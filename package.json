@@ -1,0 +1,47 @@
+{
+  "name": "thuki",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "frontend:dev": "vite",
+    "build:frontend": "tsc && vite build",
+    "build:backend": "tauri build --bundles app",
+    "build:all": "bun run build:frontend && bun run build:backend",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "lint:frontend": "eslint src",
+    "lint:backend": "cd src-tauri && cargo clippy -- -D warnings",
+    "lint": "bun run lint:frontend && bun run lint:backend",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" && cd src-tauri && cargo fmt",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" && cd src-tauri && cargo fmt -- --check",
+    "typecheck": "tsc --noEmit",
+    "validate-build": "bun run lint && bun run format:check && bun run typecheck && bun run build:all"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "framer-motion": "^12.38.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@tailwindcss/vite": "^4.2.2",
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "eslint": "^9",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "globals": "^17.4.0",
+    "prettier": "^3.8.1",
+    "tailwindcss": "^4.2.2",
+    "typescript": "~5.8.3",
+    "typescript-eslint": "^8.57.1",
+    "vite": "^7.0.4"
+  }
+}
