@@ -1,0 +1,42 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans:
+    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  --color-brand: #58a6ff;
+  --color-text-main: #e6edf3;
+  --color-glass-base: rgba(13, 17, 23, 0.85);
+  --color-glass-secondary: rgba(22, 27, 34, 0.5);
+  --color-glass-border: rgba(48, 54, 61, 0.5);
+  --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.6);
+  --animate-custom-pulse: custom-pulse 2.5s infinite;
+
+  @keyframes custom-pulse {
+    0% {
+      transform: scale(0.9);
+      opacity: 0.5;
+      box-shadow: 0 0 0px #58a6ff;
+    }
+    50% {
+      transform: scale(1.1);
+      opacity: 1;
+      box-shadow: 0 0 15px #58a6ff;
+    }
+    100% {
+      transform: scale(0.9);
+      opacity: 0.5;
+      box-shadow: 0 0 0px #58a6ff;
+    }
+  }
+}
+
+html,
+body {
+  background-color: transparent;
+  color: var(--color-text-main);
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  user-select: none;
+}
