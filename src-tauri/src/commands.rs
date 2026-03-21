@@ -76,6 +76,7 @@ pub async fn ask_ollama(
                         buffer.extend_from_slice(&bytes);
 
                         while let Some(idx) = buffer.iter().position(|&b| b == b'\n') {
+                            // Safely drain the buffer strictly up to the newline delimiter
                             let line_bytes = buffer.drain(..=idx).collect::<Vec<u8>>();
                             if let Ok(line_text) = String::from_utf8(line_bytes) {
                                 let trimmed = line_text.trim();

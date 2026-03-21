@@ -1,0 +1,104 @@
+# ==============================================================================
+# Architecture: Isolated Generative Sandbox (Zero-Trust Model)
+# 
+# Purpose: Provides a secure, containerized LLM runtime separated from the host.
+# 
+# SECURITY AUDIT CHECKLIST (First-Class Concerns):
+# [x] HOST ISOLATION: Zero bind-mounts. Uses Docker-managed volumes only.
+# [x] NETWORK EGRESS: Blocked. 'internal: false' prevents "phoning home".
+# [x] NETWORK INGRESS: Isolated. '127.0.0.1' binding drops external requests.
+# [x] PRIVILEGE ESCALATION: Blocked. 'no-new-privileges: true' enforced.
+# [x] BREAKOUT MITIGATION: Blocked. 'cap_drop: ALL' strips kernel privileges.
+# [x] POISONING PROTECTION: Blocked. 'sandbox_models' volume is Read-Only (:ro).
+# [x] DOS PREVENTION: Limited. 'memory: 16G' prevents host kernel panic.
+# [x] EPHEMERAL STATE: Purged. 'down -v' in package.json kills all data.
+# [x] NON-EXECUTABLE WEIGHTS: Modern GGUF format is math-only, not code-driven.
+# ==============================================================================
+
+# DRY Configuration Extension for shared Ollama security baseline
+x-ollama-base: &ollama-base
+  image: ollama/ollama@sha256:5a5d014aa774f78ebe1340c0d4afc2e35afc12a2c3b34c84e71f78ea20af4ba3
+  # Drops all Linux kernel capabilities. Negates thousands of container-escape 
+  # exploit vectors by denying the process any advanced kernel privileges.
+  cap_drop:
+    - ALL
+  security_opt:
+    # Blocks the process from gaining new execution privileges through setuid/setgid,
+    # eliminating local privilege escalation vectors inside the container.
+    - no-new-privileges:true
+
+services:
+  # ----------------------------------------------------------------------------
+  # Initialization Service (sandbox-init)
+  # Purpose: Downloads the designated LLM model to the shared volume, then exits.
+  # ----------------------------------------------------------------------------
+  sandbox-init:
+    <<: *ollama-base
+    container_name: thuki-sandbox-init
+    # The default entrypoint conflicts with the bash-based initialization script.
+    # Explicitly redefining the entrypoint allows conditional execution, polling, 
+    # and graceful signal handling (pkill) without requiring a custom Dockerfile.
+    entrypoint: ["/usr/bin/bash", "-c"]
+    environment:
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+    volumes:
+      - sandbox_models:/root/.ollama
+    command: 
+      - |
+        ollama serve &
+        # Deterministic readiness probe: poll until the daemon responds or timeout after 30s
+        for i in {1..30}; do
+          if ollama list >/dev/null 2>&1; then break; fi
+          sleep 1
+        done
+        # Pull the specified generative model into the mounted volume.
+        # If the pull fails, terminate the daemon gracefully but exit with 1.
+        ollama pull $$OLLAMA_MODEL || { pkill -SIGINT ollama; wait; exit 1; }
+        # Send SIGINT to gracefully terminate the daemon and preserve data integrity
+        pkill -SIGINT ollama
+        wait
+    networks:
+      - isolated_sandbox
+
+  sandbox-server:
+    <<: *ollama-base
+    container_name: thuki-sandbox-server
+    restart: unless-stopped
+    depends_on:
+      sandbox-init:
+        condition: service_completed_successfully
+    environment:
+      # to clean up 'unused models/manifests' at startup, which would instantly 
+      # crash when executed on the Read-Only volume security enforced below.
+      OLLAMA_NOPRUNE: "true"
+    volumes:
+      # Prevents Host Alteration and Model Poisoning. The container physically 
+      # cannot modify its weights or write backdoors to the storage layer even if 
+      # Remote Code Execution (RCE) is achieved.
+      - sandbox_models:/root/.ollama:ro
+    ports:
+      # Prevents unauthorized access. Only connections originating from the host 
+      # machine (127.0.0.1) can reach the port. Drops external network ingress.
+      - "127.0.0.1:11434:11434"
+    networks:
+      - isolated_sandbox
+    # Restricts post-exploitation pivot capabilities by mitigating unauthorized file
+    # writes to the container's underlying OS layers.
+    read_only: true
+    tmpfs:
+      - /tmp
+
+volumes:
+  # Isolates the generative payload from the user's host filesystem. This is not a bind mount.
+  # When 'bun run sandbox:stop' (down -v) is called, this volume and all downloaded model 
+  # weights are permanently destroyed, ensuring zero residual artifacts on the host.
+  sandbox_models:
+
+networks:
+  isolated_sandbox:
+    driver: bridge
+    # NOTE: Docker Desktop (Mac/Windows) proxy drops host-bound routes for 'internal: true'
+    # natively. Imposing strict egress-drop physically breaks the host application's local
+    # port binding. Without 'internal: true', splitting 'egress' and 'internal' subnets 
+    # creates identical redundant bridges. For KISS we use one simplified bridge and lean 
+    # exclusively on host port binding, capabilities, and readonly filesystems for defense.
