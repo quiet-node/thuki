@@ -17,6 +17,8 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" && cd src-tauri && cargo fmt",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" && cd src-tauri && cargo fmt -- --check",
     "typecheck": "tsc --noEmit",
+    "sandbox:start": "docker compose -f sandbox/docker-compose.yml up -d",
+    "sandbox:stop": "docker compose -f sandbox/docker-compose.yml down -v",
     "validate-build": "bun run lint && bun run format:check && bun run typecheck && bun run build:all"
   },
   "dependencies": {
