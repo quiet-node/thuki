@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Thuki",
         "width": 600,
         "height": 450,
@@ -19,7 +20,8 @@
         "fullscreen": false,
         "transparent": true,
         "decorations": false,
-        "alwaysOnTop": true
+        "alwaysOnTop": false,
+        "visible": false
       }
     ],
     "security": {
