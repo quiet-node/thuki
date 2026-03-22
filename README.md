@@ -40,11 +40,13 @@ Thuki utilizes a **Dual-Layer Isolation** model for generative inference:
     Thuki offers a hardened, isolated Docker sandbox as a secure-by-default environment for generative inference. This is ideal if you do not wish to install AI models directly on your host or prefer maximum isolation from the network.
 
     This bootstraps the sandbox and pulls the models (default: `llama3.2:3b`).
+
     ```bash
     bun run sandbox:start
     ```
 
     _To pre-select or switch the model:_
+
     ```bash
     OLLAMA_MODEL=llama3:8b bun run sandbox:start
     ```
@@ -54,9 +56,32 @@ Thuki utilizes a **Dual-Layer Isolation** model for generative inference:
 
 3.  **Launch Thuki**:
     Starts the Tauri chat interface.
+
     ```bash
     bun run dev
     ```
+
+    > [!NOTE]
+    > **macOS Accessibility Permission**: Thuki registers a global keyboard shortcut to toggle the overlay. This requires macOS Accessibility permission. During development, the system dialog will prompt you to grant permission to your **terminal app** (e.g., iTerm, Terminal) — this is standard macOS behavior for non-bundled binaries and is expected. In production builds (`.app` bundle), the prompt correctly shows "Thuki."
+
+### Production Build
+
+Build a distributable `.app` bundle:
+
+```bash
+bun run build:all
+```
+
+The bundle is output to `src-tauri/target/release/bundle/macos/Thuki.app`. Launch it directly:
+
+```bash
+open src-tauri/target/release/bundle/macos/Thuki.app
+```
+
+On first launch, macOS will prompt: **"Thuki would like to control this computer using accessibility features."** Grant it once — this enables the global keyboard shortcut for toggling the overlay. The permission persists across app restarts.
+
+> [!TIP]
+> To build a debug `.app` bundle (with DevTools access), run `bun run tauri build -- --debug`. The bundle lands in `src-tauri/target/debug/bundle/macos/Thuki.app`.
 
 ### Command Reference
 

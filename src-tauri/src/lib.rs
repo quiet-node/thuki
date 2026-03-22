@@ -2,15 +2,21 @@
  * Thuki Core Library
  *
  * Application bootstrap for the Thuki desktop agent. Configures the macOS
- * status bar presence, system tray menu, global keyboard shortcut, and
+ * status bar presence, system tray menu, double-tap Option hotkey, and
  * window lifecycle (hide-on-close instead of quit).
  *
  * On macOS the main window is converted to an NSPanel via `tauri-nspanel`.
  * This allows the overlay to appear on top of native fullscreen applications
  * — something a standard NSWindow cannot do regardless of window level.
+ *
+ * The overlay is toggled via a system-level activation trigger (macOS only),
+ * managed by the `activator` module.
  */
 
 pub mod commands;
+
+#[cfg(target_os = "macos")]
+mod activator;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -20,9 +26,6 @@ use tauri::{
 
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
-
-#[cfg(desktop)]
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[cfg(target_os = "macos")]
 use tauri_nspanel::{
@@ -116,7 +119,7 @@ fn init_panel(app_handle: &tauri::AppHandle) {
 /// Setup order:
 /// 1. `ActivationPolicy::Accessory` suppresses the Dock icon.
 /// 2. The main window is converted to an NSPanel for fullscreen overlay.
-/// 3. System tray and global shortcut (Ctrl+T) are registered.
+/// 3. System tray is registered; double-tap Option listener starts.
 /// 4. `CloseRequested` is intercepted to hide instead of destroy.
 ///
 /// # Panics
@@ -195,31 +198,16 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // ── Global keyboard shortcut: Control+T ────────────────────
-            #[cfg(desktop)]
+            // ── Activation listener (macOS only) ─────────────────────────
+            #[cfg(target_os = "macos")]
             {
-                let ctrl_t = Shortcut::new(Some(Modifiers::CONTROL), Code::KeyT);
                 let app_handle = app.handle().clone();
-
-                app.handle().plugin(
-                    tauri_plugin_global_shortcut::Builder::new()
-                        .with_handler(move |_app, shortcut, event| {
-                            if shortcut == &ctrl_t && event.state() == ShortcutState::Pressed {
-                                #[cfg(target_os = "macos")]
-                                toggle_panel(&app_handle);
-
-                                #[cfg(not(target_os = "macos"))]
-                                {
-                                    if let Some(win) = app_handle.get_webview_window("main") {
-                                        toggle_window(&win);
-                                    }
-                                }
-                            }
-                        })
-                        .build(),
-                )?;
-
-                app.global_shortcut().register(ctrl_t)?;
+                let activator = activator::OverlayActivator::new();
+                activator.start(move || {
+                    let handle = app_handle.clone();
+                    let _ = app_handle.run_on_main_thread(move || toggle_panel(&handle));
+                });
+                app.manage(activator);
             }
 
             // ── Persistent HTTP client ────────────────────────────────
