@@ -2,8 +2,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useState, useEffect, useRef } from 'react';
 import { useOllama } from './hooks/useOllama';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import './App.css';
-
 /**
  * Main application container for Thuki.
  *
@@ -33,6 +33,19 @@ function App() {
   useEffect(() => {
     const timer = setTimeout(() => setIsInitialized(true), 1200);
     return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const handleGlobalKeyDown = async (e: KeyboardEvent) => {
+      // Handle Cmd+W (macOS) or Ctrl+W to hide window
+      if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
+        e.preventDefault();
+        await getCurrentWindow().hide();
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, []);
 
   return (

@@ -3,6 +3,9 @@
   "identifier": "default",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-start-dragging",
+    "core:window:deny-internal-toggle-maximize"
   ]
 }
