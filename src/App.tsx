@@ -1,205 +1,302 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { useOllama } from './hooks/useOllama';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import './App.css';
+
+const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
+
 /**
- * Main application container for Thuki.
+ * Authoritative deadline from the start of the hide transition to the native
+ * window hide call. Accounts for WKWebView `requestAnimationFrame` throttling
+ * in non-key windows, which stalls spring animations indefinitely and makes
+ * `AnimatePresence.onExitComplete` unreliable when the panel is unfocused.
+ */
+const HIDE_COMMIT_DELAY_MS = 350;
+
+type OverlayVisibilityPayload = 'show' | 'hide-request';
+type OverlayState = 'visible' | 'hidden' | 'hiding';
+
+/**
+ * Hoisted static SVG — prevents re-allocation on every render cycle.
+ * @see Vercel React Best Practices §6.3 — Hoist Static JSX Elements
+ */
+const ARROW_UP_ICON = (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <path
+      d="M8 13V3M8 3L3 8M8 3L13 8"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+/**
+ * Animated spinner rendered in the submit button during response generation.
+ * Defined as a component to guarantee fresh animation state on each mount.
+ */
+function Spinner() {
+  return (
+    <motion.div
+      animate={{ rotate: 360 }}
+      transition={{ duration: 0.7, repeat: Infinity, ease: 'linear' }}
+      className="w-4 h-4 rounded-full border-2 border-neutral border-t-primary"
+    />
+  );
+}
+
+/**
+ * Main application component for Thuki.
  *
- * Provides a frameless, transparent interface using glassmorphism aesthetics.
- * Features entry animations and a search-oriented interface for assistant interactions.
- *
- * @returns {JSX.Element} The rendered application component hierarchy.
+ * Renders a minimal, spotlight-style input bar with an expanding response panel.
+ * Designed as a frameless, transparent overlay for fast assistant interactions.
  */
 function App() {
-  const [isInitialized, setIsInitialized] = useState(false);
   const [query, setQuery] = useState('');
-  const { messages, streamingContent, ask, isGenerating, error } = useOllama();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [overlayState, setOverlayState] = useState<OverlayState>('hidden');
+  const { messages, streamingContent, ask, isGenerating, error, reset } =
+    useOllama();
+  const responseRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const handleSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      ask(query);
-      setQuery('');
-    }
-  };
+  const canSubmit = query.trim().length > 0 && !isGenerating;
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingContent]);
+  /** Derive latest assistant response without ES2023+ Array methods. */
+  const latestResponse = messages.reduce<string>(
+    (acc, m) => (m.role === 'assistant' ? m.content : acc),
+    '',
+  );
+  const displayContent = streamingContent || latestResponse;
+  const showResponse =
+    displayContent.length > 0 || isGenerating || error !== null;
+  const shouldRenderOverlay = overlayState === 'visible';
 
-  useEffect(() => {
-    const timer = setTimeout(() => setIsInitialized(true), 1200);
-    return () => clearTimeout(timer);
+  /**
+   * Replays the entrance sequence by transitioning the overlay to the visible state.
+   * Clears conversation state for a fresh session each time the overlay appears.
+   */
+  const replayEntranceAnimation = useCallback(() => {
+    setQuery('');
+    reset();
+    setOverlayState('visible');
+  }, [reset]);
+
+  /**
+   * Moves the overlay into an exit phase. The actual Tauri window hide call is
+   * deferred until Framer Motion finishes the exit transition.
+   */
+  const requestHideOverlay = useCallback(() => {
+    setOverlayState((currentState) => {
+      if (currentState === 'hidden' || currentState === 'hiding') {
+        return currentState;
+      }
+
+      return 'hiding';
+    });
   }, []);
 
-  useEffect(() => {
-    const handleGlobalKeyDown = async (e: KeyboardEvent) => {
-      // Handle Cmd+W (macOS) or Ctrl+W to hide window
-      if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
+  const handleSubmit = useCallback(() => {
+    if (!canSubmit) return;
+    ask(query);
+    setQuery('');
+  }, [canSubmit, query, ask]);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        await getCurrentWindow().hide();
+        handleSubmit();
       }
+    },
+    [handleSubmit],
+  );
+
+  /** Auto-scroll response panel as streaming tokens arrive. */
+  useEffect(() => {
+    if (streamingContent && responseRef.current) {
+      responseRef.current.scrollTop = responseRef.current.scrollHeight;
+    }
+  }, [streamingContent]);
+
+  /**
+   * Synchronizes the React animation state with Tauri-driven overlay visibility
+   * requests emitted from the Rust backend.
+   */
+  useEffect(() => {
+    let unlistenVisibility: (() => void) | undefined;
+
+    const attachVisibilityListener = async () => {
+      unlistenVisibility = await listen<OverlayVisibilityPayload>(
+        OVERLAY_VISIBILITY_EVENT,
+        ({ payload }) => {
+          if (payload === 'show') {
+            replayEntranceAnimation();
+            return;
+          }
+
+          requestHideOverlay();
+        },
+      );
     };
 
-    window.addEventListener('keydown', handleGlobalKeyDown);
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, []);
+    void attachVisibilityListener();
+
+    return () => {
+      unlistenVisibility?.();
+    };
+  }, [replayEntranceAnimation, requestHideOverlay]);
+
+  /** Hide window on Escape or Cmd+W (macOS) / Ctrl+W. */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (((e.metaKey || e.ctrlKey) && e.key === 'w') || e.key === 'Escape') {
+        e.preventDefault();
+        void invoke('notify_overlay_hidden');
+        requestHideOverlay();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [requestHideOverlay]);
+
+  /** Programmatic focus when the overlay becomes visible. */
+  useEffect(() => {
+    if (overlayState === 'visible') {
+      const raf = requestAnimationFrame(() => inputRef.current?.focus());
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [overlayState]);
+
+  /**
+   * Commits the native window hide after a fixed deadline from the start of
+   * the exit transition. Uses a timer rather than AnimatePresence.onExitComplete
+   * because WKWebView throttles requestAnimationFrame in non-key windows,
+   * causing spring animations to stall and the callback to never fire.
+   */
+  useEffect(() => {
+    if (overlayState !== 'hiding') return;
+
+    const timer = setTimeout(() => {
+      void getCurrentWindow().hide();
+      void invoke('notify_overlay_hidden');
+      setOverlayState('hidden');
+    }, HIDE_COMMIT_DELAY_MS);
+
+    return () => clearTimeout(timer);
+  }, [overlayState]);
 
   return (
-    <AnimatePresence>
-      {!isInitialized ? (
-        <motion.div
-          key="loader"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="flex items-center justify-center h-screen bg-transparent"
-        >
+    <div
+      className="flex flex-col items-center justify-start h-screen w-screen p-10 bg-transparent overflow-visible"
+      data-tauri-drag-region
+    >
+      <AnimatePresence mode="wait">
+        {shouldRenderOverlay ? (
           <motion.div
-            animate={{ rotate: 360 }}
-            transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
-            className="w-12 h-12 rounded-full border-4 border-glass-secondary border-t-brand/80"
-          />
-        </motion.div>
-      ) : (
-        <motion.main
-          key="app"
-          initial={{ opacity: 0, scale: 0.95, y: 10 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          className="flex flex-col h-screen w-screen p-10 bg-glass-base backdrop-blur-2xl border border-glass-border rounded-3xl shadow-glass"
-          data-tauri-drag-region
-        >
-          <header
-            className="mb-10 text-center flex flex-col items-center"
-            data-tauri-drag-region
+            key="overlay"
+            initial={{ opacity: 0, y: -20, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -16, scale: 0.98 }}
+            transition={{ type: 'spring', stiffness: 260, damping: 24 }}
+            className="w-full max-w-2xl px-4 py-2 overflow-visible"
           >
-            <motion.img
-              initial={{ filter: 'blur(10px)', opacity: 0 }}
-              animate={{ filter: 'blur(0px)', opacity: 1 }}
-              transition={{ delay: 0.2 }}
-              src="/thuki-logo.png"
-              className="w-[100px] h-[100px] mb-6 rounded-3xl shadow-[0_0_40px_rgba(88,166,255,0.4)]"
-              alt="Thuki logo"
-              data-tauri-drag-region
-            />
-            <motion.h1
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.4 }}
-              data-tauri-drag-region
-              className="text-5xl font-bold bg-[linear-gradient(to_bottom_right,white,#58a6ff)] text-transparent bg-clip-text tracking-tight m-0"
-            >
-              Thuki
-            </motion.h1>
-            <motion.p
-              className="text-sm opacity-70 mt-3 font-light tracking-wide"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 0.7 }}
-              transition={{ delay: 0.6 }}
-              data-tauri-drag-region
-            >
-              Ready to assist! Let&apos;s go!
-            </motion.p>
-          </header>
+            {/* Input Bar Container — provides space for the shadow to bleed without clipping */}
+            <div className="overflow-visible">
+              <motion.div
+                initial={{ opacity: 0, y: -12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.04, duration: 0.22, ease: 'easeOut' }}
+                className="flex items-center w-full bg-surface-base backdrop-blur-2xl rounded-2xl border border-surface-border shadow-bar p-1.5 gap-2"
+              >
+                <motion.img
+                  src="/thuki-logo.png"
+                  alt="Thuki"
+                  className="w-10 h-10 shrink-0 rounded-xl"
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: 0.1, type: 'spring', stiffness: 300 }}
+                  draggable={false}
+                />
 
-          <section className="flex-1 flex flex-col items-center justify-center overflow-hidden">
-            {messages.length === 0 ? (
-              <motion.div
-                className="flex items-center text-sm opacity-60 mt-4 mb-auto"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 0.6 }}
-                transition={{ delay: 1.2 }}
-              >
-                <span className="w-2.5 h-2.5 bg-brand rounded-full mr-3.5 shadow-[0_0_15px_#58a6ff] animate-custom-pulse" />
-                Awaiting your request
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  disabled={isGenerating}
+                  autoFocus
+                  placeholder="Ask Thuki anything..."
+                  className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50"
+                />
+
+                <motion.button
+                  type="button"
+                  onClick={handleSubmit}
+                  disabled={!canSubmit && !isGenerating}
+                  whileHover={canSubmit ? { scale: 1.08 } : undefined}
+                  whileTap={canSubmit ? { scale: 0.92 } : undefined}
+                  className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-colors duration-200 ${
+                    canSubmit
+                      ? 'bg-primary text-neutral cursor-pointer'
+                      : isGenerating
+                        ? 'bg-surface-elevated text-primary cursor-default'
+                        : 'bg-surface-elevated text-text-secondary cursor-default'
+                  }`}
+                  aria-label="Send message"
+                >
+                  {isGenerating ? <Spinner /> : ARROW_UP_ICON}
+                </motion.button>
               </motion.div>
-            ) : (
-              <motion.div
-                className="w-full max-w-xl flex-1 overflow-y-auto mb-4 p-4 rounded-2xl bg-glass-secondary border border-glass-border custom-scrollbar text-left text-sm"
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-              >
-                {messages.map((msg, i) => (
-                  <div
-                    key={i}
-                    className={`mb-4 w-full flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+
+              {/* Response Panel — appears contextually below the bar */}
+              <AnimatePresence>
+                {showResponse ? (
+                  <motion.div
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+                    className="w-full mt-3 bg-surface-base backdrop-blur-2xl rounded-2xl border border-surface-border shadow-bar overflow-hidden"
                   >
                     <div
-                      className={`max-w-[85%] p-3 rounded-2xl ${
-                        msg.role === 'user'
-                          ? 'bg-brand/20 border border-brand/30 text-white rounded-br-sm'
-                          : 'bg-[rgba(22,27,34,0.6)] border border-glass-border text-gray-200 rounded-bl-sm'
-                      }`}
+                      ref={responseRef}
+                      className="p-4 max-h-85 overflow-y-auto text-sm leading-relaxed custom-scrollbar"
                     >
-                      {msg.role === 'user' ? (
-                        <span className="whitespace-pre-wrap">
-                          {msg.content}
-                        </span>
-                      ) : (
-                        <MarkdownRenderer
-                          content={msg.content}
-                          className="prose-sm leading-relaxed"
-                        />
-                      )}
+                      {displayContent ? (
+                        <MarkdownRenderer content={displayContent} />
+                      ) : isGenerating ? (
+                        <div className="flex items-center gap-2 text-text-secondary">
+                          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                          Thinking...
+                        </div>
+                      ) : null}
+                      {error ? (
+                        <p className="text-red-400 text-xs mt-3 p-2 rounded-lg bg-red-950/30 border border-red-900/50">
+                          {error}
+                        </p>
+                      ) : null}
                     </div>
-                  </div>
-                ))}
-                {isGenerating && streamingContent && (
-                  <div className="mb-4 w-full flex justify-start">
-                    <div className="max-w-[85%] p-3 rounded-2xl bg-[rgba(22,27,34,0.6)] border border-glass-border text-gray-200 rounded-bl-sm">
-                      <MarkdownRenderer
-                        content={streamingContent}
-                        className="prose-sm leading-relaxed"
-                      />
-                    </div>
-                  </div>
-                )}
-                {isGenerating && (
-                  <div className="flex items-center text-xs opacity-50 mt-2">
-                    <span className="w-1.5 h-1.5 bg-brand rounded-full mr-2 animate-bounce" />
-                    Thuki is thinking...
-                  </div>
-                )}
-                {error && (
-                  <div className="text-red-400 text-xs mt-2 p-2 border border-red-900 rounded bg-red-950/30">
-                    Connection Error: {error}
-                  </div>
-                )}
-                <div ref={messagesEndRef} />
-              </motion.div>
-            )}
-
-            <motion.div
-              className="w-full max-w-xl mt-auto shrink-0"
-              initial={{ width: '20%', opacity: 0 }}
-              animate={{ width: '100%', opacity: 1 }}
-              transition={{ delay: 0.8, type: 'spring', stiffness: 100 }}
-            >
-              <input
-                type="text"
-                placeholder="How can I help you today?"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={handleSubmit}
-                disabled={isGenerating}
-                autoFocus
-                className="w-full px-7 py-5 mb-2 rounded-2xl border border-glass-border bg-glass-secondary text-text-main text-lg outline-none shadow-lg transition-all duration-300 transform focus:border-brand focus:bg-[rgba(22,27,34,0.8)] focus:ring-4 focus:ring-brand/25 focus:-translate-y-0.5 disabled:opacity-50"
-              />
-            </motion.div>
-          </section>
-
-          <footer
-            className="text-right text-xs opacity-40 font-light mt-2"
-            data-tauri-drag-region
-          >
-            <span className="version">Thuki v0.1.0</span>
-          </footer>
-        </motion.main>
-      )}
-    </AnimatePresence>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
   );
 }
 

@@ -18,10 +18,12 @@ pub mod commands;
 #[cfg(target_os = "macos")]
 mod activator;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, WebviewWindow,
+    Emitter, Manager, RunEvent, WebviewWindow,
 };
 
 #[cfg(target_os = "macos")]
@@ -49,31 +51,73 @@ tauri_panel! {
 
 // ─── Window helpers ─────────────────────────────────────────────────────────
 
-/// Toggles the NSPanel between visible/hidden on macOS.
+/// Frontend event used to synchronize show/hide animations with native window visibility.
+const OVERLAY_VISIBILITY_EVENT: &str = "thuki://visibility";
+const OVERLAY_VISIBILITY_SHOW: &str = "show";
+const OVERLAY_VISIBILITY_HIDE_REQUEST: &str = "hide-request";
+
+/// Tracks the intended visibility state of the overlay, preventing race conditions
+/// between the frontend exit animation and rapid activation toggles.
+static OVERLAY_INTENDED_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+/// Emits a visibility transition to the frontend animation controller.
+fn emit_overlay_visibility(app_handle: &tauri::AppHandle, state: &str) {
+    let _ = app_handle.emit(OVERLAY_VISIBILITY_EVENT, state);
+}
+
+/// Shows the overlay and requests the frontend to replay its entrance animation.
 ///
-/// Uses `get_webview_panel` to operate directly on the NSPanel, which
-/// correctly handles fullscreen Space visibility. Falls back to standard
-/// window show/hide on non-macOS platforms.
+/// Uses `show_and_make_key()` to guarantee the NSPanel becomes the key window,
+/// which is required for the WebView input to receive keyboard focus reliably.
 #[cfg(target_os = "macos")]
-fn toggle_panel(app_handle: &tauri::AppHandle) {
+fn show_overlay(app_handle: &tauri::AppHandle) {
+    if OVERLAY_INTENDED_VISIBLE.swap(true, Ordering::SeqCst) {
+        return;
+    }
     if let Ok(panel) = app_handle.get_webview_panel("main") {
-        if panel.is_visible() {
-            panel.hide();
-        } else {
-            panel.show();
-        }
+        panel.show_and_make_key();
+        emit_overlay_visibility(app_handle, OVERLAY_VISIBILITY_SHOW);
     }
 }
 
-/// Toggles the chat window between visible/hidden states (non-macOS fallback).
+/// Requests an animated hide sequence from the frontend. The actual native
+/// window hide is deferred until the frontend exit animation completes.
+fn request_overlay_hide(app_handle: &tauri::AppHandle) {
+    if OVERLAY_INTENDED_VISIBLE.swap(false, Ordering::SeqCst) {
+        emit_overlay_visibility(app_handle, OVERLAY_VISIBILITY_HIDE_REQUEST);
+    }
+}
+
+/// Shows the overlay and requests the frontend to replay its entrance animation.
 #[cfg(not(target_os = "macos"))]
-fn toggle_window(window: &WebviewWindow) {
-    if window.is_visible().unwrap_or(false) {
-        let _ = window.hide();
-    } else {
+fn show_overlay(app_handle: &tauri::AppHandle) {
+    if OVERLAY_INTENDED_VISIBLE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if let Some(window) = app_handle.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
+        emit_overlay_visibility(app_handle, OVERLAY_VISIBILITY_SHOW);
     }
+}
+
+/// Toggles the overlay between visible and hidden states.
+///
+/// Uses an atomic flag as the single source of truth for intended visibility,
+/// which avoids race conditions with the native panel state during animations.
+fn toggle_overlay(app_handle: &tauri::AppHandle) {
+    if OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst) {
+        request_overlay_hide(app_handle);
+    } else {
+        show_overlay(app_handle);
+    }
+}
+
+/// Synchronizes the Rust-side visibility tracking when the frontend
+/// completes its exit animation and hides the native window.
+#[tauri::command]
+fn notify_overlay_hidden() {
+    OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
 }
 
 // ─── NSPanel initialisation ─────────────────────────────────────────────────
@@ -81,12 +125,16 @@ fn toggle_window(window: &WebviewWindow) {
 /// Converts the main Tauri window into an NSPanel and applies the overlay
 /// configuration required to appear over fullscreen macOS applications.
 ///
-/// The three critical settings are:
+/// The four critical settings are:
 /// - `PanelLevel::Floating` — floats above normal windows
 /// - `CollectionBehavior::full_screen_auxiliary()` — allows coexistence with
 ///   fullscreen Spaces (this is what standard `alwaysOnTop` cannot do)
 /// - `StyleMask::nonactivating_panel()` — prevents the panel from stealing
 ///   focus/activation from the fullscreen application
+/// - `set_has_shadow(false)` — disables the native compositor shadow, which
+///   renders differently for key vs. non-key windows, causing a visible change
+///   when the user clicks elsewhere. CSS `shadow-bar` provides a consistent
+///   elevation effect independent of key-window state.
 #[cfg(target_os = "macos")]
 fn init_panel(app_handle: &tauri::AppHandle) {
     let window: WebviewWindow = app_handle
@@ -110,6 +158,12 @@ fn init_panel(app_handle: &tauri::AppHandle) {
 
     // Keep the panel visible when the user clicks back into the fullscreen app.
     panel.set_hides_on_deactivate(false);
+
+    // Disable the native compositor shadow. macOS renders visually distinct
+    // shadows for key vs. non-key windows, which causes the overlay to appear
+    // different after the user clicks elsewhere. The CSS `shadow-bar` provides
+    // a stable, focus-independent elevation effect.
+    panel.set_has_shadow(false);
 }
 
 // ─── Application entry point ─────────────────────────────────────────────────
@@ -159,19 +213,7 @@ pub fn run() {
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
-                        #[cfg(target_os = "macos")]
-                        {
-                            if let Ok(panel) = app.get_webview_panel("main") {
-                                panel.show();
-                            }
-                        }
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            if let Some(win) = app.get_webview_window("main") {
-                                let _ = win.show();
-                                let _ = win.set_focus();
-                            }
-                        }
+                        show_overlay(app);
                     }
                     "quit" => {
                         app.exit(0);
@@ -185,15 +227,7 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        #[cfg(target_os = "macos")]
-                        toggle_panel(tray.app_handle());
-
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            if let Some(win) = tray.app_handle().get_webview_window("main") {
-                                toggle_window(&win);
-                            }
-                        }
+                        toggle_overlay(tray.app_handle());
                     }
                 })
                 .build(app)?;
@@ -205,7 +239,7 @@ pub fn run() {
                 let activator = activator::OverlayActivator::new();
                 activator.start(move || {
                     let handle = app_handle.clone();
-                    let _ = app_handle.run_on_main_thread(move || toggle_panel(&handle));
+                    let _ = app_handle.run_on_main_thread(move || toggle_overlay(&handle));
                 });
                 app.manage(activator);
             }
@@ -215,7 +249,10 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![commands::ask_ollama])
+        .invoke_handler(tauri::generate_handler![
+            commands::ask_ollama,
+            notify_overlay_hidden
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
@@ -228,18 +265,7 @@ pub fn run() {
                 if label == "main" {
                     api.prevent_close();
 
-                    #[cfg(target_os = "macos")]
-                    {
-                        if let Ok(panel) = app_handle.get_webview_panel("main") {
-                            panel.hide();
-                        }
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        if let Some(win) = app_handle.get_webview_window("main") {
-                            let _ = win.hide();
-                        }
-                    }
+                    request_overlay_hide(app_handle);
                 }
             }
         });
