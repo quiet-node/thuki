@@ -31,6 +31,9 @@ use core_graphics::event::{
 /// Maximum temporal proximity between trigger events to qualify as an activation signal.
 const ACTIVATION_WINDOW: Duration = Duration::from_millis(400);
 
+/// Minimum interval between successive activations to prevent accidental double-toggles.
+const ACTIVATION_COOLDOWN: Duration = Duration::from_millis(600);
+
 /// Primary keycodes used for the activation sequence (macOS Option keys).
 const KC_PRIMARY_L: i64 = 0x3A;
 const KC_PRIMARY_R: i64 = 0x3D;
@@ -84,6 +87,8 @@ struct ActivationState {
     last_trigger: Option<Instant>,
     /// Tracks the current physical state of the trigger key.
     is_pressed: bool,
+    /// Timestamp of the last successful activation to enforce cooldown.
+    last_activation: Option<Instant>,
 }
 
 /// Evaluates a raw input event to determine if the activation sequence is complete.
@@ -95,11 +100,18 @@ fn evaluate_activation(state: &mut ActivationState, is_press: bool) -> bool {
         state.is_pressed = true;
         let now = Instant::now();
 
+        // Enforce cooldown period after a successful activation to prevent
+        // rapid tapping from triggering multiple toggles.
+        if let Some(last_act) = state.last_activation {
+            if now.duration_since(last_act) < ACTIVATION_COOLDOWN {
+                return false;
+            }
+        }
+
         if let Some(last) = state.last_trigger {
             if now.duration_since(last) < ACTIVATION_WINDOW {
-                // Sequence completed successfully. Reset state to prevent
-                // subsequent events from creating an unintended feedback loop.
                 state.last_trigger = None;
+                state.last_activation = Some(now);
                 return true;
             }
         }
@@ -186,6 +198,7 @@ where
     let state = Arc::new(Mutex::new(ActivationState {
         last_trigger: None,
         is_pressed: false,
+        last_activation: None,
     }));
 
     let cb_active = is_active.clone();
@@ -254,6 +267,7 @@ mod tests {
         let mut state = ActivationState {
             last_trigger: None,
             is_pressed: false,
+            last_activation: None,
         };
 
         // First event
@@ -269,6 +283,7 @@ mod tests {
         let mut state = ActivationState {
             last_trigger: None,
             is_pressed: false,
+            last_activation: None,
         };
 
         evaluate_activation(&mut state, true);

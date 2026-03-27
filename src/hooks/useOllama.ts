@@ -95,5 +95,13 @@ export function useOllama() {
     [isGenerating],
   );
 
-  return { messages, streamingContent, ask, isGenerating, error, setMessages };
+  /** Resets all conversation state to prepare for a fresh session. */
+  const reset = useCallback(() => {
+    setMessages([]);
+    setStreamingContent('');
+    setIsGenerating(false);
+    setError(null);
+  }, []);
+
+  return { messages, streamingContent, ask, isGenerating, error, reset };
 }
