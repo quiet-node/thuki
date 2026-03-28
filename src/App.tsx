@@ -3,7 +3,9 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useOllama } from './hooks/useOllama';
-import { MarkdownRenderer } from './components/MarkdownRenderer';
+import { ChatBubble } from './components/ChatBubble';
+import { TypingIndicator } from './components/TypingIndicator';
+import { WindowControls } from './components/WindowControls';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import './App.css';
 
@@ -60,27 +62,36 @@ function Spinner() {
 /**
  * Main application component for Thuki.
  *
- * Renders a minimal, spotlight-style input bar with an expanding response panel.
- * Designed as a frameless, transparent overlay for fast assistant interactions.
+ * Implements an adaptive morphing UI: starts as a minimal spotlight-style input
+ * bar, then smoothly transforms into a full chat window when the user sends
+ * their first message. Uses Framer Motion's `layout` animations for seamless
+ * container morphing with GPU-accelerated transforms and spring physics.
  */
 function App() {
   const [query, setQuery] = useState('');
   const [overlayState, setOverlayState] = useState<OverlayState>('hidden');
   const { messages, streamingContent, ask, isGenerating, error, reset } =
     useOllama();
-  const responseRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  /**
+   * Session counter — incremented on each overlay open. Used in the motion
+   * key to force AnimatePresence to fully unmount the stale tree before
+   * mounting a fresh one, preventing a flash of the previous conversation.
+   * Must be state (not a ref) because it is read during render for the key.
+   */
+  const [sessionId, setSessionId] = useState(0);
 
   const canSubmit = query.trim().length > 0 && !isGenerating;
 
-  /** Derive latest assistant response without ES2023+ Array methods. */
-  const latestResponse = messages.reduce<string>(
-    (acc, m) => (m.role === 'assistant' ? m.content : acc),
-    '',
-  );
-  const displayContent = streamingContent || latestResponse;
-  const showResponse =
-    displayContent.length > 0 || isGenerating || error !== null;
+  /**
+   * Determines whether the UI has entered "chat mode" — i.e., the morphing
+   * chat window state with message bubbles. Transitions from input-bar mode
+   * to chat-window mode are animated via Framer Motion `layout` prop.
+   */
+  const isChatMode = messages.length > 0 || isGenerating;
+
   const shouldRenderOverlay = overlayState === 'visible';
 
   /**
@@ -88,6 +99,7 @@ function App() {
    * Clears conversation state for a fresh session each time the overlay appears.
    */
   const replayEntranceAnimation = useCallback(() => {
+    setSessionId((id) => id + 1);
     setQuery('');
     reset();
     setOverlayState('visible');
@@ -111,10 +123,13 @@ function App() {
     if (!canSubmit) return;
     ask(query);
     setQuery('');
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
   }, [canSubmit, query, ask]);
 
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         handleSubmit();
@@ -123,12 +138,74 @@ function App() {
     [handleSubmit],
   );
 
-  /** Auto-scroll response panel as streaming tokens arrive. */
+  /**
+   * Auto-resizes the textarea to fit its content up to a maximum height.
+   * Uses scrollHeight (layout read) followed by a style write — single
+   * forced reflow per input event, which is unavoidable for auto-grow.
+   */
+  const handleTextareaChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      setQuery(e.target.value);
+      const el = e.target;
+      el.style.height = 'auto';
+      el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
+    },
+    [],
+  );
+
+  /**
+   * Tracks whether the user is "pinned" near the bottom of the scroll
+   * container. When pinned, new streaming tokens auto-scroll the view.
+   * When the user manually scrolls up, pinning is released so they can
+   * read older messages undisturbed — identical to ChatGPT's behavior.
+   */
+  const isUserNearBottomRef = useRef(true);
+
+  /** Threshold in pixels — if within this distance of the bottom, consider "pinned". */
+  const NEAR_BOTTOM_THRESHOLD = 60;
+
+  /**
+   * Scroll event handler — updates the pinned state based on the user's
+   * current scroll position relative to the bottom of the container.
+   */
+  const handleScroll = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    isUserNearBottomRef.current =
+      scrollHeight - scrollTop - clientHeight < NEAR_BOTTOM_THRESHOLD;
+  }, []);
+
+  /**
+   * Auto-scroll the chat container to the bottom — but only when the user
+   * is pinned near the bottom. This lets users scroll up to read older
+   * messages while streaming continues without yanking them back down.
+   */
   useEffect(() => {
-    if (streamingContent && responseRef.current) {
-      responseRef.current.scrollTop = responseRef.current.scrollHeight;
+    if (!isUserNearBottomRef.current) return;
+
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const raf = requestAnimationFrame(() => {
+      container.scrollTop = container.scrollHeight;
+    });
+
+    return () => cancelAnimationFrame(raf);
+  }, [messages, streamingContent]);
+
+  /**
+   * Re-pin to bottom whenever the user sends a new message.
+   * This ensures the view follows the AI response for the new query.
+   */
+  useEffect(() => {
+    if (messages.length > 0) {
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg.role === 'user') {
+        isUserNearBottomRef.current = true;
+      }
     }
-  }, [streamingContent]);
+  }, [messages]);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
@@ -158,18 +235,27 @@ function App() {
     };
   }, [replayEntranceAnimation, requestHideOverlay]);
 
+  /**
+   * Combined close handler shared by the keyboard shortcut (Esc/Cmd+W)
+   * and the traffic light close/minimize buttons. Notifies the Rust
+   * backend and triggers the frontend exit animation sequence.
+   */
+  const handleCloseOverlay = useCallback(() => {
+    void invoke('notify_overlay_hidden');
+    requestHideOverlay();
+  }, [requestHideOverlay]);
+
   /** Hide window on Escape or Cmd+W (macOS) / Ctrl+W. */
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (((e.metaKey || e.ctrlKey) && e.key === 'w') || e.key === 'Escape') {
         e.preventDefault();
-        void invoke('notify_overlay_hidden');
-        requestHideOverlay();
+        handleCloseOverlay();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [requestHideOverlay]);
+  }, [handleCloseOverlay]);
 
   /** Programmatic focus when the overlay becomes visible. */
   useEffect(() => {
@@ -197,49 +283,150 @@ function App() {
     return () => clearTimeout(timer);
   }, [overlayState]);
 
+  /**
+   * Initiates native window dragging when the user mousedowns on any
+   * non-interactive surface of the morphing container.
+   *
+   * Uses `getCurrentWindow().startDragging()` instead of the declarative
+   * `data-tauri-drag-region` attribute, which only works on the exact
+   * element it's applied to — not on children. This approach lets the
+   * entire visible surface (chat bubbles, padding, separator) be draggable
+   * while preserving interactivity for textarea, buttons, and links.
+   */
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    const INTERACTIVE_TAGS = new Set([
+      'TEXTAREA',
+      'INPUT',
+      'BUTTON',
+      'A',
+      'SELECT',
+    ]);
+    let el = e.target as HTMLElement | null;
+    while (el) {
+      if (INTERACTIVE_TAGS.has(el.tagName)) return;
+      el = el.parentElement;
+    }
+    void getCurrentWindow().startDragging();
+  }, []);
+
   return (
-    <div
-      className="flex flex-col items-center justify-start h-screen w-screen p-10 bg-transparent overflow-visible"
-      data-tauri-drag-region
-    >
+    <div className="flex flex-col items-center justify-start h-screen w-screen p-10 bg-transparent overflow-visible">
       <AnimatePresence mode="wait">
         {shouldRenderOverlay ? (
           <motion.div
-            key="overlay"
+            key={`overlay-${sessionId}`}
             initial={{ opacity: 0, y: -20, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -16, scale: 0.98 }}
             transition={{ type: 'spring', stiffness: 260, damping: 24 }}
             className="w-full max-w-2xl px-4 py-2 overflow-visible"
           >
-            {/* Input Bar Container — provides space for the shadow to bleed without clipping */}
-            <div className="overflow-visible">
-              <motion.div
-                initial={{ opacity: 0, y: -12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.04, duration: 0.22, ease: 'easeOut' }}
-                className="flex items-center w-full bg-surface-base backdrop-blur-2xl rounded-2xl border border-surface-border shadow-bar p-1.5 gap-2"
+            {/* Morphing Container — flex column ensures the input bar
+                always sticks to the bottom without spring animation lag */}
+            <div
+              className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border overflow-hidden ${
+                isChatMode ? 'rounded-lg shadow-chat max-h-[calc(100vh-9rem)]' : 'rounded-2xl shadow-bar'
+              }`}
+            >
+              {/* Chat Messages Area — renders when in chat mode */}
+              <AnimatePresence>
+                {isChatMode ? (
+                  <motion.div
+                    key="chat-area"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ opacity: { duration: 0.2 } }}
+                    className="chat-area flex-1 min-h-0 flex flex-col"
+                  >
+                    {/* Traffic light window controls + logo */}
+                    <WindowControls
+                      onClose={handleCloseOverlay}
+                      onDragStart={handleDragStart}
+                    />
+                    <div
+                      ref={scrollContainerRef}
+                      onScroll={handleScroll}
+                      className="chat-messages-scroll px-5 py-4 flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto select-text"
+                    >
+                      {messages.map((msg, i) => (
+                        <ChatBubble
+                          key={`${msg.role}-${i}`}
+                          role={msg.role}
+                          content={msg.content}
+                          index={i}
+                        />
+                      ))}
+
+                      {/* Streaming AI response — renders as a live-updating bubble */}
+                      {streamingContent ? (
+                        <ChatBubble
+                          key="streaming"
+                          role="assistant"
+                          content={streamingContent}
+                          index={messages.length}
+                        />
+                      ) : null}
+
+                      {/* Typing indicator — shows before any tokens arrive */}
+                      {isGenerating && !streamingContent ? (
+                        <TypingIndicator />
+                      ) : null}
+
+                      {/* Error display */}
+                      {error ? (
+                        <motion.div
+                          initial={{ opacity: 0, y: 6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="flex w-full justify-start"
+                        >
+                          <p className="text-red-400 text-xs px-4 py-2.5 rounded-2xl rounded-bl-md bg-red-950/30 border border-red-900/50 max-w-[80%]">
+                            {error}
+                          </p>
+                        </motion.div>
+                      ) : null}
+                    </div>
+
+                    {/* Separator line between messages and input */}
+                    <motion.div
+                      initial={{ opacity: 0, scaleX: 0 }}
+                      animate={{ opacity: 1, scaleX: 1 }}
+                      transition={{ delay: 0.15, duration: 0.3 }}
+                      className="h-px bg-surface-border origin-center"
+                    />
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+
+              {/* Input Bar — shrink-0 pins it to the bottom. Also serves
+                  as the drag handle for moving the window (industry standard:
+                  toolbar = drag area, content area = text-selectable). */}
+              <div
+                onMouseDown={handleDragStart}
+                className="flex items-center w-full px-3 py-2.5 gap-2 shrink-0"
               >
-                <motion.img
+                {/* Logo — smoothly transitions between large (input-bar) and compact (chat) */}
+                <img
                   src="/thuki-logo.png"
                   alt="Thuki"
-                  className="w-10 h-10 shrink-0 rounded-xl"
-                  initial={{ opacity: 0, scale: 0.8 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: 0.1, type: 'spring', stiffness: 300 }}
+                  className={`shrink-0 transition-all duration-300 ease-out ${
+                    isChatMode ? 'w-6 h-6 rounded-lg' : 'w-10 h-10 rounded-xl'
+                  }`}
                   draggable={false}
                 />
 
-                <input
+                <textarea
                   ref={inputRef}
-                  type="text"
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
+                  onChange={handleTextareaChange}
                   onKeyDown={handleKeyDown}
                   disabled={isGenerating}
                   autoFocus
-                  placeholder="Ask Thuki anything..."
-                  className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50"
+                  rows={1}
+                  placeholder={
+                    isChatMode ? 'Reply...' : 'Ask Thuki anything...'
+                  }
+                  className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
                 />
 
                 <motion.button
@@ -259,39 +446,7 @@ function App() {
                 >
                   {isGenerating ? <Spinner /> : ARROW_UP_ICON}
                 </motion.button>
-              </motion.div>
-
-              {/* Response Panel — appears contextually below the bar */}
-              <AnimatePresence>
-                {showResponse ? (
-                  <motion.div
-                    initial={{ opacity: 0, y: -8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -8 }}
-                    transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-                    className="w-full mt-3 bg-surface-base backdrop-blur-2xl rounded-2xl border border-surface-border shadow-bar overflow-hidden"
-                  >
-                    <div
-                      ref={responseRef}
-                      className="p-4 max-h-85 overflow-y-auto text-sm leading-relaxed custom-scrollbar"
-                    >
-                      {displayContent ? (
-                        <MarkdownRenderer content={displayContent} />
-                      ) : isGenerating ? (
-                        <div className="flex items-center gap-2 text-text-secondary">
-                          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-                          Thinking...
-                        </div>
-                      ) : null}
-                      {error ? (
-                        <p className="text-red-400 text-xs mt-3 p-2 rounded-lg bg-red-950/30 border border-red-900/50">
-                          {error}
-                        </p>
-                      ) : null}
-                    </div>
-                  </motion.div>
-                ) : null}
-              </AnimatePresence>
+              </div>
             </div>
           </motion.div>
         ) : null}
