@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { LogicalSize } from '@tauri-apps/api/dpi';
 import { useOllama } from './hooks/useOllama';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView } from './view/AskBarView';
@@ -54,6 +55,41 @@ function App() {
    */
   const isChatMode = messages.length > 0 || isGenerating;
   const shouldRenderOverlay = overlayState === 'visible';
+
+  /**
+   * Reference stored for ResizeObserver cleanup.
+   */
+  const observerRef = useRef<ResizeObserver | null>(null);
+
+  /**
+   * Callback ref to reliably attach the ResizeObserver when the conditionally
+   * rendered Framer Motion container actually mounts in the DOM. This fixes
+   * the bug where a standard useEffect would run before the DOM node was ready,
+   * leaving the native window stuck at 600x700.
+   */
+  const setContainerRef = useCallback((node: HTMLDivElement | null) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+
+    if (node) {
+      const observer = new ResizeObserver((entries) => {
+        requestAnimationFrame(() => {
+          for (const entry of entries) {
+            const rect = entry.target.getBoundingClientRect();
+            // Total vertical room: 8px (pt-2) + 24px (pb-6) + 16px (motion py-2) = 48px.
+            // This ensures the tightened drop shadows aren't clipped by the native window edge.
+            const targetHeight = Math.ceil(rect.height) + 48;
+            void getCurrentWindow().setSize(new LogicalSize(600, targetHeight));
+          }
+        });
+      });
+
+      observer.observe(node);
+      observerRef.current = observer;
+    }
+  }, []);
 
   /**
    * Replays the entrance sequence by transitioning the overlay to the visible state.
@@ -162,8 +198,15 @@ function App() {
   }, [overlayState]);
 
   /**
-   * Initiates native window dragging when the user mousedowns on any
-   * non-interactive surface of the morphing container.
+   * Handles mousedown on any surface of the application window.
+   *
+   * For non-interactive targets (transparent padding, container chrome, etc.):
+   * - Calls `preventDefault()` to suppress the browser's default behaviour of
+   *   blurring the active element, keeping textarea focus intact.
+   * - Initiates a native platform drag via `startDragging()`.
+   *
+   * For interactive targets (textarea, buttons, links): returns early so
+   * standard DOM behaviour (focus, click, selection) proceeds normally.
    */
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     const INTERACTIVE_TAGS = new Set([
@@ -180,11 +223,20 @@ function App() {
       if (INTERACTIVE_TAGS.has(el.tagName.toUpperCase())) return;
       el = el.parentElement;
     }
+
+    // Suppress the default mousedown side-effect (focus transfer / blur)
+    // so the textarea retains keyboard input during window repositioning.
+    e.preventDefault();
     void getCurrentWindow().startDragging();
   }, []);
 
   return (
-    <div className="flex flex-col items-center justify-start h-screen w-screen p-10 bg-transparent overflow-visible">
+    // Minimal padding (pt-2 pb-6) provides just enough physical clearance for the
+    // tightened drop shadow to render without clipping at the native window edge.
+    <div
+      onMouseDown={handleDragStart}
+      className="flex flex-col items-center justify-start h-screen w-screen px-3 pt-2 pb-6 bg-transparent overflow-visible"
+    >
       <AnimatePresence mode="wait">
         {shouldRenderOverlay ? (
           <motion.div
@@ -198,9 +250,10 @@ function App() {
             {/* Morphing Container — flex column ensures the input bar
                 always sticks to the bottom without spring animation lag */}
             <div
+              ref={setContainerRef}
               className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border overflow-hidden ${
                 isChatMode
-                  ? 'rounded-lg shadow-chat max-h-[calc(100vh-9rem)]'
+                  ? 'rounded-lg shadow-chat max-h-[600px]'
                   : 'rounded-2xl shadow-bar'
               }`}
             >
@@ -213,7 +266,6 @@ function App() {
                     isGenerating={isGenerating}
                     error={error}
                     onClose={handleCloseOverlay}
-                    onDragStart={handleDragStart}
                   />
                 ) : null}
               </AnimatePresence>
@@ -226,7 +278,6 @@ function App() {
                 isGenerating={isGenerating}
                 onSubmit={handleSubmit}
                 inputRef={inputRef}
-                onDragStart={handleDragStart}
               />
             </div>
           </motion.div>
