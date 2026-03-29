@@ -34,9 +34,9 @@ const ACTIVATION_WINDOW: Duration = Duration::from_millis(400);
 /// Minimum interval between successive activations to prevent accidental double-toggles.
 const ACTIVATION_COOLDOWN: Duration = Duration::from_millis(600);
 
-/// Primary keycodes used for the activation sequence (macOS Option keys).
-const KC_PRIMARY_L: i64 = 0x3A;
-const KC_PRIMARY_R: i64 = 0x3D;
+/// Primary keycodes used for the activation sequence (macOS Command keys).
+const KC_PRIMARY_L: i64 = 0x37;
+const KC_PRIMARY_R: i64 = 0x36;
 
 /// Maximum number of attempts to establish the event tap while waiting for system permissions.
 const MAX_PERMISSION_ATTEMPTS: u32 = 6;
@@ -226,8 +226,8 @@ where
                 return None;
             }
 
-            // Check specific bitmask for the Alternate (Option) key state
-            let is_press = flags.contains(CGEventFlags::CGEventFlagAlternate);
+            // Check specific bitmask for the Command key state
+            let is_press = flags.contains(CGEventFlags::CGEventFlagCommand);
 
             let mut s = cb_state.lock().unwrap();
             if evaluate_activation(&mut s, is_press) {
