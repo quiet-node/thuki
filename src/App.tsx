@@ -209,6 +209,16 @@ function App() {
    * standard DOM behaviour (focus, click, selection) proceeds normally.
    */
   const handleDragStart = useCallback((e: React.MouseEvent) => {
+    const el = e.target as HTMLElement | null;
+
+    // 1. Allow native text selection in explicitly selectable regions.
+    // If the click occurs inside a chat bubble (which has .select-text),
+    // we return early so the user can highlight and copy the text.
+    if (el?.closest('.select-text')) {
+      return;
+    }
+
+    // 2. Allow interaction with standard interactive elements.
     const INTERACTIVE_TAGS = new Set([
       'TEXTAREA',
       'INPUT',
@@ -218,10 +228,10 @@ function App() {
       'PATH',
       'SVG',
     ]);
-    let el = e.target as HTMLElement | null;
-    while (el) {
-      if (INTERACTIVE_TAGS.has(el.tagName.toUpperCase())) return;
-      el = el.parentElement;
+    let current = el;
+    while (current) {
+      if (INTERACTIVE_TAGS.has(current.tagName.toUpperCase())) return;
+      current = current.parentElement;
     }
 
     // Suppress the default mousedown side-effect (focus transfer / blur)

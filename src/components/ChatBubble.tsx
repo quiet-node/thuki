@@ -50,7 +50,7 @@ export function ChatBubble({ role, content, index }: ChatBubbleProps) {
       className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}
     >
       <div
-        className={`chat-bubble relative max-w-[80%] px-4 py-2.5 text-sm leading-relaxed ${
+        className={`chat-bubble relative max-w-[80%] px-4 py-2.5 text-sm leading-relaxed select-text ${
           isUser
             ? 'chat-bubble-user rounded-2xl rounded-br-md'
             : 'chat-bubble-ai rounded-2xl rounded-bl-md'
