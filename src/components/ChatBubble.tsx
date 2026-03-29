@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { CopyButton } from './CopyButton';
 
 interface ChatBubbleProps {
   /** The message role determines alignment and color treatment. */
@@ -36,6 +37,9 @@ const bubbleVariants = {
  * AI messages appear left-aligned with a frosted glass surface that harmonizes
  * with the dark overlay aesthetic.
  *
+ * A fixed 24px action bar below the bubble always reserves space for the copy
+ * button, which fades in on hover — no layout shift.
+ *
  * @param props Chat bubble properties including role, content, and stagger index.
  */
 export function ChatBubble({ role, content, index }: ChatBubbleProps) {
@@ -49,18 +53,26 @@ export function ChatBubble({ role, content, index }: ChatBubbleProps) {
       transition={{ delay: index * 0.06 }}
       className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}
     >
-      <div
-        className={`chat-bubble relative max-w-[80%] px-4 py-2.5 text-sm leading-relaxed select-text ${
-          isUser
-            ? 'chat-bubble-user rounded-2xl rounded-br-md'
-            : 'chat-bubble-ai rounded-2xl rounded-bl-md'
-        }`}
-      >
-        {isUser ? (
-          <span className="text-white/95 font-medium">{content}</span>
-        ) : (
-          <MarkdownRenderer content={content} />
-        )}
+      {/* group wrapper: owns max-width, stacks bubble + action bar, enables hover */}
+      <div className="group flex flex-col max-w-[80%]">
+        <div
+          className={`chat-bubble relative px-4 py-2.5 text-sm leading-relaxed select-text ${
+            isUser
+              ? 'chat-bubble-user rounded-2xl rounded-br-md'
+              : 'chat-bubble-ai rounded-2xl rounded-bl-md'
+          }`}
+        >
+          {isUser ? (
+            <span className="text-white/95 font-medium">{content}</span>
+          ) : (
+            <MarkdownRenderer content={content} />
+          )}
+        </div>
+
+        {/* Action bar — always 24px tall so layout never shifts on hover */}
+        <div className="h-6 flex items-center px-1">
+          <CopyButton content={content} align={isUser ? 'right' : 'left'} />
+        </div>
       </div>
     </motion.div>
   );
