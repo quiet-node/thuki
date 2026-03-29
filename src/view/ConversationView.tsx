@@ -1,5 +1,4 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import type React from 'react';
 import { useRef, useCallback, useEffect } from 'react';
 import { ChatBubble } from '../components/ChatBubble';
 import { TypingIndicator } from '../components/TypingIndicator';
@@ -20,8 +19,6 @@ interface ConversationViewProps {
   error: string | null;
   /** Callback fired when the user requests to close the overlay. */
   onClose: () => void;
-  /** Callback fired when the user initiates a window drag. */
-  onDragStart: (e: React.MouseEvent) => void;
 }
 
 /**
@@ -36,7 +33,6 @@ export function ConversationView({
   isGenerating,
   error,
   onClose,
-  onDragStart,
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -103,7 +99,7 @@ export function ConversationView({
       transition={{ opacity: { duration: 0.2 } }}
       className="chat-area flex-1 min-h-0 flex flex-col"
     >
-      <WindowControls onClose={onClose} onDragStart={onDragStart} />
+      <WindowControls onClose={onClose} />
 
       <div
         ref={scrollContainerRef}

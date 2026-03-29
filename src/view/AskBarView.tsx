@@ -55,15 +55,13 @@ interface AskBarViewProps {
   onSubmit: () => void;
   /** Ref to the textarea input element for focus management. */
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
-  /** Callback fired when the container acts as a drag handle. */
-  onDragStart: (e: React.MouseEvent) => void;
 }
 
 /**
  * Renders the persistent bottom input bar of the application.
  *
- * This bar acts both as the text input mechanism for the user and as the native
- * macOS drag handle for repositioning the frameless overlay window.
+ * Window dragging is handled by the application root container via event
+ * bubbling — mousedown events from this component propagate up naturally.
  */
 export function AskBarView({
   query,
@@ -72,7 +70,6 @@ export function AskBarView({
   isGenerating,
   onSubmit,
   inputRef,
-  onDragStart,
 }: AskBarViewProps) {
   const canSubmit = query.trim().length > 0 && !isGenerating;
 
@@ -105,10 +102,7 @@ export function AskBarView({
   );
 
   return (
-    <div
-      onMouseDown={onDragStart}
-      className="flex items-center w-full px-3 py-2.5 gap-2 shrink-0"
-    >
+    <div className="flex items-center w-full px-3 py-2.5 gap-2 shrink-0">
       <img
         src="/thuki-logo.png"
         alt="Thuki"

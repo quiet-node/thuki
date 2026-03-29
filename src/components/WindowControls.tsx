@@ -6,7 +6,8 @@
  * remain grayed as decorative elements (panel windows do not support
  * minimize or fullscreen).
  *
- * The bar surface doubles as a drag handle for window repositioning.
+ * Window dragging is handled by the application root container via event
+ * bubbling — mousedown events from the bar surface propagate up naturally.
  * A subtle divider at the bottom visually separates the controls from
  * the chat messages area below.
  */
@@ -16,8 +17,6 @@ import { memo } from 'react';
 interface WindowControlsProps {
   /** Triggers the overlay hide animation sequence. */
   onClose: () => void;
-  /** Initiates native window drag from the bar surface. */
-  onDragStart: (e: React.MouseEvent) => void;
 }
 
 /** Decorative dot color for inactive buttons. */
@@ -25,14 +24,10 @@ const INACTIVE_DOT = 'rgba(255, 255, 255, 0.12)';
 
 export const WindowControls = memo(function WindowControls({
   onClose,
-  onDragStart,
 }: WindowControlsProps) {
   return (
     <div className="shrink-0">
-      <div
-        onMouseDown={onDragStart}
-        className="group flex items-center px-4 py-2.5"
-      >
+      <div className="group flex items-center px-4 py-2.5">
         {/* Close button — reveals × icon on group hover */}
         <button
           type="button"
