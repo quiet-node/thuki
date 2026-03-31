@@ -1,4 +1,3 @@
-import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { WindowControls } from '../WindowControls';
@@ -34,7 +33,7 @@ describe('WindowControls', () => {
   });
 
   it('close button has x icon svg', () => {
-    const { container } = render(<WindowControls onClose={vi.fn()} />);
+    render(<WindowControls onClose={vi.fn()} />);
     const closeBtn = screen.getByRole('button', { name: 'Close window' });
     const svg = closeBtn.querySelector('svg');
     expect(svg).toBeTruthy();

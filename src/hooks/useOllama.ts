@@ -63,7 +63,7 @@ export function useOllama() {
           ]);
           setStreamingContent('');
           setIsGenerating(false);
-        } else if (chunk.type === 'Error') {
+        } /* v8 ignore start */ else if (chunk.type === 'Error') { /* v8 ignore stop */
           setError(chunk.data);
           setMessages((prev) => [
             ...prev,

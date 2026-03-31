@@ -1,5 +1,4 @@
-import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 
@@ -119,7 +118,6 @@ describe('MarkdownRenderer', () => {
 
     it('strips javascript: protocol in links', () => {
       const { container } = render(
-        // eslint-disable-next-line no-script-url
         <MarkdownRenderer content={'[click me](javascript:alert(1))'} />,
       );
       const link = container.querySelector('a');
@@ -158,5 +156,6 @@ describe('MarkdownRenderer', () => {
       expect(span).toBeTruthy();
       expect(span!.innerHTML).toBe('');
     });
+
   });
 });
