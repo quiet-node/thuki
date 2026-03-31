@@ -106,7 +106,8 @@ pub async fn stream_ollama(
 
 /// Streams text chunks from the local Ollama backend via `reqwest` to the frontend using `Channel`.
 /// Uses `State` to persist the HTTP Client's connection pool.
-#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
 pub async fn ask_ollama(
     prompt: String,
     on_event: Channel<StreamChunk>,
@@ -306,6 +307,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handles_invalid_utf8_in_stream() {
+        let mut server = mockito::Server::new_async().await;
+        // Line 1: invalid UTF-8 bytes + newline, Line 2: valid JSON + newline
+        let body = b"\xFF\xFE\n{\"response\":\"ok\",\"done\":true}\n".to_vec();
+        let mock = server
+            .mock("POST", "/api/generate")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (chunks, callback) = collect_chunks();
+
+        stream_ollama(
+            &format!("{}/api/generate", server.url()),
+            "test-model",
+            "hi".to_string(),
+            &client,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+        let chunks = chunks.lock().unwrap();
+        // Invalid UTF-8 line is silently skipped; valid line emits Done
+        assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Done)));
+    }
+
+    #[tokio::test]
+    async fn handles_mid_stream_network_error() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            // Send valid HTTP headers then partial chunked body and drop
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\n\
+                      Content-Type: application/x-ndjson\r\n\
+                      Transfer-Encoding: chunked\r\n\r\n\
+                      4\r\ntest",
+                )
+                .await;
+            // Drop stream — connection closed mid-chunk, triggering a reqwest stream error
+        });
+
+        let client = reqwest::Client::new();
+        let (chunks, callback) = collect_chunks();
+
+        stream_ollama(
+            &format!("http://127.0.0.1:{}/api/generate", port),
+            "test-model",
+            "hi".to_string(),
+            &client,
+            callback,
+        )
+        .await;
+
+        let chunks = chunks.lock().unwrap();
+        // Either an Error chunk from the stream error, or empty if reqwest absorbed the truncation
+        // Either way, no panic and the function completed cleanly
+        let has_no_tokens = chunks.iter().all(|c| !matches!(c, StreamChunk::Token(_)));
+        assert!(has_no_tokens);
+    }
+
+    #[tokio::test]
     async fn http_500_with_empty_body() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
@@ -331,5 +402,61 @@ mod tests {
         let chunks = chunks.lock().unwrap();
         assert_eq!(chunks.len(), 1);
         assert!(matches!(&chunks[0], StreamChunk::Error(e) if e.contains("HTTP 500")));
+    }
+
+    #[tokio::test]
+    async fn whitespace_only_lines_are_skipped() {
+        let mut server = mockito::Server::new_async().await;
+        // A line of only spaces/tabs followed by a valid JSON line
+        let mock = server
+            .mock("POST", "/api/generate")
+            .with_body("   \n{\"response\":\"hi\",\"done\":true}\n")
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (chunks, callback) = collect_chunks();
+
+        stream_ollama(
+            &format!("{}/api/generate", server.url()),
+            "test-model",
+            "hi".to_string(),
+            &client,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+        let chunks = chunks.lock().unwrap();
+        assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Done)));
+    }
+
+    #[tokio::test]
+    async fn response_field_absent_emits_only_done() {
+        let mut server = mockito::Server::new_async().await;
+        // JSON where `response` key is missing — exercises the None arm of if-let Some(token)
+        let mock = server
+            .mock("POST", "/api/generate")
+            .with_body("{\"done\":true}\n")
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (chunks, callback) = collect_chunks();
+
+        stream_ollama(
+            &format!("{}/api/generate", server.url()),
+            "test-model",
+            "hi".to_string(),
+            &client,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+        let chunks = chunks.lock().unwrap();
+        // No Token chunks since response is absent; Done is emitted
+        assert!(chunks.iter().all(|c| !matches!(c, StreamChunk::Token(_))));
+        assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Done)));
     }
 }

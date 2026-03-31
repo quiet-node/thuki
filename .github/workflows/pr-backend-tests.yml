@@ -31,7 +31,14 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Run backend tests
+      - name: Install nightly Rust toolchain
+        run: rustup toolchain install nightly --no-self-update
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Run backend tests with coverage
+        working-directory: src-tauri
         run: |
-          echo "Running Cargo tests..."
-          bun run test:backend
+          echo "Running Cargo tests with 100% line coverage enforcement..."
+          cargo +nightly llvm-cov --ignore-filename-regex "(lib|main)\.rs" --fail-under-lines 100
