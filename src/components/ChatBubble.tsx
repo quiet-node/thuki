@@ -75,7 +75,11 @@ export function ChatBubble({
             <>
               {quotedText && (
                 <p className="border-l-2 border-white/40 pl-2 mb-2 italic text-xs text-white/60 whitespace-pre-wrap">
-                  {formatQuotedText(quotedText, quote.maxDisplayLines, quote.maxDisplayChars)}
+                  {formatQuotedText(
+                    quotedText,
+                    quote.maxDisplayLines,
+                    quote.maxDisplayChars,
+                  )}
                 </p>
               )}
               <span className="text-white/95 font-medium">{content}</span>

@@ -40,19 +40,23 @@ describe('config', () => {
     });
 
     it('reads VITE_QUOTE_MAX_DISPLAY_LINES from env', async () => {
-      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES = '6';
+      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES =
+        '6';
       const { quote } = await import('..');
       expect(quote.maxDisplayLines).toBe(6);
     });
 
     it('reads VITE_QUOTE_MAX_DISPLAY_CHARS from env', async () => {
-      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_CHARS = '500';
+      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_CHARS =
+        '500';
       const { quote } = await import('..');
       expect(quote.maxDisplayChars).toBe(500);
     });
 
     it('reads VITE_QUOTE_MAX_CONTEXT_LENGTH from env', async () => {
-      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_CONTEXT_LENGTH = '8192';
+      (
+        import.meta.env as Record<string, string>
+      ).VITE_QUOTE_MAX_CONTEXT_LENGTH = '8192';
       const { quote } = await import('..');
       expect(quote.maxContextLength).toBe(8192);
     });
@@ -64,37 +68,43 @@ describe('config', () => {
     });
 
     it('falls back to default for empty string', async () => {
-      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES = '';
+      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES =
+        '';
       const { quote } = await import('..');
       expect(quote.maxDisplayLines).toBe(4);
     });
 
     it('falls back to default for non-numeric string', async () => {
-      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES = 'abc';
+      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES =
+        'abc';
       const { quote } = await import('..');
       expect(quote.maxDisplayLines).toBe(4);
     });
 
     it('falls back to default for negative number', async () => {
-      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES = '-5';
+      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES =
+        '-5';
       const { quote } = await import('..');
       expect(quote.maxDisplayLines).toBe(4);
     });
 
     it('falls back to default for zero', async () => {
-      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES = '0';
+      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES =
+        '0';
       const { quote } = await import('..');
       expect(quote.maxDisplayLines).toBe(4);
     });
 
     it('floors decimal values', async () => {
-      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES = '5.7';
+      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES =
+        '5.7';
       const { quote } = await import('..');
       expect(quote.maxDisplayLines).toBe(5);
     });
 
     it('falls back to default for Infinity', async () => {
-      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES = 'Infinity';
+      (import.meta.env as Record<string, string>).VITE_QUOTE_MAX_DISPLAY_LINES =
+        'Infinity';
       const { quote } = await import('..');
       expect(quote.maxDisplayLines).toBe(4);
     });

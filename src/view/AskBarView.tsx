@@ -111,7 +111,13 @@ export function AskBarView({
       {selectedText && (
         <div className="px-4 pt-2 pb-0">
           <p className="italic text-xs text-text-secondary select-text whitespace-pre-wrap">
-            &ldquo;{formatQuotedText(selectedText, quote.maxDisplayLines, quote.maxDisplayChars)}&rdquo;
+            &ldquo;
+            {formatQuotedText(
+              selectedText,
+              quote.maxDisplayLines,
+              quote.maxDisplayChars,
+            )}
+            &rdquo;
           </p>
         </div>
       )}

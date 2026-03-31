@@ -85,7 +85,11 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('what is this?', 'Context: "code snippet"\n\nwhat is this?', 'code snippet');
+        await result.current.ask(
+          'what is this?',
+          'Context: "code snippet"\n\nwhat is this?',
+          'code snippet',
+        );
       });
 
       expect(result.current.messages[0]).toEqual({
@@ -99,12 +103,17 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('summarize', 'Context: "selected text"\n\nsummarize');
+        await result.current.ask(
+          'summarize',
+          'Context: "selected text"\n\nsummarize',
+        );
       });
 
       expect(invoke).toHaveBeenCalledWith(
         'ask_ollama',
-        expect.objectContaining({ prompt: 'Context: "selected text"\n\nsummarize' }),
+        expect.objectContaining({
+          prompt: 'Context: "selected text"\n\nsummarize',
+        }),
       );
     });
 
