@@ -7,6 +7,8 @@ import { invoke, Channel } from '@tauri-apps/api/core';
 export interface Message {
   role: 'user' | 'assistant';
   content: string;
+  /** Selected text from the host app that was quoted with this message, if any. */
+  quotedText?: string;
 }
 
 /**
@@ -18,10 +20,10 @@ export type StreamChunk =
   | { type: 'Error'; data: string };
 
 /**
- * Custom hook to abstract the interaction with the local Ollama LLM.
- * Manages the message history, streaming state, and Rust IPC channels.
+ * A custom hook that simplifies interactions with the local Ollama LLM.
+ * It manages message history, streaming state, and sets up Rust IPC channels.
  *
- * @returns Object containing the message history, submit callback, and operational states.
+ * @returns An object containing the message history, a submit callback function, and operational states.
  */
 export function useOllama() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -36,13 +38,22 @@ export function useOllama() {
    * Avoids continuous array copy operations during streaming by maintaining the streaming
    * chunk state separately from the main messages state until generation finishes.
    *
-   * @param prompt The user's input string.
+   * @param displayContent The user's query as it should appear in the chat bubble.
+   * @param ollamaPrompt The full prompt sent to Ollama (may include context preamble).
+   * @param quotedText Optional selected text quoted alongside this message.
    */
   const ask = useCallback(
-    async (prompt: string) => {
-      if (!prompt.trim() || isGenerating) return;
+    async (
+      displayContent: string,
+      ollamaPrompt: string,
+      quotedText?: string,
+    ) => {
+      if (!displayContent.trim() || isGenerating) return;
 
-      setMessages((prev) => [...prev, { role: 'user', content: prompt }]);
+      setMessages((prev) => [
+        ...prev,
+        { role: 'user', content: displayContent, quotedText },
+      ]);
       setStreamingContent('');
       setIsGenerating(true);
       setError(null);
@@ -78,7 +89,7 @@ export function useOllama() {
       };
 
       try {
-        await invoke('ask_ollama', { prompt, onEvent: channel });
+        await invoke('ask_ollama', { prompt: ollamaPrompt, onEvent: channel });
       } catch (err) {
         setError(String(err));
         setMessages((prev) => [

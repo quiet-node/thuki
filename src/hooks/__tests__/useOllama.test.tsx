@@ -28,7 +28,7 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('hello world');
+        await result.current.ask('hello world', 'hello world');
       });
 
       expect(invoke).toHaveBeenCalledWith(
@@ -56,7 +56,7 @@ describe('useOllama', () => {
 
       // Start ask but don't await so we can read state while in-flight
       act(() => {
-        void result.current.ask('test prompt');
+        void result.current.ask('test prompt', 'test prompt');
       });
 
       // isGenerating should be true right after ask sets it
@@ -72,7 +72,7 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('my question');
+        await result.current.ask('my question', 'my question');
       });
 
       expect(result.current.messages[0]).toEqual({
@@ -81,11 +81,47 @@ describe('useOllama', () => {
       });
     });
 
+    it('stores quotedText on user message when provided', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask(
+          'what is this?',
+          'Context: "code snippet"\n\nwhat is this?',
+          'code snippet',
+        );
+      });
+
+      expect(result.current.messages[0]).toEqual({
+        role: 'user',
+        content: 'what is this?',
+        quotedText: 'code snippet',
+      });
+    });
+
+    it('sends ollamaPrompt (not displayContent) to invoke', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask(
+          'summarize',
+          'Context: "selected text"\n\nsummarize',
+        );
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          prompt: 'Context: "selected text"\n\nsummarize',
+        }),
+      );
+    });
+
     it('accumulates streaming tokens into streamingContent', async () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('hello');
+        await result.current.ask('hello', 'hello');
       });
 
       const channel = getChannel();
@@ -103,7 +139,7 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('hello');
+        await result.current.ask('hello', 'hello');
       });
 
       const channel = getChannel();
@@ -126,7 +162,7 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('');
+        await result.current.ask('', '');
       });
 
       expect(invoke).not.toHaveBeenCalled();
@@ -137,7 +173,7 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('   ');
+        await result.current.ask('   ', '   ');
       });
 
       expect(invoke).not.toHaveBeenCalled();
@@ -160,7 +196,7 @@ describe('useOllama', () => {
 
       // Start the first ask (stalls)
       act(() => {
-        void result.current.ask('first');
+        void result.current.ask('first', 'first');
       });
 
       expect(result.current.isGenerating).toBe(true);
@@ -168,7 +204,7 @@ describe('useOllama', () => {
 
       // Try a second ask while generating
       await act(async () => {
-        await result.current.ask('second');
+        await result.current.ask('second', 'second');
       });
 
       // invoke should NOT have been called again
@@ -188,7 +224,7 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('test');
+        await result.current.ask('test', 'test');
       });
 
       const channel = getChannel();
@@ -208,7 +244,7 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('test');
+        await result.current.ask('test', 'test');
       });
 
       expect(result.current.error).toBe('Error: connection refused');
@@ -219,7 +255,7 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('test');
+        await result.current.ask('test', 'test');
       });
 
       const channel = getChannel();
@@ -244,7 +280,7 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('test');
+        await result.current.ask('test', 'test');
       });
 
       const assistantMsg = result.current.messages.find(
@@ -259,14 +295,14 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('first ask');
+        await result.current.ask('first ask', 'first ask');
       });
 
       expect(result.current.error).toBe('Error: first error');
 
       // Second ask — succeeds, channel sends Done
       await act(async () => {
-        await result.current.ask('second ask');
+        await result.current.ask('second ask', 'second ask');
       });
 
       const channel = getChannel();
@@ -287,7 +323,7 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        await result.current.ask('hello');
+        await result.current.ask('hello', 'hello');
       });
 
       const channel = getChannel();
@@ -310,7 +346,7 @@ describe('useOllama', () => {
 
       // Build up some state
       await act(async () => {
-        await result.current.ask('hello');
+        await result.current.ask('hello', 'hello');
       });
 
       const channel = getChannel();
@@ -340,7 +376,7 @@ describe('useOllama', () => {
 
       // First ask + response
       await act(async () => {
-        await result.current.ask('first question');
+        await result.current.ask('first question', 'first question');
       });
       let channel = getChannel();
       act(() => {
@@ -354,7 +390,7 @@ describe('useOllama', () => {
 
       // Second ask + response
       await act(async () => {
-        await result.current.ask('second question');
+        await result.current.ask('second question', 'second question');
       });
       channel = getChannel();
       act(() => {

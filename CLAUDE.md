@@ -37,7 +37,9 @@ bun run validate-build   # All gates: lint + format + typecheck + build
 
 ## Testing
 
-Tests use **Vitest** for the frontend (React/TypeScript with React Testing Library + happy-dom) and **Cargo test** for the backend (Rust unit tests). Target 100% code coverage. Superpowers-generated documentation (specs, plans) should not be committed to PRs — only the test code and infrastructure.
+Tests use **Vitest** for the frontend (React/TypeScript with React Testing Library + happy-dom) and **Cargo test** for the backend (Rust unit tests).
+
+**100% code coverage is mandatory.** Any new or modified code — frontend or backend — must maintain 100% coverage across lines, functions, branches, and statements. Run `bun run test:coverage` before committing and verify the coverage report shows no uncovered lines. PRs that drop below 100% coverage will not be merged.
 
 ## Architecture
 

@@ -1,6 +1,8 @@
 import { motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { CopyButton } from './CopyButton';
+import { formatQuotedText } from '../utils/formatQuote';
+import { quote } from '../config';
 
 interface ChatBubbleProps {
   /** The message role determines alignment and color treatment. */
@@ -9,6 +11,8 @@ interface ChatBubbleProps {
   content: string;
   /** Stagger index for orchestrated entrance choreography. */
   index: number;
+  /** Selected text from the host app that was quoted alongside this message, if any. */
+  quotedText?: string;
 }
 
 /**
@@ -42,7 +46,12 @@ const bubbleVariants = {
  *
  * @param props Chat bubble properties including role, content, and stagger index.
  */
-export function ChatBubble({ role, content, index }: ChatBubbleProps) {
+export function ChatBubble({
+  role,
+  content,
+  index,
+  quotedText,
+}: ChatBubbleProps) {
   const isUser = role === 'user';
 
   return (
@@ -63,7 +72,18 @@ export function ChatBubble({ role, content, index }: ChatBubbleProps) {
           }`}
         >
           {isUser ? (
-            <span className="text-white/95 font-medium">{content}</span>
+            <>
+              {quotedText && (
+                <p className="border-l-2 border-white/40 pl-2 mb-2 italic text-xs text-white/60 whitespace-pre-wrap">
+                  {formatQuotedText(
+                    quotedText,
+                    quote.maxDisplayLines,
+                    quote.maxDisplayChars,
+                  )}
+                </p>
+              )}
+              <span className="text-white/95 font-medium">{content}</span>
+            </>
           ) : (
             <MarkdownRenderer content={content} />
           )}

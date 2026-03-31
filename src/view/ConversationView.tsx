@@ -3,6 +3,7 @@ import { useRef, useCallback, useEffect } from 'react';
 import { ChatBubble } from '../components/ChatBubble';
 import { TypingIndicator } from '../components/TypingIndicator';
 import { WindowControls } from '../components/WindowControls';
+import type { Message } from '../hooks/useOllama';
 
 /**
  * Props for the ConversationView component.
@@ -10,7 +11,7 @@ import { WindowControls } from '../components/WindowControls';
  */
 interface ConversationViewProps {
   /** Array of completed messages in the conversation. */
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  messages: Message[];
   /** The actively streaming content for the current assistant response. */
   streamingContent: string;
   /** Whether the underlying LLM engine is currently generating a response. */
@@ -115,6 +116,7 @@ export function ConversationView({
             key={`${msg.role}-${i}`}
             role={msg.role}
             content={msg.content}
+            quotedText={msg.quotedText}
             index={i}
           />
         ))}
