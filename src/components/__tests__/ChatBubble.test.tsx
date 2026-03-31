@@ -74,6 +74,54 @@ describe('ChatBubble', () => {
     });
   });
 
+  describe('Quoted text', () => {
+    it('renders quote block when quotedText is provided for user messages', () => {
+      const { container } = render(
+        <ChatBubble
+          role="user"
+          content="explain this"
+          index={0}
+          quotedText="some code"
+        />,
+      );
+      const quote = container.querySelector('.border-l-2');
+      expect(quote).not.toBeNull();
+      expect(quote?.textContent).toContain('some code');
+    });
+
+    it('does not render quote block when quotedText is not provided', () => {
+      const { container } = render(
+        <ChatBubble role="user" content="hello" index={0} />,
+      );
+      expect(container.querySelector('.border-l-2')).toBeNull();
+    });
+
+    it('does not render quote block for assistant messages even if quotedText is passed', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="response"
+          index={0}
+          quotedText="ignored"
+        />,
+      );
+      expect(container.querySelector('.border-l-2')).toBeNull();
+    });
+
+    it('preserves line breaks in quoted text via whitespace-pre-wrap', () => {
+      const { container } = render(
+        <ChatBubble
+          role="user"
+          content="explain"
+          index={0}
+          quotedText="line one\nline two"
+        />,
+      );
+      const quote = container.querySelector('.whitespace-pre-wrap');
+      expect(quote).not.toBeNull();
+    });
+  });
+
   describe('Layout', () => {
     it('has max-width constraint (max-w-[80%])', () => {
       const { container } = render(

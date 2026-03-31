@@ -8,6 +8,7 @@ import { LogicalSize } from '@tauri-apps/api/dpi';
 import { useOllama } from './hooks/useOllama';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView } from './view/AskBarView';
+import { quote } from './config';
 import './App.css';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
@@ -24,8 +25,6 @@ const HIDE_COMMIT_DELAY_MS = 350;
 const OVERLAY_WIDTH = 600;
 /** Total transparent padding around the morphing container: pt-2(8) + pb-6(24) + motion py-2(16). */
 const CONTAINER_VERTICAL_PADDING = 48;
-/** Maximum length of selected context text included in the prompt. */
-const MAX_CONTEXT_LENGTH = 4096;
 
 type WindowAnchor = { x: number; bottom_y: number; min_y: number };
 type OverlayVisibilityPayload =
@@ -181,17 +180,18 @@ function App() {
     const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
     const sanitized = selectedContext
       ?.replace(CONTROL_CHARS, '')
-      .slice(0, MAX_CONTEXT_LENGTH);
-    const prompt =
-      sanitized && sanitized.trim().length > 0
-        ? `Context: "${sanitized}"\n\n${query}`
-        : query;
-    ask(prompt);
+      .slice(0, quote.maxContextLength);
+    const hasContext = sanitized && sanitized.trim().length > 0;
+    const ollamaPrompt = hasContext
+      ? `Context: "${sanitized}"\n\n${query}`
+      : query;
+    ask(query, ollamaPrompt, hasContext ? sanitized : undefined);
+    setSelectedContext(null);
     setQuery('');
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
     }
-  }, [query, isGenerating, ask, selectedContext]);
+  }, [query, isGenerating, ask, selectedContext, setSelectedContext]);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
