@@ -40,7 +40,15 @@ Thuki utilizes a **Dual-Layer Isolation** model for generative inference:
     bun install
     ```
 
-2.  **Start Sandbox (Security-First Launch)**:
+2.  **Configure Environment** (optional):
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Edit `.env` to override defaults. See [docs/configurations.md](docs/configurations.md) for the full reference.
+
+3.  **Start Sandbox (Security-First Launch)**:
     Thuki offers a hardened, isolated Docker sandbox as a secure-by-default environment for generative inference. This is ideal if you do not wish to install AI models directly on your host or prefer maximum isolation from the network.
 
     This bootstraps the sandbox and pulls the models (default: `llama3.2:3b`).
@@ -58,7 +66,7 @@ Thuki utilizes a **Dual-Layer Isolation** model for generative inference:
     > [!TIP]
     > **Skip this step?** If you already have [Ollama](https://ollama.com) installed and running on your local machine (standard port `11434`), Thuki is fully compatible. If your model is already pulled locally, you can skip the sandbox and proceed directly to **Launch Thuki**. Thuki naturally connects to `http://127.0.0.1:11434`.
 
-3.  **Launch Thuki**:
+4.  **Launch Thuki**:
     Starts the Tauri chat interface.
 
     ```bash
