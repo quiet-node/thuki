@@ -14,7 +14,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           ref: ${{ inputs.head_ref || github.head_ref }}
           fetch-depth: 1
@@ -23,7 +23,7 @@ jobs:
         run: rustup toolchain install nightly-2026-03-30 --component llvm-tools --no-self-update
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481  # v2.9.4
+        uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df  # v2.70.3
         with:
           tool: cargo-llvm-cov
 
