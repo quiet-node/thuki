@@ -202,7 +202,7 @@ pub fn run() {
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
-            let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
+            let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))
                 .expect("Failed to load tray icon");
 
             let _tray = TrayIconBuilder::new()
