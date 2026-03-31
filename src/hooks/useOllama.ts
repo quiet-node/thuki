@@ -5,6 +5,8 @@ import { invoke, Channel } from '@tauri-apps/api/core';
  * Represents a single message in the chat thread.
  */
 export interface Message {
+  /** Unique identifier for stable React list keys. */
+  id: string;
   role: 'user' | 'assistant';
   content: string;
   /** Selected text from the host app that was quoted with this message, if any. */
@@ -52,7 +54,12 @@ export function useOllama() {
 
       setMessages((prev) => [
         ...prev,
-        { role: 'user', content: displayContent, quotedText },
+        {
+          id: crypto.randomUUID(),
+          role: 'user',
+          content: displayContent,
+          quotedText,
+        },
       ]);
       setStreamingContent('');
       setIsGenerating(true);
@@ -70,7 +77,11 @@ export function useOllama() {
         } else if (chunk.type === 'Done') {
           setMessages((prev) => [
             ...prev,
-            { role: 'assistant', content: currentContent },
+            {
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: currentContent,
+            },
           ]);
           setStreamingContent('');
           setIsGenerating(false);
@@ -79,6 +90,7 @@ export function useOllama() {
           setMessages((prev) => [
             ...prev,
             {
+              id: crypto.randomUUID(),
               role: 'assistant',
               content: currentContent + '\n\n**Error:** ' + chunk.data,
             },
@@ -95,6 +107,7 @@ export function useOllama() {
         setMessages((prev) => [
           ...prev,
           {
+            id: crypto.randomUUID(),
             role: 'assistant',
             content: currentContent + '\n\n**Error:** ' + String(err),
           },
