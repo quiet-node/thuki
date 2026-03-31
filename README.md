@@ -24,9 +24,13 @@ Thuki utilizes a **Dual-Layer Isolation** model for generative inference:
 
 ### Prerequisites
 
-- **Bun**: Fast JavaScript runtime and package manager.
-- **Rust**: Required for the Tauri backend.
-- **Docker**: Required to run the isolated generative sandbox.
+- **Bun**: Fast JavaScript runtime and package manager. Install via [bun.sh](https://bun.sh).
+- **Rust**: Required for the Tauri backend. Install via [rustup](https://rustup.rs):
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
+  After installation, restart your shell or run `source ~/.cargo/env` to make `cargo` available.
+- **Docker**: Required to run the isolated generative sandbox. Install via [docker.com](https://www.docker.com/get-started).
 
 ### Getting Started
 
