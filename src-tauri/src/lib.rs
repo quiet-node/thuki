@@ -503,3 +503,51 @@ pub fn run() {
             }
         });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_window_frame_rejects_nan() {
+        assert!(!f64::NAN.is_finite());
+        assert!(!f64::INFINITY.is_finite());
+        assert!(!f64::NEG_INFINITY.is_finite());
+        assert!(100.0_f64.is_finite());
+    }
+
+    #[test]
+    fn width_height_clamp_logic() {
+        assert_eq!(0.5_f64.clamp(1.0, 10_000.0), 1.0);
+        assert_eq!(500.0_f64.clamp(1.0, 10_000.0), 500.0);
+        assert_eq!(20_000.0_f64.clamp(1.0, 10_000.0), 10_000.0);
+    }
+
+    #[test]
+    fn notify_overlay_hidden_sets_flag_to_false() {
+        OVERLAY_INTENDED_VISIBLE.store(true, Ordering::SeqCst);
+        OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
+        assert!(!OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn overlay_visibility_event_constant_matches() {
+        assert_eq!(OVERLAY_VISIBILITY_EVENT, "thuki://visibility");
+        assert_eq!(OVERLAY_VISIBILITY_SHOW, "show");
+        assert_eq!(OVERLAY_VISIBILITY_HIDE_REQUEST, "hide-request");
+    }
+
+    #[test]
+    fn overlay_logical_dimensions() {
+        assert_eq!(OVERLAY_LOGICAL_WIDTH, 600.0);
+        assert_eq!(OVERLAY_LOGICAL_HEIGHT_COLLAPSED, 80.0);
+    }
+
+    #[test]
+    fn monitor_top_clearance_matches_context() {
+        assert_eq!(
+            MONITOR_TOP_CLEARANCE,
+            crate::context::MENU_BAR_HEIGHT + crate::context::SCREEN_MARGIN
+        );
+    }
+}

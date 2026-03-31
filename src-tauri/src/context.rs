@@ -345,9 +345,9 @@ const ANCHOR_OFFSET_Y: f64 = 2.0;
 /// the selection boundary.
 const WINDOW_BOTTOM_PADDING: f64 = 32.0;
 /// Minimum distance from any screen edge (logical pts).
-const SCREEN_MARGIN: f64 = 16.0;
+pub(crate) const SCREEN_MARGIN: f64 = 16.0;
 /// macOS menu bar height approximation (logical pts).
-const MENU_BAR_HEIGHT: f64 = 24.0;
+pub(crate) const MENU_BAR_HEIGHT: f64 = 24.0;
 /// Minimum screen space (logical pts) needed below the initial window bottom
 /// for the conversation to expand freely. Derived from the frontend's
 /// `max-h-[600px]` CSS constraint plus a small safety margin.
