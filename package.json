@@ -30,6 +30,7 @@
     "@tauri-apps/api": "^2",
     "dompurify": "^3.3.3",
     "framer-motion": "^12.38.0",
+    "jsdom": "^29.0.1",
     "marked": "^17.0.5",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
