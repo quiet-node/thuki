@@ -294,4 +294,122 @@ mod tests {
 
         assert!(!evaluate_activation(&mut state, true));
     }
+
+    #[test]
+    fn cooldown_rejects_activation_within_window() {
+        let mut state = ActivationState {
+            last_trigger: None,
+            is_pressed: false,
+            last_activation: None,
+        };
+
+        // Complete first activation
+        evaluate_activation(&mut state, true);
+        evaluate_activation(&mut state, false);
+        assert!(evaluate_activation(&mut state, true));
+        evaluate_activation(&mut state, false);
+
+        // Try to activate again immediately — within 600ms cooldown
+        evaluate_activation(&mut state, true);
+        evaluate_activation(&mut state, false);
+        // This should be rejected by cooldown
+        assert!(!evaluate_activation(&mut state, true));
+    }
+
+    #[test]
+    fn cooldown_allows_activation_after_expiry() {
+        let mut state = ActivationState {
+            last_trigger: None,
+            is_pressed: false,
+            last_activation: None,
+        };
+
+        // Complete first activation
+        evaluate_activation(&mut state, true);
+        evaluate_activation(&mut state, false);
+        assert!(evaluate_activation(&mut state, true));
+        evaluate_activation(&mut state, false);
+
+        // Simulate cooldown expiry
+        state.last_activation = Some(Instant::now() - Duration::from_millis(700));
+
+        // Should work now
+        evaluate_activation(&mut state, true);
+        evaluate_activation(&mut state, false);
+        assert!(evaluate_activation(&mut state, true));
+    }
+
+    #[test]
+    fn boundary_timing_at_exactly_400ms_is_rejected() {
+        let mut state = ActivationState {
+            last_trigger: Some(Instant::now() - Duration::from_millis(400)),
+            is_pressed: false,
+            last_activation: None,
+        };
+
+        assert!(!evaluate_activation(&mut state, true));
+    }
+
+    #[test]
+    fn boundary_timing_at_399ms_is_accepted() {
+        let mut state = ActivationState {
+            last_trigger: Some(Instant::now() - Duration::from_millis(399)),
+            is_pressed: false,
+            last_activation: None,
+        };
+
+        assert!(evaluate_activation(&mut state, true));
+    }
+
+    #[test]
+    fn first_tap_records_timestamp() {
+        let mut state = ActivationState {
+            last_trigger: None,
+            is_pressed: false,
+            last_activation: None,
+        };
+
+        assert!(!evaluate_activation(&mut state, true));
+        assert!(state.last_trigger.is_some());
+    }
+
+    #[test]
+    fn state_resets_after_successful_activation() {
+        let mut state = ActivationState {
+            last_trigger: None,
+            is_pressed: false,
+            last_activation: None,
+        };
+
+        evaluate_activation(&mut state, true);
+        evaluate_activation(&mut state, false);
+        assert!(evaluate_activation(&mut state, true));
+
+        assert!(state.last_trigger.is_none());
+        assert!(state.last_activation.is_some());
+    }
+
+    #[test]
+    fn repeated_press_without_release_is_ignored() {
+        let mut state = ActivationState {
+            last_trigger: None,
+            is_pressed: false,
+            last_activation: None,
+        };
+
+        evaluate_activation(&mut state, true);
+        assert!(!evaluate_activation(&mut state, true));
+    }
+
+    #[test]
+    fn release_without_press_does_nothing() {
+        let mut state = ActivationState {
+            last_trigger: None,
+            is_pressed: false,
+            last_activation: None,
+        };
+
+        assert!(!evaluate_activation(&mut state, false));
+        assert!(state.last_trigger.is_none());
+    }
 }
