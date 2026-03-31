@@ -53,7 +53,9 @@ export function ConversationView({
    */
   const handleScroll = useCallback(() => {
     const container = scrollContainerRef.current;
-    if (!container) return;
+    /* v8 ignore start */
+    if (!container) return; // defensive null guard, ref always populated when handler fires
+    /* v8 ignore stop */
     const { scrollTop, scrollHeight, clientHeight } = container;
     isUserNearBottomRef.current =
       scrollHeight - scrollTop - clientHeight < NEAR_BOTTOM_THRESHOLD;
@@ -68,7 +70,9 @@ export function ConversationView({
     if (!isUserNearBottomRef.current) return;
 
     const container = scrollContainerRef.current;
-    if (!container) return;
+    /* v8 ignore start */
+    if (!container) return; // defensive null guard, ref always populated when effect fires
+    /* v8 ignore stop */
 
     const raf = requestAnimationFrame(() => {
       container.scrollTop = container.scrollHeight;

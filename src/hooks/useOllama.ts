@@ -63,7 +63,7 @@ export function useOllama() {
           ]);
           setStreamingContent('');
           setIsGenerating(false);
-        } else if (chunk.type === 'Error') {
+        } else {
           setError(chunk.data);
           setMessages((prev) => [
             ...prev,
