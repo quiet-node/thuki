@@ -1,0 +1,37 @@
+name: Frontend Tests
+
+on:
+  workflow_call:
+    inputs:
+      head_ref:
+        description: 'The head ref of the PR'
+        required: false
+        type: string
+      event_name:
+        description: 'The event name'
+        required: false
+        type: string
+
+jobs:
+  test:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_ref || github.head_ref }}
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run frontend tests with coverage
+        run: |
+          echo "Running Vitest with 100% coverage threshold..."
+          bun run test:coverage

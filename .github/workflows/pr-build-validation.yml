@@ -1,0 +1,49 @@
+name: Build Validation
+
+on:
+  workflow_call:
+    inputs:
+      head_ref:
+        description: 'The head ref of the PR'
+        required: false
+        type: string
+      event_name:
+        description: 'The event name'
+        required: false
+        type: string
+
+jobs:
+  build:
+    name: Build Validation
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_ref || github.head_ref }}
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify dependencies
+        run: bun pm ls
+
+      - name: Security vulnerability scan
+        run: |
+          echo "Running security audit for dependencies..."
+          if bun audit; then
+            echo "Security scan completed successfully"
+          else
+            echo "::warning::Security vulnerabilities detected in dependencies"
+          fi
+
+      - name: Build validation
+        run: |
+          echo "Running full build validation (lint, format, typecheck, frontend + Tauri build)..."
+          bun run validate-build
