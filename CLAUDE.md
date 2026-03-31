@@ -35,26 +35,6 @@ bun run test:all         # Both Vitest and Cargo test
 bun run validate-build   # All gates: lint + format + typecheck + build
 ```
 
-## Git Configuration
-
-All commits must be signed with your name and email. The repository is configured to automatically add your signature.
-
-```bash
-# One-time setup (if not already done)
-git config user.name "Logan Nguyen"
-git config user.email "lg.131.dev@gmail.com"
-```
-
-Every commit will automatically include:
-```
-Signed-off-by: Logan Nguyen <lg.131.dev@gmail.com>
-```
-
-The commit-msg hook in `.git/hooks/` handles this automatically. If you need to sign manually, use:
-```bash
-git commit -s  # -s flag adds Signed-off-by automatically
-```
-
 ## Testing
 
 Tests use **Vitest** for the frontend (React/TypeScript with React Testing Library + happy-dom) and **Cargo test** for the backend (Rust unit tests). Target 100% code coverage. Superpowers-generated documentation (specs, plans) should not be committed to PRs — only the test code and infrastructure.
