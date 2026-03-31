@@ -26,7 +26,7 @@ Controls how selected-text quotes are displayed in the AskBar preview and chat b
 
 ### Validation Rules
 
-All configuration values are validated at startup via `src/config.ts`:
+All configuration values are validated at startup via `src/config/index.ts`:
 
 - **Missing or empty** values fall back to the default.
 - **Non-numeric** values (e.g., `abc`) fall back to the default.

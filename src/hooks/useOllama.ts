@@ -20,10 +20,11 @@ export type StreamChunk =
   | { type: 'Error'; data: string };
 
 /**
-
-A custom hook that simplifies interactions with the local Ollama LLM.
-It manages message history, streaming state, and sets up Rust IPC channels.
-@returns An object containing the message history, a submit callback function, and operational states. */
+ * A custom hook that simplifies interactions with the local Ollama LLM.
+ * It manages message history, streaming state, and sets up Rust IPC channels.
+ *
+ * @returns An object containing the message history, a submit callback function, and operational states.
+ */
 export function useOllama() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingContent, setStreamingContent] = useState('');

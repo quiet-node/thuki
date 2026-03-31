@@ -55,6 +55,10 @@ describe('formatQuotedText', () => {
     expect(formatQuotedText(input)).toBe('a'.repeat(300));
   });
 
+  it('returns empty string for empty input', () => {
+    expect(formatQuotedText('')).toBe('');
+  });
+
   it('returns empty string for all-empty-lines input', () => {
     expect(formatQuotedText('\n\n\n')).toBe('');
   });

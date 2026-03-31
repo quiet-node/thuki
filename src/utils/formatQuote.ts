@@ -12,6 +12,7 @@ export function formatQuotedText(
   maxLines: number = 4,
   maxChars: number = 300,
 ): string {
+  if (!text) return '';
   const lines = text.split('\n');
   const result: string[] = [];
   let totalChars = 0;
