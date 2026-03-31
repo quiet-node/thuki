@@ -5,8 +5,8 @@ import { ConversationView } from '../ConversationView';
 describe('ConversationView', () => {
   it('renders ChatBubble for each message', () => {
     const messages = [
-      { role: 'user' as const, content: 'Hello there' },
-      { role: 'assistant' as const, content: 'Hi!' },
+      { id: '1', role: 'user' as const, content: 'Hello there' },
+      { id: '2', role: 'assistant' as const, content: 'Hi!' },
     ];
     render(
       <ConversationView
@@ -120,7 +120,7 @@ describe('ConversationView', () => {
   it('handleScroll updates pinned state when user scrolls', () => {
     const { container } = render(
       <ConversationView
-        messages={[{ role: 'user' as const, content: 'Hello' }]}
+        messages={[{ id: '1', role: 'user' as const, content: 'Hello' }]}
         streamingContent=""
         isGenerating={false}
         error={null}
@@ -145,7 +145,7 @@ describe('ConversationView', () => {
   it('auto-scroll is skipped when user is not near bottom (early return branch)', () => {
     const { container, rerender } = render(
       <ConversationView
-        messages={[{ role: 'user' as const, content: 'first' }]}
+        messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
         streamingContent=""
         isGenerating={false}
         error={null}
@@ -183,8 +183,8 @@ describe('ConversationView', () => {
       rerender(
         <ConversationView
           messages={[
-            { role: 'user' as const, content: 'first' },
-            { role: 'assistant' as const, content: 'response' },
+            { id: '1', role: 'user' as const, content: 'first' },
+            { id: '2', role: 'assistant' as const, content: 'response' },
           ]}
           streamingContent=""
           isGenerating={false}
@@ -200,6 +200,7 @@ describe('ConversationView', () => {
 
   it('renders multiple messages correctly (10 messages)', () => {
     const messages = Array.from({ length: 10 }, (_, i) => ({
+      id: `msg-${i}`,
       role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
       content: `Message ${i}`,
     }));

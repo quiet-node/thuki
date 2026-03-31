@@ -1,41 +1,34 @@
-import React, { useMemo } from 'react';
-import DOMPurify from 'dompurify';
-import { marked } from 'marked';
+import React, { memo } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface MarkdownRendererProps {
   content: string;
   className?: string;
 }
 
-/**
- * Safely renders markdown content by parsing it to HTML and rigorously sanitizing
- * the output using DOMPurify to prevent XSS attacks. Ensures the LLM cannot execute
- * arbitrary JS in the Tauri Webview.
- *
- * @param props Content string and optional CSS class names.
- * @returns Sanitized, rendered HTML within a span.
- */
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
-  content,
-  className = '',
-}) => {
-  const safeHtml = useMemo(() => {
-    if (!content) return '';
-    try {
-      // Parse markdown synchronously
-      const rawHtml = marked.parse(content, { async: false }) as string;
-      // Sanitize the HTML to prevent XSS
-      return DOMPurify.sanitize(rawHtml);
-    } catch (e) {
-      console.error('Markdown rendering error', e);
-      return '<i>Error rendering text</i>';
-    }
-  }, [content]);
+/** Remark plugins applied to every render. Stable reference prevents re-initialization. */
+const remarkPlugins = [remarkGfm];
 
-  return (
-    <span
-      className={`markdown-body ${className}`}
-      dangerouslySetInnerHTML={{ __html: safeHtml }}
-    />
-  );
-};
+/**
+ * Renders markdown content as React elements using react-markdown.
+ *
+ * Secure by design: react-markdown converts markdown to a React element tree
+ * via `createElement`, never using `dangerouslySetInnerHTML`. Raw HTML in
+ * markdown source is stripped by default, preventing XSS without an external
+ * sanitizer. Supports GitHub Flavored Markdown (tables, strikethrough, task
+ * lists, autolinks) via the remark-gfm plugin.
+ *
+ * Memoized to skip re-renders when props are unchanged, which matters during
+ * LLM token streaming where sibling bubbles would otherwise re-render on
+ * every new token.
+ */
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(
+  function MarkdownRenderer({ content, className = '' }) {
+    return (
+      <span className={`markdown-body ${className}`}>
+        <ReactMarkdown remarkPlugins={remarkPlugins}>{content}</ReactMarkdown>
+      </span>
+    );
+  },
+);
