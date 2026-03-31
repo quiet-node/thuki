@@ -8,9 +8,11 @@ describe('CopyButton', () => {
     vi.mocked(navigator.clipboard.writeText).mockResolvedValue(undefined);
   });
 
-  it('calls clipboard.writeText with correct content on click', () => {
+  it('calls clipboard.writeText with correct content on click', async () => {
     render(<CopyButton content="Hello world" align="right" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy message' }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy message' }));
+    });
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('Hello world');
   });
 
