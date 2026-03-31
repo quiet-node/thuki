@@ -80,6 +80,13 @@ Frontend calls Tauri commands via `@tauri-apps/api/core`. Streaming uses Tauri's
 
 **Always use git worktrees for development work.** Before starting any feature, bugfix, or non-trivial change, create an isolated git worktree. This keeps the main working directory clean and allows parallel work without branch-switching conflicts.
 
+### Git Worktree Requirements
+
+1. **Never commit to main from a worktree.** All work must remain isolated in the worktree branch until explicitly tested and approved.
+2. **Only merge to main after user sign-off.** User must confirm the fix/feature works before any changes land on main.
+3. **Clean up on completion.** After work is approved and merged to main (or if abandoned), remove the worktree to keep the workspace tidy.
+4. **Test in worktree first.** Verify all tests pass (100% coverage), build succeeds, and linting/formatting is clean before requesting approval.
+
 ## Key Design Constraints
 
 - **macOS only** — uses NSPanel, Core Graphics event taps, macOS Command key
