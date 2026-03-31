@@ -182,16 +182,17 @@ function App() {
     const sanitized = selectedContext
       ?.replace(CONTROL_CHARS, '')
       .slice(0, MAX_CONTEXT_LENGTH);
-    const prompt =
-      sanitized && sanitized.trim().length > 0
-        ? `Context: "${sanitized}"\n\n${query}`
-        : query;
-    ask(prompt);
+    const hasContext = sanitized && sanitized.trim().length > 0;
+    const ollamaPrompt = hasContext
+      ? `Context: "${sanitized}"\n\n${query}`
+      : query;
+    ask(query, ollamaPrompt, hasContext ? sanitized : undefined);
+    setSelectedContext(null);
     setQuery('');
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
     }
-  }, [query, isGenerating, ask, selectedContext]);
+  }, [query, isGenerating, ask, selectedContext, setSelectedContext]);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
