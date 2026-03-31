@@ -640,4 +640,56 @@ mod tests {
         assert_eq!(p.y, MENU_BAR_HEIGHT + SCREEN_MARGIN);
         assert_eq!(p.anchor_bottom_y, None);
     }
+
+    #[test]
+    fn zero_sized_selection_rect() {
+        let ctx = ctx_with_bounds(200.0, 400.0, 0.0, 0.0);
+        let p = calculate_window_position(&ctx, SW, SH, WW, WH);
+        assert_eq!(p.x, 200.0 + ANCHOR_OFFSET_X);
+    }
+
+    #[test]
+    fn selection_spanning_full_screen_width() {
+        let ctx = ctx_with_bounds(0.0, 300.0, SW, 20.0);
+        let p = calculate_window_position(&ctx, SW, SH, WW, WH);
+        assert_eq!(p.x, SCREEN_MARGIN);
+    }
+
+    #[test]
+    fn very_tall_screen_no_anchor_bottom() {
+        let ctx = ctx_with_bounds(100.0, 100.0, 80.0, 20.0);
+        let tall_screen = 2000.0;
+        let p = calculate_window_position(&ctx, SW, tall_screen, WW, WH);
+        assert_eq!(p.anchor_bottom_y, None);
+    }
+
+    #[test]
+    fn mouse_near_screen_edge_flips() {
+        let ctx = ctx_text_no_bounds_with_mouse(1430.0, 300.0);
+        let p = calculate_window_position(&ctx, SW, SH, WW, WH);
+        assert_eq!(p.x, (1430.0 - WW - ANCHOR_OFFSET_X).max(SCREEN_MARGIN));
+    }
+
+    #[test]
+    fn capture_activation_context_returns_empty_when_visible() {
+        let ctx = capture_activation_context(true);
+        assert!(ctx.selected_text.is_none());
+        assert!(ctx.bounds.is_none());
+        assert!(ctx.mouse_position.is_none());
+    }
+
+    #[test]
+    fn activation_context_empty_has_no_fields() {
+        let ctx = ActivationContext::empty();
+        assert!(ctx.selected_text.is_none());
+        assert!(ctx.bounds.is_none());
+        assert!(ctx.mouse_position.is_none());
+    }
+
+    #[test]
+    fn bottom_center_on_small_screen() {
+        let small_w = WW + 2.0 * SCREEN_MARGIN;
+        let p = calculate_window_position(&ctx_no_selection(), small_w, SH, WW, WH);
+        assert_eq!(p.x, SCREEN_MARGIN);
+    }
 }
