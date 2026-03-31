@@ -23,5 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 
+# Test coverage
+coverage
+
 # Git worktrees
 .worktrees

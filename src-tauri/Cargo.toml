@@ -30,3 +30,7 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.
 core-graphics = "0.24"
 core-foundation = "0.10"
 
+[dev-dependencies]
+mockito = "1"
+tokio = { version = "1", features = ["rt", "macros"] }
+

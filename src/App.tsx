@@ -100,38 +100,42 @@ function App() {
     }
 
     if (node) {
-      const observer = new ResizeObserver((entries) => {
-        requestAnimationFrame(() => {
-          for (const entry of entries) {
-            const rect = entry.target.getBoundingClientRect();
-            // Total vertical room: 8px (pt-2) + 24px (pb-6) + 16px (motion py-2) = 48px.
-            // This ensures the tightened drop shadows aren't clipped by the native window edge.
-            const targetHeight =
-              Math.ceil(rect.height) + CONTAINER_VERTICAL_PADDING;
-            const anchor = windowAnchorRef.current;
-            if (anchor) {
-              // Grow upward: invoke a single Rust command that sets both position
-              // and size in the same main-thread block so macOS coalesces them
-              // into one display frame — eliminating the downward-flash that
-              // occurs when JS fires two separate async IPC round-trips.
-              const newY = Math.max(
-                anchor.min_y,
-                anchor.bottom_y - targetHeight,
-              );
-              void invoke('set_window_frame', {
-                x: anchor.x,
-                y: newY,
-                width: OVERLAY_WIDTH,
-                height: targetHeight,
-              });
-            } else {
-              void getCurrentWindow().setSize(
-                new LogicalSize(OVERLAY_WIDTH, targetHeight),
-              );
+      const observer = new ResizeObserver(
+        /* v8 ignore start -- ResizeObserver callback requires a native browser resize event */
+        (entries) => {
+          requestAnimationFrame(() => {
+            for (const entry of entries) {
+              const rect = entry.target.getBoundingClientRect();
+              // Total vertical room: 8px (pt-2) + 24px (pb-6) + 16px (motion py-2) = 48px.
+              // This ensures the tightened drop shadows aren't clipped by the native window edge.
+              const targetHeight =
+                Math.ceil(rect.height) + CONTAINER_VERTICAL_PADDING;
+              const anchor = windowAnchorRef.current;
+              if (anchor) {
+                // Grow upward: invoke a single Rust command that sets both position
+                // and size in the same main-thread block so macOS coalesces them
+                // into one display frame — eliminating the downward-flash that
+                // occurs when JS fires two separate async IPC round-trips.
+                const newY = Math.max(
+                  anchor.min_y,
+                  anchor.bottom_y - targetHeight,
+                );
+                void invoke('set_window_frame', {
+                  x: anchor.x,
+                  y: newY,
+                  width: OVERLAY_WIDTH,
+                  height: targetHeight,
+                });
+              } else {
+                void getCurrentWindow().setSize(
+                  new LogicalSize(OVERLAY_WIDTH, targetHeight),
+                );
+              }
             }
-          }
-        });
-      });
+          });
+        },
+        /* v8 ignore stop */
+      );
 
       observer.observe(node);
       observerRef.current = observer;

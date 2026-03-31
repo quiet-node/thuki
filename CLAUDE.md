@@ -26,10 +26,18 @@ bun run typecheck        # tsc --noEmit
 bun run sandbox:start    # Docker Compose up (pulls Ollama model)
 bun run sandbox:stop     # docker compose down -v (destructive: wipes volume)
 
+bun run test             # Vitest run (frontend tests only)
+bun run test:watch       # Vitest watch mode
+bun run test:coverage    # Vitest with coverage report
+bun run test:backend     # Cargo test (Rust backend tests)
+bun run test:all         # Both Vitest and Cargo test
+
 bun run validate-build   # All gates: lint + format + typecheck + build
 ```
 
-No test runner is configured. The only tests are Rust unit tests in `src-tauri/src/activator.rs`, run with `cargo test` from `src-tauri/`.
+## Testing
+
+Tests use **Vitest** for the frontend (React/TypeScript with React Testing Library + happy-dom) and **Cargo test** for the backend (Rust unit tests). Target 100% code coverage. Superpowers-generated documentation (specs, plans) should not be committed to PRs — only the test code and infrastructure.
 
 ## Architecture
 
