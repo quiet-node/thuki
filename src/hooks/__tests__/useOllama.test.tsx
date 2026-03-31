@@ -75,10 +75,13 @@ describe('useOllama', () => {
         await result.current.ask('my question', 'my question');
       });
 
-      expect(result.current.messages[0]).toEqual({
-        role: 'user',
-        content: 'my question',
-      });
+      expect(result.current.messages[0]).toEqual(
+        expect.objectContaining({
+          role: 'user',
+          content: 'my question',
+        }),
+      );
+      expect(result.current.messages[0].id).toEqual(expect.any(String));
     });
 
     it('stores quotedText on user message when provided', async () => {
@@ -92,11 +95,13 @@ describe('useOllama', () => {
         );
       });
 
-      expect(result.current.messages[0]).toEqual({
-        role: 'user',
-        content: 'what is this?',
-        quotedText: 'code snippet',
-      });
+      expect(result.current.messages[0]).toEqual(
+        expect.objectContaining({
+          role: 'user',
+          content: 'what is this?',
+          quotedText: 'code snippet',
+        }),
+      );
     });
 
     it('sends ollamaPrompt (not displayContent) to invoke', async () => {
@@ -152,10 +157,12 @@ describe('useOllama', () => {
 
       expect(result.current.streamingContent).toBe('');
       expect(result.current.isGenerating).toBe(false);
-      expect(result.current.messages).toContainEqual({
-        role: 'assistant',
-        content: 'Hi there',
-      });
+      expect(result.current.messages).toContainEqual(
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'Hi there',
+        }),
+      );
     });
 
     it('does nothing for empty prompt', async () => {
@@ -399,10 +406,13 @@ describe('useOllama', () => {
       });
 
       expect(result.current.messages).toEqual([
-        { role: 'user', content: 'first question' },
-        { role: 'assistant', content: 'First answer' },
-        { role: 'user', content: 'second question' },
-        { role: 'assistant', content: 'Second answer' },
+        expect.objectContaining({ role: 'user', content: 'first question' }),
+        expect.objectContaining({ role: 'assistant', content: 'First answer' }),
+        expect.objectContaining({ role: 'user', content: 'second question' }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'Second answer',
+        }),
       ]);
     });
   });

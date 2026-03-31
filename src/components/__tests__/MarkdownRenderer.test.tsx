@@ -1,6 +1,5 @@
 import { render } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
-import DOMPurify from 'dompurify';
+import { describe, it, expect } from 'vitest';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 
 describe('MarkdownRenderer', () => {
@@ -105,8 +104,35 @@ describe('MarkdownRenderer', () => {
     });
   });
 
-  describe('XSS sanitization', () => {
-    it('strips script tags', () => {
+  describe('GFM support', () => {
+    it('renders strikethrough text', () => {
+      const { container } = render(
+        <MarkdownRenderer content="This is ~~deleted~~ text" />,
+      );
+      expect(container.querySelector('del')).not.toBeNull();
+      expect(container.querySelector('del')!.textContent).toBe('deleted');
+    });
+
+    it('renders tables', () => {
+      const { container } = render(
+        <MarkdownRenderer content={'| A | B |\n|---|---|\n| 1 | 2 |'} />,
+      );
+      expect(container.querySelector('table')).not.toBeNull();
+      expect(container.querySelectorAll('th')).toHaveLength(2);
+      expect(container.querySelectorAll('td')).toHaveLength(2);
+    });
+
+    it('renders task lists', () => {
+      const { container } = render(
+        <MarkdownRenderer content={'- [x] done\n- [ ] todo'} />,
+      );
+      const inputs = container.querySelectorAll('input[type="checkbox"]');
+      expect(inputs).toHaveLength(2);
+    });
+  });
+
+  describe('XSS prevention', () => {
+    it('strips raw script tags from markdown source', () => {
       const { container } = render(
         <MarkdownRenderer content={'<script>alert("xss")</script>safe text'} />,
       );
@@ -114,33 +140,7 @@ describe('MarkdownRenderer', () => {
       expect(container.innerHTML).not.toContain('<script');
     });
 
-    it('strips onerror event handlers', () => {
-      const { container } = render(
-        <MarkdownRenderer content={'<img src="x" onerror="alert(1)" />'} />,
-      );
-      const img = container.querySelector('img');
-      if (img) {
-        expect(img.getAttribute('onerror')).toBeNull();
-      }
-      expect(container.innerHTML).not.toContain('onerror');
-    });
-
-    it('strips javascript: protocol in links', () => {
-      const { container } = render(
-        <MarkdownRenderer content={'[click me](javascript:alert(1))'} />,
-      );
-      const link = container.querySelector('a');
-      if (link) {
-        const href = link.getAttribute('href');
-        // DOMPurify either removes the href entirely or replaces it — must not be javascript:
-        if (href !== null) {
-          expect(href).not.toMatch(/javascript:/i);
-        }
-      }
-      expect(container.innerHTML).not.toMatch(/javascript:/i);
-    });
-
-    it('strips iframe embeds', () => {
+    it('strips raw iframe embeds from markdown source', () => {
       const { container } = render(
         <MarkdownRenderer
           content={'<iframe src="https://evil.com"></iframe>'}
@@ -150,7 +150,22 @@ describe('MarkdownRenderer', () => {
       expect(container.innerHTML).not.toContain('<iframe');
     });
 
-    it('allows safe HTML through', () => {
+    it('escapes raw img tags with event handlers to inert text', () => {
+      const { container } = render(
+        <MarkdownRenderer content={'<img src="x" onerror="alert(1)" />'} />,
+      );
+      // react-markdown escapes raw HTML to text — no actual <img> element is created
+      expect(container.querySelector('img')).toBeNull();
+    });
+
+    it('sanitizes javascript: protocol in markdown links', () => {
+      const { container } = render(
+        <MarkdownRenderer content={'[click me](javascript:alert(1))'} />,
+      );
+      expect(container.innerHTML).not.toMatch(/javascript:/i);
+    });
+
+    it('renders safe markdown elements normally', () => {
       const { container } = render(
         <MarkdownRenderer content="**bold** and *italic* and `code`" />,
       );
@@ -165,24 +180,16 @@ describe('MarkdownRenderer', () => {
       const { container } = render(<MarkdownRenderer content="" />);
       const span = container.querySelector('span');
       expect(span).not.toBeNull();
-      expect(span!.innerHTML).toBe('');
+      expect(span!.textContent).toBe('');
     });
 
-    it('displays error message when sanitization throws', () => {
-      // Mock DOMPurify.sanitize to throw an error
-      const originalSanitize = DOMPurify.sanitize;
-      DOMPurify.sanitize = vi.fn(() => {
-        throw new Error('Sanitization error');
-      });
-
-      try {
-        const { container } = render(<MarkdownRenderer content="test" />);
-        // The error fallback should be rendered
-        expect(container.textContent).toContain('Error rendering text');
-      } finally {
-        // Restore original sanitize function
-        DOMPurify.sanitize = originalSanitize;
-      }
+    it('skips re-render when props are unchanged (React.memo)', () => {
+      const { container, rerender } = render(
+        <MarkdownRenderer content="stable" />,
+      );
+      const firstOutput = container.innerHTML;
+      rerender(<MarkdownRenderer content="stable" />);
+      expect(container.innerHTML).toBe(firstOutput);
     });
   });
 });

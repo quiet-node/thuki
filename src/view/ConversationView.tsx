@@ -113,7 +113,7 @@ export function ConversationView({
       >
         {messages.map((msg, i) => (
           <ChatBubble
-            key={`${msg.role}-${i}`}
+            key={msg.id}
             role={msg.role}
             content={msg.content}
             quotedText={msg.quotedText}
