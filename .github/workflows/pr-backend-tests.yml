@@ -19,6 +19,9 @@ jobs:
           ref: ${{ inputs.head_ref || github.head_ref }}
           fetch-depth: 1
 
+      - name: Install nightly Rust toolchain
+        run: rustup toolchain install nightly-2026-03-30 --component llvm-tools --no-self-update
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481  # v2.9.4
         with:
@@ -28,4 +31,4 @@ jobs:
         working-directory: src-tauri
         run: |
           echo "Running Cargo tests with 100% line coverage enforcement..."
-          cargo +nightly llvm-cov --ignore-filename-regex "(lib|main)\.rs" --fail-under-lines 100
+          cargo +nightly-2026-03-30 llvm-cov --ignore-filename-regex "(lib|main)\.rs" --fail-under-lines 100
