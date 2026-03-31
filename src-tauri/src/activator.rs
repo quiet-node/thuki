@@ -269,7 +269,9 @@ mod tests {
     #[test]
     fn new_activator_is_inactive() {
         let activator = OverlayActivator::new();
-        assert!(!activator.is_active.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!activator
+            .is_active
+            .load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

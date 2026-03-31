@@ -99,7 +99,9 @@ describe('ConversationView', () => {
         onClose={onClose}
       />,
     );
-    expect(screen.getByRole('button', { name: 'Close window' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Close window' }),
+    ).toBeInTheDocument();
   });
 
   it('renders empty state with no messages (no .chat-bubble elements)', () => {
