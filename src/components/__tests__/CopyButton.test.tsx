@@ -3,18 +3,6 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CopyButton } from '../CopyButton';
 
-// Mock framer-motion to avoid rAF-loop issues in the test environment.
-// AnimatePresence swaps children based on state; the synchronous rAF mock
-// causes an infinite recursion inside motion-dom's batcher when animations
-// run. Stripping animation wrappers lets us assert on real DOM state changes.
-vi.mock('framer-motion', () => ({
-  AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  motion: {
-    span: ({ children, ...props }: React.HTMLAttributes<HTMLSpanElement>) => (
-      <span {...props}>{children}</span>
-    ),
-  },
-}));
 
 describe('CopyButton', () => {
   beforeEach(() => {

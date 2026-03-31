@@ -30,6 +30,7 @@ export default defineConfig({
         __dirname,
         'src/test/mocks/tauri-window.ts',
       ),
+      'framer-motion': resolve(__dirname, 'src/test/mocks/framer-motion.tsx'),
     },
   },
 });

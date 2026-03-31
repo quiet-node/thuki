@@ -3,34 +3,6 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { ConversationView } from '../ConversationView';
 
-// Mock framer-motion to avoid rAF-loop issues in the test environment.
-vi.mock('framer-motion', () => ({
-  motion: {
-    div: ({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-      <div className={className} {...props}>
-        {children}
-      </div>
-    ),
-    span: ({ children, className, ...props }: React.HTMLAttributes<HTMLSpanElement>) => (
-      <span className={className} {...props}>
-        {children}
-      </span>
-    ),
-    button: ({
-      children,
-      className,
-      onClick,
-      disabled,
-      'aria-label': ariaLabel,
-      ...props
-    }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-      <button className={className} onClick={onClick} disabled={disabled} aria-label={ariaLabel} {...props}>
-        {children}
-      </button>
-    ),
-  },
-  AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
 
 describe('ConversationView', () => {
   it('renders ChatBubble for each message', () => {

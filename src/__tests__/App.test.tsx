@@ -10,35 +10,6 @@ import {
 } from '../test/mocks/tauri';
 import { __mockWindow } from '../test/mocks/tauri-window';
 
-// Mock framer-motion to avoid rAF-loop issues in the test environment.
-vi.mock('framer-motion', () => ({
-  motion: {
-    div: ({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-      <div className={className} {...props}>
-        {children}
-      </div>
-    ),
-    span: ({ children, className, ...props }: React.HTMLAttributes<HTMLSpanElement>) => (
-      <span className={className} {...props}>
-        {children}
-      </span>
-    ),
-    button: ({
-      children,
-      className,
-      onClick,
-      disabled,
-      'aria-label': ariaLabel,
-      ...props
-    }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-      <button className={className} onClick={onClick} disabled={disabled} aria-label={ariaLabel} {...props}>
-        {children}
-      </button>
-    ),
-  },
-  AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
-
 import { vi } from 'vitest';
 
 async function showOverlay(selectedText: string | null = null) {
@@ -145,10 +116,9 @@ describe('App', () => {
       emitTauriEvent('thuki://visibility', { state: 'hide-request' });
     });
 
-    // The hide-request path transitions overlay to hiding state;
-    // the overlay should no longer be fully visible (input may still be in DOM during transition)
-    // The important thing is no crash occurred and the code path was exercised
-    expect(true).toBe(true);
+    // The hide-request path transitions overlay to hiding state (overlayState !== 'visible'),
+    // so shouldRenderOverlay becomes false and the overlay is removed from the DOM.
+    expect(screen.queryByPlaceholderText('Ask Thuki anything...')).toBeNull();
   });
 
   it('hides overlay on Cmd+W key', async () => {

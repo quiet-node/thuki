@@ -3,22 +3,6 @@ import { render } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { TypingIndicator } from '../TypingIndicator';
 
-// Mock framer-motion to avoid rAF-loop issues in the test environment.
-vi.mock('framer-motion', () => ({
-  motion: {
-    div: ({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-      <div className={className} {...props}>
-        {children}
-      </div>
-    ),
-    span: ({ children, className, ...props }: React.HTMLAttributes<HTMLSpanElement>) => (
-      <span className={className} {...props}>
-        {children}
-      </span>
-    ),
-  },
-  AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
 
 describe('TypingIndicator', () => {
   it('renders exactly three dots (elements with rounded-full and bg-primary/70)', () => {

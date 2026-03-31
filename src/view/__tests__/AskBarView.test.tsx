@@ -3,29 +3,6 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { AskBarView } from '../AskBarView';
 
-// Mock framer-motion to avoid rAF-loop issues in the test environment.
-vi.mock('framer-motion', () => ({
-  motion: {
-    div: ({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-      <div className={className} {...props}>
-        {children}
-      </div>
-    ),
-    button: ({
-      children,
-      className,
-      onClick,
-      disabled,
-      'aria-label': ariaLabel,
-      ...props
-    }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-      <button className={className} onClick={onClick} disabled={disabled} aria-label={ariaLabel} {...props}>
-        {children}
-      </button>
-    ),
-  },
-  AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
 
 function makeRef(): React.RefObject<HTMLTextAreaElement | null> {
   return { current: null };
