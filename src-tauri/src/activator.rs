@@ -25,7 +25,7 @@ use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_foundation::string::CFString;
 use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-    CGEventType, EventField,
+    CGEventType, CallbackResult, EventField,
 };
 
 /// Maximum temporal proximity between trigger events to qualify as an activation signal.
@@ -216,10 +216,10 @@ where
         CGEventTapPlacement::HeadInsertEventTap,
         CGEventTapOptions::ListenOnly,
         vec![CGEventType::FlagsChanged],
-        move |_proxy, _event_type, event| -> Option<CGEvent> {
+        move |_proxy, _event_type, event: &CGEvent| -> CallbackResult {
             if !cb_active.load(Ordering::SeqCst) {
                 CFRunLoop::get_current().stop();
-                return None;
+                return CallbackResult::Keep;
             }
 
             let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
@@ -227,7 +227,7 @@ where
 
             // Filter for primary triggers (Modifier keys)
             if keycode != KC_PRIMARY_L && keycode != KC_PRIMARY_R {
-                return None;
+                return CallbackResult::Keep;
             }
 
             // Check specific bitmask for the Command key state
@@ -238,7 +238,7 @@ where
                 cb_on_activation();
             }
 
-            None
+            CallbackResult::Keep
         },
     );
 
@@ -246,7 +246,7 @@ where
         Ok(tap) => {
             unsafe {
                 let loop_source = tap
-                    .mach_port
+                    .mach_port()
                     .create_runloop_source(0)
                     .expect("failed to create run loop source");
 

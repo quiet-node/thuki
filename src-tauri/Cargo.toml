@@ -27,7 +27,7 @@ futures-util = "0.3.32"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
-core-graphics = "0.24"
+core-graphics = "0.25"
 core-foundation = "0.10"
 
 [dev-dependencies]
