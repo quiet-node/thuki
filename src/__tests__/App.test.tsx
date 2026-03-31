@@ -6,8 +6,8 @@ import {
   emitTauriEvent,
   enableChannelCapture,
   lastChannel,
-} from '../test/mocks/tauri';
-import { __mockWindow } from '../test/mocks/tauri-window';
+} from '../testUtils/mocks/tauri';
+import { __mockWindow } from '../testUtils/mocks/tauri-window';
 
 import { vi } from 'vitest';
 

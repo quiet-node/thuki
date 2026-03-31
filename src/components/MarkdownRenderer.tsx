@@ -26,13 +26,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
       const rawHtml = marked.parse(content, { async: false }) as string;
       // Sanitize the HTML to prevent XSS
       return DOMPurify.sanitize(rawHtml);
-      /* v8 ignore start */
     } catch (e) {
-      // marked.parse() cannot throw in the ESM test environment
       console.error('Markdown rendering error', e);
       return '<i>Error rendering text</i>';
     }
-    /* v8 ignore stop */
   }, [content]);
 
   return (

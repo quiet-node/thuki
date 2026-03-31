@@ -6,7 +6,7 @@ import {
   enableChannelCapture,
   lastChannel,
   resetChannelCapture,
-} from '../../test/mocks/tauri';
+} from '../../testUtils/mocks/tauri';
 
 // After calling enableChannelCapture(), `lastChannel` is module-level state.
 // We re-read it via a getter so each reference picks up the latest value.
