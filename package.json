@@ -38,6 +38,7 @@
     "picomatch": ">=4.0.4"
   },
   "devDependencies": {
+    "@eslint-react/eslint-plugin": "3.0.0",
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.2.2",
     "@tauri-apps/cli": "^2.10.1",
@@ -51,8 +52,6 @@
     "@vitejs/plugin-react": "^4.7.0",
     "@vitest/coverage-v8": "^4.1.2",
     "eslint": "^10.1.0",
-    "eslint-plugin-react": "^7.37.5",
-    "eslint-plugin-react-hooks": "^7.0.1",
     "globals": "^17.4.0",
     "jsdom": "^29.0.1",
     "msw": "^2.12.14",
