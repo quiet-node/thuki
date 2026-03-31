@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { CopyButton } from './CopyButton';
+import { formatQuotedText } from '../utils/formatQuote';
 
 interface ChatBubbleProps {
   /** The message role determines alignment and color treatment. */
@@ -72,8 +73,8 @@ export function ChatBubble({
           {isUser ? (
             <>
               {quotedText && (
-                <p className="border-l-2 border-white/40 pl-2 mb-2 italic text-xs text-white/60 line-clamp-2">
-                  {quotedText.replace(/\s+/g, ' ').trim()}
+                <p className="border-l-2 border-white/40 pl-2 mb-2 italic text-xs text-white/60 whitespace-pre-wrap">
+                  {formatQuotedText(quotedText)}
                 </p>
               )}
               <span className="text-white/95 font-medium">{content}</span>

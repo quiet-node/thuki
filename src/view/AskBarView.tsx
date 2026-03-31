@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion';
 import type React from 'react';
 import { useCallback } from 'react';
+import { formatQuotedText } from '../utils/formatQuote';
 
 /**
  * Hoisted static SVG — prevents re-allocation on every render cycle.
@@ -108,8 +109,8 @@ export function AskBarView({
     <div className="flex flex-col w-full shrink-0">
       {selectedText && (
         <div className="px-4 pt-2 pb-0">
-          <p className="italic text-xs text-text-secondary line-clamp-2 select-text">
-            &ldquo;{selectedText.replace(/\s+/g, ' ').trim()}&rdquo;
+          <p className="italic text-xs text-text-secondary select-text whitespace-pre-wrap">
+            &ldquo;{formatQuotedText(selectedText)}&rdquo;
           </p>
         </div>
       )}
