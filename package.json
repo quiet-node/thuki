@@ -19,7 +19,12 @@
     "typecheck": "tsc --noEmit",
     "sandbox:start": "docker compose -f sandbox/docker-compose.yml up -d",
     "sandbox:stop": "docker compose -f sandbox/docker-compose.yml down -v",
-    "validate-build": "bun run lint && bun run format:check && bun run typecheck && bun run build:all"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:backend": "cd src-tauri && cargo test",
+    "test:all": "vitest run && cd src-tauri && cargo test",
+    "validate-build": "bun run lint && bun run format:check && bun run typecheck && vitest run && bun run build:all"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -33,20 +38,27 @@
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.2.2",
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/dompurify": "^3.2.0",
     "@types/marked": "^6.0.0",
     "@types/node": "^25.5.0",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "@vitest/coverage-v8": "^4.1.2",
     "eslint": "^9",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.0.1",
     "globals": "^17.4.0",
+    "happy-dom": "^20.8.9",
+    "msw": "^2.12.14",
     "prettier": "^3.8.1",
     "tailwindcss": "^4.2.2",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.57.1",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^4.1.2"
   }
 }
