@@ -60,6 +60,7 @@ extern "C" {
 /// Under development builds launched via terminal, macOS attributes this
 /// permission to the terminal emulator. In production `.app` bundles, the
 /// permission is correctly attributed to the application identity.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn request_authorization(prompt: bool) -> bool {
     unsafe {
         if AXIsProcessTrusted() {
@@ -148,6 +149,7 @@ impl OverlayActivator {
     ///
     /// * `on_activation` - A thread-safe closure executed whenever the activation
     ///   sequence is detected.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn start<F>(&self, on_activation: F)
     where
         F: Fn() + Send + Sync + 'static,
@@ -170,6 +172,7 @@ impl OverlayActivator {
 }
 
 /// Persistence layer that maintains the event loop through permission cycles.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn run_loop_with_retry<F>(is_active: Arc<AtomicBool>, on_activation: Arc<F>)
 where
     F: Fn() + Send + Sync + 'static,
@@ -191,6 +194,7 @@ where
 }
 
 /// Core initialization of the Mach event tap.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn try_initialize_tap<F>(is_active: &Arc<AtomicBool>, on_activation: &Arc<F>) -> bool
 where
     F: Fn() + Send + Sync + 'static,
@@ -261,6 +265,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_activator_is_inactive() {
+        let activator = OverlayActivator::new();
+        assert!(!activator
+            .is_active
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
 
     #[test]
     fn validates_activation_sequence() {

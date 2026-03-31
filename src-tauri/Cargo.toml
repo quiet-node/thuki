@@ -32,5 +32,5 @@ core-foundation = "0.10"
 
 [dev-dependencies]
 mockito = "1"
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util"] }
 

@@ -40,7 +40,9 @@ describe('App', () => {
 
     await showOverlay();
 
-    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText('Ask Thuki anything...'),
+    ).toBeInTheDocument();
   });
 
   it('hides overlay on Escape key', async () => {
@@ -50,7 +52,9 @@ describe('App', () => {
     await showOverlay();
 
     // Confirm overlay is visible
-    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText('Ask Thuki anything...'),
+    ).toBeInTheDocument();
 
     act(() => {
       fireEvent.keyDown(window, { key: 'Escape' });
@@ -106,7 +110,9 @@ describe('App', () => {
 
     // First show overlay
     await showOverlay();
-    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText('Ask Thuki anything...'),
+    ).toBeInTheDocument();
 
     // Then send hide-request — calls requestHideOverlay() (not handleCloseOverlay)
     await act(async () => {
@@ -123,7 +129,9 @@ describe('App', () => {
     await act(async () => {});
 
     await showOverlay();
-    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText('Ask Thuki anything...'),
+    ).toBeInTheDocument();
 
     act(() => {
       fireEvent.keyDown(window, { key: 'w', metaKey: true });
@@ -332,7 +340,10 @@ describe('App', () => {
     await act(async () => {});
 
     act(() => {
-      getLastChannel()?.simulateMessage({ type: 'Token', data: 'First response' });
+      getLastChannel()?.simulateMessage({
+        type: 'Token',
+        data: 'First response',
+      });
       getLastChannel()?.simulateMessage({ type: 'Done' });
     });
 
@@ -345,7 +356,9 @@ describe('App', () => {
     await showOverlay();
 
     // Should be back to input bar mode with placeholder
-    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText('Ask Thuki anything...'),
+    ).toBeInTheDocument();
     // Old messages should be gone
     expect(screen.queryByText('First response')).toBeNull();
   });

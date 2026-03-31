@@ -1,0 +1,50 @@
+version: 2
+updates:
+  # Check for updates to frontend npm dependencies
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    open-pull-requests-limit: 3
+    groups:
+      dependencies-minor-patch:
+        patterns:
+          - '*'
+        update-types:
+          - 'minor'
+          - 'patch'
+      dependencies-major:
+        patterns:
+          - '*'
+        update-types:
+          - 'major'
+
+  # Check for updates to Rust/Cargo dependencies
+  - package-ecosystem: 'cargo'
+    directory: '/src-tauri'
+    schedule:
+      interval: 'weekly'
+    open-pull-requests-limit: 3
+    groups:
+      dependencies-minor-patch:
+        patterns:
+          - '*'
+        update-types:
+          - 'minor'
+          - 'patch'
+      dependencies-major:
+        patterns:
+          - '*'
+        update-types:
+          - 'major'
+
+  # Check for updates to GitHub Actions
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    open-pull-requests-limit: 3
+    groups:
+      github-actions:
+        patterns:
+          - '*'

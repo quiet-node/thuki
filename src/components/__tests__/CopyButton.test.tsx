@@ -34,7 +34,9 @@ describe('CopyButton', () => {
     act(() => {
       vi.advanceTimersByTime(1500);
     });
-    expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Copy message' }),
+    ).toBeInTheDocument();
     vi.useRealTimers();
   });
 
@@ -47,7 +49,9 @@ describe('CopyButton', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Copy message' }));
     });
     // Button should remain in un-copied state after failure
-    expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Copy message' }),
+    ).toBeInTheDocument();
   });
 
   it('handles multiple rapid clicks', async () => {

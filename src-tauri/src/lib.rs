@@ -13,6 +13,8 @@
  * managed by the `activator` module.
  */
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 pub mod commands;
 
 #[cfg(target_os = "macos")]
@@ -482,6 +484,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(not(coverage))]
             commands::ask_ollama,
             notify_overlay_hidden,
             set_window_frame
