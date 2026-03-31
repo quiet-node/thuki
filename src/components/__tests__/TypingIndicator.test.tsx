@@ -11,7 +11,7 @@ describe('TypingIndicator', () => {
 
   it('renders with AI bubble styling (chat-bubble-ai)', () => {
     const { container } = render(<TypingIndicator />);
-    expect(container.querySelector('.chat-bubble-ai')).toBeTruthy();
+    expect(container.querySelector('.chat-bubble-ai')).not.toBeNull();
   });
 
   it('is left-aligned (justify-start)', () => {

@@ -20,8 +20,29 @@ export const invoke = vi.fn<
   (cmd: string, args?: Record<string, any>) => Promise<any>
 >(async () => {});
 
-export let lastChannel: Channel | null = null;
+/**
+ * Channel capture state (per test).
+ *
+ * Tests should use getLastChannel() to read the captured channel after calling ask().
+ * Explicitly avoid relying on module-level state by calling resetChannelCapture()
+ * in beforeEach or afterEach.
+ */
+let lastChannel: Channel | null = null;
 
+/**
+ * Get the last captured channel (set by enableChannelCapture when invoke is called with onEvent).
+ * Returns null if no channel has been captured.
+ */
+export function getLastChannel(): Channel | null {
+  return lastChannel;
+}
+
+/**
+ * Enable channel capture: when invoke() is called with an onEvent argument,
+ * that Channel will be stored in lastChannel for test use.
+ *
+ * IMPORTANT: Call resetChannelCapture() in afterEach to avoid state leaking between tests.
+ */
 export function enableChannelCapture() {
   invoke.mockImplementation(
     async (_cmd: string, args?: Record<string, unknown>) => {
@@ -32,6 +53,10 @@ export function enableChannelCapture() {
   );
 }
 
+/**
+ * Reset channel capture: clears lastChannel.
+ * Call this in afterEach or between test scenarios to avoid state leaking.
+ */
 export function resetChannelCapture() {
   lastChannel = null;
 }

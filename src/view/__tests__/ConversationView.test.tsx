@@ -17,8 +17,8 @@ describe('ConversationView', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByText('Hello there')).toBeTruthy();
-    expect(screen.getByText('Hi!')).toBeTruthy();
+    expect(screen.getByText('Hello there')).toBeInTheDocument();
+    expect(screen.getByText('Hi!')).toBeInTheDocument();
   });
 
   it('renders streaming bubble when streamingContent is non-empty', () => {
@@ -31,7 +31,7 @@ describe('ConversationView', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByText('streaming response...')).toBeTruthy();
+    expect(screen.getByText('streaming response...')).toBeInTheDocument();
   });
 
   it('shows TypingIndicator when isGenerating with no streaming content', () => {
@@ -72,7 +72,7 @@ describe('ConversationView', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByText('Something went wrong')).toBeTruthy();
+    expect(screen.getByText('Something went wrong')).toBeInTheDocument();
   });
 
   it('hides error banner when error is null', () => {
@@ -99,7 +99,7 @@ describe('ConversationView', () => {
         onClose={onClose}
       />,
     );
-    expect(screen.getByRole('button', { name: 'Close window' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Close window' })).toBeInTheDocument();
   });
 
   it('renders empty state with no messages (no .chat-bubble elements)', () => {
@@ -129,7 +129,7 @@ describe('ConversationView', () => {
     const scrollEl = container.querySelector(
       '.chat-messages-scroll',
     ) as HTMLElement;
-    expect(scrollEl).toBeTruthy();
+    expect(scrollEl).not.toBeNull();
 
     // Fire a scroll event — the handler reads scrollTop/scrollHeight/clientHeight
     act(() => {
@@ -137,7 +137,7 @@ describe('ConversationView', () => {
     });
 
     // No assertion needed beyond "no crash" — the callback just updates a ref
-    expect(scrollEl).toBeTruthy();
+    expect(scrollEl).not.toBeNull();
   });
 
   it('auto-scroll is skipped when user is not near bottom (early return branch)', () => {
@@ -154,7 +154,7 @@ describe('ConversationView', () => {
     const scrollEl = container.querySelector(
       '.chat-messages-scroll',
     ) as HTMLElement;
-    expect(scrollEl).toBeTruthy();
+    expect(scrollEl).not.toBeNull();
 
     // Simulate scrolling far up — sets isUserNearBottomRef to false
     // by making scrollHeight - scrollTop - clientHeight > NEAR_BOTTOM_THRESHOLD (60)
@@ -211,7 +211,7 @@ describe('ConversationView', () => {
       />,
     );
     for (let i = 0; i < 10; i++) {
-      expect(screen.getByText(`Message ${i}`)).toBeTruthy();
+      expect(screen.getByText(`Message ${i}`)).toBeInTheDocument();
     }
   });
 });

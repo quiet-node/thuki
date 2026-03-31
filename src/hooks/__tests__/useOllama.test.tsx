@@ -4,17 +4,14 @@ import { useOllama } from '../useOllama';
 import {
   invoke,
   enableChannelCapture,
-  lastChannel,
+  getLastChannel,
   resetChannelCapture,
 } from '../../testUtils/mocks/tauri';
 
-// After calling enableChannelCapture(), `lastChannel` is module-level state.
-// We re-read it via a getter so each reference picks up the latest value.
+// Wrapper around getLastChannel() for clarity: reads the captured channel
+// that was set by enableChannelCapture when invoke() is called with onEvent.
 function getChannel() {
-  // lastChannel is exported as `let`, so we need a fresh import reference.
-  // Use a dynamic import trick — simpler: just access via the named export
-  // which is re-evaluated on each access since it's a live binding.
-  return lastChannel;
+  return getLastChannel();
 }
 
 describe('useOllama', () => {

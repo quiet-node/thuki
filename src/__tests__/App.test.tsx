@@ -1,15 +1,13 @@
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import App from '../App';
 import {
   invoke,
   emitTauriEvent,
   enableChannelCapture,
-  lastChannel,
+  getLastChannel,
 } from '../testUtils/mocks/tauri';
 import { __mockWindow } from '../testUtils/mocks/tauri-window';
-
-import { vi } from 'vitest';
 
 async function showOverlay(selectedText: string | null = null) {
   await act(async () => {
@@ -42,7 +40,7 @@ describe('App', () => {
 
     await showOverlay();
 
-    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeInTheDocument();
   });
 
   it('hides overlay on Escape key', async () => {
@@ -52,7 +50,7 @@ describe('App', () => {
     await showOverlay();
 
     // Confirm overlay is visible
-    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeInTheDocument();
 
     act(() => {
       fireEvent.keyDown(window, { key: 'Escape' });
@@ -84,13 +82,13 @@ describe('App', () => {
 
     // Simulate streaming tokens
     act(() => {
-      lastChannel?.simulateMessage({ type: 'Token', data: 'Hi' });
-      lastChannel?.simulateMessage({ type: 'Token', data: ' there!' });
-      lastChannel?.simulateMessage({ type: 'Done' });
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hi' });
+      getLastChannel()?.simulateMessage({ type: 'Token', data: ' there!' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
     });
 
     // The assistant response should now be in the DOM
-    expect(screen.getByText('Hi there!')).toBeTruthy();
+    expect(screen.getByText('Hi there!')).toBeInTheDocument();
   });
 
   it('shows selected context when provided', async () => {
@@ -99,7 +97,7 @@ describe('App', () => {
 
     await showOverlay('some code snippet');
 
-    expect(screen.getByText(/some code snippet/)).toBeTruthy();
+    expect(screen.getByText(/some code snippet/)).toBeInTheDocument();
   });
 
   it('enters hiding state on hide-request visibility event', async () => {
@@ -108,7 +106,7 @@ describe('App', () => {
 
     // First show overlay
     await showOverlay();
-    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeInTheDocument();
 
     // Then send hide-request — calls requestHideOverlay() (not handleCloseOverlay)
     await act(async () => {
@@ -125,7 +123,7 @@ describe('App', () => {
     await act(async () => {});
 
     await showOverlay();
-    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeInTheDocument();
 
     act(() => {
       fireEvent.keyDown(window, { key: 'w', metaKey: true });
@@ -194,7 +192,7 @@ describe('App', () => {
 
     // Fire mousedown on the outermost div (non-interactive)
     const container = document.querySelector('.morphing-container');
-    expect(container).toBeTruthy();
+    expect(container).not.toBeNull();
 
     act(() => {
       fireEvent.mouseDown(container!);
@@ -210,7 +208,7 @@ describe('App', () => {
     await showOverlay();
 
     const container = document.querySelector('.morphing-container');
-    expect(container).toBeTruthy();
+    expect(container).not.toBeNull();
 
     __mockWindow.startDragging.mockClear();
 
@@ -244,8 +242,8 @@ describe('App', () => {
     await act(async () => {});
 
     act(() => {
-      lastChannel?.simulateMessage({ type: 'Token', data: 'Reply' });
-      lastChannel?.simulateMessage({ type: 'Done' });
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Reply' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
     });
 
     // Find a .select-text element
@@ -334,11 +332,11 @@ describe('App', () => {
     await act(async () => {});
 
     act(() => {
-      lastChannel?.simulateMessage({ type: 'Token', data: 'First response' });
-      lastChannel?.simulateMessage({ type: 'Done' });
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'First response' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
     });
 
-    expect(screen.getByText('First response')).toBeTruthy();
+    expect(screen.getByText('First response')).toBeInTheDocument();
 
     // Re-enable channel capture for second session
     enableChannelCapture();
@@ -347,7 +345,7 @@ describe('App', () => {
     await showOverlay();
 
     // Should be back to input bar mode with placeholder
-    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Ask Thuki anything...')).toBeInTheDocument();
     // Old messages should be gone
     expect(screen.queryByText('First response')).toBeNull();
   });

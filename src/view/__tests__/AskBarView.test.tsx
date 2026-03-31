@@ -20,7 +20,7 @@ describe('AskBarView', () => {
       />,
     );
     const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-    expect(textarea).toBeTruthy();
+    expect(textarea).not.toBeNull();
   });
 
   it('renders textarea with chat mode placeholder', () => {
@@ -35,7 +35,7 @@ describe('AskBarView', () => {
       />,
     );
     const textarea = screen.getByPlaceholderText('Reply...');
-    expect(textarea).toBeTruthy();
+    expect(textarea).not.toBeNull();
   });
 
   it('calls setQuery on textarea change', () => {
@@ -132,7 +132,7 @@ describe('AskBarView', () => {
       />,
     );
     const logo = container.querySelector('img[alt="Thuki"]');
-    expect(logo).toBeTruthy();
+    expect(logo).not.toBeNull();
     expect(logo?.classList.contains('w-10')).toBe(true);
     expect(logo?.classList.contains('h-10')).toBe(true);
     expect(logo?.classList.contains('rounded-xl')).toBe(true);
@@ -150,7 +150,7 @@ describe('AskBarView', () => {
       />,
     );
     const logo = container.querySelector('img[alt="Thuki"]');
-    expect(logo).toBeTruthy();
+    expect(logo).not.toBeNull();
     expect(logo?.classList.contains('w-6')).toBe(true);
     expect(logo?.classList.contains('h-6')).toBe(true);
     expect(logo?.classList.contains('rounded-lg')).toBe(true);
@@ -167,7 +167,7 @@ describe('AskBarView', () => {
         inputRef={makeRef()}
       />,
     );
-    expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeInTheDocument();
   });
 
   it('displays selectedText when provided', () => {
@@ -182,7 +182,7 @@ describe('AskBarView', () => {
         selectedText="some highlighted text"
       />,
     );
-    expect(screen.getByText(/some highlighted text/)).toBeTruthy();
+    expect(screen.getByText(/some highlighted text/)).toBeInTheDocument();
   });
 
   it('hides context area when no selectedText (no line-clamp-2 element)', () => {
@@ -212,7 +212,7 @@ describe('AskBarView', () => {
       />,
     );
     const el = container.querySelector('.line-clamp-2');
-    expect(el).toBeTruthy();
+    expect(el).not.toBeNull();
     expect(el?.textContent).toContain('context text here');
   });
 });

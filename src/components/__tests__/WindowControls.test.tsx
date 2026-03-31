@@ -13,7 +13,7 @@ describe('WindowControls', () => {
   it('close button has correct styling (bg-[#FF5F57])', () => {
     const { container } = render(<WindowControls onClose={vi.fn()} />);
     const closeBtn = container.querySelector('.bg-\\[\\#FF5F57\\]');
-    expect(closeBtn).toBeTruthy();
+    expect(closeBtn).not.toBeNull();
   });
 
   it('renders decorative minimize and zoom dots (aria-hidden elements)', () => {
@@ -29,13 +29,13 @@ describe('WindowControls', () => {
 
   it('renders divider separator (bg-surface-border)', () => {
     const { container } = render(<WindowControls onClose={vi.fn()} />);
-    expect(container.querySelector('.bg-surface-border')).toBeTruthy();
+    expect(container.querySelector('.bg-surface-border')).not.toBeNull();
   });
 
   it('close button has x icon svg', () => {
     render(<WindowControls onClose={vi.fn()} />);
     const closeBtn = screen.getByRole('button', { name: 'Close window' });
     const svg = closeBtn.querySelector('svg');
-    expect(svg).toBeTruthy();
+    expect(svg).not.toBeNull();
   });
 });

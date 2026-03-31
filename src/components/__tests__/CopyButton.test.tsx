@@ -21,7 +21,7 @@ describe('CopyButton', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Copy message' }));
     });
-    expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument();
   });
 
   it('reverts to copy icon after 1.5 seconds', async () => {
@@ -30,11 +30,11 @@ describe('CopyButton', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Copy message' }));
     });
-    expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument();
     act(() => {
       vi.advanceTimersByTime(1500);
     });
-    expect(screen.getByRole('button', { name: 'Copy message' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
     vi.useRealTimers();
   });
 
@@ -47,7 +47,7 @@ describe('CopyButton', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Copy message' }));
     });
     // Button should remain in un-copied state after failure
-    expect(screen.getByRole('button', { name: 'Copy message' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
   });
 
   it('handles multiple rapid clicks', async () => {
@@ -80,6 +80,6 @@ describe('CopyButton', () => {
   it('has accessible button role and label', () => {
     render(<CopyButton content="accessible" align="left" />);
     const button = screen.getByRole('button', { name: 'Copy message' });
-    expect(button).toBeTruthy();
+    expect(button).not.toBeNull();
   });
 });

@@ -6,14 +6,14 @@ describe('ChatBubble', () => {
   describe('User messages', () => {
     it('renders user message content as plain text', () => {
       render(<ChatBubble role="user" content="Hello there" index={0} />);
-      expect(screen.getByText('Hello there')).toBeTruthy();
+      expect(screen.getByText('Hello there')).toBeInTheDocument();
     });
 
     it('applies user styling (chat-bubble-user class)', () => {
       const { container } = render(
         <ChatBubble role="user" content="Hi" index={0} />,
       );
-      expect(container.querySelector('.chat-bubble-user')).toBeTruthy();
+      expect(container.querySelector('.chat-bubble-user')).not.toBeNull();
     });
 
     it('does not render markdown for user messages (** shows as text, no <strong>)', () => {
@@ -22,12 +22,12 @@ describe('ChatBubble', () => {
       );
       // User content is rendered as plain text inside a <span>, not parsed as markdown
       expect(container.querySelector('strong')).toBeNull();
-      expect(screen.getByText('**bold**')).toBeTruthy();
+      expect(screen.getByText('**bold**')).toBeInTheDocument();
     });
 
     it('shows copy button for user messages', () => {
       render(<ChatBubble role="user" content="copy me" index={0} />);
-      expect(screen.getByRole('button', { name: 'Copy message' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
     });
 
     it('right-aligns user messages (justify-end class)', () => {
@@ -45,7 +45,7 @@ describe('ChatBubble', () => {
       const { container } = render(
         <ChatBubble role="assistant" content="**bold**" index={0} />,
       );
-      expect(container.querySelector('strong')).toBeTruthy();
+      expect(container.querySelector('strong')).not.toBeNull();
       expect(container.querySelector('strong')!.textContent).toBe('bold');
     });
 
@@ -53,12 +53,12 @@ describe('ChatBubble', () => {
       const { container } = render(
         <ChatBubble role="assistant" content="Hello" index={0} />,
       );
-      expect(container.querySelector('.chat-bubble-ai')).toBeTruthy();
+      expect(container.querySelector('.chat-bubble-ai')).not.toBeNull();
     });
 
     it('shows copy button for assistant messages', () => {
       render(<ChatBubble role="assistant" content="response" index={0} />);
-      expect(screen.getByRole('button', { name: 'Copy message' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
     });
 
     it('left-aligns assistant messages (justify-start class)', () => {
