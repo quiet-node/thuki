@@ -7,10 +7,6 @@ on:
         description: 'The head ref of the PR'
         required: false
         type: string
-      event_name:
-        description: 'The event name'
-        required: false
-        type: string
 
 jobs:
   test:
@@ -18,24 +14,15 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: ${{ inputs.head_ref || github.head_ref }}
-          fetch-depth: 0
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Install nightly Rust toolchain
-        run: rustup toolchain install nightly --no-self-update
+          fetch-depth: 1
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481  # v2.9.4
+        with:
+          tool: cargo-llvm-cov
 
       - name: Run backend tests with coverage
         working-directory: src-tauri
