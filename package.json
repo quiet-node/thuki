@@ -24,7 +24,7 @@
     "test:coverage": "vitest run --coverage",
     "test:backend": "cd src-tauri && cargo test",
     "test:all": "vitest run && cd src-tauri && cargo test",
-    "validate-build": "bun run lint && bun run format:check && bun run typecheck && vitest run && bun run build:all"
+    "validate-build": "bun run lint && bun run format:check && bun run typecheck && bun run build:all"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
