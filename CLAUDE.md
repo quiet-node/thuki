@@ -76,6 +76,10 @@ Frontend calls Tauri commands via `@tauri-apps/api/core`. Streaming uses Tauri's
 - `ActivationPolicy::Accessory` hides Dock icon
 - `macOSPrivateApi: true` enables NSPanel for fullscreen-app overlay
 
+## Workflow
+
+**Always use git worktrees for development work.** Before starting any feature, bugfix, or non-trivial change, create an isolated git worktree. This keeps the main working directory clean and allows parallel work without branch-switching conflicts.
+
 ## Key Design Constraints
 
 - **macOS only** — uses NSPanel, Core Graphics event taps, macOS Command key
