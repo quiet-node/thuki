@@ -1,8 +1,6 @@
-import React from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { ConversationView } from '../ConversationView';
-
 
 describe('ConversationView', () => {
   it('renders ChatBubble for each message', () => {
@@ -120,9 +118,7 @@ describe('ConversationView', () => {
   it('handleScroll updates pinned state when user scrolls', () => {
     const { container } = render(
       <ConversationView
-        messages={[
-          { role: 'user' as const, content: 'Hello' },
-        ]}
+        messages={[{ role: 'user' as const, content: 'Hello' }]}
         streamingContent=""
         isGenerating={false}
         error={null}
@@ -130,7 +126,9 @@ describe('ConversationView', () => {
       />,
     );
 
-    const scrollEl = container.querySelector('.chat-messages-scroll') as HTMLElement;
+    const scrollEl = container.querySelector(
+      '.chat-messages-scroll',
+    ) as HTMLElement;
     expect(scrollEl).toBeTruthy();
 
     // Fire a scroll event — the handler reads scrollTop/scrollHeight/clientHeight
@@ -153,14 +151,26 @@ describe('ConversationView', () => {
       />,
     );
 
-    const scrollEl = container.querySelector('.chat-messages-scroll') as HTMLElement;
+    const scrollEl = container.querySelector(
+      '.chat-messages-scroll',
+    ) as HTMLElement;
     expect(scrollEl).toBeTruthy();
 
     // Simulate scrolling far up — sets isUserNearBottomRef to false
     // by making scrollHeight - scrollTop - clientHeight > NEAR_BOTTOM_THRESHOLD (60)
-    Object.defineProperty(scrollEl, 'scrollHeight', { value: 500, configurable: true });
-    Object.defineProperty(scrollEl, 'clientHeight', { value: 100, configurable: true });
-    Object.defineProperty(scrollEl, 'scrollTop', { value: 0, configurable: true, writable: true });
+    Object.defineProperty(scrollEl, 'scrollHeight', {
+      value: 500,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, 'clientHeight', {
+      value: 100,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, 'scrollTop', {
+      value: 0,
+      configurable: true,
+      writable: true,
+    });
 
     act(() => {
       fireEvent.scroll(scrollEl);

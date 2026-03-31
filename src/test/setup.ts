@@ -43,7 +43,8 @@ class MockResizeObserver {
   }
 }
 
-globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+globalThis.ResizeObserver =
+  MockResizeObserver as unknown as typeof ResizeObserver;
 
 Object.defineProperty(navigator, 'clipboard', {
   value: {

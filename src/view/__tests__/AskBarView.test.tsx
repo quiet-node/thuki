@@ -3,7 +3,6 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { AskBarView } from '../AskBarView';
 
-
 function makeRef(): React.RefObject<HTMLTextAreaElement | null> {
   return { current: null };
 }

@@ -11,9 +11,13 @@ describe('MarkdownRenderer', () => {
     });
 
     it('renders h1 heading with correct element', () => {
-      const { container } = render(<MarkdownRenderer content="# Heading One" />);
+      const { container } = render(
+        <MarkdownRenderer content="# Heading One" />,
+      );
       expect(container.querySelector('h1')).toBeTruthy();
-      expect(container.querySelector('h1')!.textContent).toContain('Heading One');
+      expect(container.querySelector('h1')!.textContent).toContain(
+        'Heading One',
+      );
     });
 
     it('renders bullet lists', () => {
@@ -41,7 +45,9 @@ describe('MarkdownRenderer', () => {
         <MarkdownRenderer content="Use `console.log()` for debugging" />,
       );
       expect(container.querySelector('code')).toBeTruthy();
-      expect(container.querySelector('code')!.textContent).toBe('console.log()');
+      expect(container.querySelector('code')!.textContent).toBe(
+        'console.log()',
+      );
     });
 
     it('renders fenced code blocks', () => {
@@ -50,7 +56,9 @@ describe('MarkdownRenderer', () => {
       );
       expect(container.querySelector('pre')).toBeTruthy();
       expect(container.querySelector('pre code')).toBeTruthy();
-      expect(container.querySelector('pre code')!.textContent).toContain('const x = 1;');
+      expect(container.querySelector('pre code')!.textContent).toContain(
+        'const x = 1;',
+      );
     });
 
     it('renders links with correct href', () => {
@@ -133,7 +141,9 @@ describe('MarkdownRenderer', () => {
 
     it('strips iframe embeds', () => {
       const { container } = render(
-        <MarkdownRenderer content={'<iframe src="https://evil.com"></iframe>'} />,
+        <MarkdownRenderer
+          content={'<iframe src="https://evil.com"></iframe>'}
+        />,
       );
       expect(container.querySelector('iframe')).toBeNull();
       expect(container.innerHTML).not.toContain('<iframe');
@@ -156,6 +166,5 @@ describe('MarkdownRenderer', () => {
       expect(span).toBeTruthy();
       expect(span!.innerHTML).toBe('');
     });
-
   });
 });

@@ -15,17 +15,21 @@ export class Channel<T = unknown> {
 
 // ─── invoke mock ────────────────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export const invoke = vi.fn(async (_cmd: string, _args?: Record<string, unknown>) => {});
+export const invoke = vi.fn<
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (cmd: string, args?: Record<string, any>) => Promise<any>
+>(async () => {});
 
 export let lastChannel: Channel | null = null;
 
 export function enableChannelCapture() {
-  invoke.mockImplementation(async (_cmd, args) => {
-    if (args && 'onEvent' in args) {
-      lastChannel = args.onEvent as Channel;
-    }
-  });
+  invoke.mockImplementation(
+    async (_cmd: string, args?: Record<string, unknown>) => {
+      if (args && 'onEvent' in args) {
+        lastChannel = args.onEvent as Channel;
+      }
+    },
+  );
 }
 
 export function resetChannelCapture() {

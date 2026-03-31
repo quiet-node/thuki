@@ -11,12 +11,20 @@ import React from 'react';
  */
 
 export const motion = {
-  div: ({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
+  div: ({
+    children,
+    className,
+    ...props
+  }: React.HTMLAttributes<HTMLDivElement>) => (
     <div className={className} {...props}>
       {children}
     </div>
   ),
-  span: ({ children, className, ...props }: React.HTMLAttributes<HTMLSpanElement>) => (
+  span: ({
+    children,
+    className,
+    ...props
+  }: React.HTMLAttributes<HTMLSpanElement>) => (
     <span className={className} {...props}>
       {children}
     </span>
@@ -29,10 +37,20 @@ export const motion = {
     'aria-label': ariaLabel,
     ...props
   }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-    <button className={className} onClick={onClick} disabled={disabled} aria-label={ariaLabel} {...props}>
+    <button
+      className={className}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      {...props}
+    >
       {children}
     </button>
   ),
 };
 
-export const AnimatePresence = ({ children }: { children: React.ReactNode }) => <>{children}</>;
+export const AnimatePresence = ({
+  children,
+}: {
+  children: React.ReactNode;
+}) => <>{children}</>;

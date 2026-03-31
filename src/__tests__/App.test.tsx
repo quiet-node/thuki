@@ -1,4 +1,3 @@
-import React from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, beforeEach } from 'vitest';
 import App from '../App';
@@ -184,10 +183,7 @@ describe('App', () => {
     await act(async () => {});
 
     // ask_ollama should NOT have been called
-    expect(invoke).not.toHaveBeenCalledWith(
-      'ask_ollama',
-      expect.anything(),
-    );
+    expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
   });
 
   it('fires drag on non-interactive mousedown', async () => {

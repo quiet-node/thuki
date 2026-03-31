@@ -1,8 +1,6 @@
-import React from 'react';
 import { render } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { TypingIndicator } from '../TypingIndicator';
-
 
 describe('TypingIndicator', () => {
   it('renders exactly three dots (elements with rounded-full and bg-primary/70)', () => {

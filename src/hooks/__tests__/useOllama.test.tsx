@@ -253,9 +253,7 @@ describe('useOllama', () => {
       const assistantMsg = result.current.messages.find(
         (m) => m.role === 'assistant',
       );
-      expect(assistantMsg?.content).toBe(
-        '\n\n**Error:** Error: network error',
-      );
+      expect(assistantMsg?.content).toBe('\n\n**Error:** Error: network error');
     });
 
     it('clears previous error on new ask', async () => {
