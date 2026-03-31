@@ -55,6 +55,8 @@ interface AskBarViewProps {
   onSubmit: () => void;
   /** Ref to the textarea input element for focus management. */
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
+  /** Selected text from the host app captured at activation time, if any. */
+  selectedText?: string;
 }
 
 /**
@@ -70,6 +72,7 @@ export function AskBarView({
   isGenerating,
   onSubmit,
   inputRef,
+  selectedText,
 }: AskBarViewProps) {
   const canSubmit = query.trim().length > 0 && !isGenerating;
 
@@ -102,45 +105,54 @@ export function AskBarView({
   );
 
   return (
-    <div className="flex items-center w-full px-3 py-2.5 gap-2 shrink-0">
-      <img
-        src="/thuki-logo.png"
-        alt="Thuki"
-        className={`shrink-0 transition-all duration-300 ease-out ${
-          isChatMode ? 'w-6 h-6 rounded-lg' : 'w-10 h-10 rounded-xl'
-        }`}
-        draggable={false}
-      />
+    <div className="flex flex-col w-full shrink-0">
+      {selectedText && (
+        <div className="px-4 pt-2 pb-0">
+          <p className="italic text-xs text-text-secondary line-clamp-2 select-text">
+            &ldquo;{selectedText.replace(/\s+/g, ' ').trim()}&rdquo;
+          </p>
+        </div>
+      )}
+      <div className="flex items-center w-full px-3 py-2.5 gap-2">
+        <img
+          src="/thuki-logo.png"
+          alt="Thuki"
+          className={`shrink-0 transition-all duration-300 ease-out ${
+            isChatMode ? 'w-6 h-6 rounded-lg' : 'w-10 h-10 rounded-xl'
+          }`}
+          draggable={false}
+        />
 
-      <textarea
-        ref={inputRef}
-        value={query}
-        onChange={handleTextareaChange}
-        onKeyDown={handleKeyDown}
-        disabled={isGenerating}
-        autoFocus
-        rows={1}
-        placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
-        className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
-      />
+        <textarea
+          ref={inputRef}
+          value={query}
+          onChange={handleTextareaChange}
+          onKeyDown={handleKeyDown}
+          disabled={isGenerating}
+          autoFocus
+          rows={1}
+          placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
+          className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
+        />
 
-      <motion.button
-        type="button"
-        onClick={onSubmit}
-        disabled={!canSubmit && !isGenerating}
-        whileHover={canSubmit ? { scale: 1.08 } : undefined}
-        whileTap={canSubmit ? { scale: 0.92 } : undefined}
-        className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-colors duration-200 ${
-          canSubmit
-            ? 'bg-primary text-neutral cursor-pointer'
-            : isGenerating
-              ? 'bg-surface-elevated text-primary cursor-default'
-              : 'bg-surface-elevated text-text-secondary cursor-default'
-        }`}
-        aria-label="Send message"
-      >
-        {isGenerating ? <Spinner /> : ARROW_UP_ICON}
-      </motion.button>
+        <motion.button
+          type="button"
+          onClick={onSubmit}
+          disabled={!canSubmit && !isGenerating}
+          whileHover={canSubmit ? { scale: 1.08 } : undefined}
+          whileTap={canSubmit ? { scale: 0.92 } : undefined}
+          className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-colors duration-200 ${
+            canSubmit
+              ? 'bg-primary text-neutral cursor-pointer'
+              : isGenerating
+                ? 'bg-surface-elevated text-primary cursor-default'
+                : 'bg-surface-elevated text-text-secondary cursor-default'
+          }`}
+          aria-label="Send message"
+        >
+          {isGenerating ? <Spinner /> : ARROW_UP_ICON}
+        </motion.button>
+      </div>
     </div>
   );
 }

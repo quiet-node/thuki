@@ -20,7 +20,21 @@ const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
  */
 const HIDE_COMMIT_DELAY_MS = 350;
 
-type OverlayVisibilityPayload = 'show' | 'hide-request';
+/** Must match `OVERLAY_LOGICAL_WIDTH` in `src-tauri/src/lib.rs`. */
+const OVERLAY_WIDTH = 600;
+/** Total transparent padding around the morphing container: pt-2(8) + pb-6(24) + motion py-2(16). */
+const CONTAINER_VERTICAL_PADDING = 48;
+/** Maximum length of selected context text included in the prompt. */
+const MAX_CONTEXT_LENGTH = 4096;
+
+type WindowAnchor = { x: number; bottom_y: number; min_y: number };
+type OverlayVisibilityPayload =
+  | {
+      state: 'show';
+      selected_text: string | null;
+      window_anchor: WindowAnchor | null;
+    }
+  | { state: 'hide-request' };
 type OverlayState = 'visible' | 'hidden' | 'hiding';
 
 /**
@@ -47,6 +61,7 @@ function App() {
    * mounting a fresh one, preventing a flash of the previous conversation.
    */
   const [sessionId, setSessionId] = useState(0);
+  const [selectedContext, setSelectedContext] = useState<string | null>(null);
 
   /**
    * Determines whether the UI has entered "chat mode" — i.e., the morphing
@@ -62,10 +77,21 @@ function App() {
   const observerRef = useRef<ResizeObserver | null>(null);
 
   /**
+   * Holds the window anchor for the "above selection" spawn case.
+   * Stored in a ref (not state) so the ResizeObserver closure can read the
+   * latest value without needing to be recreated on each anchor change.
+   */
+  const windowAnchorRef = useRef<WindowAnchor | null>(null);
+
+  /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
    * rendered Framer Motion container actually mounts in the DOM. This fixes
    * the bug where a standard useEffect would run before the DOM node was ready,
    * leaving the native window stuck at 600x700.
+   *
+   * When a window anchor is present (bar spawned above selection), the observer
+   * also repositions the window upward to keep its bottom pinned to the anchor
+   * as the conversation grows.
    */
   const setContainerRef = useCallback((node: HTMLDivElement | null) => {
     if (observerRef.current) {
@@ -80,8 +106,29 @@ function App() {
             const rect = entry.target.getBoundingClientRect();
             // Total vertical room: 8px (pt-2) + 24px (pb-6) + 16px (motion py-2) = 48px.
             // This ensures the tightened drop shadows aren't clipped by the native window edge.
-            const targetHeight = Math.ceil(rect.height) + 48;
-            void getCurrentWindow().setSize(new LogicalSize(600, targetHeight));
+            const targetHeight =
+              Math.ceil(rect.height) + CONTAINER_VERTICAL_PADDING;
+            const anchor = windowAnchorRef.current;
+            if (anchor) {
+              // Grow upward: invoke a single Rust command that sets both position
+              // and size in the same main-thread block so macOS coalesces them
+              // into one display frame — eliminating the downward-flash that
+              // occurs when JS fires two separate async IPC round-trips.
+              const newY = Math.max(
+                anchor.min_y,
+                anchor.bottom_y - targetHeight,
+              );
+              void invoke('set_window_frame', {
+                x: anchor.x,
+                y: newY,
+                width: OVERLAY_WIDTH,
+                height: targetHeight,
+              });
+            } else {
+              void getCurrentWindow().setSize(
+                new LogicalSize(OVERLAY_WIDTH, targetHeight),
+              );
+            }
           }
         });
       });
@@ -95,18 +142,25 @@ function App() {
    * Replays the entrance sequence by transitioning the overlay to the visible state.
    * Clears conversation state for a fresh session each time the overlay appears.
    */
-  const replayEntranceAnimation = useCallback(() => {
-    setSessionId((id) => id + 1);
-    setQuery('');
-    reset();
-    setOverlayState('visible');
-  }, [reset]);
+  const replayEntranceAnimation = useCallback(
+    (context: string | null, anchor: WindowAnchor | null) => {
+      windowAnchorRef.current = anchor;
+      setSessionId((id) => id + 1);
+      setQuery('');
+      setSelectedContext(context);
+      reset();
+      setOverlayState('visible');
+    },
+    [reset],
+  );
 
   /**
    * Moves the overlay into an exit phase. The actual Tauri window hide call is
    * deferred until Framer Motion finishes the exit transition.
    */
   const requestHideOverlay = useCallback(() => {
+    windowAnchorRef.current = null;
+    setSelectedContext(null);
     setOverlayState((currentState) => {
       if (currentState === 'hidden' || currentState === 'hiding') {
         return currentState;
@@ -117,13 +171,23 @@ function App() {
 
   const handleSubmit = useCallback(() => {
     if (query.trim().length === 0 || isGenerating) return;
-    ask(query);
+    // Sanitize externally-sourced context: strip control characters and enforce
+    // a length cap to limit prompt-injection surface from host-app selections.
+    // eslint-disable-next-line no-control-regex
+    const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
+    const sanitized = selectedContext
+      ?.replace(CONTROL_CHARS, '')
+      .slice(0, MAX_CONTEXT_LENGTH);
+    const prompt =
+      sanitized && sanitized.trim().length > 0
+        ? `Context: "${sanitized}"\n\n${query}`
+        : query;
+    ask(prompt);
     setQuery('');
     if (inputRef.current) {
-      // Reset auto-grown textarea shrink back to 1 row
       inputRef.current.style.height = 'auto';
     }
-  }, [query, isGenerating, ask]);
+  }, [query, isGenerating, ask, selectedContext]);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
@@ -136,8 +200,11 @@ function App() {
       unlistenVisibility = await listen<OverlayVisibilityPayload>(
         OVERLAY_VISIBILITY_EVENT,
         ({ payload }) => {
-          if (payload === 'show') {
-            replayEntranceAnimation();
+          if (payload.state === 'show') {
+            replayEntranceAnimation(
+              payload.selected_text ?? null,
+              payload.window_anchor ?? null,
+            );
             return;
           }
           requestHideOverlay();
@@ -238,6 +305,16 @@ function App() {
     // so the textarea retains keyboard input during window repositioning.
     e.preventDefault();
     void getCurrentWindow().startDragging();
+
+    // After the user repositions the window, drop the upward-grow anchor so
+    // subsequent conversation growth tracks the new position downward.
+    window.addEventListener(
+      'mouseup',
+      () => {
+        windowAnchorRef.current = null;
+      },
+      { once: true },
+    );
   }, []);
 
   return (
@@ -288,6 +365,7 @@ function App() {
                 isGenerating={isGenerating}
                 onSubmit={handleSubmit}
                 inputRef={inputRef}
+                selectedText={selectedContext ?? undefined}
               />
             </div>
           </motion.div>
