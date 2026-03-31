@@ -27,7 +27,9 @@ describe('ChatBubble', () => {
 
     it('shows copy button for user messages', () => {
       render(<ChatBubble role="user" content="copy me" index={0} />);
-      expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Copy message' }),
+      ).toBeInTheDocument();
     });
 
     it('right-aligns user messages (justify-end class)', () => {
@@ -58,7 +60,9 @@ describe('ChatBubble', () => {
 
     it('shows copy button for assistant messages', () => {
       render(<ChatBubble role="assistant" content="response" index={0} />);
-      expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Copy message' }),
+      ).toBeInTheDocument();
     });
 
     it('left-aligns assistant messages (justify-start class)', () => {

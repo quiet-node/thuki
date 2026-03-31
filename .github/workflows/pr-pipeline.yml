@@ -1,0 +1,33 @@
+name: PR Pipeline
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build-validation:
+    name: Build Validation
+    uses: ./.github/workflows/pr-build-validation.yml
+    with:
+      head_ref: ${{ github.head_ref }}
+
+  frontend-tests:
+    name: Frontend Tests
+    uses: ./.github/workflows/pr-frontend-tests.yml
+    with:
+      head_ref: ${{ github.head_ref }}
+
+  backend-tests:
+    name: Backend Tests
+    uses: ./.github/workflows/pr-backend-tests.yml
+    with:
+      head_ref: ${{ github.head_ref }}

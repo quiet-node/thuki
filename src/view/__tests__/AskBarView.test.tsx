@@ -167,7 +167,9 @@ describe('AskBarView', () => {
         inputRef={makeRef()}
       />,
     );
-    expect(screen.getByRole('button', { name: 'Send message' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Send message' }),
+    ).toBeInTheDocument();
   });
 
   it('displays selectedText when provided', () => {

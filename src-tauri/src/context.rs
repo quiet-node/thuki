@@ -47,6 +47,7 @@ impl ActivationContext {
 // ─── macOS AX capture ────────────────────────────────────────────────────────
 
 #[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod macos {
     use std::ffi::c_void;
 
@@ -317,6 +318,7 @@ mod macos {
 ///
 /// When `overlay_is_visible` is `true` the hotkey will hide the overlay, so
 /// no context is needed — skip AX queries and clipboard simulation entirely.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn capture_activation_context(overlay_is_visible: bool) -> ActivationContext {
     if overlay_is_visible {
         return ActivationContext::empty();
