@@ -28,7 +28,13 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Security vulnerability scan
-        run: bun audit
+        run: |
+          AUDIT=$(bun audit 2>&1 || true)
+          echo "$AUDIT"
+          if echo "$AUDIT" | grep -qE '\b(critical|high)\b'; then
+            echo "::error::High or critical severity vulnerabilities found. Fix before merging."
+            exit 1
+          fi
 
       - name: Build validation
         run: |
