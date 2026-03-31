@@ -187,7 +187,7 @@ describe('AskBarView', () => {
     expect(screen.getByText(/some highlighted text/)).toBeInTheDocument();
   });
 
-  it('hides context area when no selectedText (no line-clamp-2 element)', () => {
+  it('hides context area when no selectedText', () => {
     const { container } = render(
       <AskBarView
         query=""
@@ -198,10 +198,10 @@ describe('AskBarView', () => {
         inputRef={makeRef()}
       />,
     );
-    expect(container.querySelector('.line-clamp-2')).toBeNull();
+    expect(container.querySelector('.whitespace-pre-wrap')).toBeNull();
   });
 
-  it('displays selectedText with line-clamp-2 class', () => {
+  it('displays selectedText with whitespace-pre-wrap class', () => {
     const { container } = render(
       <AskBarView
         query=""
@@ -213,7 +213,7 @@ describe('AskBarView', () => {
         selectedText="context text here"
       />,
     );
-    const el = container.querySelector('.line-clamp-2');
+    const el = container.querySelector('.whitespace-pre-wrap');
     expect(el).not.toBeNull();
     expect(el?.textContent).toContain('context text here');
   });
