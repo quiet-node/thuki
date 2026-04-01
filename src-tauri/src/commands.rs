@@ -49,7 +49,9 @@ pub struct GenerationState {
 impl GenerationState {
     /// Creates a new empty generation state with no active token.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            token: Mutex::new(None),
+        }
     }
 
     /// Stores a new cancellation token, replacing any previous one.
