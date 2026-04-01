@@ -98,10 +98,11 @@ export function ConversationView({
   return (
     <motion.div
       key="chat-area"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ opacity: { duration: 0.2 } }}
+      layout
+      initial={{ opacity: 0, y: -40 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      transition={{ type: 'spring', stiffness: 300, damping: 20 }}
       className="chat-area flex-1 min-h-0 flex flex-col"
     >
       <WindowControls onClose={onClose} />
@@ -154,7 +155,12 @@ export function ConversationView({
       <motion.div
         initial={{ opacity: 0, scaleX: 0 }}
         animate={{ opacity: 1, scaleX: 1 }}
-        transition={{ delay: 0.15, duration: 0.3 }}
+        transition={{
+          type: 'spring',
+          stiffness: 300,
+          damping: 20,
+          delay: 0.15,
+        }}
         className="h-px shrink-0 bg-surface-border origin-center"
       />
     </motion.div>

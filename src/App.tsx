@@ -367,8 +367,12 @@ function App() {
           >
             {/* Morphing Container — flex column ensures the input bar
                 always sticks to the bottom without spring animation lag */}
-            <div
+            <motion.div
               ref={setContainerRef}
+              layout
+              transition={{
+                layout: { type: 'spring', stiffness: 300, damping: 20 },
+              }}
               className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border overflow-hidden ${
                 isChatMode
                   ? 'rounded-lg shadow-chat max-h-[600px]'
@@ -389,6 +393,7 @@ function App() {
               </AnimatePresence>
 
               {/* Input Bar — always pinned to the bottom */}
+              <motion.div layout="position">
               <AskBarView
                 query={query}
                 setQuery={setQuery}
@@ -398,7 +403,8 @@ function App() {
                 inputRef={inputRef}
                 selectedText={selectedContext ?? undefined}
               />
-            </div>
+              </motion.div>
+            </motion.div>
           </motion.div>
         ) : null}
       </AnimatePresence>
