@@ -481,11 +481,16 @@ pub fn run() {
             // ── Persistent HTTP client ────────────────────────────────
             app.manage(reqwest::Client::new());
 
+            // ── Generation cancellation state ────────────────────────────
+            app.manage(commands::GenerationState::new());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             #[cfg(not(coverage))]
             commands::ask_ollama,
+            #[cfg(not(coverage))]
+            commands::cancel_generation,
             notify_overlay_hidden,
             set_window_frame
         ])

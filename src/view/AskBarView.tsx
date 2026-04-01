@@ -28,18 +28,20 @@ const ARROW_UP_ICON = (
 );
 
 /**
- * Animated spinner rendered in the submit button during response generation.
- * Defined as a localized component to guarantee fresh animation state on mount.
+ * Hoisted static SVG — square stop icon displayed during active generation.
  */
-function Spinner() {
-  return (
-    <motion.div
-      animate={{ rotate: 360 }}
-      transition={{ duration: 0.7, repeat: Infinity, ease: 'linear' }}
-      className="w-4 h-4 rounded-full border-2 border-neutral border-t-primary"
-    />
-  );
-}
+const STOP_ICON = (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <rect x="3" y="3" width="10" height="10" rx="2" fill="currentColor" />
+  </svg>
+);
 
 /**
  * Props for the AskBarView component.
@@ -55,6 +57,8 @@ interface AskBarViewProps {
   isGenerating: boolean;
   /** Submit handler fired when the user commits their message. */
   onSubmit: () => void;
+  /** Cancel handler fired when the user stops an active generation. */
+  onCancel: () => void;
   /** Ref to the textarea input element for focus management. */
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   /** Selected text from the host app captured at activation time, if any. */
@@ -73,6 +77,7 @@ export function AskBarView({
   isChatMode,
   isGenerating,
   onSubmit,
+  onCancel,
   inputRef,
   selectedText,
 }: AskBarViewProps) {
@@ -145,20 +150,20 @@ export function AskBarView({
 
         <motion.button
           type="button"
-          onClick={onSubmit}
+          onClick={isGenerating ? onCancel : onSubmit}
           disabled={!canSubmit && !isGenerating}
-          whileHover={canSubmit ? { scale: 1.08 } : undefined}
-          whileTap={canSubmit ? { scale: 0.92 } : undefined}
+          whileHover={canSubmit || isGenerating ? { scale: 1.08 } : undefined}
+          whileTap={canSubmit || isGenerating ? { scale: 0.92 } : undefined}
           className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-colors duration-200 ${
-            canSubmit
-              ? 'bg-primary text-neutral cursor-pointer'
-              : isGenerating
-                ? 'bg-surface-elevated text-primary cursor-default'
+            isGenerating
+              ? 'bg-red-500/20 text-red-400 cursor-pointer'
+              : canSubmit
+                ? 'bg-primary text-neutral cursor-pointer'
                 : 'bg-surface-elevated text-text-secondary cursor-default'
           }`}
-          aria-label="Send message"
+          aria-label={isGenerating ? 'Stop generating' : 'Send message'}
         >
-          {isGenerating ? <Spinner /> : ARROW_UP_ICON}
+          {isGenerating ? STOP_ICON : ARROW_UP_ICON}
         </motion.button>
       </div>
     </div>

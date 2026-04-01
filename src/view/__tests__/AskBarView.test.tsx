@@ -16,6 +16,7 @@ describe('AskBarView', () => {
         isChatMode={false}
         isGenerating={false}
         onSubmit={vi.fn()}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
       />,
     );
@@ -31,6 +32,7 @@ describe('AskBarView', () => {
         isChatMode={true}
         isGenerating={false}
         onSubmit={vi.fn()}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
       />,
     );
@@ -47,6 +49,7 @@ describe('AskBarView', () => {
         isChatMode={false}
         isGenerating={false}
         onSubmit={vi.fn()}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
       />,
     );
@@ -63,6 +66,7 @@ describe('AskBarView', () => {
         isChatMode={false}
         isGenerating={true}
         onSubmit={vi.fn()}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
       />,
     );
@@ -79,6 +83,7 @@ describe('AskBarView', () => {
         isChatMode={false}
         isGenerating={false}
         onSubmit={onSubmit}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
       />,
     );
@@ -96,6 +101,7 @@ describe('AskBarView', () => {
         isChatMode={false}
         isGenerating={false}
         onSubmit={onSubmit}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
       />,
     );
@@ -113,6 +119,7 @@ describe('AskBarView', () => {
         isChatMode={false}
         isGenerating={false}
         onSubmit={onSubmit}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
       />,
     );
@@ -128,6 +135,7 @@ describe('AskBarView', () => {
         isChatMode={false}
         isGenerating={false}
         onSubmit={vi.fn()}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
       />,
     );
@@ -146,6 +154,7 @@ describe('AskBarView', () => {
         isChatMode={true}
         isGenerating={false}
         onSubmit={vi.fn()}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
       />,
     );
@@ -164,6 +173,7 @@ describe('AskBarView', () => {
         isChatMode={false}
         isGenerating={false}
         onSubmit={vi.fn()}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
       />,
     );
@@ -180,6 +190,7 @@ describe('AskBarView', () => {
         isChatMode={false}
         isGenerating={false}
         onSubmit={vi.fn()}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
         selectedText="some highlighted text"
       />,
@@ -195,10 +206,62 @@ describe('AskBarView', () => {
         isChatMode={false}
         isGenerating={false}
         onSubmit={vi.fn()}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
       />,
     );
     expect(container.querySelector('.whitespace-pre-wrap')).toBeNull();
+  });
+
+  it('shows stop button with accessible label during generation', () => {
+    render(
+      <AskBarView
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={true}
+        isGenerating={true}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Stop generating' }),
+    ).toBeInTheDocument();
+  });
+
+  it('calls onCancel when stop button is clicked', () => {
+    const onCancel = vi.fn();
+    render(
+      <AskBarView
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={true}
+        isGenerating={true}
+        onSubmit={vi.fn()}
+        onCancel={onCancel}
+        inputRef={makeRef()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Stop generating' }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call onSubmit when stop button is clicked during generation', () => {
+    const onSubmit = vi.fn();
+    render(
+      <AskBarView
+        query="hello"
+        setQuery={vi.fn()}
+        isChatMode={true}
+        isGenerating={true}
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Stop generating' }));
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it('displays selectedText with whitespace-pre-wrap class', () => {
@@ -209,6 +272,7 @@ describe('AskBarView', () => {
         isChatMode={false}
         isGenerating={false}
         onSubmit={vi.fn()}
+        onCancel={vi.fn()}
         inputRef={makeRef()}
         selectedText="context text here"
       />,

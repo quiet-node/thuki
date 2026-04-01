@@ -4119,6 +4119,7 @@ dependencies = [
  "tauri-build",
  "tauri-nspanel",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
