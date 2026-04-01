@@ -87,6 +87,15 @@ Frontend calls Tauri commands via `@tauri-apps/api/core`. Streaming uses Tauri's
 3. **Clean up on completion.** After work is approved and merged to main (or if abandoned), remove the worktree to keep the workspace tidy.
 4. **Test in worktree first.** Verify all tests pass (100% coverage), build succeeds, and linting/formatting is clean before requesting approval.
 
+## Post-Change Validation
+
+After making any code changes and before ending your response, you must:
+
+1. Run `bun run test` — all tests must pass
+2. Run `bun run validate-build` — must complete with **zero warnings and zero errors**
+
+Do not consider the task done if either step produces any warnings or errors. Fix all issues first.
+
 ## Key Design Constraints
 
 - **macOS only** — uses NSPanel, Core Graphics event taps, macOS Command key
