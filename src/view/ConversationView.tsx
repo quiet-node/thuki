@@ -123,6 +123,7 @@ export function ConversationView({
     }
 
     node.style.height = prev;
+    // eslint-disable-next-line @eslint-react/set-state-in-effect -- intentional: measure DOM in useLayoutEffect before paint, then feed the spring
     setTargetHeight(Math.min(naturalH, Math.max(maxAvailable, 0)));
   }, [messages, streamingContent, isGenerating, error]);
   /* v8 ignore stop */
