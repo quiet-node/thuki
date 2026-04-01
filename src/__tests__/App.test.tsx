@@ -308,6 +308,24 @@ describe('App', () => {
     );
   });
 
+  it('applies justify-end layout when overlay opens with anchor', async () => {
+    render(<App />);
+    await act(async () => {});
+
+    // Show overlay with a window anchor (upward-growth mode)
+    await act(async () => {
+      emitTauriEvent('thuki://visibility', {
+        state: 'show',
+        selected_text: null,
+        window_anchor: { x: 100, bottom_y: 800, min_y: 50 },
+      });
+    });
+
+    // The outer container should use justify-end for bottom-pinning
+    const outer = document.querySelector('.justify-end');
+    expect(outer).not.toBeNull();
+  });
+
   it('requestHideOverlay is a no-op when already hidden', async () => {
     render(<App />);
     await act(async () => {});
