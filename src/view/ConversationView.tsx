@@ -46,28 +46,73 @@ export function ConversationView({
   const NEAR_BOTTOM_THRESHOLD = 60;
 
   /**
-   * Auto-scroll the chat container to the bottom — but only when the user
-   * is near the bottom or the container hasn't started scrolling yet.
+   * Tracks whether the view should auto-scroll to follow new content.
    *
-   * Checks scroll position **fresh** on every content change rather than
-   * tracking it across renders, since the spring animation can trigger
-   * layout-induced scroll events at unpredictable times that would make
-   * stale state unreliable. Treating "no overflow" as "at the bottom"
-   * ensures the growth→scroll transition works seamlessly.
+   * Only **user-initiated** wheel events can disable auto-scroll (set to
+   * `false` on upward scroll). This avoids false negatives from layout-induced
+   * scroll events: the `useLayoutEffect` height-measurement cycle temporarily
+   * sets `height: auto` on the spring-animated parent, which can clamp
+   * `scrollTop` to 0 and fire a deferred scroll event that looks like the user
+   * scrolled away from the bottom, even though they didn't.
+   *
+   * Re-enabled when:
+   * - The user scrolls back near the bottom (wheel deltaY > 0).
+   * - A new message is added (`messages.length` changes).
+   */
+  const shouldAutoScrollRef = useRef(true);
+  const prevMessagesLengthRef = useRef(0);
+
+  /**
+   * Wheel listener — the only mechanism that can disable auto-scroll.
+   * Wheel events are exclusively user-initiated (never fired by programmatic
+   * scrollTop changes or layout reflows), making them a reliable signal for
+   * "user scrolled up to read earlier content."
    */
   useEffect(() => {
     const container = scrollContainerRef.current;
     /* v8 ignore start */
-    if (!container) return; // defensive null guard, ref always populated when effect fires
+    if (!container) return;
     /* v8 ignore stop */
 
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    const hasOverflow = scrollHeight > clientHeight;
-    const isNearBottom =
-      !hasOverflow ||
-      scrollHeight - scrollTop - clientHeight < NEAR_BOTTOM_THRESHOLD;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) {
+        shouldAutoScrollRef.current = false;
+      } else if (e.deltaY > 0) {
+        requestAnimationFrame(() => {
+          const { scrollTop, scrollHeight, clientHeight } = container;
+          if (scrollHeight - scrollTop - clientHeight < NEAR_BOTTOM_THRESHOLD) {
+            shouldAutoScrollRef.current = true;
+          }
+        });
+      }
+    };
 
-    if (!isNearBottom) return;
+    container.addEventListener('wheel', onWheel, { passive: true });
+    return () => container.removeEventListener('wheel', onWheel);
+  }, []);
+
+  /**
+   * Re-enable auto-scroll whenever a new message is added. Sending a message
+   * is an explicit "I want to see the response" action.
+   */
+  useEffect(() => {
+    if (messages.length > prevMessagesLengthRef.current) {
+      shouldAutoScrollRef.current = true;
+    }
+    prevMessagesLengthRef.current = messages.length;
+  }, [messages.length]);
+
+  /**
+   * Auto-scroll the chat container to the bottom when new content arrives,
+   * but only if the user hasn't manually scrolled up.
+   */
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    /* v8 ignore start */
+    if (!container) return;
+    /* v8 ignore stop */
+
+    if (!shouldAutoScrollRef.current) return;
 
     const raf = requestAnimationFrame(() => {
       container.scrollTop = container.scrollHeight;
