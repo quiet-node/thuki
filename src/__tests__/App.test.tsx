@@ -381,48 +381,4 @@ describe('App', () => {
     expect(screen.queryByText('First response')).toBeNull();
   });
 
-  it('disables morph layout animation after initial transition', async () => {
-    vi.useFakeTimers();
-    render(<App />);
-    await act(async () => {});
-
-    await showOverlay();
-
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-
-    // Enter chat mode — triggers isMorphing=true
-    act(() => {
-      fireEvent.change(textarea, { target: { value: 'test' } });
-    });
-    act(() => {
-      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    });
-    await act(async () => {});
-
-    // Advance past the 600ms morph window — triggers isMorphing=false
-    await act(async () => {
-      vi.advanceTimersByTime(700);
-    });
-
-    // Complete the conversation turn
-    act(() => {
-      getLastChannel()?.simulateMessage({ type: 'Token', data: 'reply' });
-      getLastChannel()?.simulateMessage({ type: 'Done' });
-    });
-
-    expect(screen.getByText('reply')).toBeInTheDocument();
-
-    // Re-enable channel capture for the second session
-    enableChannelCapture();
-
-    // Reopen overlay — reset() clears messages, isChatMode becomes false,
-    // exercising the !isChatMode cleanup branch in the morph effect.
-    await showOverlay();
-
-    expect(
-      screen.getByPlaceholderText('Ask Thuki anything...'),
-    ).toBeInTheDocument();
-
-    vi.useRealTimers();
-  });
 });
