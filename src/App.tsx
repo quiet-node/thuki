@@ -135,24 +135,32 @@ function App() {
                 Math.ceil(rect.height) + CONTAINER_VERTICAL_PADDING;
               const anchor = windowAnchorRef.current;
               if (anchor) {
-                // On the very first observer event for an anchored session,
-                // expand the window to max height immediately. This fires
-                // during the Framer Motion entrance fade-in (opacity 0→1),
-                // so the user never sees the jump. All subsequent events
-                // are skipped — content grows inside the fixed window.
+                // Once the window has reached max height for this anchor
+                // session, skip all further adjustments — content scrolls
+                // internally inside the fixed-size window.
                 if (isPreExpandedRef.current) return;
-                isPreExpandedRef.current = true;
 
                 const maxHeight = Math.min(
                   MAX_CHAT_WINDOW_HEIGHT,
                   anchor.bottom_y - anchor.min_y,
                 );
-                const newY = anchor.bottom_y - maxHeight;
+                const neededHeight = Math.min(targetHeight, maxHeight);
+
+                // Lock the observer once max height is reached.
+                if (neededHeight >= maxHeight) {
+                  isPreExpandedRef.current = true;
+                }
+
+                // Grow upward incrementally: pin the window bottom to the
+                // anchor and expand the top edge as content grows. Because
+                // `set_window_frame` applies position + size atomically on
+                // the main thread, there is no inter-frame jitter.
+                const newY = anchor.bottom_y - neededHeight;
                 void invoke('set_window_frame', {
                   x: anchor.x,
                   y: newY,
                   width: OVERLAY_WIDTH,
-                  height: maxHeight,
+                  height: neededHeight,
                 });
               } else {
                 void getCurrentWindow().setSize(
