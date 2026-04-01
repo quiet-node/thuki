@@ -561,11 +561,17 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_stops_stream_and_emits_cancelled() {
+        use std::sync::Arc;
         use tokio::io::AsyncWriteExt;
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+
+        // Notify lets the spawned server task exit cleanly after the test
+        // completes, ensuring its closure runs to completion for coverage.
+        let server_done = Arc::new(tokio::sync::Notify::new());
+        let server_done_clone = server_done.clone();
 
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -576,8 +582,8 @@ mod tests {
                       {\"response\":\"A\",\"done\":false}\n",
                 )
                 .await;
-            // Keep the connection open so cancellation can interrupt
-            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            // Keep the connection open until the test signals completion.
+            server_done_clone.notified().await;
         });
 
         let client = reqwest::Client::new();
@@ -606,6 +612,10 @@ mod tests {
             .any(|c| matches!(c, StreamChunk::Token(t) if t == "A")));
         assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Cancelled)));
         assert!(chunks.iter().all(|c| !matches!(c, StreamChunk::Done)));
+
+        // Signal the server task to exit cleanly.
+        server_done.notify_one();
+        tokio::task::yield_now().await;
     }
 
     #[tokio::test]
