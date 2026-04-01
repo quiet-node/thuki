@@ -1,5 +1,5 @@
-import { motion, AnimatePresence } from 'framer-motion';
-import { useRef, useCallback, useEffect } from 'react';
+import { motion, AnimatePresence, useMotionValue, useSpring } from 'framer-motion';
+import { useRef, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { ChatBubble } from '../components/ChatBubble';
 import { TypingIndicator } from '../components/TypingIndicator';
 import { WindowControls } from '../components/WindowControls';
@@ -95,14 +95,56 @@ export function ConversationView({
     }
   }, [messages]);
 
+  /**
+   * Spring-driven height that smoothly tracks the growing content.
+   *
+   * Framer Motion's `height: 'auto'` measures the target once at mount and
+   * snaps when the spring finishes — causing a visible jump when streaming
+   * tokens grow the content beyond the initial measurement. Instead, we
+   * temporarily flip the element to `height: auto` inside a `useLayoutEffect`
+   * (before the browser paints), measure the natural height, restore the
+   * spring value, and feed the measurement to a spring. The user never sees
+   * the temporary auto state. The spring smoothly chases the growing content.
+   *
+   * Capped at `MAX_CONVERSATION_HEIGHT` so the flex chain stays intact and
+   * the scroll container can scroll when content exceeds the available space.
+   */
+  const motionRef = useRef<HTMLDivElement>(null);
+  const [targetHeight, setTargetHeight] = useState(0);
+
+  /** Cap so the spring settles at the available space and the scroll container takes over. */
+  const MAX_CONVERSATION_HEIGHT = 600;
+
+  /* v8 ignore start -- useLayoutEffect + DOM measurement requires a real browser */
+  useLayoutEffect(() => {
+    const node = motionRef.current;
+    if (!node) return;
+    // Temporarily remove the spring-driven height so the browser can lay out
+    // children at their natural sizes. This runs before paint, so no flicker.
+    const prev = node.style.height;
+    node.style.height = 'auto';
+    const naturalH = Math.ceil(node.getBoundingClientRect().height);
+    node.style.height = prev;
+    setTargetHeight(Math.min(naturalH, MAX_CONVERSATION_HEIGHT));
+  }, [messages, streamingContent, isGenerating, error]);
+  /* v8 ignore stop */
+
+  const heightMotion = useMotionValue(0);
+  const heightSpring = useSpring(heightMotion, { stiffness: 300, damping: 30 });
+
+  useLayoutEffect(() => {
+    heightMotion.set(targetHeight);
+  }, [targetHeight, heightMotion]);
+
   return (
     <motion.div
+      ref={motionRef}
       key="chat-area"
-      initial={{ height: 0, opacity: 0 }}
-      animate={{ height: 'auto', opacity: 1 }}
-      exit={{ height: 0, opacity: 0 }}
-      transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-      style={{ overflow: 'hidden' }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ opacity: { duration: 0.2 } }}
+      style={{ height: heightSpring, overflow: 'hidden' }}
       className="chat-area min-h-0 flex flex-col"
     >
       <WindowControls onClose={onClose} />
