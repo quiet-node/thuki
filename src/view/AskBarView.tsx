@@ -44,6 +44,49 @@ const STOP_ICON = (
 );
 
 /**
+ * SVG overlay that traces a glowing comet-tail along the button's border.
+ * Uses `pathLength="100"` so dash math is in clean percentages regardless
+ * of the actual rect perimeter. Three layered strokes at staggered offsets
+ * create a smooth fade-out tail that follows the rounded-rect path exactly.
+ */
+const BORDER_TRACE_RING = (
+  <svg
+    className="stop-ring-svg"
+    viewBox="0 0 40 40"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <rect
+      className="stop-trace-tail"
+      x="1"
+      y="1"
+      width="38"
+      height="38"
+      rx="13"
+      pathLength="100"
+    />
+    <rect
+      className="stop-trace-mid"
+      x="1"
+      y="1"
+      width="38"
+      height="38"
+      rx="13"
+      pathLength="100"
+    />
+    <rect
+      className="stop-trace-head"
+      x="1"
+      y="1"
+      width="38"
+      height="38"
+      rx="13"
+      pathLength="100"
+    />
+  </svg>
+);
+
+/**
  * Props for the AskBarView component.
  */
 interface AskBarViewProps {
@@ -163,7 +206,14 @@ export function AskBarView({
           }`}
           aria-label={isGenerating ? 'Stop generating' : 'Send message'}
         >
-          {isGenerating ? STOP_ICON : ARROW_UP_ICON}
+          {isGenerating ? (
+            <>
+              {BORDER_TRACE_RING}
+              {STOP_ICON}
+            </>
+          ) : (
+            ARROW_UP_ICON
+          )}
         </motion.button>
       </div>
     </div>
