@@ -25,6 +25,8 @@ const HIDE_COMMIT_DELAY_MS = 350;
 const OVERLAY_WIDTH = 600;
 /** Total transparent padding around the morphing container: pt-2(8) + pb-6(24) + motion py-2(16). */
 const CONTAINER_VERTICAL_PADDING = 48;
+/** Max morphing-container height in chat mode (matches `max-h-[600px]`) + vertical padding. */
+const MAX_CHAT_WINDOW_HEIGHT = 600 + CONTAINER_VERTICAL_PADDING;
 
 type WindowAnchor = { x: number; bottom_y: number; min_y: number };
 type OverlayVisibilityPayload =
@@ -63,6 +65,13 @@ function App() {
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
 
   /**
+   * True when the window was spawned with an upward-growth anchor. Used to
+   * flip the outer container to `justify-end` so the morphing container pins
+   * to the bottom of the pre-expanded window and content grows upward.
+   */
+  const [isAnchoredUpward, setIsAnchoredUpward] = useState(false);
+
+  /**
    * Determines whether the UI has entered "chat mode" — i.e., the morphing
    * chat window state with message bubbles. Transitions from input-bar mode
    * to chat-window mode are animated via Framer Motion `layout` prop.
@@ -81,6 +90,14 @@ function App() {
    * latest value without needing to be recreated on each anchor change.
    */
   const windowAnchorRef = useRef<WindowAnchor | null>(null);
+
+  /**
+   * Set once the first ResizeObserver event has expanded the window to max
+   * height for an anchored session. While true, all subsequent observer
+   * events for the anchor path are skipped — the window stays at max and
+   * content grows inside it. Reset when the anchor is cleared.
+   */
+  const isPreExpandedRef = useRef(false);
 
   /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
@@ -111,19 +128,24 @@ function App() {
                 Math.ceil(rect.height) + CONTAINER_VERTICAL_PADDING;
               const anchor = windowAnchorRef.current;
               if (anchor) {
-                // Grow upward: invoke a single Rust command that sets both position
-                // and size in the same main-thread block so macOS coalesces them
-                // into one display frame — eliminating the downward-flash that
-                // occurs when JS fires two separate async IPC round-trips.
-                const newY = Math.max(
-                  anchor.min_y,
-                  anchor.bottom_y - targetHeight,
+                // On the very first observer event for an anchored session,
+                // expand the window to max height immediately. This fires
+                // during the Framer Motion entrance fade-in (opacity 0→1),
+                // so the user never sees the jump. All subsequent events
+                // are skipped — content grows inside the fixed window.
+                if (isPreExpandedRef.current) return;
+                isPreExpandedRef.current = true;
+
+                const maxHeight = Math.min(
+                  MAX_CHAT_WINDOW_HEIGHT,
+                  anchor.bottom_y - anchor.min_y,
                 );
+                const newY = anchor.bottom_y - maxHeight;
                 void invoke('set_window_frame', {
                   x: anchor.x,
                   y: newY,
                   width: OVERLAY_WIDTH,
-                  height: targetHeight,
+                  height: maxHeight,
                 });
               } else {
                 void getCurrentWindow().setSize(
@@ -148,6 +170,8 @@ function App() {
   const replayEntranceAnimation = useCallback(
     (context: string | null, anchor: WindowAnchor | null) => {
       windowAnchorRef.current = anchor;
+      isPreExpandedRef.current = false;
+      setIsAnchoredUpward(anchor !== null);
       setSessionId((id) => id + 1);
       setQuery('');
       setSelectedContext(context);
@@ -163,6 +187,7 @@ function App() {
    */
   const requestHideOverlay = useCallback(() => {
     windowAnchorRef.current = null;
+    isPreExpandedRef.current = false;
     setSelectedContext(null);
     setOverlayState((currentState) => {
       if (currentState === 'hidden' || currentState === 'hiding') {
@@ -316,6 +341,8 @@ function App() {
       'mouseup',
       () => {
         windowAnchorRef.current = null;
+        isPreExpandedRef.current = false;
+        setIsAnchoredUpward(false);
       },
       { once: true },
     );
@@ -326,7 +353,7 @@ function App() {
     // tightened drop shadow to render without clipping at the native window edge.
     <div
       onMouseDown={handleDragStart}
-      className="flex flex-col items-center justify-start h-screen w-screen px-3 pt-2 pb-6 bg-transparent overflow-visible"
+      className={`flex flex-col items-center ${isAnchoredUpward ? 'justify-end' : 'justify-start'} h-screen w-screen px-3 pt-2 pb-6 bg-transparent overflow-visible`}
     >
       <AnimatePresence mode="wait">
         {shouldRenderOverlay ? (
