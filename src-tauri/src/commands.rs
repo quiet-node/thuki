@@ -41,22 +41,15 @@ struct OllamaResponse {
 ///
 /// Only one generation runs at a time — starting a new request replaces the
 /// previous token. `cancel_generation` cancels whatever is currently active.
+#[derive(Default)]
 pub struct GenerationState {
     token: Mutex<Option<CancellationToken>>,
-}
-
-impl Default for GenerationState {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl GenerationState {
     /// Creates a new empty generation state with no active token.
     pub fn new() -> Self {
-        Self {
-            token: Mutex::new(None),
-        }
+        Self::default()
     }
 
     /// Stores a new cancellation token, replacing any previous one.
