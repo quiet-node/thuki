@@ -19,6 +19,7 @@ export interface Message {
 export type StreamChunk =
   | { type: 'Token'; data: string }
   | { type: 'Done' }
+  | { type: 'Cancelled' }
   | { type: 'Error'; data: string };
 
 /**
@@ -85,6 +86,21 @@ export function useOllama() {
           ]);
           setStreamingContent('');
           setIsGenerating(false);
+        } else if (chunk.type === 'Cancelled') {
+          // Finalize partial content as a complete message so the user
+          // retains everything generated before they hit stop.
+          if (currentContent) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: currentContent,
+              },
+            ]);
+          }
+          setStreamingContent('');
+          setIsGenerating(false);
         } else {
           setError(chunk.data);
           setMessages((prev) => [
@@ -119,6 +135,12 @@ export function useOllama() {
     [isGenerating],
   );
 
+  /** Cancels the currently active generation by signalling the Rust backend. */
+  const cancel = useCallback(async () => {
+    if (!isGenerating) return;
+    await invoke('cancel_generation');
+  }, [isGenerating]);
+
   /** Resets all conversation state to prepare for a fresh session. */
   const reset = useCallback(() => {
     setMessages([]);
@@ -127,5 +149,13 @@ export function useOllama() {
     setError(null);
   }, []);
 
-  return { messages, streamingContent, ask, isGenerating, error, reset };
+  return {
+    messages,
+    streamingContent,
+    ask,
+    cancel,
+    isGenerating,
+    error,
+    reset,
+  };
 }

@@ -51,8 +51,15 @@ type OverlayState = 'visible' | 'hidden' | 'hiding';
 function App() {
   const [query, setQuery] = useState('');
   const [overlayState, setOverlayState] = useState<OverlayState>('hidden');
-  const { messages, streamingContent, ask, isGenerating, error, reset } =
-    useOllama();
+  const {
+    messages,
+    streamingContent,
+    ask,
+    cancel,
+    isGenerating,
+    error,
+    reset,
+  } = useOllama();
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -395,6 +402,7 @@ function App() {
                 isChatMode={isChatMode}
                 isGenerating={isGenerating}
                 onSubmit={handleSubmit}
+                onCancel={cancel}
                 inputRef={inputRef}
                 selectedText={selectedContext ?? undefined}
               />
