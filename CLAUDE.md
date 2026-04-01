@@ -50,7 +50,7 @@ Thuki is a macOS-only desktop app — a floating AI secretary activated by doubl
 The UI morphs between two states: a compact spotlight-style input bar → an expanded chat window. This morphing is driven by Framer Motion and a single `isChatMode` boolean in `App.tsx`.
 
 - **`App.tsx`** — orchestrates all state: messages, streaming, window resizing via ResizeObserver + Tauri `setSize()`
-- **`hooks/useOllama.ts`** — Tauri Channel-based streaming hook; emits `Token`, `Done`, `Error` variants
+- **`hooks/useOllama.ts`** — Tauri Channel-based streaming hook; emits `Token`, `Done`, `Cancelled`, `Error` variants
 - **`view/ConversationView.tsx`** — smart auto-scroll (pins to bottom unless user scrolls up)
 - **`view/AskBarView.tsx`** — auto-expanding textarea (max 144px), morphs logo size
 - **`components/ChatBubble.tsx`** — markdown rendering with DOMPurify sanitization

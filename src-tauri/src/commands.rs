@@ -119,6 +119,7 @@ pub async fn stream_ollama(
 
             loop {
                 tokio::select! {
+                    biased;
                     _ = cancel_token.cancelled() => {
                         // Drop the stream — closes the HTTP connection,
                         // which signals Ollama to stop inference.
