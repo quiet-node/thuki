@@ -331,12 +331,12 @@ describe('App', () => {
 
     function spyOnResizeObserver() {
       const OriginalMock = globalThis.ResizeObserver;
-      vi.spyOn(globalThis, 'ResizeObserver').mockImplementation(
-        (callback: ResizeObserverCallback) => {
-          capturedCallback = callback;
-          return new OriginalMock(callback) as ResizeObserver;
-        },
-      );
+      vi.spyOn(globalThis, 'ResizeObserver').mockImplementation(function (
+        callback: ResizeObserverCallback,
+      ) {
+        capturedCallback = callback;
+        return new OriginalMock(callback) as ResizeObserver;
+      });
     }
 
     function triggerResize(element: Element, contentHeight: number) {
@@ -472,7 +472,10 @@ describe('App', () => {
       act(() => {
         triggerResize(container!, 620);
       });
-      expect(invoke).not.toHaveBeenCalledWith('set_window_frame', expect.anything());
+      expect(invoke).not.toHaveBeenCalledWith(
+        'set_window_frame',
+        expect.anything(),
+      );
     });
 
     it('uses setSize (not set_window_frame) after drag clears the anchor', async () => {
@@ -507,8 +510,102 @@ describe('App', () => {
       act(() => {
         triggerResize(container!, 60);
       });
-      expect(invoke).not.toHaveBeenCalledWith('set_window_frame', expect.anything());
+      expect(invoke).not.toHaveBeenCalledWith(
+        'set_window_frame',
+        expect.anything(),
+      );
       expect(__mockWindow.setSize).toHaveBeenCalled();
+    });
+
+    it('clamps to available space when screen gap is smaller than MAX_CHAT_WINDOW_HEIGHT', async () => {
+      spyOnResizeObserver();
+
+      render(<App />);
+      await act(async () => {});
+
+      // Available space: bottom_y - min_y = 300 - 100 = 200, which is < MAX_CHAT_WINDOW_HEIGHT (648)
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', {
+          state: 'show',
+          selected_text: null,
+          window_anchor: { x: 50, bottom_y: 300, min_y: 100 },
+        });
+      });
+
+      const container = document.querySelector('.morphing-container');
+      expect(container).not.toBeNull();
+
+      invoke.mockClear();
+      // Content height (300) → targetHeight (348) exceeds available space (200) → clamped to 200
+      act(() => {
+        triggerResize(container!, 300);
+      });
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 50,
+        y: 100, // bottom_y (300) - clamped height (200) = 100
+        width: 600,
+        height: 200, // clamped to available space, not targetHeight (348) or MAX (648)
+      });
+
+      // isPreExpandedRef is now true — next event is a no-op
+      invoke.mockClear();
+      act(() => {
+        triggerResize(container!, 400);
+      });
+      expect(invoke).not.toHaveBeenCalledWith(
+        'set_window_frame',
+        expect.anything(),
+      );
+    });
+
+    it('isPreExpandedRef resets on session reopen, allowing incremental growth again', async () => {
+      spyOnResizeObserver();
+
+      render(<App />);
+      await act(async () => {});
+
+      // Session 1: grow to max height, locking isPreExpandedRef
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', {
+          state: 'show',
+          selected_text: null,
+          window_anchor: { x: 100, bottom_y: 884, min_y: 40 },
+        });
+      });
+
+      const container1 = document.querySelector('.morphing-container');
+      act(() => {
+        triggerResize(container1!, 600); // locks isPreExpandedRef = true
+      });
+
+      // Close the overlay — requestHideOverlay resets isPreExpandedRef to false
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', { state: 'hide-request' });
+      });
+
+      // Session 2: reopen with new anchor — incremental growth must work again
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', {
+          state: 'show',
+          selected_text: null,
+          window_anchor: { x: 100, bottom_y: 884, min_y: 40 },
+        });
+      });
+
+      const container2 = document.querySelector('.morphing-container');
+      expect(container2).not.toBeNull();
+
+      invoke.mockClear();
+      // Small content — must NOT be skipped even though the previous session was locked
+      act(() => {
+        triggerResize(container2!, 60);
+      });
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 100,
+        y: 776, // bottom_y (884) - neededHeight (108) = 776
+        width: 600,
+        height: 108, // content height (60) + padding (48)
+      });
     });
   });
 
