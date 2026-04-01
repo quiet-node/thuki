@@ -188,7 +188,6 @@ function App() {
   const requestHideOverlay = useCallback(() => {
     windowAnchorRef.current = null;
     isPreExpandedRef.current = false;
-    setIsAnchoredUpward(false);
     setSelectedContext(null);
     setOverlayState((currentState) => {
       if (currentState === 'hidden' || currentState === 'hiding') {
