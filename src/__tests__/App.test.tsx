@@ -308,6 +308,73 @@ describe('App', () => {
     );
   });
 
+  it('pre-expands window to max height when streaming starts with anchor', async () => {
+    render(<App />);
+    await act(async () => {});
+
+    // Show overlay with a window anchor (upward-growth mode)
+    await act(async () => {
+      emitTauriEvent('thuki://visibility', {
+        state: 'show',
+        selected_text: null,
+        window_anchor: { x: 100, bottom_y: 800, min_y: 50 },
+      });
+    });
+
+    invoke.mockClear();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    // The pre-expansion useEffect should have called set_window_frame
+    // with the max chat window height (600 + 48 = 648)
+    expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+      x: 100,
+      y: 800 - 648,
+      width: 600,
+      height: 648,
+    });
+  });
+
+  it('clamps pre-expansion height to available screen space', async () => {
+    render(<App />);
+    await act(async () => {});
+
+    // Anchor near top of screen — only 200px available
+    await act(async () => {
+      emitTauriEvent('thuki://visibility', {
+        state: 'show',
+        selected_text: null,
+        window_anchor: { x: 100, bottom_y: 250, min_y: 50 },
+      });
+    });
+
+    invoke.mockClear();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    // Should clamp to available space: 250 - 50 = 200
+    expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+      x: 100,
+      y: 50,
+      width: 600,
+      height: 200,
+    });
+  });
+
   it('requestHideOverlay is a no-op when already hidden', async () => {
     render(<App />);
     await act(async () => {});

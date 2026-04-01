@@ -1,6 +1,12 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useRef,
+} from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -25,6 +31,8 @@ const HIDE_COMMIT_DELAY_MS = 350;
 const OVERLAY_WIDTH = 600;
 /** Total transparent padding around the morphing container: pt-2(8) + pb-6(24) + motion py-2(16). */
 const CONTAINER_VERTICAL_PADDING = 48;
+/** Max morphing-container height in chat mode (matches `max-h-[600px]`) + vertical padding. */
+const MAX_CHAT_WINDOW_HEIGHT = 600 + CONTAINER_VERTICAL_PADDING;
 
 type WindowAnchor = { x: number; bottom_y: number; min_y: number };
 type OverlayVisibilityPayload =
@@ -63,6 +71,13 @@ function App() {
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
 
   /**
+   * True when the window was spawned with an upward-growth anchor. Used to
+   * flip the outer container to `justify-end` so the morphing container pins
+   * to the bottom of the pre-expanded window and content grows upward.
+   */
+  const [isAnchoredUpward, setIsAnchoredUpward] = useState(false);
+
+  /**
    * Determines whether the UI has entered "chat mode" — i.e., the morphing
    * chat window state with message bubbles. Transitions from input-bar mode
    * to chat-window mode are animated via Framer Motion `layout` prop.
@@ -81,6 +96,13 @@ function App() {
    * latest value without needing to be recreated on each anchor change.
    */
   const windowAnchorRef = useRef<WindowAnchor | null>(null);
+
+  /**
+   * Mirror of `isGenerating` readable by the ResizeObserver closure without
+   * needing to recreate the observer. Synced via useLayoutEffect so it's
+   * current before any RAF callbacks fire.
+   */
+  const isGeneratingRef = useRef(false);
 
   /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
@@ -111,10 +133,12 @@ function App() {
                 Math.ceil(rect.height) + CONTAINER_VERTICAL_PADDING;
               const anchor = windowAnchorRef.current;
               if (anchor) {
-                // Grow upward: invoke a single Rust command that sets both position
-                // and size in the same main-thread block so macOS coalesces them
-                // into one display frame — eliminating the downward-flash that
-                // occurs when JS fires two separate async IPC round-trips.
+                // During streaming the window is pre-expanded to max height
+                // (see useEffect on isGenerating below), so skip per-token
+                // resizes that would cause upward-growth jitter. Once
+                // streaming ends the observer resumes normal duty.
+                if (isGeneratingRef.current) return;
+
                 const newY = Math.max(
                   anchor.min_y,
                   anchor.bottom_y - targetHeight,
@@ -142,12 +166,46 @@ function App() {
   }, []);
 
   /**
+   * Keep the ref in sync before any RAF / ResizeObserver callbacks can read it.
+   * useLayoutEffect fires synchronously after DOM mutations but before paint,
+   * guaranteeing the ref is current when the ResizeObserver's RAF runs.
+   */
+  useLayoutEffect(() => {
+    isGeneratingRef.current = isGenerating;
+  }, [isGenerating]);
+
+  /**
+   * Pre-expand the window to max chat height when streaming starts and the
+   * window is in upward-growth mode (anchor present). This eliminates
+   * per-token window resizing — the single expansion happens once, and
+   * content fills naturally inside the already-sized window. When streaming
+   * ends, the ResizeObserver resumes and shrinks the window to fit.
+   */
+  useEffect(() => {
+    const anchor = windowAnchorRef.current;
+    if (!isGenerating || !anchor) return;
+
+    const maxHeight = Math.min(
+      MAX_CHAT_WINDOW_HEIGHT,
+      anchor.bottom_y - anchor.min_y,
+    );
+    const newY = anchor.bottom_y - maxHeight;
+    void invoke('set_window_frame', {
+      x: anchor.x,
+      y: newY,
+      width: OVERLAY_WIDTH,
+      height: maxHeight,
+    });
+  }, [isGenerating]);
+
+  /**
    * Replays the entrance sequence by transitioning the overlay to the visible state.
    * Clears conversation state for a fresh session each time the overlay appears.
    */
   const replayEntranceAnimation = useCallback(
     (context: string | null, anchor: WindowAnchor | null) => {
       windowAnchorRef.current = anchor;
+      setIsAnchoredUpward(anchor !== null);
       setSessionId((id) => id + 1);
       setQuery('');
       setSelectedContext(context);
@@ -163,6 +221,7 @@ function App() {
    */
   const requestHideOverlay = useCallback(() => {
     windowAnchorRef.current = null;
+    setIsAnchoredUpward(false);
     setSelectedContext(null);
     setOverlayState((currentState) => {
       if (currentState === 'hidden' || currentState === 'hiding') {
@@ -316,6 +375,7 @@ function App() {
       'mouseup',
       () => {
         windowAnchorRef.current = null;
+        setIsAnchoredUpward(false);
       },
       { once: true },
     );
@@ -326,7 +386,7 @@ function App() {
     // tightened drop shadow to render without clipping at the native window edge.
     <div
       onMouseDown={handleDragStart}
-      className="flex flex-col items-center justify-start h-screen w-screen px-3 pt-2 pb-6 bg-transparent overflow-visible"
+      className={`flex flex-col items-center ${isAnchoredUpward ? 'justify-end' : 'justify-start'} h-screen w-screen px-3 pt-2 pb-6 bg-transparent overflow-visible`}
     >
       <AnimatePresence mode="wait">
         {shouldRenderOverlay ? (
