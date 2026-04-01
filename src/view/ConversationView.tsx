@@ -1,4 +1,9 @@
-import { motion, AnimatePresence, useMotionValue, useSpring } from 'framer-motion';
+import {
+  motion,
+  AnimatePresence,
+  useMotionValue,
+  useSpring,
+} from 'framer-motion';
 import { useRef, useEffect, useLayoutEffect, useState } from 'react';
 import { ChatBubble } from '../components/ChatBubble';
 import { TypingIndicator } from '../components/TypingIndicator';

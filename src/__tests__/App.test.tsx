@@ -380,5 +380,4 @@ describe('App', () => {
     // Old messages should be gone
     expect(screen.queryByText('First response')).toBeNull();
   });
-
 });
