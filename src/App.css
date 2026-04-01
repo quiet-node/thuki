@@ -79,6 +79,26 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
+/* ─── Stop Button Spinner ─── */
+.stop-btn-ring {
+  position: relative;
+}
+.stop-btn-ring::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 14px;
+  border: 2px solid transparent;
+  border-top-color: #f87171;
+  border-right-color: rgba(248, 113, 113, 0.3);
+  animation: spin-stop 1s linear infinite;
+}
+@keyframes spin-stop {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* ─── Chat Messages Scrollable Area ─── */
 .chat-messages-scroll {
   scrollbar-gutter: stable;

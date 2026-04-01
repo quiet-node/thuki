@@ -247,6 +247,22 @@ describe('AskBarView', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
+  it('applies spinning ring class to stop button', () => {
+    render(
+      <AskBarView
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={true}
+        isGenerating={true}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+      />,
+    );
+    const btn = screen.getByRole('button', { name: 'Stop generating' });
+    expect(btn.classList.contains('stop-btn-ring')).toBe(true);
+  });
+
   it('does not call onSubmit when stop button is clicked during generation', () => {
     const onSubmit = vi.fn();
     render(

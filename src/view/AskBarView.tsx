@@ -156,7 +156,7 @@ export function AskBarView({
           whileTap={canSubmit || isGenerating ? { scale: 0.92 } : undefined}
           className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-colors duration-200 ${
             isGenerating
-              ? 'bg-red-500/20 text-red-400 cursor-pointer'
+              ? 'stop-btn-ring bg-red-500/10 text-red-400 cursor-pointer'
               : canSubmit
                 ? 'bg-primary text-neutral cursor-pointer'
                 : 'bg-surface-elevated text-text-secondary cursor-default'
