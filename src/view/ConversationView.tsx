@@ -64,16 +64,27 @@ export function ConversationView({
 
   /**
    * Auto-scroll the chat container to the bottom — but only when the user
-   * is pinned near the bottom. This prevents yanking the user back down
-   * if they are reading old messages while generation occurs.
+   * is near the bottom or the container hasn't started scrolling yet.
+   *
+   * Checks scroll position **fresh** on every content change instead of
+   * relying on `isUserNearBottomRef`, which can go stale when the spring
+   * animation triggers layout-induced scroll events at unpredictable times.
+   * Treating "no overflow" as "at the bottom" ensures the growth→scroll
+   * transition works seamlessly.
    */
   useEffect(() => {
-    if (!isUserNearBottomRef.current) return;
-
     const container = scrollContainerRef.current;
     /* v8 ignore start */
     if (!container) return; // defensive null guard, ref always populated when effect fires
     /* v8 ignore stop */
+
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const hasOverflow = scrollHeight > clientHeight;
+    const isNearBottom =
+      !hasOverflow ||
+      scrollHeight - scrollTop - clientHeight < NEAR_BOTTOM_THRESHOLD;
+
+    if (!isNearBottom) return;
 
     const raf = requestAnimationFrame(() => {
       container.scrollTop = container.scrollHeight;
@@ -81,19 +92,6 @@ export function ConversationView({
 
     return () => cancelAnimationFrame(raf);
   }, [messages, streamingContent]);
-
-  /**
-   * Re-pin to bottom whenever the user sends a new message.
-   * Ensures the view snaps to the latest query immediately.
-   */
-  useEffect(() => {
-    if (messages.length > 0) {
-      const lastMsg = messages[messages.length - 1];
-      if (lastMsg.role === 'user') {
-        isUserNearBottomRef.current = true;
-      }
-    }
-  }, [messages]);
 
   /**
    * Spring-driven height that smoothly tracks the growing content.
@@ -112,20 +110,37 @@ export function ConversationView({
   const motionRef = useRef<HTMLDivElement>(null);
   const [targetHeight, setTargetHeight] = useState(0);
 
-  /** Cap so the spring settles at the available space and the scroll container takes over. */
-  const MAX_CONVERSATION_HEIGHT = 600;
-
   /* v8 ignore start -- useLayoutEffect + DOM measurement requires a real browser */
   useLayoutEffect(() => {
     const node = motionRef.current;
     if (!node) return;
-    // Temporarily remove the spring-driven height so the browser can lay out
-    // children at their natural sizes. This runs before paint, so no flicker.
+
+    // Temporarily remove the spring-driven height so the browser lays out
+    // children at their natural sizes. This runs before paint — no flicker.
     const prev = node.style.height;
     node.style.height = 'auto';
     const naturalH = Math.ceil(node.getBoundingClientRect().height);
+
+    // Compute the actual flex-available space by reading the parent container's
+    // clientHeight (capped by its max-h-[600px]) and subtracting sibling heights
+    // (AskBarView). Without this, the spring would target 600px while the flex
+    // algorithm renders the motion.div at ~548px — the mismatch makes the scroll
+    // container 52px taller than the visible area, hiding the latest streamed
+    // content behind the input bar.
+    let maxAvailable = naturalH;
+    const parent = node.parentElement;
+    if (parent) {
+      let siblingH = 0;
+      for (const child of parent.children) {
+        if (child !== node) {
+          siblingH += (child as HTMLElement).offsetHeight;
+        }
+      }
+      maxAvailable = parent.clientHeight - siblingH;
+    }
+
     node.style.height = prev;
-    setTargetHeight(Math.min(naturalH, MAX_CONVERSATION_HEIGHT));
+    setTargetHeight(Math.min(naturalH, Math.max(maxAvailable, 0)));
   }, [messages, streamingContent, isGenerating, error]);
   /* v8 ignore stop */
 
