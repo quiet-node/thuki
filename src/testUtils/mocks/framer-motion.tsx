@@ -90,3 +90,26 @@ export const AnimatePresence = ({
 }: {
   children: React.ReactNode;
 }) => <>{children}</>;
+
+/**
+ * Stub for `useMotionValue` — returns a minimal object with get/set methods.
+ * No animation in tests; the DOM renders with static values.
+ */
+// eslint-disable-next-line @eslint-react/no-unnecessary-use-prefix
+export function useMotionValue(initial: number) {
+  let value = initial;
+  return {
+    get: () => value,
+    set: (v: number) => {
+      value = v;
+    },
+  };
+}
+
+/**
+ * Stub for `useSpring` — passthrough, no spring physics in tests.
+ */
+// eslint-disable-next-line @eslint-react/no-unnecessary-use-prefix
+export function useSpring(motionValue: ReturnType<typeof useMotionValue>) {
+  return motionValue;
+}

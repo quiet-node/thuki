@@ -43,7 +43,9 @@ body {
 /* ─── Morphing Container ─── */
 .morphing-container {
   will-change: transform;
-  transition: box-shadow 0.35s ease-out;
+  transition:
+    box-shadow 0.5s cubic-bezier(0.12, 0.8, 0.2, 1.18),
+    border-radius 0.5s cubic-bezier(0.12, 0.8, 0.2, 1.18);
 }
 
 /* ─── Chat Bubble Styles ─── */
