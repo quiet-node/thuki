@@ -1,12 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
-import {
-  useState,
-  useEffect,
-  useLayoutEffect,
-  useCallback,
-  useRef,
-} from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -98,11 +92,12 @@ function App() {
   const windowAnchorRef = useRef<WindowAnchor | null>(null);
 
   /**
-   * Mirror of `isGenerating` readable by the ResizeObserver closure without
-   * needing to recreate the observer. Synced via useLayoutEffect so it's
-   * current before any RAF callbacks fire.
+   * Set once the first ResizeObserver event has expanded the window to max
+   * height for an anchored session. While true, all subsequent observer
+   * events for the anchor path are skipped — the window stays at max and
+   * content grows inside it. Reset when the anchor is cleared.
    */
-  const isGeneratingRef = useRef(false);
+  const isPreExpandedRef = useRef(false);
 
   /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
@@ -133,21 +128,24 @@ function App() {
                 Math.ceil(rect.height) + CONTAINER_VERTICAL_PADDING;
               const anchor = windowAnchorRef.current;
               if (anchor) {
-                // During streaming the window is pre-expanded to max height
-                // (see useEffect on isGenerating below), so skip per-token
-                // resizes that would cause upward-growth jitter. Once
-                // streaming ends the observer resumes normal duty.
-                if (isGeneratingRef.current) return;
+                // On the very first observer event for an anchored session,
+                // expand the window to max height immediately. This fires
+                // during the Framer Motion entrance fade-in (opacity 0→1),
+                // so the user never sees the jump. All subsequent events
+                // are skipped — content grows inside the fixed window.
+                if (isPreExpandedRef.current) return;
+                isPreExpandedRef.current = true;
 
-                const newY = Math.max(
-                  anchor.min_y,
-                  anchor.bottom_y - targetHeight,
+                const maxHeight = Math.min(
+                  MAX_CHAT_WINDOW_HEIGHT,
+                  anchor.bottom_y - anchor.min_y,
                 );
+                const newY = anchor.bottom_y - maxHeight;
                 void invoke('set_window_frame', {
                   x: anchor.x,
                   y: newY,
                   width: OVERLAY_WIDTH,
-                  height: targetHeight,
+                  height: maxHeight,
                 });
               } else {
                 void getCurrentWindow().setSize(
@@ -166,45 +164,13 @@ function App() {
   }, []);
 
   /**
-   * Keep the ref in sync before any RAF / ResizeObserver callbacks can read it.
-   * useLayoutEffect fires synchronously after DOM mutations but before paint,
-   * guaranteeing the ref is current when the ResizeObserver's RAF runs.
-   */
-  useLayoutEffect(() => {
-    isGeneratingRef.current = isGenerating;
-  }, [isGenerating]);
-
-  /**
-   * Pre-expand the window to max chat height when streaming starts and the
-   * window is in upward-growth mode (anchor present). This eliminates
-   * per-token window resizing — the single expansion happens once, and
-   * content fills naturally inside the already-sized window. When streaming
-   * ends, the ResizeObserver resumes and shrinks the window to fit.
-   */
-  useEffect(() => {
-    const anchor = windowAnchorRef.current;
-    if (!isGenerating || !anchor) return;
-
-    const maxHeight = Math.min(
-      MAX_CHAT_WINDOW_HEIGHT,
-      anchor.bottom_y - anchor.min_y,
-    );
-    const newY = anchor.bottom_y - maxHeight;
-    void invoke('set_window_frame', {
-      x: anchor.x,
-      y: newY,
-      width: OVERLAY_WIDTH,
-      height: maxHeight,
-    });
-  }, [isGenerating]);
-
-  /**
    * Replays the entrance sequence by transitioning the overlay to the visible state.
    * Clears conversation state for a fresh session each time the overlay appears.
    */
   const replayEntranceAnimation = useCallback(
     (context: string | null, anchor: WindowAnchor | null) => {
       windowAnchorRef.current = anchor;
+      isPreExpandedRef.current = false;
       setIsAnchoredUpward(anchor !== null);
       setSessionId((id) => id + 1);
       setQuery('');
@@ -221,6 +187,7 @@ function App() {
    */
   const requestHideOverlay = useCallback(() => {
     windowAnchorRef.current = null;
+    isPreExpandedRef.current = false;
     setIsAnchoredUpward(false);
     setSelectedContext(null);
     setOverlayState((currentState) => {
@@ -375,6 +342,7 @@ function App() {
       'mouseup',
       () => {
         windowAnchorRef.current = null;
+        isPreExpandedRef.current = false;
         setIsAnchoredUpward(false);
       },
       { once: true },
