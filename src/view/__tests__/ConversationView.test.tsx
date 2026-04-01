@@ -15,6 +15,7 @@ describe('ConversationView', () => {
         isGenerating={false}
         error={null}
         onClose={vi.fn()}
+        isMorphing={false}
       />,
     );
     expect(screen.getByText('Hello there')).toBeInTheDocument();
@@ -29,6 +30,7 @@ describe('ConversationView', () => {
         isGenerating={true}
         error={null}
         onClose={vi.fn()}
+        isMorphing={false}
       />,
     );
     expect(screen.getByText('streaming response...')).toBeInTheDocument();
@@ -42,6 +44,7 @@ describe('ConversationView', () => {
         isGenerating={true}
         error={null}
         onClose={vi.fn()}
+        isMorphing={false}
       />,
     );
     const dots = container.querySelectorAll('.rounded-full.bg-primary\\/70');
@@ -56,6 +59,7 @@ describe('ConversationView', () => {
         isGenerating={true}
         error={null}
         onClose={vi.fn()}
+        isMorphing={false}
       />,
     );
     const dots = container.querySelectorAll('.rounded-full.bg-primary\\/70');
@@ -70,6 +74,7 @@ describe('ConversationView', () => {
         isGenerating={false}
         error="Something went wrong"
         onClose={vi.fn()}
+        isMorphing={false}
       />,
     );
     expect(screen.getByText('Something went wrong')).toBeInTheDocument();
@@ -83,6 +88,7 @@ describe('ConversationView', () => {
         isGenerating={false}
         error={null}
         onClose={vi.fn()}
+        isMorphing={false}
       />,
     );
     expect(screen.queryByText('Something went wrong')).toBeNull();
@@ -97,6 +103,7 @@ describe('ConversationView', () => {
         isGenerating={false}
         error={null}
         onClose={onClose}
+        isMorphing={false}
       />,
     );
     expect(
@@ -112,6 +119,7 @@ describe('ConversationView', () => {
         isGenerating={false}
         error={null}
         onClose={vi.fn()}
+        isMorphing={false}
       />,
     );
     expect(container.querySelectorAll('.chat-bubble')).toHaveLength(0);
@@ -125,6 +133,7 @@ describe('ConversationView', () => {
         isGenerating={false}
         error={null}
         onClose={vi.fn()}
+        isMorphing={false}
       />,
     );
 
@@ -150,6 +159,7 @@ describe('ConversationView', () => {
         isGenerating={false}
         error={null}
         onClose={vi.fn()}
+        isMorphing={false}
       />,
     );
 
@@ -190,6 +200,7 @@ describe('ConversationView', () => {
           isGenerating={false}
           error={null}
           onClose={vi.fn()}
+          isMorphing={false}
         />,
       );
     });
@@ -211,6 +222,7 @@ describe('ConversationView', () => {
         isGenerating={false}
         error={null}
         onClose={vi.fn()}
+        isMorphing={false}
       />,
     );
     for (let i = 0; i < 10; i++) {

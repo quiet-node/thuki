@@ -20,6 +20,8 @@ interface ConversationViewProps {
   error: string | null;
   /** Callback fired when the user requests to close the overlay. */
   onClose: () => void;
+  /** True only during the initial askbar→chat morph (~600ms). */
+  isMorphing: boolean;
 }
 
 /**
@@ -34,6 +36,7 @@ export function ConversationView({
   isGenerating,
   error,
   onClose,
+  isMorphing,
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -98,12 +101,16 @@ export function ConversationView({
   return (
     <motion.div
       key="chat-area"
-      layout
-      initial={{ opacity: 0, y: -40 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -20 }}
-      transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-      className="chat-area flex-1 min-h-0 flex flex-col"
+      initial={{ height: 0, opacity: 0 }}
+      animate={{ height: 'auto', opacity: 1 }}
+      exit={{ height: 0, opacity: 0 }}
+      transition={
+        isMorphing
+          ? { type: 'spring', stiffness: 300, damping: 30 }
+          : { duration: 0 }
+      }
+      style={{ overflow: 'hidden' }}
+      className="chat-area min-h-0 flex flex-col"
     >
       <WindowControls onClose={onClose} />
 

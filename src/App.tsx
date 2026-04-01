@@ -80,6 +80,37 @@ function App() {
   const shouldRenderOverlay = overlayState === 'visible';
 
   /**
+   * Synchronous morph detection via refs — ensures `layout={true}` is present
+   * on the exact render where `isChatMode` first becomes true. A `useEffect`
+   * would be one render too late, causing Framer Motion to miss the "before"
+   * snapshot and skip the animation entirely.
+   *
+   * After 600ms (spring settle time), the ref flips to false so subsequent
+   * streaming-token resizes use an instant `duration: 0` transition instead
+   * of the spring, preventing the input bar from overlapping growing content.
+   */
+  const morphingRef = useRef(false);
+  const prevChatModeRef = useRef(false);
+
+  if (isChatMode && !prevChatModeRef.current) {
+    morphingRef.current = true;
+    prevChatModeRef.current = true;
+  } else if (!isChatMode && prevChatModeRef.current) {
+    morphingRef.current = false;
+    prevChatModeRef.current = false;
+  }
+
+  useEffect(() => {
+    if (!morphingRef.current) return;
+    const timer = setTimeout(() => {
+      morphingRef.current = false;
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [isChatMode]);
+
+  const isMorphing = morphingRef.current;
+
+  /**
    * Reference stored for ResizeObserver cleanup.
    */
   const observerRef = useRef<ResizeObserver | null>(null);
@@ -367,12 +398,8 @@ function App() {
           >
             {/* Morphing Container — flex column ensures the input bar
                 always sticks to the bottom without spring animation lag */}
-            <motion.div
+            <div
               ref={setContainerRef}
-              layout
-              transition={{
-                layout: { type: 'spring', stiffness: 300, damping: 20 },
-              }}
               className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border overflow-hidden ${
                 isChatMode
                   ? 'rounded-lg shadow-chat max-h-[600px]'
@@ -388,12 +415,12 @@ function App() {
                     isGenerating={isGenerating}
                     error={error}
                     onClose={handleCloseOverlay}
+                    isMorphing={isMorphing}
                   />
                 ) : null}
               </AnimatePresence>
 
               {/* Input Bar — always pinned to the bottom */}
-              <motion.div layout="position">
               <AskBarView
                 query={query}
                 setQuery={setQuery}
@@ -403,8 +430,7 @@ function App() {
                 inputRef={inputRef}
                 selectedText={selectedContext ?? undefined}
               />
-              </motion.div>
-            </motion.div>
+            </div>
           </motion.div>
         ) : null}
       </AnimatePresence>
