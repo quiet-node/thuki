@@ -1,5 +1,5 @@
 import { motion, AnimatePresence, useMotionValue, useSpring } from 'framer-motion';
-import { useRef, useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import { useRef, useEffect, useLayoutEffect, useState } from 'react';
 import { ChatBubble } from '../components/ChatBubble';
 import { TypingIndicator } from '../components/TypingIndicator';
 import { WindowControls } from '../components/WindowControls';
@@ -37,40 +37,18 @@ export function ConversationView({
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  /**
-   * Tracks whether the user is "pinned" near the bottom of the scroll
-   * container. When pinned, new streaming tokens auto-scroll the view.
-   * When the user manually scrolls up, pinning is released so they can
-   * read older messages undisturbed.
-   */
-  const isUserNearBottomRef = useRef(true);
-
-  /** Threshold in pixels — if within this distance of the bottom, consider "pinned". */
+  /** Threshold in pixels — if within this distance of the bottom, consider "near bottom". */
   const NEAR_BOTTOM_THRESHOLD = 60;
-
-  /**
-   * Scroll event handler — updates the pinned state based on the user's
-   * current scroll position relative to the bottom of the container.
-   */
-  const handleScroll = useCallback(() => {
-    const container = scrollContainerRef.current;
-    /* v8 ignore start */
-    if (!container) return; // defensive null guard, ref always populated when handler fires
-    /* v8 ignore stop */
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    isUserNearBottomRef.current =
-      scrollHeight - scrollTop - clientHeight < NEAR_BOTTOM_THRESHOLD;
-  }, []);
 
   /**
    * Auto-scroll the chat container to the bottom — but only when the user
    * is near the bottom or the container hasn't started scrolling yet.
    *
-   * Checks scroll position **fresh** on every content change instead of
-   * relying on `isUserNearBottomRef`, which can go stale when the spring
-   * animation triggers layout-induced scroll events at unpredictable times.
-   * Treating "no overflow" as "at the bottom" ensures the growth→scroll
-   * transition works seamlessly.
+   * Checks scroll position **fresh** on every content change rather than
+   * tracking it across renders, since the spring animation can trigger
+   * layout-induced scroll events at unpredictable times that would make
+   * stale state unreliable. Treating "no overflow" as "at the bottom"
+   * ensures the growth→scroll transition works seamlessly.
    */
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -166,7 +144,6 @@ export function ConversationView({
 
       <div
         ref={scrollContainerRef}
-        onScroll={handleScroll}
         className="chat-messages-scroll px-5 py-4 flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto"
       >
         {messages.map((msg, i) => (

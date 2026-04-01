@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, act } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { ConversationView } from '../ConversationView';
 
@@ -117,31 +117,6 @@ describe('ConversationView', () => {
     expect(container.querySelectorAll('.chat-bubble')).toHaveLength(0);
   });
 
-  it('handleScroll updates pinned state when user scrolls', () => {
-    const { container } = render(
-      <ConversationView
-        messages={[{ id: '1', role: 'user' as const, content: 'Hello' }]}
-        streamingContent=""
-        isGenerating={false}
-        error={null}
-        onClose={vi.fn()}
-      />,
-    );
-
-    const scrollEl = container.querySelector(
-      '.chat-messages-scroll',
-    ) as HTMLElement;
-    expect(scrollEl).not.toBeNull();
-
-    // Fire a scroll event — the handler reads scrollTop/scrollHeight/clientHeight
-    act(() => {
-      fireEvent.scroll(scrollEl);
-    });
-
-    // No assertion needed beyond "no crash" — the callback just updates a ref
-    expect(scrollEl).not.toBeNull();
-  });
-
   it('auto-scroll is skipped when user is not near bottom (early return branch)', () => {
     const { container, rerender } = render(
       <ConversationView
@@ -158,8 +133,8 @@ describe('ConversationView', () => {
     ) as HTMLElement;
     expect(scrollEl).not.toBeNull();
 
-    // Simulate scrolling far up — sets isUserNearBottomRef to false
-    // by making scrollHeight - scrollTop - clientHeight > NEAR_BOTTOM_THRESHOLD (60)
+    // Simulate a scroll container where the user is far from the bottom:
+    // scrollHeight - scrollTop - clientHeight = 500 - 0 - 100 = 400 > 60 threshold
     Object.defineProperty(scrollEl, 'scrollHeight', {
       value: 500,
       configurable: true,
@@ -174,11 +149,8 @@ describe('ConversationView', () => {
       writable: true,
     });
 
-    act(() => {
-      fireEvent.scroll(scrollEl);
-    });
-
-    // Now rerender with new messages — the auto-scroll useEffect should hit the early return
+    // Rerender with new messages — the auto-scroll useEffect reads scroll
+    // position fresh and should hit the early return (not near bottom)
     act(() => {
       rerender(
         <ConversationView
