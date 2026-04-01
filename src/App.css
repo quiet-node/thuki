@@ -79,6 +79,58 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
+/* ─── Stop Button Border Trace ───
+ * SVG border-trace using pathLength="100" so all dash math is in clean
+ * percentages. Three layered strokes staggered via animation-delay (NOT
+ * initial dashoffset — that causes different travel distances and speed
+ * drift). All three share the same keyframe and duration so they move
+ * in lockstep, with the delay creating a fixed spatial offset.
+ */
+.stop-btn-ring {
+  position: relative;
+}
+.stop-btn-ring > .stop-ring-svg {
+  position: absolute;
+  inset: -2px;
+  width: calc(100% + 4px);
+  height: calc(100% + 4px);
+  pointer-events: none;
+  overflow: visible;
+}
+.stop-btn-ring > .stop-ring-svg rect {
+  fill: none;
+  stroke: #f87171;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+/* Head — bright leading segment, furthest along the path */
+.stop-trace-head {
+  stroke-dasharray: 15 85;
+  animation: trace-border 2s linear infinite;
+  animation-delay: -0.56s;
+}
+/* Mid — dimmer segment trailing the head */
+.stop-trace-mid {
+  stroke-dasharray: 12 88;
+  opacity: 0.4;
+  animation: trace-border 2s linear infinite;
+  animation-delay: -0.3s;
+}
+/* Tail — faintest segment, furthest behind */
+.stop-trace-tail {
+  stroke-dasharray: 10 90;
+  opacity: 0.12;
+  animation: trace-border 2s linear infinite;
+}
+@keyframes trace-border {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -100;
+  }
+}
+
 /* ─── Chat Messages Scrollable Area ─── */
 .chat-messages-scroll {
   scrollbar-gutter: stable;

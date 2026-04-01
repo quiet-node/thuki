@@ -345,6 +345,103 @@ describe('useOllama', () => {
     });
   });
 
+  // ─── cancel() ───────────────────────────────────────────────────────────────
+
+  describe('cancel()', () => {
+    it('invokes cancel_generation on the backend', async () => {
+      let resolveInvoke!: () => void;
+      invoke.mockImplementationOnce(
+        async (_cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            return new Promise<void>((res) => {
+              resolveInvoke = res;
+            });
+          }
+        },
+      );
+
+      const { result } = renderHook(() => useOllama());
+
+      act(() => {
+        void result.current.ask('hello', 'hello');
+      });
+
+      expect(result.current.isGenerating).toBe(true);
+
+      await act(async () => {
+        await result.current.cancel();
+      });
+
+      expect(invoke).toHaveBeenCalledWith('cancel_generation');
+
+      act(() => {
+        resolveInvoke?.();
+      });
+    });
+
+    it('does nothing when not generating', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.cancel();
+      });
+
+      // cancel_generation should NOT have been called
+      expect(invoke).not.toHaveBeenCalledWith('cancel_generation');
+    });
+  });
+
+  // ─── Cancelled chunk handling ───────────────────────────────────────────────
+
+  describe('Cancelled chunk', () => {
+    it('finalizes partial content as assistant message on Cancelled', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello', 'hello');
+      });
+
+      const channel = getChannel();
+      expect(channel).not.toBeNull();
+
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', data: 'Partial ' });
+        channel!.simulateMessage({ type: 'Token', data: 'response' });
+        channel!.simulateMessage({ type: 'Cancelled' });
+      });
+
+      expect(result.current.streamingContent).toBe('');
+      expect(result.current.isGenerating).toBe(false);
+      expect(result.current.messages).toContainEqual(
+        expect.objectContaining({
+          role: 'assistant',
+          content: 'Partial response',
+        }),
+      );
+    });
+
+    it('does not add empty assistant message when cancelled with no tokens', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello', 'hello');
+      });
+
+      const channel = getChannel();
+      expect(channel).not.toBeNull();
+
+      act(() => {
+        channel!.simulateMessage({ type: 'Cancelled' });
+      });
+
+      expect(result.current.streamingContent).toBe('');
+      expect(result.current.isGenerating).toBe(false);
+      // Only the user message should exist — no empty assistant message
+      expect(result.current.messages).toHaveLength(1);
+      expect(result.current.messages[0].role).toBe('user');
+    });
+  });
+
   // ─── reset() ────────────────────────────────────────────────────────────────
 
   describe('reset()', () => {
