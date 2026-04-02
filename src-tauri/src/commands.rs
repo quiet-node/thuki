@@ -7,8 +7,8 @@ use tauri::{ipc::Channel, State};
 use tokio_util::sync::CancellationToken;
 
 /// Default configuration constants as the application currently lacks a Settings UI.
-const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
-const DEFAULT_MODEL_NAME: &str = "llama3.2:3b";
+pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
+pub const DEFAULT_MODEL_NAME: &str = "llama3.2:3b";
 const DEFAULT_SYSTEM_PROMPT: &str = "You are Thuki (thư ký), a personal desktop secretary that \
 lives as a floating overlay on macOS. You are fast, sharp, and helpful.\n\nResponse style:\n- Be \
 concise. You appear in a small floating window — keep responses scannable.\n- Use short paragraphs, \
@@ -101,8 +101,8 @@ impl GenerationState {
 /// stale writes after a reset. The Rust side is the source of truth; the
 /// frontend sends only new user messages and receives streamed tokens.
 pub struct ConversationHistory {
-    messages: Mutex<Vec<ChatMessage>>,
-    epoch: AtomicU64,
+    pub messages: Mutex<Vec<ChatMessage>>,
+    pub epoch: AtomicU64,
 }
 
 impl Default for ConversationHistory {
