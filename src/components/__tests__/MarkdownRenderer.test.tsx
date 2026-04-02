@@ -61,13 +61,15 @@ describe('MarkdownRenderer', () => {
       );
     });
 
-    it('renders links as interactive elements', () => {
+    it('renders links with correct href', () => {
       const { container } = render(
         <MarkdownRenderer content="[Visit site](https://example.com)" />,
       );
-      // Streamdown renders links as buttons with data-streamdown="link"
-      const link = container.querySelector('[data-streamdown="link"]');
+      const link = container.querySelector('a[data-streamdown="link"]');
       expect(link).not.toBeNull();
+      expect(link!.getAttribute('href')).toBe('https://example.com/');
+      expect(link!.getAttribute('rel')).toBe('noopener noreferrer');
+      expect(link!.getAttribute('target')).toBe('_blank');
       expect(link!.textContent).toBe('Visit site');
     });
 
