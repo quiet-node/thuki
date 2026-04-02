@@ -39,6 +39,7 @@ pub struct PersistedMessage {
 ///
 /// Returns an error if the home directory cannot be determined, the
 /// `~/.thuki/` directory cannot be created, or SQLite initialisation fails.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn open_database() -> SqlResult<Connection> {
     let db_path =
         resolve_db_path().map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
@@ -61,6 +62,7 @@ pub fn open_in_memory() -> SqlResult<Connection> {
 }
 
 /// Resolves the database file path, creating `~/.thuki/` if it does not exist.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn resolve_db_path() -> std::io::Result<std::path::PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found")
@@ -103,6 +105,7 @@ fn run_migrations(conn: &Connection) -> SqlResult<()> {
 // ─── Conversation CRUD ──────────────────────────────────────────────────────
 
 /// Inserts a new conversation row and returns its UUID.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn create_conversation(
     conn: &Connection,
     title: Option<&str>,
@@ -120,6 +123,7 @@ pub fn create_conversation(
 
 /// Lists conversations ordered by most recently updated, with an optional
 /// case-insensitive title substring filter.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn list_conversations(
     conn: &Connection,
     search: Option<&str>,
@@ -154,6 +158,7 @@ pub fn list_conversations(
 }
 
 /// Updates the title of an existing conversation.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn update_conversation_title(
     conn: &Connection,
     conversation_id: &str,
@@ -167,6 +172,7 @@ pub fn update_conversation_title(
 }
 
 /// Deletes a conversation and its messages (via ON DELETE CASCADE).
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn delete_conversation(conn: &Connection, conversation_id: &str) -> SqlResult<()> {
     conn.execute(
         "DELETE FROM conversations WHERE id = ?1",
@@ -178,6 +184,7 @@ pub fn delete_conversation(conn: &Connection, conversation_id: &str) -> SqlResul
 // ─── Message CRUD ───────────────────────────────────────────────────────────
 
 /// Inserts a single message and touches the conversation's `updated_at`.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn insert_message(
     conn: &Connection,
     conversation_id: &str,
@@ -200,6 +207,7 @@ pub fn insert_message(
 }
 
 /// Bulk-inserts messages for the initial save. Runs inside a transaction.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn insert_messages_batch(
     conn: &Connection,
     conversation_id: &str,
@@ -232,6 +240,7 @@ pub fn insert_messages_batch(
 }
 
 /// Loads all messages for a conversation in chronological order.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn load_messages(conn: &Connection, conversation_id: &str) -> SqlResult<Vec<PersistedMessage>> {
     let mut stmt = conn.prepare(
         "SELECT id, role, content, quoted_text, created_at

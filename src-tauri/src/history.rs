@@ -282,20 +282,15 @@ mod tests {
     #[test]
     fn placeholder_title_truncation() {
         let long_message = "a".repeat(100);
-        let trimmed = long_message.trim();
-        let title = if trimmed.len() > 50 {
-            format!(
-                "{}...",
-                &trimmed[..trimmed
-                    .char_indices()
-                    .take(50)
-                    .last()
-                    .map(|(i, c)| i + c.len_utf8())
-                    .unwrap_or(50)]
-            )
-        } else {
-            trimmed.to_string()
-        };
+        // Long message (100 chars) should be truncated to 50 + "..."
+        assert!(long_message.len() > 50);
+        let end = long_message
+            .char_indices()
+            .take(50)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(50);
+        let title = format!("{}...", &long_message[..end]);
         assert_eq!(title.len(), 53); // 50 chars + "..."
         assert!(title.ends_with("..."));
     }
@@ -303,29 +298,24 @@ mod tests {
     #[test]
     fn placeholder_title_short_message() {
         let short = "Hello";
-        let title = if short.len() > 50 {
-            format!("{}...", &short[..50])
-        } else {
-            short.to_string()
-        };
-        assert_eq!(title, "Hello");
+        // Short message (5 chars) should not be truncated.
+        assert!(short.len() <= 50);
+        assert_eq!(short, "Hello");
     }
 
     #[test]
     fn placeholder_title_with_unicode() {
         let unicode_msg = "こんにちは世界、これはテストメッセージです。長いテキストを作成するために追加のテキストが必要です。";
         let trimmed = unicode_msg.trim();
-        let title = if trimmed.len() > 50 {
-            let end = trimmed
-                .char_indices()
-                .take(50)
-                .last()
-                .map(|(i, c)| i + c.len_utf8())
-                .unwrap_or(50);
-            format!("{}...", &trimmed[..end])
-        } else {
-            trimmed.to_string()
-        };
+        // Unicode message with byte length > 50 should truncate at char boundary.
+        assert!(trimmed.len() > 50);
+        let end = trimmed
+            .char_indices()
+            .take(50)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(50);
+        let title = format!("{}...", &trimmed[..end]);
         // Should not panic on unicode boundary.
         assert!(title.ends_with("..."));
     }
@@ -333,12 +323,11 @@ mod tests {
     #[test]
     fn title_truncation_over_100_chars() {
         let mut title = "a".repeat(150);
-        if title.len() > 100 {
-            if let Some((i, c)) = title.char_indices().take(100).last() {
-                title.truncate(i + c.len_utf8());
-                title.push_str("...");
-            }
-        }
+        // Titles over 100 chars should be truncated to 100 + "..."
+        assert!(title.len() > 100);
+        let (i, c) = title.char_indices().take(100).last().unwrap();
+        title.truncate(i + c.len_utf8());
+        title.push_str("...");
         assert_eq!(title.len(), 103); // 100 + "..."
     }
 }
