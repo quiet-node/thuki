@@ -481,8 +481,10 @@ pub fn run() {
             // ── Persistent HTTP client ────────────────────────────────
             app.manage(reqwest::Client::new());
 
-            // ── Generation cancellation state ────────────────────────────
+            // ── Generation + conversation state ─────────────────────
             app.manage(commands::GenerationState::new());
+            app.manage(commands::ConversationHistory::new());
+            app.manage(commands::SystemPrompt(commands::load_system_prompt()));
 
             Ok(())
         })
@@ -491,6 +493,8 @@ pub fn run() {
             commands::ask_ollama,
             #[cfg(not(coverage))]
             commands::cancel_generation,
+            #[cfg(not(coverage))]
+            commands::reset_conversation,
             notify_overlay_hidden,
             set_window_frame
         ])

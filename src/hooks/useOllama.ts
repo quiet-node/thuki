@@ -35,22 +35,17 @@ export function useOllama() {
   const [error, setError] = useState<string | null>(null);
 
   /**
-   * Submits a prompt to the Ollama backend and initiates the streaming response.
-   * Modifies local state optimistically.
+   * Submits a message to the Ollama backend and initiates the streaming response.
+   * The backend manages conversation history — only the new user message is sent.
    *
    * Avoids continuous array copy operations during streaming by maintaining the streaming
    * chunk state separately from the main messages state until generation finishes.
    *
    * @param displayContent The user's query as it should appear in the chat bubble.
-   * @param ollamaPrompt The full prompt sent to Ollama (may include context preamble).
    * @param quotedText Optional selected text quoted alongside this message.
    */
   const ask = useCallback(
-    async (
-      displayContent: string,
-      ollamaPrompt: string,
-      quotedText?: string,
-    ) => {
+    async (displayContent: string, quotedText?: string) => {
       if (!displayContent.trim() || isGenerating) return;
 
       setMessages((prev) => [
@@ -117,7 +112,11 @@ export function useOllama() {
       };
 
       try {
-        await invoke('ask_ollama', { prompt: ollamaPrompt, onEvent: channel });
+        await invoke('ask_ollama', {
+          message: displayContent,
+          quotedText: quotedText ?? null,
+          onEvent: channel,
+        });
       } catch (err) {
         setError(String(err));
         setMessages((prev) => [
@@ -147,6 +146,7 @@ export function useOllama() {
     setStreamingContent('');
     setIsGenerating(false);
     setError(null);
+    void invoke('reset_conversation');
   }, []);
 
   return {

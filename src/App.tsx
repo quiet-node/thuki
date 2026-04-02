@@ -222,10 +222,7 @@ function App() {
       ?.replace(CONTROL_CHARS, '')
       .slice(0, quote.maxContextLength);
     const hasContext = sanitized && sanitized.trim().length > 0;
-    const ollamaPrompt = hasContext
-      ? `Context: "${sanitized}"\n\n${query}`
-      : query;
-    ask(query, ollamaPrompt, hasContext ? sanitized : undefined);
+    ask(query, hasContext ? sanitized : undefined);
     setSelectedContext(null);
     setQuery('');
     if (inputRef.current) {
