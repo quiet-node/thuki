@@ -281,7 +281,7 @@ describe('App', () => {
     expect(__mockWindow.startDragging).not.toHaveBeenCalled();
   });
 
-  it('submits query with context prepended when selectedContext is set', async () => {
+  it('submits query with quoted text when selectedContext is set', async () => {
     render(<App />);
     await act(async () => {});
 
@@ -299,11 +299,12 @@ describe('App', () => {
 
     await act(async () => {});
 
-    // Prompt should be context-wrapped
+    // Backend receives the message and quoted text separately
     expect(invoke).toHaveBeenCalledWith(
       'ask_ollama',
       expect.objectContaining({
-        prompt: expect.stringContaining('Context:'),
+        message: 'my question',
+        quotedText: 'selected snippet',
       }),
     );
   });
