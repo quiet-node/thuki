@@ -274,17 +274,19 @@ pub async fn ask_ollama(
         DEFAULT_MODEL_NAME,
         messages,
         &client,
-        cancel_token,
+        cancel_token.clone(),
         |chunk| {
             let _ = on_event.send(chunk);
         },
     )
     .await;
 
-    // Persist user + assistant messages only if the epoch has not changed
-    // (i.e., no reset occurred while we were streaming) and we got content.
+    // Persist user + assistant messages only when the stream completed
+    // naturally (not cancelled or error), the epoch has not changed
+    // (no reset during streaming), and we received content.
+    let was_cancelled = cancel_token.is_cancelled();
     let current_epoch = history.epoch.load(Ordering::SeqCst);
-    if current_epoch == epoch_at_start && !accumulated.is_empty() {
+    if !was_cancelled && current_epoch == epoch_at_start && !accumulated.is_empty() {
         let mut conv = history.messages.lock().unwrap();
         conv.push(user_msg);
         conv.push(ChatMessage {
