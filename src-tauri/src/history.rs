@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::commands::{ChatMessage, ConversationHistory, StreamChunk, SystemPrompt};
+use crate::commands::{ChatMessage, ConversationHistory, SystemPrompt};
 use crate::database;
 
 /// Thread-safe wrapper around the SQLite connection.
@@ -121,8 +121,14 @@ pub fn load_conversation(
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let persisted = database::load_messages(&conn, &conversation_id).map_err(|e| e.to_string())?;
 
-    // Sync the backend conversation history so ask_ollama picks up context.
-    let mut conv = history.messages.lock().unwrap();
+    // Bump the epoch before replacing messages — same invariant as
+    // `reset_conversation`. This prevents any in-flight `ask_ollama`
+    // stream from appending stale tokens into the freshly loaded history.
+    history
+        .epoch
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+    let mut conv = history.messages.lock().map_err(|e| e.to_string())?;
     conv.clear();
     for msg in &persisted {
         conv.push(ChatMessage {
@@ -197,11 +203,7 @@ pub async fn generate_title(
         title_messages,
         &client,
         cancel_token,
-        |chunk| {
-            if let StreamChunk::Token(_) = &chunk {
-                // Tokens are accumulated by stream_ollama_chat internally.
-            }
-        },
+        |_| {}, // No per-chunk side effects; we use the accumulated return value.
     )
     .await;
 
