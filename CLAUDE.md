@@ -39,7 +39,10 @@ bun run validate-build   # All gates: lint + format + typecheck + build
 
 Tests use **Vitest** for the frontend (React/TypeScript with React Testing Library + happy-dom) and **Cargo test** for the backend (Rust unit tests).
 
-**100% code coverage is mandatory.** Any new or modified code — frontend or backend — must maintain 100% coverage across lines, functions, branches, and statements. Run `bun run test:coverage` before committing and verify the coverage report shows no uncovered lines. PRs that drop below 100% coverage will not be merged.
+**100% code coverage is mandatory.** Any new or modified code — frontend or backend — must maintain 100% coverage across lines, functions, branches, and statements. PRs that drop below 100% coverage will not be merged.
+
+- **Frontend:** Run `bun run test:coverage` and verify all metrics are 100%.
+- **Backend:** Run `cargo +nightly-2026-03-30 llvm-cov --ignore-filename-regex "(lib|main)\.rs" --fail-under-lines 100` from `src-tauri/` to enforce 100% line coverage. Functions excluded from coverage with `#[cfg_attr(coverage_nightly, coverage(off))]` must be thin wrappers (Tauri commands, filesystem I/O) whose logic is tested through the functions they delegate to.
 
 ## Architecture
 

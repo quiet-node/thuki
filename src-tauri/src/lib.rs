@@ -16,6 +16,8 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod commands;
+pub mod database;
+pub mod history;
 
 #[cfg(target_os = "macos")]
 mod activator;
@@ -490,6 +492,11 @@ pub fn run() {
             app.manage(commands::ConversationHistory::new());
             app.manage(commands::SystemPrompt(commands::load_system_prompt()));
 
+            // ── SQLite database for conversation history ──────────
+            let db_conn = database::open_database()
+                .expect("failed to initialise SQLite database at ~/.thuki/thuki.db");
+            app.manage(history::Database(std::sync::Mutex::new(db_conn)));
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -499,6 +506,18 @@ pub fn run() {
             commands::cancel_generation,
             #[cfg(not(coverage))]
             commands::reset_conversation,
+            #[cfg(not(coverage))]
+            history::save_conversation,
+            #[cfg(not(coverage))]
+            history::persist_message,
+            #[cfg(not(coverage))]
+            history::list_conversations,
+            #[cfg(not(coverage))]
+            history::load_conversation,
+            #[cfg(not(coverage))]
+            history::delete_conversation,
+            #[cfg(not(coverage))]
+            history::generate_title,
             notify_overlay_hidden,
             set_window_frame
         ])
