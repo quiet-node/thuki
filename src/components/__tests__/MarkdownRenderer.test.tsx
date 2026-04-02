@@ -61,13 +61,13 @@ describe('MarkdownRenderer', () => {
       );
     });
 
-    it('renders links with correct href', () => {
+    it('renders links as interactive elements', () => {
       const { container } = render(
         <MarkdownRenderer content="[Visit site](https://example.com)" />,
       );
-      const link = container.querySelector('a');
+      // Streamdown renders links as buttons with data-streamdown="link"
+      const link = container.querySelector('[data-streamdown="link"]');
       expect(link).not.toBeNull();
-      expect(link!.getAttribute('href')).toBe('https://example.com');
       expect(link!.textContent).toBe('Visit site');
     });
 
@@ -75,8 +75,10 @@ describe('MarkdownRenderer', () => {
       const { container } = render(
         <MarkdownRenderer content="This is **bold** text" />,
       );
-      expect(container.querySelector('strong')).not.toBeNull();
-      expect(container.querySelector('strong')!.textContent).toBe('bold');
+      // Streamdown renders bold as span with data-streamdown="strong"
+      const bold = container.querySelector('[data-streamdown="strong"]');
+      expect(bold).not.toBeNull();
+      expect(bold!.textContent).toBe('bold');
     });
 
     it('renders italic text', () => {
@@ -169,7 +171,9 @@ describe('MarkdownRenderer', () => {
       const { container } = render(
         <MarkdownRenderer content="**bold** and *italic* and `code`" />,
       );
-      expect(container.querySelector('strong')).not.toBeNull();
+      expect(
+        container.querySelector('[data-streamdown="strong"]'),
+      ).not.toBeNull();
       expect(container.querySelector('em')).not.toBeNull();
       expect(container.querySelector('code')).not.toBeNull();
     });

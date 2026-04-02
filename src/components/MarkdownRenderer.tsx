@@ -1,33 +1,35 @@
 import React, { memo } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { Streamdown } from 'streamdown';
 
 interface MarkdownRendererProps {
   content: string;
   className?: string;
+  /** Whether this content is actively being streamed from the LLM. */
+  isStreaming?: boolean;
 }
 
-/** Remark plugins applied to every render. Stable reference prevents re-initialization. */
-const remarkPlugins = [remarkGfm];
-
 /**
- * Renders markdown content as React elements using react-markdown.
+ * Renders markdown content using Streamdown, a streaming-aware markdown
+ * renderer that handles incomplete syntax and memoizes completed blocks.
  *
- * Secure by design: react-markdown converts markdown to a React element tree
- * via `createElement`, never using `dangerouslySetInnerHTML`. Raw HTML in
- * markdown source is stripped by default, preventing XSS without an external
- * sanitizer. Supports GitHub Flavored Markdown (tables, strikethrough, task
- * lists, autolinks) via the remark-gfm plugin.
+ * During streaming, only the last in-progress block re-renders on each
+ * token. Completed paragraphs are memoized and never reflow, eliminating
+ * the bubble-height jitter caused by full markdown re-parsing.
  *
- * Memoized to skip re-renders when props are unchanged, which matters during
- * LLM token streaming where sibling bubbles would otherwise re-render on
- * every new token.
+ * Memoized to skip re-renders when props are unchanged, which matters
+ * during LLM token streaming where sibling bubbles would otherwise
+ * re-render on every new token.
  */
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(
-  function MarkdownRenderer({ content, className = '' }) {
+  function MarkdownRenderer({ content, className = '', isStreaming = false }) {
     return (
       <span className={`markdown-body ${className}`}>
-        <ReactMarkdown remarkPlugins={remarkPlugins}>{content}</ReactMarkdown>
+        <Streamdown
+          mode={isStreaming ? 'streaming' : 'static'}
+          controls={false}
+        >
+          {content}
+        </Streamdown>
       </span>
     );
   },

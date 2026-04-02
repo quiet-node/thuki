@@ -13,6 +13,8 @@ interface ChatBubbleProps {
   index: number;
   /** Selected text from the host app that was quoted alongside this message, if any. */
   quotedText?: string;
+  /** Whether this bubble is actively streaming content from the LLM. */
+  isStreaming?: boolean;
 }
 
 /**
@@ -51,6 +53,7 @@ export function ChatBubble({
   content,
   index,
   quotedText,
+  isStreaming = false,
 }: ChatBubbleProps) {
   const isUser = role === 'user';
 
@@ -85,7 +88,7 @@ export function ChatBubble({
               <span className="text-white/95 font-medium">{content}</span>
             </>
           ) : (
-            <MarkdownRenderer content={content} />
+            <MarkdownRenderer content={content} isStreaming={isStreaming} />
           )}
         </div>
 
