@@ -914,30 +914,22 @@ mod tests {
 
     #[test]
     fn load_system_prompt_reads_env_var() {
-        let original = std::env::var("THUKI_SYSTEM_PROMPT").ok();
         std::env::set_var("THUKI_SYSTEM_PROMPT", "Custom prompt");
 
         let prompt = load_system_prompt();
         assert_eq!(prompt, "Custom prompt");
 
-        match original {
-            Some(val) => std::env::set_var("THUKI_SYSTEM_PROMPT", val),
-            None => std::env::remove_var("THUKI_SYSTEM_PROMPT"),
-        }
+        std::env::remove_var("THUKI_SYSTEM_PROMPT");
     }
 
     #[test]
     fn load_system_prompt_ignores_empty_env_var() {
-        let original = std::env::var("THUKI_SYSTEM_PROMPT").ok();
         std::env::set_var("THUKI_SYSTEM_PROMPT", "   ");
 
         let prompt = load_system_prompt();
         assert_eq!(prompt, DEFAULT_SYSTEM_PROMPT);
 
-        match original {
-            Some(val) => std::env::set_var("THUKI_SYSTEM_PROMPT", val),
-            None => std::env::remove_var("THUKI_SYSTEM_PROMPT"),
-        }
+        std::env::remove_var("THUKI_SYSTEM_PROMPT");
     }
 
     #[test]
