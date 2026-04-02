@@ -214,6 +214,7 @@ export function ConversationView({
             role="assistant"
             content={streamingContent}
             index={messages.length}
+            isStreaming
           />
         ) : null}
 

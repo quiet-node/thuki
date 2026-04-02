@@ -22,7 +22,7 @@ describe('ConversationView', () => {
   });
 
   it('renders streaming bubble when streamingContent is non-empty', () => {
-    render(
+    const { container } = render(
       <ConversationView
         messages={[]}
         streamingContent="streaming response..."
@@ -31,7 +31,10 @@ describe('ConversationView', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByText('streaming response...')).toBeInTheDocument();
+    // Streamdown splits streaming text into per-word animated spans,
+    // so exact full-text match won't work. Check for content presence.
+    expect(container.textContent).toContain('streaming');
+    expect(container.textContent).toContain('response...');
   });
 
   it('shows TypingIndicator when isGenerating with no streaming content', () => {

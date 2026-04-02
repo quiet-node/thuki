@@ -1,33 +1,49 @@
 import React, { memo } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { Streamdown } from 'streamdown';
 
 interface MarkdownRendererProps {
   content: string;
   className?: string;
+  /** Whether this content is actively being streamed from the LLM. */
+  isStreaming?: boolean;
 }
 
-/** Remark plugins applied to every render. Stable reference prevents re-initialization. */
-const remarkPlugins = [remarkGfm];
-
 /**
- * Renders markdown content as React elements using react-markdown.
+ * Renders markdown content using Streamdown, a streaming-aware markdown
+ * renderer that handles incomplete syntax and memoizes completed blocks.
  *
- * Secure by design: react-markdown converts markdown to a React element tree
- * via `createElement`, never using `dangerouslySetInnerHTML`. Raw HTML in
- * markdown source is stripped by default, preventing XSS without an external
- * sanitizer. Supports GitHub Flavored Markdown (tables, strikethrough, task
- * lists, autolinks) via the remark-gfm plugin.
+ * During streaming, only the last in-progress block re-renders on each
+ * token. Completed paragraphs are memoized and never reflow, eliminating
+ * the bubble-height jitter caused by full markdown re-parsing.
  *
- * Memoized to skip re-renders when props are unchanged, which matters during
- * LLM token streaming where sibling bubbles would otherwise re-render on
- * every new token.
+ * Security: Streamdown sanitizes rendered output via rehype-sanitize
+ * (allowlist-based HTML element/attribute filtering) and rehype-harden
+ * (blocks dangerous URL protocols). Raw HTML in markdown source is parsed
+ * then sanitized, stripping script tags, event handlers, iframes, and
+ * javascript: URLs. Link safety is disabled so links render as native
+ * anchor elements with target="_blank" and rel="noopener noreferrer".
+ *
+ * Memoized to skip re-renders when props are unchanged, which matters
+ * during LLM token streaming where sibling bubbles would otherwise
+ * re-render on every new token.
  */
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(
-  function MarkdownRenderer({ content, className = '' }) {
+  function MarkdownRenderer({ content, className = '', isStreaming = false }) {
     return (
       <span className={`markdown-body ${className}`}>
-        <ReactMarkdown remarkPlugins={remarkPlugins}>{content}</ReactMarkdown>
+        <Streamdown
+          mode={isStreaming ? 'streaming' : 'static'}
+          /* Disable built-in copy/download controls; the parent ChatBubble
+             provides its own CopyButton for the full message content. */
+          controls={false}
+          /* Disable the link safety interstitial modal so links render as
+             native <a> elements with href, target="_blank", and noopener.
+             In a Tauri app the webview opens external links in the system
+             browser, making the modal unnecessary friction. */
+          linkSafety={{ enabled: false }}
+        >
+          {content}
+        </Streamdown>
       </span>
     );
   },

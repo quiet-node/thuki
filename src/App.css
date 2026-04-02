@@ -1,4 +1,6 @@
 @import 'tailwindcss';
+@source "../node_modules/streamdown/dist";
+@import 'streamdown/styles.css';
 
 @theme {
   --font-sans:

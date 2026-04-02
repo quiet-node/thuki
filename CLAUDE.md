@@ -53,7 +53,7 @@ The UI morphs between two states: a compact spotlight-style input bar → an exp
 - **`hooks/useOllama.ts`** — Tauri Channel-based streaming hook; emits `Token`, `Done`, `Cancelled`, `Error` variants
 - **`view/ConversationView.tsx`** — smart auto-scroll (pins to bottom unless user scrolls up)
 - **`view/AskBarView.tsx`** — auto-expanding textarea (max 144px), morphs logo size
-- **`components/ChatBubble.tsx`** — markdown rendering with DOMPurify sanitization
+- **`components/ChatBubble.tsx`** — markdown rendering via Streamdown (rehype-sanitize for XSS protection)
 
 ### Backend (`src-tauri/src/`)
 

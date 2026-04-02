@@ -43,12 +43,14 @@ describe('ChatBubble', () => {
   });
 
   describe('Assistant messages', () => {
-    it('renders assistant content via MarkdownRenderer (** becomes <strong>)', () => {
+    it('renders assistant content via MarkdownRenderer (** becomes bold)', () => {
       const { container } = render(
         <ChatBubble role="assistant" content="**bold**" index={0} />,
       );
-      expect(container.querySelector('strong')).not.toBeNull();
-      expect(container.querySelector('strong')!.textContent).toBe('bold');
+      // Streamdown renders bold as span with data-streamdown="strong"
+      const bold = container.querySelector('[data-streamdown="strong"]');
+      expect(bold).not.toBeNull();
+      expect(bold!.textContent).toBe('bold');
     });
 
     it('applies assistant styling (chat-bubble-ai class)', () => {
