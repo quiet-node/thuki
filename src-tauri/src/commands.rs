@@ -901,15 +901,10 @@ mod tests {
 
     #[test]
     fn load_system_prompt_returns_default_when_unset() {
-        let original = std::env::var("THUKI_SYSTEM_PROMPT").ok();
         std::env::remove_var("THUKI_SYSTEM_PROMPT");
 
         let prompt = load_system_prompt();
         assert_eq!(prompt, DEFAULT_SYSTEM_PROMPT);
-
-        if let Some(val) = original {
-            std::env::set_var("THUKI_SYSTEM_PROMPT", val);
-        }
     }
 
     #[test]
