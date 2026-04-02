@@ -10,6 +10,9 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig(async () => ({
   plugins: [tailwindcss(), react()],
   clearScreen: false,
+  build: {
+    chunkSizeWarningLimit: 600,
+  },
   server: {
     port: 1420,
     strictPort: true,
