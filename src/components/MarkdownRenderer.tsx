@@ -33,9 +33,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(
       <span className={`markdown-body ${className}`}>
         <Streamdown
           mode={isStreaming ? 'streaming' : 'static'}
-          /* Disable built-in copy/download controls; the parent ChatBubble
-             provides its own CopyButton for the full message content. */
-          controls={false}
+          /* Enable only the copy button on code blocks; disable download
+             and all other block-level controls (table, mermaid). The parent
+             ChatBubble provides its own CopyButton for the full message. */
+          controls={{ code: { copy: true, download: false } }}
           /* Disable the link safety interstitial modal so links render as
              native <a> elements with href, target="_blank", and noopener.
              In a Tauri app the webview opens external links in the system
