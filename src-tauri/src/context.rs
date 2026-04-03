@@ -380,7 +380,7 @@ fn bottom_center(
     let x_min = SCREEN_MARGIN;
     let x_max = (screen_width - window_width - SCREEN_MARGIN).max(x_min);
     let x = ((screen_width - window_width) / 2.0).clamp(x_min, x_max);
-    let y = screen_height - window_height - SCREEN_MARGIN;
+    let y = screen_height - window_height - SCREEN_MARGIN - 32.0;
     WindowPlacement {
         x,
         y,
@@ -546,11 +546,10 @@ mod tests {
 
     #[test]
     fn no_selection_returns_bottom_center() {
-        // y = 804. space_below = 900-16-884 = 0 < 600 → anchor pinned.
         let p = calculate_window_position(&ctx_no_selection(), SW, SH, WW, WH);
         assert_eq!(p.x, (SW - WW) / 2.0);
-        assert_eq!(p.y, SH - WH - SCREEN_MARGIN);
-        assert_eq!(p.anchor_bottom_y, Some(SH - WH - SCREEN_MARGIN + WH));
+        assert_eq!(p.y, SH - WH - SCREEN_MARGIN - 32.0);
+        assert_eq!(p.anchor_bottom_y, Some(SH - WH - SCREEN_MARGIN - 32.0 + WH));
     }
 
     #[test]
@@ -565,8 +564,8 @@ mod tests {
         let x_min = SCREEN_MARGIN;
         let x_max = (SW - WW - SCREEN_MARGIN).max(x_min);
         assert_eq!(p.x, ((SW - WW) / 2.0).clamp(x_min, x_max));
-        assert_eq!(p.y, SH - WH - SCREEN_MARGIN);
-        assert_eq!(p.anchor_bottom_y, Some(SH - WH - SCREEN_MARGIN + WH));
+        assert_eq!(p.y, SH - WH - SCREEN_MARGIN - 32.0);
+        assert_eq!(p.anchor_bottom_y, Some(SH - WH - SCREEN_MARGIN - 32.0 + WH));
     }
 
     #[test]
