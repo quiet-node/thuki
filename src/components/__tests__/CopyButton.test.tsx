@@ -86,4 +86,10 @@ describe('CopyButton', () => {
     const button = screen.getByRole('button', { name: 'Copy message' });
     expect(button).not.toBeNull();
   });
+
+  it('is always visible by default (button does not carry opacity-0 class)', () => {
+    const { container } = render(<CopyButton content="test" align="left" />);
+    const button = container.querySelector('button');
+    expect(button?.classList.contains('opacity-0')).toBe(false);
+  });
 });
