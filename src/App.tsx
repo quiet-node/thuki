@@ -160,6 +160,15 @@ function App() {
   const isPreExpandedRef = useRef(false);
 
   /**
+   * Ref attached to the outermost layout div. Used to set an explicit
+   * `minHeight` before calling `set_window_frame` in the anchor path so the
+   * CSS layout matches the new window dimensions before WKWebView's viewport
+   * size event arrives — preventing the one-frame flash where `h-screen` is
+   * still the old small height but the window has already repositioned upward.
+   */
+  const outerContainerRef = useRef<HTMLDivElement | null>(null);
+
+  /**
    * When the LLM starts generating and the window has an upward anchor, expand
    * immediately to max height before any streaming tokens arrive.
    *
@@ -182,6 +191,11 @@ function App() {
     );
     const newY = anchor.bottom_y - maxHeight;
     isPreExpandedRef.current = true;
+    // Pre-set CSS min-height so justify-end positions correctly during the
+    // WKWebView viewport update lag that follows set_window_frame.
+    if (outerContainerRef.current) {
+      outerContainerRef.current.style.minHeight = `${maxHeight}px`;
+    }
     void invoke('set_window_frame', {
       x: anchor.x,
       y: newY,
@@ -237,6 +251,11 @@ function App() {
                   isPreExpandedRef.current = true;
                 }
 
+                // Pre-set CSS min-height before the native resize so the
+                // WKWebView layout is correct during its viewport update lag.
+                if (outerContainerRef.current) {
+                  outerContainerRef.current.style.minHeight = `${neededHeight}px`;
+                }
                 // Grow upward incrementally: pin the window bottom to the
                 // anchor and expand the top edge as content grows. Because
                 // `set_window_frame` applies position + size atomically on
@@ -272,6 +291,9 @@ function App() {
     (context: string | null, anchor: WindowAnchor | null) => {
       windowAnchorRef.current = anchor;
       isPreExpandedRef.current = false;
+      if (outerContainerRef.current) {
+        outerContainerRef.current.style.minHeight = '';
+      }
       setIsAnchoredUpward(anchor !== null);
       setSessionId((id) => id + 1);
       setQuery('');
@@ -291,6 +313,9 @@ function App() {
   const requestHideOverlay = useCallback(() => {
     windowAnchorRef.current = null;
     isPreExpandedRef.current = false;
+    if (outerContainerRef.current) {
+      outerContainerRef.current.style.minHeight = '';
+    }
     setSelectedContext(null);
     setOverlayState((currentState) => {
       if (currentState === 'hidden' || currentState === 'hiding') {
@@ -606,6 +631,7 @@ function App() {
     // Minimal padding (pt-2 pb-6) provides just enough physical clearance for the
     // tightened drop shadow to render without clipping at the native window edge.
     <div
+      ref={outerContainerRef}
       onMouseDown={handleDragStart}
       className={`flex flex-col items-center ${isAnchoredUpward ? 'justify-end' : 'justify-start'} h-screen w-screen px-3 pt-2 pb-6 bg-transparent overflow-visible`}
     >
