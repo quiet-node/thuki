@@ -26,9 +26,15 @@ export type StreamChunk =
  * A custom hook that simplifies interactions with the local Ollama LLM.
  * It manages message history, streaming state, and sets up Rust IPC channels.
  *
+ * @param onTurnComplete Optional callback invoked after a complete user/assistant
+ *   turn (i.e., when the `Done` chunk is received). Receives the user message
+ *   and the finalized assistant message. Not called on `Cancelled` or `Error`.
+ *   Used by the caller to persist completed turns to SQLite.
  * @returns An object containing the message history, a submit callback function, and operational states.
  */
-export function useOllama() {
+export function useOllama(
+  onTurnComplete?: (userMsg: Message, assistantMsg: Message) => void,
+) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingContent, setStreamingContent] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -48,15 +54,14 @@ export function useOllama() {
     async (displayContent: string, quotedText?: string) => {
       if (!displayContent.trim() || isGenerating) return;
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: 'user',
-          content: displayContent,
-          quotedText,
-        },
-      ]);
+      const userMsg: Message = {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: displayContent,
+        quotedText,
+      };
+
+      setMessages((prev) => [...prev, userMsg]);
       setStreamingContent('');
       setIsGenerating(true);
       setError(null);
@@ -71,16 +76,17 @@ export function useOllama() {
           currentContent += chunk.data;
           setStreamingContent(currentContent);
         } else if (chunk.type === 'Done') {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: 'assistant',
-              content: currentContent,
-            },
-          ]);
+          const assistantMsg: Message = {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: currentContent,
+          };
+          setMessages((prev) => [...prev, assistantMsg]);
           setStreamingContent('');
           setIsGenerating(false);
+          // Notify the caller that a complete turn has finished so it can
+          // persist both messages to SQLite if the conversation is saved.
+          onTurnComplete?.(userMsg, assistantMsg);
         } else if (chunk.type === 'Cancelled') {
           // Finalize partial content as a complete message so the user
           // retains everything generated before they hit stop.
@@ -131,7 +137,7 @@ export function useOllama() {
         setIsGenerating(false);
       }
     },
-    [isGenerating],
+    [isGenerating, onTurnComplete],
   );
 
   /** Cancels the currently active generation by signalling the Rust backend. */
@@ -149,6 +155,22 @@ export function useOllama() {
     void invoke('reset_conversation');
   }, []);
 
+  /**
+   * Replaces the current message list with a previously loaded set of messages.
+   *
+   * Called after `load_conversation` returns from the backend (which already
+   * synced the Rust `ConversationHistory`). Does NOT call `reset_conversation`
+   * to avoid conflicting with the epoch bump performed by `load_conversation`.
+   *
+   * @param msgs The complete message array to load into React state.
+   */
+  const loadMessages = useCallback((msgs: Message[]) => {
+    setMessages(msgs);
+    setStreamingContent('');
+    setIsGenerating(false);
+    setError(null);
+  }, []);
+
   return {
     messages,
     streamingContent,
@@ -157,5 +179,6 @@ export function useOllama() {
     isGenerating,
     error,
     reset,
+    loadMessages,
   };
 }
