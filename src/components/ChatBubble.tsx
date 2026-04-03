@@ -37,16 +37,15 @@ const bubbleVariants = {
 };
 
 /**
- * Renders an iMessage-inspired chat bubble with role-based styling.
+ * Renders a chat message following industry-standard assistant UI conventions:
  *
- * User messages appear right-aligned with a warm gradient (#ff8d5c → #e67a3e).
- * AI messages appear left-aligned with a frosted glass surface that harmonizes
- * with the dark overlay aesthetic.
+ * - **User messages** — right-aligned bubble with warm gradient, quoted-text
+ *   support, and an always-visible copy button below the bubble (right-aligned).
+ * - **AI messages** — full-width plain text (no bubble), markdown-rendered, with
+ *   an always-visible copy button below the text (left-aligned).
  *
- * A fixed 24px action bar below the bubble always reserves space for the copy
- * button, which fades in on hover — no layout shift.
- *
- * @param props Chat bubble properties including role, content, and stagger index.
+ * Spring entrance animation is staggered by `index` to produce natural
+ * choreography when multiple messages appear at once.
  */
 export function ChatBubble({
   role,
@@ -65,38 +64,36 @@ export function ChatBubble({
       transition={{ delay: index * 0.06 }}
       className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}
     >
-      {/* group wrapper: owns max-width, stacks bubble + action bar, enables hover */}
-      <div className="group flex flex-col max-w-[80%]">
-        <div
-          className={`chat-bubble relative px-4 py-2.5 text-sm leading-relaxed select-text ${
-            isUser
-              ? 'chat-bubble-user rounded-2xl rounded-br-md'
-              : 'chat-bubble-ai rounded-2xl rounded-bl-md'
-          }`}
-        >
-          {isUser ? (
-            <>
-              {quotedText && (
-                <p className="border-l-2 border-white/40 pl-2 mb-2 italic text-xs text-white/60 whitespace-pre-wrap">
-                  {formatQuotedText(
-                    quotedText,
-                    quote.maxDisplayLines,
-                    quote.maxDisplayChars,
-                  )}
-                </p>
-              )}
-              <span className="text-white/95 font-medium">{content}</span>
-            </>
-          ) : (
+      {isUser ? (
+        /* User bubble — max-width capped, stacks bubble + action bar */
+        <div className="flex flex-col max-w-[80%]">
+          <div className="chat-bubble chat-bubble-user relative px-4 py-2.5 text-sm leading-relaxed select-text rounded-2xl rounded-br-md">
+            {quotedText && (
+              <p className="border-l-2 border-white/40 pl-2 mb-2 italic text-xs text-white/60 whitespace-pre-wrap">
+                {formatQuotedText(
+                  quotedText,
+                  quote.maxDisplayLines,
+                  quote.maxDisplayChars,
+                )}
+              </p>
+            )}
+            <span className="text-white/95 font-medium">{content}</span>
+          </div>
+          <div className="h-6 flex items-center px-1">
+            <CopyButton content={content} align="right" />
+          </div>
+        </div>
+      ) : (
+        /* AI plain text — full width, no bubble chrome */
+        <div className="flex flex-col w-full">
+          <div className="text-sm leading-relaxed select-text py-1">
             <MarkdownRenderer content={content} isStreaming={isStreaming} />
-          )}
+          </div>
+          <div className="h-6 flex items-center">
+            <CopyButton content={content} align="left" />
+          </div>
         </div>
-
-        {/* Action bar — always 24px tall so layout never shifts on hover */}
-        <div className="h-6 flex items-center px-1">
-          <CopyButton content={content} align={isUser ? 'right' : 'left'} />
-        </div>
-      </div>
+      )}
     </motion.div>
   );
 }

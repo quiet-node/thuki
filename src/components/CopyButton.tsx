@@ -9,9 +9,8 @@ interface CopyButtonProps {
 }
 
 /**
- * One-click copy button that lives in the reserved action bar below a chat bubble.
- * Visible only when the parent container is hovered (via Tailwind `group`).
- * Shows a checkmark for 1.5s on successful copy, then reverts to the copy icon.
+ * One-click copy button rendered below a chat message.
+ * Always visible; shows a checkmark for 1.5s on successful copy, then reverts.
  * Clipboard failures are swallowed silently.
  */
 export function CopyButton({ content, align }: CopyButtonProps) {
@@ -42,7 +41,7 @@ export function CopyButton({ content, align }: CopyButtonProps) {
     >
       <button
         onClick={handleCopy}
-        className={`transition-opacity duration-150 text-white/40 hover:text-white/70 p-0.5 rounded cursor-pointer ${copied ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+        className="transition-opacity duration-150 text-white/40 hover:text-white/70 p-0.5 rounded cursor-pointer"
         aria-label={copied ? 'Copied' : 'Copy message'}
       >
         <AnimatePresence mode="wait" initial={false}>

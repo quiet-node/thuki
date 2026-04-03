@@ -160,6 +160,53 @@ function App() {
   const isPreExpandedRef = useRef(false);
 
   /**
+   * Ref attached to the outermost layout div. Used to set an explicit
+   * `minHeight` before calling `set_window_frame` in the anchor path so the
+   * CSS layout matches the new window dimensions before WKWebView's viewport
+   * size event arrives — preventing the one-frame flash where `h-screen` is
+   * still the old small height but the window has already repositioned upward.
+   */
+  const outerContainerRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * When the LLM starts generating and the window has an upward anchor, expand
+   * immediately to max height before any streaming tokens arrive.
+   *
+   * Streamdown opens empty block elements (`<p></p>`) before their content,
+   * causing the morphing container to grow in sudden steps. Each step triggers
+   * a ResizeObserver → set_window_frame cycle that repositions the window
+   * upward — visible as a jittery jump during upward-anchor sessions.
+   *
+   * Expanding to max height in a single `useEffect` call (before the first
+   * token paint) gives the streaming text a fixed canvas to fill, eliminating
+   * all incremental upward repositioning during the response.
+   */
+  useEffect(() => {
+    if (!isGenerating || !windowAnchorRef.current || isPreExpandedRef.current)
+      return;
+    const anchor = windowAnchorRef.current;
+    const maxHeight = Math.min(
+      MAX_CHAT_WINDOW_HEIGHT,
+      anchor.bottom_y - anchor.min_y,
+    );
+    const newY = anchor.bottom_y - maxHeight;
+    isPreExpandedRef.current = true;
+    // Pre-set CSS min-height so justify-end positions correctly during the
+    // WKWebView viewport update lag that follows set_window_frame.
+    /* v8 ignore start -- DOM ref null guard: always set when overlay is visible */
+    if (outerContainerRef.current) {
+      outerContainerRef.current.style.minHeight = `${maxHeight}px`;
+    }
+    /* v8 ignore stop */
+    void invoke('set_window_frame', {
+      x: anchor.x,
+      y: newY,
+      width: OVERLAY_WIDTH,
+      height: maxHeight,
+    });
+  }, [isGenerating]);
+
+  /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
    * rendered Framer Motion container actually mounts in the DOM. This fixes
    * the bug where a standard useEffect would run before the DOM node was ready,
@@ -206,6 +253,11 @@ function App() {
                   isPreExpandedRef.current = true;
                 }
 
+                // Pre-set CSS min-height before the native resize so the
+                // WKWebView layout is correct during its viewport update lag.
+                if (outerContainerRef.current) {
+                  outerContainerRef.current.style.minHeight = `${neededHeight}px`;
+                }
                 // Grow upward incrementally: pin the window bottom to the
                 // anchor and expand the top edge as content grows. Because
                 // `set_window_frame` applies position + size atomically on
@@ -241,6 +293,11 @@ function App() {
     (context: string | null, anchor: WindowAnchor | null) => {
       windowAnchorRef.current = anchor;
       isPreExpandedRef.current = false;
+      /* v8 ignore start -- DOM ref null guard: always set when overlay is visible */
+      if (outerContainerRef.current) {
+        outerContainerRef.current.style.minHeight = '';
+      }
+      /* v8 ignore stop */
       setIsAnchoredUpward(anchor !== null);
       setSessionId((id) => id + 1);
       setQuery('');
@@ -260,6 +317,11 @@ function App() {
   const requestHideOverlay = useCallback(() => {
     windowAnchorRef.current = null;
     isPreExpandedRef.current = false;
+    /* v8 ignore start -- DOM ref null guard: always set when overlay is visible */
+    if (outerContainerRef.current) {
+      outerContainerRef.current.style.minHeight = '';
+    }
+    /* v8 ignore stop */
     setSelectedContext(null);
     setOverlayState((currentState) => {
       if (currentState === 'hidden' || currentState === 'hiding') {
@@ -575,6 +637,7 @@ function App() {
     // Minimal padding (pt-2 pb-6) provides just enough physical clearance for the
     // tightened drop shadow to render without clipping at the native window edge.
     <div
+      ref={outerContainerRef}
       onMouseDown={handleDragStart}
       className={`flex flex-col items-center ${isAnchoredUpward ? 'justify-end' : 'justify-start'} h-screen w-screen px-3 pt-2 pb-6 bg-transparent overflow-visible`}
     >

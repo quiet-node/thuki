@@ -47,8 +47,9 @@ describe('ConversationView', () => {
         onClose={vi.fn()}
       />,
     );
-    const dots = container.querySelectorAll('.rounded-full.bg-primary\\/70');
-    expect(dots.length).toBeGreaterThanOrEqual(3);
+    // New indicator: 9-dot spiral grid
+    const dots = container.querySelectorAll('.rounded-full');
+    expect(dots.length).toBeGreaterThanOrEqual(9);
   });
 
   it('hides TypingIndicator when streaming content arrives', () => {
