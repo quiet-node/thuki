@@ -685,6 +685,7 @@ function App() {
                       onSave={handleSave}
                       isSaved={isSaved}
                       canSave={canSave}
+                      onNewConversation={handleNewConversation}
                       onHistoryOpen={handleHistoryToggle}
                     />
                   ) : null}
@@ -765,8 +766,7 @@ function App() {
                       onDeleteConversation={handleDeleteConversation}
                       hasCurrentMessages={messages.length > 0 && !isSaved}
                       currentConversationId={conversationId}
-                      showNewConversation={true}
-                      onNewConversation={handleNewConversation}
+                      showNewConversation={false}
                     />
                   </motion.div>
                 ) : null}

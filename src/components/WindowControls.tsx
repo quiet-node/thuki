@@ -13,6 +13,7 @@
  */
 
 import { memo } from 'react';
+import { Tooltip } from './Tooltip';
 
 /** Hoisted bookmark icon — save/saved state toggled via fill class. */
 const BOOKMARK_ICON_EMPTY = (
@@ -44,6 +45,24 @@ const BOOKMARK_ICON_FILLED = (
     aria-hidden="true"
   >
     <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+  </svg>
+);
+
+/** Hoisted new-conversation (plus) icon. */
+const NEW_CONVERSATION_ICON = (
+  <svg
+    width="13"
+    height="13"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <line x1="5" y1="12" x2="19" y2="12" />
   </svg>
 );
 
@@ -88,6 +107,11 @@ interface WindowControlsProps {
    * Omit to hide the history button entirely.
    */
   onHistoryOpen?: () => void;
+  /**
+   * Called when the user clicks the new-conversation (+) button.
+   * Omit to hide the button entirely.
+   */
+  onNewConversation?: () => void;
 }
 
 /** Decorative dot color for inactive buttons. */
@@ -99,6 +123,7 @@ export const WindowControls = memo(function WindowControls({
   isSaved = false,
   canSave = false,
   onHistoryOpen,
+  onNewConversation,
 }: WindowControlsProps) {
   const saveDisabled = isSaved || !canSave;
 
@@ -145,34 +170,54 @@ export const WindowControls = memo(function WindowControls({
         {/* Right-side header controls — save bookmark + history dropdown */}
         <div className="ml-auto flex items-center gap-1">
           {onSave !== undefined && (
-            <button
-              type="button"
-              onClick={onSave}
-              disabled={saveDisabled}
-              aria-label={isSaved ? 'Conversation saved' : 'Save conversation'}
-              className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors duration-150 cursor-pointer disabled:cursor-default ${
-                isSaved
-                  ? 'text-primary opacity-80'
-                  : canSave
-                    ? 'text-text-secondary hover:text-primary hover:bg-primary/8'
-                    : 'text-text-secondary opacity-30'
-              }`}
+            <Tooltip
+              label={isSaved ? 'Conversation saved' : 'Save conversation'}
             >
-              {isSaved ? BOOKMARK_ICON_FILLED : BOOKMARK_ICON_EMPTY}
-            </button>
+              <button
+                type="button"
+                onClick={onSave}
+                disabled={saveDisabled}
+                aria-label={
+                  isSaved ? 'Conversation saved' : 'Save conversation'
+                }
+                className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors duration-150 cursor-pointer disabled:cursor-default ${
+                  isSaved
+                    ? 'text-primary opacity-80'
+                    : canSave
+                      ? 'text-text-secondary hover:text-primary hover:bg-primary/8'
+                      : 'text-text-secondary opacity-30'
+                }`}
+              >
+                {isSaved ? BOOKMARK_ICON_FILLED : BOOKMARK_ICON_EMPTY}
+              </button>
+            </Tooltip>
+          )}
+
+          {onNewConversation !== undefined && (
+            <Tooltip label="New conversation">
+              <button
+                type="button"
+                onClick={onNewConversation}
+                aria-label="New conversation"
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
+              >
+                {NEW_CONVERSATION_ICON}
+              </button>
+            </Tooltip>
           )}
 
           {onHistoryOpen !== undefined && (
-            <button
-              type="button"
-              onClick={onHistoryOpen}
-              aria-label="Open history"
-              data-history-toggle
-              className="flex items-center gap-1 h-7 px-2 rounded-lg text-[11px] text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
-            >
-              {HISTORY_ICON}
-              <span>History</span>
-            </button>
+            <Tooltip label="Conversation history">
+              <button
+                type="button"
+                onClick={onHistoryOpen}
+                aria-label="Open history"
+                data-history-toggle
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
+              >
+                {HISTORY_ICON}
+              </button>
+            </Tooltip>
           )}
         </div>
       </div>
