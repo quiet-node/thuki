@@ -23,6 +23,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:backend": "cd src-tauri && cargo test",
+    "test:backend:coverage": "cd src-tauri && cargo +nightly-2026-03-30 llvm-cov --ignore-filename-regex \"(lib|main)\\.rs\" --fail-under-lines 100",
     "test:all": "vitest run && cd src-tauri && cargo test",
     "validate-build": "bun run lint && bun run format:check && bun run typecheck && bun run build:all"
   },

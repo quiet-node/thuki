@@ -53,11 +53,19 @@ describe('ChatBubble', () => {
       expect(bold!.textContent).toBe('bold');
     });
 
-    it('applies assistant styling (chat-bubble-ai class)', () => {
+    it('renders as plain text without a bubble wrapper (no chat-bubble-ai class)', () => {
       const { container } = render(
         <ChatBubble role="assistant" content="Hello" index={0} />,
       );
-      expect(container.querySelector('.chat-bubble-ai')).not.toBeNull();
+      expect(container.querySelector('.chat-bubble-ai')).toBeNull();
+    });
+
+    it('is not width-constrained (no max-w-[80%] on wrapper)', () => {
+      const { container } = render(
+        <ChatBubble role="assistant" content="Hello" index={0} />,
+      );
+      // AI messages span full width — no max-width cap like user bubbles
+      expect(container.querySelector('.group')).toBeNull();
     });
 
     it('shows copy button for assistant messages', () => {
@@ -129,9 +137,7 @@ describe('ChatBubble', () => {
       const { container } = render(
         <ChatBubble role="user" content="test" index={0} />,
       );
-      // The inner group wrapper has the max-width class
-      const groupDiv = container.querySelector('.group');
-      expect(groupDiv?.classList.contains('max-w-[80%]')).toBe(true);
+      expect(container.querySelector('.max-w-\\[80\\%\\]')).not.toBeNull();
     });
   });
 });

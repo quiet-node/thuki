@@ -29,8 +29,9 @@ bun run sandbox:stop     # docker compose down -v (destructive: wipes volume)
 bun run test             # Vitest run (frontend tests only)
 bun run test:watch       # Vitest watch mode
 bun run test:coverage    # Vitest with coverage report
-bun run test:backend     # Cargo test (Rust backend tests)
-bun run test:all         # Both Vitest and Cargo test
+bun run test:backend          # Cargo test (Rust backend tests)
+bun run test:backend:coverage # Cargo test + llvm-cov, enforces 100% line coverage (mirrors CI)
+bun run test:all              # Both Vitest and Cargo test
 
 bun run validate-build   # All gates: lint + format + typecheck + build
 ```
@@ -42,7 +43,7 @@ Tests use **Vitest** for the frontend (React/TypeScript with React Testing Libra
 **100% code coverage is mandatory.** Any new or modified code — frontend or backend — must maintain 100% coverage across lines, functions, branches, and statements. PRs that drop below 100% coverage will not be merged.
 
 - **Frontend:** Run `bun run test:coverage` and verify all metrics are 100%.
-- **Backend:** Run `cargo +nightly-2026-03-30 llvm-cov --ignore-filename-regex "(lib|main)\.rs" --fail-under-lines 100` from `src-tauri/` to enforce 100% line coverage. Functions excluded from coverage with `#[cfg_attr(coverage_nightly, coverage(off))]` must be thin wrappers (Tauri commands, filesystem I/O) whose logic is tested through the functions they delegate to.
+- **Backend:** Run `bun run test:backend:coverage` to enforce 100% line coverage (identical to what CI runs). Functions excluded from coverage with `#[cfg_attr(coverage_nightly, coverage(off))]` must be thin wrappers (Tauri commands, filesystem I/O) whose logic is tested through the functions they delegate to.
 
 ## Architecture
 
