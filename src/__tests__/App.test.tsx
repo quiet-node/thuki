@@ -442,6 +442,59 @@ describe('App', () => {
       });
     });
 
+    it('immediately expands to max height when isGenerating becomes true with upward anchor', async () => {
+      spyOnResizeObserver();
+
+      render(<App />);
+      await act(async () => {});
+
+      // Show with anchor
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', {
+          state: 'show',
+          selected_text: null,
+          window_anchor: { x: 100, bottom_y: 884, min_y: 40 },
+        });
+      });
+
+      // Small initial resize (ask bar only, isGenerating=false)
+      const container = document.querySelector('.morphing-container');
+      expect(container).not.toBeNull();
+      act(() => {
+        triggerResize(container!, 60);
+      });
+
+      // Submit a message — causes isGenerating to become true
+      invoke.mockClear();
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // Must immediately call set_window_frame with max height
+      // max = min(648, 884 - 40 = 844) = 648; newY = 884 - 648 = 236
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 100,
+        y: 236,
+        width: 600,
+        height: 648,
+      });
+
+      // Subsequent resize events must be no-ops (isPreExpandedRef is now true)
+      invoke.mockClear();
+      act(() => {
+        triggerResize(container!, 100);
+      });
+      expect(invoke).not.toHaveBeenCalledWith(
+        'set_window_frame',
+        expect.anything(),
+      );
+    });
+
     it('locks at max height and skips further resize events', async () => {
       spyOnResizeObserver();
 
