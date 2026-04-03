@@ -11,7 +11,7 @@ export default defineConfig(async () => ({
   plugins: [tailwindcss(), react()],
   clearScreen: false,
   build: {
-    chunkSizeWarningLimit: 600,
+    chunkSizeWarningLimit: 900,
   },
   server: {
     port: 1420,
