@@ -297,4 +297,58 @@ describe('AskBarView', () => {
     expect(el).not.toBeNull();
     expect(el?.textContent).toContain('context text here');
   });
+
+  describe('history icon button', () => {
+    it('renders history icon button in ask-bar mode when onHistoryOpen is provided', () => {
+      render(
+        <AskBarView
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          onHistoryOpen={vi.fn()}
+        />,
+      );
+      expect(
+        screen.getByRole('button', { name: /history/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('does not render history icon button in chat mode', () => {
+      render(
+        <AskBarView
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={true}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          onHistoryOpen={vi.fn()}
+        />,
+      );
+      expect(screen.queryByRole('button', { name: /history/i })).toBeNull();
+    });
+
+    it('calls onHistoryOpen when history button is clicked', () => {
+      const onHistoryOpen = vi.fn();
+      render(
+        <AskBarView
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          onHistoryOpen={onHistoryOpen}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: /history/i }));
+      expect(onHistoryOpen).toHaveBeenCalledOnce();
+    });
+  });
 });

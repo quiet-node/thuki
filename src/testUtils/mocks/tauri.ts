@@ -61,6 +61,29 @@ export function resetChannelCapture() {
   lastChannel = null;
 }
 
+/**
+ * Enable channel capture AND provide per-command return values.
+ *
+ * Combines `enableChannelCapture` with command-specific mock responses in a
+ * single `mockImplementation` call so neither overrides the other.
+ *
+ * @param responses - map of Tauri command name → resolved value
+ */
+export function enableChannelCaptureWithResponses(
+  responses: Record<string, unknown>,
+) {
+  invoke.mockImplementation(
+    async (cmd: string, args?: Record<string, unknown>) => {
+      if (args && 'onEvent' in args) {
+        lastChannel = args.onEvent as Channel;
+      }
+      if (Object.prototype.hasOwnProperty.call(responses, cmd)) {
+        return responses[cmd];
+      }
+    },
+  );
+}
+
 // ─── listen mock ────────────────────────────────────────────────────────────
 
 type EventCallback<T = unknown> = (event: { payload: T }) => void;

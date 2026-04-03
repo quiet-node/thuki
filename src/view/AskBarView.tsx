@@ -86,6 +86,34 @@ const BORDER_TRACE_RING = (
   </svg>
 );
 
+/** Hoisted static history (clock) icon — prevents re-allocation on every render. */
+const HISTORY_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <circle
+      cx="12"
+      cy="12"
+      r="10"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+    />
+    <polyline
+      points="12 6 12 12 16 14"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 /**
  * Props for the AskBarView component.
  */
@@ -106,6 +134,11 @@ interface AskBarViewProps {
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   /** Selected text from the host app captured at activation time, if any. */
   selectedText?: string;
+  /**
+   * Called when the compact history icon is clicked in ask-bar mode.
+   * Omit to hide the history icon entirely.
+   */
+  onHistoryOpen?: () => void;
 }
 
 /**
@@ -123,6 +156,7 @@ export function AskBarView({
   onCancel,
   inputRef,
   selectedText,
+  onHistoryOpen,
 }: AskBarViewProps) {
   const canSubmit = query.trim().length > 0 && !isGenerating;
 
@@ -178,6 +212,19 @@ export function AskBarView({
           }`}
           draggable={false}
         />
+
+        {/* Compact history entry point — ask-bar mode only. In chat mode the
+            history button lives in the ConversationView header. */}
+        {!isChatMode && onHistoryOpen && (
+          <button
+            type="button"
+            onClick={onHistoryOpen}
+            aria-label="Open history"
+            className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 cursor-pointer"
+          >
+            {HISTORY_ICON}
+          </button>
+        )}
 
         <textarea
           ref={inputRef}

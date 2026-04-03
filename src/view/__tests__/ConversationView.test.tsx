@@ -1,4 +1,4 @@
-import { render, screen, act } from '@testing-library/react';
+import { render, screen, act, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { ConversationView } from '../ConversationView';
 
@@ -383,6 +383,121 @@ describe('ConversationView', () => {
           onClose={vi.fn()}
         />,
       );
+    });
+  });
+
+  describe('header controls', () => {
+    it('renders History button when onHistoryOpen is provided', () => {
+      render(
+        <ConversationView
+          messages={[]}
+          streamingContent=""
+          isGenerating={false}
+          error={null}
+          onClose={vi.fn()}
+          onHistoryOpen={vi.fn()}
+        />,
+      );
+      expect(
+        screen.getByRole('button', { name: /history/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('does not render History button when onHistoryOpen is not provided', () => {
+      render(
+        <ConversationView
+          messages={[]}
+          streamingContent=""
+          isGenerating={false}
+          error={null}
+          onClose={vi.fn()}
+        />,
+      );
+      expect(screen.queryByRole('button', { name: /history/i })).toBeNull();
+    });
+
+    it('calls onHistoryOpen when History button is clicked', () => {
+      const onHistoryOpen = vi.fn();
+      render(
+        <ConversationView
+          messages={[]}
+          streamingContent=""
+          isGenerating={false}
+          error={null}
+          onClose={vi.fn()}
+          onHistoryOpen={onHistoryOpen}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: /history/i }));
+      expect(onHistoryOpen).toHaveBeenCalledOnce();
+    });
+
+    it('renders Save button when onSave is provided', () => {
+      render(
+        <ConversationView
+          messages={[]}
+          streamingContent=""
+          isGenerating={false}
+          error={null}
+          onClose={vi.fn()}
+          onSave={vi.fn()}
+          isSaved={false}
+          canSave={true}
+        />,
+      );
+      expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument();
+    });
+
+    it('calls onSave when Save button is clicked', () => {
+      const onSave = vi.fn();
+      render(
+        <ConversationView
+          messages={[]}
+          streamingContent=""
+          isGenerating={false}
+          error={null}
+          onClose={vi.fn()}
+          onSave={onSave}
+          isSaved={false}
+          canSave={true}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+      expect(onSave).toHaveBeenCalledOnce();
+    });
+
+    it('Save button is disabled when canSave is false', () => {
+      render(
+        <ConversationView
+          messages={[]}
+          streamingContent=""
+          isGenerating={false}
+          error={null}
+          onClose={vi.fn()}
+          onSave={vi.fn()}
+          isSaved={false}
+          canSave={false}
+        />,
+      );
+      const saveBtn = screen.getByRole('button', { name: /save/i });
+      expect(saveBtn).toBeDisabled();
+    });
+
+    it('Save button is disabled when isSaved is true', () => {
+      render(
+        <ConversationView
+          messages={[]}
+          streamingContent=""
+          isGenerating={false}
+          error={null}
+          onClose={vi.fn()}
+          onSave={vi.fn()}
+          isSaved={true}
+          canSave={true}
+        />,
+      );
+      const saveBtn = screen.getByRole('button', { name: /save/i });
+      expect(saveBtn).toBeDisabled();
     });
   });
 

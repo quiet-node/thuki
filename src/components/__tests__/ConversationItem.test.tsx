@@ -1,0 +1,88 @@
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { ConversationItem } from '../ConversationItem';
+import type { ConversationSummary } from '../../types/history';
+
+const SUMMARY: ConversationSummary = {
+  id: 'conv-1',
+  title: 'How does React work?',
+  model: 'llama3.2:3b',
+  updated_at: Math.floor(Date.now() / 1000),
+  message_count: 6,
+};
+
+describe('ConversationItem', () => {
+  it('renders the conversation title', () => {
+    render(
+      <ConversationItem
+        conversation={SUMMARY}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('How does React work?')).toBeInTheDocument();
+  });
+
+  it('renders "Untitled" when title is null', () => {
+    render(
+      <ConversationItem
+        conversation={{ ...SUMMARY, title: null }}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Untitled')).toBeInTheDocument();
+  });
+
+  it('renders message count', () => {
+    render(
+      <ConversationItem
+        conversation={SUMMARY}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/6 msgs/)).toBeInTheDocument();
+  });
+
+  it('calls onSelect with conversation id when clicked', () => {
+    const onSelect = vi.fn();
+    render(
+      <ConversationItem
+        conversation={SUMMARY}
+        onSelect={onSelect}
+        onDelete={vi.fn()}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: /how does react work/i }),
+    );
+    expect(onSelect).toHaveBeenCalledWith('conv-1');
+  });
+
+  it('calls onDelete with conversation id when delete button is clicked', () => {
+    const onDelete = vi.fn();
+    render(
+      <ConversationItem
+        conversation={SUMMARY}
+        onSelect={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /delete/i }));
+    expect(onDelete).toHaveBeenCalledWith('conv-1');
+  });
+
+  it('does not call onSelect when delete button is clicked', () => {
+    const onSelect = vi.fn();
+    render(
+      <ConversationItem
+        conversation={SUMMARY}
+        onSelect={onSelect}
+        onDelete={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /delete/i }));
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+});

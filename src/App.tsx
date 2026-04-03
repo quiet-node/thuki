@@ -6,10 +6,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { useOllama } from './hooks/useOllama';
+import { useConversationHistory } from './hooks/useConversationHistory';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView } from './view/AskBarView';
+import { HistoryPanel } from './components/HistoryPanel';
 import { quote } from './config';
 import './App.css';
+
+/** Ollama model used for this session — must match the Rust DEFAULT_MODEL_NAME. */
+const MODEL_NAME = 'llama3.2:3b';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 
@@ -51,6 +56,46 @@ type OverlayState = 'visible' | 'hidden' | 'hiding';
 function App() {
   const [query, setQuery] = useState('');
   const [overlayState, setOverlayState] = useState<OverlayState>('hidden');
+
+  /**
+   * Whether the ask-bar history panel is currently open.
+   * Distinct from the chat-mode history dropdown (controlled by the same toggle
+   * but rendered differently based on `isChatMode`).
+   */
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+
+  /**
+   * Direct reference to the morphing container DOM node, stored alongside the
+   * ResizeObserver so the dropdown sync effect can mutate `style.minHeight`
+   * without going through React state (direct DOM mutation + CSS transition).
+   */
+  const morphingContainerNodeRef = useRef<HTMLDivElement | null>(null);
+
+  const {
+    conversationId,
+    isSaved,
+    save,
+    persistTurn,
+    loadConversation,
+    deleteConversation,
+    listConversations,
+    reset: resetHistory,
+  } = useConversationHistory();
+
+  /**
+   * Persist a completed user/assistant turn to SQLite if the conversation
+   * has been saved. Passed as `onTurnComplete` to `useOllama`.
+   */
+  const handleTurnComplete = useCallback(
+    async (
+      userMsg: Parameters<typeof persistTurn>[0],
+      assistantMsg: Parameters<typeof persistTurn>[1],
+    ) => {
+      await persistTurn(userMsg, assistantMsg);
+    },
+    [persistTurn],
+  );
+
   const {
     messages,
     streamingContent,
@@ -59,7 +104,8 @@ function App() {
     isGenerating,
     error,
     reset,
-  } = useOllama();
+    loadMessages,
+  } = useOllama(handleTurnComplete);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -84,6 +130,13 @@ function App() {
    * to chat-window mode are animated via Framer Motion `layout` prop.
    */
   const isChatMode = messages.length > 0 || isGenerating;
+
+  /**
+   * The bookmark save button is active once the AI has produced at least one
+   * complete response. We check for an assistant message rather than any message
+   * so the button never appears during the very first user-only half-turn.
+   */
+  const canSave = messages.some((m) => m.role === 'assistant');
   const shouldRenderOverlay = overlayState === 'visible';
 
   /**
@@ -117,6 +170,8 @@ function App() {
    * as the conversation grows.
    */
   const setContainerRef = useCallback((node: HTMLDivElement | null) => {
+    morphingContainerNodeRef.current = node;
+
     if (observerRef.current) {
       observerRef.current.disconnect();
       observerRef.current = null;
@@ -190,10 +245,12 @@ function App() {
       setSessionId((id) => id + 1);
       setQuery('');
       setSelectedContext(context);
+      setIsHistoryOpen(false);
       reset();
+      resetHistory();
       setOverlayState('visible');
     },
-    [reset],
+    [reset, resetHistory],
   );
 
   /**
@@ -211,6 +268,124 @@ function App() {
       return 'hiding';
     });
   }, []);
+
+  /** Ref attached to the chat-mode history dropdown for click-outside detection. */
+  const historyDropdownRef = useRef<HTMLDivElement>(null);
+
+  /** Toggles the history panel open/closed. */
+  const handleHistoryToggle = useCallback(() => {
+    setIsHistoryOpen((prev) => !prev);
+  }, []);
+
+  /**
+   * Close the chat-mode history dropdown when the user clicks outside it.
+   * Clicks on the toggle button itself are excluded so the button's own
+   * onClick handler (handleHistoryToggle) can manage the toggle normally.
+   */
+  useEffect(() => {
+    if (!(isChatMode && isHistoryOpen)) return;
+
+    const handleMouseDown = (e: MouseEvent) => {
+      const target = e.target as Element;
+      if (
+        historyDropdownRef.current?.contains(target) ||
+        target.closest?.('[data-history-toggle]')
+      ) {
+        return;
+      }
+      setIsHistoryOpen(false);
+    };
+
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [isChatMode, isHistoryOpen]);
+
+  /**
+   * Observes the dropdown's height while it's open and mutates the morphing
+   * container's `min-height` style directly (bypassing React state) so the
+   * native window grows exactly as tall as the dropdown needs. A CSS transition
+   * on the container drives the smooth resize; the existing ResizeObserver fires
+   * per-frame and calls `setSize()` as the transition runs.
+   *
+   * Direct DOM mutation avoids the React state → Framer Motion → ResizeObserver
+   * indirect chain that broke timing. ResizeObserver tracks async conversation
+   * list load so `min-height` stays accurate as content populates.
+   */
+  useEffect(() => {
+    /* v8 ignore start -- ResizeObserver + DOM mutations require a real browser */
+    if (!isChatMode || !isHistoryOpen) {
+      if (morphingContainerNodeRef.current) {
+        morphingContainerNodeRef.current.style.minHeight = '';
+      }
+      return;
+    }
+
+    const dropdown = historyDropdownRef.current;
+    const container = morphingContainerNodeRef.current;
+    if (!dropdown || !container) return;
+
+    const sync = () => {
+      container.style.minHeight = `${dropdown.offsetTop + dropdown.offsetHeight + 8}px`;
+    };
+
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(dropdown);
+    return () => ro.disconnect();
+    /* v8 ignore stop */
+  }, [isChatMode, isHistoryOpen]);
+
+  /** Saves the current conversation to SQLite. */
+  const handleSave = useCallback(async () => {
+    await save(messages, MODEL_NAME);
+  }, [save, messages]);
+
+  /**
+   * Loads a conversation from history, replacing the current session.
+   * `load_conversation` on the backend already synced ConversationHistory.
+   */
+  const handleLoadConversation = useCallback(
+    async (id: string) => {
+      const loaded = await loadConversation(id);
+      loadMessages(loaded);
+      setIsHistoryOpen(false);
+    },
+    [loadConversation, loadMessages],
+  );
+
+  /**
+   * Saves the current unsaved session then loads the requested conversation.
+   * Used when the user confirms "Save & Switch" in the history panel.
+   */
+  const handleSaveAndLoad = useCallback(
+    async (id: string) => {
+      await save(messages, MODEL_NAME);
+      const loaded = await loadConversation(id);
+      loadMessages(loaded);
+      setIsHistoryOpen(false);
+    },
+    [save, messages, loadConversation, loadMessages],
+  );
+
+  /** Deletes a conversation from the history panel. */
+  const handleDeleteConversation = useCallback(
+    async (id: string) => {
+      await deleteConversation(id);
+      // If we deleted the currently loaded conversation, reset the history state
+      if (id === conversationId) {
+        resetHistory();
+      }
+    },
+    [deleteConversation, conversationId, resetHistory],
+  );
+
+  /** Starts a fresh conversation from within conversation view. */
+  const handleNewConversation = useCallback(() => {
+    reset();
+    resetHistory();
+    setIsHistoryOpen(false);
+    setQuery('');
+  }, [reset, resetHistory]);
 
   const handleSubmit = useCallback(() => {
     if (query.trim().length === 0 || isGenerating) return;
@@ -377,40 +552,126 @@ function App() {
             transition={{ type: 'spring', stiffness: 260, damping: 24 }}
             className="w-full max-w-2xl px-4 py-2 overflow-visible"
           >
-            {/* Morphing Container — flex column ensures the input bar
-                always sticks to the bottom without spring animation lag */}
-            <div
-              ref={setContainerRef}
-              className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border overflow-hidden ${
-                isChatMode
-                  ? 'rounded-lg shadow-chat max-h-[600px]'
-                  : 'rounded-2xl shadow-bar'
-              }`}
-            >
-              {/* Chat Messages Area — morphs in when in chat mode */}
+            {/* Relative wrapper — serves as the positioning context for the
+                chat-mode history dropdown so it can sit outside the morphing
+                container's overflow-hidden boundary without being clipped. */}
+            <div className="relative">
+              {/* Morphing Container — flex column ensures the input bar
+                  always sticks to the bottom without spring animation lag.
+                  A CSS `transition: min-height` drives smooth window growth
+                  when the chat-mode history dropdown is open; the existing
+                  ResizeObserver fires per-frame and calls setSize() so the
+                  native window tracks the animation. The dropdown is a sibling
+                  (not a child) so overflow-hidden never clips it. */}
+              <div
+                ref={setContainerRef}
+                style={{
+                  transition: 'min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+                }}
+                className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border ${
+                  isChatMode
+                    ? 'rounded-lg shadow-chat max-h-[600px] overflow-hidden'
+                    : 'rounded-2xl shadow-bar overflow-hidden'
+                }`}
+              >
+                {/* Chat Messages Area — morphs in when in chat mode */}
+                <AnimatePresence>
+                  {isChatMode ? (
+                    <ConversationView
+                      messages={messages}
+                      streamingContent={streamingContent}
+                      isGenerating={isGenerating}
+                      error={error}
+                      onClose={handleCloseOverlay}
+                      onSave={handleSave}
+                      isSaved={isSaved}
+                      canSave={canSave}
+                      onHistoryOpen={handleHistoryToggle}
+                    />
+                  ) : null}
+                </AnimatePresence>
+
+                {/* Ask-bar mode history panel — inline below the input bar.
+                    The !isChatMode gate lives OUTSIDE AnimatePresence so that when
+                    a conversation is loaded (isChatMode → true) the panel unmounts
+                    instantly — no exit animation runs alongside ConversationView
+                    mounting. Without this, AnimatePresence would hold the panel in
+                    the DOM during its exit while ConversationView is also present,
+                    causing two rapid ResizeObserver → setSize() calls (jitter).
+                    AnimatePresence is still used for the manual toggle (isHistoryOpen)
+                    so the drawer height-animates smoothly open and closed. */}
+                {!isChatMode && (
+                  <AnimatePresence>
+                    {isHistoryOpen ? (
+                      <motion.div
+                        key="ask-bar-history"
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{
+                          height: { duration: 0.25, ease: [0.16, 1, 0.3, 1] },
+                          opacity: { duration: 0.2 },
+                        }}
+                        style={{ overflow: 'hidden' }}
+                        className="border-t border-surface-border"
+                      >
+                        <HistoryPanel
+                          listConversations={listConversations}
+                          onLoadConversation={handleLoadConversation}
+                          onSaveAndLoad={handleSaveAndLoad}
+                          onDeleteConversation={handleDeleteConversation}
+                          hasCurrentMessages={false}
+                          showNewConversation={false}
+                          currentConversationId={conversationId}
+                        />
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
+                )}
+
+                {/* Input Bar — always pinned to the bottom */}
+                <AskBarView
+                  query={query}
+                  setQuery={setQuery}
+                  isChatMode={isChatMode}
+                  isGenerating={isGenerating}
+                  onSubmit={handleSubmit}
+                  onCancel={cancel}
+                  inputRef={inputRef}
+                  selectedText={selectedContext ?? undefined}
+                  onHistoryOpen={handleHistoryToggle}
+                />
+              </div>
+
+              {/* Chat-mode history dropdown — sibling of the morphing container so
+                  it is never clipped by its overflow-hidden. Positioned absolutely
+                  within this relative wrapper (same coordinate space as the
+                  container). The container's minHeight animation grows the native
+                  window tall enough to reveal the full dropdown. */}
               <AnimatePresence>
-                {isChatMode ? (
-                  <ConversationView
-                    messages={messages}
-                    streamingContent={streamingContent}
-                    isGenerating={isGenerating}
-                    error={error}
-                    onClose={handleCloseOverlay}
-                  />
+                {isChatMode && isHistoryOpen ? (
+                  <motion.div
+                    ref={historyDropdownRef}
+                    key="chat-history"
+                    initial={{ opacity: 0, y: -8, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                    transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                    className="history-dropdown absolute right-3 top-10 z-50 w-56 rounded-xl border border-surface-border bg-surface-base shadow-chat overflow-hidden flex flex-col"
+                  >
+                    <HistoryPanel
+                      listConversations={listConversations}
+                      onLoadConversation={handleLoadConversation}
+                      onSaveAndLoad={handleSaveAndLoad}
+                      onDeleteConversation={handleDeleteConversation}
+                      hasCurrentMessages={messages.length > 0 && !isSaved}
+                      currentConversationId={conversationId}
+                      showNewConversation={true}
+                      onNewConversation={handleNewConversation}
+                    />
+                  </motion.div>
                 ) : null}
               </AnimatePresence>
-
-              {/* Input Bar — always pinned to the bottom */}
-              <AskBarView
-                query={query}
-                setQuery={setQuery}
-                isChatMode={isChatMode}
-                isGenerating={isGenerating}
-                onSubmit={handleSubmit}
-                onCancel={cancel}
-                inputRef={inputRef}
-                selectedText={selectedContext ?? undefined}
-              />
             </div>
           </motion.div>
         ) : null}
