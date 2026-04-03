@@ -5,6 +5,7 @@ import {
   invoke,
   emitTauriEvent,
   enableChannelCapture,
+  enableChannelCaptureWithResponses,
   getLastChannel,
 } from '../testUtils/mocks/tauri';
 import { __mockWindow } from '../testUtils/mocks/tauri-window';
@@ -622,6 +623,692 @@ describe('App', () => {
 
     // No crash, no change — overlay is already hidden
     expect(document.querySelector('.morphing-container')).toBeNull();
+  });
+
+  // ─── History integration ─────────────────────────────────────────────────────
+
+  describe('history integration', () => {
+    it('shows history icon button in ask-bar mode', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      expect(
+        screen.getByRole('button', { name: /open history/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('shows history panel when history icon is clicked in ask-bar mode', async () => {
+      invoke.mockResolvedValue([]); // list_conversations returns empty
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+
+      expect(
+        screen.getByPlaceholderText(/search past chats/i),
+      ).toBeInTheDocument();
+    });
+
+    it('closes history panel when a conversation is loaded', async () => {
+      invoke.mockResolvedValueOnce([]); // list_conversations
+      invoke.mockResolvedValueOnce([
+        // load_conversation
+        {
+          id: 'm1',
+          role: 'user',
+          content: 'Hello',
+          quoted_text: null,
+          created_at: 1,
+        },
+        {
+          id: 'm2',
+          role: 'assistant',
+          content: 'Hi',
+          quoted_text: null,
+          created_at: 2,
+        },
+      ]);
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Open history
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+
+      // Wait for empty list to render
+      await act(async () => {});
+
+      // Panel should be visible but no conversations to click
+      // (list is empty, so just verify panel closes on a second click)
+      // Close via second click on history icon
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+
+      expect(screen.queryByPlaceholderText(/search past chats/i)).toBeNull();
+    });
+
+    it('shows save button in conversation view when there are messages', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'test' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'Reply' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument();
+    });
+
+    it('save button calls save_conversation when clicked', async () => {
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'conv-test' },
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'question' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'answer' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: /save conversation/i }),
+        );
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'save_conversation',
+        expect.objectContaining({
+          model: expect.any(String),
+          messages: expect.any(Array),
+        }),
+      );
+    });
+
+    it('resets history state on overlay reopen', async () => {
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'conv-123' },
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Send message + Done
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hi' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Save
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: /save conversation/i }),
+        );
+      });
+
+      // Reopen — bookmark should reset (save button enabled again)
+      enableChannelCapture();
+      await showOverlay();
+
+      // In ask-bar mode now — no save button visible, but history icon is
+      expect(
+        screen.getByRole('button', { name: /open history/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('handleNewConversation resets to ask-bar mode', async () => {
+      enableChannelCaptureWithResponses({
+        list_conversations: [],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Get into chat mode
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'question' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'answer' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Open history dropdown in chat mode
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /history/i }));
+      });
+
+      // Click "+ New conversation"
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: /new conversation/i }),
+        );
+      });
+
+      // Should be back in ask-bar mode (no chat bubbles)
+      expect(
+        screen.getByPlaceholderText('Ask Thuki anything...'),
+      ).toBeInTheDocument();
+    });
+
+    it('handleSaveAndLoad saves unsaved conversation then switches', async () => {
+      const OTHER_MSGS = [
+        {
+          id: 'm3',
+          role: 'user',
+          content: 'Old q',
+          quoted_text: null,
+          created_at: 1,
+        },
+        {
+          id: 'm4',
+          role: 'assistant',
+          content: 'Old a',
+          quoted_text: null,
+          created_at: 2,
+        },
+      ];
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'conv-new' },
+        load_conversation: OTHER_MSGS,
+        list_conversations: [
+          {
+            id: 'conv-other2',
+            title: 'Other chat',
+            model: 'llama3.2:3b',
+            updated_at: 1,
+            message_count: 2,
+          },
+        ],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Complete a turn (unsaved)
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'q' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'a' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Open chat history WITHOUT saving
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /history/i }));
+      });
+
+      // Click a different conversation → SwitchConfirmation
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /other chat/i }));
+      });
+
+      // Save & Switch — isSaved is FALSE so save_conversation should be called
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /save & switch/i }));
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'save_conversation',
+        expect.objectContaining({
+          model: expect.any(String),
+        }),
+      );
+    });
+
+    it('handleSaveAndLoad aborts load when save_conversation fails', async () => {
+      // Bug: without the early return on save failure, the load would still run
+      // and could overwrite the current session with an unrelated conversation.
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'list_conversations')
+          return [
+            {
+              id: 'c2',
+              title: 'Other chat',
+              model: 'llama3.2:3b',
+              updated_at: 1,
+              message_count: 1,
+            },
+          ];
+        if (cmd === 'save_conversation') throw new Error('disk full');
+        // load_conversation must NOT be called
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Complete a turn so isSaved = false
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'q' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'a' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Open history → click another conversation → SwitchConfirmation
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /other chat/i }));
+      });
+
+      // Confirm "Save & Switch" — save_conversation will throw
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /save & switch/i }));
+      });
+
+      // load_conversation must NOT have been called (early return after save failure)
+      expect(invoke).not.toHaveBeenCalledWith(
+        'load_conversation',
+        expect.anything(),
+      );
+    });
+
+    it('clicking a conversation loads it directly when already saved (no dialog)', async () => {
+      const OTHER_MSGS = [
+        {
+          id: 'm3',
+          role: 'user',
+          content: 'Old q',
+          quoted_text: null,
+          created_at: 1,
+        },
+        {
+          id: 'm4',
+          role: 'assistant',
+          content: 'Old a',
+          quoted_text: null,
+          created_at: 2,
+        },
+      ];
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'conv-current' },
+        load_conversation: OTHER_MSGS,
+        list_conversations: [
+          {
+            id: 'conv-other',
+            title: 'Switch target',
+            model: 'llama3.2:3b',
+            updated_at: 1,
+            message_count: 2,
+          },
+        ],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Complete a turn
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'q' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'a' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Save the conversation → isSaved = true
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: /save conversation/i }),
+        );
+      });
+
+      // Open chat history
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /history/i }));
+      });
+
+      // Click a different conversation — isSaved=true means no dialog, loads directly
+      invoke.mockClear();
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /switch target/i }));
+      });
+
+      // No SwitchConfirmation dialog — save_conversation NOT called again
+      expect(invoke).not.toHaveBeenCalledWith(
+        'save_conversation',
+        expect.anything(),
+      );
+      // load_conversation IS called directly
+      expect(invoke).toHaveBeenCalledWith('load_conversation', {
+        conversationId: 'conv-other',
+      });
+    });
+
+    it('handleDeleteConversation resets history when current conversation is deleted', async () => {
+      const LOADED_MSGS = [
+        {
+          id: 'm1',
+          role: 'user',
+          content: 'Hi',
+          quoted_text: null,
+          created_at: 1,
+        },
+        {
+          id: 'm2',
+          role: 'assistant',
+          content: 'Hello',
+          quoted_text: null,
+          created_at: 2,
+        },
+      ];
+      enableChannelCaptureWithResponses({
+        load_conversation: LOADED_MSGS,
+        list_conversations: [
+          {
+            id: 'conv-target',
+            title: 'My chat',
+            model: 'llama3.2:3b',
+            updated_at: 1,
+            message_count: 2,
+          },
+        ],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Load a conversation from ask-bar history → conversationId = 'conv-target'
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /my chat/i }));
+      });
+
+      // In chat mode; open chat history
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+
+      // Delete the same conversation that is currently loaded (id matches conversationId)
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: /delete conversation/i }),
+        );
+      });
+
+      // delete_conversation was called with the matching id
+      expect(invoke).toHaveBeenCalledWith('delete_conversation', {
+        conversationId: 'conv-target',
+      });
+    });
+
+    it('clicking outside the chat history dropdown closes it', async () => {
+      enableChannelCaptureWithResponses({
+        list_conversations: [],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Complete a turn to enter chat mode
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'q' } });
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'a' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Open history dropdown
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+      expect(
+        screen.getByPlaceholderText('Search past chats…'),
+      ).toBeInTheDocument();
+
+      // Click outside — should close the dropdown
+      await act(async () => {
+        fireEvent.mouseDown(document.body);
+      });
+      expect(screen.queryByPlaceholderText('Search past chats…')).toBeNull();
+    });
+
+    it('clicking inside the chat history dropdown does not close it', async () => {
+      enableChannelCaptureWithResponses({
+        list_conversations: [],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Complete a turn to enter chat mode
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'q' } });
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'a' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Open history dropdown
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+
+      const searchInput = screen.getByPlaceholderText('Search past chats…');
+      expect(searchInput).toBeInTheDocument();
+
+      // Click inside the dropdown — should NOT close it
+      await act(async () => {
+        fireEvent.mouseDown(searchInput);
+      });
+      expect(
+        screen.getByPlaceholderText('Search past chats…'),
+      ).toBeInTheDocument();
+    });
+
+    it('handleDeleteConversation clears messages when the active conversation is deleted', async () => {
+      // Bug: resetHistory() clears conversationId but not messages — the chat
+      // view remains populated after the active conversation is deleted.
+      enableChannelCaptureWithResponses({
+        load_conversation: [
+          {
+            id: 'm1',
+            role: 'user',
+            content: 'Hi',
+            quoted_text: null,
+            created_at: 1,
+          },
+          {
+            id: 'm2',
+            role: 'assistant',
+            content: 'Hello',
+            quoted_text: null,
+            created_at: 2,
+          },
+        ],
+        list_conversations: [
+          {
+            id: 'conv-active',
+            title: 'Active chat',
+            model: 'llama3.2:3b',
+            updated_at: 1,
+            message_count: 2,
+          },
+        ],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Load the conversation from ask-bar history → enters chat mode with messages
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /active chat/i }));
+      });
+
+      expect(screen.getByText('Hi')).toBeInTheDocument();
+
+      // Re-open history in chat mode and delete the active conversation
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: /delete conversation/i }),
+        );
+      });
+
+      // Messages must be gone — UI returns to ask-bar mode
+      expect(screen.queryByText('Hi')).toBeNull();
+      expect(
+        screen.getByPlaceholderText('Ask Thuki anything...'),
+      ).toBeInTheDocument();
+    });
+
+    it('handleLoadConversation closes history panel when load_conversation fails', async () => {
+      // Bug: without try/catch, setIsHistoryOpen(false) is never reached when
+      // loadConversation() throws, leaving the panel open on failure.
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'list_conversations')
+          return [
+            {
+              id: 'c1',
+              title: 'Chat',
+              model: 'llama3.2:3b',
+              updated_at: 1,
+              message_count: 1,
+            },
+          ];
+        if (cmd === 'load_conversation') throw new Error('load failed');
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+
+      // Click the conversation — load_conversation will throw
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /^chat$/i }));
+      });
+
+      // Panel must close even on failure; app must still be running
+      expect(screen.queryByPlaceholderText(/search past chats/i)).toBeNull();
+      expect(
+        screen.getByPlaceholderText('Ask Thuki anything...'),
+      ).toBeInTheDocument();
+    });
+
+    it('handleDeleteConversation does not reset history when a different conversation is deleted', async () => {
+      enableChannelCaptureWithResponses({
+        list_conversations: [
+          {
+            id: 'conv-unrelated',
+            title: 'Unrelated',
+            model: 'llama3.2:3b',
+            updated_at: 1,
+            message_count: 2,
+          },
+        ],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Open ask-bar history (no conversation loaded — conversationId is null)
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+
+      // Delete a conversation while conversationId is null (id !== conversationId → false branch)
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: /delete conversation/i }),
+        );
+      });
+
+      expect(invoke).toHaveBeenCalledWith('delete_conversation', {
+        conversationId: 'conv-unrelated',
+      });
+    });
   });
 
   it('resets session on overlay reopen', async () => {

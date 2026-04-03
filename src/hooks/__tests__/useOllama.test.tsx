@@ -1,5 +1,5 @@
 import { renderHook, act } from '@testing-library/react';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useOllama } from '../useOllama';
 import {
   invoke,
@@ -468,6 +468,112 @@ describe('useOllama', () => {
       expect(result.current.error).toBeNull();
       // Should also reset backend conversation history
       expect(invoke).toHaveBeenCalledWith('reset_conversation');
+    });
+  });
+
+  // ─── onTurnComplete callback ─────────────────────────────────────────────────
+
+  describe('onTurnComplete callback', () => {
+    it('is called with user and assistant messages on Done', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+
+      await act(async () => {
+        await result.current.ask('ping');
+      });
+
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', data: 'pong' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      expect(onTurnComplete).toHaveBeenCalledOnce();
+      const [userMsg, assistantMsg] = onTurnComplete.mock.calls[0];
+      expect(userMsg).toMatchObject({ role: 'user', content: 'ping' });
+      expect(assistantMsg).toMatchObject({
+        role: 'assistant',
+        content: 'pong',
+      });
+    });
+
+    it('is not called when Cancelled', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+
+      await act(async () => {
+        await result.current.ask('ping');
+      });
+
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', data: 'partial' });
+        channel!.simulateMessage({ type: 'Cancelled' });
+      });
+
+      expect(onTurnComplete).not.toHaveBeenCalled();
+    });
+
+    it('is not called when an Error chunk is received', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+
+      await act(async () => {
+        await result.current.ask('ping');
+      });
+
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Error', data: 'failure' });
+      });
+
+      expect(onTurnComplete).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── loadMessages() ──────────────────────────────────────────────────────────
+
+  describe('loadMessages()', () => {
+    it('replaces messages state with provided array', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('original question');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      expect(result.current.messages).toHaveLength(2);
+
+      const loaded = [
+        { id: 'l1', role: 'user' as const, content: 'loaded question' },
+        { id: 'l2', role: 'assistant' as const, content: 'loaded answer' },
+      ];
+
+      act(() => {
+        result.current.loadMessages(loaded);
+      });
+
+      expect(result.current.messages).toEqual(loaded);
+    });
+
+    it('clears streaming and error state when loading messages', async () => {
+      invoke.mockRejectedValueOnce(new Error('boom'));
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('fail');
+      });
+      expect(result.current.error).not.toBeNull();
+
+      act(() => {
+        result.current.loadMessages([]);
+      });
+
+      expect(result.current.streamingContent).toBe('');
+      expect(result.current.isGenerating).toBe(false);
+      expect(result.current.error).toBeNull();
     });
   });
 
