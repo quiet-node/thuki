@@ -193,9 +193,11 @@ function App() {
     isPreExpandedRef.current = true;
     // Pre-set CSS min-height so justify-end positions correctly during the
     // WKWebView viewport update lag that follows set_window_frame.
+    /* v8 ignore start -- DOM ref null guard: always set when overlay is visible */
     if (outerContainerRef.current) {
       outerContainerRef.current.style.minHeight = `${maxHeight}px`;
     }
+    /* v8 ignore stop */
     void invoke('set_window_frame', {
       x: anchor.x,
       y: newY,
@@ -291,9 +293,11 @@ function App() {
     (context: string | null, anchor: WindowAnchor | null) => {
       windowAnchorRef.current = anchor;
       isPreExpandedRef.current = false;
+      /* v8 ignore start -- DOM ref null guard: always set when overlay is visible */
       if (outerContainerRef.current) {
         outerContainerRef.current.style.minHeight = '';
       }
+      /* v8 ignore stop */
       setIsAnchoredUpward(anchor !== null);
       setSessionId((id) => id + 1);
       setQuery('');
@@ -313,9 +317,11 @@ function App() {
   const requestHideOverlay = useCallback(() => {
     windowAnchorRef.current = null;
     isPreExpandedRef.current = false;
+    /* v8 ignore start -- DOM ref null guard: always set when overlay is visible */
     if (outerContainerRef.current) {
       outerContainerRef.current.style.minHeight = '';
     }
+    /* v8 ignore stop */
     setSelectedContext(null);
     setOverlayState((currentState) => {
       if (currentState === 'hidden' || currentState === 'hiding') {

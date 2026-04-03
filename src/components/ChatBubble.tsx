@@ -65,8 +65,8 @@ export function ChatBubble({
       className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}
     >
       {isUser ? (
-        /* User bubble — max-width capped, group enables legacy hover compat */
-        <div className="group flex flex-col max-w-[80%]">
+        /* User bubble — max-width capped, stacks bubble + action bar */
+        <div className="flex flex-col max-w-[80%]">
           <div className="chat-bubble chat-bubble-user relative px-4 py-2.5 text-sm leading-relaxed select-text rounded-2xl rounded-br-md">
             {quotedText && (
               <p className="border-l-2 border-white/40 pl-2 mb-2 italic text-xs text-white/60 whitespace-pre-wrap">

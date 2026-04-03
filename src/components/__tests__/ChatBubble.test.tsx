@@ -137,9 +137,7 @@ describe('ChatBubble', () => {
       const { container } = render(
         <ChatBubble role="user" content="test" index={0} />,
       );
-      // The inner group wrapper has the max-width class
-      const groupDiv = container.querySelector('.group');
-      expect(groupDiv?.classList.contains('max-w-[80%]')).toBe(true);
+      expect(container.querySelector('.max-w-\\[80\\%\\]')).not.toBeNull();
     });
   });
 });

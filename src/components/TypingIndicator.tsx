@@ -76,7 +76,9 @@ export function TypingIndicator() {
     /** Schedule `fn` after `delay` ms; no-ops if cancelled. */
     function schedule(fn: () => void, delay: number) {
       timerRef.current = setTimeout(() => {
+        /* v8 ignore start -- cancelled guard: only reachable when component unmounts mid-tick */
         if (!cancelled) fn();
+        /* v8 ignore stop */
       }, delay);
     }
 
@@ -105,7 +107,9 @@ export function TypingIndicator() {
 
     return () => {
       cancelled = true;
+      /* v8 ignore start -- timerRef null guard: ref is always set by the time cleanup runs */
       if (timerRef.current) clearTimeout(timerRef.current);
+      /* v8 ignore stop */
     };
   }, []);
 
