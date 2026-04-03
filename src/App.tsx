@@ -1,6 +1,12 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useRef,
+} from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -32,6 +38,15 @@ const OVERLAY_WIDTH = 600;
 const CONTAINER_VERTICAL_PADDING = 48;
 /** Max morphing-container height in chat mode (matches `max-h-[600px]`) + vertical padding. */
 const MAX_CHAT_WINDOW_HEIGHT = 600 + CONTAINER_VERTICAL_PADDING;
+/**
+ * Extra logical pixels added to the upward-anchor window height while the
+ * LLM is actively streaming. Streamdown opens empty block elements (e.g.
+ * `<p></p>`) before their content arrives, causing sudden ~20 px height jumps.
+ * Pre-expanding by this amount ensures new reserved lines always fit inside
+ * the already-repositioned window, eliminating the one-to-two-frame lag that
+ * makes upward growth visibly jump.
+ */
+const STREAM_BUFFER_PX = 32;
 
 type WindowAnchor = { x: number; bottom_y: number; min_y: number };
 type OverlayVisibilityPayload =
@@ -160,6 +175,19 @@ function App() {
   const isPreExpandedRef = useRef(false);
 
   /**
+   * Mirrors `isGenerating` for the ResizeObserver closure, which is created
+   * once (empty deps) and cannot read React state directly.
+   *
+   * `useLayoutEffect` fires before paint so the ref is always current by the
+   * time `requestAnimationFrame` reads it in the observer callback — preventing
+   * the race that would leave the buffer unapplied on the first streaming frame.
+   */
+  const isGeneratingRef = useRef(false);
+  useLayoutEffect(() => {
+    isGeneratingRef.current = isGenerating;
+  }, [isGenerating]);
+
+  /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
    * rendered Framer Motion container actually mounts in the DOM. This fixes
    * the bug where a standard useEffect would run before the DOM node was ready,
@@ -199,7 +227,11 @@ function App() {
                   MAX_CHAT_WINDOW_HEIGHT,
                   anchor.bottom_y - anchor.min_y,
                 );
-                const neededHeight = Math.min(targetHeight, maxHeight);
+                // Pre-expand by STREAM_BUFFER_PX while generating so that
+                // Streamdown's paragraph-level height reservations land inside
+                // the already-repositioned window rather than overflowing it.
+                const buffer = isGeneratingRef.current ? STREAM_BUFFER_PX : 0;
+                const neededHeight = Math.min(targetHeight + buffer, maxHeight);
 
                 // Lock the observer once max height is reached.
                 if (neededHeight >= maxHeight) {
