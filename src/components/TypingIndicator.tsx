@@ -118,8 +118,8 @@ export function TypingIndicator() {
       className="flex w-full justify-start py-1"
     >
       <div
-        className="grid gap-[5px]"
-        style={{ gridTemplateColumns: 'repeat(3, 4px)' }}
+        className="grid gap-[3px]"
+        style={{ gridTemplateColumns: 'repeat(3, 3px)' }}
         role="status"
         aria-label="AI is thinking"
       >
@@ -127,7 +127,7 @@ export function TypingIndicator() {
           ([0, 1, 2] as const).map((col) => (
             <div
               key={`${row},${col}`}
-              className={`w-[4px] h-[4px] rounded-full transition-colors duration-[100ms] ${INTENSITY_CLASS[getIntensity(row, col, step, dimmed)]}`}
+              className={`w-[3px] h-[3px] rounded-full transition-colors duration-[100ms] ${INTENSITY_CLASS[getIntensity(row, col, step, dimmed)]}`}
             />
           )),
         )}
