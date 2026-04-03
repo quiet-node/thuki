@@ -292,6 +292,29 @@ describe('HistoryPanel', () => {
     expect(props.onLoadConversation).not.toHaveBeenCalled();
   });
 
+  it('restores deleted conversation when onDeleteConversation rejects', async () => {
+    // Bug: optimistic removal has no rollback — if the backend delete fails the
+    // item disappears from the UI but still exists in SQLite, reappearing on next open.
+    const props = makeProps({
+      onDeleteConversation: vi.fn(async () => {
+        throw new Error('delete failed');
+      }),
+    });
+    render(<HistoryPanel {...props} />);
+
+    await act(async () => {});
+
+    expect(screen.getByText('React basics')).toBeInTheDocument();
+
+    const deleteButtons = screen.getAllByRole('button', { name: /delete/i });
+    await act(async () => {
+      fireEvent.click(deleteButtons[0]);
+    });
+
+    // After the backend rejects, the conversation must be restored to the list
+    expect(screen.getByText('React basics')).toBeInTheDocument();
+  });
+
   it('shows error message when listConversations rejects', async () => {
     const props = makeProps({
       listConversations: vi.fn(async () => {

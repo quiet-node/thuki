@@ -58,7 +58,7 @@ interface HistoryPanelProps {
    */
   onSaveAndLoad: (id: string) => void;
   /** Called when the user clicks the delete button on a row. */
-  onDeleteConversation: (id: string) => void;
+  onDeleteConversation: (id: string) => Promise<void>;
   /**
    * True when the current session has unsaved messages. Causes a
    * `SwitchConfirmation` to appear before loading.
@@ -188,12 +188,31 @@ export function HistoryPanel({
   }, []);
 
   const handleDelete = useCallback(
-    (id: string) => {
-      // Optimistic removal — update list immediately without waiting for the backend.
+    async (id: string) => {
+      // Capture snapshot for rollback before optimistic removal.
+      // find() always returns a match (called via ConversationItem on a known id).
+      // The ?? null and the snapshot !== null guard are defensive only.
+      /* v8 ignore start */
+      const snapshot = conversations.find((c) => c.id === id) ?? null;
+      /* v8 ignore stop */
       setConversations((prev) => prev.filter((c) => c.id !== id));
-      onDeleteConversation(id);
+      try {
+        await onDeleteConversation(id);
+      } catch {
+        // Backend rejected — restore the item in its original sort position.
+        /* v8 ignore start */
+        if (snapshot !== null) {
+          setConversations((prev) =>
+            // Item was just removed optimistically; can't already be present.
+            prev.some((c) => c.id === id)
+              ? prev
+              : [...prev, snapshot].sort((a, b) => b.updated_at - a.updated_at),
+          );
+        }
+        /* v8 ignore stop */
+      }
     },
-    [onDeleteConversation],
+    [onDeleteConversation, conversations],
   );
 
   const groups = groupByDate(conversations);

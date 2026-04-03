@@ -337,46 +337,82 @@ function App() {
 
   /** Saves the current conversation to SQLite. */
   const handleSave = useCallback(async () => {
-    await save(messages, MODEL_NAME);
+    try {
+      await save(messages, MODEL_NAME);
+    } catch {
+      // Save failed — bookmark state stays unchanged; the error is surfaced by
+      // the Tauri runtime. No UI banner here; save is a user-initiated fire-and-
+      // forget action with visible feedback via the bookmark icon state.
+    }
   }, [save, messages]);
 
   /**
    * Loads a conversation from history, replacing the current session.
-   * `load_conversation` on the backend already synced ConversationHistory.
+   *
+   * Closes the history panel regardless of success or failure: on success the
+   * loaded messages replace the current session; on failure the current session
+   * is preserved and the panel is dismissed so the user is not left in a
+   * half-open state.
    */
   const handleLoadConversation = useCallback(
     async (id: string) => {
-      const loaded = await loadConversation(id);
-      loadMessages(loaded);
-      setIsHistoryOpen(false);
+      try {
+        const loaded = await loadConversation(id);
+        loadMessages(loaded);
+      } catch {
+        // Load failed — current session is preserved intact.
+      } finally {
+        setIsHistoryOpen(false);
+      }
     },
     [loadConversation, loadMessages],
   );
 
   /**
    * Saves the current unsaved session then loads the requested conversation.
-   * Used when the user confirms "Save & Switch" in the history panel.
+   *
+   * If save fails the operation is aborted — we do not load the target
+   * conversation because the current session has not been persisted yet.
+   * If save succeeds but load fails the panel is still dismissed; the
+   * current session has been saved so no data is lost.
    */
   const handleSaveAndLoad = useCallback(
     async (id: string) => {
-      await save(messages, MODEL_NAME);
-      const loaded = await loadConversation(id);
-      loadMessages(loaded);
-      setIsHistoryOpen(false);
+      try {
+        await save(messages, MODEL_NAME);
+      } catch {
+        // Save failed — abort to avoid leaving the current session unprotected.
+        return;
+      }
+      try {
+        const loaded = await loadConversation(id);
+        loadMessages(loaded);
+      } catch {
+        // Load failed — save already committed; dismiss panel, keep current view.
+      } finally {
+        setIsHistoryOpen(false);
+      }
     },
     [save, messages, loadConversation, loadMessages],
   );
 
-  /** Deletes a conversation from the history panel. */
+  /**
+   * Deletes a conversation from the history panel.
+   *
+   * When the deleted conversation is the currently active one, both the
+   * message history (`reset`) and the persistence state (`resetHistory`) are
+   * cleared so the UI returns to the blank ask-bar state. The error is
+   * re-thrown so `HistoryPanel` can roll back its optimistic removal.
+   */
   const handleDeleteConversation = useCallback(
     async (id: string) => {
       await deleteConversation(id);
-      // If we deleted the currently loaded conversation, reset the history state
       if (id === conversationId) {
+        reset();
         resetHistory();
       }
     },
-    [deleteConversation, conversationId, resetHistory],
+    [deleteConversation, conversationId, reset, resetHistory],
   );
 
   /** Starts a fresh conversation from within conversation view. */

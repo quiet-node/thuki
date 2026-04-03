@@ -909,6 +909,62 @@ describe('App', () => {
       );
     });
 
+    it('handleSaveAndLoad aborts load when save_conversation fails', async () => {
+      // Bug: without the early return on save failure, the load would still run
+      // and could overwrite the current session with an unrelated conversation.
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'list_conversations')
+          return [
+            {
+              id: 'c2',
+              title: 'Other chat',
+              model: 'llama3.2:3b',
+              updated_at: 1,
+              message_count: 1,
+            },
+          ];
+        if (cmd === 'save_conversation') throw new Error('disk full');
+        // load_conversation must NOT be called
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Complete a turn so isSaved = false
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'q' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'a' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Open history → click another conversation → SwitchConfirmation
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /other chat/i }));
+      });
+
+      // Confirm "Save & Switch" — save_conversation will throw
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /save & switch/i }));
+      });
+
+      // load_conversation must NOT have been called (early return after save failure)
+      expect(invoke).not.toHaveBeenCalledWith(
+        'load_conversation',
+        expect.anything(),
+      );
+    });
+
     it('clicking a conversation loads it directly when already saved (no dialog)', async () => {
       const OTHER_MSGS = [
         {
@@ -1118,6 +1174,105 @@ describe('App', () => {
       });
       expect(
         screen.getByPlaceholderText('Search past chats…'),
+      ).toBeInTheDocument();
+    });
+
+    it('handleDeleteConversation clears messages when the active conversation is deleted', async () => {
+      // Bug: resetHistory() clears conversationId but not messages — the chat
+      // view remains populated after the active conversation is deleted.
+      enableChannelCaptureWithResponses({
+        load_conversation: [
+          {
+            id: 'm1',
+            role: 'user',
+            content: 'Hi',
+            quoted_text: null,
+            created_at: 1,
+          },
+          {
+            id: 'm2',
+            role: 'assistant',
+            content: 'Hello',
+            quoted_text: null,
+            created_at: 2,
+          },
+        ],
+        list_conversations: [
+          {
+            id: 'conv-active',
+            title: 'Active chat',
+            model: 'llama3.2:3b',
+            updated_at: 1,
+            message_count: 2,
+          },
+        ],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Load the conversation from ask-bar history → enters chat mode with messages
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /active chat/i }));
+      });
+
+      expect(screen.getByText('Hi')).toBeInTheDocument();
+
+      // Re-open history in chat mode and delete the active conversation
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: /delete conversation/i }),
+        );
+      });
+
+      // Messages must be gone — UI returns to ask-bar mode
+      expect(screen.queryByText('Hi')).toBeNull();
+      expect(
+        screen.getByPlaceholderText('Ask Thuki anything...'),
+      ).toBeInTheDocument();
+    });
+
+    it('handleLoadConversation closes history panel when load_conversation fails', async () => {
+      // Bug: without try/catch, setIsHistoryOpen(false) is never reached when
+      // loadConversation() throws, leaving the panel open on failure.
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'list_conversations')
+          return [
+            {
+              id: 'c1',
+              title: 'Chat',
+              model: 'llama3.2:3b',
+              updated_at: 1,
+              message_count: 1,
+            },
+          ];
+        if (cmd === 'load_conversation') throw new Error('load failed');
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+
+      // Click the conversation — load_conversation will throw
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /^chat$/i }));
+      });
+
+      // Panel must close even on failure; app must still be running
+      expect(screen.queryByPlaceholderText(/search past chats/i)).toBeNull();
+      expect(
+        screen.getByPlaceholderText('Ask Thuki anything...'),
       ).toBeInTheDocument();
     });
 
