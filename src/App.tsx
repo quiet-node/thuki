@@ -63,6 +63,12 @@ function App() {
    * but rendered differently based on `isChatMode`).
    */
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  /**
+   * True when the user clicked + while an unsaved conversation is active.
+   * Causes the history dropdown to show a SwitchConfirmation prompt instead
+   * of the conversation list.
+   */
+  const [pendingNewConversation, setPendingNewConversation] = useState(false);
 
   /**
    * Direct reference to the morphing container DOM node, stored alongside the
@@ -362,6 +368,11 @@ function App() {
     return () => document.removeEventListener('mousedown', handleMouseDown);
   }, [isChatMode, isHistoryOpen]);
 
+  // Clear any pending new-conversation confirmation whenever the panel closes.
+  useEffect(() => {
+    if (!isHistoryOpen) setPendingNewConversation(false);
+  }, [isHistoryOpen]);
+
   /**
    * Observes the dropdown's height while it's open and mutates the morphing
    * container's `min-height` style directly (bypassing React state) so the
@@ -477,8 +488,39 @@ function App() {
     [deleteConversation, conversationId, reset, resetHistory],
   );
 
-  /** Starts a fresh conversation from within conversation view. */
+  /**
+   * Starts a fresh conversation from within conversation view.
+   * If the current conversation has unsaved messages, opens the history
+   * dropdown and surfaces a SwitchConfirmation prompt instead of resetting
+   * immediately.
+   */
   const handleNewConversation = useCallback(() => {
+    if (!isSaved && messages.length > 0) {
+      setPendingNewConversation(true);
+      setIsHistoryOpen(true);
+      return;
+    }
+    reset();
+    resetHistory();
+    setIsHistoryOpen(false);
+    setQuery('');
+  }, [isSaved, messages.length, reset, resetHistory]);
+
+  /** Saves the current conversation then starts a fresh one. */
+  const handleSaveAndNew = useCallback(async () => {
+    try {
+      await save(messages, MODEL_NAME);
+    } catch {
+      return;
+    }
+    reset();
+    resetHistory();
+    setIsHistoryOpen(false);
+    setQuery('');
+  }, [save, messages, reset, resetHistory]);
+
+  /** Discards the current conversation and starts a fresh one. */
+  const handleJustNew = useCallback(() => {
     reset();
     resetHistory();
     setIsHistoryOpen(false);
@@ -767,6 +809,9 @@ function App() {
                       hasCurrentMessages={messages.length > 0 && !isSaved}
                       currentConversationId={conversationId}
                       showNewConversation={false}
+                      pendingNewConversation={pendingNewConversation}
+                      onSaveAndNew={handleSaveAndNew}
+                      onJustNew={handleJustNew}
                     />
                   </motion.div>
                 ) : null}

@@ -849,9 +849,55 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
-    it('handleNewConversation resets to ask-bar mode', async () => {
+    it('handleNewConversation shows SwitchConfirmation when unsaved, resets on Just Switch', async () => {
       enableChannelCaptureWithResponses({
         list_conversations: [],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Get into chat mode with an unsaved turn
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'question' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'answer' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Click + (unsaved conversation → history panel opens with SwitchConfirmation)
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'New conversation' }),
+        );
+      });
+
+      // SwitchConfirmation should be visible
+      expect(
+        screen.getByRole('button', { name: 'Just Switch' }),
+      ).toBeInTheDocument();
+
+      // Click "Just Switch" → should reset to ask-bar mode
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Just Switch' }));
+      });
+
+      expect(
+        screen.getByPlaceholderText('Ask Thuki anything...'),
+      ).toBeInTheDocument();
+    });
+
+    it('handleNewConversation resets directly when conversation is already saved', async () => {
+      enableChannelCaptureWithResponses({
+        list_conversations: [],
+        save_conversation: 'saved-id',
       });
 
       render(<App />);
@@ -872,22 +918,109 @@ describe('App', () => {
         getLastChannel()?.simulateMessage({ type: 'Done' });
       });
 
-      // Open history dropdown in chat mode
-      await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: /history/i }));
-      });
-
-      // Click "+ New conversation"
+      // Save the conversation
       await act(async () => {
         fireEvent.click(
-          screen.getByRole('button', { name: /new conversation/i }),
+          screen.getByRole('button', { name: /save conversation/i }),
         );
       });
 
-      // Should be back in ask-bar mode (no chat bubbles)
+      // Click + (already saved → no confirmation, direct reset)
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'New conversation' }),
+        );
+      });
+
+      // Should be directly back in ask-bar mode (no confirmation prompt)
       expect(
         screen.getByPlaceholderText('Ask Thuki anything...'),
       ).toBeInTheDocument();
+    });
+
+    it('handleNewConversation saves then resets on Save & Switch', async () => {
+      enableChannelCaptureWithResponses({
+        list_conversations: [],
+        save_conversation: 'saved-id',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Get into chat mode with an unsaved turn
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'question' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'answer' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Click + → SwitchConfirmation appears
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'New conversation' }),
+        );
+      });
+
+      expect(
+        screen.getByRole('button', { name: 'Save & Switch' }),
+      ).toBeInTheDocument();
+
+      // Click "Save & Switch" → saves then resets to ask-bar mode
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Save & Switch' }));
+      });
+
+      expect(
+        screen.getByPlaceholderText('Ask Thuki anything...'),
+      ).toBeInTheDocument();
+    });
+
+    it('handleSaveAndNew aborts reset when save fails', async () => {
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'list_conversations') return [];
+        if (cmd === 'save_conversation') throw new Error('disk full');
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Complete a turn so isSaved = false
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'q' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'a' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Click + → SwitchConfirmation
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'New conversation' }),
+        );
+      });
+
+      // Click "Save & Switch" — save fails → should stay in chat mode
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Save & Switch' }));
+      });
+
+      // Still in chat mode (save_conversation threw, reset was aborted)
+      expect(screen.getByText('q')).toBeInTheDocument();
     });
 
     it('handleSaveAndLoad saves unsaved conversation then switches', async () => {
