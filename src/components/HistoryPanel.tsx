@@ -76,6 +76,15 @@ interface HistoryPanelProps {
   showNewConversation: boolean;
   /** Called when the user clicks "+ New conversation". */
   onNewConversation?: () => void;
+  /**
+   * When true, replaces the conversation list with a SwitchConfirmation prompt
+   * asking whether to save before starting a new conversation.
+   */
+  pendingNewConversation?: boolean;
+  /** Called when the user confirms "Save & Switch" for a new conversation. */
+  onSaveAndNew?: () => void;
+  /** Called when the user confirms "Just Switch" for a new conversation. */
+  onJustNew?: () => void;
 }
 
 /**
@@ -86,6 +95,7 @@ interface HistoryPanelProps {
  * - Debounces search input at 200 ms.
  * - Shows a `SwitchConfirmation` prompt before loading when the user has an
  *   active session (`hasCurrentMessages`).
+ * - Shows a `SwitchConfirmation` prompt when `pendingNewConversation` is true.
  * - Optimistically removes deleted conversations from the list.
  * - Conditionally renders a "+ New conversation" footer via `showNewConversation`.
  */
@@ -98,6 +108,9 @@ export function HistoryPanel({
   currentConversationId,
   showNewConversation,
   onNewConversation,
+  pendingNewConversation = false,
+  onSaveAndNew,
+  onJustNew,
 }: HistoryPanelProps) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [search, setSearch] = useState('');
@@ -239,6 +252,12 @@ export function HistoryPanel({
           onJustSwitch={handleJustSwitch}
           onCancel={handleCancelSwitch}
         />
+      ) : pendingNewConversation ? (
+        <SwitchConfirmation
+          onSaveAndSwitch={onSaveAndNew!}
+          onJustSwitch={onJustNew!}
+          onCancel={handleCancelSwitch}
+        />
       ) : (
         <div className="overflow-y-auto py-1 max-h-[280px]">
           {loadError && (
@@ -272,7 +291,7 @@ export function HistoryPanel({
       )}
 
       {/* Optional footer — only shown in conversation-view mode */}
-      {showNewConversation && pendingId === null && (
+      {showNewConversation && pendingId === null && !pendingNewConversation && (
         <div className="border-t border-surface-border pt-1 pb-1">
           <button
             type="button"

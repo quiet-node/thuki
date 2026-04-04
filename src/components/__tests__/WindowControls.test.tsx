@@ -38,4 +38,38 @@ describe('WindowControls', () => {
     const svg = closeBtn.querySelector('svg');
     expect(svg).not.toBeNull();
   });
+
+  it('save button shows "Save conversation" aria-label when not saved', () => {
+    render(
+      <WindowControls
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        canSave
+        isSaved={false}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Save conversation' }),
+    ).toBeInTheDocument();
+  });
+
+  it('save button shows "Remove from history" aria-label when saved', () => {
+    render(
+      <WindowControls onClose={vi.fn()} onSave={vi.fn()} canSave isSaved />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Remove from history' }),
+    ).toBeInTheDocument();
+  });
+
+  it('save button calls onSave when clicked while saved', () => {
+    const onSave = vi.fn();
+    render(
+      <WindowControls onClose={vi.fn()} onSave={onSave} canSave isSaved />,
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Remove from history' }),
+    );
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
 });

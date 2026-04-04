@@ -40,6 +40,11 @@ interface ConversationViewProps {
    * Omit to hide the history button.
    */
   onHistoryOpen?: () => void;
+  /**
+   * Called when the new-conversation (+) button is clicked.
+   * Omit to hide the button.
+   */
+  onNewConversation?: () => void;
 }
 
 /**
@@ -62,6 +67,7 @@ export function ConversationView({
   isSaved,
   canSave,
   onHistoryOpen,
+  onNewConversation,
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -155,6 +161,7 @@ export function ConversationView({
         onSave={onSave}
         isSaved={isSaved}
         canSave={canSave}
+        onNewConversation={onNewConversation}
         onHistoryOpen={onHistoryOpen}
       />
 
