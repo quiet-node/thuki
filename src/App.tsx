@@ -480,9 +480,9 @@ function App() {
   /**
    * Deletes a conversation from the history panel.
    *
-   * When the deleted conversation is the currently active one, both the
-   * message history (`reset`) and the persistence state (`resetHistory`) are
-   * cleared so the UI returns to the blank ask-bar state. The error is
+   * When the deleted conversation is the currently active one, only the
+   * persistence state (`resetHistory`) is cleared — messages remain visible
+   * so the user can continue chatting or re-save. The error is intentionally
    * re-thrown so `HistoryPanel` can roll back its optimistic removal.
    */
   const handleDeleteConversation = useCallback(

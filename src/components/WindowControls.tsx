@@ -201,6 +201,7 @@ export const WindowControls = memo(function WindowControls({
                 type="button"
                 onClick={onNewConversation}
                 aria-label="New conversation"
+                data-history-toggle
                 className="w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
               >
                 {NEW_CONVERSATION_ICON}

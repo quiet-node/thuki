@@ -548,7 +548,7 @@ mod tests {
     fn no_selection_returns_top_center() {
         let p = calculate_window_position(&ctx_no_selection(), SW, SH, WW, WH);
         assert_eq!(p.x, (SW - WW) / 2.0);
-        assert_eq!(p.y, MENU_BAR_HEIGHT + SCREEN_MARGIN);
+        assert_eq!(p.y, MENU_BAR_HEIGHT + SCREEN_MARGIN + 120.0);
         assert_eq!(p.anchor_bottom_y, None);
     }
 
@@ -564,7 +564,7 @@ mod tests {
         let x_min = SCREEN_MARGIN;
         let x_max = (SW - WW - SCREEN_MARGIN).max(x_min);
         assert_eq!(p.x, ((SW - WW) / 2.0).clamp(x_min, x_max));
-        assert_eq!(p.y, MENU_BAR_HEIGHT + SCREEN_MARGIN);
+        assert_eq!(p.y, MENU_BAR_HEIGHT + SCREEN_MARGIN + 120.0);
         assert_eq!(p.anchor_bottom_y, None);
     }
 
