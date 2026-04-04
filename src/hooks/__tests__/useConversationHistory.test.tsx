@@ -39,8 +39,18 @@ describe('useConversationHistory', () => {
 
     expect(invoke).toHaveBeenCalledWith('save_conversation', {
       messages: [
-        { role: 'user', content: 'Hello', quoted_text: null },
-        { role: 'assistant', content: 'Hi there', quoted_text: null },
+        {
+          role: 'user',
+          content: 'Hello',
+          quoted_text: null,
+          image_paths: null,
+        },
+        {
+          role: 'assistant',
+          content: 'Hi there',
+          quoted_text: null,
+          image_paths: null,
+        },
       ],
       model: MODEL,
     });
@@ -73,8 +83,18 @@ describe('useConversationHistory', () => {
     expect(invoke).toHaveBeenCalledWith('generate_title', {
       conversationId: 'conv-123',
       messages: [
-        { role: 'user', content: 'Hello', quoted_text: null },
-        { role: 'assistant', content: 'Hi there', quoted_text: null },
+        {
+          role: 'user',
+          content: 'Hello',
+          quoted_text: null,
+          image_paths: null,
+        },
+        {
+          role: 'assistant',
+          content: 'Hi there',
+          quoted_text: null,
+          image_paths: null,
+        },
       ],
     });
   });
@@ -141,12 +161,14 @@ describe('useConversationHistory', () => {
       role: 'user',
       content: 'Follow up',
       quotedText: 'ctx',
+      imagePaths: null,
     });
     expect(invoke).toHaveBeenCalledWith('persist_message', {
       conversationId: 'conv-123',
       role: 'assistant',
       content: 'Reply',
       quotedText: null,
+      imagePaths: null,
     });
   });
 
@@ -201,6 +223,7 @@ describe('useConversationHistory', () => {
         role: 'user',
         content: 'Saved question',
         quoted_text: null,
+        image_paths: null,
         created_at: 1,
       },
       {
@@ -208,6 +231,7 @@ describe('useConversationHistory', () => {
         role: 'assistant',
         content: 'Saved answer',
         quoted_text: 'ctx',
+        image_paths: null,
         created_at: 2,
       },
     ]);
@@ -237,6 +261,37 @@ describe('useConversationHistory', () => {
         quotedText: 'ctx',
       },
     ]);
+  });
+
+  it('loadConversation() restores imagePaths from persisted JSON', async () => {
+    invoke.mockResolvedValueOnce([
+      {
+        id: 'm1',
+        role: 'user',
+        content: 'Look at this',
+        quoted_text: null,
+        image_paths: '["/images/a.jpg","/images/b.jpg"]',
+        created_at: 1,
+      },
+      {
+        id: 'm2',
+        role: 'assistant',
+        content: 'I see',
+        quoted_text: null,
+        image_paths: null,
+        created_at: 2,
+      },
+    ]);
+
+    const { result } = renderHook(() => useConversationHistory());
+    let loaded: Message[] = [];
+
+    await act(async () => {
+      loaded = await result.current.loadConversation('conv-img');
+    });
+
+    expect(loaded[0].imagePaths).toEqual(['/images/a.jpg', '/images/b.jpg']);
+    expect(loaded[1].imagePaths).toBeUndefined();
   });
 
   it('loadConversation() sets conversationId to the loaded id', async () => {

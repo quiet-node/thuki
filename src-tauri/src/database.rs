@@ -29,6 +29,7 @@ pub struct PersistedMessage {
     pub role: String,
     pub content: String,
     pub quoted_text: Option<String>,
+    pub image_paths: Option<String>,
     pub created_at: i64,
 }
 
@@ -99,7 +100,22 @@ fn run_migrations(conn: &Connection) -> SqlResult<()> {
 
         CREATE INDEX IF NOT EXISTS idx_conversations_updated
             ON conversations(updated_at DESC);",
-    )
+    )?;
+
+    // Migration: add image_paths column to messages table.
+    // ALTER TABLE with IF NOT EXISTS is not supported in SQLite, so we check
+    // the column existence via pragma and only add if missing.
+    let has_image_paths: bool = conn
+        .prepare("PRAGMA table_info(messages)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|name| name == "image_paths");
+
+    if !has_image_paths {
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN image_paths TEXT;")?;
+    }
+
+    Ok(())
 }
 
 // ─── Conversation CRUD ──────────────────────────────────────────────────────
@@ -191,13 +207,14 @@ pub fn insert_message(
     role: &str,
     content: &str,
     quoted_text: Option<&str>,
+    image_paths: Option<&str>,
 ) -> SqlResult<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_millis();
     conn.execute(
-        "INSERT INTO messages (id, conversation_id, role, content, quoted_text, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, conversation_id, role, content, quoted_text, now],
+        "INSERT INTO messages (id, conversation_id, role, content, quoted_text, image_paths, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![id, conversation_id, role, content, quoted_text, image_paths, now],
     )?;
     conn.execute(
         "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
@@ -211,16 +228,16 @@ pub fn insert_message(
 pub fn insert_messages_batch(
     conn: &Connection,
     conversation_id: &str,
-    messages: &[(String, String, Option<String>)], // (role, content, quoted_text)
+    messages: &[(String, String, Option<String>, Option<String>)], // (role, content, quoted_text, image_paths)
 ) -> SqlResult<()> {
     let tx = conn.unchecked_transaction()?;
     let now = now_millis();
     {
         let mut stmt = tx.prepare(
-            "INSERT INTO messages (id, conversation_id, role, content, quoted_text, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO messages (id, conversation_id, role, content, quoted_text, image_paths, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
-        for (role, content, quoted_text) in messages {
+        for (role, content, quoted_text, image_paths) in messages {
             let id = uuid::Uuid::new_v4().to_string();
             stmt.execute(params![
                 id,
@@ -228,6 +245,7 @@ pub fn insert_messages_batch(
                 role,
                 content,
                 quoted_text.as_deref(),
+                image_paths.as_deref(),
                 now
             ])?;
         }
@@ -243,7 +261,7 @@ pub fn insert_messages_batch(
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn load_messages(conn: &Connection, conversation_id: &str) -> SqlResult<Vec<PersistedMessage>> {
     let mut stmt = conn.prepare(
-        "SELECT id, role, content, quoted_text, created_at
+        "SELECT id, role, content, quoted_text, image_paths, created_at
          FROM messages
          WHERE conversation_id = ?1
          ORDER BY created_at ASC",
@@ -254,10 +272,29 @@ pub fn load_messages(conn: &Connection, conversation_id: &str) -> SqlResult<Vec<
             role: row.get(1)?,
             content: row.get(2)?,
             quoted_text: row.get(3)?,
-            created_at: row.get(4)?,
+            image_paths: row.get(4)?,
+            created_at: row.get(5)?,
         })
     })?;
     rows.collect()
+}
+
+/// Returns all image paths referenced by any saved message.
+/// Used by the cleanup sweep to identify orphaned files.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn get_all_image_paths(conn: &Connection) -> SqlResult<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT image_paths FROM messages WHERE image_paths IS NOT NULL")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+
+    let mut paths = Vec::new();
+    for row in rows {
+        let json_str = row?;
+        if let Ok(arr) = serde_json::from_str::<Vec<String>>(&json_str) {
+            paths.extend(arr);
+        }
+    }
+    Ok(paths)
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -363,8 +400,8 @@ mod tests {
     fn delete_conversation_cascades_messages() {
         let conn = open_in_memory().unwrap();
         let id = create_conversation(&conn, Some("To Delete"), "gemma3:4b").unwrap();
-        insert_message(&conn, &id, "user", "hello", None).unwrap();
-        insert_message(&conn, &id, "assistant", "hi there", None).unwrap();
+        insert_message(&conn, &id, "user", "hello", None, None).unwrap();
+        insert_message(&conn, &id, "assistant", "hi there", None, None).unwrap();
 
         delete_conversation(&conn, &id).unwrap();
 
@@ -380,8 +417,24 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
 
-        insert_message(&conn, &id, "user", "What is Rust?", Some("quoted context")).unwrap();
-        insert_message(&conn, &id, "assistant", "Rust is a systems language.", None).unwrap();
+        insert_message(
+            &conn,
+            &id,
+            "user",
+            "What is Rust?",
+            Some("quoted context"),
+            None,
+        )
+        .unwrap();
+        insert_message(
+            &conn,
+            &id,
+            "assistant",
+            "Rust is a systems language.",
+            None,
+            None,
+        )
+        .unwrap();
 
         let msgs = load_messages(&conn, &id).unwrap();
         assert_eq!(msgs.len(), 2);
@@ -399,12 +452,13 @@ mod tests {
         let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
 
         let batch = vec![
-            ("user".to_string(), "hello".to_string(), None),
-            ("assistant".to_string(), "hi".to_string(), None),
+            ("user".to_string(), "hello".to_string(), None, None),
+            ("assistant".to_string(), "hi".to_string(), None, None),
             (
                 "user".to_string(),
                 "how are you?".to_string(),
                 Some("context".to_string()),
+                None,
             ),
         ];
         insert_messages_batch(&conn, &id, &batch).unwrap();
@@ -427,7 +481,7 @@ mod tests {
         // Small delay to ensure timestamp changes.
         std::thread::sleep(std::time::Duration::from_millis(5));
 
-        insert_message(&conn, &id, "user", "test", None).unwrap();
+        insert_message(&conn, &id, "user", "test", None, None).unwrap();
         let after = list_conversations(&conn, None).unwrap()[0].updated_at;
 
         assert!(after >= before);
@@ -446,7 +500,7 @@ mod tests {
 
         // Updating a message in the first conversation bumps it to the top.
         std::thread::sleep(std::time::Duration::from_millis(5));
-        insert_message(&conn, &id1, "user", "bump", None).unwrap();
+        insert_message(&conn, &id1, "user", "bump", None, None).unwrap();
 
         let convos = list_conversations(&conn, None).unwrap();
         assert_eq!(convos[0].title.as_deref(), Some("First"));
@@ -482,6 +536,97 @@ mod tests {
         let ms = now_millis();
         // Should be after 2024-01-01 in milliseconds.
         assert!(ms > 1_704_067_200_000);
+    }
+
+    #[test]
+    fn insert_message_with_image_paths() {
+        let conn = open_in_memory().unwrap();
+        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+
+        let paths_json = r#"["/images/a.jpg","/images/b.jpg"]"#;
+        insert_message(&conn, &id, "user", "look at this", None, Some(paths_json)).unwrap();
+
+        let msgs = load_messages(&conn, &id).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].image_paths.as_deref(), Some(paths_json));
+    }
+
+    #[test]
+    fn insert_message_without_image_paths() {
+        let conn = open_in_memory().unwrap();
+        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+
+        insert_message(&conn, &id, "user", "hello", None, None).unwrap();
+
+        let msgs = load_messages(&conn, &id).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].image_paths.is_none());
+    }
+
+    #[test]
+    fn batch_insert_with_image_paths() {
+        let conn = open_in_memory().unwrap();
+        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+
+        let batch = vec![
+            (
+                "user".to_string(),
+                "look".to_string(),
+                None,
+                Some(r#"["/images/x.jpg"]"#.to_string()),
+            ),
+            ("assistant".to_string(), "I see".to_string(), None, None),
+        ];
+        insert_messages_batch(&conn, &id, &batch).unwrap();
+
+        let msgs = load_messages(&conn, &id).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].image_paths.as_deref(), Some(r#"["/images/x.jpg"]"#));
+        assert!(msgs[1].image_paths.is_none());
+    }
+
+    #[test]
+    fn get_all_image_paths_collects_from_all_conversations() {
+        let conn = open_in_memory().unwrap();
+        let c1 = create_conversation(&conn, None, "gemma3:4b").unwrap();
+        let c2 = create_conversation(&conn, None, "gemma3:4b").unwrap();
+
+        insert_message(
+            &conn,
+            &c1,
+            "user",
+            "msg1",
+            None,
+            Some(r#"["/images/a.jpg"]"#),
+        )
+        .unwrap();
+        insert_message(
+            &conn,
+            &c2,
+            "user",
+            "msg2",
+            None,
+            Some(r#"["/images/b.jpg","/images/c.jpg"]"#),
+        )
+        .unwrap();
+        // Message without images.
+        insert_message(&conn, &c1, "assistant", "reply", None, None).unwrap();
+
+        let paths = get_all_image_paths(&conn).unwrap();
+        assert_eq!(paths.len(), 3);
+        assert!(paths.contains(&"/images/a.jpg".to_string()));
+        assert!(paths.contains(&"/images/b.jpg".to_string()));
+        assert!(paths.contains(&"/images/c.jpg".to_string()));
+    }
+
+    #[test]
+    fn get_all_image_paths_empty_when_no_images() {
+        let conn = open_in_memory().unwrap();
+        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+        insert_message(&conn, &id, "user", "hello", None, None).unwrap();
+
+        let paths = get_all_image_paths(&conn).unwrap();
+        assert!(paths.is_empty());
     }
 
     #[test]

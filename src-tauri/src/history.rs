@@ -24,6 +24,7 @@ pub struct SaveMessagePayload {
     pub role: String,
     pub content: String,
     pub quoted_text: Option<String>,
+    pub image_paths: Option<Vec<String>>,
 }
 
 /// Response returned when saving a conversation.
@@ -66,9 +67,15 @@ pub fn save_conversation(
         database::create_conversation(&conn, placeholder_title.as_deref(), &model)
             .map_err(|e| e.to_string())?;
 
-    let batch: Vec<(String, String, Option<String>)> = messages
+    let batch: Vec<(String, String, Option<String>, Option<String>)> = messages
         .into_iter()
-        .map(|m| (m.role, m.content, m.quoted_text))
+        .map(|m| {
+            let image_json = m
+                .image_paths
+                .filter(|v| !v.is_empty())
+                .map(|v| serde_json::to_string(&v).unwrap_or_default());
+            (m.role, m.content, m.quoted_text, image_json)
+        })
         .collect();
 
     database::insert_messages_batch(&conn, &conversation_id, &batch).map_err(|e| e.to_string())?;
@@ -84,15 +91,20 @@ pub fn persist_message(
     role: String,
     content: String,
     quoted_text: Option<String>,
+    image_paths: Option<Vec<String>>,
     db: State<'_, Database>,
 ) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let image_json = image_paths
+        .filter(|v| !v.is_empty())
+        .map(|v| serde_json::to_string(&v).unwrap_or_default());
     database::insert_message(
         &conn,
         &conversation_id,
         &role,
         &content,
         quoted_text.as_deref(),
+        image_json.as_deref(),
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -141,12 +153,30 @@ pub fn load_conversation(
     Ok(persisted)
 }
 
-/// Deletes a conversation and all its messages from SQLite.
+/// Deletes a conversation and all its messages from SQLite, and immediately
+/// removes any image files referenced by those messages from disk.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn delete_conversation(conversation_id: String, db: State<'_, Database>) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    database::delete_conversation(&conn, &conversation_id).map_err(|e| e.to_string())
+
+    // Collect image paths before deleting messages (CASCADE will remove them).
+    let messages = database::load_messages(&conn, &conversation_id).map_err(|e| e.to_string())?;
+    let image_paths: Vec<String> = messages
+        .iter()
+        .filter_map(|m| m.image_paths.as_ref())
+        .filter_map(|json| serde_json::from_str::<Vec<String>>(json).ok())
+        .flatten()
+        .collect();
+
+    database::delete_conversation(&conn, &conversation_id).map_err(|e| e.to_string())?;
+
+    // Best-effort file cleanup — don't fail the command if a file is missing.
+    for path in &image_paths {
+        let _ = crate::images::remove_image(path);
+    }
+
+    Ok(())
 }
 
 /// Generates a short AI title for a saved conversation by asking Ollama.
@@ -249,11 +279,13 @@ mod tests {
                 role: "user".to_string(),
                 content: "What is Rust?".to_string(),
                 quoted_text: None,
+                image_paths: None,
             },
             SaveMessagePayload {
                 role: "assistant".to_string(),
                 content: "Rust is a systems programming language.".to_string(),
                 quoted_text: None,
+                image_paths: None,
             },
         ];
 
@@ -267,9 +299,15 @@ mod tests {
             database::create_conversation(&conn, placeholder_title.as_deref(), "gemma3:4b")
                 .unwrap();
 
-        let batch: Vec<(String, String, Option<String>)> = messages
+        let batch: Vec<(String, String, Option<String>, Option<String>)> = messages
             .into_iter()
-            .map(|m| (m.role, m.content, m.quoted_text))
+            .map(|m| {
+                let image_json = m
+                    .image_paths
+                    .filter(|v| !v.is_empty())
+                    .map(|v| serde_json::to_string(&v).unwrap_or_default());
+                (m.role, m.content, m.quoted_text, image_json)
+            })
             .collect();
 
         database::insert_messages_batch(&conn, &conversation_id, &batch).unwrap();

@@ -17,6 +17,7 @@ function toPayload(msg: Message): SaveMessagePayload {
     role: msg.role,
     content: msg.content,
     quoted_text: msg.quotedText ?? null,
+    image_paths: msg.imagePaths ?? null,
   };
 }
 
@@ -25,11 +26,15 @@ function toPayload(msg: Message): SaveMessagePayload {
  * frontend `Message`, preserving optional `quotedText`.
  */
 function fromPersisted(msg: PersistedMessage): Message {
+  const imagePaths = msg.image_paths
+    ? (JSON.parse(msg.image_paths) as string[])
+    : undefined;
   return {
     id: msg.id,
     role: msg.role as 'user' | 'assistant',
     content: msg.content,
     quotedText: msg.quoted_text ?? undefined,
+    imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : undefined,
   };
 }
 
@@ -106,12 +111,14 @@ export function useConversationHistory() {
           role: userMsg.role,
           content: userMsg.content,
           quotedText: userMsg.quotedText ?? null,
+          imagePaths: userMsg.imagePaths ?? null,
         }),
         invoke('persist_message', {
           conversationId,
           role: assistantMsg.role,
           content: assistantMsg.content,
           quotedText: assistantMsg.quotedText ?? null,
+          imagePaths: null,
         }),
       ]);
     },

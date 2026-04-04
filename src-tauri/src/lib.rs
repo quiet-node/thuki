@@ -395,6 +395,45 @@ fn init_panel(app_handle: &tauri::AppHandle) {
     panel.set_has_shadow(false);
 }
 
+// ─── Image cleanup ──────────────────────────────────────────────────────────
+
+/// Interval between periodic orphaned-image cleanup sweeps.
+const IMAGE_CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Runs a single orphaned-image cleanup sweep. Queries all image paths
+/// referenced by saved messages, then removes any files in the images
+/// directory that are not in that set.
+fn run_image_cleanup(app_handle: &tauri::AppHandle) {
+    let db = app_handle.state::<history::Database>();
+    let conn = match db.0.lock() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let referenced = database::get_all_image_paths(&conn).unwrap_or_default();
+    drop(conn);
+
+    let base_dir = match app_handle.path().app_data_dir() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let _ = images::cleanup_orphaned_images(&base_dir, &referenced);
+}
+
+/// Spawns a background Tokio task that runs the orphaned-image cleanup
+/// sweep on a fixed interval. Best-effort — errors are silently ignored
+/// since cleanup is a housekeeping operation, not a critical path.
+fn spawn_periodic_image_cleanup(app_handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(IMAGE_CLEANUP_INTERVAL);
+        // Skip the first tick (startup cleanup already ran synchronously).
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            run_image_cleanup(&app_handle);
+        }
+    });
+}
+
 // ─── Application entry point ─────────────────────────────────────────────────
 
 /// Initialises and runs the Tauri application.
@@ -497,6 +536,10 @@ pub fn run() {
             let db_conn = database::open_database()
                 .expect("failed to initialise SQLite database at ~/.thuki/thuki.db");
             app.manage(history::Database(std::sync::Mutex::new(db_conn)));
+
+            // ── Orphaned image cleanup (startup + periodic) ─────────
+            run_image_cleanup(app.handle());
+            spawn_periodic_image_cleanup(app.handle().clone());
 
             Ok(())
         })
