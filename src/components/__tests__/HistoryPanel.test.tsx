@@ -3,9 +3,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { HistoryPanel } from '../HistoryPanel';
 import type { ConversationSummary } from '../../types/history';
 
-const NOW = Math.floor(Date.now() / 1000);
-const YESTERDAY = NOW - 86400;
-const OLDER = NOW - 86400 * 3;
+const NOW = Date.now();
+const YESTERDAY = NOW - 86_400_000;
+const OLDER = NOW - 86_400_000 * 3;
 
 const CONVERSATIONS: ConversationSummary[] = [
   {
@@ -313,6 +313,40 @@ describe('HistoryPanel', () => {
 
     // After the backend rejects, the conversation must be restored to the list
     expect(screen.getByText('React basics')).toBeInTheDocument();
+  });
+
+  it('shows SwitchConfirmation and hides search when pendingNewConversation is true', async () => {
+    const onSaveAndNew = vi.fn();
+    const onJustNew = vi.fn();
+    const onCancelNew = vi.fn();
+    const props = makeProps({
+      pendingNewConversation: true,
+      onSaveAndNew,
+      onJustNew,
+      onCancelNew,
+      hasCurrentMessages: true,
+    });
+    render(<HistoryPanel {...props} />);
+
+    await act(async () => {});
+
+    // Search box should NOT be rendered
+    expect(screen.queryByPlaceholderText(/search/i)).toBeNull();
+
+    // SwitchConfirmation should show "new" variant text
+    expect(screen.getByText('New conversation?')).toBeInTheDocument();
+
+    // Save & Start New calls onSaveAndNew
+    fireEvent.click(screen.getByRole('button', { name: /save & start new/i }));
+    expect(onSaveAndNew).toHaveBeenCalledOnce();
+
+    // Start New calls onJustNew
+    fireEvent.click(screen.getByRole('button', { name: /^start new$/i }));
+    expect(onJustNew).toHaveBeenCalledOnce();
+
+    // Cancel calls onCancelNew
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(onCancelNew).toHaveBeenCalledOnce();
   });
 
   it('shows error message when listConversations rejects', async () => {

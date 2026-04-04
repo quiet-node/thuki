@@ -7,7 +7,7 @@ const SUMMARY: ConversationSummary = {
   id: 'conv-1',
   title: 'How does React work?',
   model: 'llama3.2:3b',
-  updated_at: Math.floor(Date.now() / 1000),
+  updated_at: Date.now(),
   message_count: 6,
 };
 
@@ -34,7 +34,7 @@ describe('ConversationItem', () => {
     expect(screen.getByText('Untitled')).toBeInTheDocument();
   });
 
-  it('renders message count', () => {
+  it('renders relative timestamp', () => {
     render(
       <ConversationItem
         conversation={SUMMARY}
@@ -42,7 +42,7 @@ describe('ConversationItem', () => {
         onDelete={vi.fn()}
       />,
     );
-    expect(screen.getByText(/6 msgs/)).toBeInTheDocument();
+    expect(screen.getByText('just now')).toBeInTheDocument();
   });
 
   it('calls onSelect with conversation id when clicked', () => {
@@ -84,5 +84,38 @@ describe('ConversationItem', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: /delete/i }));
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('applies active styling when isActive is true', () => {
+    render(
+      <ConversationItem
+        conversation={SUMMARY}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+        isActive
+      />,
+    );
+    const button = screen.getByRole('button', {
+      name: /how does react work/i,
+    });
+    expect(button).toHaveAttribute('aria-current', 'true');
+    expect(button.className).toContain('bg-primary/10');
+    expect(button.className).toContain('border-primary');
+  });
+
+  it('does not apply active styling when isActive is false', () => {
+    render(
+      <ConversationItem
+        conversation={SUMMARY}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+        isActive={false}
+      />,
+    );
+    const button = screen.getByRole('button', {
+      name: /how does react work/i,
+    });
+    expect(button).not.toHaveAttribute('aria-current');
+    expect(button.className).not.toContain('bg-primary/10');
   });
 });
