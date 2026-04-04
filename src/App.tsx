@@ -686,9 +686,6 @@ function App() {
         windowAnchorRef.current = null;
         isPreExpandedRef.current = false;
         setIsAnchoredUpward(false);
-        /* v8 ignore next -- DOM ref null guard */
-        if (outerContainerRef.current)
-          outerContainerRef.current.style.minHeight = '';
       },
       { once: true },
     );
