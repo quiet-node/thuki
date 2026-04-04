@@ -380,7 +380,7 @@ fn top_center(
     let x_min = SCREEN_MARGIN;
     let x_max = (screen_width - window_width - SCREEN_MARGIN).max(x_min);
     let x = ((screen_width - window_width) / 2.0).clamp(x_min, x_max);
-    let y = MENU_BAR_HEIGHT + SCREEN_MARGIN;
+    let y = MENU_BAR_HEIGHT + SCREEN_MARGIN + 120.0;
     WindowPlacement {
         x,
         y,
