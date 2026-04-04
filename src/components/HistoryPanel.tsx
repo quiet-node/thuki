@@ -288,6 +288,7 @@ export function HistoryPanel({
                 <ConversationItem
                   key={conv.id}
                   conversation={conv}
+                  isActive={conv.id === currentConversationId}
                   onSelect={handleSelect}
                   onDelete={handleDelete}
                 />

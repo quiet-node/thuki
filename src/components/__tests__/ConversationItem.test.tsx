@@ -85,4 +85,37 @@ describe('ConversationItem', () => {
     fireEvent.click(screen.getByRole('button', { name: /delete/i }));
     expect(onSelect).not.toHaveBeenCalled();
   });
+
+  it('applies active styling when isActive is true', () => {
+    render(
+      <ConversationItem
+        conversation={SUMMARY}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+        isActive
+      />,
+    );
+    const button = screen.getByRole('button', {
+      name: /how does react work/i,
+    });
+    expect(button).toHaveAttribute('aria-current', 'true');
+    expect(button.className).toContain('bg-primary/10');
+    expect(button.className).toContain('border-primary');
+  });
+
+  it('does not apply active styling when isActive is false', () => {
+    render(
+      <ConversationItem
+        conversation={SUMMARY}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+        isActive={false}
+      />,
+    );
+    const button = screen.getByRole('button', {
+      name: /how does react work/i,
+    });
+    expect(button).not.toHaveAttribute('aria-current');
+    expect(button.className).not.toContain('bg-primary/10');
+  });
 });

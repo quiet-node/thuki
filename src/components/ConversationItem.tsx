@@ -26,6 +26,8 @@ interface ConversationItemProps {
   onSelect: (id: string) => void;
   /** Called with the conversation id when the delete button is clicked. */
   onDelete: (id: string) => void;
+  /** When true, renders the row with an active/highlighted style. */
+  isActive?: boolean;
 }
 
 /**
@@ -39,6 +41,7 @@ export const ConversationItem = memo(function ConversationItem({
   conversation,
   onSelect,
   onDelete,
+  isActive = false,
 }: ConversationItemProps) {
   const title = conversation.title ?? 'Untitled';
 
@@ -48,9 +51,16 @@ export const ConversationItem = memo(function ConversationItem({
         type="button"
         onClick={() => onSelect(conversation.id)}
         aria-label={title}
-        className="flex-1 min-w-0 flex flex-col gap-0.5 text-left px-3 py-2 rounded-lg transition-colors duration-150 hover:bg-white/5 cursor-pointer"
+        aria-current={isActive ? 'true' : undefined}
+        className={`flex-1 min-w-0 flex flex-col gap-0.5 text-left px-3 py-2 rounded-lg transition-colors duration-150 cursor-pointer ${
+          isActive
+            ? 'bg-primary/10 border-l-2 border-primary'
+            : 'hover:bg-white/5'
+        }`}
       >
-        <span className="text-xs text-text-primary truncate leading-snug">
+        <span
+          className={`text-xs truncate leading-snug ${isActive ? 'text-primary font-medium' : 'text-text-primary'}`}
+        >
           {title}
         </span>
         <span className="text-[10px] text-text-secondary leading-none">
