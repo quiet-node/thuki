@@ -2,7 +2,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { useOllama } from './hooks/useOllama';
@@ -11,6 +11,7 @@ import { ConversationView } from './view/ConversationView';
 import { AskBarView } from './view/AskBarView';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
+import type { AttachedImage } from './types/image';
 import { quote } from './config';
 import './App.css';
 
@@ -117,10 +118,11 @@ function App() {
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  /** File paths of images attached to the current (unsent) message. */
-  const [attachedImages, setAttachedImages] = useState<string[]>([]);
-  /** File path of the image currently open in the preview modal. */
-  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  /** Images attached to the current (unsent) message. Blob URLs render
+   *  immediately; file paths are set asynchronously after Rust processing. */
+  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
+  /** URL of the image currently open in the preview modal (blob or asset URL). */
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
 
   /**
    * Session counter — incremented on each overlay open. Used in the motion
@@ -564,30 +566,78 @@ function App() {
   }, [resetForNewConversation]);
 
   /**
-   * Stages image byte arrays to disk via the Rust backend and adds the
-   * returned file paths to the attachedImages state.
+   * Handles newly attached image files. Creates blob URLs immediately for
+   * instant thumbnail rendering, then processes each file in the background
+   * via base64-encoded IPC to the Rust backend.
    */
-  const handleImagesAttached = useCallback(async (byteArrays: string[]) => {
-    const paths: string[] = [];
-    for (const bytes of byteArrays) {
-      try {
-        const path = await invoke<string>('save_image_command', {
-          imageData: bytes,
-        });
-        paths.push(path);
-      } catch {
-        // Skip images that fail to stage.
+  const handleImagesAttached = useCallback((files: File[]) => {
+    const newImages: AttachedImage[] = files.map((file) => ({
+      id: crypto.randomUUID(),
+      blobUrl: URL.createObjectURL(file),
+      filePath: null,
+    }));
+
+    setAttachedImages((prev) => [...prev, ...newImages]);
+
+    // Defer backend processing to the next frame so React can render the
+    // blob URL thumbnails immediately — keeps the UI responsive while
+    // FileReader + IPC serialisation happen in subsequent event-loop ticks.
+    requestAnimationFrame(() => {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const imageId = newImages[i].id;
+
+        const reader = new FileReader();
+        reader.onload = () => {
+          // Extract pure base64 from the data URL (strip "data:image/png;base64,").
+          const base64 = (reader.result as string).split(',')[1];
+          invoke<string>('save_image_command', { imageDataBase64: base64 })
+            .then((filePath) => {
+              setAttachedImages((prev) =>
+                prev.map((img) =>
+                  img.id === imageId ? { ...img, filePath } : img,
+                ),
+              );
+            })
+            .catch(() => {
+              setAttachedImages((prev) =>
+                prev.filter((img) => img.id !== imageId),
+              );
+            });
+        };
+        reader.readAsDataURL(file);
       }
-    }
-    if (paths.length > 0) {
-      setAttachedImages((prev) => [...prev, ...paths]);
-    }
+    });
   }, []);
 
-  /** Removes an attached image from state and deletes the staged file. */
-  const handleImageRemove = useCallback((path: string) => {
-    setAttachedImages((prev) => prev.filter((p) => p !== path));
-    void invoke('remove_image_command', { path });
+  /** Removes an attached image from state, revokes the blob URL, and
+   *  deletes the staged file from disk if processing completed. */
+  const handleImageRemove = useCallback((id: string) => {
+    setAttachedImages((prev) => {
+      const img = prev.find((i) => i.id === id);
+      if (img) {
+        URL.revokeObjectURL(img.blobUrl);
+        if (img.filePath) {
+          void invoke('remove_image_command', { path: img.filePath });
+        }
+      }
+      return prev.filter((i) => i.id !== id);
+    });
+  }, []);
+
+  /** Opens the preview modal for an attached image (identified by ID).
+   *  The ID always comes from the thumbnail component which only renders
+   *  items present in attachedImages, so the find always succeeds. */
+  const handleAskBarImagePreview = useCallback(
+    (id: string) => {
+      setPreviewImageUrl(attachedImages.find((i) => i.id === id)!.blobUrl);
+    },
+    [attachedImages],
+  );
+
+  /** Opens the preview modal for a chat history image (identified by file path). */
+  const handleChatImagePreview = useCallback((path: string) => {
+    setPreviewImageUrl(convertFileSrc(path));
   }, []);
 
   const handleSubmit = useCallback(() => {
@@ -604,14 +654,21 @@ function App() {
       ?.replace(CONTROL_CHARS, '')
       .slice(0, quote.maxContextLength);
     const hasContext = sanitized && sanitized.trim().length > 0;
-    const images = attachedImages.length > 0 ? [...attachedImages] : undefined;
+    // Only include images that have finished backend processing.
+    const readyPaths = attachedImages
+      .filter((img) => img.filePath !== null)
+      .map((img) => img.filePath as string);
+    const images = readyPaths.length > 0 ? readyPaths : undefined;
     ask(query, hasContext ? sanitized : undefined, images);
     setSelectedContext(null);
     setQuery('');
-    setAttachedImages([]);
-    if (inputRef.current) {
-      inputRef.current.style.height = 'auto';
+    // Revoke blob URLs to free memory.
+    for (const img of attachedImages) {
+      URL.revokeObjectURL(img.blobUrl);
     }
+    setAttachedImages([]);
+    // Reset textarea height after submit (ref is always live when submit fires).
+    inputRef.current!.style.height = 'auto';
   }, [
     query,
     isGenerating,
@@ -805,7 +862,7 @@ function App() {
                       canSave={canSave}
                       onNewConversation={handleNewConversation}
                       onHistoryOpen={handleHistoryToggle}
-                      onImagePreview={setPreviewImage}
+                      onImagePreview={handleChatImagePreview}
                     />
                   ) : null}
                 </AnimatePresence>
@@ -862,7 +919,7 @@ function App() {
                   attachedImages={attachedImages}
                   onImagesAttached={handleImagesAttached}
                   onImageRemove={handleImageRemove}
-                  onImagePreview={setPreviewImage}
+                  onImagePreview={handleAskBarImagePreview}
                 />
               </div>
 
@@ -903,8 +960,8 @@ function App() {
         ) : null}
       </AnimatePresence>
       <ImagePreviewModal
-        imagePath={previewImage}
-        onClose={() => setPreviewImage(null)}
+        imageUrl={previewImageUrl}
+        onClose={() => setPreviewImageUrl(null)}
       />
     </div>
   );

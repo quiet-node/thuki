@@ -2,6 +2,7 @@ import { motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { CopyButton } from './CopyButton';
 import { ImageThumbnails } from './ImageThumbnails';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
 
@@ -87,7 +88,10 @@ export function ChatBubble({
             {imagePaths && imagePaths.length > 0 && onImagePreview && (
               <div className="mb-2">
                 <ImageThumbnails
-                  imagePaths={imagePaths}
+                  items={imagePaths.map((p) => ({
+                    id: p,
+                    src: convertFileSrc(p),
+                  }))}
                   onPreview={onImagePreview}
                   size={48}
                 />

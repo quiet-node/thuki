@@ -3,44 +3,42 @@ import { describe, it, expect, vi } from 'vitest';
 import { ImagePreviewModal } from '../ImagePreviewModal';
 
 describe('ImagePreviewModal', () => {
-  describe('when imagePath is null', () => {
+  describe('when imageUrl is null', () => {
     it('renders nothing', () => {
       const { container } = render(
-        <ImagePreviewModal imagePath={null} onClose={vi.fn()} />,
+        <ImagePreviewModal imageUrl={null} onClose={vi.fn()} />,
       );
       expect(container.querySelector('[role="dialog"]')).toBeNull();
     });
 
     it('does not register keydown listener when closed', () => {
       const onClose = vi.fn();
-      render(<ImagePreviewModal imagePath={null} onClose={onClose} />);
+      render(<ImagePreviewModal imageUrl={null} onClose={onClose} />);
 
       fireEvent.keyDown(window, { key: 'Escape' });
       expect(onClose).not.toHaveBeenCalled();
     });
   });
 
-  describe('when imagePath is set', () => {
-    const testPath = '/Users/test/photo.png';
+  describe('when imageUrl is set', () => {
+    const testUrl = 'blob:http://localhost/test-image-uuid';
 
     it('renders a dialog with correct aria attributes', () => {
-      render(<ImagePreviewModal imagePath={testPath} onClose={vi.fn()} />);
+      render(<ImagePreviewModal imageUrl={testUrl} onClose={vi.fn()} />);
       const dialog = screen.getByRole('dialog');
       expect(dialog).toBeInTheDocument();
       expect(dialog).toHaveAttribute('aria-label', 'Image preview');
     });
 
-    it('renders the image with converted src', () => {
-      render(<ImagePreviewModal imagePath={testPath} onClose={vi.fn()} />);
+    it('renders the image with the provided URL directly', () => {
+      render(<ImagePreviewModal imageUrl={testUrl} onClose={vi.fn()} />);
       const img = screen.getByAltText('Preview');
       expect(img).toBeInTheDocument();
-      expect(img.getAttribute('src')).toBe(
-        `asset://localhost/${encodeURIComponent(testPath)}`,
-      );
+      expect(img.getAttribute('src')).toBe(testUrl);
     });
 
     it('renders the close button with aria-label', () => {
-      render(<ImagePreviewModal imagePath={testPath} onClose={vi.fn()} />);
+      render(<ImagePreviewModal imageUrl={testUrl} onClose={vi.fn()} />);
       expect(
         screen.getByRole('button', { name: 'Close preview' }),
       ).toBeInTheDocument();
@@ -48,7 +46,7 @@ describe('ImagePreviewModal', () => {
 
     it('renders the close icon SVG with aria-hidden', () => {
       const { container } = render(
-        <ImagePreviewModal imagePath={testPath} onClose={vi.fn()} />,
+        <ImagePreviewModal imageUrl={testUrl} onClose={vi.fn()} />,
       );
       const svg = container.querySelector('svg');
       expect(svg).not.toBeNull();
@@ -57,11 +55,11 @@ describe('ImagePreviewModal', () => {
   });
 
   describe('closing interactions', () => {
-    const testPath = '/Users/test/photo.png';
+    const testUrl = 'blob:http://localhost/test-image-uuid';
 
     it('calls onClose when clicking the backdrop', () => {
       const onClose = vi.fn();
-      render(<ImagePreviewModal imagePath={testPath} onClose={onClose} />);
+      render(<ImagePreviewModal imageUrl={testUrl} onClose={onClose} />);
 
       const dialog = screen.getByRole('dialog');
       fireEvent.click(dialog);
@@ -70,7 +68,7 @@ describe('ImagePreviewModal', () => {
 
     it('calls onClose when clicking the close button (also bubbles to backdrop)', () => {
       const onClose = vi.fn();
-      render(<ImagePreviewModal imagePath={testPath} onClose={onClose} />);
+      render(<ImagePreviewModal imageUrl={testUrl} onClose={onClose} />);
 
       fireEvent.click(screen.getByRole('button', { name: 'Close preview' }));
       // The button's onClick fires onClose, and the event bubbles to the
@@ -80,7 +78,7 @@ describe('ImagePreviewModal', () => {
 
     it('calls onClose on Escape key press', () => {
       const onClose = vi.fn();
-      render(<ImagePreviewModal imagePath={testPath} onClose={onClose} />);
+      render(<ImagePreviewModal imageUrl={testUrl} onClose={onClose} />);
 
       fireEvent.keyDown(window, { key: 'Escape' });
       expect(onClose).toHaveBeenCalledTimes(1);
@@ -88,7 +86,7 @@ describe('ImagePreviewModal', () => {
 
     it('does not call onClose on non-Escape key press', () => {
       const onClose = vi.fn();
-      render(<ImagePreviewModal imagePath={testPath} onClose={onClose} />);
+      render(<ImagePreviewModal imageUrl={testUrl} onClose={onClose} />);
 
       fireEvent.keyDown(window, { key: 'Enter' });
       expect(onClose).not.toHaveBeenCalled();
@@ -96,7 +94,7 @@ describe('ImagePreviewModal', () => {
 
     it('clicking the image does not call onClose (stopPropagation)', () => {
       const onClose = vi.fn();
-      render(<ImagePreviewModal imagePath={testPath} onClose={onClose} />);
+      render(<ImagePreviewModal imageUrl={testUrl} onClose={onClose} />);
 
       const img = screen.getByAltText('Preview');
       fireEvent.click(img);
@@ -105,10 +103,13 @@ describe('ImagePreviewModal', () => {
   });
 
   describe('keydown listener lifecycle', () => {
-    it('removes keydown listener when imagePath changes to null', () => {
+    it('removes keydown listener when imageUrl changes to null', () => {
       const onClose = vi.fn();
       const { rerender } = render(
-        <ImagePreviewModal imagePath="/test.png" onClose={onClose} />,
+        <ImagePreviewModal
+          imageUrl="blob:http://localhost/test"
+          onClose={onClose}
+        />,
       );
 
       // Escape works while open
@@ -116,7 +117,7 @@ describe('ImagePreviewModal', () => {
       expect(onClose).toHaveBeenCalledTimes(1);
 
       // Close modal
-      rerender(<ImagePreviewModal imagePath={null} onClose={onClose} />);
+      rerender(<ImagePreviewModal imageUrl={null} onClose={onClose} />);
 
       // Escape no longer triggers onClose
       fireEvent.keyDown(window, { key: 'Escape' });
@@ -126,7 +127,10 @@ describe('ImagePreviewModal', () => {
     it('removes keydown listener on unmount', () => {
       const onClose = vi.fn();
       const { unmount } = render(
-        <ImagePreviewModal imagePath="/test.png" onClose={onClose} />,
+        <ImagePreviewModal
+          imageUrl="blob:http://localhost/test"
+          onClose={onClose}
+        />,
       );
 
       unmount();

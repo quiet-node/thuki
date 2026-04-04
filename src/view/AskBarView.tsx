@@ -4,6 +4,8 @@ import { useCallback, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
 import { ImageThumbnails } from '../components/ImageThumbnails';
+import type { AttachedImage } from '../types/image';
+import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
 
 /**
  * Hoisted static SVG — prevents re-allocation on every render cycle.
@@ -143,14 +145,14 @@ interface AskBarViewProps {
    * Omit to hide the history icon entirely.
    */
   onHistoryOpen?: () => void;
-  /** Absolute file paths of currently attached images. */
-  attachedImages: string[];
+  /** Currently attached images (may still be processing in the background). */
+  attachedImages: AttachedImage[];
   /** Called when the user pastes or drops image files. */
-  onImagesAttached: (paths: string[]) => void;
-  /** Called when the user removes an attached image. */
-  onImageRemove: (path: string) => void;
+  onImagesAttached: (files: File[]) => void;
+  /** Called when the user removes an attached image by ID. */
+  onImageRemove: (id: string) => void;
   /** Called when the user clicks a thumbnail to preview it. */
-  onImagePreview: (path: string) => void;
+  onImagePreview: (id: string) => void;
 }
 
 /**
@@ -206,39 +208,28 @@ export function AskBarView({
     [onSubmit],
   );
 
-  /** Extracts image files from a DataTransfer and forwards them for staging. */
+  /**
+   * Filters and forwards valid image files to the parent for processing.
+   * Rejects non-image files and files exceeding the 30MB size cap.
+   */
   const processImageFiles = useCallback(
     (files: FileList | null) => {
       if (!files || isGenerating) return;
       const remaining = MAX_IMAGES - attachedImages.length;
       if (remaining <= 0) return;
 
-      const imageFiles: File[] = [];
-      for (let i = 0; i < files.length && imageFiles.length < remaining; i++) {
-        if (files[i].type.startsWith('image/')) {
-          imageFiles.push(files[i]);
+      const accepted: File[] = [];
+      for (let i = 0; i < files.length && accepted.length < remaining; i++) {
+        if (
+          files[i].type.startsWith('image/') &&
+          files[i].size <= MAX_IMAGE_SIZE_BYTES
+        ) {
+          accepted.push(files[i]);
         }
       }
-      if (imageFiles.length === 0) return;
-
-      const readPromises = imageFiles.map(
-        (file) =>
-          new Promise<ArrayBuffer>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as ArrayBuffer);
-            /* v8 ignore start -- FileReader.onerror is a defensive callback that cannot fire in tests */
-            reader.onerror = () => reject(reader.error);
-            /* v8 ignore stop */
-            reader.readAsArrayBuffer(file);
-          }),
-      );
-
-      void Promise.all(readPromises).then((buffers) => {
-        const byteArrays = buffers.map((buf) =>
-          Array.from(new Uint8Array(buf)),
-        );
-        onImagesAttached(byteArrays as unknown as string[]);
-      });
+      if (accepted.length > 0) {
+        onImagesAttached(accepted);
+      }
     },
     [isGenerating, attachedImages.length, onImagesAttached],
   );
@@ -256,31 +247,15 @@ export function AskBarView({
       for (let i = 0; i < items.length && imageFiles.length < remaining; i++) {
         if (items[i].type.startsWith('image/')) {
           const file = items[i].getAsFile();
-          if (file) imageFiles.push(file);
+          if (file && file.size <= MAX_IMAGE_SIZE_BYTES) {
+            imageFiles.push(file);
+          }
         }
       }
 
       if (imageFiles.length === 0) return;
       e.preventDefault();
-
-      const readPromises = imageFiles.map(
-        (file) =>
-          new Promise<ArrayBuffer>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as ArrayBuffer);
-            /* v8 ignore start -- FileReader.onerror is a defensive callback that cannot fire in tests */
-            reader.onerror = () => reject(reader.error);
-            /* v8 ignore stop */
-            reader.readAsArrayBuffer(file);
-          }),
-      );
-
-      void Promise.all(readPromises).then((buffers) => {
-        const byteArrays = buffers.map((buf) =>
-          Array.from(new Uint8Array(buf)),
-        );
-        onImagesAttached(byteArrays as unknown as string[]);
-      });
+      onImagesAttached(imageFiles);
     },
     [isGenerating, attachedImages.length, onImagesAttached],
   );
@@ -329,7 +304,11 @@ export function AskBarView({
       {attachedImages.length > 0 && (
         <div className="px-4 pt-2 pb-0">
           <ImageThumbnails
-            imagePaths={attachedImages}
+            items={attachedImages.map((img) => ({
+              id: img.id,
+              src: img.blobUrl,
+              loading: img.filePath === null,
+            }))}
             onPreview={onImagePreview}
             onRemove={onImageRemove}
             size={56}

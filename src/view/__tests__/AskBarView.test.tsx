@@ -2,14 +2,25 @@ import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { AskBarView } from '../AskBarView';
+import type { AttachedImage } from '../../types/image';
 
 function makeRef(): React.RefObject<HTMLTextAreaElement | null> {
   return { current: null };
 }
 
+/** Helper to create an AttachedImage with defaults. */
+function makeImage(overrides: Partial<AttachedImage> = {}): AttachedImage {
+  return {
+    id: overrides.id ?? 'test-id',
+    blobUrl: overrides.blobUrl ?? 'blob:http://localhost/test',
+    filePath: overrides.filePath ?? '/tmp/img.jpg',
+    ...overrides,
+  };
+}
+
 /** Default image-related props shared across all AskBarView test renders. */
 const IMAGE_DEFAULTS = {
-  attachedImages: [] as string[],
+  attachedImages: [] as AttachedImage[],
   onImagesAttached: vi.fn(),
   onImageRemove: vi.fn(),
   onImagePreview: vi.fn(),
@@ -385,7 +396,10 @@ describe('AskBarView', () => {
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
-          attachedImages={['/tmp/img1.jpg', '/tmp/img2.jpg']}
+          attachedImages={[
+            makeImage({ id: 'img-1', blobUrl: 'blob:http://localhost/1' }),
+            makeImage({ id: 'img-2', blobUrl: 'blob:http://localhost/2' }),
+          ]}
           query=""
           setQuery={vi.fn()}
           isChatMode={false}
@@ -424,7 +438,7 @@ describe('AskBarView', () => {
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
-          attachedImages={['/tmp/img1.jpg']}
+          attachedImages={[makeImage({ id: 'img-1' })]}
           query=""
           setQuery={vi.fn()}
           isChatMode={false}
@@ -443,7 +457,7 @@ describe('AskBarView', () => {
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
-          attachedImages={['/tmp/img1.jpg']}
+          attachedImages={[makeImage({ id: 'img-1' })]}
           onImagePreview={onImagePreview}
           query=""
           setQuery={vi.fn()}
@@ -455,7 +469,7 @@ describe('AskBarView', () => {
         />,
       );
       fireEvent.click(screen.getByRole('button', { name: /preview/i }));
-      expect(onImagePreview).toHaveBeenCalledWith('/tmp/img1.jpg');
+      expect(onImagePreview).toHaveBeenCalledWith('img-1');
     });
 
     it('calls onImageRemove when remove button is clicked', () => {
@@ -463,7 +477,7 @@ describe('AskBarView', () => {
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
-          attachedImages={['/tmp/img1.jpg']}
+          attachedImages={[makeImage({ id: 'img-1' })]}
           onImageRemove={onImageRemove}
           query=""
           setQuery={vi.fn()}
@@ -475,7 +489,7 @@ describe('AskBarView', () => {
         />,
       );
       fireEvent.click(screen.getByRole('button', { name: /remove/i }));
-      expect(onImageRemove).toHaveBeenCalledWith('/tmp/img1.jpg');
+      expect(onImageRemove).toHaveBeenCalledWith('img-1');
     });
 
     it('applies drag-over styling on dragOver event', () => {
@@ -594,7 +608,11 @@ describe('AskBarView', () => {
       const { container } = render(
         <AskBarView
           {...IMAGE_DEFAULTS}
-          attachedImages={['/a.jpg', '/b.jpg', '/c.jpg']}
+          attachedImages={[
+            makeImage({ id: 'a' }),
+            makeImage({ id: 'b' }),
+            makeImage({ id: 'c' }),
+          ]}
           onImagesAttached={onImagesAttached}
           query=""
           setQuery={vi.fn()}
@@ -801,7 +819,11 @@ describe('AskBarView', () => {
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
-          attachedImages={['/tmp/a.jpg', '/tmp/b.jpg', '/tmp/c.jpg']}
+          attachedImages={[
+            makeImage({ id: 'a' }),
+            makeImage({ id: 'b' }),
+            makeImage({ id: 'c' }),
+          ]}
           onImagesAttached={onImagesAttached}
           query=""
           setQuery={vi.fn()}

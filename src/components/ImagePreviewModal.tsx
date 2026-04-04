@@ -1,10 +1,9 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useEffect, useCallback } from 'react';
-import { convertFileSrc } from '@tauri-apps/api/core';
 
 interface ImagePreviewModalProps {
-  /** Absolute file path of the image to preview. Null when closed. */
-  imagePath: string | null;
+  /** URL of the image to preview (blob URL or asset URL). Null when closed. */
+  imageUrl: string | null;
   /** Called when the modal should close. */
   onClose: () => void;
 }
@@ -15,7 +14,7 @@ interface ImagePreviewModalProps {
  * or Escape key.
  */
 export function ImagePreviewModal({
-  imagePath,
+  imageUrl,
   onClose,
 }: ImagePreviewModalProps) {
   const handleKeyDown = useCallback(
@@ -29,15 +28,15 @@ export function ImagePreviewModal({
   );
 
   useEffect(() => {
-    if (!imagePath) return;
+    if (!imageUrl) return;
     window.addEventListener('keydown', handleKeyDown, { capture: true });
     return () =>
       window.removeEventListener('keydown', handleKeyDown, { capture: true });
-  }, [imagePath, handleKeyDown]);
+  }, [imageUrl, handleKeyDown]);
 
   return (
     <AnimatePresence>
-      {imagePath && (
+      {imageUrl && (
         <motion.div
           key="image-preview-backdrop"
           initial={{ opacity: 0 }}
@@ -51,7 +50,7 @@ export function ImagePreviewModal({
         >
           <motion.img
             key="image-preview"
-            src={convertFileSrc(imagePath)}
+            src={imageUrl}
             alt="Preview"
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}

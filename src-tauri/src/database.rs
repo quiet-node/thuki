@@ -70,6 +70,7 @@ pub fn open_in_memory() -> SqlResult<Connection> {
 
 /// Moves the database from `~/.thuki/thuki.db` to the Tauri app data
 /// directory if the legacy file exists and the target does not.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn migrate_legacy_db(new_path: &std::path::Path) {
     if new_path.exists() {
         return;
@@ -105,32 +106,22 @@ fn migrate_legacy_db(new_path: &std::path::Path) {
 
 /// Creates the schema tables if they do not already exist.
 fn run_migrations(conn: &Connection) -> SqlResult<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS conversations (
-            id          TEXT PRIMARY KEY,
-            title       TEXT,
-            model       TEXT NOT NULL,
-            created_at  INTEGER NOT NULL,
-            updated_at  INTEGER NOT NULL,
-            meta        TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS messages (
-            id              TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL
-                REFERENCES conversations(id) ON DELETE CASCADE,
-            role            TEXT NOT NULL,
-            content         TEXT NOT NULL,
-            quoted_text     TEXT,
-            created_at      INTEGER NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_messages_conversation
-            ON messages(conversation_id, created_at);
-
-        CREATE INDEX IF NOT EXISTS idx_conversations_updated
-            ON conversations(updated_at DESC);",
-    )?;
+    // Static schema DDL — compiled into a single &str at build time via concat!.
+    const SCHEMA_DDL: &str = concat!(
+        "CREATE TABLE IF NOT EXISTS conversations (",
+        "  id TEXT PRIMARY KEY, title TEXT, model TEXT NOT NULL,",
+        "  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, meta TEXT);",
+        "CREATE TABLE IF NOT EXISTS messages (",
+        "  id TEXT PRIMARY KEY,",
+        "  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,",
+        "  role TEXT NOT NULL, content TEXT NOT NULL, quoted_text TEXT,",
+        "  created_at INTEGER NOT NULL);",
+        "CREATE INDEX IF NOT EXISTS idx_messages_conversation",
+        "  ON messages(conversation_id, created_at);",
+        "CREATE INDEX IF NOT EXISTS idx_conversations_updated",
+        "  ON conversations(updated_at DESC);",
+    );
+    conn.execute_batch(SCHEMA_DDL)?;
 
     // Migration: add image_paths column to messages table.
     // ALTER TABLE with IF NOT EXISTS is not supported in SQLite, so we check

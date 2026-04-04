@@ -6,7 +6,7 @@
  * Signal, iMessage, and Slack — media files are independent entities linked
  * to messages through path references, not organized by conversation.
  *
- * Each image is compressed to JPEG (quality 85, max 1080p) on save to keep
+ * Each image is compressed to JPEG (quality 85, max 1920px) on save to keep
  * disk usage and Ollama inference latency low.
  *
  * Lifecycle:
@@ -150,19 +150,41 @@ pub fn encode_images_as_base64(paths: &[String]) -> Result<Vec<String>, String> 
 }
 
 // ─── Tauri commands ────────────────────────────────────────────────────────
+//
+// Thin wrappers that delegate to the pure functions above. Excluded from
+// coverage builds entirely (`#[cfg(not(coverage))]`) because `coverage(off)`
+// suppresses instrumentation but llvm-cov still counts excluded function
+// signatures as "missed lines" in the summary — breaking the 100% gate.
 
 /// Compresses and saves an image to the flat images directory.
+///
+/// Accepts base64-encoded image data as a string to avoid the performance
+/// penalty of JSON-serializing a `Vec<u8>` (millions of individual numbers)
+/// over the Tauri IPC bridge.
+///
+/// The command is `async` so Tauri runs it off the main thread. The heavy
+/// work (base64 decode → PNG decode → Lanczos3 resize → JPEG encode) is
+/// dispatched to `spawn_blocking` to avoid blocking the async runtime,
+/// keeping the WebView UI fully responsive during processing.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub fn save_image_command(
+pub async fn save_image_command(
     app_handle: tauri::AppHandle,
-    image_data: Vec<u8>,
+    image_data_base64: String,
 ) -> Result<String, String> {
     let base_dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-    save_image(&base_dir, &image_data)
+
+    tokio::task::spawn_blocking(move || {
+        let image_data = BASE64
+            .decode(&image_data_base64)
+            .map_err(|e| format!("failed to decode base64: {e}"))?;
+        save_image(&base_dir, &image_data)
+    })
+    .await
+    .map_err(|e| format!("image processing task failed: {e}"))?
 }
 
 /// Deletes a single image file from disk.

@@ -1,13 +1,21 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { convertFileSrc } from '@tauri-apps/api/core';
+
+interface ThumbnailItem {
+  /** Unique key for React list rendering. */
+  id: string;
+  /** URL to render (blob URL, asset URL, or any valid image src). */
+  src: string;
+  /** Whether the image is still being processed by the backend. */
+  loading?: boolean;
+}
 
 interface ImageThumbnailsProps {
-  /** Absolute file paths of the attached images. */
-  imagePaths: string[];
-  /** Called with the path when a thumbnail is clicked (opens preview). */
-  onPreview: (path: string) => void;
-  /** Called with the path when the remove button is clicked. Omit to hide remove buttons. */
-  onRemove?: (path: string) => void;
+  /** Images to display as thumbnails. */
+  items: ThumbnailItem[];
+  /** Called with the item ID when a thumbnail is clicked (opens preview). */
+  onPreview: (id: string) => void;
+  /** Called with the item ID when the remove button is clicked. Omit to hide remove buttons. */
+  onRemove?: (id: string) => void;
   /** Thumbnail size in pixels. Defaults to 56. */
   size?: number;
 }
@@ -17,12 +25,12 @@ interface ImageThumbnailsProps {
  * Used in the ask bar (with remove) and in chat bubbles (without remove).
  */
 export function ImageThumbnails({
-  imagePaths,
+  items,
   onPreview,
   onRemove,
   size = 56,
 }: ImageThumbnailsProps) {
-  if (imagePaths.length === 0) return null;
+  if (items.length === 0) return null;
 
   return (
     <div
@@ -31,9 +39,9 @@ export function ImageThumbnails({
       aria-label="Attached images"
     >
       <AnimatePresence>
-        {imagePaths.map((path) => (
+        {items.map((item) => (
           <motion.div
-            key={path}
+            key={item.id}
             layout
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -44,22 +52,27 @@ export function ImageThumbnails({
           >
             <button
               type="button"
-              onClick={() => onPreview(path)}
+              onClick={() => onPreview(item.id)}
               className="block rounded-lg overflow-hidden border border-surface-border hover:border-primary/40 transition-colors cursor-pointer"
               aria-label="Preview image"
             >
               <img
-                src={convertFileSrc(path)}
+                src={item.src}
                 alt="Attached"
                 style={{ width: size, height: size }}
-                className="object-cover"
+                className={`object-cover ${item.loading ? 'opacity-50' : ''}`}
                 draggable={false}
               />
+              {item.loading && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                </div>
+              )}
             </button>
             {onRemove && (
               <button
                 type="button"
-                onClick={() => onRemove(path)}
+                onClick={() => onRemove(item.id)}
                 aria-label="Remove image"
                 className="absolute -top-1.5 -right-1.5 w-5 h-5 flex items-center justify-center rounded-full bg-neutral border border-surface-border text-text-secondary hover:text-red-400 hover:border-red-400/40 transition-colors opacity-0 group-hover:opacity-100 cursor-pointer"
               >
@@ -86,3 +99,5 @@ export function ImageThumbnails({
     </div>
   );
 }
+
+export type { ThumbnailItem };

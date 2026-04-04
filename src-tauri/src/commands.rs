@@ -921,8 +921,14 @@ mod tests {
         assert!(second_clone.is_cancelled());
     }
 
+    /// Guard to serialize tests that mutate `THUKI_SYSTEM_PROMPT` env var.
+    /// Rust runs tests in parallel by default; without serialization these
+    /// tests race on the shared environment variable.
+    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
     #[test]
     fn load_system_prompt_returns_default_when_unset() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("THUKI_SYSTEM_PROMPT");
 
         let prompt = load_system_prompt();
@@ -931,6 +937,7 @@ mod tests {
 
     #[test]
     fn load_system_prompt_reads_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("THUKI_SYSTEM_PROMPT", "Custom prompt");
 
         let prompt = load_system_prompt();
@@ -941,6 +948,7 @@ mod tests {
 
     #[test]
     fn load_system_prompt_ignores_empty_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("THUKI_SYSTEM_PROMPT", "   ");
 
         let prompt = load_system_prompt();
