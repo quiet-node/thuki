@@ -489,6 +489,31 @@ function App() {
   );
 
   /**
+   * Shared reset sequence for all "start a new conversation" paths.
+   *
+   * Mirrors what `replayEntranceAnimation` does for the anchor-mode state so
+   * the Tauri window shrinks back to ask-bar height regardless of whether the
+   * session was launched from a text-selection anchor:
+   *
+   * - `isPreExpandedRef.current = false` unblocks the ResizeObserver in anchor
+   *   mode so it can call `set_window_frame` with the (smaller) ask-bar height.
+   * - Clearing `outerContainerRef.current.style.minHeight` removes the inline
+   *   CSS constraint that was keeping the outer container at the expanded height.
+   */
+  const resetForNewConversation = useCallback(() => {
+    isPreExpandedRef.current = false;
+    /* v8 ignore start -- DOM ref null guard */
+    if (outerContainerRef.current) {
+      outerContainerRef.current.style.minHeight = '';
+    }
+    /* v8 ignore stop */
+    reset();
+    resetHistory();
+    setIsHistoryOpen(false);
+    setQuery('');
+  }, [reset, resetHistory]);
+
+  /**
    * Starts a fresh conversation from within conversation view.
    * If the current conversation has unsaved messages, opens the history
    * dropdown and surfaces a SwitchConfirmation prompt instead of resetting
@@ -500,11 +525,8 @@ function App() {
       setIsHistoryOpen(true);
       return;
     }
-    reset();
-    resetHistory();
-    setIsHistoryOpen(false);
-    setQuery('');
-  }, [isSaved, messages.length, reset, resetHistory]);
+    resetForNewConversation();
+  }, [isSaved, messages.length, resetForNewConversation]);
 
   /** Saves the current conversation then starts a fresh one. */
   const handleSaveAndNew = useCallback(async () => {
@@ -513,19 +535,13 @@ function App() {
     } catch {
       return;
     }
-    reset();
-    resetHistory();
-    setIsHistoryOpen(false);
-    setQuery('');
-  }, [save, messages, reset, resetHistory]);
+    resetForNewConversation();
+  }, [save, messages, resetForNewConversation]);
 
   /** Discards the current conversation and starts a fresh one. */
   const handleJustNew = useCallback(() => {
-    reset();
-    resetHistory();
-    setIsHistoryOpen(false);
-    setQuery('');
-  }, [reset, resetHistory]);
+    resetForNewConversation();
+  }, [resetForNewConversation]);
 
   const handleSubmit = useCallback(() => {
     if (query.trim().length === 0 || isGenerating) return;
