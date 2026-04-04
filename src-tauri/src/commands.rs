@@ -35,10 +35,16 @@ pub enum StreamChunk {
 }
 
 /// A single message in the Ollama `/api/chat` conversation format.
+///
+/// The optional `images` field carries base64-encoded image data for
+/// multimodal models (e.g. `gemma3:4b`). When absent or empty, the
+/// message is text-only.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
 }
 
 /// Request payload for Ollama `/api/chat` endpoint.
@@ -260,6 +266,7 @@ pub async fn ask_ollama(
     let user_msg = ChatMessage {
         role: "user".to_string(),
         content,
+        images: None,
     };
 
     // Snapshot the current epoch and build the messages array for Ollama.
@@ -271,6 +278,7 @@ pub async fn ask_ollama(
         let mut msgs = vec![ChatMessage {
             role: "system".to_string(),
             content: system_prompt.0.clone(),
+            images: None,
         }];
         msgs.extend(conv.clone());
         msgs.push(user_msg.clone());
@@ -300,6 +308,7 @@ pub async fn ask_ollama(
         conv.push(ChatMessage {
             role: "assistant".to_string(),
             content: accumulated,
+            images: None,
         });
     }
 
@@ -371,6 +380,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: "user".to_string(),
             content: "hi".to_string(),
+            images: None,
         }];
 
         let accumulated = stream_ollama_chat(
@@ -804,10 +814,12 @@ mod tests {
             ChatMessage {
                 role: "system".to_string(),
                 content: "Be helpful".to_string(),
+                images: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: "hi".to_string(),
+                images: None,
             },
         ];
 
@@ -940,6 +952,7 @@ mod tests {
         h.messages.lock().unwrap().push(ChatMessage {
             role: "user".to_string(),
             content: "hi".to_string(),
+            images: None,
         });
 
         h.epoch.fetch_add(1, Ordering::SeqCst);

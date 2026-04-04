@@ -134,6 +134,7 @@ pub fn load_conversation(
         conv.push(ChatMessage {
             role: msg.role.clone(),
             content: msg.content.clone(),
+            images: None,
         });
     }
 
@@ -184,10 +185,12 @@ pub async fn generate_title(
         ChatMessage {
             role: "system".to_string(),
             content: system_prompt.0.clone(),
+            images: None,
         },
         ChatMessage {
             role: "user".to_string(),
             content: title_prompt,
+            images: None,
         },
     ];
 

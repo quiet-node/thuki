@@ -18,6 +18,7 @@
 pub mod commands;
 pub mod database;
 pub mod history;
+pub mod images;
 
 #[cfg(target_os = "macos")]
 mod activator;
@@ -518,6 +519,14 @@ pub fn run() {
             history::delete_conversation,
             #[cfg(not(coverage))]
             history::generate_title,
+            #[cfg(not(coverage))]
+            images::save_image_command,
+            #[cfg(not(coverage))]
+            images::remove_image_command,
+            #[cfg(not(coverage))]
+            images::cleanup_orphaned_images_command,
+            #[cfg(not(coverage))]
+            images::remove_conversation_images,
             notify_overlay_hidden,
             set_window_frame
         ])
