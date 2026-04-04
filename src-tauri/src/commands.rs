@@ -289,12 +289,12 @@ pub async fn ask_ollama(
     )
     .await;
 
-    // Persist user + assistant messages only when the stream completed
-    // naturally (not cancelled or error), the epoch has not changed
-    // (no reset during streaming), and we received content.
-    let was_cancelled = cancel_token.is_cancelled();
+    // Persist user + assistant messages to in-memory history when the epoch
+    // has not changed (no reset during streaming) and we received content.
+    // This includes cancelled generations so that subsequent requests retain
+    // the conversational context (the user message and any partial response).
     let current_epoch = history.epoch.load(Ordering::SeqCst);
-    if !was_cancelled && current_epoch == epoch_at_start && !accumulated.is_empty() {
+    if current_epoch == epoch_at_start && !accumulated.is_empty() {
         let mut conv = history.messages.lock().unwrap();
         conv.push(user_msg);
         conv.push(ChatMessage {
