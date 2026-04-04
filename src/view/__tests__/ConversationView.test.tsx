@@ -484,7 +484,7 @@ describe('ConversationView', () => {
       expect(saveBtn).toBeDisabled();
     });
 
-    it('Save button is disabled when isSaved is true', () => {
+    it('Save button is enabled (for unsave) when isSaved is true', () => {
       render(
         <ConversationView
           messages={[]}
@@ -497,8 +497,10 @@ describe('ConversationView', () => {
           canSave={true}
         />,
       );
-      const saveBtn = screen.getByRole('button', { name: /save/i });
-      expect(saveBtn).toBeDisabled();
+      const saveBtn = screen.getByRole('button', {
+        name: /remove from history/i,
+      });
+      expect(saveBtn).not.toBeDisabled();
     });
   });
 

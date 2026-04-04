@@ -149,6 +149,17 @@ export function useConversationHistory() {
   }, []);
 
   /**
+   * Removes the current conversation from SQLite without clearing the
+   * in-memory message history. After this call `isSaved` is false and the
+   * session is treated as unsaved again (the user can re-save if desired).
+   */
+  const unsave = useCallback(async (): Promise<void> => {
+    if (!isSaved || conversationId === null) return;
+    await invoke('delete_conversation', { conversationId });
+    setConversationId(null);
+  }, [isSaved, conversationId]);
+
+  /**
    * Fetches the list of saved conversations, optionally filtered by title.
    *
    * @param search Optional case-insensitive search term applied against
@@ -180,6 +191,7 @@ export function useConversationHistory() {
     conversationId,
     isSaved,
     save,
+    unsave,
     persistTurn,
     loadConversation,
     deleteConversation,

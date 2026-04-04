@@ -125,7 +125,9 @@ export const WindowControls = memo(function WindowControls({
   onHistoryOpen,
   onNewConversation,
 }: WindowControlsProps) {
-  const saveDisabled = isSaved || !canSave;
+  // Disabled only when there is nothing to save yet and the conversation hasn't
+  // been saved. Once saved the button stays active so the user can unsave.
+  const saveDisabled = !isSaved && !canSave;
 
   return (
     <div className="shrink-0">
@@ -171,18 +173,18 @@ export const WindowControls = memo(function WindowControls({
         <div className="ml-auto flex items-center gap-1">
           {onSave !== undefined && (
             <Tooltip
-              label={isSaved ? 'Conversation saved' : 'Save conversation'}
+              label={isSaved ? 'Remove from history' : 'Save conversation'}
             >
               <button
                 type="button"
                 onClick={onSave}
                 disabled={saveDisabled}
                 aria-label={
-                  isSaved ? 'Conversation saved' : 'Save conversation'
+                  isSaved ? 'Remove from history' : 'Save conversation'
                 }
                 className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors duration-150 cursor-pointer disabled:cursor-default ${
                   isSaved
-                    ? 'text-primary opacity-80'
+                    ? 'text-primary hover:text-text-secondary hover:bg-white/5'
                     : canSave
                       ? 'text-text-secondary hover:text-primary hover:bg-primary/8'
                       : 'text-text-secondary opacity-30'

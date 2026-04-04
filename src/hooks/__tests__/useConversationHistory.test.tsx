@@ -311,6 +311,40 @@ describe('useConversationHistory', () => {
     expect(result.current.conversationId).toBeNull();
   });
 
+  it('unsave() calls delete_conversation and clears isSaved', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-123' });
+    invoke.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(MESSAGES, MODEL);
+    });
+    expect(result.current.isSaved).toBe(true);
+
+    invoke.mockClear();
+
+    await act(async () => {
+      await result.current.unsave();
+    });
+
+    expect(invoke).toHaveBeenCalledWith('delete_conversation', {
+      conversationId: 'conv-123',
+    });
+    expect(result.current.isSaved).toBe(false);
+    expect(result.current.conversationId).toBeNull();
+  });
+
+  it('unsave() is a no-op when not saved', async () => {
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.unsave();
+    });
+
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('reset() does not call reset_conversation (caller is responsible)', async () => {
     invoke.mockResolvedValueOnce({ conversation_id: 'conv-123' });
     invoke.mockResolvedValue(undefined);

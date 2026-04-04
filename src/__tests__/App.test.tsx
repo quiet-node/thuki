@@ -809,6 +809,59 @@ describe('App', () => {
       );
     });
 
+    it('clicking save button when already saved calls delete_conversation (unsave toggle)', async () => {
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'conv-save-toggle' },
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'question' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'answer' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Save the conversation first
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: /save conversation/i }),
+        );
+      });
+
+      // Button should now read "Remove from history"
+      expect(
+        screen.getByRole('button', { name: /remove from history/i }),
+      ).toBeInTheDocument();
+
+      invoke.mockClear();
+
+      // Click again to unsave
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: /remove from history/i }),
+        );
+      });
+
+      expect(invoke).toHaveBeenCalledWith('delete_conversation', {
+        conversationId: 'conv-save-toggle',
+      });
+
+      // Button reverts to "Save conversation"
+      expect(
+        screen.getByRole('button', { name: /save conversation/i }),
+      ).toBeInTheDocument();
+    });
+
     it('resets history state on overlay reopen', async () => {
       enableChannelCaptureWithResponses({
         save_conversation: { conversation_id: 'conv-123' },
@@ -1209,7 +1262,7 @@ describe('App', () => {
 
       // Open chat history
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: /history/i }));
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
       });
 
       // Click a different conversation — isSaved=true means no dialog, loads directly

@@ -81,6 +81,7 @@ function App() {
     conversationId,
     isSaved,
     save,
+    unsave,
     persistTurn,
     loadConversation,
     deleteConversation,
@@ -408,16 +409,23 @@ function App() {
     /* v8 ignore stop */
   }, [isChatMode, isHistoryOpen]);
 
-  /** Saves the current conversation to SQLite. */
+  /**
+   * Toggles the save state of the current conversation.
+   * - Not saved → saves to SQLite (bookmark fills).
+   * - Already saved → deletes from SQLite, marks unsaved (bookmark empties);
+   *   messages remain in the UI so the session can be re-saved if desired.
+   */
   const handleSave = useCallback(async () => {
     try {
-      await save(messages, MODEL_NAME);
+      if (isSaved) {
+        await unsave();
+      } else {
+        await save(messages, MODEL_NAME);
+      }
     } catch {
-      // Save failed — bookmark state stays unchanged; the error is surfaced by
-      // the Tauri runtime. No UI banner here; save is a user-initiated fire-and-
-      // forget action with visible feedback via the bookmark icon state.
+      // State stays unchanged on failure; feedback is implicit in the icon.
     }
-  }, [save, messages]);
+  }, [isSaved, unsave, save, messages]);
 
   /**
    * Loads a conversation from history, replacing the current session.
