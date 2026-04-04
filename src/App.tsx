@@ -14,7 +14,7 @@ import { quote } from './config';
 import './App.css';
 
 /** Ollama model used for this session — must match the Rust DEFAULT_MODEL_NAME. */
-const MODEL_NAME = 'llama3.2:3b';
+const MODEL_NAME = 'gemma3:4b';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 

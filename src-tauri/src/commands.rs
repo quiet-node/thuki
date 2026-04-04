@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Default configuration constants as the application currently lacks a Settings UI.
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
-pub const DEFAULT_MODEL_NAME: &str = "llama3.2:3b";
+pub const DEFAULT_MODEL_NAME: &str = "gemma3:4b";
 const DEFAULT_SYSTEM_PROMPT: &str = "You are Thuki (thư ký), a personal desktop secretary that \
 lives as a floating overlay on macOS. You are fast, sharp, and helpful.\n\nResponse style:\n- Be \
 concise. You appear in a small floating window — keep responses scannable.\n- Use short paragraphs, \

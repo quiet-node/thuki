@@ -261,7 +261,7 @@ mod tests {
             .map(|m| m.content.trim().to_string());
 
         let conversation_id =
-            database::create_conversation(&conn, placeholder_title.as_deref(), "llama3.2:3b")
+            database::create_conversation(&conn, placeholder_title.as_deref(), "gemma3:4b")
                 .unwrap();
 
         let batch: Vec<(String, String, Option<String>)> = messages

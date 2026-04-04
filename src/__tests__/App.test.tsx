@@ -1151,7 +1151,7 @@ describe('App', () => {
           {
             id: 'conv-other2',
             title: 'Other chat',
-            model: 'llama3.2:3b',
+            model: 'gemma3:4b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1208,7 +1208,7 @@ describe('App', () => {
             {
               id: 'c2',
               title: 'Other chat',
-              model: 'llama3.2:3b',
+              model: 'gemma3:4b',
               updated_at: 1,
               message_count: 1,
             },
@@ -1279,7 +1279,7 @@ describe('App', () => {
           {
             id: 'conv-other',
             title: 'Switch target',
-            model: 'llama3.2:3b',
+            model: 'gemma3:4b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1356,7 +1356,7 @@ describe('App', () => {
           {
             id: 'conv-target',
             title: 'My chat',
-            model: 'llama3.2:3b',
+            model: 'gemma3:4b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1500,7 +1500,7 @@ describe('App', () => {
           {
             id: 'conv-active',
             title: 'Active chat',
-            model: 'llama3.2:3b',
+            model: 'gemma3:4b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1562,7 +1562,7 @@ describe('App', () => {
             {
               id: 'c1',
               title: 'Chat',
-              model: 'llama3.2:3b',
+              model: 'gemma3:4b',
               updated_at: 1,
               message_count: 1,
             },
@@ -1596,7 +1596,7 @@ describe('App', () => {
           {
             id: 'conv-unrelated',
             title: 'Unrelated',
-            model: 'llama3.2:3b',
+            model: 'gemma3:4b',
             updated_at: 1,
             message_count: 2,
           },

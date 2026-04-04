@@ -51,7 +51,7 @@ Thuki utilizes a **Dual-Layer Isolation** model for generative inference:
 3.  **Start Sandbox (Security-First Launch)**:
     Thuki offers a hardened, isolated Docker sandbox as a secure-by-default environment for generative inference. This is ideal if you do not wish to install AI models directly on your host or prefer maximum isolation from the network.
 
-    This bootstraps the sandbox and pulls the models (default: `llama3.2:3b`).
+    This bootstraps the sandbox and pulls the models (default: `gemma3:4b`).
 
     ```bash
     bun run sandbox:start
