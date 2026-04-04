@@ -1038,6 +1038,68 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
+    it('handleNewConversation revokes blob URLs when images are attached', async () => {
+      enableChannelCaptureWithResponses({
+        list_conversations: [],
+        save_image_command: '/tmp/img.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Get into chat mode with an unsaved turn
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'question' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'answer' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Paste an image while in chat mode (unsaved conversation)
+      const replyInput = screen.getByPlaceholderText('Reply...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(replyInput, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+
+      const revokeSpy = vi.mocked(URL.revokeObjectURL);
+      revokeSpy.mockClear();
+
+      // Click + → SwitchConfirmation (unsaved conversation)
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'New conversation' }),
+        );
+      });
+
+      // Click "Start New" → resetForNewConversation revokes blob URLs
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Start New' }));
+      });
+
+      expect(revokeSpy).toHaveBeenCalled();
+      expect(
+        screen.queryByRole('list', { name: /attached images/i }),
+      ).toBeNull();
+    });
+
     it('handleNewConversation saves then resets on Save & Start New', async () => {
       enableChannelCaptureWithResponses({
         list_conversations: [],
@@ -1988,6 +2050,71 @@ describe('App', () => {
       expect(screen.queryByRole('dialog')).toBeNull();
     });
 
+    it('handleChatImagePreview passes blob URLs through without convertFileSrc', async () => {
+      // Make save_image_command hang so the image stays as a blob URL
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // channel capture
+          }
+          if (cmd === 'save_image_command') {
+            return new Promise<string>(() => {}); // never resolves
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste and submit while still processing → pendingUserMessage with blob URL
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'what is this?' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Pending user message should be visible in chat with a blob URL thumbnail
+      await vi.waitFor(() => {
+        expect(screen.getByText('what is this?')).toBeInTheDocument();
+      });
+
+      // Click the preview button in the chat bubble — should open the modal
+      // with the blob URL directly (no convertFileSrc wrapping).
+      const previewButtons = screen.getAllByRole('button', {
+        name: /preview/i,
+      });
+      expect(previewButtons.length).toBeGreaterThan(0);
+
+      await act(async () => {
+        fireEvent.click(previewButtons[0]);
+      });
+
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+      // Flush stale FileReader macrotask so it doesn't leak into the next test.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+    });
+
     it('handleImageRemove is safe when called twice for the same image', async () => {
       enableChannelCaptureWithResponses({
         save_image_command: '/tmp/staged/img1.jpg',
@@ -2403,7 +2530,45 @@ describe('App', () => {
       expect(
         screen.getByRole('button', { name: /send message/i }),
       ).toBeInTheDocument();
+
+      // User's query should be restored so their text isn't lost
+      expect(screen.getByPlaceholderText('Ask Thuki anything...')).toHaveValue(
+        'describe',
+      );
     });
+  });
+
+  it('revokes blob URLs when overlay reopens with attached images', async () => {
+    enableChannelCaptureWithResponses({
+      save_image_command: '/tmp/img.jpg',
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    // Paste an image so attachedImages is non-empty
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const file = new File(['data'], 'img.png', { type: 'image/png' });
+    await act(async () => {
+      fireEvent.paste(textarea, {
+        clipboardData: {
+          items: [{ type: 'image/png', getAsFile: () => file }],
+        },
+      });
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        screen.getByRole('list', { name: /attached images/i }),
+      ).toBeInTheDocument();
+    });
+
+    // Reopen overlay — should clear images and revoke blob URLs
+    await showOverlay();
+
+    expect(URL.revokeObjectURL).toHaveBeenCalled();
+    expect(screen.queryByRole('list', { name: /attached images/i })).toBeNull();
   });
 
   it('resets session on overlay reopen', async () => {

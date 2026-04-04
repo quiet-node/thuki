@@ -40,7 +40,7 @@ pub fn images_root(base_dir: &Path) -> PathBuf {
     base_dir.join("images")
 }
 
-/// Compresses raw image bytes to JPEG (max 1080p) and writes to the flat
+/// Compresses raw image bytes to JPEG (max 1920px) and writes to the flat
 /// images directory with a UUID filename.
 ///
 /// Returns the absolute path of the saved file. The caller owns the path and
@@ -83,17 +83,29 @@ pub fn save_image(base_dir: &Path, image_data: &[u8]) -> Result<String, String> 
         .ok_or_else(|| "image path contains non-UTF-8 characters".to_string())
 }
 
-/// Deletes a single image file from disk.
+/// Deletes a single image file from disk, provided it resides within the
+/// given `base_dir/images/` directory. Rejects paths outside the images root
+/// to prevent path-traversal attacks via the IPC boundary.
 ///
 /// # Errors
 ///
-/// Returns an error if the file cannot be removed. Silently succeeds if the
-/// file does not exist (idempotent).
-pub fn remove_image(path: &str) -> Result<(), String> {
+/// Returns an error if the path escapes the images directory or the file
+/// cannot be removed. Silently succeeds if the file does not exist (idempotent).
+pub fn remove_image(base_dir: &Path, path: &str) -> Result<(), String> {
     let p = Path::new(path);
-    if p.exists() {
-        std::fs::remove_file(p).map_err(|e| format!("failed to remove image: {e}"))?;
+    if !p.exists() {
+        return Ok(());
     }
+    let canonical = p
+        .canonicalize()
+        .map_err(|e| format!("failed to resolve image path: {e}"))?;
+    let root = images_root(base_dir)
+        .canonicalize()
+        .map_err(|e| format!("failed to resolve images root: {e}"))?;
+    if !canonical.starts_with(&root) {
+        return Err("path is outside the images directory".to_string());
+    }
+    std::fs::remove_file(p).map_err(|e| format!("failed to remove image: {e}"))?;
     Ok(())
 }
 
@@ -151,10 +163,11 @@ pub fn encode_images_as_base64(paths: &[String]) -> Result<Vec<String>, String> 
 
 // ─── Tauri commands ────────────────────────────────────────────────────────
 //
-// Thin wrappers that delegate to the pure functions above. Excluded from
-// coverage builds entirely (`#[cfg(not(coverage))]`) because `coverage(off)`
-// suppresses instrumentation but llvm-cov still counts excluded function
-// signatures as "missed lines" in the summary — breaking the 100% gate.
+// Thin wrappers that delegate to the pure functions above. The
+// `tauri::command` proc-macro is gated behind `#[cfg(not(coverage))]` so it
+// is not applied during coverage builds, and `coverage(off)` suppresses
+// instrumentation on nightly — together preventing false "missed lines" in
+// the llvm-cov summary.
 
 /// Compresses and saves an image to the flat images directory.
 ///
@@ -187,11 +200,15 @@ pub async fn save_image_command(
     .map_err(|e| format!("image processing task failed: {e}"))?
 }
 
-/// Deletes a single image file from disk.
+/// Deletes a single image file from disk (with path containment check).
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub fn remove_image_command(path: String) -> Result<(), String> {
-    remove_image(&path)
+pub fn remove_image_command(app_handle: tauri::AppHandle, path: String) -> Result<(), String> {
+    let base_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+    remove_image(&base_dir, &path)
 }
 
 /// Removes image files not referenced by any saved message.
@@ -319,7 +336,7 @@ mod tests {
         let path = save_image(&base, &tiny_png()).unwrap();
         assert!(Path::new(&path).exists());
 
-        remove_image(&path).unwrap();
+        remove_image(&base, &path).unwrap();
         assert!(!Path::new(&path).exists());
 
         fs::remove_dir_all(&base).unwrap();
@@ -327,8 +344,26 @@ mod tests {
 
     #[test]
     fn remove_image_idempotent_on_missing_file() {
-        let result = remove_image("/tmp/nonexistent-thuki-image.jpg");
+        let base = temp_dir();
+        let result = remove_image(&base, "/tmp/nonexistent-thuki-image.jpg");
         assert!(result.is_ok());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn remove_image_rejects_path_outside_images_dir() {
+        let base = temp_dir();
+        fs::create_dir_all(images_root(&base)).unwrap();
+        let outside = base.join("secret.txt");
+        fs::write(&outside, b"sensitive").unwrap();
+
+        let result = remove_image(&base, outside.to_str().unwrap());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("outside the images directory"));
+        // File must still exist — not deleted.
+        assert!(outside.exists());
+
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

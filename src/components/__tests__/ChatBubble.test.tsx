@@ -207,6 +207,8 @@ describe('ChatBubble', () => {
       ).toBeInTheDocument();
       // The content span should not be rendered when content is empty
       expect(container.querySelector('.text-white\\/95')).toBeNull();
+      // CopyButton should also be hidden — nothing to copy
+      expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
     });
   });
 

@@ -400,9 +400,10 @@ fn init_panel(app_handle: &tauri::AppHandle) {
 /// Interval between periodic orphaned-image cleanup sweeps.
 const IMAGE_CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// Runs a single orphaned-image cleanup sweep. Queries all image paths
-/// referenced by saved messages, then removes any files in the images
-/// directory that are not in that set.
+/// Runs a single orphaned-image cleanup sweep. Thin orchestration wrapper
+/// that delegates to `database::get_all_image_paths` and
+/// `images::cleanup_orphaned_images`, both independently tested.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn run_image_cleanup(app_handle: &tauri::AppHandle) {
     let db = app_handle.state::<history::Database>();
     let conn = match db.0.lock() {
@@ -419,9 +420,9 @@ fn run_image_cleanup(app_handle: &tauri::AppHandle) {
     let _ = images::cleanup_orphaned_images(&base_dir, &referenced);
 }
 
-/// Spawns a background Tokio task that runs the orphaned-image cleanup
-/// sweep on a fixed interval. Best-effort — errors are silently ignored
-/// since cleanup is a housekeeping operation, not a critical path.
+/// Spawns a background Tokio task that runs the cleanup sweep on a fixed
+/// interval. Thin async wrapper — delegates to `run_image_cleanup`.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn spawn_periodic_image_cleanup(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(IMAGE_CLEANUP_INTERVAL);

@@ -117,12 +117,10 @@ const HISTORY_ICON = (
   </svg>
 );
 
-/**
- * Props for the AskBarView component.
- */
-/** Maximum number of images allowed per message. */
+/** Maximum number of images allowed per message (mirrors MAX_IMAGES_PER_MESSAGE in images.rs). */
 const MAX_IMAGES = 3;
 
+/** Props for the AskBarView component. */
 interface AskBarViewProps {
   /** The current user input text. */
   query: string;

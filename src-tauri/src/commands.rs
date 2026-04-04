@@ -240,8 +240,9 @@ pub async fn stream_ollama_chat(
 }
 
 /// Streams a chat response from the local Ollama backend. Appends the user
-/// message and assistant response to conversation history only after successful
-/// completion. Uses an epoch counter to prevent stale writes after a reset.
+/// message and assistant response to conversation history after completion
+/// or cancellation (retaining context for follow-up requests). Uses an epoch
+/// counter to prevent stale writes after a reset.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 #[allow(clippy::too_many_arguments)]
@@ -281,7 +282,8 @@ pub async fn ask_ollama(
 
     // Snapshot the current epoch and build the messages array for Ollama.
     // The user message is NOT yet committed to history — it is only added
-    // after a successful response to prevent orphaned messages on errors.
+    // after a response (including partial/cancelled) to prevent orphaned
+    // messages on errors.
     let (epoch_at_start, messages) = {
         let conv = history.messages.lock().unwrap();
         let epoch = history.epoch.load(Ordering::SeqCst);

@@ -335,7 +335,10 @@ function App() {
       setQuery('');
       setSelectedContext(context);
       setIsHistoryOpen(false);
-      setAttachedImages([]);
+      setAttachedImages((prev) => {
+        for (const img of prev) URL.revokeObjectURL(img.blobUrl);
+        return [];
+      });
       pendingSubmitRef.current = null;
       setIsSubmitPending(false);
       setPendingUserMessage(null);
@@ -553,7 +556,10 @@ function App() {
     resetHistory();
     setIsHistoryOpen(false);
     setQuery('');
-    setAttachedImages([]);
+    setAttachedImages((prev) => {
+      for (const img of prev) URL.revokeObjectURL(img.blobUrl);
+      return [];
+    });
     pendingSubmitRef.current = null;
     setIsSubmitPending(false);
     setPendingUserMessage(null);
@@ -624,9 +630,12 @@ function App() {
               );
             })
             .catch(() => {
-              setAttachedImages((prev) =>
-                prev.filter((img) => img.id !== imageId),
-              );
+              setAttachedImages((prev) => {
+                for (const img of prev) {
+                  if (img.id === imageId) URL.revokeObjectURL(img.blobUrl);
+                }
+                return prev.filter((img) => img.id !== imageId);
+              });
             });
         };
         reader.readAsDataURL(file);
@@ -661,7 +670,7 @@ function App() {
 
   /** Opens the preview modal for a chat history image (identified by file path). */
   const handleChatImagePreview = useCallback((path: string) => {
-    setPreviewImageUrl(convertFileSrc(path));
+    setPreviewImageUrl(path.startsWith('blob:') ? path : convertFileSrc(path));
   }, []);
 
   /** Fires the actual ask() call and cleans up attached images + input. */
@@ -738,13 +747,20 @@ function App() {
   // When a pending submit exists and all images finish processing, fire it.
   // Reads `attachedImages` directly (not via `executeSubmit` closure) to
   // guarantee the effect always sees the freshest file paths.
+  /* eslint-disable @eslint-react/set-state-in-effect -- intentional: effect
+     reacts to image processing completion and must synchronously transition
+     state (pending → submitted) in the same tick to avoid stale renders. */
   useEffect(() => {
     if (!pendingSubmitRef.current) return;
     if (attachedImages.length === 0) {
-      // All images were removed (failed) — cancel the pending submit.
+      // All images failed — restore the user's query so their text isn't lost.
+      const { query: savedQuery, context: savedContext } =
+        pendingSubmitRef.current;
       pendingSubmitRef.current = null;
       setIsSubmitPending(false);
       setPendingUserMessage(null);
+      setQuery(savedQuery);
+      setSelectedContext(savedContext ?? null);
       return;
     }
     // Wait until every image has finished backend processing.
@@ -765,6 +781,7 @@ function App() {
     }
     setAttachedImages([]);
   }, [attachedImages, ask, setSelectedContext]);
+  /* eslint-enable @eslint-react/set-state-in-effect */
 
   /** Unified cancel handler: reverts a pending submit (undo-send) or cancels
    *  an active Ollama generation. When reverting, restores the user's query

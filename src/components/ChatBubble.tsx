@@ -102,9 +102,11 @@ export function ChatBubble({
               <span className="text-white/95 font-medium">{content}</span>
             )}
           </div>
-          <div className="h-6 flex items-center px-1">
-            <CopyButton content={content} align="right" />
-          </div>
+          {content && (
+            <div className="h-6 flex items-center px-1">
+              <CopyButton content={content} align="right" />
+            </div>
+          )}
         </div>
       ) : (
         /* AI plain text — full width, no bubble chrome */

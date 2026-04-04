@@ -10,6 +10,7 @@ use std::sync::Mutex;
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 use tauri::State;
 
 use crate::commands::{ChatMessage, ConversationHistory, SystemPrompt};
@@ -70,10 +71,9 @@ pub fn save_conversation(
     let batch: Vec<(String, String, Option<String>, Option<String>)> = messages
         .into_iter()
         .map(|m| {
-            let image_json = m
-                .image_paths
-                .filter(|v| !v.is_empty())
-                .map(|v| serde_json::to_string(&v).unwrap_or_default());
+            let image_json = m.image_paths.filter(|v| !v.is_empty()).map(|v| {
+                serde_json::to_string(&v).expect("Vec<String> serialization is infallible")
+            });
             (m.role, m.content, m.quoted_text, image_json)
         })
         .collect();
@@ -97,7 +97,7 @@ pub fn persist_message(
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let image_json = image_paths
         .filter(|v| !v.is_empty())
-        .map(|v| serde_json::to_string(&v).unwrap_or_default());
+        .map(|v| serde_json::to_string(&v).expect("Vec<String> serialization is infallible"));
     database::insert_message(
         &conn,
         &conversation_id,
@@ -157,7 +157,11 @@ pub fn load_conversation(
 /// removes any image files referenced by those messages from disk.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub fn delete_conversation(conversation_id: String, db: State<'_, Database>) -> Result<(), String> {
+pub fn delete_conversation(
+    app_handle: tauri::AppHandle,
+    conversation_id: String,
+    db: State<'_, Database>,
+) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
 
     // Collect image paths before deleting messages (CASCADE will remove them).
@@ -172,8 +176,12 @@ pub fn delete_conversation(conversation_id: String, db: State<'_, Database>) -> 
     database::delete_conversation(&conn, &conversation_id).map_err(|e| e.to_string())?;
 
     // Best-effort file cleanup — don't fail the command if a file is missing.
+    let base_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
     for path in &image_paths {
-        let _ = crate::images::remove_image(path);
+        let _ = crate::images::remove_image(&base_dir, path);
     }
 
     Ok(())
@@ -302,10 +310,9 @@ mod tests {
         let batch: Vec<(String, String, Option<String>, Option<String>)> = messages
             .into_iter()
             .map(|m| {
-                let image_json = m
-                    .image_paths
-                    .filter(|v| !v.is_empty())
-                    .map(|v| serde_json::to_string(&v).unwrap_or_default());
+                let image_json = m.image_paths.filter(|v| !v.is_empty()).map(|v| {
+                    serde_json::to_string(&v).expect("Vec<String> serialization is infallible")
+                });
                 (m.role, m.content, m.quoted_text, image_json)
             })
             .collect();
