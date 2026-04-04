@@ -711,14 +711,15 @@ function App() {
     pendingSubmitRef.current = { query, context };
     setIsSubmitPending(true);
 
-    // Show the user's message immediately in the chat view with blob URL
-    // thumbnails so the UI transitions to conversation mode right away.
+    // Show the user's message immediately in the chat view. Use file paths
+    // for already-processed images (no loading spinner) and blob URLs only
+    // for images still being processed (ChatBubble shows a spinner for blob: URLs).
     setPendingUserMessage({
       id: crypto.randomUUID(),
       role: 'user',
       content: query,
       quotedText: context,
-      imagePaths: attachedImages.map((img) => img.blobUrl),
+      imagePaths: attachedImages.map((img) => img.filePath ?? img.blobUrl),
     });
 
     setQuery('');
