@@ -11,7 +11,7 @@ export interface ConversationSummary {
   title: string | null;
   /** Ollama model name used for this conversation. */
   model: string;
-  /** Unix timestamp (seconds) of the last message. */
+  /** Unix timestamp (milliseconds) of the last message. */
   updated_at: number;
   /** Total number of messages in this conversation. */
   message_count: number;

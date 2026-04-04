@@ -82,9 +82,9 @@ interface HistoryPanelProps {
    * Also hides the search box since only the confirmation is shown.
    */
   pendingNewConversation?: boolean;
-  /** Called when the user confirms "Save & Switch" for a new conversation. */
+  /** Called when the user confirms "Save & Start New" for a new conversation. */
   onSaveAndNew?: () => void;
-  /** Called when the user confirms "Just Switch" for a new conversation. */
+  /** Called when the user confirms "Start New" for a new conversation. */
   onJustNew?: () => void;
   /** Called when the user cancels the new-conversation confirmation. */
   onCancelNew?: () => void;

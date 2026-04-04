@@ -34,9 +34,9 @@ interface ConversationItemProps {
 /**
  * Renders a single conversation row in the history panel.
  *
- * Displays the conversation title (falling back to "Untitled"), message
- * count, and a delete button revealed on hover. The entire row is a button
- * for keyboard accessibility.
+ * Displays the conversation title (falling back to "Untitled"), a relative
+ * timestamp, and a delete button revealed on hover. The entire row is a
+ * button for keyboard accessibility.
  */
 export const ConversationItem = memo(function ConversationItem({
   conversation,

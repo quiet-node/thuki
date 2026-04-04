@@ -947,6 +947,53 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
+    it('handleNewConversation Cancel closes the history dropdown', async () => {
+      enableChannelCaptureWithResponses({
+        list_conversations: [],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Get into chat mode with an unsaved turn
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'question' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'answer' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Click + → SwitchConfirmation appears
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'New conversation' }),
+        );
+      });
+
+      expect(
+        screen.getByRole('button', { name: 'Cancel' }),
+      ).toBeInTheDocument();
+
+      // Click Cancel → dropdown closes, still in chat mode
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      });
+
+      // SwitchConfirmation should be gone
+      expect(
+        screen.queryByRole('button', { name: 'Cancel' }),
+      ).not.toBeInTheDocument();
+      // Still showing the conversation
+      expect(screen.getByText('question')).toBeInTheDocument();
+    });
+
     it('handleNewConversation resets directly when conversation is already saved', async () => {
       enableChannelCaptureWithResponses({
         list_conversations: [],
