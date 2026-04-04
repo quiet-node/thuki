@@ -835,6 +835,7 @@ function App() {
                       pendingNewConversation={pendingNewConversation}
                       onSaveAndNew={handleSaveAndNew}
                       onJustNew={handleJustNew}
+                      onCancelNew={() => setIsHistoryOpen(false)}
                     />
                   </motion.div>
                 ) : null}

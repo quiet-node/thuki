@@ -13,10 +13,10 @@ const SEARCH_DEBOUNCE_MS = 200;
 function groupByDate(
   conversations: ConversationSummary[],
 ): [string, ConversationSummary[]][] {
-  const nowSec = Math.floor(Date.now() / 1000);
-  const DAY = 86400;
+  const nowMs = Date.now();
+  const DAY = 86_400_000;
 
-  const todayStart = nowSec - (nowSec % DAY);
+  const todayStart = nowMs - (nowMs % DAY);
   const yesterdayStart = todayStart - DAY;
 
   const buckets = new Map<string, ConversationSummary[]>();
@@ -79,12 +79,15 @@ interface HistoryPanelProps {
   /**
    * When true, replaces the conversation list with a SwitchConfirmation prompt
    * asking whether to save before starting a new conversation.
+   * Also hides the search box since only the confirmation is shown.
    */
   pendingNewConversation?: boolean;
-  /** Called when the user confirms "Save & Switch" for a new conversation. */
+  /** Called when the user confirms "Save & Start New" for a new conversation. */
   onSaveAndNew?: () => void;
-  /** Called when the user confirms "Just Switch" for a new conversation. */
+  /** Called when the user confirms "Start New" for a new conversation. */
   onJustNew?: () => void;
+  /** Called when the user cancels the new-conversation confirmation. */
+  onCancelNew?: () => void;
 }
 
 /**
@@ -111,6 +114,7 @@ export function HistoryPanel({
   pendingNewConversation = false,
   onSaveAndNew,
   onJustNew,
+  onCancelNew,
 }: HistoryPanelProps) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [search, setSearch] = useState('');
@@ -233,17 +237,19 @@ export function HistoryPanel({
 
   return (
     <div className="history-panel flex flex-col w-full">
-      {/* Search input — always visible, auto-focused via CSS autofocus attribute */}
-      <div className="px-3 pt-3 pb-2 border-b border-surface-border">
-        <input
-          type="text"
-          value={search}
-          onChange={handleSearchChange}
-          placeholder="Search past chats…"
-          autoFocus
-          className="w-full bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
-        />
-      </div>
+      {/* Search input — hidden when only showing the new-conversation confirmation */}
+      {!pendingNewConversation && (
+        <div className="px-3 pt-3 pb-2 border-b border-surface-border">
+          <input
+            type="text"
+            value={search}
+            onChange={handleSearchChange}
+            placeholder="Search past chats…"
+            autoFocus
+            className="w-full bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
+          />
+        </div>
+      )}
 
       {/* Switch confirmation — overlays the list when pending */}
       {pendingId !== null ? (
@@ -254,9 +260,10 @@ export function HistoryPanel({
         />
       ) : pendingNewConversation ? (
         <SwitchConfirmation
+          variant="new"
           onSaveAndSwitch={onSaveAndNew!}
           onJustSwitch={onJustNew!}
-          onCancel={handleCancelSwitch}
+          onCancel={onCancelNew!}
         />
       ) : (
         <div className="overflow-y-auto py-1 max-h-[280px]">
@@ -281,6 +288,7 @@ export function HistoryPanel({
                 <ConversationItem
                   key={conv.id}
                   conversation={conv}
+                  isActive={conv.id === currentConversationId}
                   onSelect={handleSelect}
                   onDelete={handleDelete}
                 />

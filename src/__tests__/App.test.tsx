@@ -902,7 +902,7 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
-    it('handleNewConversation shows SwitchConfirmation when unsaved, resets on Just Switch', async () => {
+    it('handleNewConversation shows SwitchConfirmation when unsaved, resets on Start New', async () => {
       enableChannelCaptureWithResponses({
         list_conversations: [],
       });
@@ -932,19 +932,66 @@ describe('App', () => {
         );
       });
 
-      // SwitchConfirmation should be visible
+      // SwitchConfirmation should be visible with "new" variant
       expect(
-        screen.getByRole('button', { name: 'Just Switch' }),
+        screen.getByRole('button', { name: 'Start New' }),
       ).toBeInTheDocument();
 
-      // Click "Just Switch" → should reset to ask-bar mode
+      // Click "Start New" → should reset to ask-bar mode
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Just Switch' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Start New' }));
       });
 
       expect(
         screen.getByPlaceholderText('Ask Thuki anything...'),
       ).toBeInTheDocument();
+    });
+
+    it('handleNewConversation Cancel closes the history dropdown', async () => {
+      enableChannelCaptureWithResponses({
+        list_conversations: [],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Get into chat mode with an unsaved turn
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'question' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'answer' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Click + → SwitchConfirmation appears
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'New conversation' }),
+        );
+      });
+
+      expect(
+        screen.getByRole('button', { name: 'Cancel' }),
+      ).toBeInTheDocument();
+
+      // Click Cancel → dropdown closes, still in chat mode
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      });
+
+      // SwitchConfirmation should be gone
+      expect(
+        screen.queryByRole('button', { name: 'Cancel' }),
+      ).not.toBeInTheDocument();
+      // Still showing the conversation
+      expect(screen.getByText('question')).toBeInTheDocument();
     });
 
     it('handleNewConversation resets directly when conversation is already saved', async () => {
@@ -991,7 +1038,7 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
-    it('handleNewConversation saves then resets on Save & Switch', async () => {
+    it('handleNewConversation saves then resets on Save & Start New', async () => {
       enableChannelCaptureWithResponses({
         list_conversations: [],
         save_conversation: 'saved-id',
@@ -1023,12 +1070,14 @@ describe('App', () => {
       });
 
       expect(
-        screen.getByRole('button', { name: 'Save & Switch' }),
+        screen.getByRole('button', { name: 'Save & Start New' }),
       ).toBeInTheDocument();
 
-      // Click "Save & Switch" → saves then resets to ask-bar mode
+      // Click "Save & Start New" → saves then resets to ask-bar mode
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Save & Switch' }));
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Save & Start New' }),
+        );
       });
 
       expect(
@@ -1067,9 +1116,11 @@ describe('App', () => {
         );
       });
 
-      // Click "Save & Switch" — save fails → should stay in chat mode
+      // Click "Save & Start New" — save fails → should stay in chat mode
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Save & Switch' }));
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Save & Start New' }),
+        );
       });
 
       // Still in chat mode (save_conversation threw, reset was aborted)
