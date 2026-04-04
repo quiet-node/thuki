@@ -846,8 +846,8 @@ describe('AskBarView', () => {
   });
 
   describe('isSubmitPending state', () => {
-    it('shows spinner on submit button when isSubmitPending is true', () => {
-      const { container } = render(
+    it('shows stop button when isSubmitPending is true', () => {
+      render(
         <AskBarView
           {...IMAGE_DEFAULTS}
           attachedImages={[makeImage({ id: 'img-1', filePath: null })]}
@@ -861,10 +861,9 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      expect(
-        screen.getByRole('button', { name: /processing/i }),
-      ).toBeInTheDocument();
-      expect(container.querySelector('.animate-spin')).not.toBeNull();
+      const btn = screen.getByRole('button', { name: /stop/i });
+      expect(btn).toBeInTheDocument();
+      expect(btn.classList.contains('stop-btn-ring')).toBe(true);
     });
 
     it('disables textarea when isSubmitPending is true', () => {

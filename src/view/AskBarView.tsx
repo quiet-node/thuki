@@ -358,30 +358,20 @@ export function AskBarView({
 
         <motion.button
           type="button"
-          onClick={isGenerating ? onCancel : onSubmit}
-          disabled={(!canSubmit && !isGenerating) || isSubmitPending}
-          whileHover={canSubmit || isGenerating ? { scale: 1.08 } : undefined}
-          whileTap={canSubmit || isGenerating ? { scale: 0.92 } : undefined}
+          onClick={isBusy ? onCancel : onSubmit}
+          disabled={!canSubmit && !isBusy}
+          whileHover={canSubmit || isBusy ? { scale: 1.08 } : undefined}
+          whileTap={canSubmit || isBusy ? { scale: 0.92 } : undefined}
           className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-colors duration-200 ${
-            isSubmitPending
-              ? 'bg-primary/60 text-neutral cursor-default'
-              : isGenerating
-                ? 'stop-btn-ring bg-red-500/10 text-red-400 cursor-pointer'
-                : canSubmit
-                  ? 'bg-primary text-neutral cursor-pointer'
-                  : 'bg-surface-elevated text-text-secondary cursor-default'
+            isBusy
+              ? 'stop-btn-ring bg-red-500/10 text-red-400 cursor-pointer'
+              : canSubmit
+                ? 'bg-primary text-neutral cursor-pointer'
+                : 'bg-surface-elevated text-text-secondary cursor-default'
           }`}
-          aria-label={
-            isSubmitPending
-              ? 'Processing images'
-              : isGenerating
-                ? 'Stop generating'
-                : 'Send message'
-          }
+          aria-label={isBusy ? 'Stop generating' : 'Send message'}
         >
-          {isSubmitPending ? (
-            <div className="w-4 h-4 border-2 border-neutral/40 border-t-neutral rounded-full animate-spin" />
-          ) : isGenerating ? (
+          {isBusy ? (
             <>
               {BORDER_TRACE_RING}
               {STOP_ICON}

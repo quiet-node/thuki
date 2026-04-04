@@ -764,6 +764,24 @@ function App() {
     setAttachedImages([]);
   }, [attachedImages, ask, setSelectedContext]);
 
+  /** Unified cancel handler: reverts a pending submit (undo-send) or cancels
+   *  an active Ollama generation. When reverting, restores the user's query
+   *  and keeps attached images so they can re-submit or edit. */
+  const handleCancel = useCallback(() => {
+    if (isSubmitPending && pendingSubmitRef.current) {
+      // Undo send — restore input state to before the user hit Enter.
+      setQuery(pendingSubmitRef.current.query);
+      setSelectedContext(pendingSubmitRef.current.context ?? null);
+      pendingSubmitRef.current = null;
+      setIsSubmitPending(false);
+      setPendingUserMessage(null);
+      // Re-focus the textarea so the user can immediately edit.
+      requestAnimationFrame(() => inputRef.current?.focus());
+      return;
+    }
+    cancel();
+  }, [isSubmitPending, cancel, setSelectedContext]);
+
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
    * requests emitted from the Rust backend.
@@ -1003,7 +1021,7 @@ function App() {
                   isGenerating={isGenerating}
                   isSubmitPending={isSubmitPending}
                   onSubmit={handleSubmit}
-                  onCancel={cancel}
+                  onCancel={handleCancel}
                   inputRef={inputRef}
                   selectedText={selectedContext ?? undefined}
                   onHistoryOpen={handleHistoryToggle}

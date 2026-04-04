@@ -2131,9 +2131,7 @@ describe('App', () => {
       });
 
       // Should show "Processing images" state
-      expect(
-        screen.getByRole('button', { name: /processing/i }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
 
       // Resolve the image — triggers deferred submit chain
       resolveSave!('/tmp/staged/img1.jpg');
@@ -2143,11 +2141,114 @@ describe('App', () => {
         await new Promise((r) => setTimeout(r, 50));
       });
 
-      // The "Processing images" button should be gone (submit executed)
-      expect(screen.queryByRole('button', { name: /processing/i })).toBeNull();
-
-      // User message should appear in the chat (ask() adds it)
+      // User message should appear in the chat (ask() fired the real submit)
       expect(screen.getByText('describe this')).toBeInTheDocument();
+    });
+
+    it('stop button cancels active generation via handleCancel', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/img.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Start a normal text conversation (no images)
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // Should be generating — stop button visible
+      const stopBtn = screen.getByRole('button', { name: /stop/i });
+      expect(stopBtn).toBeInTheDocument();
+
+      // Click stop — should call cancel_generation
+      invoke.mockClear();
+      enableChannelCapture();
+
+      await act(async () => {
+        fireEvent.click(stopBtn);
+      });
+
+      expect(invoke).toHaveBeenCalledWith('cancel_generation');
+    });
+
+    it('cancelling during pending submit restores input (undo send)', async () => {
+      // Flush stale macrotasks from prior tests
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // Accept channel
+          }
+          if (cmd === 'save_image_command') {
+            return new Promise<string>(() => {}); // never resolves
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste an image
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+
+      // Type and submit while image is still processing
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'my question' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Should be in chat mode with stop button
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+
+      // Click stop to cancel the pending submit
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /stop/i }));
+      });
+
+      // Should revert to ask-bar mode with the query restored
+      const restoredTextarea = screen.getByPlaceholderText(
+        'Ask Thuki anything...',
+      );
+      expect(restoredTextarea).toBeInTheDocument();
+      expect((restoredTextarea as HTMLTextAreaElement).value).toBe(
+        'my question',
+      );
+
+      // Images should still be visible (still processing in background)
+      expect(
+        screen.getByRole('list', { name: /attached images/i }),
+      ).toBeInTheDocument();
+
+      // ask_ollama should never have been called
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
     });
 
     it('waits for all images before firing deferred submit', async () => {
@@ -2200,9 +2301,7 @@ describe('App', () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
 
-      expect(
-        screen.getByRole('button', { name: /processing/i }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
 
       // Resolve ONLY the first image — allReady should still be false
       await act(async () => {
@@ -2211,9 +2310,7 @@ describe('App', () => {
       await act(async () => {});
 
       // Still processing — second image not ready
-      expect(
-        screen.getByRole('button', { name: /processing/i }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
 
       // Resolve the second image — now allReady is true, submit fires
       await act(async () => {
@@ -2283,7 +2380,7 @@ describe('App', () => {
       // Waiting state
       await vi.waitFor(() => {
         expect(
-          screen.getByRole('button', { name: /processing/i }),
+          screen.getByRole('button', { name: /stop/i }),
         ).toBeInTheDocument();
       });
 
