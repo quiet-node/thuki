@@ -1282,7 +1282,7 @@ describe('App', () => {
       });
     });
 
-    it('handleDeleteConversation resets history when current conversation is deleted', async () => {
+    it('handleDeleteConversation marks active conversation unsaved but keeps messages', async () => {
       const LOADED_MSGS = [
         {
           id: 'm1',
@@ -1324,22 +1324,31 @@ describe('App', () => {
         fireEvent.click(screen.getByRole('button', { name: /my chat/i }));
       });
 
-      // In chat mode; open chat history
+      // Messages are visible in chat mode
+      expect(screen.getByText('Hi')).toBeInTheDocument();
+
+      // Open chat history and delete the currently-active conversation
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /open history/i }));
       });
-
-      // Delete the same conversation that is currently loaded (id matches conversationId)
       await act(async () => {
         fireEvent.click(
           screen.getByRole('button', { name: /delete conversation/i }),
         );
       });
 
-      // delete_conversation was called with the matching id
+      // delete_conversation was called
       expect(invoke).toHaveBeenCalledWith('delete_conversation', {
         conversationId: 'conv-target',
       });
+
+      // Messages remain — still in chat mode
+      expect(screen.getByText('Hi')).toBeInTheDocument();
+
+      // Save button reverts to unsaved state ("Save conversation")
+      expect(
+        screen.getByRole('button', { name: /save conversation/i }),
+      ).toBeInTheDocument();
     });
 
     it('clicking outside the chat history dropdown closes it', async () => {
@@ -1416,9 +1425,9 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
-    it('handleDeleteConversation clears messages when the active conversation is deleted', async () => {
-      // Bug: resetHistory() clears conversationId but not messages — the chat
-      // view remains populated after the active conversation is deleted.
+    it('handleDeleteConversation allows saving the conversation again after deletion', async () => {
+      // After deleting the active conversation from history, isSaved resets to
+      // false so the user can re-save the same messages under a new record.
       enableChannelCaptureWithResponses({
         load_conversation: [
           {
@@ -1445,13 +1454,14 @@ describe('App', () => {
             message_count: 2,
           },
         ],
+        save_conversation: { conversation_id: 'conv-new' },
       });
 
       render(<App />);
       await act(async () => {});
       await showOverlay();
 
-      // Load the conversation from ask-bar history → enters chat mode with messages
+      // Load the conversation → isSaved = true
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /open history/i }));
       });
@@ -1459,9 +1469,12 @@ describe('App', () => {
         fireEvent.click(screen.getByRole('button', { name: /active chat/i }));
       });
 
-      expect(screen.getByText('Hi')).toBeInTheDocument();
+      // Verify save button shows unsave state
+      expect(
+        screen.getByRole('button', { name: /remove from history/i }),
+      ).toBeInTheDocument();
 
-      // Re-open history in chat mode and delete the active conversation
+      // Open history and delete the active conversation
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /open history/i }));
       });
@@ -1471,11 +1484,22 @@ describe('App', () => {
         );
       });
 
-      // Messages must be gone — UI returns to ask-bar mode
-      expect(screen.queryByText('Hi')).toBeNull();
+      // Messages remain, isSaved is now false — save button is re-enabled
+      expect(screen.getByText('Hi')).toBeInTheDocument();
       expect(
-        screen.getByPlaceholderText('Ask Thuki anything...'),
+        screen.getByRole('button', { name: /save conversation/i }),
       ).toBeInTheDocument();
+
+      // User can re-save the conversation
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: /save conversation/i }),
+        );
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        'save_conversation',
+        expect.objectContaining({ messages: expect.any(Array) }),
+      );
     });
 
     it('handleLoadConversation closes history panel when load_conversation fails', async () => {

@@ -489,11 +489,10 @@ function App() {
     async (id: string) => {
       await deleteConversation(id);
       if (id === conversationId) {
-        reset();
         resetHistory();
       }
     },
-    [deleteConversation, conversationId, reset, resetHistory],
+    [deleteConversation, conversationId, resetHistory],
   );
 
   /**
