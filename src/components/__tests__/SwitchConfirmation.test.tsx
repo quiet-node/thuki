@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { SwitchConfirmation } from '../SwitchConfirmation';
 
 describe('SwitchConfirmation', () => {
-  it('renders the confirmation prompt text', () => {
+  it('renders the default "switch" variant text', () => {
     render(
       <SwitchConfirmation
         onSaveAndSwitch={vi.fn()}
@@ -11,36 +11,34 @@ describe('SwitchConfirmation', () => {
         onCancel={vi.fn()}
       />,
     );
-    expect(screen.getByText(/switch conversations/i)).toBeInTheDocument();
-  });
-
-  it('renders Save & Switch button', () => {
-    render(
-      <SwitchConfirmation
-        onSaveAndSwitch={vi.fn()}
-        onJustSwitch={vi.fn()}
-        onCancel={vi.fn()}
-      />,
-    );
+    expect(screen.getByText('Switch conversations?')).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /save & switch/i }),
     ).toBeInTheDocument();
-  });
-
-  it('renders Just Switch button', () => {
-    render(
-      <SwitchConfirmation
-        onSaveAndSwitch={vi.fn()}
-        onJustSwitch={vi.fn()}
-        onCancel={vi.fn()}
-      />,
-    );
     expect(
       screen.getByRole('button', { name: /just switch/i }),
     ).toBeInTheDocument();
   });
 
-  it('calls onSaveAndSwitch when Save & Switch is clicked', () => {
+  it('renders the "new" variant text', () => {
+    render(
+      <SwitchConfirmation
+        variant="new"
+        onSaveAndSwitch={vi.fn()}
+        onJustSwitch={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('New conversation?')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /save & start new/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /^start new$/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('calls onSaveAndSwitch when the save button is clicked', () => {
     const onSaveAndSwitch = vi.fn();
     render(
       <SwitchConfirmation
@@ -53,7 +51,7 @@ describe('SwitchConfirmation', () => {
     expect(onSaveAndSwitch).toHaveBeenCalledOnce();
   });
 
-  it('calls onJustSwitch when Just Switch is clicked', () => {
+  it('calls onJustSwitch when the proceed button is clicked', () => {
     const onJustSwitch = vi.fn();
     render(
       <SwitchConfirmation
@@ -66,7 +64,7 @@ describe('SwitchConfirmation', () => {
     expect(onJustSwitch).toHaveBeenCalledOnce();
   });
 
-  it('calls onCancel when cancel/back is clicked', () => {
+  it('calls onCancel when cancel is clicked', () => {
     const onCancel = vi.fn();
     render(
       <SwitchConfirmation

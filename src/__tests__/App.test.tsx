@@ -902,7 +902,7 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
-    it('handleNewConversation shows SwitchConfirmation when unsaved, resets on Just Switch', async () => {
+    it('handleNewConversation shows SwitchConfirmation when unsaved, resets on Start New', async () => {
       enableChannelCaptureWithResponses({
         list_conversations: [],
       });
@@ -932,14 +932,14 @@ describe('App', () => {
         );
       });
 
-      // SwitchConfirmation should be visible
+      // SwitchConfirmation should be visible with "new" variant
       expect(
-        screen.getByRole('button', { name: 'Just Switch' }),
+        screen.getByRole('button', { name: 'Start New' }),
       ).toBeInTheDocument();
 
-      // Click "Just Switch" → should reset to ask-bar mode
+      // Click "Start New" → should reset to ask-bar mode
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Just Switch' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Start New' }));
       });
 
       expect(
@@ -991,7 +991,7 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
-    it('handleNewConversation saves then resets on Save & Switch', async () => {
+    it('handleNewConversation saves then resets on Save & Start New', async () => {
       enableChannelCaptureWithResponses({
         list_conversations: [],
         save_conversation: 'saved-id',
@@ -1023,12 +1023,14 @@ describe('App', () => {
       });
 
       expect(
-        screen.getByRole('button', { name: 'Save & Switch' }),
+        screen.getByRole('button', { name: 'Save & Start New' }),
       ).toBeInTheDocument();
 
-      // Click "Save & Switch" → saves then resets to ask-bar mode
+      // Click "Save & Start New" → saves then resets to ask-bar mode
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Save & Switch' }));
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Save & Start New' }),
+        );
       });
 
       expect(
@@ -1067,9 +1069,11 @@ describe('App', () => {
         );
       });
 
-      // Click "Save & Switch" — save fails → should stay in chat mode
+      // Click "Save & Start New" — save fails → should stay in chat mode
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Save & Switch' }));
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Save & Start New' }),
+        );
       });
 
       // Still in chat mode (save_conversation threw, reset was aborted)

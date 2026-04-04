@@ -79,6 +79,7 @@ interface HistoryPanelProps {
   /**
    * When true, replaces the conversation list with a SwitchConfirmation prompt
    * asking whether to save before starting a new conversation.
+   * Also hides the search box since only the confirmation is shown.
    */
   pendingNewConversation?: boolean;
   /** Called when the user confirms "Save & Switch" for a new conversation. */
@@ -233,17 +234,19 @@ export function HistoryPanel({
 
   return (
     <div className="history-panel flex flex-col w-full">
-      {/* Search input — always visible, auto-focused via CSS autofocus attribute */}
-      <div className="px-3 pt-3 pb-2 border-b border-surface-border">
-        <input
-          type="text"
-          value={search}
-          onChange={handleSearchChange}
-          placeholder="Search past chats…"
-          autoFocus
-          className="w-full bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
-        />
-      </div>
+      {/* Search input — hidden when only showing the new-conversation confirmation */}
+      {!pendingNewConversation && (
+        <div className="px-3 pt-3 pb-2 border-b border-surface-border">
+          <input
+            type="text"
+            value={search}
+            onChange={handleSearchChange}
+            placeholder="Search past chats…"
+            autoFocus
+            className="w-full bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
+          />
+        </div>
+      )}
 
       {/* Switch confirmation — overlays the list when pending */}
       {pendingId !== null ? (
@@ -254,6 +257,7 @@ export function HistoryPanel({
         />
       ) : pendingNewConversation ? (
         <SwitchConfirmation
+          variant="new"
           onSaveAndSwitch={onSaveAndNew!}
           onJustSwitch={onJustNew!}
           onCancel={handleCancelSwitch}

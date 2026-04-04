@@ -315,6 +315,34 @@ describe('HistoryPanel', () => {
     expect(screen.getByText('React basics')).toBeInTheDocument();
   });
 
+  it('shows SwitchConfirmation and hides search when pendingNewConversation is true', async () => {
+    const onSaveAndNew = vi.fn();
+    const onJustNew = vi.fn();
+    const props = makeProps({
+      pendingNewConversation: true,
+      onSaveAndNew,
+      onJustNew,
+      hasCurrentMessages: true,
+    });
+    render(<HistoryPanel {...props} />);
+
+    await act(async () => {});
+
+    // Search box should NOT be rendered
+    expect(screen.queryByPlaceholderText(/search/i)).toBeNull();
+
+    // SwitchConfirmation should show "new" variant text
+    expect(screen.getByText('New conversation?')).toBeInTheDocument();
+
+    // Save & Start New calls onSaveAndNew
+    fireEvent.click(screen.getByRole('button', { name: /save & start new/i }));
+    expect(onSaveAndNew).toHaveBeenCalledOnce();
+
+    // Start New calls onJustNew
+    fireEvent.click(screen.getByRole('button', { name: /^start new$/i }));
+    expect(onJustNew).toHaveBeenCalledOnce();
+  });
+
   it('shows error message when listConversations rejects', async () => {
     const props = makeProps({
       listConversations: vi.fn(async () => {
