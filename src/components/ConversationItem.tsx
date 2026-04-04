@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import type { ConversationSummary } from '../types/history';
+import { formatRelativeTime } from '../utils/formatRelativeTime';
 
 /** Hoisted static delete icon — avoids re-allocation on every render. */
 const DELETE_ICON = (
@@ -64,7 +65,7 @@ export const ConversationItem = memo(function ConversationItem({
           {title}
         </span>
         <span className="text-[10px] text-text-secondary leading-none">
-          {conversation.message_count} msgs
+          {formatRelativeTime(conversation.updated_at)}
         </span>
       </button>
 

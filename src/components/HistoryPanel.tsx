@@ -13,10 +13,10 @@ const SEARCH_DEBOUNCE_MS = 200;
 function groupByDate(
   conversations: ConversationSummary[],
 ): [string, ConversationSummary[]][] {
-  const nowSec = Math.floor(Date.now() / 1000);
-  const DAY = 86400;
+  const nowMs = Date.now();
+  const DAY = 86_400_000;
 
-  const todayStart = nowSec - (nowSec % DAY);
+  const todayStart = nowMs - (nowMs % DAY);
   const yesterdayStart = todayStart - DAY;
 
   const buckets = new Map<string, ConversationSummary[]>();

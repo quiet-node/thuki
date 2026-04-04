@@ -7,7 +7,7 @@ const SUMMARY: ConversationSummary = {
   id: 'conv-1',
   title: 'How does React work?',
   model: 'llama3.2:3b',
-  updated_at: Math.floor(Date.now() / 1000),
+  updated_at: Date.now(),
   message_count: 6,
 };
 
@@ -34,7 +34,7 @@ describe('ConversationItem', () => {
     expect(screen.getByText('Untitled')).toBeInTheDocument();
   });
 
-  it('renders message count', () => {
+  it('renders relative timestamp', () => {
     render(
       <ConversationItem
         conversation={SUMMARY}
@@ -42,7 +42,7 @@ describe('ConversationItem', () => {
         onDelete={vi.fn()}
       />,
     );
-    expect(screen.getByText(/6 msgs/)).toBeInTheDocument();
+    expect(screen.getByText('just now')).toBeInTheDocument();
   });
 
   it('calls onSelect with conversation id when clicked', () => {

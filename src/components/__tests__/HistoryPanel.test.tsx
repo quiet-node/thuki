@@ -3,9 +3,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { HistoryPanel } from '../HistoryPanel';
 import type { ConversationSummary } from '../../types/history';
 
-const NOW = Math.floor(Date.now() / 1000);
-const YESTERDAY = NOW - 86400;
-const OLDER = NOW - 86400 * 3;
+const NOW = Date.now();
+const YESTERDAY = NOW - 86_400_000;
+const OLDER = NOW - 86_400_000 * 3;
 
 const CONVERSATIONS: ConversationSummary[] = [
   {
