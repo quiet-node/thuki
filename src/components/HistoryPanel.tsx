@@ -86,6 +86,8 @@ interface HistoryPanelProps {
   onSaveAndNew?: () => void;
   /** Called when the user confirms "Just Switch" for a new conversation. */
   onJustNew?: () => void;
+  /** Called when the user cancels the new-conversation confirmation. */
+  onCancelNew?: () => void;
 }
 
 /**
@@ -112,6 +114,7 @@ export function HistoryPanel({
   pendingNewConversation = false,
   onSaveAndNew,
   onJustNew,
+  onCancelNew,
 }: HistoryPanelProps) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [search, setSearch] = useState('');
@@ -260,7 +263,7 @@ export function HistoryPanel({
           variant="new"
           onSaveAndSwitch={onSaveAndNew!}
           onJustSwitch={onJustNew!}
-          onCancel={handleCancelSwitch}
+          onCancel={onCancelNew!}
         />
       ) : (
         <div className="overflow-y-auto py-1 max-h-[280px]">

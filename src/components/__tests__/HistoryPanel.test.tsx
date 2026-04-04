@@ -318,10 +318,12 @@ describe('HistoryPanel', () => {
   it('shows SwitchConfirmation and hides search when pendingNewConversation is true', async () => {
     const onSaveAndNew = vi.fn();
     const onJustNew = vi.fn();
+    const onCancelNew = vi.fn();
     const props = makeProps({
       pendingNewConversation: true,
       onSaveAndNew,
       onJustNew,
+      onCancelNew,
       hasCurrentMessages: true,
     });
     render(<HistoryPanel {...props} />);
@@ -341,6 +343,10 @@ describe('HistoryPanel', () => {
     // Start New calls onJustNew
     fireEvent.click(screen.getByRole('button', { name: /^start new$/i }));
     expect(onJustNew).toHaveBeenCalledOnce();
+
+    // Cancel calls onCancelNew
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(onCancelNew).toHaveBeenCalledOnce();
   });
 
   it('shows error message when listConversations rejects', async () => {
