@@ -149,6 +149,17 @@ export function useConversationHistory() {
   }, []);
 
   /**
+   * Removes the current conversation from SQLite without clearing the
+   * in-memory message history. After this call `isSaved` is false and the
+   * session is treated as unsaved again (the user can re-save if desired).
+   */
+  const unsave = useCallback(async (): Promise<void> => {
+    if (!isSaved || conversationId === null) return;
+    await invoke('delete_conversation', { conversationId });
+    setConversationId(null);
+  }, [isSaved, conversationId]);
+
+  /**
    * Fetches the list of saved conversations, optionally filtered by title.
    *
    * @param search Optional case-insensitive search term applied against
@@ -168,9 +179,12 @@ export function useConversationHistory() {
   /**
    * Clears the local persistence state, marking the session as unsaved.
    *
-   * Does NOT call `reset_conversation` on the backend — that is the
-   * responsibility of `useOllama.reset()`, which is called in conjunction
-   * with this function from App.tsx.
+   * Does NOT call `reset_conversation` on the backend. When clearing the
+   * full session (new conversation), call `useOllama.reset()` alongside this
+   * so the backend history is also wiped. When only marking a conversation as
+   * unsaved while keeping messages visible (e.g. after deletion from history),
+   * calling this alone is correct — `persistTurn` will no-op and the backend
+   * context is rebuilt from the frontend messages on the next request.
    */
   const reset = useCallback(() => {
     setConversationId(null);
@@ -180,6 +194,7 @@ export function useConversationHistory() {
     conversationId,
     isSaved,
     save,
+    unsave,
     persistTurn,
     loadConversation,
     deleteConversation,

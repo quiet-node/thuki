@@ -63,6 +63,12 @@ function App() {
    * but rendered differently based on `isChatMode`).
    */
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  /**
+   * True when the user clicked + while an unsaved conversation is active.
+   * Causes the history dropdown to show a SwitchConfirmation prompt instead
+   * of the conversation list.
+   */
+  const [pendingNewConversation, setPendingNewConversation] = useState(false);
 
   /**
    * Direct reference to the morphing container DOM node, stored alongside the
@@ -75,6 +81,7 @@ function App() {
     conversationId,
     isSaved,
     save,
+    unsave,
     persistTurn,
     loadConversation,
     deleteConversation,
@@ -362,6 +369,11 @@ function App() {
     return () => document.removeEventListener('mousedown', handleMouseDown);
   }, [isChatMode, isHistoryOpen]);
 
+  // Clear any pending new-conversation confirmation whenever the panel closes.
+  useEffect(() => {
+    if (!isHistoryOpen) setPendingNewConversation(false);
+  }, [isHistoryOpen]);
+
   /**
    * Observes the dropdown's height while it's open and mutates the morphing
    * container's `min-height` style directly (bypassing React state) so the
@@ -397,16 +409,23 @@ function App() {
     /* v8 ignore stop */
   }, [isChatMode, isHistoryOpen]);
 
-  /** Saves the current conversation to SQLite. */
+  /**
+   * Toggles the save state of the current conversation.
+   * - Not saved → saves to SQLite (bookmark fills).
+   * - Already saved → deletes from SQLite, marks unsaved (bookmark empties);
+   *   messages remain in the UI so the session can be re-saved if desired.
+   */
   const handleSave = useCallback(async () => {
     try {
-      await save(messages, MODEL_NAME);
+      if (isSaved) {
+        await unsave();
+      } else {
+        await save(messages, MODEL_NAME);
+      }
     } catch {
-      // Save failed — bookmark state stays unchanged; the error is surfaced by
-      // the Tauri runtime. No UI banner here; save is a user-initiated fire-and-
-      // forget action with visible feedback via the bookmark icon state.
+      // State stays unchanged on failure; feedback is implicit in the icon.
     }
-  }, [save, messages]);
+  }, [isSaved, unsave, save, messages]);
 
   /**
    * Loads a conversation from history, replacing the current session.
@@ -461,29 +480,75 @@ function App() {
   /**
    * Deletes a conversation from the history panel.
    *
-   * When the deleted conversation is the currently active one, both the
-   * message history (`reset`) and the persistence state (`resetHistory`) are
-   * cleared so the UI returns to the blank ask-bar state. The error is
+   * When the deleted conversation is the currently active one, only the
+   * persistence state (`resetHistory`) is cleared — messages remain visible
+   * so the user can continue chatting or re-save. The error is intentionally
    * re-thrown so `HistoryPanel` can roll back its optimistic removal.
    */
   const handleDeleteConversation = useCallback(
     async (id: string) => {
       await deleteConversation(id);
       if (id === conversationId) {
-        reset();
         resetHistory();
       }
     },
-    [deleteConversation, conversationId, reset, resetHistory],
+    [deleteConversation, conversationId, resetHistory],
   );
 
-  /** Starts a fresh conversation from within conversation view. */
-  const handleNewConversation = useCallback(() => {
+  /**
+   * Shared reset sequence for all "start a new conversation" paths.
+   *
+   * Mirrors what `replayEntranceAnimation` does for the anchor-mode state so
+   * the Tauri window shrinks back to ask-bar height regardless of whether the
+   * session was launched from a text-selection anchor:
+   *
+   * - `isPreExpandedRef.current = false` unblocks the ResizeObserver in anchor
+   *   mode so it can call `set_window_frame` with the (smaller) ask-bar height.
+   * - Clearing `outerContainerRef.current.style.minHeight` removes the inline
+   *   CSS constraint that was keeping the outer container at the expanded height.
+   */
+  const resetForNewConversation = useCallback(() => {
+    isPreExpandedRef.current = false;
+    /* v8 ignore start -- DOM ref null guard */
+    if (outerContainerRef.current) {
+      outerContainerRef.current.style.minHeight = '';
+    }
+    /* v8 ignore stop */
     reset();
     resetHistory();
     setIsHistoryOpen(false);
     setQuery('');
   }, [reset, resetHistory]);
+
+  /**
+   * Starts a fresh conversation from within conversation view.
+   * If the current conversation has unsaved messages, opens the history
+   * dropdown and surfaces a SwitchConfirmation prompt instead of resetting
+   * immediately.
+   */
+  const handleNewConversation = useCallback(() => {
+    if (!isSaved && messages.length > 0) {
+      setPendingNewConversation(true);
+      setIsHistoryOpen(true);
+      return;
+    }
+    resetForNewConversation();
+  }, [isSaved, messages.length, resetForNewConversation]);
+
+  /** Saves the current conversation then starts a fresh one. */
+  const handleSaveAndNew = useCallback(async () => {
+    try {
+      await save(messages, MODEL_NAME);
+    } catch {
+      return;
+    }
+    resetForNewConversation();
+  }, [save, messages, resetForNewConversation]);
+
+  /** Discards the current conversation and starts a fresh one. */
+  const handleJustNew = useCallback(() => {
+    resetForNewConversation();
+  }, [resetForNewConversation]);
 
   const handleSubmit = useCallback(() => {
     if (query.trim().length === 0 || isGenerating) return;
@@ -667,10 +732,10 @@ function App() {
                 style={{
                   transition: 'min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
                 }}
-                className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border ${
+                className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border max-h-[600px] overflow-hidden ${
                   isChatMode
-                    ? 'rounded-lg shadow-chat max-h-[600px] overflow-hidden'
-                    : 'rounded-2xl shadow-bar overflow-hidden'
+                    ? 'rounded-lg shadow-chat'
+                    : 'rounded-2xl shadow-bar'
                 }`}
               >
                 {/* Chat Messages Area — morphs in when in chat mode */}
@@ -685,6 +750,7 @@ function App() {
                       onSave={handleSave}
                       isSaved={isSaved}
                       canSave={canSave}
+                      onNewConversation={handleNewConversation}
                       onHistoryOpen={handleHistoryToggle}
                     />
                   ) : null}
@@ -765,8 +831,10 @@ function App() {
                       onDeleteConversation={handleDeleteConversation}
                       hasCurrentMessages={messages.length > 0 && !isSaved}
                       currentConversationId={conversationId}
-                      showNewConversation={true}
-                      onNewConversation={handleNewConversation}
+                      showNewConversation={false}
+                      pendingNewConversation={pendingNewConversation}
+                      onSaveAndNew={handleSaveAndNew}
+                      onJustNew={handleJustNew}
                     />
                   </motion.div>
                 ) : null}
