@@ -370,17 +370,17 @@ pub struct WindowPlacement {
     pub anchor_bottom_y: Option<f64>,
 }
 
-/// Returns the bottom-center position for the no-selection spawn point.
-fn bottom_center(
+/// Returns the top-center position for the no-selection spawn point.
+fn top_center(
     screen_width: f64,
-    screen_height: f64,
+    _screen_height: f64,
     window_width: f64,
-    window_height: f64,
+    _window_height: f64,
 ) -> WindowPlacement {
     let x_min = SCREEN_MARGIN;
     let x_max = (screen_width - window_width - SCREEN_MARGIN).max(x_min);
     let x = ((screen_width - window_width) / 2.0).clamp(x_min, x_max);
-    let y = screen_height - window_height - SCREEN_MARGIN - 32.0;
+    let y = MENU_BAR_HEIGHT + SCREEN_MARGIN;
     WindowPlacement {
         x,
         y,
@@ -480,11 +480,11 @@ pub fn calculate_window_position(
                 window_height,
             )
         } else {
-            bottom_center(screen_width, screen_height, window_width, window_height)
+            top_center(screen_width, screen_height, window_width, window_height)
         }
     } else {
-        // No selection → bottom center of screen.
-        bottom_center(screen_width, screen_height, window_width, window_height)
+        // No selection → top center of screen.
+        top_center(screen_width, screen_height, window_width, window_height)
     };
 
     // Secondary check: if the flip logic above did not set an anchor, determine
@@ -545,16 +545,16 @@ mod tests {
     const WH: f64 = 80.0;
 
     #[test]
-    fn no_selection_returns_bottom_center() {
+    fn no_selection_returns_top_center() {
         let p = calculate_window_position(&ctx_no_selection(), SW, SH, WW, WH);
         assert_eq!(p.x, (SW - WW) / 2.0);
-        assert_eq!(p.y, SH - WH - SCREEN_MARGIN - 32.0);
-        assert_eq!(p.anchor_bottom_y, Some(SH - WH - SCREEN_MARGIN - 32.0 + WH));
+        assert_eq!(p.y, MENU_BAR_HEIGHT + SCREEN_MARGIN);
+        assert_eq!(p.anchor_bottom_y, None);
     }
 
     #[test]
-    fn text_with_no_bounds_and_no_mouse_falls_back_to_bottom_center() {
-        // Same bottom-center position → anchor pinned.
+    fn text_with_no_bounds_and_no_mouse_falls_back_to_top_center() {
+        // Same top-center position — no anchor needed since the bar grows downward.
         let ctx = ActivationContext {
             selected_text: Some("hello world".to_string()),
             bounds: None,
@@ -564,8 +564,8 @@ mod tests {
         let x_min = SCREEN_MARGIN;
         let x_max = (SW - WW - SCREEN_MARGIN).max(x_min);
         assert_eq!(p.x, ((SW - WW) / 2.0).clamp(x_min, x_max));
-        assert_eq!(p.y, SH - WH - SCREEN_MARGIN - 32.0);
-        assert_eq!(p.anchor_bottom_y, Some(SH - WH - SCREEN_MARGIN - 32.0 + WH));
+        assert_eq!(p.y, MENU_BAR_HEIGHT + SCREEN_MARGIN);
+        assert_eq!(p.anchor_bottom_y, None);
     }
 
     #[test]
@@ -688,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn bottom_center_on_small_screen() {
+    fn top_center_on_small_screen() {
         let small_w = WW + 2.0 * SCREEN_MARGIN;
         let p = calculate_window_position(&ctx_no_selection(), small_w, SH, WW, WH);
         assert_eq!(p.x, SCREEN_MARGIN);
