@@ -533,8 +533,12 @@ pub fn run() {
             app.manage(commands::SystemPrompt(commands::load_system_prompt()));
 
             // ── SQLite database for conversation history ──────────
-            let db_conn = database::open_database()
-                .expect("failed to initialise SQLite database at ~/.thuki/thuki.db");
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("failed to resolve app data directory");
+            let db_conn = database::open_database(&app_data_dir)
+                .expect("failed to initialise SQLite database");
             app.manage(history::Database(std::sync::Mutex::new(db_conn)));
 
             // ── Orphaned image cleanup (startup + periodic) ─────────
