@@ -725,10 +725,10 @@ function App() {
                 style={{
                   transition: 'min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
                 }}
-                className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border ${
+                className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border max-h-[600px] overflow-hidden ${
                   isChatMode
-                    ? 'rounded-lg shadow-chat max-h-[600px] overflow-hidden'
-                    : 'rounded-2xl shadow-bar overflow-hidden'
+                    ? 'rounded-lg shadow-chat'
+                    : 'rounded-2xl shadow-bar'
                 }`}
               >
                 {/* Chat Messages Area — morphs in when in chat mode */}
