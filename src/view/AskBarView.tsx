@@ -1,8 +1,9 @@
 import { motion } from 'framer-motion';
 import type React from 'react';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
+import { ImageThumbnails } from '../components/ImageThumbnails';
 
 /**
  * Hoisted static SVG — prevents re-allocation on every render cycle.
@@ -117,6 +118,9 @@ const HISTORY_ICON = (
 /**
  * Props for the AskBarView component.
  */
+/** Maximum number of images allowed per message. */
+const MAX_IMAGES = 3;
+
 interface AskBarViewProps {
   /** The current user input text. */
   query: string;
@@ -139,6 +143,14 @@ interface AskBarViewProps {
    * Omit to hide the history icon entirely.
    */
   onHistoryOpen?: () => void;
+  /** Absolute file paths of currently attached images. */
+  attachedImages: string[];
+  /** Called when the user pastes or drops image files. */
+  onImagesAttached: (paths: string[]) => void;
+  /** Called when the user removes an attached image. */
+  onImageRemove: (path: string) => void;
+  /** Called when the user clicks a thumbnail to preview it. */
+  onImagePreview: (path: string) => void;
 }
 
 /**
@@ -157,8 +169,14 @@ export function AskBarView({
   inputRef,
   selectedText,
   onHistoryOpen,
+  attachedImages,
+  onImagesAttached,
+  onImageRemove,
+  onImagePreview,
 }: AskBarViewProps) {
-  const canSubmit = query.trim().length > 0 && !isGenerating;
+  const canSubmit =
+    (query.trim().length > 0 || attachedImages.length > 0) && !isGenerating;
+  const [isDragOver, setIsDragOver] = useState(false);
 
   /**
    * Auto-resizes the textarea to fit its content up to a maximum height.
@@ -188,8 +206,113 @@ export function AskBarView({
     [onSubmit],
   );
 
+  /** Extracts image files from a DataTransfer and forwards them for staging. */
+  const processImageFiles = useCallback(
+    (files: FileList | null) => {
+      if (!files || isGenerating) return;
+      const remaining = MAX_IMAGES - attachedImages.length;
+      if (remaining <= 0) return;
+
+      const imageFiles: File[] = [];
+      for (let i = 0; i < files.length && imageFiles.length < remaining; i++) {
+        if (files[i].type.startsWith('image/')) {
+          imageFiles.push(files[i]);
+        }
+      }
+      if (imageFiles.length === 0) return;
+
+      const readPromises = imageFiles.map(
+        (file) =>
+          new Promise<ArrayBuffer>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as ArrayBuffer);
+            /* v8 ignore start -- FileReader.onerror is a defensive callback that cannot fire in tests */
+            reader.onerror = () => reject(reader.error);
+            /* v8 ignore stop */
+            reader.readAsArrayBuffer(file);
+          }),
+      );
+
+      void Promise.all(readPromises).then((buffers) => {
+        const byteArrays = buffers.map((buf) =>
+          Array.from(new Uint8Array(buf)),
+        );
+        onImagesAttached(byteArrays as unknown as string[]);
+      });
+    },
+    [isGenerating, attachedImages.length, onImagesAttached],
+  );
+
+  /** Handles clipboard paste — extracts image items from clipboardData. */
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items || isGenerating) return;
+
+      const remaining = MAX_IMAGES - attachedImages.length;
+      if (remaining <= 0) return;
+
+      const imageFiles: File[] = [];
+      for (let i = 0; i < items.length && imageFiles.length < remaining; i++) {
+        if (items[i].type.startsWith('image/')) {
+          const file = items[i].getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+
+      if (imageFiles.length === 0) return;
+      e.preventDefault();
+
+      const readPromises = imageFiles.map(
+        (file) =>
+          new Promise<ArrayBuffer>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as ArrayBuffer);
+            /* v8 ignore start -- FileReader.onerror is a defensive callback that cannot fire in tests */
+            reader.onerror = () => reject(reader.error);
+            /* v8 ignore stop */
+            reader.readAsArrayBuffer(file);
+          }),
+      );
+
+      void Promise.all(readPromises).then((buffers) => {
+        const byteArrays = buffers.map((buf) =>
+          Array.from(new Uint8Array(buf)),
+        );
+        onImagesAttached(byteArrays as unknown as string[]);
+      });
+    },
+    [isGenerating, attachedImages.length, onImagesAttached],
+  );
+
+  const handleDragOver = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      if (!isGenerating) setIsDragOver(true);
+    },
+    [isGenerating],
+  );
+
+  const handleDragLeave = useCallback(() => {
+    setIsDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragOver(false);
+      processImageFiles(e.dataTransfer?.files ?? null);
+    },
+    [processImageFiles],
+  );
+
   return (
-    <div className="flex flex-col w-full shrink-0">
+    <div
+      className={`flex flex-col w-full shrink-0 ${isDragOver ? 'ring-2 ring-primary/40 ring-inset rounded-lg' : ''}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {selectedText && (
         <div className="px-4 pt-2 pb-0">
           <p className="italic text-xs text-text-secondary select-text whitespace-pre-wrap">
@@ -201,6 +324,16 @@ export function AskBarView({
             )}
             &rdquo;
           </p>
+        </div>
+      )}
+      {attachedImages.length > 0 && (
+        <div className="px-4 pt-2 pb-0">
+          <ImageThumbnails
+            imagePaths={attachedImages}
+            onPreview={onImagePreview}
+            onRemove={onImageRemove}
+            size={56}
+          />
         </div>
       )}
       <div className="flex items-center w-full px-3 py-2.5 gap-2">
@@ -231,6 +364,7 @@ export function AskBarView({
           value={query}
           onChange={handleTextareaChange}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           disabled={isGenerating}
           autoFocus
           rows={1}

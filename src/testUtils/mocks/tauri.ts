@@ -84,6 +84,13 @@ export function enableChannelCaptureWithResponses(
   );
 }
 
+// ─── convertFileSrc mock ────────────────────────────────────────────────────
+
+/** Returns a passthrough URL for test rendering (no Tauri asset protocol). */
+export function convertFileSrc(path: string): string {
+  return `asset://localhost/${encodeURIComponent(path)}`;
+}
+
 // ─── listen mock ────────────────────────────────────────────────────────────
 
 type EventCallback<T = unknown> = (event: { payload: T }) => void;

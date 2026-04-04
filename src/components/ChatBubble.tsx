@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { CopyButton } from './CopyButton';
+import { ImageThumbnails } from './ImageThumbnails';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
 
@@ -15,6 +16,10 @@ interface ChatBubbleProps {
   quotedText?: string;
   /** Whether this bubble is actively streaming content from the LLM. */
   isStreaming?: boolean;
+  /** Absolute file paths of images attached to this message, if any. */
+  imagePaths?: string[];
+  /** Called when the user clicks a thumbnail to preview it. */
+  onImagePreview?: (path: string) => void;
 }
 
 /**
@@ -53,6 +58,8 @@ export function ChatBubble({
   index,
   quotedText,
   isStreaming = false,
+  imagePaths,
+  onImagePreview,
 }: ChatBubbleProps) {
   const isUser = role === 'user';
 
@@ -77,7 +84,18 @@ export function ChatBubble({
                 )}
               </p>
             )}
-            <span className="text-white/95 font-medium">{content}</span>
+            {imagePaths && imagePaths.length > 0 && onImagePreview && (
+              <div className="mb-2">
+                <ImageThumbnails
+                  imagePaths={imagePaths}
+                  onPreview={onImagePreview}
+                  size={48}
+                />
+              </div>
+            )}
+            {content && (
+              <span className="text-white/95 font-medium">{content}</span>
+            )}
           </div>
           <div className="h-6 flex items-center px-1">
             <CopyButton content={content} align="right" />

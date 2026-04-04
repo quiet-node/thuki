@@ -10,6 +10,7 @@ import { useConversationHistory } from './hooks/useConversationHistory';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView } from './view/AskBarView';
 import { HistoryPanel } from './components/HistoryPanel';
+import { ImagePreviewModal } from './components/ImagePreviewModal';
 import { quote } from './config';
 import './App.css';
 
@@ -115,6 +116,19 @@ function App() {
   } = useOllama(handleTurnComplete);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  /** File paths of images attached to the current (unsent) message. */
+  const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  /** File path of the image currently open in the preview modal. */
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  /**
+   * Session-scoped directory name for staged images. Uses a ref so it
+   * survives re-renders without triggering them. Reset on each new session.
+   * Initialized via useState to satisfy the React purity lint rule (useRef
+   * initializers run during render; useState initializers are allowed).
+   */
+  const [initialImageSessionId] = useState(() => crypto.randomUUID());
+  const imageSessionIdRef = useRef(initialImageSessionId);
 
   /**
    * Session counter — incremented on each overlay open. Used in the motion
@@ -310,6 +324,8 @@ function App() {
       setQuery('');
       setSelectedContext(context);
       setIsHistoryOpen(false);
+      setAttachedImages([]);
+      imageSessionIdRef.current = crypto.randomUUID();
       reset();
       resetHistory();
       setOverlayState('visible');
@@ -370,9 +386,13 @@ function App() {
   }, [isChatMode, isHistoryOpen]);
 
   // Clear any pending new-conversation confirmation whenever the panel closes.
-  useEffect(() => {
-    if (!isHistoryOpen) setPendingNewConversation(false);
-  }, [isHistoryOpen]);
+  // Uses a ref-based approach to avoid the @eslint-react/set-state-in-effect
+  // warning from calling setState synchronously inside an effect body.
+  const prevHistoryOpenRef = useRef(isHistoryOpen);
+  if (prevHistoryOpenRef.current && !isHistoryOpen) {
+    setPendingNewConversation(false);
+  }
+  prevHistoryOpenRef.current = isHistoryOpen;
 
   /**
    * Observes the dropdown's height while it's open and mutates the morphing
@@ -518,6 +538,8 @@ function App() {
     resetHistory();
     setIsHistoryOpen(false);
     setQuery('');
+    setAttachedImages([]);
+    imageSessionIdRef.current = crypto.randomUUID();
   }, [reset, resetHistory]);
 
   /**
@@ -550,8 +572,40 @@ function App() {
     resetForNewConversation();
   }, [resetForNewConversation]);
 
+  /**
+   * Stages image byte arrays to disk via the Rust backend and adds the
+   * returned file paths to the attachedImages state.
+   */
+  const handleImagesAttached = useCallback(async (byteArrays: string[]) => {
+    const paths: string[] = [];
+    for (const bytes of byteArrays) {
+      try {
+        const path = await invoke<string>('save_image_command', {
+          conversationId: imageSessionIdRef.current,
+          imageData: bytes,
+        });
+        paths.push(path);
+      } catch {
+        // Skip images that fail to stage.
+      }
+    }
+    if (paths.length > 0) {
+      setAttachedImages((prev) => [...prev, ...paths]);
+    }
+  }, []);
+
+  /** Removes an attached image from state and deletes the staged file. */
+  const handleImageRemove = useCallback((path: string) => {
+    setAttachedImages((prev) => prev.filter((p) => p !== path));
+    void invoke('remove_image_command', { path });
+  }, []);
+
   const handleSubmit = useCallback(() => {
-    if (query.trim().length === 0 || isGenerating) return;
+    if (
+      (query.trim().length === 0 && attachedImages.length === 0) ||
+      isGenerating
+    )
+      return;
     // Sanitize externally-sourced context: strip control characters and enforce
     // a length cap to limit prompt-injection surface from host-app selections.
     // eslint-disable-next-line no-control-regex
@@ -560,13 +614,22 @@ function App() {
       ?.replace(CONTROL_CHARS, '')
       .slice(0, quote.maxContextLength);
     const hasContext = sanitized && sanitized.trim().length > 0;
-    ask(query, hasContext ? sanitized : undefined);
+    const images = attachedImages.length > 0 ? [...attachedImages] : undefined;
+    ask(query, hasContext ? sanitized : undefined, images);
     setSelectedContext(null);
     setQuery('');
+    setAttachedImages([]);
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
     }
-  }, [query, isGenerating, ask, selectedContext, setSelectedContext]);
+  }, [
+    query,
+    isGenerating,
+    ask,
+    selectedContext,
+    setSelectedContext,
+    attachedImages,
+  ]);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
@@ -752,6 +815,7 @@ function App() {
                       canSave={canSave}
                       onNewConversation={handleNewConversation}
                       onHistoryOpen={handleHistoryToggle}
+                      onImagePreview={setPreviewImage}
                     />
                   ) : null}
                 </AnimatePresence>
@@ -805,6 +869,10 @@ function App() {
                   inputRef={inputRef}
                   selectedText={selectedContext ?? undefined}
                   onHistoryOpen={handleHistoryToggle}
+                  attachedImages={attachedImages}
+                  onImagesAttached={handleImagesAttached}
+                  onImageRemove={handleImageRemove}
+                  onImagePreview={setPreviewImage}
                 />
               </div>
 
@@ -844,6 +912,10 @@ function App() {
           </motion.div>
         ) : null}
       </AnimatePresence>
+      <ImagePreviewModal
+        imagePath={previewImage}
+        onClose={() => setPreviewImage(null)}
+      />
     </div>
   );
 }

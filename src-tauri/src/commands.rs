@@ -244,9 +244,11 @@ pub async fn stream_ollama_chat(
 /// completion. Uses an epoch counter to prevent stale writes after a reset.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn ask_ollama(
     message: String,
     quoted_text: Option<String>,
+    image_paths: Option<Vec<String>>,
     on_event: Channel<StreamChunk>,
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
@@ -263,10 +265,18 @@ pub async fn ask_ollama(
         _ => message,
     };
 
+    // Base64-encode attached images for the Ollama multimodal API.
+    let images = match image_paths {
+        Some(ref paths) if !paths.is_empty() => {
+            Some(crate::images::encode_images_as_base64(paths)?)
+        }
+        _ => None,
+    };
+
     let user_msg = ChatMessage {
         role: "user".to_string(),
         content,
-        images: None,
+        images,
     };
 
     // Snapshot the current epoch and build the messages array for Ollama.

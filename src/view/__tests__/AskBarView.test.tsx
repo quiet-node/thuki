@@ -7,10 +7,19 @@ function makeRef(): React.RefObject<HTMLTextAreaElement | null> {
   return { current: null };
 }
 
+/** Default image-related props shared across all AskBarView test renders. */
+const IMAGE_DEFAULTS = {
+  attachedImages: [] as string[],
+  onImagesAttached: vi.fn(),
+  onImageRemove: vi.fn(),
+  onImagePreview: vi.fn(),
+};
+
 describe('AskBarView', () => {
   it('renders textarea with placeholder for input bar mode', () => {
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
         isChatMode={false}
@@ -27,6 +36,7 @@ describe('AskBarView', () => {
   it('renders textarea with chat mode placeholder', () => {
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
         isChatMode={true}
@@ -44,6 +54,7 @@ describe('AskBarView', () => {
     const setQuery = vi.fn();
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={setQuery}
         isChatMode={false}
@@ -61,6 +72,7 @@ describe('AskBarView', () => {
   it('disables textarea during generation', () => {
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
         isChatMode={false}
@@ -78,6 +90,7 @@ describe('AskBarView', () => {
     const onSubmit = vi.fn();
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query="hello"
         setQuery={vi.fn()}
         isChatMode={false}
@@ -96,6 +109,7 @@ describe('AskBarView', () => {
     const onSubmit = vi.fn();
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query="hello"
         setQuery={vi.fn()}
         isChatMode={false}
@@ -114,6 +128,7 @@ describe('AskBarView', () => {
     const onSubmit = vi.fn();
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query="hello"
         setQuery={vi.fn()}
         isChatMode={false}
@@ -130,6 +145,7 @@ describe('AskBarView', () => {
   it('shows logo at 40px in input bar mode (w-10 h-10 rounded-xl classes)', () => {
     const { container } = render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
         isChatMode={false}
@@ -149,6 +165,7 @@ describe('AskBarView', () => {
   it('shows logo at 24px in chat mode (w-6 h-6 rounded-lg classes)', () => {
     const { container } = render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
         isChatMode={true}
@@ -168,6 +185,7 @@ describe('AskBarView', () => {
   it('shows send button with accessible label', () => {
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
         isChatMode={false}
@@ -185,6 +203,7 @@ describe('AskBarView', () => {
   it('displays selectedText when provided', () => {
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
         isChatMode={false}
@@ -201,6 +220,7 @@ describe('AskBarView', () => {
   it('hides context area when no selectedText', () => {
     const { container } = render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
         isChatMode={false}
@@ -216,6 +236,7 @@ describe('AskBarView', () => {
   it('shows stop button with accessible label during generation', () => {
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
         isChatMode={true}
@@ -234,6 +255,7 @@ describe('AskBarView', () => {
     const onCancel = vi.fn();
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
         isChatMode={true}
@@ -250,6 +272,7 @@ describe('AskBarView', () => {
   it('applies spinning ring class to stop button', () => {
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
         isChatMode={true}
@@ -267,6 +290,7 @@ describe('AskBarView', () => {
     const onSubmit = vi.fn();
     render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query="hello"
         setQuery={vi.fn()}
         isChatMode={true}
@@ -283,6 +307,7 @@ describe('AskBarView', () => {
   it('displays selectedText with whitespace-pre-wrap class', () => {
     const { container } = render(
       <AskBarView
+        {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
         isChatMode={false}
@@ -302,6 +327,7 @@ describe('AskBarView', () => {
     it('renders history icon button in ask-bar mode when onHistoryOpen is provided', () => {
       render(
         <AskBarView
+          {...IMAGE_DEFAULTS}
           query=""
           setQuery={vi.fn()}
           isChatMode={false}
@@ -320,6 +346,7 @@ describe('AskBarView', () => {
     it('does not render history icon button in chat mode', () => {
       render(
         <AskBarView
+          {...IMAGE_DEFAULTS}
           query=""
           setQuery={vi.fn()}
           isChatMode={true}
@@ -337,6 +364,7 @@ describe('AskBarView', () => {
       const onHistoryOpen = vi.fn();
       render(
         <AskBarView
+          {...IMAGE_DEFAULTS}
           query=""
           setQuery={vi.fn()}
           isChatMode={false}
@@ -349,6 +377,449 @@ describe('AskBarView', () => {
       );
       fireEvent.click(screen.getByRole('button', { name: /history/i }));
       expect(onHistoryOpen).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('image attachments', () => {
+    it('renders image thumbnails when attachedImages is non-empty', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={['/tmp/img1.jpg', '/tmp/img2.jpg']}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      expect(
+        screen.getByRole('list', { name: /attached images/i }),
+      ).toBeInTheDocument();
+      expect(screen.getAllByRole('listitem')).toHaveLength(2);
+    });
+
+    it('does not render thumbnails when attachedImages is empty', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={[]}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      expect(
+        screen.queryByRole('list', { name: /attached images/i }),
+      ).toBeNull();
+    });
+
+    it('enables submit button when images are attached even without text', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={['/tmp/img1.jpg']}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const btn = screen.getByRole('button', { name: 'Send message' });
+      expect(btn).not.toBeDisabled();
+    });
+
+    it('calls onImagePreview when thumbnail is clicked', () => {
+      const onImagePreview = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={['/tmp/img1.jpg']}
+          onImagePreview={onImagePreview}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: /preview/i }));
+      expect(onImagePreview).toHaveBeenCalledWith('/tmp/img1.jpg');
+    });
+
+    it('calls onImageRemove when remove button is clicked', () => {
+      const onImageRemove = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={['/tmp/img1.jpg']}
+          onImageRemove={onImageRemove}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: /remove/i }));
+      expect(onImageRemove).toHaveBeenCalledWith('/tmp/img1.jpg');
+    });
+
+    it('applies drag-over styling on dragOver event', () => {
+      const { container } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const wrapper = container.firstElementChild!;
+      fireEvent.dragOver(wrapper, { preventDefault: vi.fn() });
+      expect(wrapper.classList.contains('ring-2')).toBe(true);
+    });
+
+    it('removes drag-over styling on dragLeave', () => {
+      const { container } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const wrapper = container.firstElementChild!;
+      fireEvent.dragOver(wrapper, { preventDefault: vi.fn() });
+      fireEvent.dragLeave(wrapper);
+      expect(wrapper.classList.contains('ring-2')).toBe(false);
+    });
+
+    it('removes drag-over styling on drop', () => {
+      const { container } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const wrapper = container.firstElementChild!;
+      fireEvent.dragOver(wrapper, { preventDefault: vi.fn() });
+      fireEvent.drop(wrapper, {
+        preventDefault: vi.fn(),
+        dataTransfer: { files: [] },
+      });
+      expect(wrapper.classList.contains('ring-2')).toBe(false);
+    });
+
+    it('calls onImagesAttached on drop with image files', async () => {
+      const onImagesAttached = vi.fn();
+      const { container } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          onImagesAttached={onImagesAttached}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const wrapper = container.firstElementChild!;
+      const file = new File(['fake-img-data'], 'photo.png', {
+        type: 'image/png',
+      });
+      fireEvent.drop(wrapper, {
+        preventDefault: vi.fn(),
+        dataTransfer: { files: [file] },
+      });
+      await vi.waitFor(() => {
+        expect(onImagesAttached).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('ignores non-image files on drop', () => {
+      const onImagesAttached = vi.fn();
+      const { container } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          onImagesAttached={onImagesAttached}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const wrapper = container.firstElementChild!;
+      const file = new File(['text'], 'doc.txt', { type: 'text/plain' });
+      fireEvent.drop(wrapper, {
+        preventDefault: vi.fn(),
+        dataTransfer: { files: [file] },
+      });
+      expect(onImagesAttached).not.toHaveBeenCalled();
+    });
+
+    it('ignores drop when already at max images', () => {
+      const onImagesAttached = vi.fn();
+      const { container } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={['/a.jpg', '/b.jpg', '/c.jpg']}
+          onImagesAttached={onImagesAttached}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const wrapper = container.firstElementChild!;
+      const file = new File(['x'], 'img.png', { type: 'image/png' });
+      fireEvent.drop(wrapper, {
+        preventDefault: vi.fn(),
+        dataTransfer: { files: [file] },
+      });
+      expect(onImagesAttached).not.toHaveBeenCalled();
+    });
+
+    it('ignores drop when generating', () => {
+      const onImagesAttached = vi.fn();
+      const { container } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          onImagesAttached={onImagesAttached}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={true}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const wrapper = container.firstElementChild!;
+      const file = new File(['x'], 'img.png', { type: 'image/png' });
+      fireEvent.drop(wrapper, {
+        preventDefault: vi.fn(),
+        dataTransfer: { files: [file] },
+      });
+      expect(onImagesAttached).not.toHaveBeenCalled();
+    });
+
+    it('ignores drop with null files', () => {
+      const onImagesAttached = vi.fn();
+      const { container } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          onImagesAttached={onImagesAttached}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const wrapper = container.firstElementChild!;
+      fireEvent.drop(wrapper, {
+        preventDefault: vi.fn(),
+        dataTransfer: { files: null },
+      });
+      expect(onImagesAttached).not.toHaveBeenCalled();
+    });
+
+    it('does not apply drag-over styling when generating', () => {
+      const { container } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={true}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const wrapper = container.firstElementChild!;
+      fireEvent.dragOver(wrapper, { preventDefault: vi.fn() });
+      expect(wrapper.classList.contains('ring-2')).toBe(false);
+    });
+
+    it('calls onImagesAttached on paste with image', async () => {
+      const onImagesAttached = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          onImagesAttached={onImagesAttached}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['fake-img'], 'test.png', { type: 'image/png' });
+      const clipboardData = {
+        items: [{ type: 'image/png', getAsFile: () => file }],
+      };
+      fireEvent.paste(textarea, { clipboardData });
+      // FileReader is async — wait for the next microtask.
+      await vi.waitFor(() => {
+        expect(onImagesAttached).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('does not call onImagesAttached on paste with text only', () => {
+      const onImagesAttached = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          onImagesAttached={onImagesAttached}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const clipboardData = {
+        items: [{ type: 'text/plain', getAsFile: () => null }],
+      };
+      fireEvent.paste(textarea, { clipboardData });
+      expect(onImagesAttached).not.toHaveBeenCalled();
+    });
+
+    it('ignores paste when clipboard has no items', () => {
+      const onImagesAttached = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          onImagesAttached={onImagesAttached}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      fireEvent.paste(textarea, { clipboardData: { items: null } });
+      expect(onImagesAttached).not.toHaveBeenCalled();
+    });
+
+    it('ignores paste when generating', () => {
+      const onImagesAttached = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          onImagesAttached={onImagesAttached}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={true}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['x'], 'img.png', { type: 'image/png' });
+      const clipboardData = {
+        items: [{ type: 'image/png', getAsFile: () => file }],
+      };
+      fireEvent.paste(textarea, { clipboardData });
+      expect(onImagesAttached).not.toHaveBeenCalled();
+    });
+
+    it('skips image items where getAsFile returns null', () => {
+      const onImagesAttached = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          onImagesAttached={onImagesAttached}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const clipboardData = {
+        items: [{ type: 'image/png', getAsFile: () => null }],
+      };
+      fireEvent.paste(textarea, { clipboardData });
+      expect(onImagesAttached).not.toHaveBeenCalled();
+    });
+
+    it('respects max image limit during paste', async () => {
+      const onImagesAttached = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={['/tmp/a.jpg', '/tmp/b.jpg', '/tmp/c.jpg']}
+          onImagesAttached={onImagesAttached}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['x'], 'img.png', { type: 'image/png' });
+      const clipboardData = {
+        items: [{ type: 'image/png', getAsFile: () => file }],
+      };
+      fireEvent.paste(textarea, { clipboardData });
+      // Should not process since we're already at max.
+      expect(onImagesAttached).not.toHaveBeenCalled();
     });
   });
 });
