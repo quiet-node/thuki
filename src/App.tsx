@@ -6,6 +6,7 @@ import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { useOllama } from './hooks/useOllama';
+import type { Message } from './hooks/useOllama';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView } from './view/AskBarView';
@@ -124,6 +125,22 @@ function App() {
   /** URL of the image currently open in the preview modal (blob or asset URL). */
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
 
+  /** When the user submits while images are still processing, the submit
+   *  intent is stored here. The effect below watches `attachedImages` and
+   *  fires the actual `ask()` once every image has a resolved `filePath`. */
+  const pendingSubmitRef = useRef<{
+    query: string;
+    context: string | undefined;
+  } | null>(null);
+  /** True while waiting for images to finish processing before a deferred
+   *  submit. Drives the "waiting" UI state in the ask bar. */
+  const [isSubmitPending, setIsSubmitPending] = useState(false);
+  /** User message shown in the chat while waiting for images to finish
+   *  processing. Cleared when `ask()` fires and adds the real message. */
+  const [pendingUserMessage, setPendingUserMessage] = useState<Message | null>(
+    null,
+  );
+
   /**
    * Session counter — incremented on each overlay open. Used in the motion
    * key to force AnimatePresence to fully unmount the stale tree before
@@ -144,7 +161,7 @@ function App() {
    * chat window state with message bubbles. Transitions from input-bar mode
    * to chat-window mode are animated via Framer Motion `layout` prop.
    */
-  const isChatMode = messages.length > 0 || isGenerating;
+  const isChatMode = messages.length > 0 || isGenerating || isSubmitPending;
 
   /**
    * The bookmark save button is active once the AI has produced at least one
@@ -319,6 +336,9 @@ function App() {
       setSelectedContext(context);
       setIsHistoryOpen(false);
       setAttachedImages([]);
+      pendingSubmitRef.current = null;
+      setIsSubmitPending(false);
+      setPendingUserMessage(null);
 
       reset();
       resetHistory();
@@ -533,6 +553,9 @@ function App() {
     setIsHistoryOpen(false);
     setQuery('');
     setAttachedImages([]);
+    pendingSubmitRef.current = null;
+    setIsSubmitPending(false);
+    setPendingUserMessage(null);
   }, [reset, resetHistory]);
 
   /**
@@ -640,6 +663,25 @@ function App() {
     setPreviewImageUrl(convertFileSrc(path));
   }, []);
 
+  /** Fires the actual ask() call and cleans up attached images + input. */
+  const executeSubmit = useCallback(
+    (submitQuery: string, context: string | undefined) => {
+      const readyPaths = attachedImages
+        .filter((img) => img.filePath !== null)
+        .map((img) => img.filePath as string);
+      const images = readyPaths.length > 0 ? readyPaths : undefined;
+      ask(submitQuery, context, images);
+      setSelectedContext(null);
+      setQuery('');
+      for (const img of attachedImages) {
+        URL.revokeObjectURL(img.blobUrl);
+      }
+      setAttachedImages([]);
+      inputRef.current!.style.height = 'auto';
+    },
+    [ask, attachedImages, setSelectedContext],
+  );
+
   const handleSubmit = useCallback(() => {
     if (
       (query.trim().length === 0 && attachedImages.length === 0) ||
@@ -653,30 +695,74 @@ function App() {
     const sanitized = selectedContext
       ?.replace(CONTROL_CHARS, '')
       .slice(0, quote.maxContextLength);
-    const hasContext = sanitized && sanitized.trim().length > 0;
-    // Only include images that have finished backend processing.
-    const readyPaths = attachedImages
-      .filter((img) => img.filePath !== null)
-      .map((img) => img.filePath as string);
-    const images = readyPaths.length > 0 ? readyPaths : undefined;
-    ask(query, hasContext ? sanitized : undefined, images);
-    setSelectedContext(null);
-    setQuery('');
-    // Revoke blob URLs to free memory.
-    for (const img of attachedImages) {
-      URL.revokeObjectURL(img.blobUrl);
+    const context = sanitized?.trim() ? sanitized : undefined;
+
+    // If all images are ready (or there are none), submit immediately.
+    const hasPendingImages = attachedImages.some(
+      (img) => img.filePath === null,
+    );
+    if (!hasPendingImages) {
+      executeSubmit(query, context);
+      return;
     }
-    setAttachedImages([]);
-    // Reset textarea height after submit (ref is always live when submit fires).
+
+    // Images are still processing — store the intent and wait. The effect
+    // below will fire the actual ask() once every image has resolved.
+    pendingSubmitRef.current = { query, context };
+    setIsSubmitPending(true);
+
+    // Show the user's message immediately in the chat view with blob URL
+    // thumbnails so the UI transitions to conversation mode right away.
+    setPendingUserMessage({
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: query,
+      quotedText: context,
+      imagePaths: attachedImages.map((img) => img.blobUrl),
+    });
+
+    setQuery('');
+    setSelectedContext(null);
     inputRef.current!.style.height = 'auto';
   }, [
     query,
     isGenerating,
-    ask,
+    executeSubmit,
     selectedContext,
     setSelectedContext,
     attachedImages,
   ]);
+
+  // When a pending submit exists and all images finish processing, fire it.
+  // Reads `attachedImages` directly (not via `executeSubmit` closure) to
+  // guarantee the effect always sees the freshest file paths.
+  useEffect(() => {
+    if (!pendingSubmitRef.current) return;
+    if (attachedImages.length === 0) {
+      // All images were removed (failed) — cancel the pending submit.
+      pendingSubmitRef.current = null;
+      setIsSubmitPending(false);
+      setPendingUserMessage(null);
+      return;
+    }
+    // Wait until every image has finished backend processing.
+    const allReady = attachedImages.every((img) => img.filePath !== null);
+    if (!allReady) return;
+
+    const { query: pendingQuery, context } = pendingSubmitRef.current;
+    pendingSubmitRef.current = null;
+    setIsSubmitPending(false);
+    // Clear the preview message — ask() will add the real one with file paths.
+    setPendingUserMessage(null);
+
+    const images = attachedImages.map((img) => img.filePath as string);
+    void ask(pendingQuery, context, images);
+    setSelectedContext(null);
+    for (const img of attachedImages) {
+      URL.revokeObjectURL(img.blobUrl);
+    }
+    setAttachedImages([]);
+  }, [attachedImages, ask, setSelectedContext]);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
@@ -852,9 +938,13 @@ function App() {
                 <AnimatePresence>
                   {isChatMode ? (
                     <ConversationView
-                      messages={messages}
+                      messages={
+                        pendingUserMessage
+                          ? [...messages, pendingUserMessage]
+                          : messages
+                      }
                       streamingContent={streamingContent}
-                      isGenerating={isGenerating}
+                      isGenerating={isGenerating || isSubmitPending}
                       error={error}
                       onClose={handleCloseOverlay}
                       onSave={handleSave}
@@ -911,12 +1001,13 @@ function App() {
                   setQuery={setQuery}
                   isChatMode={isChatMode}
                   isGenerating={isGenerating}
+                  isSubmitPending={isSubmitPending}
                   onSubmit={handleSubmit}
                   onCancel={cancel}
                   inputRef={inputRef}
                   selectedText={selectedContext ?? undefined}
                   onHistoryOpen={handleHistoryToggle}
-                  attachedImages={attachedImages}
+                  attachedImages={isSubmitPending ? [] : attachedImages}
                   onImagesAttached={handleImagesAttached}
                   onImageRemove={handleImageRemove}
                   onImagePreview={handleAskBarImagePreview}

@@ -844,4 +844,89 @@ describe('AskBarView', () => {
       expect(onImagesAttached).not.toHaveBeenCalled();
     });
   });
+
+  describe('isSubmitPending state', () => {
+    it('shows spinner on submit button when isSubmitPending is true', () => {
+      const { container } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={[makeImage({ id: 'img-1', filePath: null })]}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          isSubmitPending={true}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      expect(
+        screen.getByRole('button', { name: /processing/i }),
+      ).toBeInTheDocument();
+      expect(container.querySelector('.animate-spin')).not.toBeNull();
+    });
+
+    it('disables textarea when isSubmitPending is true', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          isSubmitPending={true}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      expect((textarea as HTMLTextAreaElement).disabled).toBe(true);
+    });
+
+    it('does not apply drag-over styling when isSubmitPending', () => {
+      const { container } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          isSubmitPending={true}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const wrapper = container.firstElementChild!;
+      fireEvent.dragOver(wrapper, { preventDefault: vi.fn() });
+      expect(wrapper.classList.contains('ring-2')).toBe(false);
+    });
+
+    it('ignores paste when isSubmitPending', () => {
+      const onImagesAttached = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          onImagesAttached={onImagesAttached}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          isSubmitPending={true}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['x'], 'img.png', { type: 'image/png' });
+      const clipboardData = {
+        items: [{ type: 'image/png', getAsFile: () => file }],
+      };
+      fireEvent.paste(textarea, { clipboardData });
+      expect(onImagesAttached).not.toHaveBeenCalled();
+    });
+  });
 });

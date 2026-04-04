@@ -90,7 +90,7 @@ export function ChatBubble({
                 <ImageThumbnails
                   items={imagePaths.map((p) => ({
                     id: p,
-                    src: convertFileSrc(p),
+                    src: p.startsWith('blob:') ? p : convertFileSrc(p),
                   }))}
                   onPreview={onImagePreview}
                   size={48}

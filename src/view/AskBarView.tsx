@@ -132,6 +132,8 @@ interface AskBarViewProps {
   isChatMode: boolean;
   /** True if the AI is actively generating a response. */
   isGenerating: boolean;
+  /** True while waiting for images to finish processing before submitting. */
+  isSubmitPending?: boolean;
   /** Submit handler fired when the user commits their message. */
   onSubmit: () => void;
   /** Cancel handler fired when the user stops an active generation. */
@@ -166,6 +168,7 @@ export function AskBarView({
   setQuery,
   isChatMode,
   isGenerating,
+  isSubmitPending = false,
   onSubmit,
   onCancel,
   inputRef,
@@ -176,8 +179,10 @@ export function AskBarView({
   onImageRemove,
   onImagePreview,
 }: AskBarViewProps) {
+  /** True when the UI should be locked — either generating or waiting for images. */
+  const isBusy = isGenerating || isSubmitPending;
   const canSubmit =
-    (query.trim().length > 0 || attachedImages.length > 0) && !isGenerating;
+    (query.trim().length > 0 || attachedImages.length > 0) && !isBusy;
   const [isDragOver, setIsDragOver] = useState(false);
 
   /**
@@ -214,7 +219,7 @@ export function AskBarView({
    */
   const processImageFiles = useCallback(
     (files: FileList | null) => {
-      if (!files || isGenerating) return;
+      if (!files || isBusy) return;
       const remaining = MAX_IMAGES - attachedImages.length;
       if (remaining <= 0) return;
 
@@ -231,14 +236,14 @@ export function AskBarView({
         onImagesAttached(accepted);
       }
     },
-    [isGenerating, attachedImages.length, onImagesAttached],
+    [isBusy, attachedImages.length, onImagesAttached],
   );
 
   /** Handles clipboard paste — extracts image items from clipboardData. */
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
       const items = e.clipboardData?.items;
-      if (!items || isGenerating) return;
+      if (!items || isBusy) return;
 
       const remaining = MAX_IMAGES - attachedImages.length;
       if (remaining <= 0) return;
@@ -257,15 +262,15 @@ export function AskBarView({
       e.preventDefault();
       onImagesAttached(imageFiles);
     },
-    [isGenerating, attachedImages.length, onImagesAttached],
+    [isBusy, attachedImages.length, onImagesAttached],
   );
 
   const handleDragOver = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
-      if (!isGenerating) setIsDragOver(true);
+      if (!isBusy) setIsDragOver(true);
     },
-    [isGenerating],
+    [isBusy],
   );
 
   const handleDragLeave = useCallback(() => {
@@ -344,7 +349,7 @@ export function AskBarView({
           onChange={handleTextareaChange}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          disabled={isGenerating}
+          disabled={isBusy}
           autoFocus
           rows={1}
           placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
@@ -354,19 +359,29 @@ export function AskBarView({
         <motion.button
           type="button"
           onClick={isGenerating ? onCancel : onSubmit}
-          disabled={!canSubmit && !isGenerating}
+          disabled={(!canSubmit && !isGenerating) || isSubmitPending}
           whileHover={canSubmit || isGenerating ? { scale: 1.08 } : undefined}
           whileTap={canSubmit || isGenerating ? { scale: 0.92 } : undefined}
           className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-colors duration-200 ${
-            isGenerating
-              ? 'stop-btn-ring bg-red-500/10 text-red-400 cursor-pointer'
-              : canSubmit
-                ? 'bg-primary text-neutral cursor-pointer'
-                : 'bg-surface-elevated text-text-secondary cursor-default'
+            isSubmitPending
+              ? 'bg-primary/60 text-neutral cursor-default'
+              : isGenerating
+                ? 'stop-btn-ring bg-red-500/10 text-red-400 cursor-pointer'
+                : canSubmit
+                  ? 'bg-primary text-neutral cursor-pointer'
+                  : 'bg-surface-elevated text-text-secondary cursor-default'
           }`}
-          aria-label={isGenerating ? 'Stop generating' : 'Send message'}
+          aria-label={
+            isSubmitPending
+              ? 'Processing images'
+              : isGenerating
+                ? 'Stop generating'
+                : 'Send message'
+          }
         >
-          {isGenerating ? (
+          {isSubmitPending ? (
+            <div className="w-4 h-4 border-2 border-neutral/40 border-t-neutral rounded-full animate-spin" />
+          ) : isGenerating ? (
             <>
               {BORDER_TRACE_RING}
               {STOP_ICON}

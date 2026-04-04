@@ -2077,6 +2077,236 @@ describe('App', () => {
         screen.queryByRole('list', { name: /attached images/i }),
       ).toBeNull();
     });
+
+    it('defers submit when images are still processing and fires when ready', async () => {
+      // Flush any stale macrotasks (e.g. FileReader.onload from prior tests)
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+
+      // Track save_image_command calls scoped to THIS test
+      let resolveSave: ((path: string) => void) | null = null;
+      const savePromises: Promise<string>[] = [];
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // Accept channel for ask_ollama
+          }
+          if (cmd === 'save_image_command') {
+            const p = new Promise<string>((resolve) => {
+              resolveSave = resolve;
+            });
+            savePromises.push(p);
+            return p;
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste an image — thumbnail appears immediately (filePath null)
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      // Wait for this test's FileReader to complete and call save_image_command
+      await act(async () => {
+        await vi.waitFor(() => expect(savePromises).toHaveLength(1));
+      });
+
+      // Type and submit while image is still processing
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'describe this' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Should show "Processing images" state
+      expect(
+        screen.getByRole('button', { name: /processing/i }),
+      ).toBeInTheDocument();
+
+      // Resolve the image — triggers deferred submit chain
+      resolveSave!('/tmp/staged/img1.jpg');
+
+      // Flush async chain: promise → state update → effect → ask → invoke
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      // The "Processing images" button should be gone (submit executed)
+      expect(screen.queryByRole('button', { name: /processing/i })).toBeNull();
+
+      // User message should appear in the chat (ask() adds it)
+      expect(screen.getByText('describe this')).toBeInTheDocument();
+    });
+
+    it('waits for all images before firing deferred submit', async () => {
+      // Flush stale macrotasks from prior tests
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+
+      // Two images: each gets its own resolve function
+      const resolvers: ((path: string) => void)[] = [];
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // Accept channel
+          }
+          if (cmd === 'save_image_command') {
+            return new Promise<string>((resolve) => {
+              resolvers.push(resolve);
+            });
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Drop two images at once
+      const askBarWrapper = document.querySelector(
+        '[class*="flex flex-col w-full shrink-0"]',
+      )!;
+      const file1 = new File(['d1'], 'a.png', { type: 'image/png' });
+      const file2 = new File(['d2'], 'b.png', { type: 'image/png' });
+      fireEvent.drop(askBarWrapper, {
+        preventDefault: vi.fn(),
+        dataTransfer: { files: [file1, file2] },
+      });
+
+      // Wait for both save_image_command calls
+      await act(async () => {
+        await vi.waitFor(() => expect(resolvers).toHaveLength(2));
+      });
+
+      // Submit while both images are still processing
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'two images' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      expect(
+        screen.getByRole('button', { name: /processing/i }),
+      ).toBeInTheDocument();
+
+      // Resolve ONLY the first image — allReady should still be false
+      await act(async () => {
+        resolvers[0]('/tmp/img1.jpg');
+      });
+      await act(async () => {});
+
+      // Still processing — second image not ready
+      expect(
+        screen.getByRole('button', { name: /processing/i }),
+      ).toBeInTheDocument();
+
+      // Resolve the second image — now allReady is true, submit fires
+      await act(async () => {
+        resolvers[1]('/tmp/img2.jpg');
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      // User message should appear
+      expect(screen.getByText('two images')).toBeInTheDocument();
+    });
+
+    it('cancels deferred submit when all images fail', async () => {
+      // Make save_image_command hang then reject
+      let rejectSave: ((err: Error) => void) | null = null;
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // channel capture
+          }
+          if (cmd === 'save_image_command') {
+            return new Promise<string>((_, reject) => {
+              rejectSave = reject;
+            });
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste and submit while processing
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'describe' } });
+      });
+
+      // Wait for FileReader to complete and save_image_command to be invoked
+      // (which sets rejectSave via the promise constructor).
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(rejectSave).not.toBeNull();
+        });
+      });
+
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Waiting state
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('button', { name: /processing/i }),
+        ).toBeInTheDocument();
+      });
+
+      // Reject the image — it should be removed and pending submit cancelled
+      await act(async () => {
+        rejectSave!(new Error('disk full'));
+      });
+
+      // Image removed → no thumbnails → pending submit cancelled
+      await vi.waitFor(() => {
+        expect(
+          screen.queryByRole('list', { name: /attached images/i }),
+        ).toBeNull();
+      });
+
+      // ask_ollama should never have been called
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+
+      // The "Processing images" button should be gone — back to normal send
+      expect(
+        screen.getByRole('button', { name: /send message/i }),
+      ).toBeInTheDocument();
+    });
   });
 
   it('resets session on overlay reopen', async () => {
