@@ -121,14 +121,6 @@ function App() {
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
   /** File path of the image currently open in the preview modal. */
   const [previewImage, setPreviewImage] = useState<string | null>(null);
-  /**
-   * Session-scoped directory name for staged images. Uses a ref so it
-   * survives re-renders without triggering them. Reset on each new session.
-   * Initialized via useState to satisfy the React purity lint rule (useRef
-   * initializers run during render; useState initializers are allowed).
-   */
-  const [initialImageSessionId] = useState(() => crypto.randomUUID());
-  const imageSessionIdRef = useRef(initialImageSessionId);
 
   /**
    * Session counter — incremented on each overlay open. Used in the motion
@@ -325,7 +317,7 @@ function App() {
       setSelectedContext(context);
       setIsHistoryOpen(false);
       setAttachedImages([]);
-      imageSessionIdRef.current = crypto.randomUUID();
+
       reset();
       resetHistory();
       setOverlayState('visible');
@@ -539,7 +531,6 @@ function App() {
     setIsHistoryOpen(false);
     setQuery('');
     setAttachedImages([]);
-    imageSessionIdRef.current = crypto.randomUUID();
   }, [reset, resetHistory]);
 
   /**
@@ -581,7 +572,6 @@ function App() {
     for (const bytes of byteArrays) {
       try {
         const path = await invoke<string>('save_image_command', {
-          conversationId: imageSessionIdRef.current,
           imageData: bytes,
         });
         paths.push(path);

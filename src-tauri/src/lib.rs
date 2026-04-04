@@ -525,8 +525,6 @@ pub fn run() {
             images::remove_image_command,
             #[cfg(not(coverage))]
             images::cleanup_orphaned_images_command,
-            #[cfg(not(coverage))]
-            images::remove_conversation_images,
             notify_overlay_hidden,
             set_window_frame
         ])

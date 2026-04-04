@@ -1,17 +1,21 @@
 /*!
  * Image storage and lifecycle management.
  *
- * Images are stored on disk under `<app_data_dir>/images/<conversation_id>/`.
+ * Images are stored in a flat directory at `<app_data_dir>/images/` with
+ * UUID-based filenames. This follows the industry-standard pattern used by
+ * Signal, iMessage, and Slack — media files are independent entities linked
+ * to messages through path references, not organized by conversation.
+ *
  * Each image is compressed to JPEG (quality 85, max 1080p) on save to keep
  * disk usage and Ollama inference latency low.
  *
  * Lifecycle:
  * - **Paste/drop:** frontend sends raw bytes → `save_image` compresses and
- *   writes to the conversation's image directory, returns the file path.
+ *   writes to the flat images directory, returns the file path.
  * - **Remove:** user clicks "X" on a thumbnail → `remove_image` deletes the
  *   file from disk.
- * - **Cleanup:** `cleanup_orphaned_images` removes directories not referenced
- *   by any saved conversation. Runs on startup and periodically.
+ * - **Cleanup:** `cleanup_orphaned_images` removes files not referenced by
+ *   any saved message. Runs on startup and periodically.
  */
 
 use std::path::{Path, PathBuf};
@@ -36,12 +40,8 @@ pub fn images_root(base_dir: &Path) -> PathBuf {
     base_dir.join("images")
 }
 
-/// Resolves the image directory for a specific conversation.
-fn conversation_dir(base_dir: &Path, conversation_id: &str) -> PathBuf {
-    images_root(base_dir).join(conversation_id)
-}
-
-/// Compresses raw image bytes to JPEG (max 1080p) and writes to disk.
+/// Compresses raw image bytes to JPEG (max 1080p) and writes to the flat
+/// images directory with a UUID filename.
 ///
 /// Returns the absolute path of the saved file. The caller owns the path and
 /// can pass it to the frontend for `asset://` rendering.
@@ -50,11 +50,7 @@ fn conversation_dir(base_dir: &Path, conversation_id: &str) -> PathBuf {
 ///
 /// Returns an error if the image bytes cannot be decoded, the output directory
 /// cannot be created, or the file cannot be written.
-pub fn save_image(
-    base_dir: &Path,
-    conversation_id: &str,
-    image_data: &[u8],
-) -> Result<String, String> {
+pub fn save_image(base_dir: &Path, image_data: &[u8]) -> Result<String, String> {
     let img =
         image::load_from_memory(image_data).map_err(|e| format!("failed to decode image: {e}"))?;
 
@@ -64,7 +60,7 @@ pub fn save_image(
         img
     };
 
-    let dir = conversation_dir(base_dir, conversation_id);
+    let dir = images_root(base_dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create image directory: {e}"))?;
 
     let filename = format!("{}.jpg", uuid::Uuid::new_v4());
@@ -97,32 +93,23 @@ pub fn remove_image(path: &str) -> Result<(), String> {
     let p = Path::new(path);
     if p.exists() {
         std::fs::remove_file(p).map_err(|e| format!("failed to remove image: {e}"))?;
-
-        // Remove the parent directory if it is now empty.
-        if let Some(parent) = p.parent() {
-            if parent
-                .read_dir()
-                .map(|mut d| d.next().is_none())
-                .unwrap_or(false)
-            {
-                let _ = std::fs::remove_dir(parent);
-            }
-        }
     }
     Ok(())
 }
 
-/// Removes image directories that are not referenced by any saved conversation.
+/// Removes image files that are not in the set of referenced paths.
 ///
-/// `saved_ids` is the set of conversation IDs that currently exist in the
-/// database. Any directory under `<base_dir>/images/` whose name is not in
+/// `referenced_paths` contains the absolute paths of all images currently
+/// referenced by saved messages. Any file in `<base_dir>/images/` not in
 /// this set is deleted.
 ///
 /// # Errors
 ///
-/// Returns an error if the images root directory cannot be read. Individual
-/// directory removal failures are logged but do not fail the operation.
-pub fn cleanup_orphaned_images(base_dir: &Path, saved_ids: &[String]) -> Result<usize, String> {
+/// Returns an error if the images root directory cannot be read.
+pub fn cleanup_orphaned_images(
+    base_dir: &Path,
+    referenced_paths: &[String],
+) -> Result<usize, String> {
     let root = images_root(base_dir);
     if !root.exists() {
         return Ok(0);
@@ -133,11 +120,12 @@ pub fn cleanup_orphaned_images(base_dir: &Path, saved_ids: &[String]) -> Result<
 
     let mut removed = 0;
     for entry in entries.flatten() {
-        if !entry.path().is_dir() {
+        let path = entry.path();
+        if !path.is_file() {
             continue;
         }
-        let dir_name = entry.file_name().to_string_lossy().to_string();
-        if !saved_ids.contains(&dir_name) && std::fs::remove_dir_all(entry.path()).is_ok() {
+        let path_str = path.to_string_lossy().to_string();
+        if !referenced_paths.contains(&path_str) && std::fs::remove_file(&path).is_ok() {
             removed += 1;
         }
     }
@@ -163,19 +151,18 @@ pub fn encode_images_as_base64(paths: &[String]) -> Result<Vec<String>, String> 
 
 // ─── Tauri commands ────────────────────────────────────────────────────────
 
-/// Compresses and saves an image to the conversation's image directory.
+/// Compresses and saves an image to the flat images directory.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn save_image_command(
     app_handle: tauri::AppHandle,
-    conversation_id: String,
     image_data: Vec<u8>,
 ) -> Result<String, String> {
     let base_dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-    save_image(&base_dir, &conversation_id, &image_data)
+    save_image(&base_dir, &image_data)
 }
 
 /// Deletes a single image file from disk.
@@ -185,37 +172,18 @@ pub fn remove_image_command(path: String) -> Result<(), String> {
     remove_image(&path)
 }
 
-/// Removes image directories not referenced by any saved conversation.
+/// Removes image files not referenced by any saved message.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn cleanup_orphaned_images_command(
     app_handle: tauri::AppHandle,
-    saved_ids: Vec<String>,
+    referenced_paths: Vec<String>,
 ) -> Result<usize, String> {
     let base_dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-    cleanup_orphaned_images(&base_dir, &saved_ids)
-}
-
-/// Removes the entire image directory for a conversation.
-#[cfg_attr(coverage_nightly, coverage(off))]
-#[cfg_attr(not(coverage), tauri::command)]
-pub fn remove_conversation_images(
-    app_handle: tauri::AppHandle,
-    conversation_id: String,
-) -> Result<(), String> {
-    let base_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-    let dir = conversation_dir(&base_dir, &conversation_id);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)
-            .map_err(|e| format!("failed to remove conversation images: {e}"))?;
-    }
-    Ok(())
+    cleanup_orphaned_images(&base_dir, &referenced_paths)
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -258,11 +226,12 @@ mod tests {
     #[test]
     fn save_image_creates_jpeg_file() {
         let base = temp_dir();
-        let path = save_image(&base, "conv-1", &tiny_png()).unwrap();
+        let path = save_image(&base, &tiny_png()).unwrap();
 
         assert!(Path::new(&path).exists());
         assert!(path.ends_with(".jpg"));
-        assert!(path.contains("conv-1"));
+        // File should be in the flat images/ directory, not a subdirectory.
+        assert!(path.contains("/images/"));
 
         fs::remove_dir_all(&base).unwrap();
     }
@@ -270,9 +239,8 @@ mod tests {
     #[test]
     fn save_image_compresses_large_image() {
         let base = temp_dir();
-        let path = save_image(&base, "conv-2", &large_png()).unwrap();
+        let path = save_image(&base, &large_png()).unwrap();
 
-        // Verify the saved image was resized.
         let saved = image::open(&path).unwrap();
         assert!(saved.width() <= MAX_DIMENSION);
         assert!(saved.height() <= MAX_DIMENSION);
@@ -283,7 +251,7 @@ mod tests {
     #[test]
     fn save_image_rejects_invalid_bytes() {
         let base = temp_dir();
-        let result = save_image(&base, "conv-3", b"not an image");
+        let result = save_image(&base, b"not an image");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("failed to decode image"));
 
@@ -293,7 +261,6 @@ mod tests {
     #[test]
     fn save_image_preserves_aspect_ratio() {
         let base = temp_dir();
-        // Create a wide image: 3000x1000.
         let mut buf = Vec::new();
         let img = image::RgbImage::from_pixel(3000, 1000, image::Rgb([0, 0, 0]));
         let dyn_img = image::DynamicImage::ImageRgb8(img);
@@ -302,13 +269,11 @@ mod tests {
             .write_to(&mut cursor, image::ImageFormat::Png)
             .unwrap();
 
-        let path = save_image(&base, "conv-aspect", &buf).unwrap();
+        let path = save_image(&base, &buf).unwrap();
         let saved = image::open(&path).unwrap();
 
-        // Width should be clamped to MAX_DIMENSION, height scaled proportionally.
         assert_eq!(saved.width(), MAX_DIMENSION);
         assert!(saved.height() < MAX_DIMENSION);
-        // Aspect ratio: 3000/1000 = 3, so height ≈ 1920/3 = 640.
         assert_eq!(saved.height(), 640);
 
         fs::remove_dir_all(&base).unwrap();
@@ -317,10 +282,9 @@ mod tests {
     #[test]
     fn save_image_does_not_upscale_small_images() {
         let base = temp_dir();
-        let path = save_image(&base, "conv-small", &tiny_png()).unwrap();
+        let path = save_image(&base, &tiny_png()).unwrap();
         let saved = image::open(&path).unwrap();
 
-        // 1x1 image should remain 1x1 (no upscaling).
         assert_eq!(saved.width(), 1);
         assert_eq!(saved.height(), 1);
 
@@ -330,24 +294,11 @@ mod tests {
     #[test]
     fn remove_image_deletes_file() {
         let base = temp_dir();
-        let path = save_image(&base, "conv-4", &tiny_png()).unwrap();
+        let path = save_image(&base, &tiny_png()).unwrap();
         assert!(Path::new(&path).exists());
 
         remove_image(&path).unwrap();
         assert!(!Path::new(&path).exists());
-
-        fs::remove_dir_all(&base).unwrap();
-    }
-
-    #[test]
-    fn remove_image_cleans_up_empty_parent_dir() {
-        let base = temp_dir();
-        let path = save_image(&base, "conv-cleanup", &tiny_png()).unwrap();
-        let parent = Path::new(&path).parent().unwrap().to_path_buf();
-
-        remove_image(&path).unwrap();
-        // Parent directory should be removed since it's now empty.
-        assert!(!parent.exists());
 
         fs::remove_dir_all(&base).unwrap();
     }
@@ -359,17 +310,17 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_orphaned_images_removes_unreferenced_dirs() {
+    fn cleanup_orphaned_images_removes_unreferenced_files() {
         let base = temp_dir();
-        save_image(&base, "saved-conv", &tiny_png()).unwrap();
-        save_image(&base, "orphan-conv", &tiny_png()).unwrap();
+        let kept = save_image(&base, &tiny_png()).unwrap();
+        let orphan = save_image(&base, &tiny_png()).unwrap();
 
-        let saved_ids = vec!["saved-conv".to_string()];
-        let removed = cleanup_orphaned_images(&base, &saved_ids).unwrap();
+        let referenced = vec![kept.clone()];
+        let removed = cleanup_orphaned_images(&base, &referenced).unwrap();
 
         assert_eq!(removed, 1);
-        assert!(conversation_dir(&base, "saved-conv").exists());
-        assert!(!conversation_dir(&base, "orphan-conv").exists());
+        assert!(Path::new(&kept).exists());
+        assert!(!Path::new(&orphan).exists());
 
         fs::remove_dir_all(&base).unwrap();
     }
@@ -377,7 +328,6 @@ mod tests {
     #[test]
     fn cleanup_orphaned_images_noop_when_no_images_dir() {
         let base = temp_dir();
-        // Don't create any images directory.
         let removed = cleanup_orphaned_images(&base, &[]).unwrap();
         assert_eq!(removed, 0);
 
@@ -385,10 +335,10 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_orphaned_images_removes_all_when_no_saved_ids() {
+    fn cleanup_orphaned_images_removes_all_when_no_references() {
         let base = temp_dir();
-        save_image(&base, "conv-a", &tiny_png()).unwrap();
-        save_image(&base, "conv-b", &tiny_png()).unwrap();
+        save_image(&base, &tiny_png()).unwrap();
+        save_image(&base, &tiny_png()).unwrap();
 
         let removed = cleanup_orphaned_images(&base, &[]).unwrap();
         assert_eq!(removed, 2);
@@ -397,14 +347,29 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_orphaned_images_preserves_all_when_all_saved() {
+    fn cleanup_orphaned_images_preserves_all_when_all_referenced() {
         let base = temp_dir();
-        save_image(&base, "c1", &tiny_png()).unwrap();
-        save_image(&base, "c2", &tiny_png()).unwrap();
+        let p1 = save_image(&base, &tiny_png()).unwrap();
+        let p2 = save_image(&base, &tiny_png()).unwrap();
 
-        let saved_ids = vec!["c1".to_string(), "c2".to_string()];
-        let removed = cleanup_orphaned_images(&base, &saved_ids).unwrap();
+        let referenced = vec![p1, p2];
+        let removed = cleanup_orphaned_images(&base, &referenced).unwrap();
         assert_eq!(removed, 0);
+
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn cleanup_orphaned_images_skips_subdirectories() {
+        let base = temp_dir();
+        save_image(&base, &tiny_png()).unwrap();
+        // Create a subdirectory that should be skipped (not a file).
+        fs::create_dir_all(images_root(&base).join("stray-dir")).unwrap();
+
+        let removed = cleanup_orphaned_images(&base, &[]).unwrap();
+        // Only the file should be removed, not the directory.
+        assert_eq!(removed, 1);
+        assert!(images_root(&base).join("stray-dir").exists());
 
         fs::remove_dir_all(&base).unwrap();
     }
@@ -412,12 +377,11 @@ mod tests {
     #[test]
     fn encode_images_as_base64_roundtrip() {
         let base = temp_dir();
-        let path = save_image(&base, "conv-b64", &tiny_png()).unwrap();
+        let path = save_image(&base, &tiny_png()).unwrap();
 
         let encoded = encode_images_as_base64(&[path.clone()]).unwrap();
         assert_eq!(encoded.len(), 1);
 
-        // Verify the base64 decodes to valid JPEG bytes.
         let decoded = BASE64.decode(&encoded[0]).unwrap();
         assert!(!decoded.is_empty());
         // JPEG magic bytes: FF D8.
@@ -443,15 +407,6 @@ mod tests {
     fn images_root_resolves_correctly() {
         let base = Path::new("/tmp/thuki-test");
         assert_eq!(images_root(base), PathBuf::from("/tmp/thuki-test/images"));
-    }
-
-    #[test]
-    fn conversation_dir_resolves_correctly() {
-        let base = Path::new("/tmp/thuki-test");
-        assert_eq!(
-            conversation_dir(base, "abc-123"),
-            PathBuf::from("/tmp/thuki-test/images/abc-123")
-        );
     }
 
     #[test]
