@@ -196,6 +196,38 @@ Key style rules:
 
 ---
 
+## Releasing
+
+Releases are fully automated via GitHub Actions. To ship a new version:
+
+1. **Update `CHANGELOG.md`** — add a new section at the top for the version you are releasing:
+
+   ```markdown
+   ## [0.2.0] - 2026-05-01
+
+   ### Added
+   - Voice input: dictate questions instead of typing
+   - In-app model switching from the UI
+
+   ## [0.1.0] - 2026-04-05
+   ...
+   ```
+
+2. **Commit and merge to `main`** — the changelog update should land on `main` before tagging.
+
+3. **Tag and push:**
+
+   ```bash
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+That's it. The release workflow picks up the tag, runs the full test and validation suite, builds `Thuki.app`, and creates a GitHub Release. The release notes are pulled automatically from the matching `## [0.2.0]` section in `CHANGELOG.md`.
+
+The version in the tag (`v0.2.0`) must match the heading in the changelog (`## [0.2.0]`), or the release notes will be empty.
+
+---
+
 ## Good First Issues
 
 New to the codebase? Look for issues tagged [`good first issue`](https://github.com/quiet-node/thuki/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) on GitHub. These are scoped to be approachable without deep knowledge of the full system.
