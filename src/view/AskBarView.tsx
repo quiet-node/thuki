@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
 import { ImageThumbnails } from '../components/ImageThumbnails';
+import { Tooltip } from '../components/Tooltip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
 
@@ -117,8 +118,28 @@ const HISTORY_ICON = (
   </svg>
 );
 
+/** Hoisted static camera icon — triggers screenshot capture. */
+const CAMERA_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <path
+      d="M2 6 L2 2 L6 2 M10 2 L14 2 L14 6 M2 10 L2 14 L6 14 M10 14 L14 14 L14 10"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 /** Maximum number of images allowed per message (mirrors MAX_IMAGES_PER_MESSAGE in images.rs). */
-const MAX_IMAGES = 3;
+export const MAX_IMAGES = 3;
 
 /** Props for the AskBarView component. */
 interface AskBarViewProps {
@@ -153,6 +174,8 @@ interface AskBarViewProps {
   onImageRemove: (id: string) => void;
   /** Called when the user clicks a thumbnail to preview it. */
   onImagePreview: (id: string) => void;
+  /** Called when the user clicks the screenshot capture button. */
+  onScreenshot: () => void;
 }
 
 /**
@@ -176,11 +199,13 @@ export function AskBarView({
   onImagesAttached,
   onImageRemove,
   onImagePreview,
+  onScreenshot,
 }: AskBarViewProps) {
   /** True when the UI should be locked — either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
   const canSubmit =
     (query.trim().length > 0 || attachedImages.length > 0) && !isBusy;
+  const isAtMaxImages = attachedImages.length >= MAX_IMAGES;
   const [isDragOver, setIsDragOver] = useState(false);
 
   /**
@@ -353,6 +378,32 @@ export function AskBarView({
           placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
           className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
         />
+
+        {isAtMaxImages ? (
+          <Tooltip label="Maximum 3 images attached">
+            <button
+              type="button"
+              onClick={onScreenshot}
+              disabled
+              aria-label="Take screenshot"
+              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
+            >
+              {CAMERA_ICON}
+            </button>
+          </Tooltip>
+        ) : (
+          <Tooltip label="Take a screenshot">
+            <button
+              type="button"
+              onClick={onScreenshot}
+              disabled={isBusy}
+              aria-label="Take screenshot"
+              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
+            >
+              {CAMERA_ICON}
+            </button>
+          </Tooltip>
+        )}
 
         <motion.button
           type="button"

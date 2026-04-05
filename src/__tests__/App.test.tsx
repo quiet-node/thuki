@@ -2538,6 +2538,120 @@ describe('App', () => {
     });
   });
 
+  // ─── Screenshot integration ────────────────────────────────────────────────
+
+  describe('screenshot integration', () => {
+    it('clicking screenshot button invokes capture_screenshot', async () => {
+      enableChannelCaptureWithResponses({ capture_screenshot_command: null });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Take screenshot' }),
+        );
+      });
+
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith('capture_screenshot_command');
+        });
+      });
+    });
+
+    it('does nothing when capture_screenshot returns null (cancelled)', async () => {
+      enableChannelCaptureWithResponses({ capture_screenshot_command: null });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Take screenshot' }),
+        );
+      });
+
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith('capture_screenshot_command');
+        });
+      });
+
+      // save_image_command must NOT have been called
+      const saveCalls = invoke.mock.calls.filter(
+        ([cmd]) => cmd === 'save_image_command',
+      );
+      expect(saveCalls).toHaveLength(0);
+    });
+
+    it('does not invoke capture_screenshot_command when at max images', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img.jpg',
+        capture_screenshot_command: null,
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Attach 3 images via paste to reach the limit.
+      const pasteOneImage = async () => {
+        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+        const file = new File(['data'], 'photo.png', { type: 'image/png' });
+        await act(async () => {
+          fireEvent.paste(textarea, {
+            clipboardData: {
+              items: [{ type: 'image/png', getAsFile: () => file }],
+            },
+          });
+        });
+      };
+      await pasteOneImage();
+      await pasteOneImage();
+      await pasteOneImage();
+
+      const btn = screen.getByRole('button', { name: 'Take screenshot' });
+      expect(btn).toBeDisabled();
+
+      invoke.mockClear();
+      fireEvent.click(btn);
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith('capture_screenshot_command');
+    });
+
+    it('attaches screenshot image when capture_screenshot returns base64', async () => {
+      const fakeBase64 = btoa('fake screenshot bytes');
+      enableChannelCaptureWithResponses({
+        capture_screenshot_command: fakeBase64,
+        save_image_command: '/tmp/screenshot.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Take screenshot' }),
+        );
+      });
+
+      // Wait for invoke(capture_screenshot) → FileReader → invoke(save_image_command)
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.objectContaining({ imageDataBase64: expect.any(String) }),
+          );
+        });
+      });
+    });
+  });
+
   it('revokes blob URLs when overlay reopens with attached images', async () => {
     enableChannelCaptureWithResponses({
       save_image_command: '/tmp/img.jpg',
