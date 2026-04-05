@@ -8,7 +8,7 @@
  */
 
 import { AnimatePresence, motion } from 'framer-motion';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 interface TooltipProps {
@@ -61,6 +61,12 @@ export function Tooltip({ label, children }: TooltipProps) {
   const handleMouseLeave = () => {
     setIsVisible(false);
   };
+
+  useEffect(() => {
+    const handleWindowFocus = () => setIsVisible(false);
+    window.addEventListener('focus', handleWindowFocus);
+    return () => window.removeEventListener('focus', handleWindowFocus);
+  }, []);
 
   return (
     <div

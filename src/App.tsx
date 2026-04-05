@@ -9,7 +9,7 @@ import { useOllama } from './hooks/useOllama';
 import type { Message } from './hooks/useOllama';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { ConversationView } from './view/ConversationView';
-import { AskBarView } from './view/AskBarView';
+import { AskBarView, MAX_IMAGES } from './view/AskBarView';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import type { AttachedImage } from './types/image';
@@ -647,6 +647,29 @@ function App() {
     });
   }, []);
 
+  /**
+   * Invokes the Rust `capture_screenshot` command, which hides the window,
+   * lets the user drag-select a screen region, then returns the captured image
+   * as a base64 PNG string (or null if the user cancelled).
+   * On success, converts the base64 to a File and feeds it into the existing
+   * handleImagesAttached pipeline — identical to a paste or drag-drop.
+   */
+  const handleScreenshot = useCallback(async () => {
+    /* v8 ignore start -- defensive guard: button is always disabled at max images, so this branch is unreachable through normal UI interaction */
+    if (attachedImages.length >= MAX_IMAGES) return;
+    /* v8 ignore stop */
+    const base64 = await invoke<string | null>('capture_screenshot_command');
+    if (!base64) return;
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: 'image/png' });
+    const file = new File([blob], 'screenshot.png', { type: 'image/png' });
+    handleImagesAttached([file]);
+  }, [attachedImages, handleImagesAttached]);
+
   /** Removes an attached image from state, revokes the blob URL, and
    *  deletes the staged file from disk if processing completed. */
   const handleImageRemove = useCallback((id: string) => {
@@ -1052,6 +1075,7 @@ function App() {
                   onImagesAttached={handleImagesAttached}
                   onImageRemove={handleImageRemove}
                   onImagePreview={handleAskBarImagePreview}
+                  onScreenshot={handleScreenshot}
                 />
               </div>
 

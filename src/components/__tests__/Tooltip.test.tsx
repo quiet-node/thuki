@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
 import { Tooltip } from '../Tooltip';
 
@@ -78,6 +78,25 @@ describe('Tooltip', () => {
     fireEvent.mouseEnter(wrapper);
 
     expect(screen.getByText('Open history')).toBeInTheDocument();
+  });
+
+  it('hides tooltip when window regains focus (e.g. after screenshot)', () => {
+    render(
+      <Tooltip label="Take a screenshot">
+        <button type="button">Capture</button>
+      </Tooltip>,
+    );
+    const wrapper = screen.getByRole('button', {
+      name: 'Capture',
+    }).parentElement!;
+    fireEvent.mouseEnter(wrapper);
+    expect(screen.getByText('Take a screenshot')).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    expect(screen.queryByText('Take a screenshot')).not.toBeInTheDocument();
   });
 
   it('wraps children in an inline-flex div', () => {
