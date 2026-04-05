@@ -1266,6 +1266,27 @@ describe('AskBarView', () => {
       expect(onSubmit).not.toHaveBeenCalled();
     });
 
+    it('Enter submits when query exactly matches the highlighted trigger', () => {
+      const onSubmit = vi.fn();
+      const setQuery = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/screen"
+          setQuery={setQuery}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      expect(onSubmit).toHaveBeenCalledOnce();
+      expect(setQuery).not.toHaveBeenCalled();
+    });
+
     it('Escape dismisses suggestions without changing query', () => {
       const setQuery = vi.fn();
       render(

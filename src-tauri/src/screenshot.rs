@@ -65,14 +65,16 @@ pub fn process_screenshot_result(path: &PathBuf) -> Result<Option<String>, Strin
 pub async fn capture_screenshot_command(
     app_handle: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
-    use tauri_nspanel::ManagerExt;
-
-    let window = app_handle
-        .get_webview_window("main")
-        .ok_or_else(|| "main window not found".to_string())?;
-
-    window
-        .hide()
+    // Hide the window on the main thread. Tauri commands run on a tokio pool
+    // thread, but AppKit window APIs (hide, show, makeKey) must only be called
+    // from the main thread to avoid crashes.
+    let hide_handle = app_handle.clone();
+    app_handle
+        .run_on_main_thread(move || {
+            if let Some(w) = hide_handle.get_webview_window("main") {
+                let _ = w.hide();
+            }
+        })
         .map_err(|e| format!("failed to hide window: {e}"))?;
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -82,47 +84,50 @@ pub async fn capture_screenshot_command(
         .to_str()
         .ok_or_else(|| "temp path is not valid UTF-8".to_string())?;
 
-    // Ignore exit status — user cancellation exits 0 but creates no file.
+    // Ignore exit status: user cancellation exits 0 but creates no file.
     let _ = std::process::Command::new("screencapture")
         .args(["-i", "-x", path_str])
         .status();
 
-    // Re-show via show_and_make_key() so the NSPanel becomes the key window,
-    // guaranteeing the WebView textarea receives keyboard focus (mirrors lib.rs).
-    match app_handle.get_webview_panel("main") {
-        Ok(panel) => panel.show_and_make_key(),
-        Err(_) => {
-            let _ = window.show();
-            let _ = window.set_focus();
+    // Re-show on the main thread via show_and_make_key() so the NSPanel
+    // becomes the key window, guaranteeing the WebView textarea receives
+    // keyboard focus (mirrors the pattern in lib.rs).
+    let show_handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        use tauri_nspanel::ManagerExt;
+        match show_handle.get_webview_panel("main") {
+            Ok(panel) => panel.show_and_make_key(),
+            Err(_) => {
+                if let Some(w) = show_handle.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
         }
-    }
+    });
 
     process_screenshot_result(&path)
 }
 
 // ─── Full-screen silent capture (macOS) ────────────────────────────────────
 
-/// Full-screen capture using CoreGraphics CGWindowListCreateImageFromArray.
+/// Full-screen capture using CoreGraphics CGWindowListCreateImage.
 ///
-/// Captures all on-screen content, excluding windows that belong to Thuki's
-/// own process (identified by PID). No window hide, no flicker. The resulting
-/// image is saved to `<base_dir>/images/` via `crate::images::save_image` and
-/// the absolute file path is returned.
+/// Captures all on-screen content below Thuki's own window in the Z-order,
+/// effectively excluding Thuki from the screenshot without hiding the window.
+/// The resulting image is saved to `<base_dir>/images/` via
+/// `crate::images::save_image` and the absolute file path is returned.
 ///
 /// Requires Screen Recording permission (macOS Privacy & Security). If the
 /// permission has not been granted, `CGWindowListCopyWindowInfo` returns NULL
 /// and this function returns an informative error string.
 ///
-/// Excluded from coverage: this function is a thin wrapper over macOS CoreGraphics
-/// FFI that requires Screen Recording permission and a running display server.
-/// Its logic is straightforward OS API delegation that cannot be exercised
-/// in a headless CI environment.
+/// Excluded from coverage: thin wrapper over macOS CoreGraphics FFI that
+/// requires Screen Recording permission and a running display server.
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn capture_full_screen(base_dir: &std::path::Path) -> Result<String, String> {
-    use core_foundation::array::CFArray;
     use core_foundation::base::TCFType;
-    use core_foundation::number::CFNumber;
     use core_foundation::string::CFString;
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     use std::ffi::c_void;
@@ -133,13 +138,13 @@ pub fn capture_full_screen(base_dir: &std::path::Path) -> Result<String, String>
 
     // CGWindowListOption flags.
     const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1;
+    const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_BELOW_WINDOW: u32 = 1 << 2;
     const K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
     const K_CG_NULL_WINDOW_ID: u32 = 0;
     const K_CG_WINDOW_IMAGE_DEFAULT: u32 = 0;
 
-    // CFNumber type selectors.
+    // CFNumber type selector: kCFNumberSInt32Type (PID and window ID are 32-bit).
     const K_CF_NUMBER_S_INT32_TYPE: i32 = 3;
-    const K_CF_NUMBER_S_INT64_TYPE: i32 = 4;
 
     // CGBitmapInfo for BGRA (native macOS little-endian, premultiplied alpha).
     const K_CG_BITMAP_BYTE_ORDER32_HOST: u32 = 2 << 12; // 8192
@@ -150,11 +155,14 @@ pub fn capture_full_screen(base_dir: &std::path::Path) -> Result<String, String>
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
         fn CGWindowListCopyWindowInfo(option: u32, relativeToWindow: u32) -> CFArrayRef;
-        fn CGWindowListCreateImageFromArray(
+        fn CGWindowListCreateImage(
             screenBounds: CGRect,
-            windowArray: CFArrayRef,
+            listOption: u32,
+            relativeToWindow: u32,
             imageOption: u32,
         ) -> *const c_void;
+        fn CGMainDisplayID() -> u32;
+        fn CGDisplayBounds(display: u32) -> CGRect;
         fn CGImageGetWidth(image: *const c_void) -> usize;
         fn CGImageGetHeight(image: *const c_void) -> usize;
         fn CGImageRelease(image: *const c_void);
@@ -182,16 +190,16 @@ pub fn capture_full_screen(base_dir: &std::path::Path) -> Result<String, String>
         fn CFRelease(cf: *const c_void);
     }
 
-    // CGRectInfinite: the standard macOS sentinel for "all screens".
-    let cg_rect_infinite = CGRect {
-        origin: CGPoint::new(-8_388_607.0, -8_388_607.0),
-        size: CGSize::new(16_777_215.0, 16_777_215.0),
-    };
-
-    let our_pid = std::process::id() as i64;
+    let our_pid = std::process::id() as i32;
 
     unsafe {
-        // Get all on-screen window info, excluding desktop elements.
+        // Use the actual main display bounds instead of abstract CGRectNull
+        // or CGRectInfinite, which have platform-dependent representations
+        // that can cause CGWindowListCreateImage to return null.
+        let screen_bounds = CGDisplayBounds(CGMainDisplayID());
+
+        // Probe Screen Recording permission. CGWindowListCopyWindowInfo
+        // returns NULL when the permission has not been granted.
         let option =
             K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS;
         let window_info_list = CGWindowListCopyWindowInfo(option, K_CG_NULL_WINDOW_ID);
@@ -202,19 +210,19 @@ pub fn capture_full_screen(base_dir: &std::path::Path) -> Result<String, String>
                 .to_string());
         }
 
-        // Collect window IDs that do NOT belong to our process.
+        // Find Thuki's own topmost window ID so we can capture everything
+        // below it in Z-order. The window list is front-to-back, so the
+        // first entry matching our PID is the topmost.
         let count = CFArrayGetCount(window_info_list);
         let pid_key = CFString::new("kCGWindowOwnerPID");
         let wid_key = CFString::new("kCGWindowNumber");
 
-        let mut window_ids: Vec<i64> = Vec::new();
+        let mut our_window_id: u32 = K_CG_NULL_WINDOW_ID;
         for i in 0..count {
             let dict = CFArrayGetValueAtIndex(window_info_list, i) as CFDictionaryRef;
             if dict.is_null() {
                 continue;
             }
-
-            // Read owner PID.
             let pid_val =
                 CFDictionaryGetValue(dict, pid_key.as_concrete_TypeRef() as *const c_void);
             if pid_val.is_null() {
@@ -226,44 +234,51 @@ pub fn capture_full_screen(base_dir: &std::path::Path) -> Result<String, String>
                 K_CF_NUMBER_S_INT32_TYPE,
                 &mut owner_pid as *mut i32 as *mut c_void,
             );
-            if i64::from(owner_pid) == our_pid {
-                continue; // Skip our own windows.
+            if owner_pid == our_pid {
+                let wid_val =
+                    CFDictionaryGetValue(dict, wid_key.as_concrete_TypeRef() as *const c_void);
+                if !wid_val.is_null() {
+                    let mut wid: u32 = 0;
+                    CFNumberGetValue(
+                        wid_val,
+                        K_CF_NUMBER_S_INT32_TYPE,
+                        &mut wid as *mut u32 as *mut c_void,
+                    );
+                    our_window_id = wid;
+                }
+                break;
             }
-
-            // Read window ID.
-            let wid_val =
-                CFDictionaryGetValue(dict, wid_key.as_concrete_TypeRef() as *const c_void);
-            if wid_val.is_null() {
-                continue;
-            }
-            let mut wid: i64 = 0;
-            CFNumberGetValue(
-                wid_val,
-                K_CF_NUMBER_S_INT64_TYPE,
-                &mut wid as *mut i64 as *mut c_void,
-            );
-            window_ids.push(wid);
         }
         CFRelease(window_info_list);
 
-        if window_ids.is_empty() {
-            return Err("No visible windows found for screen capture.".to_string());
-        }
+        // Capture all on-screen windows below our panel. Since Thuki is an
+        // always-on-top NSPanel, "below" is effectively every other window.
+        // If we could not find our own window ID (shouldn't happen), fall
+        // back to capturing all on-screen windows.
+        let (list_option, relative_to) = if our_window_id != K_CG_NULL_WINDOW_ID {
+            (
+                K_CG_WINDOW_LIST_OPTION_ON_SCREEN_BELOW_WINDOW
+                    | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
+                our_window_id,
+            )
+        } else {
+            (
+                K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
+                K_CG_NULL_WINDOW_ID,
+            )
+        };
 
-        // Build a CFArray<CFNumber> for the window IDs.
-        let cf_numbers: Vec<CFNumber> = window_ids.iter().map(|&id| CFNumber::from(id)).collect();
-        let window_array: CFArray<CFNumber> = CFArray::from_CFTypes(&cf_numbers);
-
-        // Capture the screen.
-        let cg_image = CGWindowListCreateImageFromArray(
-            cg_rect_infinite,
-            window_array.as_concrete_TypeRef() as *const c_void,
+        let cg_image = CGWindowListCreateImage(
+            screen_bounds,
+            list_option,
+            relative_to,
             K_CG_WINDOW_IMAGE_DEFAULT,
         );
 
         if cg_image.is_null() {
             return Err(
-                "Screen capture failed: CGWindowListCreateImageFromArray returned null."
+                "Screen capture failed. Ensure Screen Recording permission is \
+                 granted in System Settings > Privacy & Security > Screen Recording."
                     .to_string(),
             );
         }

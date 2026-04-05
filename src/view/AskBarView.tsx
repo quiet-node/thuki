@@ -1,4 +1,4 @@
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
@@ -333,11 +333,16 @@ export function AskBarView({
             filteredCommands.length > 0 &&
             highlightedIndex < filteredCommands.length
           ) {
-            e.preventDefault();
-            handleCommandSelect(filteredCommands[highlightedIndex].trigger);
-            return;
+            const selectedTrigger = filteredCommands[highlightedIndex].trigger;
+            if (rawQuery !== selectedTrigger) {
+              // Partial match: complete the trigger into the input.
+              e.preventDefault();
+              handleCommandSelect(selectedTrigger);
+              return;
+            }
+            // Exact match: fall through to normal submit below.
           }
-          // No highlighted match or empty list: fall through to normal submit.
+          // No match, empty list, or exact trigger already typed: submit.
         }
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -468,15 +473,33 @@ export function AskBarView({
           />
         </div>
       )}
-      {/* Relative wrapper for the command suggestion popover positioning. */}
-      <div className="relative">
+      {/* Command suggestion renders above the input row in the normal DOM
+          flow. Being inside the morphing container means the ResizeObserver
+          detects the added height and grows the native window upward to reveal
+          the popover. AnimatePresence + motion.div drive a smooth height
+          transition so the window expansion feels intentional, not jarring. */}
+      <AnimatePresence>
         {showSuggestions && (
-          <CommandSuggestion
-            commands={filteredCommands}
-            highlightedIndex={highlightedIndex}
-            onSelect={handleCommandSelect}
-          />
+          <motion.div
+            key="command-suggestion"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{
+              height: { duration: 0.2, ease: [0.16, 1, 0.3, 1] },
+              opacity: { duration: 0.15 },
+            }}
+            style={{ overflow: 'hidden' }}
+          >
+            <CommandSuggestion
+              commands={filteredCommands}
+              highlightedIndex={highlightedIndex}
+              onSelect={handleCommandSelect}
+            />
+          </motion.div>
         )}
+      </AnimatePresence>
+      <div className="relative">
         <div className="flex items-center w-full px-3 py-2.5 gap-2">
           <img
             src="/thuki-logo.png"
@@ -494,7 +517,7 @@ export function AskBarView({
               type="button"
               onClick={onHistoryOpen}
               aria-label="Open history"
-              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 cursor-pointer"
+              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 cursor-pointer outline-none"
             >
               {HISTORY_ICON}
             </button>

@@ -2881,6 +2881,99 @@ describe('App', () => {
 
       expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
       expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+      // The actual Rust error message is surfaced directly.
+      expect(screen.getByText('Permission denied')).toBeInTheDocument();
+    });
+
+    it('surfaces string errors from Tauri invoke directly', async () => {
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'capture_full_screen_command') {
+          // Tauri v2 rejects with the Err(String) value as a plain string.
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+          return Promise.reject(
+            'Screen Recording permission is required to use /screen.',
+          );
+        }
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen ' } });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(
+        screen.getByText(
+          'Screen Recording permission is required to use /screen.',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('handles non-Error non-string rejection values', async () => {
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'capture_full_screen_command') {
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+          return Promise.reject(42);
+        }
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(screen.getByText('42')).toBeInTheDocument();
+    });
+
+    it('clears capture error when a new submit is attempted', async () => {
+      enableChannelCapture();
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'capture_full_screen_command') {
+          throw new Error('capture failed');
+        }
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      // First attempt fails — error banner appears.
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      expect(screen.getByText('capture failed')).toBeInTheDocument();
+
+      // Typing a new query and submitting normal text clears the error banner.
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      expect(screen.queryByText('capture failed')).toBeNull();
     });
 
     it('merges screenshot path with existing attached images', async () => {

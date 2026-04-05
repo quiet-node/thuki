@@ -75,7 +75,7 @@ export function CommandSuggestion({
 }: CommandSuggestionProps) {
   return (
     <div
-      className="absolute bottom-full left-0 right-0 mb-1 z-50 rounded-xl border border-surface-border bg-surface-base backdrop-blur-2xl shadow-bar overflow-hidden"
+      className="mb-1 rounded-xl border border-surface-border bg-surface-base backdrop-blur-2xl shadow-bar overflow-hidden"
       role="listbox"
       aria-label="Command suggestions"
     >

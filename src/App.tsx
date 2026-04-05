@@ -135,6 +135,9 @@ function App() {
   /** True while waiting for images to finish processing before a deferred
    *  submit. Drives the "waiting" UI state in the ask bar. */
   const [isSubmitPending, setIsSubmitPending] = useState(false);
+  /** Error message from a failed /screen capture. Shown inline above the ask
+   *  bar so the user knows capture failed rather than seeing no response. */
+  const [captureError, setCaptureError] = useState<string | null>(null);
   /** User message shown in the chat while waiting for images to finish
    *  processing. Cleared when `ask()` fires and adds the real message. */
   const [pendingUserMessage, setPendingUserMessage] = useState<Message | null>(
@@ -740,12 +743,18 @@ function App() {
     let screenshotPath: string;
     try {
       screenshotPath = await invoke<string>('capture_full_screen_command');
-    } catch {
-      // Capture failed (permission denied or other error). Restore the query
-      // so the user's message is not lost, and do not submit.
+    } catch (e) {
+      // Capture failed — surface the Rust error directly since the backend
+      // already provides descriptive, user-facing messages (permission prompts,
+      // null-image diagnostics, etc.). Tauri v2 rejects with the Err(String)
+      // value as a plain string, not an Error object.
+      setCaptureError(
+        typeof e === 'string' ? e : e instanceof Error ? e.message : String(e),
+      );
       return;
     }
 
+    setCaptureError(null);
     const readyPaths = attachedImages
       .filter((img) => img.filePath !== null)
       .map((img) => img.filePath as string);
@@ -759,7 +768,14 @@ function App() {
     }
     setAttachedImages([]);
     inputRef.current!.style.height = 'auto';
-  }, [query, selectedContext, attachedImages, ask, setSelectedContext]);
+  }, [
+    query,
+    selectedContext,
+    attachedImages,
+    ask,
+    setSelectedContext,
+    setCaptureError,
+  ]);
 
   const handleSubmit = useCallback(() => {
     if (
@@ -767,6 +783,9 @@ function App() {
       isGenerating
     )
       return;
+
+    // Clear any stale capture error from a previous attempt.
+    setCaptureError(null);
 
     // Detect /screen command at the very start of the message.
     const trimmedQuery = query.trimStart();
@@ -826,6 +845,7 @@ function App() {
     selectedContext,
     setSelectedContext,
     attachedImages,
+    setCaptureError,
   ]);
 
   // When a pending submit exists and all images finish processing, fire it.
@@ -1096,8 +1116,11 @@ function App() {
                         animate={{ height: 'auto', opacity: 1 }}
                         exit={{ height: 0, opacity: 0 }}
                         transition={{
-                          height: { duration: 0.25, ease: [0.16, 1, 0.3, 1] },
-                          opacity: { duration: 0.2 },
+                          height: {
+                            duration: 0.3,
+                            ease: [0.33, 1, 0.68, 1],
+                          },
+                          opacity: { duration: 0.2, delay: 0.08 },
                         }}
                         style={{ overflow: 'hidden' }}
                         className="border-t border-surface-border"
@@ -1114,6 +1137,16 @@ function App() {
                       </motion.div>
                     ) : null}
                   </AnimatePresence>
+                )}
+
+                {/* Capture error banner — shown when /screen capture fails so
+                    the user knows why the message was not sent. */}
+                {captureError && (
+                  <div className="px-4 py-2 border-t border-red-900/30">
+                    <p className="text-red-400 text-xs leading-relaxed">
+                      {captureError}
+                    </p>
+                  </div>
                 )}
 
                 {/* Input Bar — always pinned to the bottom */}
