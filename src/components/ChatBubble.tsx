@@ -99,7 +99,9 @@ export function ChatBubble({
               </div>
             )}
             {content && (
-              <span className="text-white/95 font-medium">{content}</span>
+              <span className="text-white/95 font-medium whitespace-pre-wrap">
+                {content}
+              </span>
             )}
           </div>
           {content && (

@@ -212,6 +212,33 @@ describe('ChatBubble', () => {
     });
   });
 
+  describe('User message text formatting', () => {
+    it('preserves newlines in user message content via whitespace-pre-wrap', () => {
+      const { container } = render(
+        <ChatBubble
+          role="user"
+          content={'line one\nline two\nline three'}
+          index={0}
+        />,
+      );
+      const contentSpan = container.querySelector('.text-white\\/95');
+      expect(contentSpan).not.toBeNull();
+      expect(contentSpan?.classList.contains('whitespace-pre-wrap')).toBe(true);
+    });
+
+    it('preserves indentation in user message content via whitespace-pre-wrap', () => {
+      const { container } = render(
+        <ChatBubble
+          role="user"
+          content={'  indented\n    more indented'}
+          index={0}
+        />,
+      );
+      const contentSpan = container.querySelector('.text-white\\/95');
+      expect(contentSpan?.classList.contains('whitespace-pre-wrap')).toBe(true);
+    });
+  });
+
   describe('Layout', () => {
     it('has max-width constraint (max-w-[80%])', () => {
       const { container } = render(
