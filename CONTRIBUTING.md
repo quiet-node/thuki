@@ -6,7 +6,6 @@ Thank you for your interest in contributing! This guide will walk you through ev
 
 - [Prerequisites](#prerequisites)
 - [Development Setup](#development-setup)
-- [Project Structure](#project-structure)
 - [Running Tests](#running-tests)
 - [Code Style](#code-style)
 - [Submitting a Pull Request](#submitting-a-pull-request)
@@ -98,39 +97,6 @@ After installation, restart your shell or run `source ~/.cargo/env` to make `car
    ```
 
    On first run, macOS will prompt for Accessibility permission. This is required for the global keyboard shortcut. Grant it once — it persists across restarts.
-
----
-
-## Project Structure
-
-```
-thuki/
-├── src/                        # React/TypeScript frontend
-│   ├── App.tsx                 # Root component — all state lives here
-│   ├── hooks/
-│   │   ├── useOllama.ts        # Tauri Channel streaming hook
-│   │   └── useConversationHistory.ts
-│   ├── components/             # Reusable UI components
-│   ├── view/                   # Page-level views (AskBar, Conversation)
-│   ├── config/                 # Environment configuration
-│   ├── types/                  # Shared TypeScript types
-│   └── utils/                  # Pure utility functions
-├── src-tauri/src/              # Rust backend
-│   ├── lib.rs                  # App setup: NSPanel, tray, hotkey
-│   ├── commands.rs             # Tauri commands (ask_ollama, etc.)
-│   ├── activator.rs            # Double-tap Control key listener
-│   ├── database.rs             # SQLite setup and migrations
-│   ├── history.rs              # Conversation history logic
-│   ├── context.rs              # Context management
-│   └── images.rs               # Image processing
-├── sandbox/                    # Docker Compose for isolated Ollama
-├── docs/                       # Documentation
-└── .github/                    # CI workflows and templates
-```
-
-The UI morphs between two states: a compact spotlight-style input bar and an expanded chat window, driven by a single `isChatMode` boolean in `App.tsx`.
-
-The Rust backend communicates with the frontend via Tauri's **Channel API** — the backend sends typed `StreamChunk` enum variants, and the `useOllama` hook accumulates tokens into React state.
 
 ---
 
