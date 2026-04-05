@@ -70,7 +70,7 @@ After installation, restart your shell or run `source ~/.cargo/env` to make `car
    bun run sandbox:start
    ```
 
-   This pulls the default model (`gemma3:4b`) and starts an air-gapped container. It may take a few minutes on first run.
+   This pulls the default model (`gemma3:4b`) and starts the hardened container. It may take a few minutes on first run.
 
    **Option B: Local Ollama**
 
@@ -175,7 +175,13 @@ Key style rules:
    bun run validate-build
    ```
 
-5. **Commit your changes** with a clear, descriptive message
+5. **Commit your changes** using [Conventional Commits](https://www.conventionalcommits.org/) format:
+
+   ```
+   <type>: <short description>
+   ```
+
+   Common types: `feat` (new feature), `fix` (bug fix), `docs` (documentation), `refactor`, `test`, `chore`. Keep the subject line under 72 characters.
 
 6. **Open a PR** against `main` and fill out the PR template fully
 

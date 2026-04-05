@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  A floating AI assistant for macOS. Fully local, completely free, zero data ever leaves your machine.
+  A floating AI secretary for macOS. Fully local, completely free, zero data ever leaves your machine.
 </p>
 
 <p align="center">
@@ -38,7 +38,7 @@ Highlight a piece of text you have a question about in any app, double-tap Contr
 
 ## Why Thuki?
 
-Most AI assistants require accounts, API keys, or subscriptions that bill you per token. Thuki is different:
+Most AI tools require accounts, API keys, or subscriptions that bill you per token. Thuki is different:
 
 - **100% free AI interactions:** you run the model locally, there is no per-query cost, ever
 - **Zero trust by design:** no remote server, no cloud backend, no analytics, no telemetry
@@ -53,7 +53,7 @@ Most AI assistants require accounts, API keys, or subscriptions that bill you pe
 - **Throwaway conversations:** fast, lightweight interactions without the overhead of a full chat app
 - **Conversation history:** persist and revisit past conversations across sessions
 - **Fully local LLM:** powered by Ollama; no API keys, no accounts, no cost per query
-- **Isolated sandbox:** optionally run models in a hardened Docker container with no network egress
+- **Isolated sandbox:** optionally run models in a hardened Docker container with capability dropping, read-only volumes, and localhost-only networking
 - **Image input:** paste or drag screenshots directly into the chat
 - **Privacy-first:** zero-trust architecture, all data stays on your device
 
@@ -168,7 +168,7 @@ Thuki is a **Tauri v2** app (Rust backend + React/TypeScript frontend) that inte
 1. **Frontend (Tauri/React):** Operates within a secure system webview with restricted IPC. Streaming uses Tauri's Channel API; the Rust backend sends typed `StreamChunk` enum variants, and the frontend hook accumulates tokens into React state.
 
 2. **Generative Engine (Docker Sandbox):**
-   - **Network Air-Gap:** Runs in an internal bridge network with zero internet egress (`internal: true`)
+   - **Ingress Isolation:** The API is bound to `127.0.0.1` only, blocking all external network access
    - **Privilege Dropping:** All Linux kernel capabilities are dropped (`cap_drop: ALL`)
    - **Model Integrity:** Model weights are mounted read-only (`:ro`) to prevent tampering
    - **Ephemeral State:** All model data is purged on shutdown via `docker compose down -v`
@@ -193,4 +193,4 @@ Reach out to [Logan](https://x.com/quiet_node) on X with questions or feedback.
 
 ## License
 
-Copyright 2026 Quiet Node Contributors. Licensed under the [Apache License, Version 2.0](LICENSE).
+Copyright 2026 Logan Nguyen. Licensed under the [Apache License, Version 2.0](LICENSE).

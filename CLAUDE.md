@@ -47,7 +47,7 @@ Tests use **Vitest** for the frontend (React/TypeScript with React Testing Libra
 
 ## Architecture
 
-Thuki is a macOS-only desktop app — a floating AI secretary activated by double-tapping the Command key. It is a **Tauri v2** app (Rust backend + React/TypeScript frontend) that interfaces with a locally running **Ollama** instance at `http://127.0.0.1:11434`.
+Thuki is a macOS-only desktop app, a floating AI secretary activated by double-tapping the Control key. It is a **Tauri v2** app (Rust backend + React/TypeScript frontend) that interfaces with a locally running **Ollama** instance at `http://127.0.0.1:11434`.
 
 ### Frontend (`src/`)
 
@@ -63,11 +63,11 @@ The UI morphs between two states: a compact spotlight-style input bar → an exp
 
 - **`lib.rs`** — app setup: converts window to NSPanel (fullscreen overlay), registers tray, spawns hotkey listener, intercepts close events (hides instead of quits)
 - **`commands.rs`** — `ask_ollama` Tauri command: streams newline-delimited JSON from Ollama, sends chunks via Tauri Channel
-- **`activator.rs`** — Core Graphics event tap watching for double-tap Command key (400ms window, 600ms cooldown); prompts for Accessibility permission, retries up to 6×
+- **`activator.rs`** — Core Graphics event tap watching for double-tap Control key (400ms window, 600ms cooldown); prompts for Accessibility permission, retries up to 6×
 
 ### Sandbox (`sandbox/`)
 
-Docker Compose runs Ollama in a hardened container: `cap_drop: ALL`, `no-new-privileges`, read-only model volume, internal-only network. Two services: `sandbox-init` (one-shot model pull) and `sandbox-server` (long-running daemon). `sandbox:stop` uses `down -v` which wipes the volume.
+Docker Compose runs Ollama in a hardened container: `cap_drop: ALL`, `no-new-privileges`, read-only model volume, localhost-only port binding (`127.0.0.1:11434`). Two services: `sandbox-init` (one-shot model pull) and `sandbox-server` (long-running daemon). `sandbox:stop` uses `down -v` which wipes the volume.
 
 ### IPC Pattern
 
