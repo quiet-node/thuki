@@ -22,7 +22,15 @@ Controls how selected-text quotes are displayed in the AskBar preview and chat b
 | :--- | :--- | :--- | :--- |
 | `VITE_QUOTE_MAX_DISPLAY_LINES` | Maximum number of lines shown in the quote preview. Lines beyond this limit are truncated with `...`. Empty lines in the selection are skipped and do not count toward this limit. | `4` | Positive integer |
 | `VITE_QUOTE_MAX_DISPLAY_CHARS` | Maximum total characters shown in the quote preview. If a line would push the total past this limit, it is truncated mid-line with `...`. | `300` | Positive integer |
-| `VITE_QUOTE_MAX_CONTEXT_LENGTH` | Maximum length (in characters) of selected context text included in the prompt sent to Ollama. This is a security and performance cap — selections longer than this are silently truncated before reaching the LLM. | `4096` | Positive integer |
+| `VITE_QUOTE_MAX_CONTEXT_LENGTH` | Maximum length (in characters) of selected context text included in the prompt sent to Ollama. This is a security and performance cap; selections longer than this are silently truncated before reaching the LLM. | `4096` | Positive integer |
+
+### System Prompt
+
+Controls the system prompt prepended to every conversation sent to Ollama.
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `THUKI_SYSTEM_PROMPT` | Custom system prompt for all conversations. If unset or empty, the built-in default is used. | Built-in secretary persona prompt (see `src-tauri/src/commands.rs`) |
 
 ### Validation Rules
 

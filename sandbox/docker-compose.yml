@@ -5,12 +5,13 @@
 # 
 # SECURITY AUDIT CHECKLIST (First-Class Concerns):
 # [x] HOST ISOLATION: Zero bind-mounts. Uses Docker-managed volumes only.
-# [x] NETWORK EGRESS: Blocked. 'internal: false' prevents "phoning home".
-# [x] NETWORK INGRESS: Isolated. '127.0.0.1' binding drops external requests.
+# [ ] NETWORK EGRESS: Not hard-blocked. 'internal: true' breaks Docker Desktop host
+#     port binding so egress relies on 127.0.0.1 ingress + cap_drop + read-only FS.
+# [x] NETWORK INGRESS: Isolated. '127.0.0.1' binding drops all external requests.
 # [x] PRIVILEGE ESCALATION: Blocked. 'no-new-privileges: true' enforced.
 # [x] BREAKOUT MITIGATION: Blocked. 'cap_drop: ALL' strips kernel privileges.
 # [x] POISONING PROTECTION: Blocked. 'sandbox_models' volume is Read-Only (:ro).
-# [x] DOS PREVENTION: Limited. 'memory: 16G' prevents host kernel panic.
+# [ ] DOS PREVENTION: Not configured. No memory limit is set.
 # [x] EPHEMERAL STATE: Purged. 'down -v' in package.json kills all data.
 # [x] NON-EXECUTABLE WEIGHTS: Modern GGUF format is math-only, not code-driven.
 # ==============================================================================
