@@ -33,6 +33,12 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 After installation, restart your shell or run `source ~/.cargo/env` to make `cargo` available. Thuki builds against stable Rust.
 
+Running the coverage suite (required before submitting a PR) also needs the `nightly-2026-03-30` toolchain with `llvm-tools`:
+
+```bash
+rustup toolchain install nightly-2026-03-30 --component llvm-tools
+```
+
 **macOS:** Thuki is macOS-only. It uses NSPanel and Core Graphics APIs that are not available on other platforms.
 
 ### Optional
