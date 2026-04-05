@@ -30,7 +30,7 @@ Controls the system prompt prepended to every conversation sent to Ollama.
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `THUKI_SYSTEM_PROMPT` | Custom system prompt for all conversations. Set to an empty string to use the built-in default. | `"You are Thuki, a concise desktop secretary. Keep responses short and direct."` |
+| `THUKI_SYSTEM_PROMPT` | Custom system prompt for all conversations. If unset or empty, the built-in default is used. | Built-in secretary persona prompt (see `src-tauri/src/commands.rs`) |
 
 ### Validation Rules
 

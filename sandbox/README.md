@@ -19,7 +19,7 @@ The sandbox separates model initialization from the inference runtime, keeping c
 | **Ingress Isolation** | Active | API bound to `127.0.0.1:11434`; no external process can reach it |
 | **Breakout Mitigation** | Active | `cap_drop: ALL` strips every Linux kernel capability |
 | **Privilege Control** | Active | `no-new-privileges: true` blocks setuid/setgid escalation |
-| **Read-Only Filesystem** | Active | Container root filesystem is read-only; only `/tmp` is writable |
+| **Read-Only Filesystem** | Active (inference only) | `sandbox-server` root filesystem is read-only; only `/tmp` is writable. `sandbox-init` requires write access to pull the model. |
 | **Ephemeral Lifecycle** | Active | `bun run sandbox:stop` runs `down -v`, permanently destroying all model weights |
 | **Non-Executable Weights** | Active | GGUF format is math-only; no Python/Pickle code execution risk |
 

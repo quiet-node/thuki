@@ -63,7 +63,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 
 > **Default model:** Thuki ships with [`gemma3:4b`](https://ollama.com/library/gemma3) by default, a capable 4-billion parameter model from Google that runs comfortably on most modern Macs with 8 GB of RAM or more. It's a great starting point: fast, conversational, and surprisingly capable for everyday tasks.
 
-Support for swapping models without rebuilding is on the roadmap; see [What's Next](#whats-next).
+Support for swapping models without rebuilding is on the roadmap; see [What's Next](#whats-next-for-thuki).
 
 Choose one of the two options below to set up your AI engine before installing Thuki.
 
