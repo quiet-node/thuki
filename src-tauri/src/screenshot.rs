@@ -111,12 +111,14 @@ pub async fn capture_screenshot_command(
 
 // ─── Full-screen silent capture (macOS) ────────────────────────────────────
 
-/// Full-screen capture using CoreGraphics CGWindowListCreateImage.
+/// Captures raw RGBA pixel bytes of the full screen using CoreGraphics.
 ///
 /// Captures all on-screen content below Thuki's own window in the Z-order,
 /// effectively excluding Thuki from the screenshot without hiding the window.
-/// The resulting image is saved to `<base_dir>/images/` via
-/// `crate::images::save_image` and the absolute file path is returned.
+/// Returns `(width, height, rgba_bytes)` on success.
+///
+/// MUST run on the macOS main thread. CoreGraphics APIs internally dispatch
+/// to the main thread; calling them from a background thread deadlocks.
 ///
 /// Requires Screen Recording permission (macOS Privacy & Security). If the
 /// permission has not been granted, `CGWindowListCopyWindowInfo` returns NULL
@@ -126,7 +128,7 @@ pub async fn capture_screenshot_command(
 /// requires Screen Recording permission and a running display server.
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub fn capture_full_screen(base_dir: &std::path::Path) -> Result<String, String> {
+fn capture_full_screen_raw() -> Result<(u32, u32, Vec<u8>), String> {
     use core_foundation::base::TCFType;
     use core_foundation::string::CFString;
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
@@ -327,36 +329,35 @@ pub fn capture_full_screen(base_dir: &std::path::Path) -> Result<String, String>
             chunk.swap(0, 2); // Swap B <-> R
         }
 
-        // Build a DynamicImage from the now-RGBA bytes and encode to PNG.
-        let buf = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
-            width as u32,
-            height as u32,
-            pixel_bytes,
-        )
-        .ok_or_else(|| "Failed to create image buffer from captured pixels.".to_string())?;
-        let dynamic = image::DynamicImage::ImageRgba8(buf);
-
-        let mut png: Vec<u8> = Vec::new();
-        dynamic
-            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-            .map_err(|e| format!("Failed to encode screen capture as PNG: {e}"))?;
-
-        // Delegate to the existing save_image pipeline (JPEG compression + UUID naming).
-        crate::images::save_image(base_dir, &png)
+        Ok((width as u32, height as u32, pixel_bytes))
     }
+}
+
+/// Captures raw RGBA pixel bytes from the screen. Must be called on the macOS
+/// main thread because CoreGraphics APIs internally dispatch there and will
+/// deadlock if called from a background thread.
+///
+/// Returns `(width, height, rgba_bytes)` on success.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
+    capture_full_screen_raw()
 }
 
 /// Non-macOS stub: full-screen capture is macOS-only.
 #[cfg(not(target_os = "macos"))]
-pub fn capture_full_screen(_base_dir: &std::path::Path) -> Result<String, String> {
+fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
     Err("full-screen capture is only supported on macOS".to_string())
 }
 
 /// Tauri command: silently captures the full screen (excluding Thuki's own
 /// windows) and returns the absolute file path of the saved image.
 ///
-/// This is a thin async wrapper around `capture_full_screen`. It is excluded
-/// from coverage because it requires a live Tauri app handle.
+/// CoreGraphics APIs internally dispatch to the main thread, so calling them
+/// from a tokio pool thread (via `spawn_blocking`) causes a deadlock. Instead,
+/// `capture_full_screen` runs on the main thread via `run_on_main_thread`,
+/// producing raw RGBA pixel bytes. The heavy image encoding and disk I/O then
+/// happen on a blocking thread to avoid stalling the UI.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn capture_full_screen_command(app_handle: tauri::AppHandle) -> Result<String, String> {
@@ -366,9 +367,36 @@ pub async fn capture_full_screen_command(app_handle: tauri::AppHandle) -> Result
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
 
-    tokio::task::spawn_blocking(move || capture_full_screen(&base_dir))
+    // Phase 1: Capture raw RGBA pixels on the main thread (CoreGraphics
+    // requirement). Returns (width, height, rgba_bytes).
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(u32, u32, Vec<u8>), String>>();
+    app_handle
+        .run_on_main_thread(move || {
+            tx.send(capture_full_screen_pixels()).ok();
+        })
+        .map_err(|e| format!("failed to dispatch capture to main thread: {e}"))?;
+
+    let (width, height, rgba_bytes) = rx
         .await
-        .map_err(|e| format!("screen capture task failed: {e}"))?
+        .map_err(|_| "main thread capture channel closed unexpectedly".to_string())??;
+
+    // Phase 2: Encode to PNG and save via the images pipeline on a blocking
+    // thread so the main thread stays responsive.
+    tokio::task::spawn_blocking(move || {
+        let buf =
+            image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(width, height, rgba_bytes)
+                .ok_or_else(|| "Failed to create image buffer from captured pixels.".to_string())?;
+        let dynamic = image::DynamicImage::ImageRgba8(buf);
+
+        let mut png: Vec<u8> = Vec::new();
+        dynamic
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .map_err(|e| format!("Failed to encode screen capture as PNG: {e}"))?;
+
+        crate::images::save_image(&base_dir, &png)
+    })
+    .await
+    .map_err(|e| format!("image encoding task failed: {e}"))?
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
