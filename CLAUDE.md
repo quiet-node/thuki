@@ -56,13 +56,15 @@ The UI morphs between two states: a compact spotlight-style input bar → an exp
 - **`App.tsx`** — orchestrates all state: messages, streaming, window resizing via ResizeObserver + Tauri `setSize()`
 - **`hooks/useOllama.ts`** — Tauri Channel-based streaming hook; emits `Token`, `Done`, `Cancelled`, `Error` variants
 - **`view/ConversationView.tsx`** — smart auto-scroll (pins to bottom unless user scrolls up)
-- **`view/AskBarView.tsx`** — auto-expanding textarea (max 144px), morphs logo size
+- **`view/AskBarView.tsx`** — auto-expanding textarea (max 144px), morphs logo size, renders slash command tab-completion suggestions
 - **`components/ChatBubble.tsx`** — markdown rendering via Streamdown (rehype-sanitize for XSS protection)
+- **`config/commands.ts`** — slash command registry: defines supported commands and the `SCREEN_CAPTURE_PLACEHOLDER` sentinel used to show a loading tile in chat while a `/screen` capture is in flight
 
 ### Backend (`src-tauri/src/`)
 
 - **`lib.rs`** — app setup: converts window to NSPanel (fullscreen overlay), registers tray, spawns hotkey listener, intercepts close events (hides instead of quits)
 - **`commands.rs`** — `ask_ollama` Tauri command: streams newline-delimited JSON from Ollama, sends chunks via Tauri Channel
+- **`screenshot.rs`** — `capture_full_screen_command` Tauri command: uses CoreGraphics FFI (`CGWindowListCreateImage`) to capture all displays excluding Thuki's own windows, writes a JPEG to a temp dir, and returns the path
 - **`activator.rs`** — Core Graphics event tap watching for double-tap Control key (400ms window, 600ms cooldown); prompts for Accessibility permission, retries up to 6×
 
 ### Sandbox (`sandbox/`)
@@ -102,6 +104,6 @@ Do not consider the task done if either step produces any warnings or errors. Fi
 
 ## Key Design Constraints
 
-- **macOS only** — uses NSPanel, Core Graphics event taps, macOS Command key
+- **macOS only** — uses NSPanel, Core Graphics event taps, macOS Control key
 - **Privacy-first** — Ollama runs locally; Docker sandbox drops all capabilities and isolates network
 - **Accessibility permission required** — hotkey listener uses a CGEventTap at session level
