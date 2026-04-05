@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/quiet-node/thuki/compare/v0.2.0...v0.3.0) (2026-04-05)
+
+
+### Features
+
+* dummy test commit to verify 0.3.0 release PR ([4e507cd](https://github.com/quiet-node/thuki/commit/4e507cd94286defbbd7e9a35962a84fc85a9acc7))
+
+
+### Bug Fixes
+
+* dummy test commit to verify 0.2.1 release PR ([b19ae72](https://github.com/quiet-node/thuki/commit/b19ae728c23088602b1d4b8ed91561f237150563))
+
 ## [0.2.0](https://github.com/quiet-node/thuki/compare/v0.1.0...v0.2.0) (2026-04-05)
 
 
