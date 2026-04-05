@@ -85,6 +85,19 @@ export const motion = {
       {children}
     </button>
   ),
+  img: ({
+    className,
+    src,
+    alt,
+    ...props
+  }: React.ImgHTMLAttributes<HTMLImageElement> & Record<string, unknown>) => (
+    <img
+      className={className}
+      src={src}
+      alt={alt}
+      {...stripMotionProps(props)}
+    />
+  ),
 };
 
 export const AnimatePresence = ({

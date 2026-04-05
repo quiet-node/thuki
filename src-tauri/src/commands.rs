@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Default configuration constants as the application currently lacks a Settings UI.
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
-pub const DEFAULT_MODEL_NAME: &str = "llama3.2:3b";
+pub const DEFAULT_MODEL_NAME: &str = "gemma3:4b";
 const DEFAULT_SYSTEM_PROMPT: &str = "You are Thuki (thư ký), a personal desktop secretary that \
 lives as a floating overlay on macOS. You are fast, sharp, and helpful.\n\nResponse style:\n- Be \
 concise. You appear in a small floating window — keep responses scannable.\n- Use short paragraphs, \
@@ -35,10 +35,16 @@ pub enum StreamChunk {
 }
 
 /// A single message in the Ollama `/api/chat` conversation format.
+///
+/// The optional `images` field carries base64-encoded image data for
+/// multimodal models (e.g. `gemma3:4b`). When absent or empty, the
+/// message is text-only.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
 }
 
 /// Request payload for Ollama `/api/chat` endpoint.
@@ -234,13 +240,16 @@ pub async fn stream_ollama_chat(
 }
 
 /// Streams a chat response from the local Ollama backend. Appends the user
-/// message and assistant response to conversation history only after successful
-/// completion. Uses an epoch counter to prevent stale writes after a reset.
+/// message and assistant response to conversation history after completion
+/// or cancellation (retaining context for follow-up requests). Uses an epoch
+/// counter to prevent stale writes after a reset.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn ask_ollama(
     message: String,
     quoted_text: Option<String>,
+    image_paths: Option<Vec<String>>,
     on_event: Channel<StreamChunk>,
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
@@ -257,20 +266,31 @@ pub async fn ask_ollama(
         _ => message,
     };
 
+    // Base64-encode attached images for the Ollama multimodal API.
+    let images = match image_paths {
+        Some(ref paths) if !paths.is_empty() => {
+            Some(crate::images::encode_images_as_base64(paths)?)
+        }
+        _ => None,
+    };
+
     let user_msg = ChatMessage {
         role: "user".to_string(),
         content,
+        images,
     };
 
     // Snapshot the current epoch and build the messages array for Ollama.
     // The user message is NOT yet committed to history — it is only added
-    // after a successful response to prevent orphaned messages on errors.
+    // after a response (including partial/cancelled) to prevent orphaned
+    // messages on errors.
     let (epoch_at_start, messages) = {
         let conv = history.messages.lock().unwrap();
         let epoch = history.epoch.load(Ordering::SeqCst);
         let mut msgs = vec![ChatMessage {
             role: "system".to_string(),
             content: system_prompt.0.clone(),
+            images: None,
         }];
         msgs.extend(conv.clone());
         msgs.push(user_msg.clone());
@@ -296,10 +316,17 @@ pub async fn ask_ollama(
     let current_epoch = history.epoch.load(Ordering::SeqCst);
     if current_epoch == epoch_at_start && !accumulated.is_empty() {
         let mut conv = history.messages.lock().unwrap();
-        conv.push(user_msg);
+        // Strip images from the persisted context — only the current turn's
+        // images are sent to Ollama; replaying base64 blobs on every
+        // subsequent turn would balloon payload size unnecessarily.
+        conv.push(ChatMessage {
+            images: None,
+            ..user_msg
+        });
         conv.push(ChatMessage {
             role: "assistant".to_string(),
             content: accumulated,
+            images: None,
         });
     }
 
@@ -371,6 +398,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: "user".to_string(),
             content: "hi".to_string(),
+            images: None,
         }];
 
         let accumulated = stream_ollama_chat(
@@ -804,10 +832,12 @@ mod tests {
             ChatMessage {
                 role: "system".to_string(),
                 content: "Be helpful".to_string(),
+                images: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: "hi".to_string(),
+                images: None,
             },
         ];
 
@@ -899,8 +929,14 @@ mod tests {
         assert!(second_clone.is_cancelled());
     }
 
+    /// Guard to serialize tests that mutate `THUKI_SYSTEM_PROMPT` env var.
+    /// Rust runs tests in parallel by default; without serialization these
+    /// tests race on the shared environment variable.
+    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
     #[test]
     fn load_system_prompt_returns_default_when_unset() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("THUKI_SYSTEM_PROMPT");
 
         let prompt = load_system_prompt();
@@ -909,6 +945,7 @@ mod tests {
 
     #[test]
     fn load_system_prompt_reads_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("THUKI_SYSTEM_PROMPT", "Custom prompt");
 
         let prompt = load_system_prompt();
@@ -919,6 +956,7 @@ mod tests {
 
     #[test]
     fn load_system_prompt_ignores_empty_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("THUKI_SYSTEM_PROMPT", "   ");
 
         let prompt = load_system_prompt();
@@ -940,6 +978,7 @@ mod tests {
         h.messages.lock().unwrap().push(ChatMessage {
             role: "user".to_string(),
             content: "hi".to_string(),
+            images: None,
         });
 
         h.epoch.fetch_add(1, Ordering::SeqCst);

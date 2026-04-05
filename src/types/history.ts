@@ -30,6 +30,8 @@ export interface PersistedMessage {
   content: string;
   /** Quoted host-app text attached to this message, if any. */
   quoted_text: string | null;
+  /** JSON-encoded array of image file paths, if any. */
+  image_paths: string | null;
   /** Unix timestamp (seconds) the message was created. */
   created_at: number;
 }
@@ -49,4 +51,5 @@ export interface SaveMessagePayload {
   role: string;
   content: string;
   quoted_text: string | null;
+  image_paths: string[] | null;
 }

@@ -45,6 +45,8 @@ interface ConversationViewProps {
    * Omit to hide the button.
    */
   onNewConversation?: () => void;
+  /** Called when the user clicks a thumbnail to preview it. */
+  onImagePreview?: (path: string) => void;
 }
 
 /**
@@ -68,6 +70,7 @@ export function ConversationView({
   canSave,
   onHistoryOpen,
   onNewConversation,
+  onImagePreview,
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -176,6 +179,8 @@ export function ConversationView({
             content={msg.content}
             quotedText={msg.quotedText}
             index={i}
+            imagePaths={msg.imagePaths}
+            onImagePreview={onImagePreview}
           />
         ))}
 

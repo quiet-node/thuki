@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ChatBubble } from '../ChatBubble';
 
 describe('ChatBubble', () => {
@@ -129,6 +129,86 @@ describe('ChatBubble', () => {
       );
       const quote = container.querySelector('.whitespace-pre-wrap');
       expect(quote).not.toBeNull();
+    });
+  });
+
+  describe('Image attachments', () => {
+    it('renders ImageThumbnails when imagePaths and onImagePreview are provided', () => {
+      render(
+        <ChatBubble
+          role="user"
+          content="look at this"
+          index={0}
+          imagePaths={['/tmp/img1.jpg', '/tmp/img2.jpg']}
+          onImagePreview={vi.fn()}
+        />,
+      );
+      expect(
+        screen.getByRole('list', { name: /attached images/i }),
+      ).toBeInTheDocument();
+      expect(screen.getAllByRole('listitem')).toHaveLength(2);
+    });
+
+    it('does not render ImageThumbnails when imagePaths is not provided', () => {
+      render(
+        <ChatBubble
+          role="user"
+          content="no images"
+          index={0}
+          onImagePreview={vi.fn()}
+        />,
+      );
+      expect(
+        screen.queryByRole('list', { name: /attached images/i }),
+      ).toBeNull();
+    });
+
+    it('does not render ImageThumbnails when imagePaths is empty', () => {
+      render(
+        <ChatBubble
+          role="user"
+          content="empty images"
+          index={0}
+          imagePaths={[]}
+          onImagePreview={vi.fn()}
+        />,
+      );
+      expect(
+        screen.queryByRole('list', { name: /attached images/i }),
+      ).toBeNull();
+    });
+
+    it('does not render ImageThumbnails when onImagePreview is not provided', () => {
+      render(
+        <ChatBubble
+          role="user"
+          content="no preview handler"
+          index={0}
+          imagePaths={['/tmp/img1.jpg']}
+        />,
+      );
+      expect(
+        screen.queryByRole('list', { name: /attached images/i }),
+      ).toBeNull();
+    });
+
+    it('renders images but no text span when content is empty', () => {
+      const { container } = render(
+        <ChatBubble
+          role="user"
+          content=""
+          index={0}
+          imagePaths={['/tmp/img1.jpg']}
+          onImagePreview={vi.fn()}
+        />,
+      );
+      expect(
+        screen.getByRole('list', { name: /attached images/i }),
+      ).toBeInTheDocument();
+      // The content span should not be rendered when content is empty
+      expect(container.querySelector('.text-white\\/95')).toBeNull();
+      // CopyButton should also be hidden — nothing to copy
+      expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
     });
   });
 
