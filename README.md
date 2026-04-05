@@ -128,18 +128,23 @@ For the full architecture and security philosophy behind the sandbox, see [`sand
 
 1. Download `Thuki.app.tar.gz` from the [latest release](https://github.com/quiet-node/thuki/releases/latest)
 2. Extract and move `Thuki.app` to your `/Applications` folder
-3. Remove the macOS quarantine flag (one-time, required for unsigned apps). Pick either option:
+3. Bypass the macOS security prompt (one-time, required for apps not from the App Store):
 
-   **Option A: Terminal command:**
+   **Option A: Terminal command (simplest):**
 
    ```bash
    xattr -rd com.apple.quarantine /Applications/Thuki.app
    ```
 
-   **Option B: System Settings:**
-   Open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to Thuki.
+   Then open Thuki normally.
 
-> Sorry about this step. Thuki is an open source app distributed directly and not through the Mac App Store. That's why it hasn't gone through Apple's notarization process. macOS blocks such apps by default as a security measure. Both options above are safe and officially documented by Apple ([learn more here](https://support.apple.com/en-us/102445)).
+   **Option B: Right-click to open:**
+   Right-click `Thuki.app` in Finder, choose **Open**, then click **Open** in the dialog.
+
+   **Option C: System Settings:**
+   Try to open Thuki once (it will be blocked), then go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to Thuki.
+
+> Sorry about this extra step. Thuki is distributed directly and has not gone through Apple's notarization process (which requires a paid Apple Developer account). macOS blocks such apps by default as a security measure. All three options above are safe and officially documented by Apple ([learn more here](https://support.apple.com/en-us/102445)).
 
 4. Open Thuki. It will appear in your menu bar.
 

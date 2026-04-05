@@ -66,6 +66,11 @@ jobs:
       - name: Build Tauri app
         run: bun run build:backend
 
+      - name: Ad-hoc sign the app
+        run: |
+          codesign --deep --force --sign - src-tauri/target/release/bundle/macos/Thuki.app
+          codesign --verify --verbose src-tauri/target/release/bundle/macos/Thuki.app
+
       - name: Create release archive
         run: |
           cd src-tauri/target/release/bundle/macos
