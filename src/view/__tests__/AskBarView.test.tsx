@@ -1171,4 +1171,287 @@ describe('AskBarView', () => {
       expect(onImagesAttached).not.toHaveBeenCalled();
     });
   });
+
+  describe('command suggestion popover', () => {
+    function renderWithQuery(query: string, busy = false) {
+      const setQuery = vi.fn();
+      const { rerender } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query={query}
+          setQuery={setQuery}
+          isChatMode={false}
+          isGenerating={busy}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      return { setQuery, rerender };
+    }
+
+    it('shows CommandSuggestion when query starts with "/"', () => {
+      renderWithQuery('/');
+      expect(
+        screen.getByRole('listbox', { name: /command suggestions/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('shows CommandSuggestion for partial trigger "/sc"', () => {
+      renderWithQuery('/sc');
+      expect(
+        screen.getByRole('listbox', { name: /command suggestions/i }),
+      ).toBeInTheDocument();
+      expect(screen.getByText('/screen')).toBeInTheDocument();
+    });
+
+    it('does not show CommandSuggestion when query does not start with "/"', () => {
+      renderWithQuery('hello');
+      expect(
+        screen.queryByRole('listbox', { name: /command suggestions/i }),
+      ).toBeNull();
+    });
+
+    it('does not show CommandSuggestion when query has a space after the trigger', () => {
+      renderWithQuery('/screen ');
+      expect(
+        screen.queryByRole('listbox', { name: /command suggestions/i }),
+      ).toBeNull();
+    });
+
+    it('does not show CommandSuggestion when busy (generating)', () => {
+      renderWithQuery('/screen', true);
+      expect(
+        screen.queryByRole('listbox', { name: /command suggestions/i }),
+      ).toBeNull();
+    });
+
+    it('Tab key calls setQuery with trigger + space when suggestion is visible', () => {
+      const setQuery = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/sc"
+          setQuery={setQuery}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      fireEvent.keyDown(textarea, { key: 'Tab' });
+      expect(setQuery).toHaveBeenCalledWith('/screen ');
+    });
+
+    it('Enter on highlighted row completes the trigger instead of submitting', () => {
+      const onSubmit = vi.fn();
+      const setQuery = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/sc"
+          setQuery={setQuery}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      expect(setQuery).toHaveBeenCalledWith('/screen ');
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('Escape dismisses suggestions without changing query', () => {
+      const setQuery = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/sc"
+          setQuery={setQuery}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+      // setQuery is NOT called (query is unchanged)
+      expect(setQuery).not.toHaveBeenCalled();
+      // Suggestion popover is no longer rendered
+      expect(
+        screen.queryByRole('listbox', { name: /command suggestions/i }),
+      ).toBeNull();
+    });
+
+    it('ArrowDown moves highlight to next row', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/"
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      // Initially row 0 is highlighted (only one command, so index stays 0)
+      fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+      // With one command, ArrowDown wraps back to 0 — row is still highlighted
+      const option = screen.getByRole('option');
+      expect(option).toHaveAttribute('aria-selected', 'true');
+    });
+
+    it('ArrowUp moves highlight to previous row (wraps)', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/"
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+      // Single command wraps back to index 0
+      const option = screen.getByRole('option');
+      expect(option).toHaveAttribute('aria-selected', 'true');
+    });
+
+    it('clicking a suggestion row calls setQuery with trigger + space', () => {
+      const setQuery = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/"
+          setQuery={setQuery}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const option = screen.getByRole('option');
+      fireEvent.mouseDown(option);
+      expect(setQuery).toHaveBeenCalledWith('/screen ');
+    });
+
+    it('Tab does nothing when suggestions are not shown', () => {
+      const onSubmit = vi.fn();
+      const setQuery = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="hello"
+          setQuery={setQuery}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      fireEvent.keyDown(textarea, { key: 'Tab' });
+      expect(setQuery).not.toHaveBeenCalled();
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('Escape does nothing when suggestions are not shown', () => {
+      const setQuery = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="hello"
+          setQuery={setQuery}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+      expect(setQuery).not.toHaveBeenCalled();
+    });
+
+    it('shows "No commands found" when prefix matches nothing', () => {
+      renderWithQuery('/xyz');
+      expect(screen.getByText('No commands found')).toBeInTheDocument();
+    });
+
+    it('Enter falls through to submit when suggestion list is empty', () => {
+      const onSubmit = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/xyz"
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      expect(onSubmit).toHaveBeenCalledOnce();
+    });
+
+    it('ArrowDown and ArrowUp do nothing when filtered list is empty', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/xyz"
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      // Should not throw
+      fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+      fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+      // Still shows "No commands found"
+      expect(screen.getByText('No commands found')).toBeInTheDocument();
+    });
+
+    it('Tab does nothing when filtered list is empty', () => {
+      const setQuery = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/xyz"
+          setQuery={setQuery}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      fireEvent.keyDown(textarea, { key: 'Tab' });
+      expect(setQuery).not.toHaveBeenCalled();
+    });
+  });
 });

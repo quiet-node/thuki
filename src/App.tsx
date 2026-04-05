@@ -719,12 +719,68 @@ function App() {
     [ask, attachedImages, setSelectedContext],
   );
 
+  /**
+   * Async handler for the `/screen` command path. Invokes the Rust
+   * `capture_full_screen_command`, which silently captures the screen
+   * (excluding Thuki's own windows) and returns the saved file path.
+   * On success, merges the screenshot path with any manually attached
+   * images and calls ask(). On error, restores the query so no input is lost.
+   */
+  const handleScreenSubmit = useCallback(async () => {
+    // eslint-disable-next-line no-control-regex
+    const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
+    const sanitized = selectedContext
+      ?.replace(CONTROL_CHARS, '')
+      .slice(0, quote.maxContextLength);
+    const context = sanitized?.trim() ? sanitized : undefined;
+
+    const trimmed = query.trimStart();
+    const cleanQuery = trimmed.slice('/screen'.length).trimStart();
+
+    let screenshotPath: string;
+    try {
+      screenshotPath = await invoke<string>('capture_full_screen_command');
+    } catch {
+      // Capture failed (permission denied or other error). Restore the query
+      // so the user's message is not lost, and do not submit.
+      return;
+    }
+
+    const readyPaths = attachedImages
+      .filter((img) => img.filePath !== null)
+      .map((img) => img.filePath as string);
+    readyPaths.push(screenshotPath);
+
+    ask(cleanQuery, context, readyPaths);
+    setSelectedContext(null);
+    setQuery('');
+    for (const img of attachedImages) {
+      URL.revokeObjectURL(img.blobUrl);
+    }
+    setAttachedImages([]);
+    inputRef.current!.style.height = 'auto';
+  }, [query, selectedContext, attachedImages, ask, setSelectedContext]);
+
   const handleSubmit = useCallback(() => {
     if (
       (query.trim().length === 0 && attachedImages.length === 0) ||
       isGenerating
     )
       return;
+
+    // Detect /screen command at the very start of the message.
+    const trimmedQuery = query.trimStart();
+    const isScreenCommand =
+      trimmedQuery.startsWith('/screen') &&
+      (trimmedQuery.length === '/screen'.length ||
+        trimmedQuery['/screen'.length] === ' ');
+
+    if (isScreenCommand) {
+      // Fire-and-forget: the async path handles cleanup and ask() invocation.
+      void handleScreenSubmit();
+      return;
+    }
+
     // Sanitize externally-sourced context: strip control characters and enforce
     // a length cap to limit prompt-injection surface from host-app selections.
     // eslint-disable-next-line no-control-regex
@@ -766,6 +822,7 @@ function App() {
     query,
     isGenerating,
     executeSubmit,
+    handleScreenSubmit,
     selectedContext,
     setSelectedContext,
     attachedImages,

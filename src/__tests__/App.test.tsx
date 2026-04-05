@@ -2761,4 +2761,208 @@ describe('App', () => {
     // Old messages should be gone
     expect(screen.queryByText('First response')).toBeNull();
   });
+
+  // ─── /screen command ─────────────────────────────────────────────────────────
+
+  describe('/screen command', () => {
+    it('invokes capture_full_screen_command and calls ask with screenshot path', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/screen.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Use "/screen " (with trailing space) so the suggestion popover is dismissed
+      // and Enter goes to the submit handler directly.
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen ' } });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          imagePaths: ['/tmp/screen.jpg'],
+          message: '',
+        }),
+      );
+    });
+
+    it('strips the /screen trigger and sends the remaining text as message', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/screen.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/screen what is this error?' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: 'what is this error?',
+          imagePaths: ['/tmp/screen.jpg'],
+        }),
+      );
+    });
+
+    it('does not invoke capture_full_screen_command when /screen is not at start', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: 'hello /screen there' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith('capture_full_screen_command');
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({ message: 'hello /screen there' }),
+      );
+    });
+
+    it('does not call ask when capture_full_screen_command throws', async () => {
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'capture_full_screen_command') {
+          throw new Error('Permission denied');
+        }
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Use "/screen " (with trailing space) so the suggestion popover is dismissed
+      // and Enter goes directly to the submit handler.
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen ' } });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+    });
+
+    it('merges screenshot path with existing attached images', async () => {
+      // Set up mocks: save_image_command for image attachment, then screen capture.
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/attached.jpg',
+        capture_full_screen_command: '/tmp/screen.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste an image first — this exercises the filter/map on attachedImages inside
+      // handleScreenSubmit, covering the lines for non-null filePath images.
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['img'], 'photo.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      // Wait for the image to be processed (filePath resolved).
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith(
+          'save_image_command',
+          expect.anything(),
+        );
+      });
+
+      // Now type /screen and submit.
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen describe' } });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: 'describe',
+          imagePaths: ['/tmp/attached.jpg', '/tmp/screen.jpg'],
+        }),
+      );
+    });
+
+    it('handles /screen with selected context', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/screen.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay('some context');
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen explain' } });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: 'explain',
+          quotedText: 'some context',
+          imagePaths: ['/tmp/screen.jpg'],
+        }),
+      );
+    });
+  });
 });

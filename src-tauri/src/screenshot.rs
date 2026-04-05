@@ -1,14 +1,21 @@
 /*!
  * Screenshot capture.
  *
- * Exposes a single Tauri command that hides the main window, invokes the
- * macOS `screencapture -i` tool (interactive crosshair region select), and
- * returns the captured image as a base64 string — or `None` if the user
- * cancelled (pressed Escape without selecting).
+ * Exposes two Tauri commands:
+ *
+ * 1. `capture_screenshot_command` — hides the main window, invokes the
+ *    macOS `screencapture -i` tool (interactive crosshair region select), and
+ *    returns the captured image as a base64 string, or `None` if the user
+ *    cancelled (pressed Escape without selecting).
+ *
+ * 2. `capture_full_screen_command` — silently captures all screens using
+ *    CoreGraphics `CGWindowListCreateImageFromArray`, excluding Thuki's own
+ *    windows by PID. No window hide, no flicker. Returns the absolute file
+ *    path of the saved image in `<app_data_dir>/images/`.
  *
  * `temp_screenshot_path` and `encode_as_base64` are pure helpers extracted
  * from the command wrapper so they can be unit-tested without Tauri context.
- * The command wrapper itself is excluded from coverage (thin I/O wrapper).
+ * The command wrappers themselves are excluded from coverage (thin I/O wrappers).
  */
 
 use std::path::PathBuf;
@@ -93,6 +100,262 @@ pub async fn capture_screenshot_command(
     process_screenshot_result(&path)
 }
 
+// ─── Full-screen silent capture (macOS) ────────────────────────────────────
+
+/// Full-screen capture using CoreGraphics CGWindowListCreateImageFromArray.
+///
+/// Captures all on-screen content, excluding windows that belong to Thuki's
+/// own process (identified by PID). No window hide, no flicker. The resulting
+/// image is saved to `<base_dir>/images/` via `crate::images::save_image` and
+/// the absolute file path is returned.
+///
+/// Requires Screen Recording permission (macOS Privacy & Security). If the
+/// permission has not been granted, `CGWindowListCopyWindowInfo` returns NULL
+/// and this function returns an informative error string.
+///
+/// Excluded from coverage: this function is a thin wrapper over macOS CoreGraphics
+/// FFI that requires Screen Recording permission and a running display server.
+/// Its logic is straightforward OS API delegation that cannot be exercised
+/// in a headless CI environment.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn capture_full_screen(base_dir: &std::path::Path) -> Result<String, String> {
+    use core_foundation::array::CFArray;
+    use core_foundation::base::TCFType;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString;
+    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    use std::ffi::c_void;
+
+    // CoreFoundation / CoreGraphics opaque pointer types for our raw FFI.
+    type CFArrayRef = *const c_void;
+    type CFDictionaryRef = *const c_void;
+
+    // CGWindowListOption flags.
+    const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1;
+    const K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
+    const K_CG_NULL_WINDOW_ID: u32 = 0;
+    const K_CG_WINDOW_IMAGE_DEFAULT: u32 = 0;
+
+    // CFNumber type selectors.
+    const K_CF_NUMBER_S_INT32_TYPE: i32 = 3;
+    const K_CF_NUMBER_S_INT64_TYPE: i32 = 4;
+
+    // CGBitmapInfo for BGRA (native macOS little-endian, premultiplied alpha).
+    const K_CG_BITMAP_BYTE_ORDER32_HOST: u32 = 2 << 12; // 8192
+    const K_CG_IMAGE_ALPHA_PREMULTIPLIED_FIRST: u32 = 2;
+    const BGRA_BITMAP_INFO: u32 =
+        K_CG_BITMAP_BYTE_ORDER32_HOST | K_CG_IMAGE_ALPHA_PREMULTIPLIED_FIRST;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn CGWindowListCopyWindowInfo(option: u32, relativeToWindow: u32) -> CFArrayRef;
+        fn CGWindowListCreateImageFromArray(
+            screenBounds: CGRect,
+            windowArray: CFArrayRef,
+            imageOption: u32,
+        ) -> *const c_void;
+        fn CGImageGetWidth(image: *const c_void) -> usize;
+        fn CGImageGetHeight(image: *const c_void) -> usize;
+        fn CGImageRelease(image: *const c_void);
+        fn CGColorSpaceCreateDeviceRGB() -> *const c_void;
+        fn CGColorSpaceRelease(cs: *const c_void);
+        fn CGBitmapContextCreate(
+            data: *mut c_void,
+            width: usize,
+            height: usize,
+            bitsPerComponent: usize,
+            bytesPerRow: usize,
+            colorSpace: *const c_void,
+            bitmapInfo: u32,
+        ) -> *const c_void;
+        fn CGContextDrawImage(ctx: *const c_void, rect: CGRect, image: *const c_void);
+        fn CGContextRelease(ctx: *const c_void);
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFArrayGetCount(array: CFArrayRef) -> isize;
+        fn CFArrayGetValueAtIndex(array: CFArrayRef, idx: isize) -> *const c_void;
+        fn CFDictionaryGetValue(dict: CFDictionaryRef, key: *const c_void) -> *const c_void;
+        fn CFNumberGetValue(number: *const c_void, theType: i32, valuePtr: *mut c_void) -> bool;
+        fn CFRelease(cf: *const c_void);
+    }
+
+    // CGRectInfinite: the standard macOS sentinel for "all screens".
+    let cg_rect_infinite = CGRect {
+        origin: CGPoint::new(-8_388_607.0, -8_388_607.0),
+        size: CGSize::new(16_777_215.0, 16_777_215.0),
+    };
+
+    let our_pid = std::process::id() as i64;
+
+    unsafe {
+        // Get all on-screen window info, excluding desktop elements.
+        let option =
+            K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS;
+        let window_info_list = CGWindowListCopyWindowInfo(option, K_CG_NULL_WINDOW_ID);
+
+        if window_info_list.is_null() {
+            return Err("Screen Recording permission is required to use /screen. \
+                 Grant it in System Settings > Privacy & Security > Screen Recording."
+                .to_string());
+        }
+
+        // Collect window IDs that do NOT belong to our process.
+        let count = CFArrayGetCount(window_info_list);
+        let pid_key = CFString::new("kCGWindowOwnerPID");
+        let wid_key = CFString::new("kCGWindowNumber");
+
+        let mut window_ids: Vec<i64> = Vec::new();
+        for i in 0..count {
+            let dict = CFArrayGetValueAtIndex(window_info_list, i) as CFDictionaryRef;
+            if dict.is_null() {
+                continue;
+            }
+
+            // Read owner PID.
+            let pid_val =
+                CFDictionaryGetValue(dict, pid_key.as_concrete_TypeRef() as *const c_void);
+            if pid_val.is_null() {
+                continue;
+            }
+            let mut owner_pid: i32 = 0;
+            CFNumberGetValue(
+                pid_val,
+                K_CF_NUMBER_S_INT32_TYPE,
+                &mut owner_pid as *mut i32 as *mut c_void,
+            );
+            if i64::from(owner_pid) == our_pid {
+                continue; // Skip our own windows.
+            }
+
+            // Read window ID.
+            let wid_val =
+                CFDictionaryGetValue(dict, wid_key.as_concrete_TypeRef() as *const c_void);
+            if wid_val.is_null() {
+                continue;
+            }
+            let mut wid: i64 = 0;
+            CFNumberGetValue(
+                wid_val,
+                K_CF_NUMBER_S_INT64_TYPE,
+                &mut wid as *mut i64 as *mut c_void,
+            );
+            window_ids.push(wid);
+        }
+        CFRelease(window_info_list);
+
+        if window_ids.is_empty() {
+            return Err("No visible windows found for screen capture.".to_string());
+        }
+
+        // Build a CFArray<CFNumber> for the window IDs.
+        let cf_numbers: Vec<CFNumber> = window_ids.iter().map(|&id| CFNumber::from(id)).collect();
+        let window_array: CFArray<CFNumber> = CFArray::from_CFTypes(&cf_numbers);
+
+        // Capture the screen.
+        let cg_image = CGWindowListCreateImageFromArray(
+            cg_rect_infinite,
+            window_array.as_concrete_TypeRef() as *const c_void,
+            K_CG_WINDOW_IMAGE_DEFAULT,
+        );
+
+        if cg_image.is_null() {
+            return Err(
+                "Screen capture failed: CGWindowListCreateImageFromArray returned null."
+                    .to_string(),
+            );
+        }
+
+        let width = CGImageGetWidth(cg_image);
+        let height = CGImageGetHeight(cg_image);
+
+        if width == 0 || height == 0 {
+            CGImageRelease(cg_image);
+            return Err("Screen capture returned an empty image.".to_string());
+        }
+
+        // Render CGImage into a BGRA bitmap buffer.
+        let bytes_per_row = width * 4;
+        let mut pixel_bytes: Vec<u8> = vec![0u8; height * bytes_per_row];
+
+        let color_space = CGColorSpaceCreateDeviceRGB();
+        let ctx = CGBitmapContextCreate(
+            pixel_bytes.as_mut_ptr() as *mut c_void,
+            width,
+            height,
+            8,
+            bytes_per_row,
+            color_space,
+            BGRA_BITMAP_INFO,
+        );
+        CGColorSpaceRelease(color_space);
+
+        if ctx.is_null() {
+            CGImageRelease(cg_image);
+            return Err("Failed to create bitmap context for screen capture.".to_string());
+        }
+
+        let draw_rect = CGRect {
+            origin: CGPoint::new(0.0, 0.0),
+            size: CGSize::new(width as f64, height as f64),
+        };
+        CGContextDrawImage(ctx, draw_rect, cg_image);
+        CGContextRelease(ctx);
+        CGImageRelease(cg_image);
+
+        // Convert BGRA to RGBA in-place (swap B and R channels).
+        // CoreGraphics BGRA layout: [B, G, R, A] per pixel.
+        // image crate Rgba layout:  [R, G, B, A] per pixel.
+        for chunk in pixel_bytes.chunks_exact_mut(4) {
+            chunk.swap(0, 2); // Swap B <-> R
+        }
+
+        // Build a DynamicImage from the now-RGBA bytes and encode to PNG.
+        let buf = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
+            width as u32,
+            height as u32,
+            pixel_bytes,
+        )
+        .ok_or_else(|| "Failed to create image buffer from captured pixels.".to_string())?;
+        let dynamic = image::DynamicImage::ImageRgba8(buf);
+
+        let mut png: Vec<u8> = Vec::new();
+        dynamic
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .map_err(|e| format!("Failed to encode screen capture as PNG: {e}"))?;
+
+        // Delegate to the existing save_image pipeline (JPEG compression + UUID naming).
+        crate::images::save_image(base_dir, &png)
+    }
+}
+
+/// Non-macOS stub: full-screen capture is macOS-only.
+#[cfg(not(target_os = "macos"))]
+pub fn capture_full_screen(_base_dir: &std::path::Path) -> Result<String, String> {
+    Err("full-screen capture is only supported on macOS".to_string())
+}
+
+/// Tauri command: silently captures the full screen (excluding Thuki's own
+/// windows) and returns the absolute file path of the saved image.
+///
+/// This is a thin async wrapper around `capture_full_screen`. It is excluded
+/// from coverage because it requires a live Tauri app handle.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn capture_full_screen_command(app_handle: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let base_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+
+    tokio::task::spawn_blocking(move || capture_full_screen(&base_dir))
+        .await
+        .map_err(|e| format!("screen capture task failed: {e}"))?
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -158,5 +421,14 @@ mod tests {
     #[test]
     fn encode_as_base64_empty_input() {
         assert_eq!(encode_as_base64(b""), "");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn capture_full_screen_returns_err_on_non_macos() {
+        use std::path::Path;
+        let result = capture_full_screen(Path::new("/tmp"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("only supported on macOS"));
     }
 }
