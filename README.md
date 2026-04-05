@@ -89,16 +89,23 @@ Choose one of the two options below to set up your AI engine before installing T
 
 **Prerequisites:** Install [Docker Desktop](https://www.docker.com/get-started)
 
-The Docker sandbox is for users who want the strongest possible isolation between the AI model and their host system — ideal if you work in regulated environments, are security-conscious about what runs on your machine, or simply want peace of mind.
+The Docker sandbox is for users who want the strongest possible isolation between the AI model and their host system — ideal if you work in regulated environments, are security-conscious about what runs on your machine, or simply want peace of mind. The model runs in a hardened container that cannot reach the internet, cannot write to your filesystem, and leaves no trace when stopped.
 
-The sandbox runs Ollama inside a hardened container with:
+Start the sandbox:
 
-- **Network air-gap** — the container runs on an internal bridge network with zero internet egress. The model cannot make outbound connections of any kind.
-- **Privilege dropping** — all Linux kernel capabilities are dropped (`cap_drop: ALL`). The container runs with the minimum possible privileges.
-- **Read-only model weights** — model files are mounted read-only (`:ro`). A malicious prompt cannot modify or persist changes to the model.
-- **Ephemeral state** — all model data is wiped on shutdown (`docker compose down -v`). Nothing persists between sessions.
+```bash
+bun run sandbox:start
+```
 
-The sandbox is started as part of the Thuki launch process — see [Installation](#installation) below.
+> **First run:** The sandbox will pull the model inside the container — this may take several minutes depending on your connection. Subsequent starts are instant.
+
+When you're done, stop and wipe all model data:
+
+```bash
+bun run sandbox:stop
+```
+
+For the full architecture and security philosophy behind the sandbox, see [`sandbox/README.md`](sandbox/README.md).
 
 ### Step 2: Install Thuki
 
@@ -123,12 +130,6 @@ The sandbox is started as part of the Thuki launch process — see [Installation
 
 > **First launch:** macOS will ask for Accessibility permission. This is required for the global keyboard shortcut that lets you summon Thuki from any app. Grant it once — it persists across restarts.
 
-If you chose the **Docker sandbox**, start it now:
-
-```bash
-bun run sandbox:start
-```
-
 #### Build from Source
 
 **Prerequisites:** [Bun](https://bun.sh), [Rust](https://rustup.rs), and optionally [Docker](https://www.docker.com/get-started)
@@ -138,9 +139,6 @@ bun run sandbox:start
 git clone https://github.com/quiet-node/thuki.git
 cd thuki
 bun install
-
-# If using the Docker sandbox, start it now
-bun run sandbox:start
 
 # Launch in development mode
 bun run dev
@@ -181,7 +179,7 @@ Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get starte
 
 ## Author
 
-Built by [@quiet_node](https://x.com/quiet_node).
+Reached out to [Logan](https://x.com/quiet_node) on X with questions or feedback.
 
 ## License
 
