@@ -655,7 +655,7 @@ function App() {
    * handleImagesAttached pipeline — identical to a paste or drag-drop.
    */
   const handleScreenshot = useCallback(async () => {
-    const base64 = await invoke<string | null>('capture_screenshot');
+    const base64 = await invoke<string | null>('capture_screenshot_command');
     if (!base64) return;
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);

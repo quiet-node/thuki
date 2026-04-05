@@ -2542,7 +2542,7 @@ describe('App', () => {
 
   describe('screenshot integration', () => {
     it('clicking screenshot button invokes capture_screenshot', async () => {
-      enableChannelCaptureWithResponses({ capture_screenshot: null });
+      enableChannelCaptureWithResponses({ capture_screenshot_command: null });
 
       render(<App />);
       await act(async () => {});
@@ -2556,13 +2556,13 @@ describe('App', () => {
 
       await act(async () => {
         await vi.waitFor(() => {
-          expect(invoke).toHaveBeenCalledWith('capture_screenshot');
+          expect(invoke).toHaveBeenCalledWith('capture_screenshot_command');
         });
       });
     });
 
     it('does nothing when capture_screenshot returns null (cancelled)', async () => {
-      enableChannelCaptureWithResponses({ capture_screenshot: null });
+      enableChannelCaptureWithResponses({ capture_screenshot_command: null });
 
       render(<App />);
       await act(async () => {});
@@ -2576,7 +2576,7 @@ describe('App', () => {
 
       await act(async () => {
         await vi.waitFor(() => {
-          expect(invoke).toHaveBeenCalledWith('capture_screenshot');
+          expect(invoke).toHaveBeenCalledWith('capture_screenshot_command');
         });
       });
 
@@ -2590,7 +2590,7 @@ describe('App', () => {
     it('attaches screenshot image when capture_screenshot returns base64', async () => {
       const fakeBase64 = btoa('fake screenshot bytes');
       enableChannelCaptureWithResponses({
-        capture_screenshot: fakeBase64,
+        capture_screenshot_command: fakeBase64,
         save_image_command: '/tmp/screenshot.jpg',
       });
 
