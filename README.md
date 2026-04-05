@@ -63,7 +63,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 
 > **Default model:** Thuki ships with [`gemma3:4b`](https://ollama.com/library/gemma3) by default, a capable 4-billion parameter model from Google that runs comfortably on most modern Macs with 8 GB of RAM or more. It's a great starting point: fast, conversational, and surprisingly capable for everyday tasks.
 
-Support for swapping models without rebuilding is planned; follow the project for updates.
+Support for swapping models without rebuilding is on the roadmap; see [What's Next](#whats-next).
 
 Choose one of the two options below to set up your AI engine before installing Thuki.
 
@@ -190,6 +190,38 @@ Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get starte
 ## Author
 
 Reach out to [Logan](https://x.com/quiet_node) on X with questions or feedback.
+
+## What's next for Thuki
+
+Thuki is just getting started. Here's where it's headed:
+
+### Secretary Superpowers
+
+The big leap: from answering questions to taking action.
+
+- **Internet search:** let Thuki look things up in real time, not just reason from its training data
+- **Tool integrations via [MCP](https://modelcontextprotocol.io/):** connect Thuki to Gmail, Slack, Discord, Google Calendar, and any other MCP-compatible service; ask it to draft a reply, summarize a thread, or schedule a meeting without ever leaving your current app
+- **Slash commands:** type `/summarize`, `/translate`, `/explain`, `/rewrite`, and more to instantly trigger built-in prompts without typing a full question
+
+### Better AI Control
+
+More flexibility over the model powering Thuki.
+
+- **In-app model switching:** swap between any Ollama model from the UI without rebuilding
+- **Multiple provider support:** opt in to OpenAI, Anthropic, or any OpenAI-compatible endpoint as an alternative to local Ollama
+- **Custom activation shortcut:** change the double-tap trigger to any key or combo you prefer
+
+### Richer Context
+
+Give Thuki more to work with.
+
+- **Voice input:** dictate your question instead of typing
+- **Auto-capture screen context:** activate Thuki and have it automatically read the active window or selected region as context
+- **File and document drop:** drag a PDF, image, or text file directly into Thuki as context for your question
+
+---
+
+Have a feature idea? [Open an issue](https://github.com/quiet-node/thuki/issues) and let's talk about it.
 
 ## License
 
