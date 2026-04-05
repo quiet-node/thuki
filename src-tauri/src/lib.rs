@@ -19,6 +19,7 @@ pub mod commands;
 pub mod database;
 pub mod history;
 pub mod images;
+pub mod screenshot;
 
 #[cfg(target_os = "macos")]
 mod activator;
@@ -573,6 +574,8 @@ pub fn run() {
             images::remove_image_command,
             #[cfg(not(coverage))]
             images::cleanup_orphaned_images_command,
+            #[cfg(not(coverage))]
+            screenshot::capture_screenshot_command,
             notify_overlay_hidden,
             set_window_frame
         ])
