@@ -126,19 +126,21 @@ For the full architecture and security philosophy behind the sandbox, see [`sand
 
 #### Download (Recommended)
 
-1. Download `Thuki.app.tar.gz` from the [latest release](https://github.com/quiet-node/thuki/releases/latest)
-2. Extract the archive and move `Thuki.app` to your `/Applications` folder
-3. **Before opening Thuki for the first time**, run this command in Terminal:
+1. Download `Thuki.dmg` from the [latest release](https://github.com/quiet-node/thuki/releases/latest)
+2. Double-click `Thuki.dmg` to open it. A window appears showing the Thuki app icon next to an Applications folder shortcut.
+3. Drag `Thuki` onto the `Applications` folder shortcut.
+4. Eject the disk image (drag it to Trash in the Finder sidebar, or right-click and choose Eject).
+5. **Before opening Thuki for the first time**, run this command in Terminal:
 
    ```bash
    xattr -rd com.apple.quarantine /Applications/Thuki.app
    ```
 
-   > **Why is this needed?** Thuki is an open-source app distributed directly — not through the Mac App Store. Apple's Gatekeeper automatically blocks any app downloaded from the internet that hasn't gone through Apple's paid notarization process ($99/year Apple Developer account). This one-time command removes that block. It is safe and [officially documented by Apple](https://support.apple.com/en-us/102445).
+   > **Why is this needed?** Thuki is a free, non-profit, open-source app distributed directly and not through the Mac App Store. Apple's Gatekeeper automatically blocks any app downloaded from the internet that has not gone through Apple's paid notarization process ($99/year Apple Developer account). This one-time command removes that block. It is safe and [officially documented by Apple](https://support.apple.com/en-us/102445).
    >
-   > **What happens if you skip this step and open Thuki first?** macOS will show a dialog saying "Apple could not verify Thuki is free of malware." Click **Done** (not "Move to Trash"), then go to **System Settings → Privacy & Security**, scroll down until you see "Thuki was blocked", and click **Open Anyway**. Enter your Mac password when prompted, then open Thuki again.
+   > **What if you already tried to open Thuki and got a security warning?** Click **Done** (not "Move to Trash"), then go to **System Settings → Privacy & Security**, scroll down until you see "Thuki was blocked", and click **Open Anyway**. Enter your Mac password when prompted, then open Thuki again.
 
-4. Open Thuki. It will appear in your menu bar.
+6. Open Thuki. It will appear in your menu bar.
 
 > **First launch:** macOS will ask for Accessibility permission. This is required for the global keyboard shortcut that lets you summon Thuki from any app. Grant it once; it persists across restarts.
 
