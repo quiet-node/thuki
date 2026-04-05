@@ -7,6 +7,12 @@ interface ThumbnailItem {
   src: string;
   /** Whether the image is still being processed by the backend. */
   loading?: boolean;
+  /**
+   * When true, renders a branded screen-capture loading tile instead of an
+   * image. Use this when no preview image is available yet (e.g. the /screen
+   * capture is in flight and there is no blob URL to show).
+   */
+  placeholder?: boolean;
 }
 
 interface ImageThumbnailsProps {
@@ -50,25 +56,36 @@ export function ImageThumbnails({
             className="relative group"
             role="listitem"
           >
-            <button
-              type="button"
-              onClick={() => onPreview(item.id)}
-              className="block rounded-lg overflow-hidden border border-surface-border hover:border-primary/40 transition-colors cursor-pointer"
-              aria-label="Preview image"
-            >
-              <img
-                src={item.src}
-                alt="Attached"
+            {item.placeholder ? (
+              /* Screen-capture in-flight: clean minimal tile, no image yet */
+              <div
+                className="rounded-lg bg-black/15 flex items-center justify-center"
                 style={{ width: size, height: size }}
-                className={`object-cover ${item.loading ? 'opacity-50' : ''}`}
-                draggable={false}
-              />
-              {item.loading && (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                </div>
-              )}
-            </button>
+                aria-label="Capturing screen..."
+              >
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white/80 rounded-full animate-spin" />
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onPreview(item.id)}
+                className="block rounded-lg overflow-hidden border border-surface-border hover:border-primary/40 transition-colors cursor-pointer"
+                aria-label="Preview image"
+              >
+                <img
+                  src={item.src}
+                  alt="Attached"
+                  style={{ width: size, height: size }}
+                  className={`object-cover ${item.loading ? 'opacity-50' : ''}`}
+                  draggable={false}
+                />
+                {item.loading && (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                  </div>
+                )}
+              </button>
+            )}
             {onRemove && (
               <button
                 type="button"

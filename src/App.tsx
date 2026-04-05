@@ -14,6 +14,7 @@ import { HistoryPanel } from './components/HistoryPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import type { AttachedImage } from './types/image';
 import { quote } from './config';
+import { SCREEN_CAPTURE_PLACEHOLDER } from './config/commands';
 import './App.css';
 
 /** Ollama model used for this session — must match the Rust DEFAULT_MODEL_NAME. */
@@ -135,6 +136,24 @@ function App() {
   /** True while waiting for images to finish processing before a deferred
    *  submit. Drives the "waiting" UI state in the ask bar. */
   const [isSubmitPending, setIsSubmitPending] = useState(false);
+  /** Error message from a failed /screen capture. Shown inline above the ask
+   *  bar so the user knows capture failed rather than seeing no response. */
+  const [captureError, setCaptureError] = useState<string | null>(null);
+  /**
+   * Set to true when a /screen capture is dispatched, false when it resolves
+   * or when the user cancels. Lets the async tail in handleScreenSubmit
+   * detect a mid-flight cancellation and skip the ask() call.
+   */
+  const screenCapturePendingRef = useRef(false);
+  /**
+   * Stores the input state (query + context) captured just before a /screen
+   * submit clears them. Used by handleCancel to restore the ask bar if the
+   * user aborts the in-flight capture.
+   */
+  const screenCaptureInputSnapshotRef = useRef<{
+    query: string;
+    context: string | undefined;
+  } | null>(null);
   /** User message shown in the chat while waiting for images to finish
    *  processing. Cleared when `ask()` fires and adds the real message. */
   const [pendingUserMessage, setPendingUserMessage] = useState<Message | null>(
@@ -340,8 +359,11 @@ function App() {
         return [];
       });
       pendingSubmitRef.current = null;
+      screenCapturePendingRef.current = false;
+      screenCaptureInputSnapshotRef.current = null;
       setIsSubmitPending(false);
       setPendingUserMessage(null);
+      setCaptureError(null);
 
       reset();
       resetHistory();
@@ -362,6 +384,8 @@ function App() {
       outerContainerRef.current.style.minHeight = '';
     }
     /* v8 ignore stop */
+    screenCapturePendingRef.current = false;
+    screenCaptureInputSnapshotRef.current = null;
     setSelectedContext(null);
     setPreviewImageUrl(null);
     setAttachedImages((prev) => {
@@ -565,6 +589,8 @@ function App() {
       return [];
     });
     pendingSubmitRef.current = null;
+    screenCapturePendingRef.current = false;
+    screenCaptureInputSnapshotRef.current = null;
     setIsSubmitPending(false);
     setPendingUserMessage(null);
   }, [reset, resetHistory]);
@@ -719,12 +745,127 @@ function App() {
     [ask, attachedImages, setSelectedContext],
   );
 
+  /**
+   * Async handler for the `/screen` command path. Invokes the Rust
+   * `capture_full_screen_command`, which silently captures the screen
+   * (excluding Thuki's own windows) and returns the saved file path.
+   * On success, merges the screenshot path with any manually attached
+   * images and calls ask(). On error, restores the query so no input is lost.
+   */
+  const handleScreenSubmit = useCallback(async () => {
+    // eslint-disable-next-line no-control-regex
+    const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
+    const sanitized = selectedContext
+      ?.replace(CONTROL_CHARS, '')
+      .slice(0, quote.maxContextLength);
+    const context = sanitized?.trim() ? sanitized : undefined;
+
+    const trimmed = query.trimStart();
+    const cleanQuery = trimmed.slice('/screen'.length).trimStart();
+
+    // Snapshot display paths for the pending bubble: use resolved file paths
+    // for already-processed images, blob URLs for still-processing ones.
+    const existingDisplayPaths = attachedImages.map(
+      (img) => img.filePath ?? img.blobUrl,
+    );
+
+    // Store the original input so handleCancel can restore it if the user
+    // aborts the capture before it resolves.
+    const restoredQuery = `/screen${cleanQuery ? ` ${cleanQuery}` : ''}`;
+    screenCaptureInputSnapshotRef.current = { query: restoredQuery, context };
+
+    // Immediately show the user's message in chat with a loading placeholder
+    // for the screenshot. This prevents double-submit spam and gives instant
+    // feedback that the capture is in progress.
+    screenCapturePendingRef.current = true;
+    setIsSubmitPending(true);
+    setPendingUserMessage({
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: cleanQuery,
+      quotedText: context,
+      imagePaths: [...existingDisplayPaths, SCREEN_CAPTURE_PLACEHOLDER],
+    });
+    setQuery('');
+    setSelectedContext(null);
+    /* v8 ignore start -- inputRef always set when overlay is visible */
+    if (inputRef.current) inputRef.current.style.height = 'auto';
+    /* v8 ignore stop */
+
+    let screenshotPath: string;
+    try {
+      screenshotPath = await invoke<string>('capture_full_screen_command');
+    } catch (e) {
+      screenCapturePendingRef.current = false;
+      screenCaptureInputSnapshotRef.current = null;
+      // Capture failed: restore input state so the user can retry or edit.
+      setIsSubmitPending(false);
+      setPendingUserMessage(null);
+      setQuery(restoredQuery);
+      setSelectedContext(context ?? null);
+      // Surface the Rust error directly: the backend already provides
+      // descriptive messages (permission prompts, null-image diagnostics, etc.).
+      // Tauri v2 rejects with the Err(String) value as a plain string.
+      setCaptureError(
+        typeof e === 'string' ? e : e instanceof Error ? e.message : String(e),
+      );
+      return;
+    }
+
+    // Check for mid-flight cancellation before touching any state.
+    // handleCancel sets screenCapturePendingRef.current = false as a signal.
+    const wasCancelled = !screenCapturePendingRef.current;
+    screenCapturePendingRef.current = false;
+    screenCaptureInputSnapshotRef.current = null;
+    if (wasCancelled) return;
+
+    // Capture succeeded: finalize the submit.
+    setCaptureError(null);
+    setIsSubmitPending(false);
+    setPendingUserMessage(null);
+
+    const readyPaths = attachedImages
+      .filter((img) => img.filePath !== null)
+      .map((img) => img.filePath as string);
+    readyPaths.push(screenshotPath);
+
+    ask(cleanQuery, context, readyPaths);
+    for (const img of attachedImages) {
+      URL.revokeObjectURL(img.blobUrl);
+    }
+    setAttachedImages([]);
+  }, [
+    query,
+    selectedContext,
+    attachedImages,
+    ask,
+    setSelectedContext,
+    setCaptureError,
+  ]);
+
   const handleSubmit = useCallback(() => {
     if (
       (query.trim().length === 0 && attachedImages.length === 0) ||
       isGenerating
     )
       return;
+
+    // Clear any stale capture error from a previous attempt.
+    setCaptureError(null);
+
+    // Detect /screen command at the very start of the message.
+    const trimmedQuery = query.trimStart();
+    const isScreenCommand =
+      trimmedQuery.startsWith('/screen') &&
+      (trimmedQuery.length === '/screen'.length ||
+        trimmedQuery['/screen'.length] === ' ');
+
+    if (isScreenCommand) {
+      // Fire-and-forget: the async path handles cleanup and ask() invocation.
+      void handleScreenSubmit();
+      return;
+    }
+
     // Sanitize externally-sourced context: strip control characters and enforce
     // a length cap to limit prompt-injection surface from host-app selections.
     // eslint-disable-next-line no-control-regex
@@ -766,9 +907,11 @@ function App() {
     query,
     isGenerating,
     executeSubmit,
+    handleScreenSubmit,
     selectedContext,
     setSelectedContext,
     attachedImages,
+    setCaptureError,
   ]);
 
   // When a pending submit exists and all images finish processing, fire it.
@@ -810,18 +953,46 @@ function App() {
   }, [attachedImages, ask, setSelectedContext]);
   /* eslint-enable @eslint-react/set-state-in-effect */
 
-  /** Unified cancel handler: reverts a pending submit (undo-send) or cancels
-   *  an active Ollama generation. When reverting, restores the user's query
-   *  and keeps attached images so they can re-submit or edit. */
+  /**
+   * Unified cancel handler: reverts a pending submit (undo-send), clears an
+   * in-flight /screen capture, or cancels an active Ollama generation.
+   *
+   * Three cases:
+   * 1. Image-processing pending (`pendingSubmitRef.current` is set): restore
+   *    query and attached images so the user can re-submit or edit.
+   * 2. Screen-capture in-flight (`isSubmitPending` true but ref is null):
+   *    clear pending state. The async capture may still complete on the Rust
+   *    side, but `isSubmitPending` being false when the result arrives will
+   *    cause `handleScreenSubmit` to attempt ask() on stale state. To prevent
+   *    that, we track the abandonment via a flag so the async tail is a no-op.
+   * 3. Ollama generation active: delegate to the streaming cancel.
+   */
   const handleCancel = useCallback(() => {
     if (isSubmitPending && pendingSubmitRef.current) {
-      // Undo send — restore input state to before the user hit Enter.
+      // Case 1: image-processing pending. Restore input state.
       setQuery(pendingSubmitRef.current.query);
       setSelectedContext(pendingSubmitRef.current.context ?? null);
       pendingSubmitRef.current = null;
       setIsSubmitPending(false);
       setPendingUserMessage(null);
-      // Re-focus the textarea so the user can immediately edit.
+      requestAnimationFrame(() => inputRef.current?.focus());
+      return;
+    }
+    if (isSubmitPending) {
+      // Case 2: /screen capture in flight. Signal cancellation via ref so the
+      // async tail in handleScreenSubmit skips ask() when capture resolves.
+      // Restore the ask bar to what it looked like before the capture started.
+      screenCapturePendingRef.current = false;
+      const snapshot = screenCaptureInputSnapshotRef.current;
+      screenCaptureInputSnapshotRef.current = null;
+      setIsSubmitPending(false);
+      setPendingUserMessage(null);
+      /* v8 ignore start -- snapshot is always set when isSubmitPending is true via /screen */
+      if (snapshot) {
+        setQuery(snapshot.query);
+        setSelectedContext(snapshot.context ?? null);
+      }
+      /* v8 ignore stop */
       requestAnimationFrame(() => inputRef.current?.focus());
       return;
     }
@@ -1039,8 +1210,11 @@ function App() {
                         animate={{ height: 'auto', opacity: 1 }}
                         exit={{ height: 0, opacity: 0 }}
                         transition={{
-                          height: { duration: 0.25, ease: [0.16, 1, 0.3, 1] },
-                          opacity: { duration: 0.2 },
+                          height: {
+                            duration: 0.3,
+                            ease: [0.33, 1, 0.68, 1],
+                          },
+                          opacity: { duration: 0.2, delay: 0.08 },
                         }}
                         style={{ overflow: 'hidden' }}
                         className="border-t border-surface-border"
@@ -1057,6 +1231,16 @@ function App() {
                       </motion.div>
                     ) : null}
                   </AnimatePresence>
+                )}
+
+                {/* Capture error banner: shown when /screen capture fails so
+                    the user knows why the message was not sent. */}
+                {captureError && (
+                  <div className="px-4 py-2 border-t border-red-900/30">
+                    <p className="text-red-400 text-xs leading-relaxed">
+                      {captureError}
+                    </p>
+                  </div>
                 )}
 
                 {/* Input Bar — always pinned to the bottom */}

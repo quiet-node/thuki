@@ -607,6 +607,8 @@ pub fn run() {
             images::cleanup_orphaned_images_command,
             #[cfg(not(coverage))]
             screenshot::capture_screenshot_command,
+            #[cfg(not(coverage))]
+            screenshot::capture_full_screen_command,
             notify_overlay_hidden,
             set_window_frame
         ])
