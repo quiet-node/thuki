@@ -139,6 +139,10 @@ function App() {
   /** Error message from a failed /screen capture. Shown inline above the ask
    *  bar so the user knows capture failed rather than seeing no response. */
   const [captureError, setCaptureError] = useState<string | null>(null);
+  /** Set to true when a /screen capture is dispatched, false when it resolves
+   *  or when the user cancels. Lets the async tail in handleScreenSubmit
+   *  detect a mid-flight cancellation and skip the ask() call. */
+  const screenCapturePendingRef = useRef(false);
   /** User message shown in the chat while waiting for images to finish
    *  processing. Cleared when `ask()` fires and adds the real message. */
   const [pendingUserMessage, setPendingUserMessage] = useState<Message | null>(
@@ -346,6 +350,7 @@ function App() {
       pendingSubmitRef.current = null;
       setIsSubmitPending(false);
       setPendingUserMessage(null);
+      setCaptureError(null);
 
       reset();
       resetHistory();
@@ -750,6 +755,7 @@ function App() {
     // Immediately show the user's message in chat with a loading placeholder
     // for the screenshot. This prevents double-submit spam and gives instant
     // feedback that the capture is in progress.
+    screenCapturePendingRef.current = true;
     setIsSubmitPending(true);
     setPendingUserMessage({
       id: crypto.randomUUID(),
@@ -768,6 +774,7 @@ function App() {
     try {
       screenshotPath = await invoke<string>('capture_full_screen_command');
     } catch (e) {
+      screenCapturePendingRef.current = false;
       // Capture failed: restore input state so the user can retry or edit.
       setIsSubmitPending(false);
       setPendingUserMessage(null);
@@ -781,6 +788,12 @@ function App() {
       );
       return;
     }
+
+    // Check for mid-flight cancellation before touching any state.
+    // handleCancel sets screenCapturePendingRef.current = false as a signal.
+    const wasCancelled = !screenCapturePendingRef.current;
+    screenCapturePendingRef.current = false;
+    if (wasCancelled) return;
 
     // Capture succeeded: finalize the submit.
     setCaptureError(null);
@@ -916,18 +929,37 @@ function App() {
   }, [attachedImages, ask, setSelectedContext]);
   /* eslint-enable @eslint-react/set-state-in-effect */
 
-  /** Unified cancel handler: reverts a pending submit (undo-send) or cancels
-   *  an active Ollama generation. When reverting, restores the user's query
-   *  and keeps attached images so they can re-submit or edit. */
+  /**
+   * Unified cancel handler: reverts a pending submit (undo-send), clears an
+   * in-flight /screen capture, or cancels an active Ollama generation.
+   *
+   * Three cases:
+   * 1. Image-processing pending (`pendingSubmitRef.current` is set): restore
+   *    query and attached images so the user can re-submit or edit.
+   * 2. Screen-capture in-flight (`isSubmitPending` true but ref is null):
+   *    clear pending state. The async capture may still complete on the Rust
+   *    side, but `isSubmitPending` being false when the result arrives will
+   *    cause `handleScreenSubmit` to attempt ask() on stale state. To prevent
+   *    that, we track the abandonment via a flag so the async tail is a no-op.
+   * 3. Ollama generation active: delegate to the streaming cancel.
+   */
   const handleCancel = useCallback(() => {
     if (isSubmitPending && pendingSubmitRef.current) {
-      // Undo send — restore input state to before the user hit Enter.
+      // Case 1: image-processing pending. Restore input state.
       setQuery(pendingSubmitRef.current.query);
       setSelectedContext(pendingSubmitRef.current.context ?? null);
       pendingSubmitRef.current = null;
       setIsSubmitPending(false);
       setPendingUserMessage(null);
-      // Re-focus the textarea so the user can immediately edit.
+      requestAnimationFrame(() => inputRef.current?.focus());
+      return;
+    }
+    if (isSubmitPending) {
+      // Case 2: /screen capture in flight. Signal cancellation via ref so the
+      // async tail in handleScreenSubmit skips ask() when capture resolves.
+      screenCapturePendingRef.current = false;
+      setIsSubmitPending(false);
+      setPendingUserMessage(null);
       requestAnimationFrame(() => inputRef.current?.focus());
       return;
     }
@@ -1168,7 +1200,7 @@ function App() {
                   </AnimatePresence>
                 )}
 
-                {/* Capture error banner — shown when /screen capture fails so
+                {/* Capture error banner: shown when /screen capture fails so
                     the user knows why the message was not sent. */}
                 {captureError && (
                   <div className="px-4 py-2 border-t border-red-900/30">

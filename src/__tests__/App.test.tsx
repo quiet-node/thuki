@@ -2953,7 +2953,7 @@ describe('App', () => {
       await showOverlay();
 
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      // First attempt fails — error banner appears.
+      // First attempt fails; error banner appears.
       act(() => {
         fireEvent.change(textarea, { target: { value: '/screen ' } });
       });
@@ -2985,7 +2985,7 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      // Paste an image first — this exercises the filter/map on attachedImages inside
+      // Paste an image first. This exercises the filter/map on attachedImages inside
       // handleScreenSubmit, covering the lines for non-null filePath images.
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       const file = new File(['img'], 'photo.png', { type: 'image/png' });
@@ -3073,7 +3073,7 @@ describe('App', () => {
         fireEvent.change(textarea, { target: { value: '/screen check this' } });
       });
 
-      // Submit — capture is now in-flight (pending)
+      // Submit; capture is now in-flight (pending)
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
@@ -3137,7 +3137,7 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      // Paste an image — save_image_command hangs, so filePath stays null
+      // Paste an image; save_image_command hangs, so filePath stays null
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       const file = new File(['img'], 'photo.png', { type: 'image/png' });
       await act(async () => {
@@ -3148,7 +3148,7 @@ describe('App', () => {
         });
       });
 
-      // Submit /screen immediately — image still processing (filePath === null)
+      // Submit /screen immediately; image still processing (filePath === null)
       act(() => {
         fireEvent.change(textarea, { target: { value: '/screen ' } });
       });
@@ -3166,6 +3166,44 @@ describe('App', () => {
           imagePaths: ['/tmp/screen.jpg'],
         }),
       );
+    });
+
+    it('cancelling during in-flight capture prevents ask from being called', async () => {
+      let resolveCapture!: (path: string) => void;
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: new Promise<string>((res) => {
+          resolveCapture = res;
+        }),
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen ' } });
+      });
+
+      // Submit; capture is now in-flight
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Cancel while capture is pending (Stop button)
+      const stopButton = screen.getByRole('button', { name: /stop|cancel/i });
+      act(() => {
+        fireEvent.click(stopButton);
+      });
+
+      // Resolve the capture after cancel
+      await act(async () => {
+        resolveCapture('/tmp/screen.jpg');
+      });
+      await act(async () => {});
+
+      // ask_ollama must NOT be called since the user cancelled
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
     });
   });
 });

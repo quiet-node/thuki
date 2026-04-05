@@ -3,12 +3,12 @@
  *
  * Exposes two Tauri commands:
  *
- * 1. `capture_screenshot_command` — hides the main window, invokes the
+ * 1. `capture_screenshot_command`: hides the main window, invokes the
  *    macOS `screencapture -i` tool (interactive crosshair region select), and
  *    returns the captured image as a base64 string, or `None` if the user
  *    cancelled (pressed Escape without selecting).
  *
- * 2. `capture_full_screen_command` — silently captures all screens using
+ * 2. `capture_full_screen_command`: silently captures all screens using
  *    CoreGraphics `CGWindowListCreateImageFromArray`, excluding Thuki's own
  *    windows by PID. No window hide, no flicker. Returns the absolute file
  *    path of the saved image in `<app_data_dir>/images/`.
@@ -469,8 +469,7 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn capture_full_screen_returns_err_on_non_macos() {
-        use std::path::Path;
-        let result = capture_full_screen(Path::new("/tmp"));
+        let result = capture_full_screen_pixels();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("only supported on macOS"));
     }

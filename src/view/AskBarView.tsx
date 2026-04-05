@@ -140,7 +140,11 @@ const CAMERA_ICON = (
   </svg>
 );
 
-/** Maximum number of images allowed per message (mirrors MAX_IMAGES_PER_MESSAGE in images.rs). */
+/**
+ * Maximum number of manually attached images per message. The backend allows
+ * one additional image from /screen capture, for a total of 4 per message
+ * (MAX_IMAGES_PER_MESSAGE in images.rs).
+ */
 export const MAX_IMAGES = 3;
 
 /** Props for the AskBarView component. */
@@ -510,7 +514,7 @@ export function AskBarView({
             draggable={false}
           />
 
-          {/* Compact history entry point — ask-bar mode only. In chat mode the
+          {/* Compact history entry point: ask-bar mode only. In chat mode the
             history button lives in the ConversationView header. */}
           {!isChatMode && onHistoryOpen && (
             <button

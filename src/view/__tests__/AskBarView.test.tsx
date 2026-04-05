@@ -1327,7 +1327,7 @@ describe('AskBarView', () => {
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       // Initially row 0 is highlighted (only one command, so index stays 0)
       fireEvent.keyDown(textarea, { key: 'ArrowDown' });
-      // With one command, ArrowDown wraps back to 0 — row is still highlighted
+      // With one command, ArrowDown wraps back to 0; row is still highlighted
       const option = screen.getByRole('option');
       expect(option).toHaveAttribute('aria-selected', 'true');
     });

@@ -9,8 +9,8 @@ Captures your screen and attaches it as context for the current message.
 **Usage:** `/screen [optional message]`
 
 **Examples:**
-- `/screen` — sends a screenshot with no additional message
-- `/screen what is this error?` — attaches a screenshot and asks the question
+- `/screen`: sends a screenshot with no additional message
+- `/screen what is this error?`: attaches a screenshot and asks the question
 
 **Behavior:** The screenshot is taken the moment you press Enter. Thuki's own window is excluded from the capture: no flicker, no hide. The image appears in your message bubble exactly like a pasted screenshot.
 

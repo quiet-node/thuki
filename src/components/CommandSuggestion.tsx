@@ -1,5 +1,5 @@
 /**
- * CommandSuggestion — slash command autocomplete popover.
+ * CommandSuggestion: slash command autocomplete popover.
  *
  * Renders above the ask bar when the user types a "/" prefix.
  * The parent (AskBarView) is responsible for computing `filteredCommands`
