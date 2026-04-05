@@ -2549,7 +2549,9 @@ describe('App', () => {
       await showOverlay();
 
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Take screenshot' }));
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Take screenshot' }),
+        );
       });
 
       await act(async () => {
@@ -2567,7 +2569,9 @@ describe('App', () => {
       await showOverlay();
 
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Take screenshot' }));
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Take screenshot' }),
+        );
       });
 
       await act(async () => {
@@ -2595,7 +2599,9 @@ describe('App', () => {
       await showOverlay();
 
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Take screenshot' }));
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Take screenshot' }),
+        );
       });
 
       // Wait for invoke(capture_screenshot) → FileReader → invoke(save_image_command)

@@ -860,7 +860,9 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      expect(screen.getByRole('button', { name: 'Take screenshot' })).not.toBeNull();
+      expect(
+        screen.getByRole('button', { name: 'Take screenshot' }),
+      ).not.toBeNull();
     });
 
     it('calls onScreenshot when clicked', () => {
@@ -975,7 +977,9 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      expect(screen.getByRole('button', { name: 'Take screenshot' })).not.toBeNull();
+      expect(
+        screen.getByRole('button', { name: 'Take screenshot' }),
+      ).not.toBeNull();
     });
   });
 

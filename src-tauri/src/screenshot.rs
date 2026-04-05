@@ -72,8 +72,7 @@ pub async fn capture_screenshot_command(
         return Ok(None); // user cancelled
     }
 
-    let bytes =
-        std::fs::read(&path).map_err(|e| format!("failed to read screenshot file: {e}"))?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("failed to read screenshot file: {e}"))?;
     let _ = std::fs::remove_file(&path);
 
     Ok(Some(encode_as_base64(&bytes)))
@@ -90,7 +89,10 @@ mod tests {
         let path = temp_screenshot_path();
         let s = path.to_str().unwrap();
         assert!(s.starts_with("/tmp/"), "expected /tmp/ prefix, got: {s}");
-        assert!(s.ends_with("-thuki.png"), "expected -thuki.png suffix, got: {s}");
+        assert!(
+            s.ends_with("-thuki.png"),
+            "expected -thuki.png suffix, got: {s}"
+        );
     }
 
     #[test]
