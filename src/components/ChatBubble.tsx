@@ -5,6 +5,7 @@ import { ImageThumbnails } from './ImageThumbnails';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
+import { SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
 
 interface ChatBubbleProps {
   /** The message role determines alignment and color treatment. */
@@ -90,8 +91,14 @@ export function ChatBubble({
                 <ImageThumbnails
                   items={imagePaths.map((p) => ({
                     id: p,
-                    src: p.startsWith('blob:') ? p : convertFileSrc(p),
+                    src:
+                      p === SCREEN_CAPTURE_PLACEHOLDER
+                        ? p
+                        : p.startsWith('blob:')
+                          ? p
+                          : convertFileSrc(p),
                     loading: p.startsWith('blob:'),
+                    placeholder: p === SCREEN_CAPTURE_PLACEHOLDER,
                   }))}
                   onPreview={onImagePreview}
                   size={48}

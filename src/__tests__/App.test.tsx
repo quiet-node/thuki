@@ -2889,7 +2889,6 @@ describe('App', () => {
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'capture_full_screen_command') {
           // Tauri v2 rejects with the Err(String) value as a plain string.
-          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
           return Promise.reject(
             'Screen Recording permission is required to use /screen.',
           );
@@ -2921,7 +2920,6 @@ describe('App', () => {
     it('handles non-Error non-string rejection values', async () => {
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'capture_full_screen_command') {
-          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
           return Promise.reject(42);
         }
       });
@@ -3053,6 +3051,118 @@ describe('App', () => {
         expect.objectContaining({
           message: 'explain',
           quotedText: 'some context',
+          imagePaths: ['/tmp/screen.jpg'],
+        }),
+      );
+    });
+
+    it('shows pending chat bubble immediately on submit before capture resolves', async () => {
+      let resolveCapture!: (path: string) => void;
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: new Promise<string>((res) => {
+          resolveCapture = res;
+        }),
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen check this' } });
+      });
+
+      // Submit — capture is now in-flight (pending)
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Before capture resolves: query should be cleared and app in pending mode
+      expect((textarea as HTMLTextAreaElement).value).toBe('');
+
+      // Resolve the capture and let async work settle
+      await act(async () => {
+        resolveCapture('/tmp/screen.jpg');
+      });
+      await act(async () => {});
+
+      // After capture resolves: ask_ollama should be called
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({ message: 'check this' }),
+      );
+    });
+
+    it('restores query with cleanQuery text when capture fails mid-message', async () => {
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'capture_full_screen_command') {
+          throw new Error('Screen capture timed out');
+        }
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/screen what is this?' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // Query should be restored with the full original message
+      expect((textarea as HTMLTextAreaElement).value).toBe(
+        '/screen what is this?',
+      );
+      expect(screen.getByText('Screen capture timed out')).toBeInTheDocument();
+    });
+
+    it('uses blobUrl for still-processing attached images in the pending bubble', async () => {
+      // save_image_command never resolves: image stays in null-filePath state.
+      // Use enableChannelCaptureWithResponses so channel capture (for ask_ollama)
+      // still works alongside the custom per-command responses.
+      enableChannelCaptureWithResponses({
+        save_image_command: new Promise<string>(() => {}),
+        capture_full_screen_command: '/tmp/screen.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste an image — save_image_command hangs, so filePath stays null
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['img'], 'photo.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      // Submit /screen immediately — image still processing (filePath === null)
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // Capture succeeded; ask_ollama called with only the screenshot
+      // (the attached image never resolved its filePath)
+      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
           imagePaths: ['/tmp/screen.jpg'],
         }),
       );

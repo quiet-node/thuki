@@ -22,3 +22,10 @@ export const COMMANDS: readonly Command[] = [
     description: 'Capture your screen and include it as context',
   },
 ] as const;
+
+/**
+ * Sentinel image-path value used as a loading placeholder while the
+ * /screen capture is in flight. ChatBubble detects this value and
+ * renders a branded screen-capture loading tile instead of a broken image.
+ */
+export const SCREEN_CAPTURE_PLACEHOLDER = 'blob:screen-capture-loading';

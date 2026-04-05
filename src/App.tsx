@@ -14,6 +14,7 @@ import { HistoryPanel } from './components/HistoryPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import type { AttachedImage } from './types/image';
 import { quote } from './config';
+import { SCREEN_CAPTURE_PLACEHOLDER } from './config/commands';
 import './App.css';
 
 /** Ollama model used for this session — must match the Rust DEFAULT_MODEL_NAME. */
@@ -740,34 +741,62 @@ function App() {
     const trimmed = query.trimStart();
     const cleanQuery = trimmed.slice('/screen'.length).trimStart();
 
+    // Snapshot display paths for the pending bubble: use resolved file paths
+    // for already-processed images, blob URLs for still-processing ones.
+    const existingDisplayPaths = attachedImages.map(
+      (img) => img.filePath ?? img.blobUrl,
+    );
+
+    // Immediately show the user's message in chat with a loading placeholder
+    // for the screenshot. This prevents double-submit spam and gives instant
+    // feedback that the capture is in progress.
+    setIsSubmitPending(true);
+    setPendingUserMessage({
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: cleanQuery,
+      quotedText: context,
+      imagePaths: [...existingDisplayPaths, SCREEN_CAPTURE_PLACEHOLDER],
+    });
+    setQuery('');
+    setSelectedContext(null);
+    /* v8 ignore start -- inputRef always set when overlay is visible */
+    if (inputRef.current) inputRef.current.style.height = 'auto';
+    /* v8 ignore stop */
+
     let screenshotPath: string;
     try {
       screenshotPath = await invoke<string>('capture_full_screen_command');
     } catch (e) {
-      // Capture failed — surface the Rust error directly since the backend
-      // already provides descriptive, user-facing messages (permission prompts,
-      // null-image diagnostics, etc.). Tauri v2 rejects with the Err(String)
-      // value as a plain string, not an Error object.
+      // Capture failed: restore input state so the user can retry or edit.
+      setIsSubmitPending(false);
+      setPendingUserMessage(null);
+      setQuery(`/screen${cleanQuery ? ` ${cleanQuery}` : ''}`);
+      setSelectedContext(context ?? null);
+      // Surface the Rust error directly: the backend already provides
+      // descriptive messages (permission prompts, null-image diagnostics, etc.).
+      // Tauri v2 rejects with the Err(String) value as a plain string.
       setCaptureError(
         typeof e === 'string' ? e : e instanceof Error ? e.message : String(e),
       );
       return;
     }
 
+    // Capture succeeded: finalize the submit.
     setCaptureError(null);
+    setIsSubmitPending(false);
+    setPendingUserMessage(null);
+
     const readyPaths = attachedImages
       .filter((img) => img.filePath !== null)
       .map((img) => img.filePath as string);
     readyPaths.push(screenshotPath);
 
     ask(cleanQuery, context, readyPaths);
-    setSelectedContext(null);
-    setQuery('');
     for (const img of attachedImages) {
       URL.revokeObjectURL(img.blobUrl);
     }
     setAttachedImages([]);
-    inputRef.current!.style.height = 'auto';
   }, [
     query,
     selectedContext,
