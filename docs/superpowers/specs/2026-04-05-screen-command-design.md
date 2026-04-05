@@ -41,7 +41,7 @@ The core user experience: the user types `/screen explain this bug`, presses Ent
 Five components are added or modified:
 
 ```
-src-tauri/src/screenshot.rs       NEW  — capture_screenshot Tauri command
+src-tauri/src/screenshot.rs       MOD  — add capture_full_screen() alongside existing interactive capture
 src/config/commands.ts             NEW  — command registry (single source of truth)
 src/components/CommandSuggestion.tsx  NEW  — tab-completion UI above ask bar
 src/view/AskBarView.tsx           MOD  — wires up CommandSuggestion, enforces limits
@@ -50,6 +50,19 @@ docs/commands.md                  NEW  — user-facing commands reference
 ```
 
 Nothing else changes. `useOllama.ts`, `commands.rs`, `history.rs`, and `database.rs` are untouched. `images.rs` receives one constant update (`MAX_IMAGES_PER_MESSAGE`: 3 → 4) and no behavioral changes.
+
+### Relationship to existing screenshot button (PR #31)
+
+`screenshot.rs` already exists and exposes `capture_screenshot_command` — an interactive region-select flow (`screencapture -i`) that hides the window, lets the user draw a crosshair box, and returns base64 PNG. That button and flow are unchanged by this feature.
+
+`/screen` adds a second, distinct capture function to the same file: a full-screen silent capture (SCScreenshotManager / CGWindowListCreateImageFromArray) that excludes Thuki's own window and requires no hide. Both commands live in `screenshot.rs` and serve different use cases:
+
+| | Button (existing) | `/screen` command (new) |
+|---|---|---|
+| Capture area | User-selected region | Full screen |
+| Window hide | Yes (screencapture -i) | No (filter-based exclusion) |
+| Trigger | Click camera button | `/screen` on submit |
+| Returns | base64 PNG | File path in `images/` |
 
 ---
 
@@ -149,11 +162,13 @@ No preview before sending. No thumbnail in the ask bar. The ask bar is clean thr
 
 ### Screenshot Capture (`src-tauri/src/screenshot.rs`)
 
+A new `capture_full_screen(app_handle)` public function is added to the existing `screenshot.rs`. It is wrapped by a new `capture_full_screen_command` Tauri command (thin wrapper, excluded from coverage per existing pattern).
+
 **macOS 14+ (primary path):** `SCScreenshotManager` with an `SCContentFilter` that excludes Thuki's own bundle ID. The filter is constructed before capture so Thuki's NSPanel is absent from the resulting image. No window hide, no flicker.
 
 **macOS 12-13 (fallback):** `CGWindowListCreateImageFromArray`, passing all on-screen window IDs except Thuki's own `CGWindowID`. Also flicker-free.
 
-The captured image is passed as raw bytes directly into `images::save_image(&base_dir, &raw_bytes)` — the same compression pipeline used for pasted images (JPEG, quality 85, max 1920px). The result is a UUID-named `.jpg` file in `<app_data_dir>/images/`.
+The captured image is passed as raw bytes directly into `images::save_image(&base_dir, &raw_bytes)` — the same compression pipeline used for pasted images (JPEG, quality 85, max 1920px). The result is a UUID-named `.jpg` file in `<app_data_dir>/images/`. Unlike the existing button flow, this returns a **file path** (not base64), consistent with how `save_image_command` works for pasted images.
 
 **Required permission:** Screen Recording (`com.apple.security.screen-recording-description`). This is a new permission that Thuki does not currently require. The app must request it and handle the denied case gracefully.
 
