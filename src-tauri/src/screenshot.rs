@@ -41,7 +41,7 @@ pub fn encode_as_base64(bytes: &[u8]) -> String {
 /// Returns `Err` if the file exists but cannot be read.
 pub fn process_screenshot_result(path: &PathBuf) -> Result<Option<String>, String> {
     if !path.exists() {
-        return Ok(None); // user cancelled — screencapture creates no file on Escape
+        return Ok(None); // user cancelled: screencapture creates no file on Escape
     }
     let bytes = std::fs::read(path).map_err(|e| format!("failed to read screenshot file: {e}"))?;
     let _ = std::fs::remove_file(path);
@@ -55,7 +55,7 @@ pub fn process_screenshot_result(path: &PathBuf) -> Result<Option<String>, Strin
 /// Flow:
 /// 1. Hide the main window (so it doesn't appear in the screenshot).
 /// 2. Sleep 200 ms to let the window fully disappear before the crosshair appears.
-/// 3. Run `screencapture -i -x <path>` — blocks until the user selects a region
+/// 3. Run `screencapture -i -x <path>`, which blocks until the user selects a region
 ///    or presses Escape. `-i` = interactive, `-x` = no shutter sound.
 /// 4. Re-show the window via `show_and_make_key()` so the NSPanel becomes the
 ///    key window and the WebView textarea receives keyboard focus reliably.
@@ -154,6 +154,16 @@ fn capture_full_screen_raw() -> Result<(u32, u32, Vec<u8>), String> {
     const BGRA_BITMAP_INFO: u32 =
         K_CG_BITMAP_BYTE_ORDER32_HOST | K_CG_IMAGE_ALPHA_PREMULTIPLIED_FIRST;
 
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        /// Returns true when the current process has active Screen Recording access.
+        /// Unlike CGWindowListCopyWindowInfo (which returns non-null immediately after
+        /// the user clicks "Allow"), this function returns true only after the app is
+        /// restarted post-grant: the reliable way to detect the
+        /// "permission granted but pending restart" state that produces black captures.
+        fn CGPreflightScreenCaptureAccess() -> bool;
+    }
+
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
         fn CGWindowListCopyWindowInfo(option: u32, relativeToWindow: u32) -> CFArrayRef;
@@ -200,15 +210,42 @@ fn capture_full_screen_raw() -> Result<(u32, u32, Vec<u8>), String> {
         // that can cause CGWindowListCreateImage to return null.
         let screen_bounds = CGDisplayBounds(CGMainDisplayID());
 
-        // Probe Screen Recording permission. CGWindowListCopyWindowInfo
-        // returns NULL when the permission has not been granted.
+        // Two-stage permission check for Screen Recording.
+        //
+        // Stage 1: CGPreflightScreenCaptureAccess returns true only when
+        // capture is truly active in this process. After the user clicks
+        // "Allow" in the system dialog, TCC records the grant but the
+        // running process still cannot read pixel data until it restarts.
+        // CGWindowListCopyWindowInfo returns non-null in that window (the
+        // grant is visible to TCC), but CGWindowListCreateImage returns an
+        // all-black image. CGPreflightScreenCaptureAccess is the accurate
+        // gate that tells us whether actual pixels are available right now.
         let option =
             K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS;
-        let window_info_list = CGWindowListCopyWindowInfo(option, K_CG_NULL_WINDOW_ID);
 
+        if !CGPreflightScreenCaptureAccess() {
+            // Distinguish "never granted" from "granted but pending restart"
+            // by probing the window list: it returns null only when permission
+            // has never been granted (or was revoked).
+            let probe = CGWindowListCopyWindowInfo(option, K_CG_NULL_WINDOW_ID);
+            if probe.is_null() {
+                return Err("Screen Recording permission is required to use /screen. \
+                     Grant it in System Settings > Privacy & Security > Screen Recording."
+                    .to_string());
+            }
+            CFRelease(probe);
+            return Err(
+                "Screen Recording permission was just granted but needs a restart to \
+                 activate. Please quit and relaunch Thuki, then try /screen again."
+                    .to_string(),
+            );
+        }
+
+        let window_info_list = CGWindowListCopyWindowInfo(option, K_CG_NULL_WINDOW_ID);
         if window_info_list.is_null() {
-            return Err("Screen Recording permission is required to use /screen. \
-                 Grant it in System Settings > Privacy & Security > Screen Recording."
+            // Defensive: should not happen after preflight passed, but handle gracefully.
+            return Err("Screen Recording permission check failed unexpectedly. \
+                 Try restarting Thuki."
                 .to_string());
         }
 
@@ -253,21 +290,24 @@ fn capture_full_screen_raw() -> Result<(u32, u32, Vec<u8>), String> {
         }
         CFRelease(window_info_list);
 
-        // Capture all on-screen windows below our panel. Since Thuki is an
-        // always-on-top NSPanel, "below" is effectively every other window.
-        // If we could not find our own window ID (shouldn't happen), fall
-        // back to capturing all on-screen windows.
+        // Capture all on-screen windows below our panel, including the desktop
+        // wallpaper and Dock. Omitting kCGWindowListExcludeDesktopElements is
+        // intentional: that flag strips the desktop window (the wallpaper layer),
+        // which produces a black image on an empty desktop. Including it gives a
+        // faithful "what the user sees" composite, matching macOS Screenshot.app.
+        // kCGWindowListOptionOnScreenBelowWindow already excludes Thuki itself by
+        // compositing only windows lower than our_window_id in Z-order.
+        //
+        // Fallback (our_window_id == 0, should not occur in practice): capture all
+        // on-screen windows. Thuki is transparent so its presence in the list does
+        // not corrupt the image.
         let (list_option, relative_to) = if our_window_id != K_CG_NULL_WINDOW_ID {
             (
-                K_CG_WINDOW_LIST_OPTION_ON_SCREEN_BELOW_WINDOW
-                    | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
+                K_CG_WINDOW_LIST_OPTION_ON_SCREEN_BELOW_WINDOW,
                 our_window_id,
             )
         } else {
-            (
-                K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
-                K_CG_NULL_WINDOW_ID,
-            )
+            (K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY, K_CG_NULL_WINDOW_ID)
         };
 
         let cg_image = CGWindowListCreateImage(
