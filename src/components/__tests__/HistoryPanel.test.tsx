@@ -147,7 +147,7 @@ describe('HistoryPanel', () => {
     expect(props.onLoadConversation).toHaveBeenCalledWith('c1');
   });
 
-  it('shows SwitchConfirmation when hasCurrentMessages is true and item clicked', async () => {
+  it('shows SwitchConfirmation and hides search when hasCurrentMessages is true and item clicked', async () => {
     const props = makeProps({ hasCurrentMessages: true });
     render(<HistoryPanel {...props} />);
 
@@ -156,6 +156,7 @@ describe('HistoryPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /react basics/i }));
 
     expect(screen.getByText(/switch conversations/i)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/search/i)).toBeNull();
     expect(props.onLoadConversation).not.toHaveBeenCalled();
   });
 

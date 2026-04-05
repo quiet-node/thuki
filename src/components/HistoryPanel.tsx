@@ -237,8 +237,8 @@ export function HistoryPanel({
 
   return (
     <div className="history-panel flex flex-col w-full">
-      {/* Search input — hidden when only showing the new-conversation confirmation */}
-      {!pendingNewConversation && (
+      {/* Search input — hidden when showing any confirmation prompt */}
+      {pendingId === null && !pendingNewConversation && (
         <div className="px-3 pt-3 pb-2 border-b border-surface-border">
           <input
             type="text"
