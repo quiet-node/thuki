@@ -1,7 +1,7 @@
 # Thuki
 
 <p align="center">
-  <img src="public/thuki-logo.png" alt="Thuki logo" width="140" />
+  <img src="public/thuki-logo.png" alt="Thuki logo" width="300" />
 </p>
 
 <p align="center">
