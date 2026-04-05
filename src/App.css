@@ -145,9 +145,53 @@ body {
   scrollbar-gutter: stable;
 }
 
+/* ─── Code Block — Premium Brand Style ───
+ * Streamdown's utility classes (border-border, bg-background, bg-sidebar) don't
+ * resolve against our custom theme. Override every layer explicitly.
+ *
+ * Layout note: Streamdown positions the copy button via a sticky div with
+ * `-mt-10` to overlap it with the header row. This trick doesn't work reliably
+ * in Tauri's WebKit webview. We fix it by making `code-block` a positioning
+ * context (position: relative) and targeting the sticky wrapper with `:has()`
+ * to make it absolutely-positioned flush with the header row instead.
+ *
+ * Plain CSS outside @layer overrides Tailwind utility classes in @layer utilities.
+ */
+[data-streamdown='code-block'] {
+  position: relative; /* anchors the absolutely-repositioned actions wrapper */
+  background: rgba(18, 18, 22, 0.95);
+  border-color: rgba(255, 141, 92, 0.22);
+  box-shadow:
+    0 0 0 1px rgba(255, 141, 92, 0.06),
+    0 4px 16px -4px rgba(0, 0, 0, 0.5);
+}
+
+/* Sticky wrapper Streamdown injects around code-block-actions.
+ * Override sticky → absolute so it sits at the top-right of the header row. */
+[data-streamdown='code-block']
+  > div:has([data-streamdown='code-block-actions']) {
+  position: absolute;
+  top: 8px; /* matches the outer p-2 padding so it aligns with the header */
+  right: 8px;
+  height: 32px; /* matches h-8 on the header */
+  margin: 0;
+  padding: 0;
+  pointer-events: auto;
+}
+
+[data-streamdown='code-block-header'] {
+  color: rgba(255, 141, 92, 0.55);
+  padding-left: 8px;
+}
+
+[data-streamdown='code-block-body'] {
+  background: transparent;
+  border: none;
+  border-top: 1px solid rgba(255, 141, 92, 0.08);
+}
+
 /* ─── Code Block Copy Button ───
- * Strip Streamdown's floating pill chrome and replace it with a minimal
- * ghost icon — small, transparent, consistent with the app's CopyButton.
+ * Strip Streamdown's floating pill chrome — transparent ghost icon only.
  * Plain CSS outside @layer overrides Tailwind utility classes in @layer utilities.
  */
 [data-streamdown='code-block-actions'] {
@@ -157,6 +201,9 @@ body {
   -webkit-backdrop-filter: none;
   padding: 0;
   gap: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
 }
 [data-streamdown='code-block-actions'] button {
   color: rgba(240, 240, 242, 0.3);
