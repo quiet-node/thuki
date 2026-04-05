@@ -207,6 +207,7 @@ The big leap: from answering questions to taking action.
 
 More flexibility over the model powering Thuki.
 
+- **Native settings panel (⌘,):** a proper macOS preferences window to configure your model, Ollama endpoint, activation shortcut, slash commands, and system prompt. No config files needed.
 - **In-app model switching:** swap between any Ollama model from the UI without rebuilding
 - **Multiple provider support:** opt in to OpenAI, Anthropic, or any OpenAI-compatible endpoint as an alternative to local Ollama
 - **Custom activation shortcut:** change the double-tap trigger to any key or combo you prefer
