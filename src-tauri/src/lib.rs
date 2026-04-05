@@ -41,6 +41,29 @@ use tauri_nspanel::{
     tauri_panel, CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt,
 };
 
+// ─── macOS permissions pre-flight ───────────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+/// Requests Screen Recording permission from macOS.
+///
+/// Triggers the standard system privacy dialog on first call. Subsequent calls
+/// return immediately once the user has granted permission. Calling this at
+/// startup ensures the user sees all required permission prompts in one session
+/// rather than encountering the screen recording dialog mid-use when the
+/// screenshot feature is first invoked.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn request_screen_capture_access() {
+    unsafe {
+        CGRequestScreenCaptureAccess();
+    }
+}
+
 // ─── NSPanel definition (macOS only) ────────────────────────────────────────
 
 // ThukiPanel — custom NSPanel subclass for the overlay.
@@ -470,6 +493,14 @@ pub fn run() {
             // ── NSPanel conversion (macOS only) ──────────────────────────
             #[cfg(target_os = "macos")]
             init_panel(app.app_handle());
+
+            // ── Permission pre-flight (macOS only) ───────────────────────
+            // Request all required permissions upfront at first launch so
+            // the user can grant everything in one session rather than
+            // hitting permission dialogs mid-use. Accessibility is requested
+            // inside the activator; Screen Recording is requested here.
+            #[cfg(target_os = "macos")]
+            request_screen_capture_access();
 
             // ── System tray icon + menu ───────────────────────────────────
             let show_item = MenuItem::with_id(app, "show", "Open Thuki", true, None::<&str>)?;

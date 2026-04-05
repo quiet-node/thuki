@@ -71,19 +71,22 @@ jobs:
           codesign --deep --force --sign - src-tauri/target/release/bundle/macos/Thuki.app
           codesign --verify --verbose src-tauri/target/release/bundle/macos/Thuki.app
 
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Create DMG installer
         run: |
-          mkdir -p /tmp/thuki-dmg
-          cp -r src-tauri/target/release/bundle/macos/Thuki.app /tmp/thuki-dmg/
-          ln -s /Applications /tmp/thuki-dmg/Applications
           mkdir -p src-tauri/target/release/bundle/dmg
-          hdiutil create \
-            -volname "Thuki" \
-            -srcfolder /tmp/thuki-dmg \
-            -ov \
-            -format UDZO \
-            src-tauri/target/release/bundle/dmg/Thuki.dmg
-          rm -rf /tmp/thuki-dmg
+          create-dmg \
+            --volname "Thuki" \
+            --window-pos 200 120 \
+            --window-size 600 380 \
+            --icon-size 128 \
+            --icon "Thuki.app" 170 190 \
+            --hide-extension "Thuki.app" \
+            --app-drop-link 430 190 \
+            "src-tauri/target/release/bundle/dmg/Thuki.dmg" \
+            "src-tauri/target/release/bundle/macos"
 
       - name: Upload release asset
         env:
