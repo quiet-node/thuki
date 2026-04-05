@@ -18,6 +18,7 @@
 pub mod commands;
 pub mod database;
 pub mod history;
+pub mod images;
 
 #[cfg(target_os = "macos")]
 mod activator;
@@ -394,6 +395,46 @@ fn init_panel(app_handle: &tauri::AppHandle) {
     panel.set_has_shadow(false);
 }
 
+// ─── Image cleanup ──────────────────────────────────────────────────────────
+
+/// Interval between periodic orphaned-image cleanup sweeps.
+const IMAGE_CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Runs a single orphaned-image cleanup sweep. Thin orchestration wrapper
+/// that delegates to `database::get_all_image_paths` and
+/// `images::cleanup_orphaned_images`, both independently tested.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn run_image_cleanup(app_handle: &tauri::AppHandle) {
+    let db = app_handle.state::<history::Database>();
+    let conn = match db.0.lock() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let referenced = database::get_all_image_paths(&conn).unwrap_or_default();
+    drop(conn);
+
+    let base_dir = match app_handle.path().app_data_dir() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let _ = images::cleanup_orphaned_images(&base_dir, &referenced);
+}
+
+/// Spawns a background Tokio task that runs the cleanup sweep on a fixed
+/// interval. Thin async wrapper — delegates to `run_image_cleanup`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn spawn_periodic_image_cleanup(app_handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(IMAGE_CLEANUP_INTERVAL);
+        // Skip the first tick (startup cleanup already ran synchronously).
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            run_image_cleanup(&app_handle);
+        }
+    });
+}
+
 // ─── Application entry point ─────────────────────────────────────────────────
 
 /// Initialises and runs the Tauri application.
@@ -493,9 +534,17 @@ pub fn run() {
             app.manage(commands::SystemPrompt(commands::load_system_prompt()));
 
             // ── SQLite database for conversation history ──────────
-            let db_conn = database::open_database()
-                .expect("failed to initialise SQLite database at ~/.thuki/thuki.db");
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("failed to resolve app data directory");
+            let db_conn = database::open_database(&app_data_dir)
+                .expect("failed to initialise SQLite database");
             app.manage(history::Database(std::sync::Mutex::new(db_conn)));
+
+            // ── Orphaned image cleanup (startup + periodic) ─────────
+            run_image_cleanup(app.handle());
+            spawn_periodic_image_cleanup(app.handle().clone());
 
             Ok(())
         })
@@ -518,6 +567,12 @@ pub fn run() {
             history::delete_conversation,
             #[cfg(not(coverage))]
             history::generate_title,
+            #[cfg(not(coverage))]
+            images::save_image_command,
+            #[cfg(not(coverage))]
+            images::remove_image_command,
+            #[cfg(not(coverage))]
+            images::cleanup_orphaned_images_command,
             notify_overlay_hidden,
             set_window_frame
         ])

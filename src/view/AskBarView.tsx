@@ -1,8 +1,11 @@
 import { motion } from 'framer-motion';
 import type React from 'react';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
+import { ImageThumbnails } from '../components/ImageThumbnails';
+import type { AttachedImage } from '../types/image';
+import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
 
 /**
  * Hoisted static SVG — prevents re-allocation on every render cycle.
@@ -114,9 +117,10 @@ const HISTORY_ICON = (
   </svg>
 );
 
-/**
- * Props for the AskBarView component.
- */
+/** Maximum number of images allowed per message (mirrors MAX_IMAGES_PER_MESSAGE in images.rs). */
+const MAX_IMAGES = 3;
+
+/** Props for the AskBarView component. */
 interface AskBarViewProps {
   /** The current user input text. */
   query: string;
@@ -126,6 +130,8 @@ interface AskBarViewProps {
   isChatMode: boolean;
   /** True if the AI is actively generating a response. */
   isGenerating: boolean;
+  /** True while waiting for images to finish processing before submitting. */
+  isSubmitPending?: boolean;
   /** Submit handler fired when the user commits their message. */
   onSubmit: () => void;
   /** Cancel handler fired when the user stops an active generation. */
@@ -139,6 +145,14 @@ interface AskBarViewProps {
    * Omit to hide the history icon entirely.
    */
   onHistoryOpen?: () => void;
+  /** Currently attached images (may still be processing in the background). */
+  attachedImages: AttachedImage[];
+  /** Called when the user pastes or drops image files. */
+  onImagesAttached: (files: File[]) => void;
+  /** Called when the user removes an attached image by ID. */
+  onImageRemove: (id: string) => void;
+  /** Called when the user clicks a thumbnail to preview it. */
+  onImagePreview: (id: string) => void;
 }
 
 /**
@@ -152,13 +166,22 @@ export function AskBarView({
   setQuery,
   isChatMode,
   isGenerating,
+  isSubmitPending = false,
   onSubmit,
   onCancel,
   inputRef,
   selectedText,
   onHistoryOpen,
+  attachedImages,
+  onImagesAttached,
+  onImageRemove,
+  onImagePreview,
 }: AskBarViewProps) {
-  const canSubmit = query.trim().length > 0 && !isGenerating;
+  /** True when the UI should be locked — either generating or waiting for images. */
+  const isBusy = isGenerating || isSubmitPending;
+  const canSubmit =
+    (query.trim().length > 0 || attachedImages.length > 0) && !isBusy;
+  const [isDragOver, setIsDragOver] = useState(false);
 
   /**
    * Auto-resizes the textarea to fit its content up to a maximum height.
@@ -188,8 +211,86 @@ export function AskBarView({
     [onSubmit],
   );
 
+  /**
+   * Filters and forwards valid image files to the parent for processing.
+   * Rejects non-image files and files exceeding the 30MB size cap.
+   */
+  const processImageFiles = useCallback(
+    (files: FileList | null) => {
+      if (!files || isBusy) return;
+      const remaining = MAX_IMAGES - attachedImages.length;
+      if (remaining <= 0) return;
+
+      const accepted: File[] = [];
+      for (let i = 0; i < files.length && accepted.length < remaining; i++) {
+        if (
+          files[i].type.startsWith('image/') &&
+          files[i].size <= MAX_IMAGE_SIZE_BYTES
+        ) {
+          accepted.push(files[i]);
+        }
+      }
+      if (accepted.length > 0) {
+        onImagesAttached(accepted);
+      }
+    },
+    [isBusy, attachedImages.length, onImagesAttached],
+  );
+
+  /** Handles clipboard paste — extracts image items from clipboardData. */
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items || isBusy) return;
+
+      const remaining = MAX_IMAGES - attachedImages.length;
+      if (remaining <= 0) return;
+
+      const imageFiles: File[] = [];
+      for (let i = 0; i < items.length && imageFiles.length < remaining; i++) {
+        if (items[i].type.startsWith('image/')) {
+          const file = items[i].getAsFile();
+          if (file && file.size <= MAX_IMAGE_SIZE_BYTES) {
+            imageFiles.push(file);
+          }
+        }
+      }
+
+      if (imageFiles.length === 0) return;
+      e.preventDefault();
+      onImagesAttached(imageFiles);
+    },
+    [isBusy, attachedImages.length, onImagesAttached],
+  );
+
+  const handleDragOver = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      if (!isBusy) setIsDragOver(true);
+    },
+    [isBusy],
+  );
+
+  const handleDragLeave = useCallback(() => {
+    setIsDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragOver(false);
+      processImageFiles(e.dataTransfer?.files ?? null);
+    },
+    [processImageFiles],
+  );
+
   return (
-    <div className="flex flex-col w-full shrink-0">
+    <div
+      className={`flex flex-col w-full shrink-0 ${isDragOver ? 'ring-2 ring-primary/40 ring-inset rounded-lg' : ''}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {selectedText && (
         <div className="px-4 pt-2 pb-0">
           <p className="italic text-xs text-text-secondary select-text whitespace-pre-wrap">
@@ -201,6 +302,20 @@ export function AskBarView({
             )}
             &rdquo;
           </p>
+        </div>
+      )}
+      {attachedImages.length > 0 && (
+        <div className="px-4 pt-2 pb-0">
+          <ImageThumbnails
+            items={attachedImages.map((img) => ({
+              id: img.id,
+              src: img.blobUrl,
+              loading: img.filePath === null,
+            }))}
+            onPreview={onImagePreview}
+            onRemove={onImageRemove}
+            size={56}
+          />
         </div>
       )}
       <div className="flex items-center w-full px-3 py-2.5 gap-2">
@@ -231,7 +346,8 @@ export function AskBarView({
           value={query}
           onChange={handleTextareaChange}
           onKeyDown={handleKeyDown}
-          disabled={isGenerating}
+          onPaste={handlePaste}
+          disabled={isBusy}
           autoFocus
           rows={1}
           placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
@@ -240,20 +356,20 @@ export function AskBarView({
 
         <motion.button
           type="button"
-          onClick={isGenerating ? onCancel : onSubmit}
-          disabled={!canSubmit && !isGenerating}
-          whileHover={canSubmit || isGenerating ? { scale: 1.08 } : undefined}
-          whileTap={canSubmit || isGenerating ? { scale: 0.92 } : undefined}
+          onClick={isBusy ? onCancel : onSubmit}
+          disabled={!canSubmit && !isBusy}
+          whileHover={canSubmit || isBusy ? { scale: 1.08 } : undefined}
+          whileTap={canSubmit || isBusy ? { scale: 0.92 } : undefined}
           className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-colors duration-200 ${
-            isGenerating
+            isBusy
               ? 'stop-btn-ring bg-red-500/10 text-red-400 cursor-pointer'
               : canSubmit
                 ? 'bg-primary text-neutral cursor-pointer'
                 : 'bg-surface-elevated text-text-secondary cursor-default'
           }`}
-          aria-label={isGenerating ? 'Stop generating' : 'Send message'}
+          aria-label={isBusy ? 'Stop generating' : 'Send message'}
         >
-          {isGenerating ? (
+          {isBusy ? (
             <>
               {BORDER_TRACE_RING}
               {STOP_ICON}

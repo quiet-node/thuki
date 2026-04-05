@@ -7,6 +7,12 @@ import { clearEventHandlers, resetChannelCapture } from './mocks/tauri';
 
 export const server = setupServer(...handlers);
 
+/**
+ * Counter for deterministic blob URL generation in tests.
+ * Reset between tests to ensure predictable URL values.
+ */
+let blobUrlCounter = 0;
+
 beforeAll(() => {
   server.listen({ onUnhandledRequest: 'error' });
 });
@@ -16,6 +22,7 @@ afterEach(() => {
   cleanup();
   clearEventHandlers();
   resetChannelCapture();
+  blobUrlCounter = 0;
   vi.restoreAllMocks();
 });
 
@@ -77,3 +84,12 @@ globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
   return 0;
 };
 globalThis.cancelAnimationFrame = () => {};
+
+/**
+ * Mock URL.createObjectURL / revokeObjectURL: jsdom doesn't implement Blob URLs.
+ * Returns a deterministic fake blob URL so tests can assert against it.
+ */
+URL.createObjectURL = vi.fn(
+  () => `blob:http://localhost/fake-blob-${++blobUrlCounter}`,
+);
+URL.revokeObjectURL = vi.fn();

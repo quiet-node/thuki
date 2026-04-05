@@ -1038,6 +1038,68 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
+    it('handleNewConversation revokes blob URLs when images are attached', async () => {
+      enableChannelCaptureWithResponses({
+        list_conversations: [],
+        save_image_command: '/tmp/img.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Get into chat mode with an unsaved turn
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'question' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'answer' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // Paste an image while in chat mode (unsaved conversation)
+      const replyInput = screen.getByPlaceholderText('Reply...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(replyInput, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+
+      const revokeSpy = vi.mocked(URL.revokeObjectURL);
+      revokeSpy.mockClear();
+
+      // Click + → SwitchConfirmation (unsaved conversation)
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'New conversation' }),
+        );
+      });
+
+      // Click "Start New" → resetForNewConversation revokes blob URLs
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Start New' }));
+      });
+
+      expect(revokeSpy).toHaveBeenCalled();
+      expect(
+        screen.queryByRole('list', { name: /attached images/i }),
+      ).toBeNull();
+    });
+
     it('handleNewConversation saves then resets on Save & Start New', async () => {
       enableChannelCaptureWithResponses({
         list_conversations: [],
@@ -1151,7 +1213,7 @@ describe('App', () => {
           {
             id: 'conv-other2',
             title: 'Other chat',
-            model: 'llama3.2:3b',
+            model: 'gemma3:4b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1208,7 +1270,7 @@ describe('App', () => {
             {
               id: 'c2',
               title: 'Other chat',
-              model: 'llama3.2:3b',
+              model: 'gemma3:4b',
               updated_at: 1,
               message_count: 1,
             },
@@ -1279,7 +1341,7 @@ describe('App', () => {
           {
             id: 'conv-other',
             title: 'Switch target',
-            model: 'llama3.2:3b',
+            model: 'gemma3:4b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1356,7 +1418,7 @@ describe('App', () => {
           {
             id: 'conv-target',
             title: 'My chat',
-            model: 'llama3.2:3b',
+            model: 'gemma3:4b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1500,7 +1562,7 @@ describe('App', () => {
           {
             id: 'conv-active',
             title: 'Active chat',
-            model: 'llama3.2:3b',
+            model: 'gemma3:4b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1562,7 +1624,7 @@ describe('App', () => {
             {
               id: 'c1',
               title: 'Chat',
-              model: 'llama3.2:3b',
+              model: 'gemma3:4b',
               updated_at: 1,
               message_count: 1,
             },
@@ -1596,7 +1658,7 @@ describe('App', () => {
           {
             id: 'conv-unrelated',
             title: 'Unrelated',
-            model: 'llama3.2:3b',
+            model: 'gemma3:4b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1623,6 +1685,926 @@ describe('App', () => {
         conversationId: 'conv-unrelated',
       });
     });
+  });
+
+  // ─── Image integration ─────────────────────────────────────────────────────
+
+  describe('image integration', () => {
+    /** Helper: paste an image file into the textarea and wait for thumbnails. */
+    async function pasteImage() {
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['fake-img-data'], 'photo.png', {
+        type: 'image/png',
+      });
+      const clipboardData = {
+        items: [{ type: 'image/png', getAsFile: () => file }],
+      };
+      await act(async () => {
+        fireEvent.paste(textarea, { clipboardData });
+      });
+      // Thumbnails appear immediately via blob URL (before backend completes)
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+    }
+
+    it('handleImagesAttached stages images and shows thumbnails', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImage();
+
+      // Wait for FileReader + invoke to complete in background
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.objectContaining({
+              imageDataBase64: expect.any(String),
+            }),
+          );
+        });
+      });
+
+      // Thumbnails should still be present
+      expect(
+        screen.getByRole('list', { name: /attached images/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('handleImageRemove removes thumbnail and calls remove_image_command', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImage();
+
+      // Wait for backend to resolve (filePath set)
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      invoke.mockClear();
+
+      // Click remove button on the thumbnail
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /remove/i }));
+      });
+
+      expect(invoke).toHaveBeenCalledWith('remove_image_command', {
+        path: '/tmp/staged/img1.jpg',
+      });
+      expect(
+        screen.queryByRole('list', { name: /attached images/i }),
+      ).toBeNull();
+    });
+
+    it('handleSubmit with images passes imagePaths and clears attachedImages', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImage();
+
+      // Wait for backend to resolve (filePath set)
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      // Type a message and submit
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'describe this' } });
+      });
+
+      invoke.mockClear();
+      enableChannelCapture();
+
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // ask_ollama should be called with imagePaths
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: 'describe this',
+          imagePaths: ['/tmp/staged/img1.jpg'],
+        }),
+      );
+    });
+
+    it('submits with images and no text', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImage();
+
+      // Wait for backend to resolve
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      invoke.mockClear();
+      enableChannelCapture();
+
+      // Submit with Enter (no text, just images)
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // ask_ollama should be called with empty message but imagePaths
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: '',
+          imagePaths: ['/tmp/staged/img1.jpg'],
+        }),
+      );
+    });
+
+    it('previewImage opens ImagePreviewModal and closing clears it', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImage();
+
+      // Click preview button on thumbnail
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /preview/i }));
+      });
+
+      // ImagePreviewModal should be open (has role="dialog")
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+      // Close the modal
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /close preview/i }));
+      });
+
+      // Dialog should be gone
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('handleImagesAttached removes image when backend fails', async () => {
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'save_image_command') throw new Error('disk full');
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.drop(
+          document.querySelector('[class*="flex flex-col w-full shrink-0"]')!,
+          {
+            preventDefault: vi.fn(),
+            dataTransfer: { files: [file] },
+          },
+        );
+      });
+
+      // Thumbnail appears immediately via blob URL
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+
+      // Wait for FileReader + invoke to settle — failed image gets removed
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      // Image should be removed after backend failure
+      await vi.waitFor(() => {
+        expect(
+          screen.queryByRole('list', { name: /attached images/i }),
+        ).toBeNull();
+      });
+    });
+
+    it('handleImagesAttached skips images that fail to stage', async () => {
+      // First call succeeds, second call fails
+      let saveCallCount = 0;
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // channel capture — no-op for this test
+          }
+          if (cmd === 'save_image_command') {
+            saveCallCount++;
+            if (saveCallCount === 2) throw new Error('disk full');
+            return '/tmp/staged/img1.jpg';
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Drop two image files via the AskBarView wrapper
+      const askBarWrapper = document.querySelector(
+        '[class*="flex flex-col w-full shrink-0"]',
+      );
+      expect(askBarWrapper).not.toBeNull();
+
+      const file1 = new File(['data1'], 'img1.png', { type: 'image/png' });
+      const file2 = new File(['data2'], 'img2.png', { type: 'image/png' });
+      fireEvent.drop(askBarWrapper!, {
+        preventDefault: vi.fn(),
+        dataTransfer: { files: [file1, file2] },
+      });
+
+      // Both thumbnails appear immediately
+      await vi.waitFor(() => {
+        expect(screen.getAllByRole('listitem')).toHaveLength(2);
+      });
+
+      // Wait for both backend calls to settle
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(saveCallCount).toBe(2);
+        });
+      });
+
+      // Failed image gets removed, only one remains
+      await vi.waitFor(() => {
+        expect(screen.getAllByRole('listitem')).toHaveLength(1);
+      });
+    });
+
+    it('handleChatImagePreview opens modal for chat history image', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImage();
+
+      // Wait for backend to resolve
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      // Type and submit to create a user message with image
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'what is this?' } });
+      });
+
+      invoke.mockClear();
+      enableChannelCapture();
+
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // Simulate AI response completing
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'It is' });
+        getLastChannel()?.simulateMessage({ type: 'Token', data: ' a cat.' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+
+      // The user message should have a thumbnail from chat history (via convertFileSrc)
+      // Find the preview button in the chat bubble (not the ask bar)
+      const previewButtons = screen.getAllByRole('button', {
+        name: /preview/i,
+      });
+      // The chat bubble thumbnail should be present
+      expect(previewButtons.length).toBeGreaterThan(0);
+
+      await act(async () => {
+        fireEvent.click(previewButtons[0]);
+      });
+
+      // ImagePreviewModal should be open
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+      // Close it
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /close preview/i }));
+      });
+
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('handleChatImagePreview passes blob URLs through without convertFileSrc', async () => {
+      // Make save_image_command hang so the image stays as a blob URL
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // channel capture
+          }
+          if (cmd === 'save_image_command') {
+            return new Promise<string>(() => {}); // never resolves
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste and submit while still processing → pendingUserMessage with blob URL
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'what is this?' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Pending user message should be visible in chat with a blob URL thumbnail
+      await vi.waitFor(() => {
+        expect(screen.getByText('what is this?')).toBeInTheDocument();
+      });
+
+      // Click the preview button in the chat bubble — should open the modal
+      // with the blob URL directly (no convertFileSrc wrapping).
+      const previewButtons = screen.getAllByRole('button', {
+        name: /preview/i,
+      });
+      expect(previewButtons.length).toBeGreaterThan(0);
+
+      await act(async () => {
+        fireEvent.click(previewButtons[0]);
+      });
+
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+      // Flush stale FileReader macrotask so it doesn't leak into the next test.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+    });
+
+    it('handleImageRemove is safe when called twice for the same image', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImage();
+
+      // Wait for backend to resolve
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      invoke.mockClear();
+
+      // Click remove twice rapidly — the second call should be a no-op
+      // (the functional updater in setAttachedImages will find no matching
+      // image on the second pass, exercising the !img branch).
+      const removeBtn = screen.getByRole('button', { name: /remove/i });
+      await act(async () => {
+        fireEvent.click(removeBtn);
+        fireEvent.click(removeBtn);
+      });
+
+      // remove_image_command should only be called once
+      const removeCalls = invoke.mock.calls.filter(
+        (call) => call[0] === 'remove_image_command',
+      );
+      expect(removeCalls).toHaveLength(1);
+    });
+
+    it('handleImageRemove revokes blob URL without calling remove_image_command when filePath is null', async () => {
+      // Make save_image_command hang forever (never resolve)
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // channel capture — no-op
+          }
+          if (cmd === 'save_image_command') {
+            return new Promise(() => {}); // never resolves
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste an image — thumbnail appears immediately with null filePath
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+
+      invoke.mockClear();
+
+      // Remove the image while filePath is still null
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /remove/i }));
+      });
+
+      // Should NOT call remove_image_command (no file to delete)
+      expect(invoke).not.toHaveBeenCalledWith(
+        'remove_image_command',
+        expect.anything(),
+      );
+      expect(
+        screen.queryByRole('list', { name: /attached images/i }),
+      ).toBeNull();
+    });
+
+    it('defers submit when images are still processing and fires when ready', async () => {
+      // Flush any stale macrotasks (e.g. FileReader.onload from prior tests)
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+
+      // Track save_image_command calls scoped to THIS test
+      let resolveSave: ((path: string) => void) | null = null;
+      const savePromises: Promise<string>[] = [];
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // Accept channel for ask_ollama
+          }
+          if (cmd === 'save_image_command') {
+            const p = new Promise<string>((resolve) => {
+              resolveSave = resolve;
+            });
+            savePromises.push(p);
+            return p;
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste an image — thumbnail appears immediately (filePath null)
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      // Wait for this test's FileReader to complete and call save_image_command
+      await act(async () => {
+        await vi.waitFor(() => expect(savePromises).toHaveLength(1));
+      });
+
+      // Type and submit while image is still processing
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'describe this' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Should show "Processing images" state
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+
+      // Resolve the image — triggers deferred submit chain
+      resolveSave!('/tmp/staged/img1.jpg');
+
+      // Flush async chain: promise → state update → effect → ask → invoke
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      // User message should appear in the chat (ask() fired the real submit)
+      expect(screen.getByText('describe this')).toBeInTheDocument();
+    });
+
+    it('stop button cancels active generation via handleCancel', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/img.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Start a normal text conversation (no images)
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // Should be generating — stop button visible
+      const stopBtn = screen.getByRole('button', { name: /stop/i });
+      expect(stopBtn).toBeInTheDocument();
+
+      // Click stop — should call cancel_generation
+      invoke.mockClear();
+      enableChannelCapture();
+
+      await act(async () => {
+        fireEvent.click(stopBtn);
+      });
+
+      expect(invoke).toHaveBeenCalledWith('cancel_generation');
+    });
+
+    it('cancelling during pending submit restores input (undo send)', async () => {
+      // Flush stale macrotasks from prior tests
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // Accept channel
+          }
+          if (cmd === 'save_image_command') {
+            return new Promise<string>(() => {}); // never resolves
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste an image
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+
+      // Type and submit while image is still processing
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'my question' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Should be in chat mode with stop button
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+
+      // Click stop to cancel the pending submit
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /stop/i }));
+      });
+
+      // Should revert to ask-bar mode with the query restored
+      const restoredTextarea = screen.getByPlaceholderText(
+        'Ask Thuki anything...',
+      );
+      expect(restoredTextarea).toBeInTheDocument();
+      expect((restoredTextarea as HTMLTextAreaElement).value).toBe(
+        'my question',
+      );
+
+      // Images should still be visible (still processing in background)
+      expect(
+        screen.getByRole('list', { name: /attached images/i }),
+      ).toBeInTheDocument();
+
+      // ask_ollama should never have been called
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+    });
+
+    it('waits for all images before firing deferred submit', async () => {
+      // Flush stale macrotasks from prior tests
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+
+      // Two images: each gets its own resolve function
+      const resolvers: ((path: string) => void)[] = [];
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // Accept channel
+          }
+          if (cmd === 'save_image_command') {
+            return new Promise<string>((resolve) => {
+              resolvers.push(resolve);
+            });
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Drop two images at once
+      const askBarWrapper = document.querySelector(
+        '[class*="flex flex-col w-full shrink-0"]',
+      )!;
+      const file1 = new File(['d1'], 'a.png', { type: 'image/png' });
+      const file2 = new File(['d2'], 'b.png', { type: 'image/png' });
+      fireEvent.drop(askBarWrapper, {
+        preventDefault: vi.fn(),
+        dataTransfer: { files: [file1, file2] },
+      });
+
+      // Wait for both save_image_command calls
+      await act(async () => {
+        await vi.waitFor(() => expect(resolvers).toHaveLength(2));
+      });
+
+      // Submit while both images are still processing
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'two images' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+
+      // Resolve ONLY the first image — allReady should still be false
+      await act(async () => {
+        resolvers[0]('/tmp/img1.jpg');
+      });
+      await act(async () => {});
+
+      // Still processing — second image not ready
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+
+      // Resolve the second image — now allReady is true, submit fires
+      await act(async () => {
+        resolvers[1]('/tmp/img2.jpg');
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      // User message should appear
+      expect(screen.getByText('two images')).toBeInTheDocument();
+    });
+
+    it('cancels deferred submit when all images fail', async () => {
+      // Make save_image_command hang then reject
+      let rejectSave: ((err: Error) => void) | null = null;
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // channel capture
+          }
+          if (cmd === 'save_image_command') {
+            return new Promise<string>((_, reject) => {
+              rejectSave = reject;
+            });
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste and submit while processing
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'describe' } });
+      });
+
+      // Wait for FileReader to complete and save_image_command to be invoked
+      // (which sets rejectSave via the promise constructor).
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(rejectSave).not.toBeNull();
+        });
+      });
+
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Waiting state
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('button', { name: /stop/i }),
+        ).toBeInTheDocument();
+      });
+
+      // Reject the image — it should be removed and pending submit cancelled
+      await act(async () => {
+        rejectSave!(new Error('disk full'));
+      });
+
+      // Image removed → no thumbnails → pending submit cancelled
+      await vi.waitFor(() => {
+        expect(
+          screen.queryByRole('list', { name: /attached images/i }),
+        ).toBeNull();
+      });
+
+      // ask_ollama should never have been called
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+
+      // The "Processing images" button should be gone — back to normal send
+      expect(
+        screen.getByRole('button', { name: /send message/i }),
+      ).toBeInTheDocument();
+
+      // User's query should be restored so their text isn't lost
+      expect(screen.getByPlaceholderText('Ask Thuki anything...')).toHaveValue(
+        'describe',
+      );
+    });
+  });
+
+  it('revokes blob URLs when overlay reopens with attached images', async () => {
+    enableChannelCaptureWithResponses({
+      save_image_command: '/tmp/img.jpg',
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    // Paste an image so attachedImages is non-empty
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const file = new File(['data'], 'img.png', { type: 'image/png' });
+    await act(async () => {
+      fireEvent.paste(textarea, {
+        clipboardData: {
+          items: [{ type: 'image/png', getAsFile: () => file }],
+        },
+      });
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        screen.getByRole('list', { name: /attached images/i }),
+      ).toBeInTheDocument();
+    });
+
+    // Reopen overlay — should clear images and revoke blob URLs
+    await showOverlay();
+
+    expect(URL.revokeObjectURL).toHaveBeenCalled();
+    expect(screen.queryByRole('list', { name: /attached images/i })).toBeNull();
+  });
+
+  it('revokes blob URLs when overlay hides with attached images', async () => {
+    enableChannelCaptureWithResponses({
+      save_image_command: '/tmp/img.jpg',
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const file = new File(['data'], 'img.png', { type: 'image/png' });
+    await act(async () => {
+      fireEvent.paste(textarea, {
+        clipboardData: {
+          items: [{ type: 'image/png', getAsFile: () => file }],
+        },
+      });
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        screen.getByRole('list', { name: /attached images/i }),
+      ).toBeInTheDocument();
+    });
+
+    const revokeSpy = vi.mocked(URL.revokeObjectURL);
+    revokeSpy.mockClear();
+
+    // Hide overlay via Escape — requestHideOverlay should revoke blob URLs
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+
+    expect(revokeSpy).toHaveBeenCalled();
   });
 
   it('resets session on overlay reopen', async () => {

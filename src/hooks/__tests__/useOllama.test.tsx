@@ -221,6 +221,99 @@ describe('useOllama', () => {
     });
   });
 
+  // ─── imagePaths handling ─────────────────────────────────────────────────────
+
+  describe('imagePaths handling', () => {
+    it('allows ask() with empty text but valid imagePaths', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('', undefined, ['/tmp/img1.jpg']);
+      });
+
+      // Should have created a user message (not returned early)
+      expect(result.current.messages).toHaveLength(1);
+      expect(result.current.messages[0]).toEqual(
+        expect.objectContaining({
+          role: 'user',
+          content: '',
+          imagePaths: ['/tmp/img1.jpg'],
+        }),
+      );
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: '',
+          imagePaths: ['/tmp/img1.jpg'],
+        }),
+      );
+    });
+
+    it('returns early for empty text AND no imagePaths', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('', undefined, undefined);
+      });
+
+      expect(invoke).not.toHaveBeenCalled();
+      expect(result.current.messages).toHaveLength(0);
+    });
+
+    it('returns early for empty text AND empty imagePaths array', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('', undefined, []);
+      });
+
+      expect(invoke).not.toHaveBeenCalled();
+      expect(result.current.messages).toHaveLength(0);
+    });
+
+    it('includes imagePaths in message and invoke when text AND imagePaths are provided', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('describe this', undefined, [
+          '/tmp/img1.jpg',
+          '/tmp/img2.jpg',
+        ]);
+      });
+
+      expect(result.current.messages[0]).toEqual(
+        expect.objectContaining({
+          role: 'user',
+          content: 'describe this',
+          imagePaths: ['/tmp/img1.jpg', '/tmp/img2.jpg'],
+        }),
+      );
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: 'describe this',
+          imagePaths: ['/tmp/img1.jpg', '/tmp/img2.jpg'],
+        }),
+      );
+    });
+
+    it('sets message.imagePaths to undefined and invoke imagePaths to null when no imagePaths', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello');
+      });
+
+      expect(result.current.messages[0].imagePaths).toBeUndefined();
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          imagePaths: null,
+        }),
+      );
+    });
+  });
+
   // ─── Error handling ──────────────────────────────────────────────────────────
 
   describe('error handling', () => {

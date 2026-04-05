@@ -10,6 +10,7 @@ use std::sync::Mutex;
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 use tauri::State;
 
 use crate::commands::{ChatMessage, ConversationHistory, SystemPrompt};
@@ -24,6 +25,7 @@ pub struct SaveMessagePayload {
     pub role: String,
     pub content: String,
     pub quoted_text: Option<String>,
+    pub image_paths: Option<Vec<String>>,
 }
 
 /// Response returned when saving a conversation.
@@ -66,9 +68,14 @@ pub fn save_conversation(
         database::create_conversation(&conn, placeholder_title.as_deref(), &model)
             .map_err(|e| e.to_string())?;
 
-    let batch: Vec<(String, String, Option<String>)> = messages
+    let batch: Vec<(String, String, Option<String>, Option<String>)> = messages
         .into_iter()
-        .map(|m| (m.role, m.content, m.quoted_text))
+        .map(|m| {
+            let image_json = m.image_paths.filter(|v| !v.is_empty()).map(|v| {
+                serde_json::to_string(&v).expect("Vec<String> serialization is infallible")
+            });
+            (m.role, m.content, m.quoted_text, image_json)
+        })
         .collect();
 
     database::insert_messages_batch(&conn, &conversation_id, &batch).map_err(|e| e.to_string())?;
@@ -84,15 +91,20 @@ pub fn persist_message(
     role: String,
     content: String,
     quoted_text: Option<String>,
+    image_paths: Option<Vec<String>>,
     db: State<'_, Database>,
 ) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let image_json = image_paths
+        .filter(|v| !v.is_empty())
+        .map(|v| serde_json::to_string(&v).expect("Vec<String> serialization is infallible"));
     database::insert_message(
         &conn,
         &conversation_id,
         &role,
         &content,
         quoted_text.as_deref(),
+        image_json.as_deref(),
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -134,18 +146,45 @@ pub fn load_conversation(
         conv.push(ChatMessage {
             role: msg.role.clone(),
             content: msg.content.clone(),
+            images: None,
         });
     }
 
     Ok(persisted)
 }
 
-/// Deletes a conversation and all its messages from SQLite.
+/// Deletes a conversation and all its messages from SQLite, and immediately
+/// removes any image files referenced by those messages from disk.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub fn delete_conversation(conversation_id: String, db: State<'_, Database>) -> Result<(), String> {
+pub fn delete_conversation(
+    app_handle: tauri::AppHandle,
+    conversation_id: String,
+    db: State<'_, Database>,
+) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    database::delete_conversation(&conn, &conversation_id).map_err(|e| e.to_string())
+
+    // Collect image paths before deleting messages (CASCADE will remove them).
+    let messages = database::load_messages(&conn, &conversation_id).map_err(|e| e.to_string())?;
+    let image_paths: Vec<String> = messages
+        .iter()
+        .filter_map(|m| m.image_paths.as_ref())
+        .filter_map(|json| serde_json::from_str::<Vec<String>>(json).ok())
+        .flatten()
+        .collect();
+
+    database::delete_conversation(&conn, &conversation_id).map_err(|e| e.to_string())?;
+
+    // Best-effort file cleanup — don't fail the command if a file is missing.
+    let base_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+    for path in &image_paths {
+        let _ = crate::images::remove_image(&base_dir, path);
+    }
+
+    Ok(())
 }
 
 /// Generates a short AI title for a saved conversation by asking Ollama.
@@ -184,10 +223,12 @@ pub async fn generate_title(
         ChatMessage {
             role: "system".to_string(),
             content: system_prompt.0.clone(),
+            images: None,
         },
         ChatMessage {
             role: "user".to_string(),
             content: title_prompt,
+            images: None,
         },
     ];
 
@@ -246,11 +287,13 @@ mod tests {
                 role: "user".to_string(),
                 content: "What is Rust?".to_string(),
                 quoted_text: None,
+                image_paths: Some(vec!["/tmp/img.jpg".to_string()]),
             },
             SaveMessagePayload {
                 role: "assistant".to_string(),
                 content: "Rust is a systems programming language.".to_string(),
                 quoted_text: None,
+                image_paths: None,
             },
         ];
 
@@ -261,12 +304,17 @@ mod tests {
             .map(|m| m.content.trim().to_string());
 
         let conversation_id =
-            database::create_conversation(&conn, placeholder_title.as_deref(), "llama3.2:3b")
+            database::create_conversation(&conn, placeholder_title.as_deref(), "gemma3:4b")
                 .unwrap();
 
-        let batch: Vec<(String, String, Option<String>)> = messages
+        let batch: Vec<(String, String, Option<String>, Option<String>)> = messages
             .into_iter()
-            .map(|m| (m.role, m.content, m.quoted_text))
+            .map(|m| {
+                let image_json = m.image_paths.filter(|v| !v.is_empty()).map(|v| {
+                    serde_json::to_string(&v).expect("Vec<String> serialization is infallible")
+                });
+                (m.role, m.content, m.quoted_text, image_json)
+            })
             .collect();
 
         database::insert_messages_batch(&conn, &conversation_id, &batch).unwrap();
@@ -276,7 +324,12 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].role, "user");
         assert_eq!(loaded[0].content, "What is Rust?");
+        assert_eq!(
+            loaded[0].image_paths.as_deref(),
+            Some(r#"["/tmp/img.jpg"]"#)
+        );
         assert_eq!(loaded[1].role, "assistant");
+        assert!(loaded[1].image_paths.is_none());
     }
 
     #[test]

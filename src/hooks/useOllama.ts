@@ -11,6 +11,8 @@ export interface Message {
   content: string;
   /** Selected text from the host app that was quoted with this message, if any. */
   quotedText?: string;
+  /** Absolute file paths of images attached to this message, if any. */
+  imagePaths?: string[];
 }
 
 /**
@@ -49,16 +51,27 @@ export function useOllama(
    *
    * @param displayContent The user's query as it should appear in the chat bubble.
    * @param quotedText Optional selected text quoted alongside this message.
+   * @param imagePaths Optional array of absolute file paths for attached images.
    */
   const ask = useCallback(
-    async (displayContent: string, quotedText?: string) => {
-      if (!displayContent.trim() || isGenerating) return;
+    async (
+      displayContent: string,
+      quotedText?: string,
+      imagePaths?: string[],
+    ) => {
+      if (
+        (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) ||
+        isGenerating
+      )
+        return;
 
       const userMsg: Message = {
         id: crypto.randomUUID(),
         role: 'user',
         content: displayContent,
         quotedText,
+        imagePaths:
+          imagePaths && imagePaths.length > 0 ? imagePaths : undefined,
       };
 
       setMessages((prev) => [...prev, userMsg]);
@@ -121,6 +134,7 @@ export function useOllama(
         await invoke('ask_ollama', {
           message: displayContent,
           quotedText: quotedText ?? null,
+          imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : null,
           onEvent: channel,
         });
       } catch (err) {
