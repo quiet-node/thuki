@@ -76,17 +76,25 @@ jobs:
 
       - name: Create DMG installer
         run: |
+          # Stage only the .app — exclude any leftover build artifacts
+          # (e.g. Thuki.app.tar.gz) from the bundle directory.
+          mkdir -p /tmp/thuki-dmg-src
+          cp -r src-tauri/target/release/bundle/macos/Thuki.app /tmp/thuki-dmg-src/
+
           mkdir -p src-tauri/target/release/bundle/dmg
           create-dmg \
             --volname "Thuki" \
+            --background "src-tauri/assets/dmg-background.png" \
             --window-pos 200 120 \
             --window-size 600 380 \
             --icon-size 128 \
-            --icon "Thuki.app" 170 190 \
+            --icon "Thuki.app" 170 170 \
             --hide-extension "Thuki.app" \
-            --app-drop-link 430 190 \
+            --app-drop-link 430 170 \
             "src-tauri/target/release/bundle/dmg/Thuki.dmg" \
-            "src-tauri/target/release/bundle/macos"
+            "/tmp/thuki-dmg-src"
+
+          rm -rf /tmp/thuki-dmg-src
 
       - name: Upload release asset
         env:
