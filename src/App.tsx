@@ -647,6 +647,26 @@ function App() {
     });
   }, []);
 
+  /**
+   * Invokes the Rust `capture_screenshot` command, which hides the window,
+   * lets the user drag-select a screen region, then returns the captured image
+   * as a base64 PNG string (or null if the user cancelled).
+   * On success, converts the base64 to a File and feeds it into the existing
+   * handleImagesAttached pipeline — identical to a paste or drag-drop.
+   */
+  const handleScreenshot = useCallback(async () => {
+    const base64 = await invoke<string | null>('capture_screenshot');
+    if (!base64) return;
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: 'image/png' });
+    const file = new File([blob], 'screenshot.png', { type: 'image/png' });
+    handleImagesAttached([file]);
+  }, [handleImagesAttached]);
+
   /** Removes an attached image from state, revokes the blob URL, and
    *  deletes the staged file from disk if processing completed. */
   const handleImageRemove = useCallback((id: string) => {
@@ -1052,7 +1072,7 @@ function App() {
                   onImagesAttached={handleImagesAttached}
                   onImageRemove={handleImageRemove}
                   onImagePreview={handleAskBarImagePreview}
-                  onScreenshot={() => {}}
+                  onScreenshot={handleScreenshot}
                 />
               </div>
 

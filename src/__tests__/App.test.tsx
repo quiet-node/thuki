@@ -2538,6 +2538,78 @@ describe('App', () => {
     });
   });
 
+  // ─── Screenshot integration ────────────────────────────────────────────────
+
+  describe('screenshot integration', () => {
+    it('clicking screenshot button invokes capture_screenshot', async () => {
+      enableChannelCaptureWithResponses({ capture_screenshot: null });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Take screenshot' }));
+      });
+
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith('capture_screenshot');
+        });
+      });
+    });
+
+    it('does nothing when capture_screenshot returns null (cancelled)', async () => {
+      enableChannelCaptureWithResponses({ capture_screenshot: null });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Take screenshot' }));
+      });
+
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith('capture_screenshot');
+        });
+      });
+
+      // save_image_command must NOT have been called
+      const saveCalls = invoke.mock.calls.filter(
+        ([cmd]) => cmd === 'save_image_command',
+      );
+      expect(saveCalls).toHaveLength(0);
+    });
+
+    it('attaches screenshot image when capture_screenshot returns base64', async () => {
+      const fakeBase64 = btoa('fake screenshot bytes');
+      enableChannelCaptureWithResponses({
+        capture_screenshot: fakeBase64,
+        save_image_command: '/tmp/screenshot.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Take screenshot' }));
+      });
+
+      // Wait for invoke(capture_screenshot) → FileReader → invoke(save_image_command)
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.objectContaining({ imageDataBase64: expect.any(String) }),
+          );
+        });
+      });
+    });
+  });
+
   it('revokes blob URLs when overlay reopens with attached images', async () => {
     enableChannelCaptureWithResponses({
       save_image_command: '/tmp/img.jpg',
