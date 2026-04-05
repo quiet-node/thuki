@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/status-beta-yellow.svg" alt="Beta" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
   <a href="https://github.com/quiet-node/thuki/actions/workflows/pr-pipeline.yml"><img src="https://github.com/quiet-node/thuki/actions/workflows/pr-pipeline.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="Platform: macOS" />
@@ -23,6 +24,10 @@
   <img src="https://img.shields.io/badge/SQLite-bundled-003B57?logo=sqlite&logoColor=white" alt="SQLite" />
   <img src="https://img.shields.io/badge/Ollama-local-black" alt="Ollama" />
 </p>
+
+---
+
+**Beta Notice:** Thuki is in active development. Features may change, bugs may occur, and AI model outputs are not guaranteed to be perfect or accurate. Use at your own risk. Always verify important information with trusted sources. This is not a production-ready tool.
 
 ---
 
