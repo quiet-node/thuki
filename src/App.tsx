@@ -655,7 +655,9 @@ function App() {
    * handleImagesAttached pipeline — identical to a paste or drag-drop.
    */
   const handleScreenshot = useCallback(async () => {
+    /* v8 ignore start -- defensive guard: button is always disabled at max images, so this branch is unreachable through normal UI interaction */
     if (attachedImages.length >= MAX_IMAGES) return;
+    /* v8 ignore stop */
     const base64 = await invoke<string | null>('capture_screenshot_command');
     if (!base64) return;
     const binary = atob(base64);
