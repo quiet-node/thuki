@@ -139,7 +139,7 @@ const CAMERA_ICON = (
 );
 
 /** Maximum number of images allowed per message (mirrors MAX_IMAGES_PER_MESSAGE in images.rs). */
-const MAX_IMAGES = 3;
+export const MAX_IMAGES = 3;
 
 /** Props for the AskBarView component. */
 interface AskBarViewProps {

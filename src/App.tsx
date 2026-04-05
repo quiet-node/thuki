@@ -9,7 +9,7 @@ import { useOllama } from './hooks/useOllama';
 import type { Message } from './hooks/useOllama';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { ConversationView } from './view/ConversationView';
-import { AskBarView } from './view/AskBarView';
+import { AskBarView, MAX_IMAGES } from './view/AskBarView';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import type { AttachedImage } from './types/image';
@@ -655,6 +655,7 @@ function App() {
    * handleImagesAttached pipeline — identical to a paste or drag-drop.
    */
   const handleScreenshot = useCallback(async () => {
+    if (attachedImages.length >= MAX_IMAGES) return;
     const base64 = await invoke<string | null>('capture_screenshot_command');
     if (!base64) return;
     const binary = atob(base64);
@@ -665,7 +666,7 @@ function App() {
     const blob = new Blob([bytes], { type: 'image/png' });
     const file = new File([blob], 'screenshot.png', { type: 'image/png' });
     handleImagesAttached([file]);
-  }, [handleImagesAttached]);
+  }, [attachedImages, handleImagesAttached]);
 
   /** Removes an attached image from state, revokes the blob URL, and
    *  deletes the staged file from disk if processing completed. */

@@ -2587,6 +2587,42 @@ describe('App', () => {
       expect(saveCalls).toHaveLength(0);
     });
 
+    it('does not invoke capture_screenshot_command when at max images', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img.jpg',
+        capture_screenshot_command: null,
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Attach 3 images via paste to reach the limit.
+      const pasteOneImage = async () => {
+        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+        const file = new File(['data'], 'photo.png', { type: 'image/png' });
+        await act(async () => {
+          fireEvent.paste(textarea, {
+            clipboardData: {
+              items: [{ type: 'image/png', getAsFile: () => file }],
+            },
+          });
+        });
+      };
+      await pasteOneImage();
+      await pasteOneImage();
+      await pasteOneImage();
+
+      const btn = screen.getByRole('button', { name: 'Take screenshot' });
+      expect(btn).toBeDisabled();
+
+      invoke.mockClear();
+      fireEvent.click(btn);
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith('capture_screenshot_command');
+    });
+
     it('attaches screenshot image when capture_screenshot returns base64', async () => {
       const fakeBase64 = btoa('fake screenshot bytes');
       enableChannelCaptureWithResponses({
