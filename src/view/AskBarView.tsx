@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
 import { ImageThumbnails } from '../components/ImageThumbnails';
+import { Tooltip } from '../components/Tooltip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
 
@@ -128,12 +129,12 @@ const CAMERA_ICON = (
     aria-hidden="true"
   >
     <path
-      d="M1.5 5.5C1.5 4.948 1.948 4.5 2.5 4.5H4L5 2.5H11L12 4.5H13.5C14.052 4.5 14.5 4.948 14.5 5.5V13C14.5 13.552 14.052 14 13.5 14H2.5C1.948 14 1.5 13.552 1.5 13V5.5Z"
+      d="M2 6 L2 2 L6 2 M10 2 L14 2 L14 6 M2 10 L2 14 L6 14 M10 14 L14 14 L14 10"
       stroke="currentColor"
       strokeWidth="1.5"
+      strokeLinecap="round"
       strokeLinejoin="round"
     />
-    <circle cx="8" cy="9" r="2.5" stroke="currentColor" strokeWidth="1.5" />
   </svg>
 );
 
@@ -204,6 +205,7 @@ export function AskBarView({
   const isBusy = isGenerating || isSubmitPending;
   const canSubmit =
     (query.trim().length > 0 || attachedImages.length > 0) && !isBusy;
+  const isAtMaxImages = attachedImages.length >= MAX_IMAGES;
   const [isDragOver, setIsDragOver] = useState(false);
 
   /**
@@ -377,15 +379,31 @@ export function AskBarView({
           className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
         />
 
-        <button
-          type="button"
-          onClick={onScreenshot}
-          disabled={isBusy || attachedImages.length >= MAX_IMAGES}
-          aria-label="Take screenshot"
-          className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
-        >
-          {CAMERA_ICON}
-        </button>
+        {isAtMaxImages ? (
+          <Tooltip label="Maximum 3 images attached">
+            <button
+              type="button"
+              onClick={onScreenshot}
+              disabled
+              aria-label="Take screenshot"
+              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
+            >
+              {CAMERA_ICON}
+            </button>
+          </Tooltip>
+        ) : (
+          <Tooltip label="Take a screenshot">
+            <button
+              type="button"
+              onClick={onScreenshot}
+              disabled={isBusy}
+              aria-label="Take screenshot"
+              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
+            >
+              {CAMERA_ICON}
+            </button>
+          </Tooltip>
+        )}
 
         <motion.button
           type="button"

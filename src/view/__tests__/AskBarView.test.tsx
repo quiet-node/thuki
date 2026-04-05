@@ -981,6 +981,111 @@ describe('AskBarView', () => {
         screen.getByRole('button', { name: 'Take screenshot' }),
       ).not.toBeNull();
     });
+
+    it('has no hover classes when max images are attached', () => {
+      const maxImages = [
+        makeImage({ id: '1' }),
+        makeImage({ id: '2' }),
+        makeImage({ id: '3' }),
+      ];
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={maxImages}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const btn = screen.getByRole('button', { name: 'Take screenshot' });
+      expect(btn.className).not.toContain('hover:text-text-primary');
+      expect(btn.className).not.toContain('hover:bg-white/8');
+    });
+
+    it('has hover classes when below max images', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={[makeImage()]}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const btn = screen.getByRole('button', { name: 'Take screenshot' });
+      expect(btn.className).toContain('hover:text-text-primary');
+      expect(btn.className).toContain('hover:bg-white/8');
+    });
+
+    it('shows tooltip explaining limit when camera button is hovered at max images', () => {
+      const maxImages = [
+        makeImage({ id: '1' }),
+        makeImage({ id: '2' }),
+        makeImage({ id: '3' }),
+      ];
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={maxImages}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const btn = screen.getByRole('button', { name: 'Take screenshot' });
+      fireEvent.mouseEnter(btn.parentElement!);
+      expect(screen.getByText('Maximum 3 images attached')).toBeInTheDocument();
+    });
+
+    it('does not show max-images tooltip when below max images', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={[makeImage()]}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      expect(
+        screen.queryByText('Maximum 3 images attached'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('shows screenshot tooltip on hover when below max images', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          attachedImages={[]}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const btn = screen.getByRole('button', { name: 'Take screenshot' });
+      fireEvent.mouseEnter(btn.parentElement!);
+      expect(screen.getByText('Take a screenshot')).toBeInTheDocument();
+    });
   });
 
   describe('isSubmitPending state', () => {
