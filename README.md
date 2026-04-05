@@ -47,11 +47,17 @@ Most AI assistants require accounts, API keys, or subscriptions that bill you pe
 - **Image input** — paste or drag screenshots directly into the chat
 - **Privacy-first** — zero-trust architecture, all data stays on your device
 
-## Prerequisites: Set Up Your AI Engine First
+## Getting Started
 
-Before installing Thuki, you need a local AI model running. Choose one of the two options below.
+### Step 1: Set Up Your AI Engine
 
-### Option A: Local Ollama (Recommended for most users)
+> **Default model:** Thuki ships with [`gemma3:4b`](https://ollama.com/library/gemma3) by default — a capable 4-billion parameter model from Google that runs comfortably on most modern Macs with 8 GB of RAM or more. It's a great starting point: fast, conversational, and surprisingly capable for everyday tasks.
+
+Support for swapping models without rebuilding is planned — follow the project for updates.
+
+Choose one of the two options below to set up your AI engine before installing Thuki..
+
+#### Option A: Local Ollama (Recommended for most users)
 
 [Ollama](https://ollama.com) runs AI models directly on your Mac. It's free, open-source, and takes about 5 minutes to set up.
 
@@ -79,7 +85,9 @@ Before installing Thuki, you need a local AI model running. Choose one of the tw
 
    You should see your model listed. Once it appears, Ollama is ready and Thuki will connect to it automatically at `http://127.0.0.1:11434`.
 
-### Option B: Docker Sandbox (For security-conscious users)
+#### Option B: Docker Sandbox (For security-conscious users)
+
+**Prerequisites:** Install [Docker Desktop](https://www.docker.com/get-started)
 
 The Docker sandbox is for users who want the strongest possible isolation between the AI model and their host system — ideal if you work in regulated environments, are security-conscious about what runs on your machine, or simply want peace of mind.
 
@@ -90,23 +98,26 @@ The sandbox runs Ollama inside a hardened container with:
 - **Read-only model weights** — model files are mounted read-only (`:ro`). A malicious prompt cannot modify or persist changes to the model.
 - **Ephemeral state** — all model data is wiped on shutdown (`docker compose down -v`). Nothing persists between sessions.
 
-**Prerequisites:** Install [Docker Desktop](https://www.docker.com/get-started) for Mac.
-
 The sandbox is started as part of the Thuki launch process — see [Installation](#installation) below.
 
----
+### Step 2: Install Thuki
 
-## Installation
-
-### Download (Recommended)
+#### Download (Recommended)
 
 1. Download `Thuki.app.tar.gz` from the [latest release](https://github.com/quiet-node/thuki/releases/latest)
 2. Extract and move `Thuki.app` to your `/Applications` folder
-3. Remove the macOS quarantine flag (required for unsigned apps):
+3. Remove the macOS quarantine flag (one-time, required for unsigned apps) — pick either option:
+
+   **Option A — Terminal command:**
 
    ```bash
    xattr -rd com.apple.quarantine /Applications/Thuki.app
    ```
+
+   **Option B — System Settings:**
+   Open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to Thuki.
+
+> Sorry about this step. Thuki is an open source app distributed directly and not through the Mac App Store. That's why it hasn't gone through Apple's notarization process. macOS blocks such apps by default as a security measure. Both options above are safe and officially documented by Apple — [learn more here](https://support.apple.com/en-us/102445).
 
 4. Open Thuki — it will appear in your menu bar
 
@@ -118,7 +129,7 @@ If you chose the **Docker sandbox**, start it now:
 bun run sandbox:start
 ```
 
-### Build from Source
+#### Build from Source
 
 **Prerequisites:** [Bun](https://bun.sh), [Rust](https://rustup.rs), and optionally [Docker](https://www.docker.com/get-started)
 
