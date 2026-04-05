@@ -59,7 +59,8 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **Conversation history:** persist and revisit past conversations across sessions
 - **Fully local LLM:** powered by Ollama; no API keys, no accounts, no cost per query
 - **Isolated sandbox:** optionally run models in a hardened Docker container with capability dropping, read-only volumes, and localhost-only networking
-- **Image input:** paste or drag screenshots directly into the chat
+- **Image input:** paste or drag images and screenshots directly into the chat
+- **Screen capture:** type `/screen` to instantly capture your entire screen and attach it to your question as context
 - **Privacy-first:** zero-trust architecture, all data stays on your device
 
 ## Getting Started
@@ -203,7 +204,7 @@ The big leap: from answering questions to taking action.
 
 - **Internet search:** let Thuki look things up in real time, not just reason from its training data
 - **Tool integrations via [MCP](https://modelcontextprotocol.io/):** connect Thuki to Gmail, Slack, Discord, Google Calendar, and any other MCP-compatible service; ask it to draft a reply, summarize a thread, or schedule a meeting without ever leaving your current app
-- **Slash commands:** type `/summarize`, `/translate`, `/explain`, `/rewrite`, and more to instantly trigger built-in prompts without typing a full question
+- **More slash commands:** `/screen` is live; `/summarize`, `/translate`, `/explain`, `/rewrite`, and more are on the way to instantly trigger built-in prompts without typing a full question
 
 ### Better AI Control
 
@@ -219,7 +220,7 @@ More flexibility over the model powering Thuki.
 Give Thuki more to work with.
 
 - **Voice input:** dictate your question instead of typing
-- **Auto-capture screen context:** activate Thuki and have it automatically read the active window or selected region as context
+- **Auto-capture screen context:** activate Thuki and have it automatically read the active window or selected region as context (partial: `/screen` captures the full screen today; targeted region capture is next)
 - **File and document drop:** drag a PDF, image, or text file directly into Thuki as context for your question
 
 ---

@@ -32,8 +32,8 @@ const MAX_DIMENSION: u32 = 1920;
 /// for vision model consumption.
 const JPEG_QUALITY: u8 = 85;
 
-/// Maximum number of images allowed per message.
-pub const MAX_IMAGES_PER_MESSAGE: usize = 3;
+/// Maximum number of images allowed per message (3 manual + 1 /screen = 4).
+pub const MAX_IMAGES_PER_MESSAGE: usize = 4;
 
 /// Resolves the root images directory: `<base_dir>/images/`.
 pub fn images_root(base_dir: &Path) -> PathBuf {
@@ -471,8 +471,8 @@ mod tests {
     }
 
     #[test]
-    fn max_images_per_message_is_three() {
-        assert_eq!(MAX_IMAGES_PER_MESSAGE, 3);
+    fn max_images_per_message_is_four() {
+        assert_eq!(MAX_IMAGES_PER_MESSAGE, 4);
     }
 
     #[test]

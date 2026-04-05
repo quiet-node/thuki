@@ -1,12 +1,14 @@
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
 import { ImageThumbnails } from '../components/ImageThumbnails';
+import { CommandSuggestion } from '../components/CommandSuggestion';
 import { Tooltip } from '../components/Tooltip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
+import { COMMANDS } from '../config/commands';
 
 /**
  * Hoisted static SVG — prevents re-allocation on every render cycle.
@@ -138,7 +140,11 @@ const CAMERA_ICON = (
   </svg>
 );
 
-/** Maximum number of images allowed per message (mirrors MAX_IMAGES_PER_MESSAGE in images.rs). */
+/**
+ * Maximum number of manually attached images per message. The backend allows
+ * one additional image from /screen capture, for a total of 4 per message
+ * (MAX_IMAGES_PER_MESSAGE in images.rs).
+ */
 export const MAX_IMAGES = 3;
 
 /** Props for the AskBarView component. */
@@ -208,13 +214,79 @@ export function AskBarView({
   const isAtMaxImages = attachedImages.length >= MAX_IMAGES;
   const [isDragOver, setIsDragOver] = useState(false);
 
+  // ─── Command suggestion state ─────────────────────────────────────────────
+
+  /**
+   * Index of the highlighted row in the suggestion popover. Reset to 0
+   * whenever the query changes so a new filter result always starts at the top.
+   */
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+
+  /**
+   * When the user presses Escape, we store the query prefix that was active at
+   * that moment. If the query later changes to a different prefix, the popover
+   * reopens automatically; if it stays the same, the popover stays dismissed.
+   * State (not ref) so that Escape triggers a re-render and hides the popover.
+   */
+  const [dismissedQuery, setDismissedQuery] = useState('');
+
+  /**
+   * Derived: show the suggestion popover when the query starts with "/" and
+   * has not yet had a space added (user is still typing the trigger token),
+   * the UI is not busy, and the user has not explicitly dismissed this prefix.
+   */
+  const rawQuery = query.trimStart();
+  const showSuggestions =
+    !isBusy &&
+    rawQuery.startsWith('/') &&
+    !rawQuery.includes(' ') &&
+    rawQuery !== dismissedQuery;
+
+  /** The active command prefix (e.g. "/sc"). Empty when not suggesting. */
+  const commandPrefix = showSuggestions ? rawQuery : '';
+
+  /** Commands that match the current prefix (memoized to keep stable reference). */
+  const filteredCommands = useMemo(
+    () =>
+      showSuggestions
+        ? COMMANDS.filter((cmd) => cmd.trigger.startsWith(commandPrefix))
+        : [],
+    [showSuggestions, commandPrefix],
+  );
+
+  // Reset the highlighted index whenever the command prefix changes
+  // (user typed more characters and the results updated).
+  /* eslint-disable @eslint-react/set-state-in-effect -- intentional: resetting
+     highlighted index when the filter prefix changes drives no secondary effects
+     and is the canonical pattern for derived-from-prop index resets. */
+  useEffect(() => {
+    setHighlightedIndex(0);
+  }, [commandPrefix]);
+  /* eslint-enable @eslint-react/set-state-in-effect */
+
+  /** Applies the selected trigger by setting the query to "trigger " (with trailing space). */
+  const handleCommandSelect = useCallback(
+    (trigger: string) => {
+      setDismissedQuery('');
+      setHighlightedIndex(0);
+      setQuery(trigger + ' ');
+    },
+    [setQuery],
+  );
+
   /**
    * Auto-resizes the textarea to fit its content up to a maximum height.
    * Single forced reflow per input event ensures responsive text wrapping.
+   * Also clears the dismissed-suggestion state so the popover can reopen
+   * if the user has changed the command prefix since dismissing it.
    */
   const handleTextareaChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      setQuery(e.target.value);
+      const newValue = e.target.value;
+      // Any keystroke clears the dismissed state so the popover can reopen
+      // if the user types a new "/" prefix after having pressed Escape.
+      setDismissedQuery('');
+      setQuery(newValue);
       const el = e.target;
       el.style.height = 'auto'; // Reset to auto to trigger height recalculation
       el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
@@ -225,15 +297,77 @@ export function AskBarView({
   /**
    * Catches `Enter` without `Shift` to submit the form proactively,
    * avoiding accidental line breaks for power users.
+   *
+   * When the command suggestion popover is open, also handles:
+   * - ArrowDown / ArrowUp: move the highlighted row (wraps around)
+   * - Tab: complete the highlighted command trigger into the input
+   * - Enter: if a valid row is highlighted, complete it; otherwise submit
+   * - Escape: dismiss the popover without changing the query
    */
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (showSuggestions) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (filteredCommands.length > 0) {
+            setHighlightedIndex((i) => (i + 1) % filteredCommands.length);
+          }
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (filteredCommands.length > 0) {
+            setHighlightedIndex(
+              (i) =>
+                (i - 1 + filteredCommands.length) % filteredCommands.length,
+            );
+          }
+          return;
+        }
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          if (filteredCommands.length > 0) {
+            const idx = Math.min(highlightedIndex, filteredCommands.length - 1);
+            handleCommandSelect(filteredCommands[idx].trigger);
+          }
+          return;
+        }
+        if (e.key === 'Enter' && !e.shiftKey) {
+          if (
+            filteredCommands.length > 0 &&
+            highlightedIndex < filteredCommands.length
+          ) {
+            const selectedTrigger = filteredCommands[highlightedIndex].trigger;
+            if (rawQuery !== selectedTrigger) {
+              // Partial match: complete the trigger into the input.
+              e.preventDefault();
+              handleCommandSelect(selectedTrigger);
+              return;
+            }
+            // Exact match: fall through to normal submit below.
+          }
+          // No match, empty list, or exact trigger already typed: submit.
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setDismissedQuery(rawQuery);
+          return;
+        }
+      }
+
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         onSubmit();
       }
     },
-    [onSubmit],
+    [
+      showSuggestions,
+      filteredCommands,
+      highlightedIndex,
+      handleCommandSelect,
+      rawQuery,
+      onSubmit,
+    ],
   );
 
   /**
@@ -343,92 +477,120 @@ export function AskBarView({
           />
         </div>
       )}
-      <div className="flex items-center w-full px-3 py-2.5 gap-2">
-        <img
-          src="/thuki-logo.png"
-          alt="Thuki"
-          className={`shrink-0 transition-all duration-300 ease-out ${
-            isChatMode ? 'w-6 h-6 rounded-lg' : 'w-10 h-10 rounded-xl'
-          }`}
-          draggable={false}
-        />
-
-        {/* Compact history entry point — ask-bar mode only. In chat mode the
-            history button lives in the ConversationView header. */}
-        {!isChatMode && onHistoryOpen && (
-          <button
-            type="button"
-            onClick={onHistoryOpen}
-            aria-label="Open history"
-            className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 cursor-pointer"
+      {/* Command suggestion renders above the input row in the normal DOM
+          flow. Being inside the morphing container means the ResizeObserver
+          detects the added height and grows the native window upward to reveal
+          the popover. AnimatePresence + motion.div drive a smooth height
+          transition so the window expansion feels intentional, not jarring. */}
+      <AnimatePresence>
+        {showSuggestions && (
+          <motion.div
+            key="command-suggestion"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{
+              height: { duration: 0.2, ease: [0.16, 1, 0.3, 1] },
+              opacity: { duration: 0.15 },
+            }}
+            style={{ overflow: 'hidden' }}
           >
-            {HISTORY_ICON}
-          </button>
+            <CommandSuggestion
+              commands={filteredCommands}
+              highlightedIndex={highlightedIndex}
+              onSelect={handleCommandSelect}
+            />
+          </motion.div>
         )}
+      </AnimatePresence>
+      <div className="relative">
+        <div className="flex items-center w-full px-3 py-2.5 gap-2">
+          <img
+            src="/thuki-logo.png"
+            alt="Thuki"
+            className={`shrink-0 transition-all duration-300 ease-out ${
+              isChatMode ? 'w-6 h-6 rounded-lg' : 'w-10 h-10 rounded-xl'
+            }`}
+            draggable={false}
+          />
 
-        <textarea
-          ref={inputRef}
-          value={query}
-          onChange={handleTextareaChange}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          disabled={isBusy}
-          autoFocus
-          rows={1}
-          placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
-          className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
-        />
-
-        {isAtMaxImages ? (
-          <Tooltip label="Maximum 3 images attached">
+          {/* Compact history entry point: ask-bar mode only. In chat mode the
+            history button lives in the ConversationView header. */}
+          {!isChatMode && onHistoryOpen && (
             <button
               type="button"
-              onClick={onScreenshot}
-              disabled
-              aria-label="Take screenshot"
-              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
+              onClick={onHistoryOpen}
+              aria-label="Open history"
+              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 cursor-pointer outline-none"
             >
-              {CAMERA_ICON}
+              {HISTORY_ICON}
             </button>
-          </Tooltip>
-        ) : (
-          <Tooltip label="Take a screenshot">
-            <button
-              type="button"
-              onClick={onScreenshot}
-              disabled={isBusy}
-              aria-label="Take screenshot"
-              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
-            >
-              {CAMERA_ICON}
-            </button>
-          </Tooltip>
-        )}
-
-        <motion.button
-          type="button"
-          onClick={isBusy ? onCancel : onSubmit}
-          disabled={!canSubmit && !isBusy}
-          whileHover={canSubmit || isBusy ? { scale: 1.08 } : undefined}
-          whileTap={canSubmit || isBusy ? { scale: 0.92 } : undefined}
-          className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-colors duration-200 ${
-            isBusy
-              ? 'stop-btn-ring bg-red-500/10 text-red-400 cursor-pointer'
-              : canSubmit
-                ? 'bg-primary text-neutral cursor-pointer'
-                : 'bg-surface-elevated text-text-secondary cursor-default'
-          }`}
-          aria-label={isBusy ? 'Stop generating' : 'Send message'}
-        >
-          {isBusy ? (
-            <>
-              {BORDER_TRACE_RING}
-              {STOP_ICON}
-            </>
-          ) : (
-            ARROW_UP_ICON
           )}
-        </motion.button>
+
+          <textarea
+            ref={inputRef}
+            value={query}
+            onChange={handleTextareaChange}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            disabled={isBusy}
+            autoFocus
+            rows={1}
+            placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
+            className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
+          />
+
+          {isAtMaxImages ? (
+            <Tooltip label="Maximum 3 images attached">
+              <button
+                type="button"
+                onClick={onScreenshot}
+                disabled
+                aria-label="Take screenshot"
+                className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
+              >
+                {CAMERA_ICON}
+              </button>
+            </Tooltip>
+          ) : (
+            <Tooltip label="Take a screenshot">
+              <button
+                type="button"
+                onClick={onScreenshot}
+                disabled={isBusy}
+                aria-label="Take screenshot"
+                className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
+              >
+                {CAMERA_ICON}
+              </button>
+            </Tooltip>
+          )}
+
+          <motion.button
+            type="button"
+            onClick={isBusy ? onCancel : onSubmit}
+            disabled={!canSubmit && !isBusy}
+            whileHover={canSubmit || isBusy ? { scale: 1.08 } : undefined}
+            whileTap={canSubmit || isBusy ? { scale: 0.92 } : undefined}
+            className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-colors duration-200 ${
+              isBusy
+                ? 'stop-btn-ring bg-red-500/10 text-red-400 cursor-pointer'
+                : canSubmit
+                  ? 'bg-primary text-neutral cursor-pointer'
+                  : 'bg-surface-elevated text-text-secondary cursor-default'
+            }`}
+            aria-label={isBusy ? 'Stop generating' : 'Send message'}
+          >
+            {isBusy ? (
+              <>
+                {BORDER_TRACE_RING}
+                {STOP_ICON}
+              </>
+            ) : (
+              ARROW_UP_ICON
+            )}
+          </motion.button>
+        </div>
       </div>
     </div>
   );
