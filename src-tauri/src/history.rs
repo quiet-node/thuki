@@ -287,7 +287,7 @@ mod tests {
                 role: "user".to_string(),
                 content: "What is Rust?".to_string(),
                 quoted_text: None,
-                image_paths: None,
+                image_paths: Some(vec!["/tmp/img.jpg".to_string()]),
             },
             SaveMessagePayload {
                 role: "assistant".to_string(),
@@ -324,7 +324,12 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].role, "user");
         assert_eq!(loaded[0].content, "What is Rust?");
+        assert_eq!(
+            loaded[0].image_paths.as_deref(),
+            Some(r#"["/tmp/img.jpg"]"#)
+        );
         assert_eq!(loaded[1].role, "assistant");
+        assert!(loaded[1].image_paths.is_none());
     }
 
     #[test]

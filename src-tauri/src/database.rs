@@ -302,7 +302,6 @@ pub fn load_messages(conn: &Connection, conversation_id: &str) -> SqlResult<Vec<
 
 /// Returns all image paths referenced by any saved message.
 /// Used by the cleanup sweep to identify orphaned files.
-#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn get_all_image_paths(conn: &Connection) -> SqlResult<Vec<String>> {
     let mut stmt =
         conn.prepare("SELECT image_paths FROM messages WHERE image_paths IS NOT NULL")?;

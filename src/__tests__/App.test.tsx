@@ -2571,6 +2571,42 @@ describe('App', () => {
     expect(screen.queryByRole('list', { name: /attached images/i })).toBeNull();
   });
 
+  it('revokes blob URLs when overlay hides with attached images', async () => {
+    enableChannelCaptureWithResponses({
+      save_image_command: '/tmp/img.jpg',
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const file = new File(['data'], 'img.png', { type: 'image/png' });
+    await act(async () => {
+      fireEvent.paste(textarea, {
+        clipboardData: {
+          items: [{ type: 'image/png', getAsFile: () => file }],
+        },
+      });
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        screen.getByRole('list', { name: /attached images/i }),
+      ).toBeInTheDocument();
+    });
+
+    const revokeSpy = vi.mocked(URL.revokeObjectURL);
+    revokeSpy.mockClear();
+
+    // Hide overlay via Escape — requestHideOverlay should revoke blob URLs
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+
+    expect(revokeSpy).toHaveBeenCalled();
+  });
+
   it('resets session on overlay reopen', async () => {
     render(<App />);
     await act(async () => {});

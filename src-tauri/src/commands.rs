@@ -316,7 +316,13 @@ pub async fn ask_ollama(
     let current_epoch = history.epoch.load(Ordering::SeqCst);
     if current_epoch == epoch_at_start && !accumulated.is_empty() {
         let mut conv = history.messages.lock().unwrap();
-        conv.push(user_msg);
+        // Strip images from the persisted context — only the current turn's
+        // images are sent to Ollama; replaying base64 blobs on every
+        // subsequent turn would balloon payload size unnecessarily.
+        conv.push(ChatMessage {
+            images: None,
+            ..user_msg
+        });
         conv.push(ChatMessage {
             role: "assistant".to_string(),
             content: accumulated,

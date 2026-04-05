@@ -40,6 +40,13 @@ pub fn images_root(base_dir: &Path) -> PathBuf {
     base_dir.join("images")
 }
 
+/// Returns a closure that formats an error with a contextual message prefix.
+/// One shared generic instantiation instead of N separate closure functions
+/// in the llvm-cov function table.
+fn err<E: std::fmt::Display>(context: &'static str) -> impl FnOnce(E) -> String {
+    move |e| format!("{context}: {e}")
+}
+
 /// Compresses raw image bytes to JPEG (max 1920px) and writes to the flat
 /// images directory with a UUID filename.
 ///
@@ -51,8 +58,7 @@ pub fn images_root(base_dir: &Path) -> PathBuf {
 /// Returns an error if the image bytes cannot be decoded, the output directory
 /// cannot be created, or the file cannot be written.
 pub fn save_image(base_dir: &Path, image_data: &[u8]) -> Result<String, String> {
-    let img =
-        image::load_from_memory(image_data).map_err(|e| format!("failed to decode image: {e}"))?;
+    let img = image::load_from_memory(image_data).map_err(err("failed to decode image"))?;
 
     let resized = if img.width() > MAX_DIMENSION || img.height() > MAX_DIMENSION {
         img.resize(MAX_DIMENSION, MAX_DIMENSION, FilterType::Lanczos3)
@@ -61,7 +67,7 @@ pub fn save_image(base_dir: &Path, image_data: &[u8]) -> Result<String, String> 
     };
 
     let dir = images_root(base_dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create image directory: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(err("failed to create image directory"))?;
 
     let filename = format!("{}.jpg", uuid::Uuid::new_v4());
     let path = dir.join(&filename);
@@ -73,14 +79,14 @@ pub fn save_image(base_dir: &Path, image_data: &[u8]) -> Result<String, String> 
             image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, JPEG_QUALITY);
         encoder
             .encode_image(&rgb)
-            .map_err(|e| format!("failed to encode JPEG: {e}"))?;
+            .map_err(err("failed to encode JPEG"))?;
     }
 
-    std::fs::write(&path, &jpeg_buf).map_err(|e| format!("failed to write image file: {e}"))?;
+    std::fs::write(&path, &jpeg_buf).map_err(err("failed to write image file"))?;
 
     path.to_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| "image path contains non-UTF-8 characters".to_string())
+        .ok_or("image path contains non-UTF-8 characters".to_string())
 }
 
 /// Deletes a single image file from disk, provided it resides within the
@@ -98,14 +104,14 @@ pub fn remove_image(base_dir: &Path, path: &str) -> Result<(), String> {
     }
     let canonical = p
         .canonicalize()
-        .map_err(|e| format!("failed to resolve image path: {e}"))?;
+        .map_err(err("failed to resolve image path"))?;
     let root = images_root(base_dir)
         .canonicalize()
-        .map_err(|e| format!("failed to resolve images root: {e}"))?;
+        .map_err(err("failed to resolve images root"))?;
     if !canonical.starts_with(&root) {
         return Err("path is outside the images directory".to_string());
     }
-    std::fs::remove_file(p).map_err(|e| format!("failed to remove image: {e}"))?;
+    std::fs::remove_file(p).map_err(err("failed to remove image"))?;
     Ok(())
 }
 
@@ -127,8 +133,7 @@ pub fn cleanup_orphaned_images(
         return Ok(0);
     }
 
-    let entries =
-        std::fs::read_dir(&root).map_err(|e| format!("failed to read images directory: {e}"))?;
+    let entries = std::fs::read_dir(&root).map_err(err("failed to read images directory"))?;
 
     let mut removed = 0;
     for entry in entries.flatten() {
@@ -163,11 +168,10 @@ pub fn encode_images_as_base64(paths: &[String]) -> Result<Vec<String>, String> 
 
 // ─── Tauri commands ────────────────────────────────────────────────────────
 //
-// Thin wrappers that delegate to the pure functions above. The
-// `tauri::command` proc-macro is gated behind `#[cfg(not(coverage))]` so it
-// is not applied during coverage builds, and `coverage(off)` suppresses
-// instrumentation on nightly — together preventing false "missed lines" in
-// the llvm-cov summary.
+// Thin wrappers that delegate to the pure functions above. Excluded from
+// coverage builds entirely (`#[cfg(not(coverage))]`) because `coverage(off)`
+// suppresses instrumentation but llvm-cov still counts excluded function
+// signatures as "missed lines" in the summary — breaking the 100% gate.
 
 /// Compresses and saves an image to the flat images directory.
 ///
@@ -176,7 +180,7 @@ pub fn encode_images_as_base64(paths: &[String]) -> Result<Vec<String>, String> 
 /// over the Tauri IPC bridge.
 ///
 /// The command is `async` so Tauri runs it off the main thread. The heavy
-/// work (base64 decode → PNG decode → Lanczos3 resize → JPEG encode) is
+/// work (base64 decode → image decode → Lanczos3 resize → JPEG encode) is
 /// dispatched to `spawn_blocking` to avoid blocking the async runtime,
 /// keeping the WebView UI fully responsive during processing.
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -469,5 +473,11 @@ mod tests {
     #[test]
     fn max_images_per_message_is_three() {
         assert_eq!(MAX_IMAGES_PER_MESSAGE, 3);
+    }
+
+    #[test]
+    fn err_helper_formats_context_and_cause() {
+        let format_fn = err("failed to frobnicate");
+        assert_eq!(format_fn("disk full"), "failed to frobnicate: disk full");
     }
 }

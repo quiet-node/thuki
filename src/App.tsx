@@ -364,6 +364,10 @@ function App() {
     /* v8 ignore stop */
     setSelectedContext(null);
     setPreviewImageUrl(null);
+    setAttachedImages((prev) => {
+      for (const img of prev) URL.revokeObjectURL(img.blobUrl);
+      return [];
+    });
     setOverlayState((currentState) => {
       if (currentState === 'hidden' || currentState === 'hiding') {
         return currentState;
