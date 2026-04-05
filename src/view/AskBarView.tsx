@@ -117,6 +117,26 @@ const HISTORY_ICON = (
   </svg>
 );
 
+/** Hoisted static camera icon — triggers screenshot capture. */
+const CAMERA_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <path
+      d="M1.5 5.5C1.5 4.948 1.948 4.5 2.5 4.5H4L5 2.5H11L12 4.5H13.5C14.052 4.5 14.5 4.948 14.5 5.5V13C14.5 13.552 14.052 14 13.5 14H2.5C1.948 14 1.5 13.552 1.5 13V5.5Z"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinejoin="round"
+    />
+    <circle cx="8" cy="9" r="2.5" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+);
+
 /** Maximum number of images allowed per message (mirrors MAX_IMAGES_PER_MESSAGE in images.rs). */
 const MAX_IMAGES = 3;
 
@@ -153,6 +173,8 @@ interface AskBarViewProps {
   onImageRemove: (id: string) => void;
   /** Called when the user clicks a thumbnail to preview it. */
   onImagePreview: (id: string) => void;
+  /** Called when the user clicks the screenshot capture button. */
+  onScreenshot: () => void;
 }
 
 /**
@@ -176,6 +198,7 @@ export function AskBarView({
   onImagesAttached,
   onImageRemove,
   onImagePreview,
+  onScreenshot,
 }: AskBarViewProps) {
   /** True when the UI should be locked — either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
@@ -353,6 +376,16 @@ export function AskBarView({
           placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
           className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
         />
+
+        <button
+          type="button"
+          onClick={onScreenshot}
+          disabled={isBusy || attachedImages.length >= MAX_IMAGES}
+          aria-label="Take screenshot"
+          className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
+        >
+          {CAMERA_ICON}
+        </button>
 
         <motion.button
           type="button"

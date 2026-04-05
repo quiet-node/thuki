@@ -1052,6 +1052,7 @@ function App() {
                   onImagesAttached={handleImagesAttached}
                   onImageRemove={handleImageRemove}
                   onImagePreview={handleAskBarImagePreview}
+                  onScreenshot={() => {}}
                 />
               </div>
 
