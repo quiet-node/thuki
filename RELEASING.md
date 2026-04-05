@@ -38,7 +38,7 @@ release-please reads commit prefixes to decide how to bump the version:
 
 Do not edit these manually:
 
-- `CHANGELOG.md` — written by release-please on every release PR
-- `package.json` `"version"` field — bumped automatically
-- `src-tauri/Cargo.toml` `version` field — bumped automatically
-- `.release-please-manifest.json` — tracks the current released version; do not edit
+- `CHANGELOG.md`: written by release-please on every release PR
+- `package.json` `"version"` field: bumped automatically
+- `src-tauri/Cargo.toml` `version` field: bumped automatically
+- `.release-please-manifest.json`: tracks the current released version; do not edit

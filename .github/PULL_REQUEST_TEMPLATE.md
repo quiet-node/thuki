@@ -13,4 +13,4 @@
 - [ ] Tests added or updated for all changed code
 - [ ] `bun run test:all:coverage` passes with 100% coverage
 - [ ] `bun run validate-build` passes with zero warnings and zero errors
-- [ ] `CHANGELOG.md` updated under `[Unreleased]` if this is a user-facing change
+- [ ] Commit message follows [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, etc.) so the changelog is generated automatically

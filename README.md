@@ -181,7 +181,7 @@ The app starts hidden. The hotkey or tray menu shows it. The window close button
 
 ## Configuration
 
-See [docs/configurations.md](docs/configurations.md) for the full configuration reference, including how to change the default model and Ollama URL.
+See [docs/configurations.md](docs/configurations.md) for the full configuration reference (quote display limits and system prompt).
 
 ## Contributing
 

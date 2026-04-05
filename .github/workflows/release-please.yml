@@ -40,6 +40,14 @@ jobs:
       - name: Install stable Rust toolchain
         run: rustup toolchain install stable --no-self-update
 
+      - name: Install nightly Rust toolchain
+        run: rustup toolchain install nightly-2026-03-30 --component llvm-tools --no-self-update
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df  # v2.70.3
+        with:
+          tool: cargo-llvm-cov
+
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
@@ -49,11 +57,8 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Run frontend tests
-        run: bun run test
-
-      - name: Run backend tests
-        run: bun run test:backend
+      - name: Run all tests with coverage enforcement
+        run: bun run test:all:coverage
 
       - name: Build frontend
         run: bun run build:frontend

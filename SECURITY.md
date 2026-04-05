@@ -14,6 +14,7 @@ Thuki runs entirely on your local machine. There is no server, no cloud backend,
 
 - The Tauri IPC boundary between the frontend and Rust backend
 - The macOS Accessibility API integration that captures selected text and screen bounds at activation (`context.rs`)
+- Screenshot capture via `screencapture` invoked through the Tauri command layer (`screenshot.rs`)
 - The Docker sandbox configuration (network isolation, capability dropping)
 - The local SQLite database storing conversation history
 - Image processing via the `image` crate
