@@ -138,7 +138,7 @@ For the full architecture and security philosophy behind the sandbox, see [`sand
 
    > **Why is this needed?** Thuki is a free, non-profit, open-source app distributed directly and not through the Mac App Store. Apple's Gatekeeper automatically blocks any app downloaded from the internet that has not gone through Apple's paid notarization process. This one-time command removes that block. It is safe and [officially documented by Apple](https://support.apple.com/en-us/102445).
    >
-   > **What if you already tried to open Thuki and got a security warning?** Click **Done** (not "Move to Trash"), then go to **System Settings → Privacy & Security**, scroll down until you see "Thuki was blocked", and click **Open Anyway**. Enter your Mac password when prompted, then open Thuki again.
+   > **Saw a security warning when opening?** Click **Done** (not "Move to Trash"), run the command above, then open Thuki again.
 
 6. Open Thuki. It will appear in your menu bar.
 
