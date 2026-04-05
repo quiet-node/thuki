@@ -1,7 +1,13 @@
 {
   "name": "thuki",
-  "private": true,
   "version": "0.1.0",
+  "description": "A floating AI secretary for macOS, powered by local Ollama models",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/quiet-node/thuki"
+  },
+  "homepage": "https://github.com/quiet-node/thuki",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",

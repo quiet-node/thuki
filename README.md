@@ -1,110 +1,234 @@
 # Thuki
 
-The context-aware floating secretary. Thuki provides a premium, secure, and highly isolated generative AI experience directly on your desktop.
+<p align="center">
+  <img src="public/thuki-logo.png" alt="Thuki logo" width="300" />
+</p>
+
+<p align="center">
+  A floating AI secretary for macOS. Fully local, completely free, zero data ever leaves your machine.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/status-beta-yellow.svg" alt="Beta" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
+  <a href="https://github.com/quiet-node/thuki/actions/workflows/pr-pipeline.yml"><img src="https://github.com/quiet-node/thuki/actions/workflows/pr-pipeline.yml/badge.svg" alt="CI" /></a>
+  <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="Platform: macOS" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri&logoColor=white" alt="Tauri v2" />
+  <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React 19" />
+  <img src="https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/Rust-stable-CE422B?logo=rust&logoColor=white" alt="Rust" />
+  <img src="https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?logo=tailwindcss&logoColor=white" alt="Tailwind CSS 4" />
+  <img src="https://img.shields.io/badge/SQLite-bundled-003B57?logo=sqlite&logoColor=white" alt="SQLite" />
+  <img src="https://img.shields.io/badge/Ollama-local-black" alt="Ollama" />
+</p>
+
+---
+
+⚠️ **BETA: Active Development.** This project is in active development. Features may change, bugs may occur, and AI model outputs are not guaranteed to be perfect or accurate. Use at your own risk. Always verify important information with trusted sources.
+
+---
+
+**No API keys. No subscriptions. No cloud. No telemetry. Free forever.**
+
+What is Thuki?
+
+Thuki is a lightweight macOS overlay powered by local AI models running entirely on your own machine, built for quick, uninterrupted asks without ever leaving what you're doing.
+
+How to use Thuki?
+
+Highlight a piece of text you have a question about in any app, double-tap Control <kbd>⌃</kbd>, and Thuki floats up right on top, with your selection pre-filled and ready. Ask your question, then save the conversation or toss it away and get straight back to work. No app switching. No breaking your flow. Everything happens in one Space, exactly where you already are.
+
+## Why Thuki?
+
+Most AI tools require accounts, API keys, or subscriptions that bill you per token. Thuki is different:
+
+- **100% free AI interactions:** you run the model locally, there is no per-query cost, ever
+- **Zero trust by design:** no remote server, no cloud backend, no analytics, no telemetry
+- **Works completely offline:** once your model is pulled, Thuki runs without an internet connection
+- **Your data is yours:** conversations are stored in a local SQLite database on your machine and nowhere else
+- **Most importantly: it works everywhere.** Double-tap Control <kbd>⌃</kbd> and Thuki appears on your desktop, inside a browser, inside a terminal, and yes, even in fullscreen apps. Your favorite AI chat apps can't do that!
 
 ## Features
 
-- **Context-Aware**: Intelligently understands your local workflow to provide real-time assistance.
-- **Floating Interface**: A sleek, unobtrusive Tauri-based chat interface accessible across your system.
-- **Isolated Sandbox**: Generative AI workloads run in a hardened, egress-prohibited Docker container.
-- **Privacy-First**: Zero-trust architecture ensures your data never leaves your local environment.
+- **Always available:** double-tap Control <kbd>⌃</kbd> to summon the overlay from any app, including fullscreen apps
+- **Context-aware quotes:** highlight any text, then double-tap Control <kbd>⌃</kbd> to open Thuki with the selected text pre-filled as a quote
+- **Throwaway conversations:** fast, lightweight interactions without the overhead of a full chat app
+- **Conversation history:** persist and revisit past conversations across sessions
+- **Fully local LLM:** powered by Ollama; no API keys, no accounts, no cost per query
+- **Isolated sandbox:** optionally run models in a hardened Docker container with capability dropping, read-only volumes, and localhost-only networking
+- **Image input:** paste or drag screenshots directly into the chat
+- **Privacy-first:** zero-trust architecture, all data stays on your device
+
+## Getting Started
+
+### Step 1: Set Up Your AI Engine
+
+> **Default model:** Thuki ships with [`gemma3:4b`](https://ollama.com/library/gemma3) by default, a capable 4-billion parameter model from Google that runs comfortably on most modern Macs with 8 GB of RAM or more. It's a great starting point: fast, conversational, and surprisingly capable for everyday tasks.
+
+Support for swapping models without rebuilding is on the roadmap; see [What's Next](#whats-next-for-thuki).
+
+Choose one of the two options below to set up your AI engine before installing Thuki.
+
+#### Option A: Local Ollama (Recommended for most users)
+
+[Ollama](https://ollama.com) runs AI models directly on your Mac. It's free, open-source, and takes about 5 minutes to set up.
+
+1. **Install Ollama**
+
+   Download and install from [ollama.com](https://ollama.com), or via Homebrew:
+
+   ```bash
+   brew install ollama
+   ```
+
+2. **Pull a model**
+
+   ```bash
+   ollama pull gemma3:4b
+   ```
+
+   > **Note:** Model files are large (typically 2–8 GB). This step can take several minutes depending on your internet connection. You only need to do it once.
+
+3. **Verify the model is ready**
+
+   ```bash
+   ollama list
+   ```
+
+   You should see your model listed. Once it appears, Ollama is ready and Thuki will connect to it automatically at `http://127.0.0.1:11434`.
+
+#### Option B: Docker Sandbox (For security-conscious users)
+
+**Prerequisites:** Install [Docker Desktop](https://www.docker.com/get-started)
+
+The Docker sandbox is for users who want the strongest possible isolation between the AI model and their host system, ideal if you work in regulated environments, are security-conscious about what runs on your machine, or simply want peace of mind. The model runs in a hardened container that cannot reach the internet, cannot write to your filesystem, and leaves no trace when stopped.
+
+Start the sandbox:
+
+```bash
+bun run sandbox:start
+```
+
+> **First run:** The sandbox will pull the model inside the container; this may take several minutes depending on your connection. Subsequent starts are instant.
+
+When you're done, stop and wipe all model data:
+
+```bash
+bun run sandbox:stop
+```
+
+For the full architecture and security philosophy behind the sandbox, see [`sandbox/README.md`](sandbox/README.md).
+
+### Step 2: Install Thuki
+
+#### Download (Recommended)
+
+1. Download `Thuki.app.tar.gz` from the [latest release](https://github.com/quiet-node/thuki/releases/latest)
+2. Extract and move `Thuki.app` to your `/Applications` folder
+3. Remove the macOS quarantine flag (one-time, required for unsigned apps). Pick either option:
+
+   **Option A: Terminal command:**
+
+   ```bash
+   xattr -rd com.apple.quarantine /Applications/Thuki.app
+   ```
+
+   **Option B: System Settings:**
+   Open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to Thuki.
+
+> Sorry about this step. Thuki is an open source app distributed directly and not through the Mac App Store. That's why it hasn't gone through Apple's notarization process. macOS blocks such apps by default as a security measure. Both options above are safe and officially documented by Apple ([learn more here](https://support.apple.com/en-us/102445)).
+
+4. Open Thuki. It will appear in your menu bar.
+
+> **First launch:** macOS will ask for Accessibility permission. This is required for the global keyboard shortcut that lets you summon Thuki from any app. Grant it once; it persists across restarts.
+
+#### Build from Source
+
+**Prerequisites:** [Bun](https://bun.sh), [Rust](https://rustup.rs), and optionally [Docker](https://www.docker.com/get-started)
+
+```bash
+# Clone and install dependencies
+git clone https://github.com/quiet-node/thuki.git
+cd thuki
+bun install
+
+# Launch in development mode
+bun run dev
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development setup guide.
 
 ## Architecture & Security
 
-Thuki utilizes a **Dual-Layer Isolation** model for generative inference:
+<details>
+<summary>Click to expand</summary>
 
-1.  **Frontend (Tauri/React)**: Operates within a secure system webview with restricted IPC.
-2.  **Generative Engine (Docker Sandbox)**:
-    - **Network Air-Gap**: The engine runs in an internal bridge network with zero internet egress (`internal: true`).
-    - **Privilege Dropping**: All Linux kernel capabilities are dropped (`cap_drop: ALL`).
-    - **Model Integrity**: Model weights are mounted as Read-Only (`:ro`) to prevent poisoning or persistence by malicious prompts.
-    - **Ephemeral State**: All model weights and session data are purged on shutdown using `docker compose down -v`.
+Thuki is a **Tauri v2** app (Rust backend + React/TypeScript frontend) that interfaces with a locally running Ollama instance at `http://127.0.0.1:11434`.
 
-## Development
+### Dual-Layer Isolation
 
-### Prerequisites
+1. **Frontend (Tauri/React):** Operates within a secure system webview with restricted IPC. Streaming uses Tauri's Channel API; the Rust backend sends typed `StreamChunk` enum variants, and the frontend hook accumulates tokens into React state.
 
-- **Bun**: Fast JavaScript runtime and package manager. Install via [bun.sh](https://bun.sh).
-- **Rust**: Required for the Tauri backend. Install via [rustup](https://rustup.rs):
-  ```bash
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  ```
-  After installation, restart your shell or run `source ~/.cargo/env` to make `cargo` available.
-- **Docker**: Required to run the isolated generative sandbox. Install via [docker.com](https://www.docker.com/get-started).
+2. **Generative Engine (Docker Sandbox):**
+   - **Ingress Isolation:** The API is bound to `127.0.0.1` only, blocking all external network access
+   - **Privilege Dropping:** All Linux kernel capabilities are dropped (`cap_drop: ALL`)
+   - **Model Integrity:** Model weights are mounted read-only (`:ro`) to prevent tampering
+   - **Ephemeral State:** All model data is purged on shutdown via `docker compose down -v`
 
-### Getting Started
+### Window Lifecycle
 
-1.  **Install Dependencies**:
+The app starts hidden. The hotkey or tray menu shows it. The window close button hides (not quits); quit is only available from the tray. `ActivationPolicy::Accessory` hides the Dock icon. `macOSPrivateApi: true` enables NSPanel for fullscreen-app overlay.
 
-    ```bash
-    bun install
-    ```
+</details>
 
-2.  **Configure Environment** (optional):
+## Configuration
 
-    ```bash
-    cp .env.example .env
-    ```
+See [docs/configurations.md](docs/configurations.md) for the full configuration reference (quote display limits and system prompt).
 
-    Edit `.env` to override defaults. See [docs/configurations.md](docs/configurations.md) for the full reference.
+## Contributing
 
-3.  **Start Sandbox (Security-First Launch)**:
-    Thuki offers a hardened, isolated Docker sandbox as a secure-by-default environment for generative inference. This is ideal if you do not wish to install AI models directly on your host or prefer maximum isolation from the network.
+Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-    This bootstraps the sandbox and pulls the models (default: `gemma3:4b`).
+## Author
 
-    ```bash
-    bun run sandbox:start
-    ```
+Reach out to [Logan](https://x.com/quiet_node) on X with questions or feedback.
 
-    _To pre-select or switch the model:_
+## What's next for Thuki
 
-    ```bash
-    OLLAMA_MODEL=llama3:8b bun run sandbox:start
-    ```
+Thuki is just getting started. Here's where it's headed:
 
-    > [!TIP]
-    > **Skip this step?** If you already have [Ollama](https://ollama.com) installed and running on your local machine (standard port `11434`), Thuki is fully compatible. If your model is already pulled locally, you can skip the sandbox and proceed directly to **Launch Thuki**. Thuki naturally connects to `http://127.0.0.1:11434`.
+### Secretary Superpowers
 
-4.  **Launch Thuki**:
-    Starts the Tauri chat interface.
+The big leap: from answering questions to taking action.
 
-    ```bash
-    bun run dev
-    ```
+- **Internet search:** let Thuki look things up in real time, not just reason from its training data
+- **Tool integrations via [MCP](https://modelcontextprotocol.io/):** connect Thuki to Gmail, Slack, Discord, Google Calendar, and any other MCP-compatible service; ask it to draft a reply, summarize a thread, or schedule a meeting without ever leaving your current app
+- **Slash commands:** type `/summarize`, `/translate`, `/explain`, `/rewrite`, and more to instantly trigger built-in prompts without typing a full question
 
-    > [!NOTE]
-    > **macOS Accessibility Permission**: Thuki registers a global keyboard shortcut to toggle the overlay. This requires macOS Accessibility permission. During development, the system dialog will prompt you to grant permission to your **terminal app** (e.g., iTerm, Terminal) — this is standard macOS behavior for non-bundled binaries and is expected. In production builds (`.app` bundle), the prompt correctly shows "Thuki."
+### Better AI Control
 
-### Production Build
+More flexibility over the model powering Thuki.
 
-Build a distributable `.app` bundle:
+- **Native settings panel (⌘,):** a proper macOS preferences window to configure your model, Ollama endpoint, activation shortcut, slash commands, and system prompt. No config files needed.
+- **In-app model switching:** swap between any Ollama model from the UI without rebuilding
+- **Multiple provider support:** opt in to OpenAI, Anthropic, or any OpenAI-compatible endpoint as an alternative to local Ollama
+- **Custom activation shortcut:** change the double-tap trigger to any key or combo you prefer
 
-```bash
-bun run build:all
-```
+### Richer Context
 
-The bundle is output to `src-tauri/target/release/bundle/macos/Thuki.app`. Launch it directly:
+Give Thuki more to work with.
 
-```bash
-open src-tauri/target/release/bundle/macos/Thuki.app
-```
+- **Voice input:** dictate your question instead of typing
+- **Auto-capture screen context:** activate Thuki and have it automatically read the active window or selected region as context
+- **File and document drop:** drag a PDF, image, or text file directly into Thuki as context for your question
 
-On first launch, macOS will prompt: **"Thuki would like to control this computer using accessibility features."** Grant it once — this enables the global keyboard shortcut for toggling the overlay. The permission persists across app restarts.
+---
 
-> [!TIP]
-> To build a debug `.app` bundle (with DevTools access), run `bun run tauri build -- --debug`. The bundle lands in `src-tauri/target/debug/bundle/macos/Thuki.app`.
-
-### Command Reference
-
-| Command                  | Description                                                             |
-| :----------------------- | :---------------------------------------------------------------------- |
-| `bun run dev`            | Starts the Tauri application in development mode.                       |
-| `bun run sandbox:start`  | Bootstraps the isolated Docker sandbox and pulls the models.            |
-| `bun run sandbox:stop`   | **Destructive**: Stops the sandbox and wipes the model volume.          |
-| `bun run validate-build` | Multi-stage gate: Lints, formats, typechecks, and builds the full app.  |
-| `bun run build:all`      | Compiles both the frontend (Vite) and backend (Rust/Tauri) for release. |
+Have a feature idea? [Open an issue](https://github.com/quiet-node/thuki/issues) and let's talk about it.
 
 ## License
 
-Personal and confidential. Proprietary to Quiet Node.
+Copyright 2026 Logan Nguyen. Licensed under the [Apache License, Version 2.0](LICENSE).
