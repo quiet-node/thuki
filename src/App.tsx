@@ -139,10 +139,21 @@ function App() {
   /** Error message from a failed /screen capture. Shown inline above the ask
    *  bar so the user knows capture failed rather than seeing no response. */
   const [captureError, setCaptureError] = useState<string | null>(null);
-  /** Set to true when a /screen capture is dispatched, false when it resolves
-   *  or when the user cancels. Lets the async tail in handleScreenSubmit
-   *  detect a mid-flight cancellation and skip the ask() call. */
+  /**
+   * Set to true when a /screen capture is dispatched, false when it resolves
+   * or when the user cancels. Lets the async tail in handleScreenSubmit
+   * detect a mid-flight cancellation and skip the ask() call.
+   */
   const screenCapturePendingRef = useRef(false);
+  /**
+   * Stores the input state (query + context) captured just before a /screen
+   * submit clears them. Used by handleCancel to restore the ask bar if the
+   * user aborts the in-flight capture.
+   */
+  const screenCaptureInputSnapshotRef = useRef<{
+    query: string;
+    context: string | undefined;
+  } | null>(null);
   /** User message shown in the chat while waiting for images to finish
    *  processing. Cleared when `ask()` fires and adds the real message. */
   const [pendingUserMessage, setPendingUserMessage] = useState<Message | null>(
@@ -348,6 +359,8 @@ function App() {
         return [];
       });
       pendingSubmitRef.current = null;
+      screenCapturePendingRef.current = false;
+      screenCaptureInputSnapshotRef.current = null;
       setIsSubmitPending(false);
       setPendingUserMessage(null);
       setCaptureError(null);
@@ -371,6 +384,8 @@ function App() {
       outerContainerRef.current.style.minHeight = '';
     }
     /* v8 ignore stop */
+    screenCapturePendingRef.current = false;
+    screenCaptureInputSnapshotRef.current = null;
     setSelectedContext(null);
     setPreviewImageUrl(null);
     setAttachedImages((prev) => {
@@ -574,6 +589,8 @@ function App() {
       return [];
     });
     pendingSubmitRef.current = null;
+    screenCapturePendingRef.current = false;
+    screenCaptureInputSnapshotRef.current = null;
     setIsSubmitPending(false);
     setPendingUserMessage(null);
   }, [reset, resetHistory]);
@@ -752,6 +769,11 @@ function App() {
       (img) => img.filePath ?? img.blobUrl,
     );
 
+    // Store the original input so handleCancel can restore it if the user
+    // aborts the capture before it resolves.
+    const restoredQuery = `/screen${cleanQuery ? ` ${cleanQuery}` : ''}`;
+    screenCaptureInputSnapshotRef.current = { query: restoredQuery, context };
+
     // Immediately show the user's message in chat with a loading placeholder
     // for the screenshot. This prevents double-submit spam and gives instant
     // feedback that the capture is in progress.
@@ -775,10 +797,11 @@ function App() {
       screenshotPath = await invoke<string>('capture_full_screen_command');
     } catch (e) {
       screenCapturePendingRef.current = false;
+      screenCaptureInputSnapshotRef.current = null;
       // Capture failed: restore input state so the user can retry or edit.
       setIsSubmitPending(false);
       setPendingUserMessage(null);
-      setQuery(`/screen${cleanQuery ? ` ${cleanQuery}` : ''}`);
+      setQuery(restoredQuery);
       setSelectedContext(context ?? null);
       // Surface the Rust error directly: the backend already provides
       // descriptive messages (permission prompts, null-image diagnostics, etc.).
@@ -793,6 +816,7 @@ function App() {
     // handleCancel sets screenCapturePendingRef.current = false as a signal.
     const wasCancelled = !screenCapturePendingRef.current;
     screenCapturePendingRef.current = false;
+    screenCaptureInputSnapshotRef.current = null;
     if (wasCancelled) return;
 
     // Capture succeeded: finalize the submit.
@@ -957,9 +981,18 @@ function App() {
     if (isSubmitPending) {
       // Case 2: /screen capture in flight. Signal cancellation via ref so the
       // async tail in handleScreenSubmit skips ask() when capture resolves.
+      // Restore the ask bar to what it looked like before the capture started.
       screenCapturePendingRef.current = false;
+      const snapshot = screenCaptureInputSnapshotRef.current;
+      screenCaptureInputSnapshotRef.current = null;
       setIsSubmitPending(false);
       setPendingUserMessage(null);
+      /* v8 ignore start -- snapshot is always set when isSubmitPending is true via /screen */
+      if (snapshot) {
+        setQuery(snapshot.query);
+        setSelectedContext(snapshot.context ?? null);
+      }
+      /* v8 ignore stop */
       requestAnimationFrame(() => inputRef.current?.focus());
       return;
     }
