@@ -27,7 +27,7 @@
 
 ---
 
-> **Status: Beta.** Thuki is in active development. Features may change, bugs may occur, and AI model outputs are not guaranteed to be perfect or accurate. Use at your own risk. Always verify important information with trusted sources. This is not a production-ready tool.
+⚠️ **BETA: Active Development** — This project is in active development. Features may change, bugs may occur, and AI model outputs are not guaranteed to be perfect or accurate. Use at your own risk. Always verify important information with trusted sources.
 
 ---
 
