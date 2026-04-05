@@ -1,110 +1,98 @@
 # Thuki
 
-The context-aware floating secretary. Thuki provides a premium, secure, and highly isolated generative AI experience directly on your desktop.
+<p align="center">
+  <img src="public/thuki-logo.png" alt="Thuki logo" width="80" />
+</p>
+
+<p align="center">
+  The context-aware floating secretary — a private, local AI overlay for macOS.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
+  <a href="https://github.com/quiet-node/thuki/actions/workflows/pr-pipeline.yml"><img src="https://github.com/quiet-node/thuki/actions/workflows/pr-pipeline.yml/badge.svg" alt="CI" /></a>
+  <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="Platform: macOS" />
+</p>
+
+---
+
+Thuki is a lightweight macOS desktop app that floats above your workspace. Double-tap Control to summon it from any app, ask a question, and get back to work. It connects to a locally running [Ollama](https://ollama.com) instance — your data never leaves your machine.
 
 ## Features
 
-- **Context-Aware**: Intelligently understands your local workflow to provide real-time assistance.
-- **Floating Interface**: A sleek, unobtrusive Tauri-based chat interface accessible across your system.
-- **Isolated Sandbox**: Generative AI workloads run in a hardened, egress-prohibited Docker container.
-- **Privacy-First**: Zero-trust architecture ensures your data never leaves your local environment.
+- **Always available** — double-tap Control to summon the overlay from any app, including fullscreen apps
+- **Fully local** — powered by Ollama; no cloud, no telemetry, no API keys required
+- **Isolated sandbox** — optionally run models in a hardened Docker container with no network egress
+- **Conversation history** — persist and revisit past conversations across sessions
+- **Image input** — paste or drag screenshots directly into the chat
+- **Privacy-first** — zero-trust architecture, all data stays on your device
+
+## Installation
+
+### Download (Recommended)
+
+1. Download `Thuki.app.tar.gz` from the [latest release](https://github.com/quiet-node/thuki/releases/latest)
+2. Extract and move `Thuki.app` to your `/Applications` folder
+3. Remove the macOS quarantine flag (required for unsigned apps):
+
+   ```bash
+   xattr -rd com.apple.quarantine /Applications/Thuki.app
+   ```
+
+4. Make sure [Ollama](https://ollama.com) is running locally with a model pulled, then open Thuki
+
+> **First launch:** macOS will ask for Accessibility permission. This is required for the global keyboard shortcut. Grant it once — it persists across restarts.
+
+### Build from Source
+
+**Prerequisites:** [Bun](https://bun.sh), [Rust](https://rustup.rs), and optionally [Docker](https://www.docker.com/get-started)
+
+```bash
+# Clone and install dependencies
+git clone https://github.com/quiet-node/thuki.git
+cd thuki
+bun install
+
+# Start the Docker sandbox (optional — skip if you have Ollama running locally)
+bun run sandbox:start
+
+# Launch in development mode
+bun run dev
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development setup guide.
 
 ## Architecture & Security
 
-Thuki utilizes a **Dual-Layer Isolation** model for generative inference:
+<details>
+<summary>Click to expand</summary>
 
-1.  **Frontend (Tauri/React)**: Operates within a secure system webview with restricted IPC.
-2.  **Generative Engine (Docker Sandbox)**:
-    - **Network Air-Gap**: The engine runs in an internal bridge network with zero internet egress (`internal: true`).
-    - **Privilege Dropping**: All Linux kernel capabilities are dropped (`cap_drop: ALL`).
-    - **Model Integrity**: Model weights are mounted as Read-Only (`:ro`) to prevent poisoning or persistence by malicious prompts.
-    - **Ephemeral State**: All model weights and session data are purged on shutdown using `docker compose down -v`.
+Thuki is a **Tauri v2** app (Rust backend + React/TypeScript frontend) that interfaces with a locally running Ollama instance at `http://127.0.0.1:11434`.
 
-## Development
+### Dual-Layer Isolation
 
-### Prerequisites
+1. **Frontend (Tauri/React):** Operates within a secure system webview with restricted IPC. Streaming uses Tauri's Channel API — the Rust backend sends typed `StreamChunk` enum variants, and the frontend hook accumulates tokens into React state.
 
-- **Bun**: Fast JavaScript runtime and package manager. Install via [bun.sh](https://bun.sh).
-- **Rust**: Required for the Tauri backend. Install via [rustup](https://rustup.rs):
-  ```bash
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  ```
-  After installation, restart your shell or run `source ~/.cargo/env` to make `cargo` available.
-- **Docker**: Required to run the isolated generative sandbox. Install via [docker.com](https://www.docker.com/get-started).
+2. **Generative Engine (Docker Sandbox):**
+   - **Network Air-Gap:** Runs in an internal bridge network with zero internet egress (`internal: true`)
+   - **Privilege Dropping:** All Linux kernel capabilities are dropped (`cap_drop: ALL`)
+   - **Model Integrity:** Model weights are mounted read-only (`:ro`) to prevent tampering
+   - **Ephemeral State:** All model data is purged on shutdown via `docker compose down -v`
 
-### Getting Started
+### Window Lifecycle
 
-1.  **Install Dependencies**:
+The app starts hidden. The hotkey or tray menu shows it. The window close button hides (not quits); quit is only available from the tray. `ActivationPolicy::Accessory` hides the Dock icon. `macOSPrivateApi: true` enables NSPanel for fullscreen-app overlay.
 
-    ```bash
-    bun install
-    ```
+</details>
 
-2.  **Configure Environment** (optional):
+## Configuration
 
-    ```bash
-    cp .env.example .env
-    ```
+See [docs/configurations.md](docs/configurations.md) for the full configuration reference, including how to change the default model and Ollama URL.
 
-    Edit `.env` to override defaults. See [docs/configurations.md](docs/configurations.md) for the full reference.
+## Contributing
 
-3.  **Start Sandbox (Security-First Launch)**:
-    Thuki offers a hardened, isolated Docker sandbox as a secure-by-default environment for generative inference. This is ideal if you do not wish to install AI models directly on your host or prefer maximum isolation from the network.
-
-    This bootstraps the sandbox and pulls the models (default: `gemma3:4b`).
-
-    ```bash
-    bun run sandbox:start
-    ```
-
-    _To pre-select or switch the model:_
-
-    ```bash
-    OLLAMA_MODEL=llama3:8b bun run sandbox:start
-    ```
-
-    > [!TIP]
-    > **Skip this step?** If you already have [Ollama](https://ollama.com) installed and running on your local machine (standard port `11434`), Thuki is fully compatible. If your model is already pulled locally, you can skip the sandbox and proceed directly to **Launch Thuki**. Thuki naturally connects to `http://127.0.0.1:11434`.
-
-4.  **Launch Thuki**:
-    Starts the Tauri chat interface.
-
-    ```bash
-    bun run dev
-    ```
-
-    > [!NOTE]
-    > **macOS Accessibility Permission**: Thuki registers a global keyboard shortcut to toggle the overlay. This requires macOS Accessibility permission. During development, the system dialog will prompt you to grant permission to your **terminal app** (e.g., iTerm, Terminal) — this is standard macOS behavior for non-bundled binaries and is expected. In production builds (`.app` bundle), the prompt correctly shows "Thuki."
-
-### Production Build
-
-Build a distributable `.app` bundle:
-
-```bash
-bun run build:all
-```
-
-The bundle is output to `src-tauri/target/release/bundle/macos/Thuki.app`. Launch it directly:
-
-```bash
-open src-tauri/target/release/bundle/macos/Thuki.app
-```
-
-On first launch, macOS will prompt: **"Thuki would like to control this computer using accessibility features."** Grant it once — this enables the global keyboard shortcut for toggling the overlay. The permission persists across app restarts.
-
-> [!TIP]
-> To build a debug `.app` bundle (with DevTools access), run `bun run tauri build -- --debug`. The bundle lands in `src-tauri/target/debug/bundle/macos/Thuki.app`.
-
-### Command Reference
-
-| Command                  | Description                                                             |
-| :----------------------- | :---------------------------------------------------------------------- |
-| `bun run dev`            | Starts the Tauri application in development mode.                       |
-| `bun run sandbox:start`  | Bootstraps the isolated Docker sandbox and pulls the models.            |
-| `bun run sandbox:stop`   | **Destructive**: Stops the sandbox and wipes the model volume.          |
-| `bun run validate-build` | Multi-stage gate: Lints, formats, typechecks, and builds the full app.  |
-| `bun run build:all`      | Compiles both the frontend (Vite) and backend (Rust/Tauri) for release. |
+Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-Personal and confidential. Proprietary to Quiet Node.
+Copyright 2024 Quiet Node Contributors. Licensed under the [Apache License, Version 2.0](LICENSE).
