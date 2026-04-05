@@ -88,7 +88,7 @@ After installation, restart your shell or run `source ~/.cargo/env` to make `car
    cp .env.example .env
    ```
 
-   Edit `.env` to override the default model or Ollama URL. See [docs/configurations.md](docs/configurations.md) for the full reference.
+   Edit `.env` to customize quote display behavior or the system prompt. See [docs/configurations.md](docs/configurations.md) for all available options.
 
 5. **Launch the app**
 
