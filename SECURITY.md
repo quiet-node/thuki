@@ -10,7 +10,7 @@ We will acknowledge your report within **48 hours** and aim to release a fix wit
 
 ## Scope
 
-Thuki runs entirely on your local machine — there is no server, no cloud backend, and no telemetry. The attack surface is limited to:
+Thuki runs entirely on your local machine. There is no server, no cloud backend, and no telemetry. The attack surface is limited to:
 
 - The Tauri IPC boundary between the frontend and Rust backend
 - The Docker sandbox configuration (network isolation, capability dropping)

@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  A floating AI assistant for macOS — fully local, completely free, zero data ever leaves your machine.
+  A floating AI assistant for macOS. Fully local, completely free, zero data ever leaves your machine.
 </p>
 
 <p align="center">
@@ -20,42 +20,42 @@
 
 What is Thuki?
 
-Thuki is a lightweight macOS overlay powered by local AI models running entirely on your own machine — built for quick, uninterrupted asks without ever leaving what you're doing.
+Thuki is a lightweight macOS overlay powered by local AI models running entirely on your own machine, built for quick, uninterrupted asks without ever leaving what you're doing.
 
 How to use Thuki?
 
-Highlight a piece of text you have a question about in any app, double-tap Control <kbd>⌃</kbd>, and Thuki floats up right on top — with your selection pre-filled and ready. Ask your question, then save the conversation or toss it away and get straight back to work. No app switching. No breaking your flow. Everything happens in one Space, exactly where you already are.
+Highlight a piece of text you have a question about in any app, double-tap Control <kbd>⌃</kbd>, and Thuki floats up right on top, with your selection pre-filled and ready. Ask your question, then save the conversation or toss it away and get straight back to work. No app switching. No breaking your flow. Everything happens in one Space, exactly where you already are.
 
 ## Why Thuki?
 
 Most AI assistants require accounts, API keys, or subscriptions that bill you per token. Thuki is different:
 
-- **100% free AI interactions** — you run the model locally, there is no per-query cost, ever
-- **Zero trust by design** — no remote server, no cloud backend, no analytics, no telemetry
-- **Works completely offline** — once your model is pulled, Thuki runs without an internet connection
-- **Your data is yours** — conversations are stored in a local SQLite database on your machine and nowhere else
-- **Most importantly: it works everywhere.** Double-tap Control <kbd>⌃</kbd> and Thuki appears — on your desktop, inside a browser, inside a terminal, and yes, even in fullscreen apps. Your favorite AI chat apps can't do that!
+- **100% free AI interactions:** you run the model locally, there is no per-query cost, ever
+- **Zero trust by design:** no remote server, no cloud backend, no analytics, no telemetry
+- **Works completely offline:** once your model is pulled, Thuki runs without an internet connection
+- **Your data is yours:** conversations are stored in a local SQLite database on your machine and nowhere else
+- **Most importantly: it works everywhere.** Double-tap Control <kbd>⌃</kbd> and Thuki appears on your desktop, inside a browser, inside a terminal, and yes, even in fullscreen apps. Your favorite AI chat apps can't do that!
 
 ## Features
 
-- **Always available** — double-tap Control <kbd>⌃</kbd> to summon the overlay from any app, including fullscreen apps
-- **Context-aware quotes** — highlight any text, then double-tap Control <kbd>⌃</kbd> to open Thuki with the selected text pre-filled as a quote
-- **Throwaway conversations** — fast, lightweight interactions without the overhead of a full chat app
-- **Conversation history** — persist and revisit past conversations across sessions
-- **Fully local LLM** — powered by Ollama; no API keys, no accounts, no cost per query
-- **Isolated sandbox** — optionally run models in a hardened Docker container with no network egress
-- **Image input** — paste or drag screenshots directly into the chat
-- **Privacy-first** — zero-trust architecture, all data stays on your device
+- **Always available:** double-tap Control <kbd>⌃</kbd> to summon the overlay from any app, including fullscreen apps
+- **Context-aware quotes:** highlight any text, then double-tap Control <kbd>⌃</kbd> to open Thuki with the selected text pre-filled as a quote
+- **Throwaway conversations:** fast, lightweight interactions without the overhead of a full chat app
+- **Conversation history:** persist and revisit past conversations across sessions
+- **Fully local LLM:** powered by Ollama; no API keys, no accounts, no cost per query
+- **Isolated sandbox:** optionally run models in a hardened Docker container with no network egress
+- **Image input:** paste or drag screenshots directly into the chat
+- **Privacy-first:** zero-trust architecture, all data stays on your device
 
 ## Getting Started
 
 ### Step 1: Set Up Your AI Engine
 
-> **Default model:** Thuki ships with [`gemma3:4b`](https://ollama.com/library/gemma3) by default — a capable 4-billion parameter model from Google that runs comfortably on most modern Macs with 8 GB of RAM or more. It's a great starting point: fast, conversational, and surprisingly capable for everyday tasks.
+> **Default model:** Thuki ships with [`gemma3:4b`](https://ollama.com/library/gemma3) by default, a capable 4-billion parameter model from Google that runs comfortably on most modern Macs with 8 GB of RAM or more. It's a great starting point: fast, conversational, and surprisingly capable for everyday tasks.
 
-Support for swapping models without rebuilding is planned — follow the project for updates.
+Support for swapping models without rebuilding is planned; follow the project for updates.
 
-Choose one of the two options below to set up your AI engine before installing Thuki..
+Choose one of the two options below to set up your AI engine before installing Thuki.
 
 #### Option A: Local Ollama (Recommended for most users)
 
@@ -89,7 +89,7 @@ Choose one of the two options below to set up your AI engine before installing T
 
 **Prerequisites:** Install [Docker Desktop](https://www.docker.com/get-started)
 
-The Docker sandbox is for users who want the strongest possible isolation between the AI model and their host system — ideal if you work in regulated environments, are security-conscious about what runs on your machine, or simply want peace of mind. The model runs in a hardened container that cannot reach the internet, cannot write to your filesystem, and leaves no trace when stopped.
+The Docker sandbox is for users who want the strongest possible isolation between the AI model and their host system, ideal if you work in regulated environments, are security-conscious about what runs on your machine, or simply want peace of mind. The model runs in a hardened container that cannot reach the internet, cannot write to your filesystem, and leaves no trace when stopped.
 
 Start the sandbox:
 
@@ -97,7 +97,7 @@ Start the sandbox:
 bun run sandbox:start
 ```
 
-> **First run:** The sandbox will pull the model inside the container — this may take several minutes depending on your connection. Subsequent starts are instant.
+> **First run:** The sandbox will pull the model inside the container; this may take several minutes depending on your connection. Subsequent starts are instant.
 
 When you're done, stop and wipe all model data:
 
@@ -113,22 +113,22 @@ For the full architecture and security philosophy behind the sandbox, see [`sand
 
 1. Download `Thuki.app.tar.gz` from the [latest release](https://github.com/quiet-node/thuki/releases/latest)
 2. Extract and move `Thuki.app` to your `/Applications` folder
-3. Remove the macOS quarantine flag (one-time, required for unsigned apps) — pick either option:
+3. Remove the macOS quarantine flag (one-time, required for unsigned apps). Pick either option:
 
-   **Option A — Terminal command:**
+   **Option A: Terminal command:**
 
    ```bash
    xattr -rd com.apple.quarantine /Applications/Thuki.app
    ```
 
-   **Option B — System Settings:**
+   **Option B: System Settings:**
    Open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to Thuki.
 
-> Sorry about this step. Thuki is an open source app distributed directly and not through the Mac App Store. That's why it hasn't gone through Apple's notarization process. macOS blocks such apps by default as a security measure. Both options above are safe and officially documented by Apple — [learn more here](https://support.apple.com/en-us/102445).
+> Sorry about this step. Thuki is an open source app distributed directly and not through the Mac App Store. That's why it hasn't gone through Apple's notarization process. macOS blocks such apps by default as a security measure. Both options above are safe and officially documented by Apple ([learn more here](https://support.apple.com/en-us/102445)).
 
-4. Open Thuki — it will appear in your menu bar
+4. Open Thuki. It will appear in your menu bar.
 
-> **First launch:** macOS will ask for Accessibility permission. This is required for the global keyboard shortcut that lets you summon Thuki from any app. Grant it once — it persists across restarts.
+> **First launch:** macOS will ask for Accessibility permission. This is required for the global keyboard shortcut that lets you summon Thuki from any app. Grant it once; it persists across restarts.
 
 #### Build from Source
 
@@ -155,7 +155,7 @@ Thuki is a **Tauri v2** app (Rust backend + React/TypeScript frontend) that inte
 
 ### Dual-Layer Isolation
 
-1. **Frontend (Tauri/React):** Operates within a secure system webview with restricted IPC. Streaming uses Tauri's Channel API — the Rust backend sends typed `StreamChunk` enum variants, and the frontend hook accumulates tokens into React state.
+1. **Frontend (Tauri/React):** Operates within a secure system webview with restricted IPC. Streaming uses Tauri's Channel API; the Rust backend sends typed `StreamChunk` enum variants, and the frontend hook accumulates tokens into React state.
 
 2. **Generative Engine (Docker Sandbox):**
    - **Network Air-Gap:** Runs in an internal bridge network with zero internet egress (`internal: true`)

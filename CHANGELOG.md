@@ -14,8 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Floating overlay activated by double-tapping the Control key from any app
 - Streaming chat powered by locally running Ollama models
 - Multi-turn conversation with full context retention
-- Conversation history with SQLite persistence — revisit and continue past sessions
-- Image and screenshot input — paste or drag images directly into the chat
+- Conversation history with SQLite persistence; revisit and continue past sessions
+- Image and screenshot input: paste or drag images directly into the chat
 - Docker sandbox with network air-gap, capability dropping, and read-only model volume
 - macOS NSPanel integration for fullscreen-app overlay
 - Tray icon with show/hide and quit controls

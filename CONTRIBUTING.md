@@ -19,13 +19,13 @@ You'll need the following tools installed before you can build Thuki:
 
 ### Required
 
-**Bun** — JavaScript runtime and package manager
+**Bun:** JavaScript runtime and package manager
 
 ```bash
 curl -fsSL https://bun.sh/install | bash
 ```
 
-**Rust** — required for the Tauri backend
+**Rust:** required for the Tauri backend
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -33,15 +33,15 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 After installation, restart your shell or run `source ~/.cargo/env` to make `cargo` available. Thuki builds against stable Rust.
 
-**macOS** — Thuki is macOS-only. It uses NSPanel and Core Graphics APIs that are not available on other platforms.
+**macOS:** Thuki is macOS-only. It uses NSPanel and Core Graphics APIs that are not available on other platforms.
 
 ### Optional
 
-**Docker** — only needed if you want to run the isolated Docker sandbox instead of a local Ollama install
+**Docker:** only needed if you want to run the isolated Docker sandbox instead of a local Ollama install
 
 - Install via [docker.com](https://www.docker.com/get-started)
 
-**Ollama** — if you're not using the Docker sandbox, install Ollama directly
+**Ollama:** if you're not using the Docker sandbox, install Ollama directly
 
 - Install via [ollama.com](https://ollama.com)
 
@@ -62,7 +62,7 @@ After installation, restart your shell or run `source ~/.cargo/env` to make `car
    bun install
    ```
 
-3. **Set up your AI backend** — choose one:
+3. **Set up your AI backend** (choose one):
 
    **Option A: Docker sandbox (recommended for isolation)**
 
@@ -96,7 +96,7 @@ After installation, restart your shell or run `source ~/.cargo/env` to make `car
    bun run dev
    ```
 
-   On first run, macOS will prompt for Accessibility permission. This is required for the global keyboard shortcut. Grant it once — it persists across restarts.
+   On first run, macOS will prompt for Accessibility permission. This is required for the global keyboard shortcut. Grant it once; it persists across restarts.
 
 ---
 
@@ -177,9 +177,9 @@ Key style rules:
 
 5. **Commit your changes** with a clear, descriptive message
 
-6. **Open a PR** against `main` — fill out the PR template fully
+6. **Open a PR** against `main` and fill out the PR template fully
 
-7. **Respond to review feedback** — maintainers aim to review within a few days
+7. **Respond to review feedback:** maintainers aim to review within a few days
 
 ### PR Guidelines
 
@@ -194,4 +194,4 @@ Key style rules:
 
 New to the codebase? Look for issues tagged [`good first issue`](https://github.com/quiet-node/thuki/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) on GitHub. These are scoped to be approachable without deep knowledge of the full system.
 
-If you have a question or want to discuss an approach before writing code, open an issue or start a discussion — we're happy to help.
+If you have a question or want to discuss an approach before writing code, open an issue or start a discussion; we're happy to help.
