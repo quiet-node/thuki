@@ -1,7 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "release-type": "node",
-  "signoff": "Logan Nguyen <lg.131.dev@gmail.com>",
   "packages": {
     ".": {
       "release-type": "node",
