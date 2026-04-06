@@ -43,17 +43,30 @@ jobs:
         working-directory: src-tauri
         run: cargo update --package thuki
 
-      - name: Commit Cargo.lock if it changed
+      - name: Commit Cargo.lock via GitHub API if changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ! git diff --quiet src-tauri/Cargo.lock; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add src-tauri/Cargo.lock
-            git commit -m "chore: sync Cargo.lock to version bump" -m "Signed-off-by: Logan Nguyen <lg.131.dev@gmail.com>"
-            git push
-          else
+          BRANCH="${{ fromJSON(needs.release-please.outputs.pr).headBranchName }}"
+
+          if git diff --quiet src-tauri/Cargo.lock; then
             echo "Cargo.lock already in sync, nothing to commit"
+            exit 0
           fi
+
+          # Get the current file SHA (required by the API for updates)
+          CURRENT_SHA=$(gh api \
+            "repos/${{ github.repository }}/contents/src-tauri/Cargo.lock?ref=$BRANCH" \
+            --jq '.sha')
+
+          # Commit via GitHub API — automatically creates a verified commit
+          gh api \
+            --method PUT \
+            "repos/${{ github.repository }}/contents/src-tauri/Cargo.lock" \
+            --field message="chore: sync Cargo.lock to version bump" \
+            --field "content=$(base64 -w 0 src-tauri/Cargo.lock)" \
+            --field "sha=$CURRENT_SHA" \
+            --field "branch=$BRANCH"
 
   build-and-release:
     name: Build and publish macOS app
