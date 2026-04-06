@@ -708,7 +708,8 @@ describe('App', () => {
     });
 
     it('closes history panel when a conversation is loaded', async () => {
-      invoke.mockResolvedValueOnce([]); // list_conversations
+      invoke.mockResolvedValueOnce(undefined); // notify_frontend_ready
+      invoke.mockResolvedValueOnce([]); // reset_conversation (from replayEntranceAnimation)
       invoke.mockResolvedValueOnce([
         // load_conversation
         {
