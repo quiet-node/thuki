@@ -1020,6 +1020,8 @@ function App() {
           requestHideOverlay();
         },
       );
+      // Listener is now registered — safe to let Rust show the overlay on launch.
+      await invoke('notify_frontend_ready');
     };
 
     void attachVisibilityListener();

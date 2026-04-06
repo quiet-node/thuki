@@ -96,6 +96,12 @@ const OVERLAY_VISIBILITY_HIDE_REQUEST: &str = "hide-request";
 /// between the frontend exit animation and rapid activation toggles.
 static OVERLAY_INTENDED_VISIBLE: AtomicBool = AtomicBool::new(false);
 
+/// True on first process launch; cleared when the frontend signals readiness.
+/// Used to show the overlay automatically on startup without a race condition:
+/// the frontend calls `notify_frontend_ready` after its event listener is
+/// registered, so the show event is guaranteed to have a listener.
+static LAUNCH_SHOW_PENDING: AtomicBool = AtomicBool::new(true);
+
 /// Fixed-bottom anchor emitted when the bar is positioned above the selection.
 /// The frontend pins the window bottom to `bottom_y` as the conversation grows.
 #[derive(Clone, serde::Serialize)]
@@ -373,6 +379,18 @@ fn notify_overlay_hidden() {
     OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
 }
 
+/// Called by the frontend once its visibility event listener is registered.
+/// On the first call per process lifetime, shows the overlay so the AskBar
+/// appears automatically at startup without a race between the Rust emit and
+/// the frontend listener registration.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn notify_frontend_ready(app_handle: tauri::AppHandle) {
+    if LAUNCH_SHOW_PENDING.swap(false, Ordering::SeqCst) {
+        show_overlay(&app_handle, crate::context::ActivationContext::empty());
+    }
+}
+
 // ─── NSPanel initialisation ─────────────────────────────────────────────────
 
 /// Converts the main Tauri window into an NSPanel and applies the overlay
@@ -610,6 +628,7 @@ pub fn run() {
             #[cfg(not(coverage))]
             screenshot::capture_full_screen_command,
             notify_overlay_hidden,
+            notify_frontend_ready,
             set_window_frame
         ])
         .build(tauri::generate_context!())
@@ -654,6 +673,13 @@ mod tests {
         OVERLAY_INTENDED_VISIBLE.store(true, Ordering::SeqCst);
         OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
         assert!(!OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn launch_show_pending_consumed_exactly_once() {
+        LAUNCH_SHOW_PENDING.store(true, Ordering::SeqCst);
+        assert!(LAUNCH_SHOW_PENDING.swap(false, Ordering::SeqCst));
+        assert!(!LAUNCH_SHOW_PENDING.swap(false, Ordering::SeqCst));
     }
 
     #[test]
