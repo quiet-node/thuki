@@ -159,8 +159,10 @@ impl OverlayActivator {
         }
         self.is_active.store(true, Ordering::SeqCst);
 
-        // Preliminary authorization check to trigger the system dialog if needed.
-        request_authorization(true);
+        // Check authorization without prompting. The onboarding screen owns
+        // the responsibility of directing the user to System Settings when
+        // Accessibility is not yet granted.
+        request_authorization(false);
 
         let is_active = self.is_active.clone();
         let on_activation = Arc::new(on_activation);

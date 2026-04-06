@@ -24,6 +24,7 @@ pub mod screenshot;
 #[cfg(target_os = "macos")]
 mod activator;
 pub mod context;
+pub mod permissions;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -40,29 +41,6 @@ use tauri::ActivationPolicy;
 use tauri_nspanel::{
     tauri_panel, CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt,
 };
-
-// ─── macOS permissions pre-flight ───────────────────────────────────────────
-
-#[cfg(target_os = "macos")]
-#[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
-    fn CGRequestScreenCaptureAccess() -> bool;
-}
-
-/// Requests Screen Recording permission from macOS.
-///
-/// Triggers the standard system privacy dialog on first call. Subsequent calls
-/// return immediately once the user has granted permission. Calling this at
-/// startup ensures the user sees all required permission prompts in one session
-/// rather than encountering the screen recording dialog mid-use when the
-/// screenshot feature is first invoked.
-#[cfg(target_os = "macos")]
-#[cfg_attr(coverage_nightly, coverage(off))]
-fn request_screen_capture_access() {
-    unsafe {
-        CGRequestScreenCaptureAccess();
-    }
-}
 
 // ─── NSPanel definition (macOS only) ────────────────────────────────────────
 
@@ -91,6 +69,16 @@ const OVERLAY_LOGICAL_HEIGHT_COLLAPSED: f64 = 80.0;
 const OVERLAY_VISIBILITY_EVENT: &str = "thuki://visibility";
 const OVERLAY_VISIBILITY_SHOW: &str = "show";
 const OVERLAY_VISIBILITY_HIDE_REQUEST: &str = "hide-request";
+
+/// Frontend event that triggers the onboarding screen when one or more
+/// required permissions have not yet been granted.
+const ONBOARDING_EVENT: &str = "thuki://onboarding";
+
+/// Logical dimensions of the onboarding window (centered, fixed size).
+/// Content fits tightly; native macOS shadow is re-enabled for onboarding
+/// so it renders outside the window boundary without extra transparent padding.
+const ONBOARDING_LOGICAL_WIDTH: f64 = 460.0;
+const ONBOARDING_LOGICAL_HEIGHT: f64 = 540.0;
 
 /// Tracks the intended visibility state of the overlay, preventing race conditions
 /// between the frontend exit animation and rapid activation toggles.
@@ -387,6 +375,15 @@ fn notify_overlay_hidden() {
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn notify_frontend_ready(app_handle: tauri::AppHandle) {
     if LAUNCH_SHOW_PENDING.swap(false, Ordering::SeqCst) {
+        #[cfg(target_os = "macos")]
+        {
+            let ax = permissions::is_accessibility_granted();
+            let sc = permissions::is_screen_recording_granted();
+            if permissions::needs_onboarding(ax, sc) {
+                show_onboarding_window(&app_handle);
+                return;
+            }
+        }
         show_overlay(&app_handle, crate::context::ActivationContext::empty());
     }
 }
@@ -435,6 +432,50 @@ fn init_panel(app_handle: &tauri::AppHandle) {
     // different after the user clicks elsewhere. The CSS `shadow-bar` provides
     // a stable, focus-independent elevation effect.
     panel.set_has_shadow(false);
+}
+
+// ─── Onboarding window ───────────────────────────────────────────────────────
+
+/// Sizes the main window for the onboarding screen, centers it, makes it
+/// visible, and emits `thuki://onboarding` so the frontend switches to
+/// `OnboardingView`.
+///
+/// All window mutations run on the macOS main thread via `run_on_main_thread`;
+/// the event is emitted from the same closure to avoid a race where the
+/// frontend receives the event before the window is visible.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn show_onboarding_window(app_handle: &tauri::AppHandle) {
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+                ONBOARDING_LOGICAL_WIDTH,
+                ONBOARDING_LOGICAL_HEIGHT,
+            )));
+            let _ = window.center();
+        }
+        match handle.get_webview_panel("main") {
+            Ok(panel) => {
+                // Use normal window level so System Settings can appear above.
+                panel.set_level(0);
+                // Re-enable native shadow for onboarding. init_panel disables
+                // it for the overlay to avoid the key/non-key shadow flicker,
+                // but for onboarding the native shadow looks professional and
+                // renders outside the window boundary — no transparent padding
+                // needed. The app always restarts after onboarding completes,
+                // so this does not affect the overlay session.
+                panel.set_has_shadow(true);
+                panel.show_and_make_key();
+            }
+            Err(_) => {
+                if let Some(w) = handle.get_webview_window("main") {
+                    let _ = w.show();
+                }
+            }
+        }
+        let _ = handle.emit(ONBOARDING_EVENT, ());
+    });
 }
 
 // ─── Image cleanup ──────────────────────────────────────────────────────────
@@ -511,14 +552,6 @@ pub fn run() {
             // ── NSPanel conversion (macOS only) ──────────────────────────
             #[cfg(target_os = "macos")]
             init_panel(app.app_handle());
-
-            // ── Permission pre-flight (macOS only) ───────────────────────
-            // Request all required permissions upfront at first launch so
-            // the user can grant everything in one session rather than
-            // hitting permission dialogs mid-use. Accessibility is requested
-            // inside the activator; Screen Recording is requested here.
-            #[cfg(target_os = "macos")]
-            request_screen_capture_access();
 
             // ── System tray icon + menu ───────────────────────────────────
             let show_item = MenuItem::with_id(app, "show", "Open Thuki", true, None::<&str>)?;
@@ -629,7 +662,21 @@ pub fn run() {
             screenshot::capture_full_screen_command,
             notify_overlay_hidden,
             notify_frontend_ready,
-            set_window_frame
+            set_window_frame,
+            #[cfg(not(coverage))]
+            permissions::check_accessibility_permission,
+            #[cfg(not(coverage))]
+            permissions::open_accessibility_settings,
+            #[cfg(not(coverage))]
+            permissions::check_screen_recording_permission,
+            #[cfg(not(coverage))]
+            permissions::open_screen_recording_settings,
+            #[cfg(not(coverage))]
+            permissions::request_screen_recording_access,
+            #[cfg(not(coverage))]
+            permissions::check_screen_recording_tcc_granted,
+            #[cfg(not(coverage))]
+            permissions::quit_and_relaunch
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -687,6 +734,17 @@ mod tests {
         assert_eq!(OVERLAY_VISIBILITY_EVENT, "thuki://visibility");
         assert_eq!(OVERLAY_VISIBILITY_SHOW, "show");
         assert_eq!(OVERLAY_VISIBILITY_HIDE_REQUEST, "hide-request");
+    }
+
+    #[test]
+    fn onboarding_event_constant_matches() {
+        assert_eq!(ONBOARDING_EVENT, "thuki://onboarding");
+    }
+
+    #[test]
+    fn onboarding_logical_dimensions() {
+        assert_eq!(ONBOARDING_LOGICAL_WIDTH, 460.0);
+        assert_eq!(ONBOARDING_LOGICAL_HEIGHT, 540.0);
     }
 
     #[test]
