@@ -29,7 +29,7 @@ tokio = { version = "1.50.0", features = ["macros"] }
 futures-util = "0.3.32"
 tokio-util = "0.7"
 dotenvy = "0.15.7"
-rusqlite = { version = "0.35", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
