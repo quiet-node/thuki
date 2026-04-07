@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { OnboardingView } from '../view/OnboardingView';
+import { PermissionsStep } from '../view/onboarding/PermissionsStep';
 import { invoke } from '../testUtils/mocks/tauri';
 
 describe('OnboardingView', () => {
@@ -25,7 +25,7 @@ describe('OnboardingView', () => {
 
   it('shows step 1 as active when accessibility is not granted', async () => {
     setupPermissions(false);
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     expect(screen.getByText('Accessibility')).toBeInTheDocument();
@@ -36,7 +36,7 @@ describe('OnboardingView', () => {
 
   it('shows the onboarding title', async () => {
     setupPermissions(false);
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     expect(screen.getByText("Let's get Thuki set up")).toBeInTheDocument();
@@ -44,7 +44,7 @@ describe('OnboardingView', () => {
 
   it('skips to step 2 when accessibility is already granted on mount', async () => {
     setupPermissions(true);
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     expect(
@@ -57,7 +57,7 @@ describe('OnboardingView', () => {
 
   it('clicking grant accessibility invokes request command', async () => {
     setupPermissions(false);
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -71,7 +71,7 @@ describe('OnboardingView', () => {
 
   it('shows spinner while polling after grant request', async () => {
     setupPermissions(false);
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -95,7 +95,7 @@ describe('OnboardingView', () => {
       if (cmd === 'open_accessibility_settings') return;
     });
 
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -134,7 +134,7 @@ describe('OnboardingView', () => {
       if (cmd === 'open_accessibility_settings') return;
     });
 
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     // Click grant
@@ -166,7 +166,7 @@ describe('OnboardingView', () => {
       if (cmd === 'open_accessibility_settings') return;
     });
 
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -185,7 +185,7 @@ describe('OnboardingView', () => {
 
   it('clicking open screen recording settings registers app and opens settings', async () => {
     setupPermissions(true);
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -201,7 +201,7 @@ describe('OnboardingView', () => {
 
   it('shows spinner while polling after opening screen recording settings', async () => {
     setupPermissions(true);
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -219,7 +219,7 @@ describe('OnboardingView', () => {
 
   it('does not show quit and reopen immediately after clicking screen recording button', async () => {
     setupPermissions(true);
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -242,7 +242,7 @@ describe('OnboardingView', () => {
       if (cmd === 'check_screen_recording_tcc_granted') return tccGranted;
     });
 
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -278,7 +278,7 @@ describe('OnboardingView', () => {
       if (cmd === 'check_screen_recording_tcc_granted') return true;
     });
 
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -305,7 +305,7 @@ describe('OnboardingView', () => {
       if (cmd === 'check_screen_recording_tcc_granted') return true;
     });
 
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -327,7 +327,7 @@ describe('OnboardingView', () => {
 
   it('shows screen recording step info', async () => {
     setupPermissions(true);
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     expect(screen.getByText('Screen Recording')).toBeInTheDocument();
@@ -335,7 +335,7 @@ describe('OnboardingView', () => {
 
   it('shows both steps regardless of current active step', async () => {
     setupPermissions(false);
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     expect(screen.getByText('Accessibility')).toBeInTheDocument();
@@ -346,7 +346,7 @@ describe('OnboardingView', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     setupPermissions(false);
-    const { unmount } = render(<OnboardingView />);
+    const { unmount } = render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -377,7 +377,7 @@ describe('OnboardingView', () => {
       if (cmd === 'check_screen_recording_tcc_granted') return false;
     });
 
-    const { unmount } = render(<OnboardingView />);
+    const { unmount } = render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -398,7 +398,7 @@ describe('OnboardingView', () => {
 
   it('hovering the CTA button applies brightness filter when enabled', async () => {
     setupPermissions(false);
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     const btn = screen.getByRole('button', { name: /grant accessibility/i });
@@ -412,7 +412,7 @@ describe('OnboardingView', () => {
 
   it('hovering a disabled CTA button does not apply brightness filter', async () => {
     setupPermissions(false);
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -451,7 +451,7 @@ describe('OnboardingView', () => {
       return Promise.resolve();
     });
 
-    const { unmount } = render(<OnboardingView />);
+    const { unmount } = render(<PermissionsStep />);
     // useEffect has fired; initial invoke is in-flight (resolveInitial is set).
 
     act(() => unmount()); // mountedRef → false
@@ -479,7 +479,7 @@ describe('OnboardingView', () => {
       return Promise.resolve();
     });
 
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {}); // initial check done
 
     await act(async () => {
@@ -520,7 +520,7 @@ describe('OnboardingView', () => {
       return Promise.resolve();
     });
 
-    const { unmount } = render(<OnboardingView />);
+    const { unmount } = render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -561,7 +561,7 @@ describe('OnboardingView', () => {
       return Promise.resolve();
     });
 
-    const { unmount } = render(<OnboardingView />);
+    const { unmount } = render(<PermissionsStep />);
     await act(async () => {}); // accessibility granted
 
     // Flush microtasks so the handler advances past the first await
@@ -600,7 +600,7 @@ describe('OnboardingView', () => {
       return Promise.resolve();
     });
 
-    render(<OnboardingView />);
+    render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {
@@ -636,7 +636,7 @@ describe('OnboardingView', () => {
       return Promise.resolve();
     });
 
-    const { unmount } = render(<OnboardingView />);
+    const { unmount } = render(<PermissionsStep />);
     await act(async () => {});
 
     await act(async () => {

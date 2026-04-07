@@ -9,7 +9,7 @@
  * behind a `Mutex`.
  */
 
-use rusqlite::{params, Connection, Result as SqlResult};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use serde::Serialize;
 
 /// Summary of a conversation for the history dropdown list.
@@ -120,6 +120,8 @@ fn run_migrations(conn: &Connection) -> SqlResult<()> {
         "  ON messages(conversation_id, created_at);",
         "CREATE INDEX IF NOT EXISTS idx_conversations_updated",
         "  ON conversations(updated_at DESC);",
+        "CREATE TABLE IF NOT EXISTS app_config (",
+        "  key TEXT PRIMARY KEY, value TEXT NOT NULL);",
     );
     conn.execute_batch(SCHEMA_DDL)?;
 
@@ -136,6 +138,28 @@ fn run_migrations(conn: &Connection) -> SqlResult<()> {
         conn.execute_batch("ALTER TABLE messages ADD COLUMN image_paths TEXT;")?;
     }
 
+    Ok(())
+}
+
+// ─── App config key-value store ─────────────────────────────────────────────
+
+/// Reads a value from the app_config table. Returns `None` if the key is absent.
+pub fn get_config(conn: &Connection, key: &str) -> SqlResult<Option<String>> {
+    conn.query_row(
+        "SELECT value FROM app_config WHERE key = ?1",
+        rusqlite::params![key],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// Inserts or replaces a value in the app_config table.
+pub fn set_config(conn: &Connection, key: &str, value: &str) -> SqlResult<()> {
+    conn.execute(
+        "INSERT INTO app_config (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![key, value],
+    )?;
     Ok(())
 }
 
@@ -677,6 +701,58 @@ mod tests {
         assert_eq!(fs::read(&new_path).unwrap(), b"legacy-data");
 
         fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn app_config_table_exists_after_migration() {
+        let conn = open_in_memory().unwrap();
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(tables.contains(&"app_config".to_string()));
+    }
+
+    #[test]
+    fn get_config_returns_none_for_missing_key() {
+        let conn = open_in_memory().unwrap();
+        let val = get_config(&conn, "onboarding_stage").unwrap();
+        assert!(val.is_none());
+    }
+
+    #[test]
+    fn set_and_get_config_round_trips() {
+        let conn = open_in_memory().unwrap();
+        set_config(&conn, "onboarding_stage", "intro").unwrap();
+        let val = get_config(&conn, "onboarding_stage").unwrap();
+        assert_eq!(val.as_deref(), Some("intro"));
+    }
+
+    #[test]
+    fn set_config_overwrites_existing_value() {
+        let conn = open_in_memory().unwrap();
+        set_config(&conn, "onboarding_stage", "intro").unwrap();
+        set_config(&conn, "onboarding_stage", "complete").unwrap();
+        let val = get_config(&conn, "onboarding_stage").unwrap();
+        assert_eq!(val.as_deref(), Some("complete"));
+    }
+
+    #[test]
+    fn set_config_independent_keys_do_not_interfere() {
+        let conn = open_in_memory().unwrap();
+        set_config(&conn, "onboarding_stage", "intro").unwrap();
+        set_config(&conn, "other_key", "other_value").unwrap();
+        assert_eq!(
+            get_config(&conn, "onboarding_stage").unwrap().as_deref(),
+            Some("intro")
+        );
+        assert_eq!(
+            get_config(&conn, "other_key").unwrap().as_deref(),
+            Some("other_value")
+        );
     }
 
     #[test]

@@ -160,10 +160,34 @@ pub fn check_screen_recording_tcc_granted() -> bool {
 ///
 /// Called after the user grants Screen Recording permission. macOS requires
 /// a full process restart before the new permission takes effect.
+///
+/// Advances the onboarding stage to "intro" before restarting so the next
+/// launch shows the intro screen rather than re-checking permissions via
+/// CGPreflightScreenCaptureAccess, which can return false on macOS 15 even
+/// after a successful grant.
 #[tauri::command]
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub fn quit_and_relaunch(app_handle: tauri::AppHandle) {
+pub fn quit_and_relaunch(
+    app_handle: tauri::AppHandle,
+    db: tauri::State<'_, crate::history::Database>,
+) {
+    match db.0.lock() {
+        Ok(conn) => {
+            match crate::onboarding::set_stage(&conn, &crate::onboarding::OnboardingStage::Intro) {
+                Ok(()) => {
+                    // Force WAL checkpoint so the write survives the
+                    // std::process::exit(0) inside app_handle.restart(),
+                    // which skips destructors and may leave uncheckpointed
+                    // WAL pages in the OS page cache.
+                    let _ = conn.execute_batch("PRAGMA wal_checkpoint(FULL);");
+                    eprintln!("[thuki] quit_and_relaunch: stage advanced to intro (checkpointed)");
+                }
+                Err(e) => eprintln!("[thuki] quit_and_relaunch: db write failed: {e}"),
+            }
+        }
+        Err(e) => eprintln!("[thuki] quit_and_relaunch: mutex poisoned: {e}"),
+    }
     app_handle.restart();
 }
 

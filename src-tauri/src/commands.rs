@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use tauri::{ipc::Channel, State};
+use tauri::{ipc::Channel, Manager, State};
 use tokio_util::sync::CancellationToken;
 
 /// Default configuration constants as the application currently lacks a Settings UI.
@@ -353,6 +353,25 @@ pub async fn cancel_generation(generation: State<'_, GenerationState>) -> Result
 pub fn reset_conversation(history: State<'_, ConversationHistory>) {
     history.epoch.fetch_add(1, Ordering::SeqCst);
     history.messages.lock().unwrap().clear();
+}
+
+/// Marks onboarding as complete and hides the window so the next hotkey press
+/// shows the normal overlay. Called by the frontend when the user clicks
+/// "Get Started" on the intro screen.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn finish_onboarding(
+    db: State<'_, crate::history::Database>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| format!("db lock poisoned: {e}"))?;
+    crate::onboarding::set_stage(&conn, &crate::onboarding::OnboardingStage::Complete)
+        .map_err(|e| format!("db write failed: {e}"))?;
+    drop(conn);
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    Ok(())
 }
 
 #[cfg(test)]

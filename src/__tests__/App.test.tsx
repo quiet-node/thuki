@@ -3219,7 +3219,7 @@ describe('App', () => {
       await act(async () => {});
 
       await act(async () => {
-        emitTauriEvent('thuki://onboarding', undefined);
+        emitTauriEvent('thuki://onboarding', { stage: 'permissions' });
       });
 
       expect(screen.getByText("Let's get Thuki set up")).toBeInTheDocument();
