@@ -157,6 +157,13 @@ export function OnboardingView() {
     useState<ScreenRecordingStatus>('idle');
   const axPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const screenPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Guards that prevent a new poll tick from firing while a previous invoke
+  // call is still in-flight. Without these, a slow IPC response (> POLL_INTERVAL_MS)
+  // could queue multiple concurrent permission checks.
+  const axInFlightRef = useRef(false);
+  const screenInFlightRef = useRef(false);
+  // Prevents state updates from resolving in-flight invocations after unmount.
+  const mountedRef = useRef(true);
 
   const stopAxPolling = useCallback(() => {
     if (axPollRef.current !== null) {
@@ -176,11 +183,13 @@ export function OnboardingView() {
   // step 1 and show step 2 immediately.
   useEffect(() => {
     void invoke<boolean>('check_accessibility_permission').then((granted) => {
+      if (!mountedRef.current) return;
       if (granted) {
         setAccessibilityStatus('granted');
       }
     });
     return () => {
+      mountedRef.current = false;
       stopAxPolling();
       stopScreenPolling();
     };
@@ -190,10 +199,17 @@ export function OnboardingView() {
     setAccessibilityStatus('requesting');
     await invoke('open_accessibility_settings');
     axPollRef.current = setInterval(async () => {
-      const granted = await invoke<boolean>('check_accessibility_permission');
-      if (granted) {
-        stopAxPolling();
-        setAccessibilityStatus('granted');
+      if (axInFlightRef.current) return;
+      axInFlightRef.current = true;
+      try {
+        const granted = await invoke<boolean>('check_accessibility_permission');
+        if (!mountedRef.current) return;
+        if (granted) {
+          stopAxPolling();
+          setAccessibilityStatus('granted');
+        }
+      } finally {
+        axInFlightRef.current = false;
       }
     }, POLL_INTERVAL_MS);
   }, [stopAxPolling]);
@@ -206,12 +222,19 @@ export function OnboardingView() {
     await invoke('open_screen_recording_settings');
     setScreenRecordingStatus('polling');
     screenPollRef.current = setInterval(async () => {
-      const granted = await invoke<boolean>(
-        'check_screen_recording_tcc_granted',
-      );
-      if (granted) {
-        stopScreenPolling();
-        setScreenRecordingStatus('granted');
+      if (screenInFlightRef.current) return;
+      screenInFlightRef.current = true;
+      try {
+        const granted = await invoke<boolean>(
+          'check_screen_recording_tcc_granted',
+        );
+        if (!mountedRef.current) return;
+        if (granted) {
+          stopScreenPolling();
+          setScreenRecordingStatus('granted');
+        }
+      } finally {
+        screenInFlightRef.current = false;
       }
     }, POLL_INTERVAL_MS);
   }, [stopScreenPolling]);
@@ -344,7 +367,7 @@ export function OnboardingView() {
                 Accessibility
               </div>
               <div style={{ fontSize: 12, color: '#6b6660', lineHeight: 1.5 }}>
-                Lets Thuki response to activator key <KeyChip label="⌃" />
+                Lets Thuki respond to activator key <KeyChip label="⌃" />
                 {' + '}
                 <KeyChip label="⌃" />
               </div>
@@ -558,7 +581,7 @@ function StepCard({ active, done, children }: StepCardProps) {
 }
 
 interface BadgeProps {
-  color: 'green' | 'orange' | 'muted';
+  color: 'green';
   children: React.ReactNode;
 }
 
@@ -568,16 +591,6 @@ function Badge({ color, children }: BadgeProps) {
       color: '#22c55e',
       background: 'rgba(34,197,94,0.1)',
       border: '1px solid rgba(34,197,94,0.2)',
-    },
-    orange: {
-      color: '#ff8d5c',
-      background: 'rgba(255,141,92,0.1)',
-      border: '1px solid rgba(255,141,92,0.2)',
-    },
-    muted: {
-      color: '#4a4a4e',
-      background: 'rgba(255,255,255,0.04)',
-      border: '1px solid rgba(255,255,255,0.06)',
     },
   };
 

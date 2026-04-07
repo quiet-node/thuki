@@ -341,4 +341,50 @@ describe('OnboardingView', () => {
     expect(screen.getByText('Accessibility')).toBeInTheDocument();
     expect(screen.getByText('Screen Recording')).toBeInTheDocument();
   });
+
+  it('clears accessibility polling on unmount without throwing', async () => {
+    setupPermissions(false);
+    const { unmount } = render(<OnboardingView />);
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /grant accessibility/i }),
+      );
+    });
+
+    // Unmount while polling is active — should not throw or warn
+    expect(() => act(() => unmount())).not.toThrow();
+
+    // Advancing timers after unmount should not cause state update errors
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+  });
+
+  it('clears screen recording polling on unmount without throwing', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'check_accessibility_permission') return true;
+      if (cmd === 'check_screen_recording_permission') return false;
+      if (cmd === 'request_screen_recording_access') return;
+      if (cmd === 'open_screen_recording_settings') return;
+      if (cmd === 'check_screen_recording_tcc_granted') return false;
+    });
+
+    const { unmount } = render(<OnboardingView />);
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /open screen recording settings/i }),
+      );
+    });
+
+    // Unmount while screen recording polling is active
+    expect(() => act(() => unmount())).not.toThrow();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+  });
 });
