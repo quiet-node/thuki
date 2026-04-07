@@ -1107,6 +1107,18 @@ mod tests {
         std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
     }
 
+    #[test]
+    fn load_model_config_falls_back_when_all_entries_are_empty_commas() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // All entries filter to empty strings, leaving an empty list.
+        // The active model must still fall back to DEFAULT_MODEL_NAME.
+        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", ",");
+        let config = load_model_config();
+        assert_eq!(config.active, DEFAULT_MODEL_NAME);
+        assert_eq!(config.all, Vec::<String>::new());
+        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
+    }
+
     // ── sampling options test ────────────────────────────────────────────────
 
     #[tokio::test]
