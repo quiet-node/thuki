@@ -1,11 +1,13 @@
 import { motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { ErrorCard } from './ErrorCard';
 import { CopyButton } from './CopyButton';
 import { ImageThumbnails } from './ImageThumbnails';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
 import { SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
+import type { OllamaErrorKind } from '../hooks/useOllama';
 
 interface ChatBubbleProps {
   /** The message role determines alignment and color treatment. */
@@ -18,6 +20,8 @@ interface ChatBubbleProps {
   quotedText?: string;
   /** Whether this bubble is actively streaming content from the LLM. */
   isStreaming?: boolean;
+  /** When set, renders an ErrorCard callout instead of markdown. */
+  errorKind?: OllamaErrorKind;
   /** Absolute file paths of images attached to this message, if any. */
   imagePaths?: string[];
   /** Called when the user clicks a thumbnail to preview it. */
@@ -62,6 +66,7 @@ export function ChatBubble({
   isStreaming = false,
   imagePaths,
   onImagePreview,
+  errorKind,
 }: ChatBubbleProps) {
   const isUser = role === 'user';
 
@@ -121,11 +126,17 @@ export function ChatBubble({
         /* AI plain text — full width, no bubble chrome */
         <div className="flex flex-col w-full">
           <div className="text-sm leading-relaxed select-text py-1">
-            <MarkdownRenderer content={content} isStreaming={isStreaming} />
+            {errorKind ? (
+              <ErrorCard kind={errorKind} message={content} />
+            ) : (
+              <MarkdownRenderer content={content} isStreaming={isStreaming} />
+            )}
           </div>
-          <div className="h-6 flex items-center">
-            <CopyButton content={content} align="left" />
-          </div>
+          {!errorKind && (
+            <div className="h-6 flex items-center">
+              <CopyButton content={content} align="left" />
+            </div>
+          )}
         </div>
       )}
     </motion.div>

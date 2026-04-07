@@ -317,7 +317,7 @@ describe('useOllama', () => {
   // ─── Error handling ──────────────────────────────────────────────────────────
 
   describe('error handling', () => {
-    it('sets error on Error chunk, isGenerating becomes false', async () => {
+    it('Error chunk sets isGenerating to false', async () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
@@ -328,14 +328,19 @@ describe('useOllama', () => {
       expect(channel).not.toBeNull();
 
       act(() => {
-        channel!.simulateMessage({ type: 'Error', data: 'model not found' });
+        channel!.simulateMessage({
+          type: 'Error',
+          data: {
+            kind: 'ModelNotFound',
+            message: 'Model not found\nRun: ollama pull gemma3:4b',
+          },
+        });
       });
 
-      expect(result.current.error).toBe('model not found');
       expect(result.current.isGenerating).toBe(false);
     });
 
-    it('sets error on invoke rejection', async () => {
+    it('invoke rejection sets isGenerating to false', async () => {
       invoke.mockRejectedValueOnce(new Error('connection refused'));
 
       const { result } = renderHook(() => useOllama());
@@ -344,11 +349,39 @@ describe('useOllama', () => {
         await result.current.ask('test');
       });
 
-      expect(result.current.error).toBe('Error: connection refused');
       expect(result.current.isGenerating).toBe(false);
     });
 
-    it('appends error to assistant message content on Error chunk', async () => {
+    it('Error chunk creates assistant message with errorKind set', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('test');
+      });
+
+      const channel = getChannel();
+      expect(channel).not.toBeNull();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: {
+            kind: 'NotRunning',
+            message: "Ollama isn't running\nStart Ollama and try again.",
+          },
+        });
+      });
+
+      const assistantMsg = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistantMsg?.errorKind).toBe('NotRunning');
+      expect(assistantMsg?.content).toBe(
+        "Ollama isn't running\nStart Ollama and try again.",
+      );
+    });
+
+    it('Error chunk with partial tokens preserves prior content in separate message', async () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
@@ -360,18 +393,20 @@ describe('useOllama', () => {
 
       act(() => {
         channel!.simulateMessage({ type: 'Token', data: 'Partial answer' });
-        channel!.simulateMessage({ type: 'Error', data: 'timed out' });
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'Other', message: 'Something went wrong\nHTTP 500' },
+        });
       });
 
-      const assistantMsg = result.current.messages.find(
-        (m) => m.role === 'assistant',
-      );
-      expect(assistantMsg?.content).toBe(
-        'Partial answer\n\n**Error:** timed out',
-      );
+      // The error message should appear as its own assistant message with errorKind
+      const errorMsg = result.current.messages.find((m) => m.errorKind);
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg?.errorKind).toBe('Other');
+      expect(errorMsg?.content).toBe('Something went wrong\nHTTP 500');
     });
 
-    it('appends error to assistant message content on invoke rejection', async () => {
+    it('invoke rejection creates assistant message with Other errorKind', async () => {
       invoke.mockRejectedValueOnce(new Error('network error'));
 
       const { result } = renderHook(() => useOllama());
@@ -383,33 +418,8 @@ describe('useOllama', () => {
       const assistantMsg = result.current.messages.find(
         (m) => m.role === 'assistant',
       );
-      expect(assistantMsg?.content).toBe('\n\n**Error:** Error: network error');
-    });
-
-    it('clears previous error on new ask', async () => {
-      invoke.mockRejectedValueOnce(new Error('first error'));
-
-      const { result } = renderHook(() => useOllama());
-
-      await act(async () => {
-        await result.current.ask('first ask');
-      });
-
-      expect(result.current.error).toBe('Error: first error');
-
-      // Second ask — succeeds, channel sends Done
-      await act(async () => {
-        await result.current.ask('second ask');
-      });
-
-      const channel = getChannel();
-      expect(channel).not.toBeNull();
-
-      act(() => {
-        channel!.simulateMessage({ type: 'Done' });
-      });
-
-      expect(result.current.error).toBeNull();
+      expect(assistantMsg?.errorKind).toBe('Other');
+      expect(assistantMsg?.content).toBeTruthy();
     });
   });
 
@@ -558,7 +568,6 @@ describe('useOllama', () => {
       expect(result.current.messages).toEqual([]);
       expect(result.current.streamingContent).toBe('');
       expect(result.current.isGenerating).toBe(false);
-      expect(result.current.error).toBeNull();
       // Should also reset backend conversation history
       expect(invoke).toHaveBeenCalledWith('reset_conversation');
     });
@@ -617,7 +626,10 @@ describe('useOllama', () => {
 
       const channel = getChannel();
       act(() => {
-        channel!.simulateMessage({ type: 'Error', data: 'failure' });
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'Other', message: 'Something went wrong\nHTTP 500' },
+        });
       });
 
       expect(onTurnComplete).not.toHaveBeenCalled();
@@ -651,14 +663,14 @@ describe('useOllama', () => {
       expect(result.current.messages).toEqual(loaded);
     });
 
-    it('clears streaming and error state when loading messages', async () => {
+    it('clears streaming and generating state when loading messages', async () => {
       invoke.mockRejectedValueOnce(new Error('boom'));
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
         await result.current.ask('fail');
       });
-      expect(result.current.error).not.toBeNull();
+      expect(result.current.isGenerating).toBe(false);
 
       act(() => {
         result.current.loadMessages([]);
@@ -666,7 +678,6 @@ describe('useOllama', () => {
 
       expect(result.current.streamingContent).toBe('');
       expect(result.current.isGenerating).toBe(false);
-      expect(result.current.error).toBeNull();
     });
   });
 

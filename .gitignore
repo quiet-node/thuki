@@ -34,3 +34,6 @@ target/
 .worktrees
 .claude/worktrees
 .gstack/
+
+# Superpowers generated docs (design specs, implementation plans) — never commit
+docs/superpowers/

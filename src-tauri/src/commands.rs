@@ -20,6 +20,60 @@ asked.\n- Don't repeat the context back unless specifically helpful.\n\nYou exce
 summarizing text, explaining code, drafting messages, brainstorming ideas, and catching errors. You \
 are the user's second brain — always ready, never in the way.";
 
+/// Classifies the kind of error returned from the Ollama backend.
+/// Used by the frontend to pick accent bar color and display copy.
+#[derive(Clone, Serialize, PartialEq, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub enum OllamaErrorKind {
+    /// Ollama process is not running (connection refused / timeout).
+    NotRunning,
+    /// The requested model has not been pulled yet (HTTP 404).
+    ModelNotFound,
+    /// Any other unexpected error.
+    Other,
+}
+
+/// Structured error emitted over the streaming channel.
+/// Rust owns all user-facing copy; the frontend only uses `kind` for styling.
+#[derive(Clone, Serialize, Debug)]
+pub struct OllamaError {
+    pub kind: OllamaErrorKind,
+    /// Final user-facing string. First line is the title, remainder is the subtitle.
+    pub message: String,
+}
+
+/// Maps an HTTP status code to a user-friendly `OllamaError`.
+pub fn classify_http_error(status: u16) -> OllamaError {
+    match status {
+        404 => OllamaError {
+            kind: OllamaErrorKind::ModelNotFound,
+            message: format!(
+                "Model not found\nRun: ollama pull {} in a terminal.",
+                DEFAULT_MODEL_NAME
+            ),
+        },
+        _ => OllamaError {
+            kind: OllamaErrorKind::Other,
+            message: format!("Something went wrong\nHTTP {status}"),
+        },
+    }
+}
+
+/// Maps a reqwest connection/transport error to a user-friendly `OllamaError`.
+pub fn classify_stream_error(e: &reqwest::Error) -> OllamaError {
+    if e.is_connect() || e.is_timeout() {
+        OllamaError {
+            kind: OllamaErrorKind::NotRunning,
+            message: "Ollama isn't running\nStart Ollama and try again.".to_string(),
+        }
+    } else {
+        OllamaError {
+            kind: OllamaErrorKind::Other,
+            message: "Something went wrong\nCould not reach Ollama.".to_string(),
+        }
+    }
+}
+
 /// Payload emitted back to the frontend per token chunk.
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", content = "data")]
@@ -30,8 +84,8 @@ pub enum StreamChunk {
     Done,
     /// The user explicitly cancelled generation.
     Cancelled,
-    /// An error occurred during processing.
-    Error(String),
+    /// A structured, user-friendly error occurred during processing.
+    Error(OllamaError),
 }
 
 /// A single message in the Ollama `/api/chat` conversation format.
@@ -166,14 +220,8 @@ pub async fn stream_ollama_chat(
     match res {
         Ok(response) => {
             if !response.status().is_success() {
-                let status = response.status();
-                let err_body = response.text().await.unwrap_or_default();
-                let err_msg = if err_body.is_empty() {
-                    format!("HTTP {}", status)
-                } else {
-                    format!("HTTP {}: {}", status, err_body)
-                };
-                on_chunk(StreamChunk::Error(err_msg));
+                let status = response.status().as_u16();
+                on_chunk(StreamChunk::Error(classify_http_error(status)));
                 return accumulated;
             }
 
@@ -222,7 +270,7 @@ pub async fn stream_ollama_chat(
                                 }
                             }
                             Some(Err(e)) => {
-                                on_chunk(StreamChunk::Error(e.to_string()));
+                                on_chunk(StreamChunk::Error(classify_stream_error(&e)));
                                 return accumulated;
                             }
                             None => return accumulated,
@@ -232,7 +280,7 @@ pub async fn stream_ollama_chat(
             }
         }
         Err(e) => {
-            on_chunk(StreamChunk::Error(e.to_string()));
+            on_chunk(StreamChunk::Error(classify_stream_error(&e)));
         }
     }
 
@@ -446,7 +494,7 @@ mod tests {
         mock.assert_async().await;
         let chunks = chunks.lock().unwrap();
         assert_eq!(chunks.len(), 1);
-        assert!(matches!(&chunks[0], StreamChunk::Error(e) if e.contains("500")));
+        assert!(matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::Other));
         assert!(accumulated.is_empty());
     }
 
@@ -669,7 +717,9 @@ mod tests {
         mock.assert_async().await;
         let chunks = chunks.lock().unwrap();
         assert_eq!(chunks.len(), 1);
-        assert!(matches!(&chunks[0], StreamChunk::Error(e) if e.contains("HTTP 500")));
+        assert!(
+            matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::Other && e.message.contains("500"))
+        );
     }
 
     #[tokio::test]
@@ -986,5 +1036,115 @@ mod tests {
 
         assert_eq!(h.epoch.load(Ordering::SeqCst), 1);
         assert!(h.messages.lock().unwrap().is_empty());
+    }
+
+    // ─── OllamaError classification ───────────────────────────────────────────
+
+    #[test]
+    fn classify_http_404_returns_model_not_found() {
+        let err = classify_http_error(404);
+        assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
+        assert!(err.message.contains("gemma3:4b"));
+    }
+
+    #[test]
+    fn classify_http_500_returns_other_with_status() {
+        let err = classify_http_error(500);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
+        assert!(err.message.contains("500"));
+    }
+
+    #[test]
+    fn classify_http_401_returns_other_with_status() {
+        let err = classify_http_error(401);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
+        assert!(err.message.contains("401"));
+    }
+
+    #[tokio::test]
+    async fn connection_refused_emits_not_running_error() {
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let (chunks, callback) = collect_chunks();
+
+        stream_ollama_chat(
+            "http://127.0.0.1:1/api/chat",
+            "test-model",
+            vec![],
+            &client,
+            token,
+            callback,
+        )
+        .await;
+
+        let chunks = chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert!(
+            matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::NotRunning)
+        );
+    }
+
+    #[tokio::test]
+    async fn http_404_emits_model_not_found_error() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(404)
+            .with_body("")
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let (chunks, callback) = collect_chunks();
+
+        stream_ollama_chat(
+            &format!("{}/api/chat", server.url()),
+            "test-model",
+            vec![],
+            &client,
+            token,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+        let chunks = chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert!(
+            matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::ModelNotFound)
+        );
+    }
+
+    #[tokio::test]
+    async fn http_500_emits_other_error_with_status() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(500)
+            .with_body("Internal Server Error")
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let (chunks, callback) = collect_chunks();
+
+        stream_ollama_chat(
+            &format!("{}/api/chat", server.url()),
+            "test-model",
+            vec![],
+            &client,
+            token,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+        let chunks = chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert!(
+            matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::Other && e.message.contains("500"))
+        );
     }
 }

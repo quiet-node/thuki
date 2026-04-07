@@ -13,7 +13,6 @@ describe('ConversationView', () => {
         messages={messages}
         streamingContent=""
         isGenerating={false}
-        error={null}
         onClose={vi.fn()}
       />,
     );
@@ -27,7 +26,6 @@ describe('ConversationView', () => {
         messages={[]}
         streamingContent="streaming response..."
         isGenerating={true}
-        error={null}
         onClose={vi.fn()}
       />,
     );
@@ -43,7 +41,6 @@ describe('ConversationView', () => {
         messages={[]}
         streamingContent=""
         isGenerating={true}
-        error={null}
         onClose={vi.fn()}
       />,
     );
@@ -58,38 +55,11 @@ describe('ConversationView', () => {
         messages={[]}
         streamingContent="some token"
         isGenerating={true}
-        error={null}
         onClose={vi.fn()}
       />,
     );
     const dots = container.querySelectorAll('.rounded-full.bg-primary\\/70');
     expect(dots).toHaveLength(0);
-  });
-
-  it('shows error banner when error is non-null', () => {
-    render(
-      <ConversationView
-        messages={[]}
-        streamingContent=""
-        isGenerating={false}
-        error="Something went wrong"
-        onClose={vi.fn()}
-      />,
-    );
-    expect(screen.getByText('Something went wrong')).toBeInTheDocument();
-  });
-
-  it('hides error banner when error is null', () => {
-    render(
-      <ConversationView
-        messages={[]}
-        streamingContent=""
-        isGenerating={false}
-        error={null}
-        onClose={vi.fn()}
-      />,
-    );
-    expect(screen.queryByText('Something went wrong')).toBeNull();
   });
 
   it('renders WindowControls with onClose', () => {
@@ -99,7 +69,6 @@ describe('ConversationView', () => {
         messages={[]}
         streamingContent=""
         isGenerating={false}
-        error={null}
         onClose={onClose}
       />,
     );
@@ -114,7 +83,6 @@ describe('ConversationView', () => {
         messages={[]}
         streamingContent=""
         isGenerating={false}
-        error={null}
         onClose={vi.fn()}
       />,
     );
@@ -127,7 +95,6 @@ describe('ConversationView', () => {
         messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
         streamingContent=""
         isGenerating={false}
-        error={null}
         onClose={vi.fn()}
       />,
     );
@@ -158,7 +125,6 @@ describe('ConversationView', () => {
           messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
           streamingContent="new token"
           isGenerating={true}
-          error={null}
           onClose={vi.fn()}
         />,
       );
@@ -174,7 +140,6 @@ describe('ConversationView', () => {
         messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
         streamingContent=""
         isGenerating={false}
-        error={null}
         onClose={vi.fn()}
       />,
     );
@@ -206,7 +171,6 @@ describe('ConversationView', () => {
           ]}
           streamingContent=""
           isGenerating={true}
-          error={null}
           onClose={vi.fn()}
         />,
       );
@@ -223,7 +187,6 @@ describe('ConversationView', () => {
         messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
         streamingContent=""
         isGenerating={false}
-        error={null}
         onClose={vi.fn()}
       />,
     );
@@ -272,7 +235,6 @@ describe('ConversationView', () => {
           messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
           streamingContent="new tokens"
           isGenerating={true}
-          error={null}
           onClose={vi.fn()}
         />,
       );
@@ -287,7 +249,6 @@ describe('ConversationView', () => {
         messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
         streamingContent=""
         isGenerating={false}
-        error={null}
         onClose={vi.fn()}
       />,
     );
@@ -335,7 +296,6 @@ describe('ConversationView', () => {
           messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
           streamingContent="new tokens"
           isGenerating={true}
-          error={null}
           onClose={vi.fn()}
         />,
       );
@@ -351,7 +311,6 @@ describe('ConversationView', () => {
         messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
         streamingContent=""
         isGenerating={false}
-        error={null}
         onClose={vi.fn()}
       />,
     );
@@ -380,7 +339,6 @@ describe('ConversationView', () => {
           messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
           streamingContent="tokens"
           isGenerating={true}
-          error={null}
           onClose={vi.fn()}
         />,
       );
@@ -394,7 +352,6 @@ describe('ConversationView', () => {
           messages={[]}
           streamingContent=""
           isGenerating={false}
-          error={null}
           onClose={vi.fn()}
           onHistoryOpen={vi.fn()}
         />,
@@ -410,7 +367,6 @@ describe('ConversationView', () => {
           messages={[]}
           streamingContent=""
           isGenerating={false}
-          error={null}
           onClose={vi.fn()}
         />,
       );
@@ -424,7 +380,6 @@ describe('ConversationView', () => {
           messages={[]}
           streamingContent=""
           isGenerating={false}
-          error={null}
           onClose={vi.fn()}
           onHistoryOpen={onHistoryOpen}
         />,
@@ -439,7 +394,6 @@ describe('ConversationView', () => {
           messages={[]}
           streamingContent=""
           isGenerating={false}
-          error={null}
           onClose={vi.fn()}
           onSave={vi.fn()}
           isSaved={false}
@@ -456,7 +410,6 @@ describe('ConversationView', () => {
           messages={[]}
           streamingContent=""
           isGenerating={false}
-          error={null}
           onClose={vi.fn()}
           onSave={onSave}
           isSaved={false}
@@ -473,7 +426,6 @@ describe('ConversationView', () => {
           messages={[]}
           streamingContent=""
           isGenerating={false}
-          error={null}
           onClose={vi.fn()}
           onSave={vi.fn()}
           isSaved={false}
@@ -490,7 +442,6 @@ describe('ConversationView', () => {
           messages={[]}
           streamingContent=""
           isGenerating={false}
-          error={null}
           onClose={vi.fn()}
           onSave={vi.fn()}
           isSaved={true}
@@ -515,7 +466,6 @@ describe('ConversationView', () => {
         messages={messages}
         streamingContent=""
         isGenerating={false}
-        error={null}
         onClose={vi.fn()}
       />,
     );

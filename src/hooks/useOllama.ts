@@ -1,6 +1,9 @@
 import { useState, useCallback } from 'react';
 import { invoke, Channel } from '@tauri-apps/api/core';
 
+/** Mirrors the Rust OllamaErrorKind enum sent over IPC. */
+export type OllamaErrorKind = 'NotRunning' | 'ModelNotFound' | 'Other';
+
 /**
  * Represents a single message in the chat thread.
  */
@@ -13,6 +16,8 @@ export interface Message {
   quotedText?: string;
   /** Absolute file paths of images attached to this message, if any. */
   imagePaths?: string[];
+  /** Present on assistant messages that represent an Ollama error callout. */
+  errorKind?: OllamaErrorKind;
 }
 
 /**
@@ -22,7 +27,7 @@ export type StreamChunk =
   | { type: 'Token'; data: string }
   | { type: 'Done' }
   | { type: 'Cancelled' }
-  | { type: 'Error'; data: string };
+  | { type: 'Error'; data: { kind: OllamaErrorKind; message: string } };
 
 /**
  * A custom hook that simplifies interactions with the local Ollama LLM.
@@ -40,7 +45,6 @@ export function useOllama(
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingContent, setStreamingContent] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   /**
    * Submits a message to the Ollama backend and initiates the streaming response.
@@ -77,7 +81,6 @@ export function useOllama(
       setMessages((prev) => [...prev, userMsg]);
       setStreamingContent('');
       setIsGenerating(true);
-      setError(null);
 
       const channel = new Channel<StreamChunk>();
       // Use block-scoped variable to accumulate the stream and occasionally flush to React state,
@@ -116,13 +119,13 @@ export function useOllama(
           setStreamingContent('');
           setIsGenerating(false);
         } else {
-          setError(chunk.data);
           setMessages((prev) => [
             ...prev,
             {
               id: crypto.randomUUID(),
               role: 'assistant',
-              content: currentContent + '\n\n**Error:** ' + chunk.data,
+              content: chunk.data.message,
+              errorKind: chunk.data.kind,
             },
           ]);
           setStreamingContent('');
@@ -137,14 +140,14 @@ export function useOllama(
           imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : null,
           onEvent: channel,
         });
-      } catch (err) {
-        setError(String(err));
+      } catch {
         setMessages((prev) => [
           ...prev,
           {
             id: crypto.randomUUID(),
             role: 'assistant',
-            content: currentContent + '\n\n**Error:** ' + String(err),
+            content: 'Something went wrong\nCould not reach Ollama.',
+            errorKind: 'Other' as const,
           },
         ]);
         setStreamingContent('');
@@ -165,7 +168,6 @@ export function useOllama(
     setMessages([]);
     setStreamingContent('');
     setIsGenerating(false);
-    setError(null);
     void invoke('reset_conversation');
   }, []);
 
@@ -182,7 +184,6 @@ export function useOllama(
     setMessages(msgs);
     setStreamingContent('');
     setIsGenerating(false);
-    setError(null);
   }, []);
 
   return {
@@ -191,7 +192,6 @@ export function useOllama(
     ask,
     cancel,
     isGenerating,
-    error,
     reset,
     loadMessages,
   };

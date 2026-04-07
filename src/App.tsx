@@ -117,7 +117,6 @@ function App() {
     ask,
     cancel,
     isGenerating,
-    error,
     reset,
     loadMessages,
   } = useOllama(handleTurnComplete);
@@ -1195,7 +1194,6 @@ function App() {
                       }
                       streamingContent={streamingContent}
                       isGenerating={isGenerating || isSubmitPending}
-                      error={error}
                       onClose={handleCloseOverlay}
                       onSave={handleSave}
                       isSaved={isSaved}
