@@ -45,7 +45,6 @@ export function useOllama(
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingContent, setStreamingContent] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   /**
    * Submits a message to the Ollama backend and initiates the streaming response.
@@ -82,7 +81,6 @@ export function useOllama(
       setMessages((prev) => [...prev, userMsg]);
       setStreamingContent('');
       setIsGenerating(true);
-      setError(null);
 
       const channel = new Channel<StreamChunk>();
       // Use block-scoped variable to accumulate the stream and occasionally flush to React state,
@@ -121,7 +119,6 @@ export function useOllama(
           setStreamingContent('');
           setIsGenerating(false);
         } else {
-          setError(chunk.data.message);
           setMessages((prev) => [
             ...prev,
             {
@@ -143,14 +140,14 @@ export function useOllama(
           imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : null,
           onEvent: channel,
         });
-      } catch (err) {
-        setError(String(err));
+      } catch {
         setMessages((prev) => [
           ...prev,
           {
             id: crypto.randomUUID(),
             role: 'assistant',
-            content: currentContent + '\n\n**Error:** ' + String(err),
+            content: 'Something went wrong\nCould not reach Ollama.',
+            errorKind: 'Other' as const,
           },
         ]);
         setStreamingContent('');
@@ -171,7 +168,6 @@ export function useOllama(
     setMessages([]);
     setStreamingContent('');
     setIsGenerating(false);
-    setError(null);
     void invoke('reset_conversation');
   }, []);
 
@@ -188,7 +184,6 @@ export function useOllama(
     setMessages(msgs);
     setStreamingContent('');
     setIsGenerating(false);
-    setError(null);
   }, []);
 
   return {
@@ -197,7 +192,6 @@ export function useOllama(
     ask,
     cancel,
     isGenerating,
-    error,
     reset,
     loadMessages,
   };
