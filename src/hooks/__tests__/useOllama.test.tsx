@@ -328,10 +328,18 @@ describe('useOllama', () => {
       expect(channel).not.toBeNull();
 
       act(() => {
-        channel!.simulateMessage({ type: 'Error', data: 'model not found' });
+        channel!.simulateMessage({
+          type: 'Error',
+          data: {
+            kind: 'ModelNotFound',
+            message: 'Model not found\nRun: ollama pull gemma3:4b',
+          },
+        });
       });
 
-      expect(result.current.error).toBe('model not found');
+      expect(result.current.error).toBe(
+        'Model not found\nRun: ollama pull gemma3:4b',
+      );
       expect(result.current.isGenerating).toBe(false);
     });
 
@@ -348,7 +356,36 @@ describe('useOllama', () => {
       expect(result.current.isGenerating).toBe(false);
     });
 
-    it('appends error to assistant message content on Error chunk', async () => {
+    it('Error chunk creates assistant message with errorKind set', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('test');
+      });
+
+      const channel = getChannel();
+      expect(channel).not.toBeNull();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: {
+            kind: 'NotRunning',
+            message: "Ollama isn't running\nStart Ollama and try again.",
+          },
+        });
+      });
+
+      const assistantMsg = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistantMsg?.errorKind).toBe('NotRunning');
+      expect(assistantMsg?.content).toBe(
+        "Ollama isn't running\nStart Ollama and try again.",
+      );
+    });
+
+    it('Error chunk with partial tokens preserves prior content in separate message', async () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
@@ -360,18 +397,20 @@ describe('useOllama', () => {
 
       act(() => {
         channel!.simulateMessage({ type: 'Token', data: 'Partial answer' });
-        channel!.simulateMessage({ type: 'Error', data: 'timed out' });
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'Other', message: 'Something went wrong\nHTTP 500' },
+        });
       });
 
-      const assistantMsg = result.current.messages.find(
-        (m) => m.role === 'assistant',
-      );
-      expect(assistantMsg?.content).toBe(
-        'Partial answer\n\n**Error:** timed out',
-      );
+      // The error message should appear as its own assistant message with errorKind
+      const errorMsg = result.current.messages.find((m) => m.errorKind);
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg?.errorKind).toBe('Other');
+      expect(errorMsg?.content).toBe('Something went wrong\nHTTP 500');
     });
 
-    it('appends error to assistant message content on invoke rejection', async () => {
+    it('invoke rejection creates assistant message without errorKind', async () => {
       invoke.mockRejectedValueOnce(new Error('network error'));
 
       const { result } = renderHook(() => useOllama());
@@ -383,7 +422,8 @@ describe('useOllama', () => {
       const assistantMsg = result.current.messages.find(
         (m) => m.role === 'assistant',
       );
-      expect(assistantMsg?.content).toBe('\n\n**Error:** Error: network error');
+      expect(assistantMsg?.errorKind).toBeUndefined();
+      expect(assistantMsg?.content).toContain('network error');
     });
 
     it('clears previous error on new ask', async () => {
@@ -617,7 +657,10 @@ describe('useOllama', () => {
 
       const channel = getChannel();
       act(() => {
-        channel!.simulateMessage({ type: 'Error', data: 'failure' });
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'Other', message: 'Something went wrong\nHTTP 500' },
+        });
       });
 
       expect(onTurnComplete).not.toHaveBeenCalled();

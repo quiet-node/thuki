@@ -181,6 +181,7 @@ export function ConversationView({
             index={i}
             imagePaths={msg.imagePaths}
             onImagePreview={onImagePreview}
+            errorKind={msg.errorKind}
           />
         ))}
 

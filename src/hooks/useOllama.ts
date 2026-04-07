@@ -1,6 +1,9 @@
 import { useState, useCallback } from 'react';
 import { invoke, Channel } from '@tauri-apps/api/core';
 
+/** Mirrors the Rust OllamaErrorKind enum sent over IPC. */
+export type OllamaErrorKind = 'NotRunning' | 'ModelNotFound' | 'Other';
+
 /**
  * Represents a single message in the chat thread.
  */
@@ -13,6 +16,8 @@ export interface Message {
   quotedText?: string;
   /** Absolute file paths of images attached to this message, if any. */
   imagePaths?: string[];
+  /** Present on assistant messages that represent an Ollama error callout. */
+  errorKind?: OllamaErrorKind;
 }
 
 /**
@@ -22,7 +27,7 @@ export type StreamChunk =
   | { type: 'Token'; data: string }
   | { type: 'Done' }
   | { type: 'Cancelled' }
-  | { type: 'Error'; data: string };
+  | { type: 'Error'; data: { kind: OllamaErrorKind; message: string } };
 
 /**
  * A custom hook that simplifies interactions with the local Ollama LLM.
@@ -116,13 +121,14 @@ export function useOllama(
           setStreamingContent('');
           setIsGenerating(false);
         } else {
-          setError(chunk.data);
+          setError(chunk.data.message);
           setMessages((prev) => [
             ...prev,
             {
               id: crypto.randomUUID(),
               role: 'assistant',
-              content: currentContent + '\n\n**Error:** ' + chunk.data,
+              content: chunk.data.message,
+              errorKind: chunk.data.kind,
             },
           ]);
           setStreamingContent('');
