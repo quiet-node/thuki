@@ -432,4 +432,228 @@ describe('OnboardingView', () => {
     fireEvent.mouseLeave(btn);
     expect(btn).toBeDisabled();
   });
+
+  // ─── Defensive guard coverage ─────────────────────────────────────────────
+  // The following tests exercise the early-return branches that protect against
+  // stale state updates and concurrent invocations. These branches cannot be
+  // reached through the happy-path tests because the invoke mock resolves
+  // synchronously; here we use deferred promises to keep invocations in-flight
+  // long enough to trigger each guard.
+
+  it('ignores initial accessibility check result when component unmounts mid-flight', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let resolveInitial!: (v: boolean) => void;
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'check_accessibility_permission')
+        return new Promise((r) => {
+          resolveInitial = r;
+        });
+      return Promise.resolve();
+    });
+
+    const { unmount } = render(<OnboardingView />);
+    // useEffect has fired; initial invoke is in-flight (resolveInitial is set).
+
+    act(() => unmount()); // mountedRef → false
+
+    await act(async () => {
+      resolveInitial(true); // then-handler fires; guard returns early
+    });
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('ax in-flight guard prevents concurrent permission checks', async () => {
+    let pollCallCount = 0;
+    let resolveFirstPoll!: (v: boolean) => void;
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'check_accessibility_permission') {
+        pollCallCount++;
+        if (pollCallCount === 1) return Promise.resolve(false); // initial check
+        return new Promise((r) => {
+          resolveFirstPoll = r;
+        }); // poll hangs
+      }
+      if (cmd === 'open_accessibility_settings') return Promise.resolve();
+      return Promise.resolve();
+    });
+
+    render(<OnboardingView />);
+    await act(async () => {}); // initial check done
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /grant accessibility/i }),
+      );
+    });
+
+    // First tick: callback starts, sets in-flight=true, invoke hangs.
+    // Second tick (while first is still in-flight): guard returns early.
+    act(() => {
+      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(500);
+    });
+
+    // Only one poll call (initial was count=1, first poll was count=2; second
+    // tick was blocked — no count=3).
+    expect(pollCallCount).toBe(2);
+
+    await act(async () => {
+      resolveFirstPoll(false);
+    });
+  });
+
+  it('ignores ax poll result when component unmounts during in-flight check', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let callCount = 0;
+    let resolvePoll!: (v: boolean) => void;
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'check_accessibility_permission') {
+        callCount++;
+        if (callCount === 1) return Promise.resolve(false);
+        return new Promise((r) => {
+          resolvePoll = r;
+        });
+      }
+      if (cmd === 'open_accessibility_settings') return Promise.resolve();
+      return Promise.resolve();
+    });
+
+    const { unmount } = render(<OnboardingView />);
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /grant accessibility/i }),
+      );
+    });
+
+    // Fire one tick so the poll invoke is in-flight (hanging).
+    act(() => vi.advanceTimersByTime(500));
+
+    // Unmount while the invoke is still pending; this clears the interval but
+    // the in-flight promise is still alive.
+    act(() => unmount());
+
+    // Resolving the promise must not trigger a React state update.
+    await act(async () => {
+      resolvePoll(true);
+    });
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('ignores screen recording handler when component unmounts during open-settings call', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let resolveOpen!: (v?: unknown) => void;
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'check_accessibility_permission')
+        return Promise.resolve(true);
+      if (cmd === 'request_screen_recording_access') return Promise.resolve();
+      if (cmd === 'open_screen_recording_settings')
+        return new Promise((r) => {
+          resolveOpen = r;
+        }); // hangs
+      if (cmd === 'check_screen_recording_tcc_granted')
+        return Promise.resolve(false);
+      return Promise.resolve();
+    });
+
+    const { unmount } = render(<OnboardingView />);
+    await act(async () => {}); // accessibility granted
+
+    // Flush microtasks so the handler advances past the first await
+    // (request_screen_recording_access resolves) and suspends on the second
+    // (open_screen_recording_settings hangs), setting resolveOpen.
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /open screen recording settings/i }),
+      );
+    });
+
+    act(() => unmount()); // mountedRef → false
+
+    await act(async () => {
+      resolveOpen(); // mountedRef guard at line 225 fires; returns early
+    });
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('screen in-flight guard prevents concurrent tcc checks', async () => {
+    let tccCallCount = 0;
+    let resolveFirstPoll!: (v: boolean) => void;
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'check_accessibility_permission')
+        return Promise.resolve(true);
+      if (cmd === 'request_screen_recording_access') return Promise.resolve();
+      if (cmd === 'open_screen_recording_settings') return Promise.resolve();
+      if (cmd === 'check_screen_recording_tcc_granted') {
+        tccCallCount++;
+        return new Promise((r) => {
+          resolveFirstPoll = r;
+        });
+      }
+      return Promise.resolve();
+    });
+
+    render(<OnboardingView />);
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /open screen recording settings/i }),
+      );
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(500); // first tick: in-flight
+      vi.advanceTimersByTime(500); // second tick: guard blocks it
+    });
+
+    expect(tccCallCount).toBe(1);
+
+    await act(async () => {
+      resolveFirstPoll(false);
+    });
+  });
+
+  it('ignores screen poll result when component unmounts during in-flight tcc check', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let resolvePoll!: (v: boolean) => void;
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'check_accessibility_permission')
+        return Promise.resolve(true);
+      if (cmd === 'request_screen_recording_access') return Promise.resolve();
+      if (cmd === 'open_screen_recording_settings') return Promise.resolve();
+      if (cmd === 'check_screen_recording_tcc_granted')
+        return new Promise((r) => {
+          resolvePoll = r;
+        });
+      return Promise.resolve();
+    });
+
+    const { unmount } = render(<OnboardingView />);
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /open screen recording settings/i }),
+      );
+    });
+
+    act(() => vi.advanceTimersByTime(500)); // poll fires, invoke hangs
+
+    act(() => unmount()); // clears interval; in-flight promise still alive
+
+    await act(async () => {
+      resolvePoll(true); // mountedRef guard at line 234 fires; returns early
+    });
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
 });
