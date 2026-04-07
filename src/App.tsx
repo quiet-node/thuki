@@ -10,6 +10,7 @@ import type { Message } from './hooks/useOllama';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView, MAX_IMAGES } from './view/AskBarView';
+import { OnboardingView } from './view/OnboardingView';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import type { AttachedImage } from './types/image';
@@ -21,6 +22,7 @@ import './App.css';
 const MODEL_NAME = 'gemma3:4b';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
+const ONBOARDING_EVENT = 'thuki://onboarding';
 
 /**
  * Authoritative deadline from the start of the hide transition to the native
@@ -60,6 +62,8 @@ type OverlayState = 'visible' | 'hidden' | 'hiding';
 function App() {
   const [query, setQuery] = useState('');
   const [overlayState, setOverlayState] = useState<OverlayState>('hidden');
+  /** True once the backend signals that one or more permissions are missing. */
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   /**
    * Whether the ask-bar history panel is currently open.
@@ -1005,8 +1009,9 @@ function App() {
    */
   useEffect(() => {
     let unlistenVisibility: (() => void) | undefined;
+    let unlistenOnboarding: (() => void) | undefined;
 
-    const attachVisibilityListener = async () => {
+    const attachListeners = async () => {
       unlistenVisibility = await listen<OverlayVisibilityPayload>(
         OVERLAY_VISIBILITY_EVENT,
         ({ payload }) => {
@@ -1020,13 +1025,17 @@ function App() {
           requestHideOverlay();
         },
       );
-      // Listener is now registered — safe to let Rust show the overlay on launch.
+      unlistenOnboarding = await listen<void>(ONBOARDING_EVENT, () => {
+        setShowOnboarding(true);
+      });
+      // Both listeners registered — safe to let Rust decide what to show on launch.
       await invoke('notify_frontend_ready');
     };
 
-    void attachVisibilityListener();
+    void attachListeners();
     return () => {
       unlistenVisibility?.();
+      unlistenOnboarding?.();
     };
   }, [replayEntranceAnimation, requestHideOverlay]);
 
@@ -1130,6 +1139,10 @@ function App() {
       { once: true },
     );
   }, []);
+
+  if (showOnboarding) {
+    return <OnboardingView />;
+  }
 
   return (
     // Minimal padding (pt-2 pb-6) provides just enough physical clearance for the

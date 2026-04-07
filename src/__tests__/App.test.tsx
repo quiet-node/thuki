@@ -3207,4 +3207,42 @@ describe('App', () => {
       expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
     });
   });
+
+  describe('Onboarding', () => {
+    it('shows onboarding screen when thuki://onboarding event fires', async () => {
+      enableChannelCaptureWithResponses({
+        check_accessibility_permission: false,
+        check_screen_recording_permission: false,
+      });
+
+      render(<App />);
+      await act(async () => {});
+
+      await act(async () => {
+        emitTauriEvent('thuki://onboarding', undefined);
+      });
+
+      expect(screen.getByText("Let's get Thuki set up")).toBeInTheDocument();
+    });
+
+    it('does not show onboarding on normal visibility event', async () => {
+      render(<App />);
+      await act(async () => {});
+
+      await showOverlay();
+
+      expect(screen.queryByText("Let's get Thuki set up")).toBeNull();
+    });
+
+    it('renders normal ask bar when overlay is shown without onboarding', async () => {
+      render(<App />);
+      await act(async () => {});
+
+      await showOverlay();
+
+      expect(
+        screen.getByPlaceholderText('Ask Thuki anything...'),
+      ).toBeInTheDocument();
+    });
+  });
 });
