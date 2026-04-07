@@ -41,7 +41,7 @@ services:
     # and graceful signal handling (pkill) without requiring a custom Dockerfile.
     entrypoint: ["/usr/bin/bash", "-c"]
     environment:
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:4b}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma4:e2b}
     volumes:
       - sandbox_models:/root/.ollama
     command: 

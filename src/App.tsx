@@ -18,8 +18,8 @@ import { quote } from './config';
 import { SCREEN_CAPTURE_PLACEHOLDER } from './config/commands';
 import './App.css';
 
-/** Ollama model used for this session — must match the Rust DEFAULT_MODEL_NAME. */
-const MODEL_NAME = 'gemma3:4b';
+/** Fallback model name used before get_model_config resolves at startup. */
+const DEFAULT_MODEL_FALLBACK = 'gemma4:e2b';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 const ONBOARDING_EVENT = 'thuki://onboarding';
@@ -170,6 +170,10 @@ function App() {
    */
   const [sessionId, setSessionId] = useState(0);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
+  const [modelConfig, setModelConfig] = useState<{
+    active: string;
+    all: string[];
+  } | null>(null);
 
   /**
    * True when the window was spawned with an upward-growth anchor. Used to
@@ -489,12 +493,12 @@ function App() {
       if (isSaved) {
         await unsave();
       } else {
-        await save(messages, MODEL_NAME);
+        await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
       }
     } catch {
       // State stays unchanged on failure; feedback is implicit in the icon.
     }
-  }, [isSaved, unsave, save, messages]);
+  }, [isSaved, unsave, save, messages, modelConfig]);
 
   /**
    * Loads a conversation from history, replacing the current session.
@@ -529,7 +533,7 @@ function App() {
   const handleSaveAndLoad = useCallback(
     async (id: string) => {
       try {
-        await save(messages, MODEL_NAME);
+        await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
       } catch {
         // Save failed — abort to avoid leaving the current session unprotected.
         return;
@@ -543,7 +547,7 @@ function App() {
         setIsHistoryOpen(false);
       }
     },
-    [save, messages, loadConversation, loadMessages],
+    [save, messages, loadConversation, loadMessages, modelConfig],
   );
 
   /**
@@ -616,12 +620,12 @@ function App() {
   /** Saves the current conversation then starts a fresh one. */
   const handleSaveAndNew = useCallback(async () => {
     try {
-      await save(messages, MODEL_NAME);
+      await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
     } catch {
       return;
     }
     resetForNewConversation();
-  }, [save, messages, resetForNewConversation]);
+  }, [save, messages, resetForNewConversation, modelConfig]);
 
   /** Discards the current conversation and starts a fresh one. */
   const handleJustNew = useCallback(() => {
@@ -1001,6 +1005,13 @@ function App() {
     }
     cancel();
   }, [isSubmitPending, cancel, setSelectedContext]);
+
+  /** Fetches model configuration from the backend once at mount. */
+  useEffect(() => {
+    void invoke<{ active: string; all: string[] }>('get_model_config').then(
+      setModelConfig,
+    );
+  }, []);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility

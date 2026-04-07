@@ -370,21 +370,21 @@ mod tests {
     #[test]
     fn create_and_list_conversations() {
         let conn = open_in_memory().unwrap();
-        let id = create_conversation(&conn, Some("Test Chat"), "gemma3:4b").unwrap();
+        let id = create_conversation(&conn, Some("Test Chat"), "gemma4:e2b").unwrap();
         assert!(!id.is_empty());
 
         let convos = list_conversations(&conn, None).unwrap();
         assert_eq!(convos.len(), 1);
         assert_eq!(convos[0].title.as_deref(), Some("Test Chat"));
-        assert_eq!(convos[0].model, "gemma3:4b");
+        assert_eq!(convos[0].model, "gemma4:e2b");
         assert_eq!(convos[0].message_count, 0);
     }
 
     #[test]
     fn list_conversations_with_search_filter() {
         let conn = open_in_memory().unwrap();
-        create_conversation(&conn, Some("Rust Code Help"), "gemma3:4b").unwrap();
-        create_conversation(&conn, Some("Draft Email"), "gemma3:4b").unwrap();
+        create_conversation(&conn, Some("Rust Code Help"), "gemma4:e2b").unwrap();
+        create_conversation(&conn, Some("Draft Email"), "gemma4:e2b").unwrap();
 
         let results = list_conversations(&conn, Some("rust")).unwrap();
         assert_eq!(results.len(), 1);
@@ -398,8 +398,8 @@ mod tests {
     #[test]
     fn search_escapes_sql_wildcards() {
         let conn = open_in_memory().unwrap();
-        create_conversation(&conn, Some("100% done"), "gemma3:4b").unwrap();
-        create_conversation(&conn, Some("something else"), "gemma3:4b").unwrap();
+        create_conversation(&conn, Some("100% done"), "gemma4:e2b").unwrap();
+        create_conversation(&conn, Some("something else"), "gemma4:e2b").unwrap();
 
         let results = list_conversations(&conn, Some("100%")).unwrap();
         assert_eq!(results.len(), 1);
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn update_conversation_title() {
         let conn = open_in_memory().unwrap();
-        let id = create_conversation(&conn, Some("Old Title"), "gemma3:4b").unwrap();
+        let id = create_conversation(&conn, Some("Old Title"), "gemma4:e2b").unwrap();
 
         super::update_conversation_title(&conn, &id, "New Title").unwrap();
 
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn delete_conversation_cascades_messages() {
         let conn = open_in_memory().unwrap();
-        let id = create_conversation(&conn, Some("To Delete"), "gemma3:4b").unwrap();
+        let id = create_conversation(&conn, Some("To Delete"), "gemma4:e2b").unwrap();
         insert_message(&conn, &id, "user", "hello", None, None).unwrap();
         insert_message(&conn, &id, "assistant", "hi there", None, None).unwrap();
 
@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn insert_and_load_messages() {
         let conn = open_in_memory().unwrap();
-        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
 
         insert_message(
             &conn,
@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn insert_messages_batch_is_atomic() {
         let conn = open_in_memory().unwrap();
-        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
 
         let batch = vec![
             ("user".to_string(), "hello".to_string(), None, None),
@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn insert_message_touches_updated_at() {
         let conn = open_in_memory().unwrap();
-        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
         let before = list_conversations(&conn, None).unwrap()[0].updated_at;
 
         // Small delay to ensure timestamp changes.
@@ -511,9 +511,9 @@ mod tests {
     #[test]
     fn conversations_ordered_by_most_recent() {
         let conn = open_in_memory().unwrap();
-        let id1 = create_conversation(&conn, Some("First"), "gemma3:4b").unwrap();
+        let id1 = create_conversation(&conn, Some("First"), "gemma4:e2b").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        create_conversation(&conn, Some("Second"), "gemma3:4b").unwrap();
+        create_conversation(&conn, Some("Second"), "gemma4:e2b").unwrap();
 
         let convos = list_conversations(&conn, None).unwrap();
         assert_eq!(convos[0].title.as_deref(), Some("Second"));
@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn create_conversation_with_no_title() {
         let conn = open_in_memory().unwrap();
-        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
         let convos = list_conversations(&conn, None).unwrap();
         assert_eq!(convos.len(), 1);
         assert!(convos[0].title.is_none());
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn load_messages_empty_conversation() {
         let conn = open_in_memory().unwrap();
-        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
         let msgs = load_messages(&conn, &id).unwrap();
         assert!(msgs.is_empty());
     }
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     fn insert_message_with_image_paths() {
         let conn = open_in_memory().unwrap();
-        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
 
         let paths_json = r#"["/images/a.jpg","/images/b.jpg"]"#;
         insert_message(&conn, &id, "user", "look at this", None, Some(paths_json)).unwrap();
@@ -575,7 +575,7 @@ mod tests {
     #[test]
     fn insert_message_without_image_paths() {
         let conn = open_in_memory().unwrap();
-        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
 
         insert_message(&conn, &id, "user", "hello", None, None).unwrap();
 
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn batch_insert_with_image_paths() {
         let conn = open_in_memory().unwrap();
-        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
 
         let batch = vec![
             (
@@ -609,8 +609,8 @@ mod tests {
     #[test]
     fn get_all_image_paths_collects_from_all_conversations() {
         let conn = open_in_memory().unwrap();
-        let c1 = create_conversation(&conn, None, "gemma3:4b").unwrap();
-        let c2 = create_conversation(&conn, None, "gemma3:4b").unwrap();
+        let c1 = create_conversation(&conn, None, "gemma4:e2b").unwrap();
+        let c2 = create_conversation(&conn, None, "gemma4:e2b").unwrap();
 
         insert_message(
             &conn,
@@ -643,7 +643,7 @@ mod tests {
     #[test]
     fn get_all_image_paths_empty_when_no_images() {
         let conn = open_in_memory().unwrap();
-        let id = create_conversation(&conn, None, "gemma3:4b").unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
         insert_message(&conn, &id, "user", "hello", None, None).unwrap();
 
         let paths = get_all_image_paths(&conn).unwrap();
