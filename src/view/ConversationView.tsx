@@ -1,4 +1,4 @@
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { useRef, useEffect } from 'react';
 import { ChatBubble } from '../components/ChatBubble';
 import { TypingIndicator } from '../components/TypingIndicator';
@@ -16,8 +16,6 @@ interface ConversationViewProps {
   streamingContent: string;
   /** Whether the underlying LLM engine is currently generating a response. */
   isGenerating: boolean;
-  /** Any active error message to display to the user. */
-  error: string | null;
   /** Callback fired when the user requests to close the overlay. */
   onClose: () => void;
   /**
@@ -63,7 +61,6 @@ export function ConversationView({
   messages,
   streamingContent,
   isGenerating,
-  error,
   onClose,
   onSave,
   isSaved,
@@ -198,22 +195,6 @@ export function ConversationView({
 
         {/* Typing indicator (pulsing dots) shown before first token arrives */}
         {isGenerating && !streamingContent ? <TypingIndicator /> : null}
-
-        {/* Transient error banner */}
-        {error ? (
-          <AnimatePresence>
-            <motion.div
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              className="flex w-full justify-start mt-2"
-            >
-              <p className="text-red-400 text-xs px-4 py-2.5 rounded-2xl rounded-bl-md bg-red-950/30 border border-red-900/50 max-w-[80%]">
-                {error}
-              </p>
-            </motion.div>
-          </AnimatePresence>
-        ) : null}
       </div>
 
       <motion.div
