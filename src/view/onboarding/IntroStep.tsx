@@ -30,11 +30,11 @@ export function IntroStep({ onComplete }: Props) {
         style={{
           width: 420,
           background:
-            'radial-gradient(ellipse 70% 45% at 50% 0%, rgba(255,141,92,0.10) 0%, transparent 65%), rgba(22,18,15,0.98)',
-          border: '1px solid rgba(255,255,255,0.07)',
-          borderTop: '1px solid rgba(255,141,92,0.18)',
-          borderRadius: 20,
-          padding: '28px 32px 24px',
+            'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
+          border: '1px solid rgba(255, 141, 92, 0.2)',
+          borderRadius: 24,
+          padding: '32px 26px 26px',
+          boxShadow: '0 0 40px rgba(255,100,40,0.07)',
           position: 'relative',
         }}
       >
@@ -64,7 +64,7 @@ export function IntroStep({ onComplete }: Props) {
               margin: '0 0 6px',
             }}
           >
-            Good to know
+            Before you dive in
           </h1>
           <p
             style={{

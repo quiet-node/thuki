@@ -10,7 +10,7 @@ describe('IntroStep', () => {
 
   it('renders the title', () => {
     render(<IntroStep onComplete={vi.fn()} />);
-    expect(screen.getByText('Good to know')).toBeInTheDocument();
+    expect(screen.getByText('Before you dive in')).toBeInTheDocument();
   });
 
   it('renders the subtitle', () => {

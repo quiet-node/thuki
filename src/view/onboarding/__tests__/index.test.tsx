@@ -17,6 +17,6 @@ describe('OnboardingView (orchestrator)', () => {
 
   it('renders IntroStep when stage is intro', () => {
     render(<OnboardingView stage="intro" onComplete={vi.fn()} />);
-    expect(screen.getByText('Good to know')).toBeInTheDocument();
+    expect(screen.getByText('Before you dive in')).toBeInTheDocument();
   });
 });
