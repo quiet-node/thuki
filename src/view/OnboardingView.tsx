@@ -2,12 +2,37 @@ import { motion } from 'framer-motion';
 import type React from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import thukiLogo from '../../src-tauri/icons/128x128.png';
 
 /** How often to poll for permission grants after the user requests them. */
 const POLL_INTERVAL_MS = 500;
 
 type AccessibilityStatus = 'pending' | 'requesting' | 'granted';
 type ScreenRecordingStatus = 'idle' | 'polling' | 'granted';
+
+/** Inline macOS-style keyboard key chip for showing hotkey symbols. */
+const KeyChip = ({ label }: { label: string }) => (
+  <span
+    style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '1px 5px',
+      background: 'rgba(255,255,255,0.08)',
+      border: '1px solid rgba(255,255,255,0.18)',
+      borderBottom: '2px solid rgba(255,255,255,0.12)',
+      borderRadius: 4,
+      fontSize: 11,
+      lineHeight: 1.4,
+      color: 'rgba(255,255,255,0.75)',
+      verticalAlign: 'middle',
+      margin: '0 1px',
+      fontFamily: 'system-ui, -apple-system, sans-serif',
+    }}
+  >
+    {label}
+  </span>
+);
 
 /** Checkmark icon for the granted step state. */
 const CheckIcon = () => (
@@ -250,40 +275,18 @@ export function OnboardingView() {
           data-tauri-drag-region
           style={{ textAlign: 'center', marginBottom: 18, cursor: 'grab' }}
         >
-          <div
+          <img
+            src={thukiLogo}
+            width={64}
+            height={64}
+            alt="Thuki"
             style={{
-              display: 'inline-flex',
-              width: 48,
-              height: 48,
-              borderRadius: 14,
-              background:
-                'linear-gradient(135deg, rgba(255,141,92,0.2), rgba(224,107,48,0.1))',
-              border: '1px solid rgba(255,141,92,0.25)',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: '0 0 20px rgba(255,141,92,0.15)',
+              objectFit: 'contain',
               pointerEvents: 'none',
+              display: 'block',
+              margin: '0 auto',
             }}
-          >
-            <svg
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="none"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="4" fill="#ff8d5c" />
-              <circle
-                cx="12"
-                cy="12"
-                r="8"
-                stroke="#ff8d5c"
-                strokeWidth="1.2"
-                strokeDasharray="2 3"
-                opacity="0.5"
-              />
-            </svg>
-          </div>
+          />
         </div>
 
         {/* Title */}
@@ -295,21 +298,11 @@ export function OnboardingView() {
             color: '#f0f0f2',
             letterSpacing: '-0.4px',
             lineHeight: 1.2,
-            margin: '0 0 5px',
+            margin: '0 0 20px',
           }}
         >
           {"Let's get Thuki set up"}
         </h1>
-        <p
-          style={{
-            textAlign: 'center',
-            fontSize: 13,
-            color: '#6b6660',
-            margin: '0 0 26px',
-          }}
-        >
-          Two quick steps, then your AI is ready
-        </p>
 
         {/* Steps */}
         <div
@@ -350,17 +343,17 @@ export function OnboardingView() {
               >
                 Accessibility
               </div>
-              <div style={{ fontSize: 12, color: '#6b6660', lineHeight: 1.35 }}>
-                Lets Thuki respond to your Control key
+              <div style={{ fontSize: 12, color: '#6b6660', lineHeight: 1.5 }}>
+                Lets Thuki response to activator key <KeyChip label="⌃" />
+                {' + '}
+                <KeyChip label="⌃" />
               </div>
             </div>
-            <div style={{ flexShrink: 0 }}>
-              {accessibilityGranted ? (
+            {accessibilityGranted && (
+              <div style={{ flexShrink: 0 }}>
                 <Badge color="green">Granted</Badge>
-              ) : (
-                <Badge color="orange">Step 1</Badge>
-              )}
-            </div>
+              </div>
+            )}
           </StepCard>
 
           {/* Step 2: Screen Recording */}
@@ -394,13 +387,8 @@ export function OnboardingView() {
                 Screen Recording
               </div>
               <div style={{ fontSize: 12, color: '#6b6660', lineHeight: 1.35 }}>
-                Needed for the /screen command
+                Needed for /screen to capture your entire screen
               </div>
-            </div>
-            <div style={{ flexShrink: 0 }}>
-              <Badge color={accessibilityGranted ? 'orange' : 'muted'}>
-                Step 2
-              </Badge>
             </div>
           </StepCard>
         </div>
