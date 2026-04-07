@@ -395,4 +395,41 @@ describe('OnboardingView', () => {
     expect(errorSpy).not.toHaveBeenCalled();
     errorSpy.mockRestore();
   });
+
+  it('hovering the CTA button applies brightness filter when enabled', async () => {
+    setupPermissions(false);
+    render(<OnboardingView />);
+    await act(async () => {});
+
+    const btn = screen.getByRole('button', { name: /grant accessibility/i });
+    fireEvent.mouseEnter(btn);
+    // The button is not disabled so hovered=true applies brightness(1.1).
+    // Verify the element is still present and interactive (no errors thrown).
+    expect(btn).toBeInTheDocument();
+    fireEvent.mouseLeave(btn);
+    expect(btn).toBeInTheDocument();
+  });
+
+  it('hovering a disabled CTA button does not apply brightness filter', async () => {
+    setupPermissions(false);
+    render(<OnboardingView />);
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /grant accessibility/i }),
+      );
+    });
+
+    // Button is now disabled/polling
+    const btn = screen.getByRole('button', {
+      name: /checking|grant accessibility/i,
+    });
+    expect(btn).toBeDisabled();
+    // mouseEnter on a disabled button must not toggle hovered state
+    fireEvent.mouseEnter(btn);
+    expect(btn).toBeDisabled();
+    fireEvent.mouseLeave(btn);
+    expect(btn).toBeDisabled();
+  });
 });

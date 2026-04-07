@@ -222,6 +222,7 @@ export function OnboardingView() {
     // The registration call may briefly show a macOS system prompt on first use.
     await invoke('request_screen_recording_access');
     await invoke('open_screen_recording_settings');
+    if (!mountedRef.current) return;
     setScreenRecordingStatus('polling');
     screenPollRef.current = setInterval(async () => {
       if (screenInFlightRef.current) return;
@@ -369,9 +370,8 @@ export function OnboardingView() {
                 Accessibility
               </div>
               <div style={{ fontSize: 12, color: '#6b6660', lineHeight: 1.5 }}>
-                Lets Thuki respond to activator key <KeyChip label="⌃" />
-                {' + '}
-                <KeyChip label="⌃" />
+                Lets Thuki respond to activator key (<KeyChip label="⌃" />
+                <KeyChip label="⌃" />)
               </div>
             </div>
             {accessibilityGranted && (
@@ -382,7 +382,7 @@ export function OnboardingView() {
           </StepCard>
 
           {/* Step 2: Screen Recording */}
-          <StepCard active={accessibilityGranted} done={false}>
+          <StepCard active={accessibilityGranted} done={screenGranted}>
             <div
               style={{
                 width: 36,
