@@ -5,6 +5,7 @@ export type OnboardingStage = 'permissions' | 'intro';
 
 interface Props {
   stage: OnboardingStage;
+  onComplete: () => void;
 }
 
 /**
@@ -18,9 +19,9 @@ interface Props {
  * When stage is "complete" the backend never emits the onboarding event,
  * so this component is never rendered.
  */
-export function OnboardingView({ stage }: Props) {
+export function OnboardingView({ stage, onComplete }: Props) {
   if (stage === 'intro') {
-    return <IntroStep onComplete={() => {}} />;
+    return <IntroStep onComplete={onComplete} />;
   }
   return <PermissionsStep />;
 }

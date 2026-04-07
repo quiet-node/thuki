@@ -1146,7 +1146,12 @@ function App() {
   }, []);
 
   if (onboardingStage !== null) {
-    return <OnboardingView stage={onboardingStage} />;
+    return (
+      <OnboardingView
+        stage={onboardingStage}
+        onComplete={() => setOnboardingStage(null)}
+      />
+    );
   }
 
   return (

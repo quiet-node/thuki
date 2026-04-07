@@ -378,31 +378,82 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
     if LAUNCH_SHOW_PENDING.swap(false, Ordering::SeqCst) {
         #[cfg(target_os = "macos")]
         {
-            // If onboarding is already complete, skip it entirely.
-            let is_complete =
-                db.0.lock()
-                    .ok()
-                    .and_then(|conn| onboarding::get_stage(&conn).ok())
-                    .map(|s| s == onboarding::OnboardingStage::Complete)
-                    .unwrap_or(false);
+            let ax = permissions::is_accessibility_granted();
+            let sr = permissions::check_screen_recording_tcc_granted();
 
-            if !is_complete {
-                // Derive which screen to show from live permission state.
-                // Both permissions granted → intro; otherwise → permissions.
-                // This is independent of DB persistence across restarts.
-                let ax = permissions::is_accessibility_granted();
-                let sr = permissions::check_screen_recording_tcc_granted();
-                let stage = if ax && sr {
-                    onboarding::OnboardingStage::Intro
-                } else {
-                    onboarding::OnboardingStage::Permissions
-                };
-                show_onboarding_window(&app_handle, stage);
+            if let Ok(conn) = db.0.lock() {
+                if !ax || !sr {
+                    // Permissions missing. Reset stage to "permissions" so
+                    // the next launch after granting will advance to intro.
+                    // This also handles revocation after a completed onboarding.
+                    let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Permissions);
+                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
+                    return;
+                }
+
+                // Both permissions granted. Read the persisted stage.
+                let stage = onboarding::get_stage(&conn)
+                    .unwrap_or(onboarding::OnboardingStage::Permissions);
+
+                match stage {
+                    onboarding::OnboardingStage::Complete => {
+                        // Onboarding finished previously — fall through to
+                        // show the normal overlay.
+                    }
+                    _ => {
+                        // Stage is "permissions" (first launch after grant)
+                        // or "intro" (resumed). Advance to intro and show it.
+                        let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Intro);
+                        show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
+                        return;
+                    }
+                }
+            } else {
+                // Mutex poisoned — safe fallback.
+                show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
                 return;
             }
         }
         show_overlay(&app_handle, crate::context::ActivationContext::empty());
     }
+}
+
+// ─── Onboarding completion ───────────────────────────────────────────────────
+
+/// Called when the user clicks "Get Started" on the intro screen.
+/// Marks onboarding complete in the DB, restores the window to overlay mode,
+/// and immediately shows the Ask Bar — no relaunch required.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn finish_onboarding(
+    db: tauri::State<history::Database>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| format!("db lock poisoned: {e}"))?;
+    onboarding::set_stage(&conn, &onboarding::OnboardingStage::Complete)
+        .map_err(|e| format!("db write failed: {e}"))?;
+    drop(conn);
+
+    // Restore panel to overlay configuration and show the Ask Bar.
+    // Must run on the macOS main thread because NSPanel APIs are not thread-safe.
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        // Resize the window back to the collapsed overlay dimensions before
+        // positioning, so the overlay appears at the correct size.
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+                OVERLAY_LOGICAL_WIDTH,
+                OVERLAY_LOGICAL_HEIGHT_COLLAPSED,
+            )));
+        }
+        // Restore NSPanel level, shadow, and style that show_onboarding_window
+        // changed for the onboarding appearance.
+        #[cfg(target_os = "macos")]
+        init_panel(&handle);
+        show_overlay(&handle, crate::context::ActivationContext::empty());
+    });
+
+    Ok(())
 }
 
 // ─── NSPanel initialisation ─────────────────────────────────────────────────
@@ -699,8 +750,7 @@ pub fn run() {
             permissions::check_screen_recording_tcc_granted,
             #[cfg(not(coverage))]
             permissions::quit_and_relaunch,
-            #[cfg(not(coverage))]
-            commands::finish_onboarding
+            finish_onboarding
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -168,26 +168,11 @@ pub fn check_screen_recording_tcc_granted() -> bool {
 #[tauri::command]
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub fn quit_and_relaunch(
-    app_handle: tauri::AppHandle,
-    db: tauri::State<'_, crate::history::Database>,
-) {
-    match db.0.lock() {
-        Ok(conn) => {
-            match crate::onboarding::set_stage(&conn, &crate::onboarding::OnboardingStage::Intro) {
-                Ok(()) => {
-                    // Force WAL checkpoint so the write survives the
-                    // std::process::exit(0) inside app_handle.restart(),
-                    // which skips destructors and may leave uncheckpointed
-                    // WAL pages in the OS page cache.
-                    let _ = conn.execute_batch("PRAGMA wal_checkpoint(FULL);");
-                    eprintln!("[thuki] quit_and_relaunch: stage advanced to intro (checkpointed)");
-                }
-                Err(e) => eprintln!("[thuki] quit_and_relaunch: db write failed: {e}"),
-            }
-        }
-        Err(e) => eprintln!("[thuki] quit_and_relaunch: mutex poisoned: {e}"),
-    }
+pub fn quit_and_relaunch(app_handle: tauri::AppHandle) {
+    // No DB write needed here. The onboarding stage remains "permissions"
+    // across the restart. On the next launch, notify_frontend_ready detects
+    // that both permissions are now granted and stage is still "permissions",
+    // advances the stage to "intro", and shows the intro screen.
     app_handle.restart();
 }
 
