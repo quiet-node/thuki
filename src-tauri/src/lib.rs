@@ -615,6 +615,7 @@ pub fn run() {
             app.manage(commands::GenerationState::new());
             app.manage(commands::ConversationHistory::new());
             app.manage(commands::SystemPrompt(commands::load_system_prompt()));
+            app.manage(commands::load_model_config());
 
             // ── SQLite database for conversation history ──────────
             let app_data_dir = app
@@ -638,6 +639,8 @@ pub fn run() {
             commands::cancel_generation,
             #[cfg(not(coverage))]
             commands::reset_conversation,
+            #[cfg(not(coverage))]
+            commands::get_model_config,
             #[cfg(not(coverage))]
             history::save_conversation,
             #[cfg(not(coverage))]

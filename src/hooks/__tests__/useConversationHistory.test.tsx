@@ -9,7 +9,7 @@ const MESSAGES: Message[] = [
   { id: 'a1', role: 'assistant', content: 'Hi there' },
 ];
 
-const MODEL = 'gemma3:4b';
+const MODEL = 'gemma4:e2b';
 
 describe('useConversationHistory', () => {
   beforeEach(() => {

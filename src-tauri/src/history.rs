@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tauri::State;
 
-use crate::commands::{ChatMessage, ConversationHistory, SystemPrompt};
+use crate::commands::{ChatMessage, ConversationHistory, ModelConfig, SystemPrompt};
 use crate::database;
 
 /// Thread-safe wrapper around the SQLite connection.
@@ -198,6 +198,7 @@ pub async fn generate_title(
     db: State<'_, Database>,
     client: State<'_, reqwest::Client>,
     system_prompt: State<'_, SystemPrompt>,
+    model_config: State<'_, ModelConfig>,
 ) -> Result<(), String> {
     // Build a condensed context for title generation.
     let mut context = String::new();
@@ -240,7 +241,7 @@ pub async fn generate_title(
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let accumulated = crate::commands::stream_ollama_chat(
         &endpoint,
-        crate::commands::DEFAULT_MODEL_NAME,
+        &model_config.active,
         title_messages,
         &client,
         cancel_token,
@@ -303,9 +304,12 @@ mod tests {
             .find(|m| m.role == "user")
             .map(|m| m.content.trim().to_string());
 
-        let conversation_id =
-            database::create_conversation(&conn, placeholder_title.as_deref(), "gemma3:4b")
-                .unwrap();
+        let conversation_id = database::create_conversation(
+            &conn,
+            placeholder_title.as_deref(),
+            crate::commands::DEFAULT_MODEL_NAME,
+        )
+        .unwrap();
 
         let batch: Vec<(String, String, Option<String>, Option<String>)> = messages
             .into_iter()

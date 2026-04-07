@@ -67,9 +67,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 
 ### Step 1: Set Up Your AI Engine
 
-> **Default model:** Thuki ships with [`gemma3:4b`](https://ollama.com/library/gemma3) by default, a capable 4-billion parameter model from Google that runs comfortably on most modern Macs with 8 GB of RAM or more. It's a great starting point: fast, conversational, and surprisingly capable for everyday tasks.
-
-Support for swapping models without rebuilding is on the roadmap; see [What's Next](#whats-next-for-thuki).
+> **Default model:** Thuki ships with [`gemma4:e2b`](https://ollama.com/library/gemma4) by default, an effective 2B parameter edge model from Google. It runs comfortably on most modern Macs with 8 GB of RAM and delivers strong performance on reasoning, coding, and vision tasks. The model can be changed at runtime via the `THUKI_SUPPORTED_AI_MODELS` environment variable; see [Configurations](docs/configurations.md).
 
 Choose one of the two options below to set up your AI engine before installing Thuki.
 
@@ -88,7 +86,7 @@ Choose one of the two options below to set up your AI engine before installing T
 2. **Pull a model**
 
    ```bash
-   ollama pull gemma3:4b
+   ollama pull gemma4:e2b
    ```
 
    > **Note:** Model files are large (typically 2–8 GB). This step can take several minutes depending on your internet connection. You only need to do it once.
@@ -211,7 +209,8 @@ The big leap: from answering questions to taking action.
 More flexibility over the model powering Thuki.
 
 - **Native settings panel (⌘,):** a proper macOS preferences window to configure your model, Ollama endpoint, activation shortcut, slash commands, and system prompt. No config files needed.
-- **In-app model switching:** swap between any Ollama model from the UI without rebuilding
+- **In-app model switching:** swap between any Ollama model from the UI without rebuilding (the backend already supports multiple models via `THUKI_SUPPORTED_AI_MODELS`; the picker UI is next)
+- **Thinking mode:** Gemma4 supports chain-of-thought reasoning via a `<|think|>` token in the system prompt. The model produces internal reasoning before answering, wrapped in special tokens. A future update will add stream-level filtering of thinking tokens, multi-turn history stripping (required by the Gemma4 spec), and an optional "show reasoning" toggle in the UI.
 - **Multiple provider support:** opt in to OpenAI, Anthropic, or any OpenAI-compatible endpoint as an alternative to local Ollama
 - **Custom activation shortcut:** change the double-tap trigger to any key or combo you prefer
 

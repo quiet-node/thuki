@@ -76,14 +76,14 @@ rustup toolchain install nightly-2026-03-30 --component llvm-tools
    bun run sandbox:start
    ```
 
-   This pulls the default model (`gemma3:4b`) and starts the hardened container. It may take a few minutes on first run.
+   This pulls the default model (`gemma4:e2b`) and starts the hardened container. It may take a few minutes on first run.
 
    **Option B: Local Ollama**
 
    Make sure Ollama is running and you have a model pulled:
 
    ```bash
-   ollama pull gemma3:4b
+   ollama pull gemma4:e2b
    ```
 
    Thuki connects to `http://127.0.0.1:11434` by default.
