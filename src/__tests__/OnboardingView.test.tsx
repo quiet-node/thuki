@@ -342,7 +342,9 @@ describe('OnboardingView', () => {
     expect(screen.getByText('Screen Recording')).toBeInTheDocument();
   });
 
-  it('clears accessibility polling on unmount without throwing', async () => {
+  it('does not emit console.error when unmounted during accessibility polling', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
     setupPermissions(false);
     const { unmount } = render(<OnboardingView />);
     await act(async () => {});
@@ -353,16 +355,20 @@ describe('OnboardingView', () => {
       );
     });
 
-    // Unmount while polling is active — should not throw or warn
-    expect(() => act(() => unmount())).not.toThrow();
+    act(() => unmount());
 
-    // Advancing timers after unmount should not cause state update errors
+    // Timer ticks after unmount must not trigger React state-update warnings.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000);
     });
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 
-  it('clears screen recording polling on unmount without throwing', async () => {
+  it('does not emit console.error when unmounted during screen recording polling', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'check_accessibility_permission') return true;
       if (cmd === 'check_screen_recording_permission') return false;
@@ -380,11 +386,13 @@ describe('OnboardingView', () => {
       );
     });
 
-    // Unmount while screen recording polling is active
-    expect(() => act(() => unmount())).not.toThrow();
+    act(() => unmount());
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000);
     });
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 });

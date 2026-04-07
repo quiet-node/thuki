@@ -182,6 +182,8 @@ export function OnboardingView() {
   // On mount: check whether Accessibility is already granted so we can skip
   // step 1 and show step 2 immediately.
   useEffect(() => {
+    // Reset on every mount so that a remount after unmount gets a fresh guard.
+    mountedRef.current = true;
     void invoke<boolean>('check_accessibility_permission').then((granted) => {
       if (!mountedRef.current) return;
       if (granted) {
