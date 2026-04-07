@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Default configuration constants as the application currently lacks a Settings UI.
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
-pub const DEFAULT_MODEL_NAME: &str = "gemma3:4b";
+pub const DEFAULT_MODEL_NAME: &str = "gemma4:e2b";
 const DEFAULT_SYSTEM_PROMPT: &str = "You are Thuki (thư ký), a personal desktop secretary that \
 lives as a floating overlay on macOS. You are fast, sharp, and helpful.\n\nResponse style:\n- Be \
 concise. You appear in a small floating window — keep responses scannable.\n- Use short paragraphs, \
@@ -91,8 +91,7 @@ pub enum StreamChunk {
 /// A single message in the Ollama `/api/chat` conversation format.
 ///
 /// The optional `images` field carries base64-encoded image data for
-/// multimodal models (e.g. `gemma3:4b`). When absent or empty, the
-/// message is text-only.
+/// multimodal models. When absent or empty, the message is text-only.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
@@ -101,12 +100,22 @@ pub struct ChatMessage {
     pub images: Option<Vec<String>>,
 }
 
+/// Sampling parameters for Ollama `/api/chat`, following Google's recommended
+/// configuration for Gemma4 models.
+#[derive(Serialize)]
+struct OllamaOptions {
+    temperature: f64,
+    top_p: f64,
+    top_k: u32,
+}
+
 /// Request payload for Ollama `/api/chat` endpoint.
 #[derive(Serialize)]
 struct OllamaChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
+    options: OllamaOptions,
 }
 
 /// Nested message object in Ollama `/api/chat` response chunks.
@@ -194,6 +203,45 @@ pub fn load_system_prompt() -> String {
         .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string())
 }
 
+/// Model configuration loaded once at startup from the `THUKI_SUPPORTED_AI_MODELS`
+/// environment variable (comma-separated list). The first entry is the active model
+/// used for inference. Falls back to `DEFAULT_MODEL_NAME` when unset or empty.
+pub struct ModelConfig {
+    pub active: String,
+    pub all: Vec<String>,
+}
+
+/// Reads `THUKI_SUPPORTED_AI_MODELS` from the environment and returns a
+/// `ModelConfig`. Trims whitespace around each entry and filters empty entries.
+/// Defaults to `[DEFAULT_MODEL_NAME]` when the variable is unset or empty.
+pub fn load_model_config() -> ModelConfig {
+    let models: Vec<String> = std::env::var("THUKI_SUPPORTED_AI_MODELS")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| {
+            s.split(',')
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(|| vec![DEFAULT_MODEL_NAME.to_string()]);
+    let active = models
+        .first()
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string());
+    ModelConfig {
+        active,
+        all: models,
+    }
+}
+
+/// Returns the active model and full supported list to the frontend.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn get_model_config(model_config: tauri::State<'_, ModelConfig>) -> serde_json::Value {
+    serde_json::json!({ "active": model_config.active, "all": model_config.all })
+}
+
 /// Core streaming logic for Ollama `/api/chat`, separated from the Tauri
 /// command for testability. Uses `tokio::select!` to race each chunk read
 /// against the cancellation token, ensuring the HTTP connection is dropped
@@ -211,6 +259,11 @@ pub async fn stream_ollama_chat(
         model: model.to_string(),
         messages,
         stream: true,
+        options: OllamaOptions {
+            temperature: 1.0,
+            top_p: 0.95,
+            top_k: 64,
+        },
     };
 
     let mut accumulated = String::new();
@@ -303,6 +356,7 @@ pub async fn ask_ollama(
     generation: State<'_, GenerationState>,
     history: State<'_, ConversationHistory>,
     system_prompt: State<'_, SystemPrompt>,
+    model_config: State<'_, ModelConfig>,
 ) -> Result<(), String> {
     let endpoint = format!("{}/api/chat", DEFAULT_OLLAMA_URL.trim_end_matches('/'));
     let cancel_token = CancellationToken::new();
@@ -347,7 +401,7 @@ pub async fn ask_ollama(
 
     let accumulated = stream_ollama_chat(
         &endpoint,
-        DEFAULT_MODEL_NAME,
+        &model_config.active,
         messages,
         &client,
         cancel_token.clone(),
@@ -979,10 +1033,122 @@ mod tests {
         assert!(second_clone.is_cancelled());
     }
 
-    /// Guard to serialize tests that mutate `THUKI_SYSTEM_PROMPT` env var.
+    /// Guard to serialize tests that mutate environment variables.
     /// Rust runs tests in parallel by default; without serialization these
-    /// tests race on the shared environment variable.
+    /// tests race on shared environment variables.
     static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+    // ── load_model_config tests ──────────────────────────────────────────────
+
+    #[test]
+    fn load_model_config_returns_default_when_unset() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
+        let config = load_model_config();
+        assert_eq!(config.active, DEFAULT_MODEL_NAME);
+        assert_eq!(config.all, vec![DEFAULT_MODEL_NAME.to_string()]);
+    }
+
+    #[test]
+    fn load_model_config_reads_single_model() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "gemma4:e4b");
+        let config = load_model_config();
+        assert_eq!(config.active, "gemma4:e4b");
+        assert_eq!(config.all, vec!["gemma4:e4b".to_string()]);
+        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
+    }
+
+    #[test]
+    fn load_model_config_reads_multiple_models_first_is_active() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "gemma4:e2b,gemma4:e4b");
+        let config = load_model_config();
+        assert_eq!(config.active, "gemma4:e2b");
+        assert_eq!(
+            config.all,
+            vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()]
+        );
+        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
+    }
+
+    #[test]
+    fn load_model_config_trims_whitespace_around_entries() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", " gemma4:e2b , gemma4:e4b ");
+        let config = load_model_config();
+        assert_eq!(config.active, "gemma4:e2b");
+        assert_eq!(
+            config.all,
+            vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()]
+        );
+        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
+    }
+
+    #[test]
+    fn load_model_config_falls_back_to_default_when_whitespace_only() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "   ");
+        let config = load_model_config();
+        assert_eq!(config.active, DEFAULT_MODEL_NAME);
+        assert_eq!(config.all, vec![DEFAULT_MODEL_NAME.to_string()]);
+        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
+    }
+
+    #[test]
+    fn load_model_config_filters_empty_entries_from_list() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "gemma4:e2b,,gemma4:e4b");
+        let config = load_model_config();
+        assert_eq!(
+            config.all,
+            vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()]
+        );
+        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
+    }
+
+    #[test]
+    fn load_model_config_falls_back_when_all_entries_are_empty_commas() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // All entries filter to empty strings, leaving an empty list.
+        // The active model must still fall back to DEFAULT_MODEL_NAME.
+        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", ",");
+        let config = load_model_config();
+        assert_eq!(config.active, DEFAULT_MODEL_NAME);
+        assert_eq!(config.all, Vec::<String>::new());
+        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
+    }
+
+    // ── sampling options test ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn sends_sampling_options_in_request() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"options":{"temperature":1.0,"top_p":0.95,"top_k":64}}"#.to_string(),
+            ))
+            .with_body(chat_line("", true))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let (_, callback) = collect_chunks();
+
+        stream_ollama_chat(
+            &format!("{}/api/chat", server.url()),
+            "test-model",
+            vec![],
+            &client,
+            token,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+    }
 
     #[test]
     fn load_system_prompt_returns_default_when_unset() {
@@ -1044,7 +1210,7 @@ mod tests {
     fn classify_http_404_returns_model_not_found() {
         let err = classify_http_error(404);
         assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
-        assert!(err.message.contains("gemma3:4b"));
+        assert!(err.message.contains("gemma4:e2b"));
     }
 
     #[test]

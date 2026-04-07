@@ -6,7 +6,7 @@ import type { ConversationSummary } from '../../types/history';
 const SUMMARY: ConversationSummary = {
   id: 'conv-1',
   title: 'How does React work?',
-  model: 'gemma3:4b',
+  model: 'gemma4:e2b',
   updated_at: Date.now(),
   message_count: 6,
 };

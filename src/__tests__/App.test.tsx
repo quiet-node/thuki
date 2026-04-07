@@ -26,6 +26,13 @@ describe('App', () => {
     enableChannelCapture();
   });
 
+  it('calls get_model_config on mount', async () => {
+    render(<App />);
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith('get_model_config');
+  });
+
   it('renders nothing when overlay is hidden', async () => {
     const { container } = render(<App />);
     // Flush effects so listener registers
@@ -708,6 +715,10 @@ describe('App', () => {
     });
 
     it('closes history panel when a conversation is loaded', async () => {
+      invoke.mockResolvedValueOnce({
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+      }); // get_model_config
       invoke.mockResolvedValueOnce(undefined); // notify_frontend_ready
       invoke.mockResolvedValueOnce([]); // reset_conversation (from replayEntranceAnimation)
       invoke.mockResolvedValueOnce([
@@ -1214,7 +1225,7 @@ describe('App', () => {
           {
             id: 'conv-other2',
             title: 'Other chat',
-            model: 'gemma3:4b',
+            model: 'gemma4:e2b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1271,7 +1282,7 @@ describe('App', () => {
             {
               id: 'c2',
               title: 'Other chat',
-              model: 'gemma3:4b',
+              model: 'gemma4:e2b',
               updated_at: 1,
               message_count: 1,
             },
@@ -1342,7 +1353,7 @@ describe('App', () => {
           {
             id: 'conv-other',
             title: 'Switch target',
-            model: 'gemma3:4b',
+            model: 'gemma4:e2b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1419,7 +1430,7 @@ describe('App', () => {
           {
             id: 'conv-target',
             title: 'My chat',
-            model: 'gemma3:4b',
+            model: 'gemma4:e2b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1563,7 +1574,7 @@ describe('App', () => {
           {
             id: 'conv-active',
             title: 'Active chat',
-            model: 'gemma3:4b',
+            model: 'gemma4:e2b',
             updated_at: 1,
             message_count: 2,
           },
@@ -1625,7 +1636,7 @@ describe('App', () => {
             {
               id: 'c1',
               title: 'Chat',
-              model: 'gemma3:4b',
+              model: 'gemma4:e2b',
               updated_at: 1,
               message_count: 1,
             },
@@ -1659,7 +1670,7 @@ describe('App', () => {
           {
             id: 'conv-unrelated',
             title: 'Unrelated',
-            model: 'gemma3:4b',
+            model: 'gemma4:e2b',
             updated_at: 1,
             message_count: 2,
           },
