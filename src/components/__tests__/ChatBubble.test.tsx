@@ -247,4 +247,40 @@ describe('ChatBubble', () => {
       expect(container.querySelector('.max-w-\\[80\\%\\]')).not.toBeNull();
     });
   });
+
+  describe('Error messages (errorKind)', () => {
+    it('renders ErrorCard instead of MarkdownRenderer when errorKind is set', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content={"Ollama isn't running\nStart Ollama and try again."}
+          index={0}
+          errorKind="NotRunning"
+        />,
+      );
+      expect(container.querySelector('[data-error-bar]')).not.toBeNull();
+    });
+
+    it('does not render MarkdownRenderer when errorKind is set', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content={"Ollama isn't running\nStart Ollama and try again."}
+          index={0}
+          errorKind="NotRunning"
+        />,
+      );
+      // MarkdownRenderer would produce a <p> or streamdown elements; ErrorCard does not
+      expect(container.querySelector('[data-streamdown]')).toBeNull();
+    });
+
+    it('renders MarkdownRenderer when errorKind is absent', () => {
+      const { container } = render(
+        <ChatBubble role="assistant" content="**bold**" index={0} />,
+      );
+      expect(
+        container.querySelector('[data-streamdown="strong"]'),
+      ).not.toBeNull();
+    });
+  });
 });
