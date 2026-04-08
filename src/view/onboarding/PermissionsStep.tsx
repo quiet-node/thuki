@@ -146,7 +146,7 @@ const Spinner = () => (
  * CGRequestScreenCaptureAccess, polls TCC until granted, then prompts
  * quit+reopen since macOS requires a restart for the permission to take effect).
  *
- * Visual direction: Warm Ambient — dark base with a warm orange radial glow.
+ * Visual direction: Warm Ambient: dark base with a warm orange radial glow.
  * The outer container is transparent so the rounded panel corners are visible
  * against the macOS desktop.
  */
@@ -295,7 +295,7 @@ export function PermissionsStep() {
           }}
         />
 
-        {/* Logo mark + title — drag region so the user can reposition the
+        {/* Logo mark + title, drag region so the user can reposition the
             onboarding window when it overlaps System Settings. */}
         <div
           data-tauri-drag-region
