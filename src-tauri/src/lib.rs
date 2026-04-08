@@ -209,7 +209,9 @@ fn monitor_info_fallback() -> (f64, f64, f64, f64) {
 /// back to global coordinates for `set_position`.
 #[cfg(target_os = "macos")]
 fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
-    if OVERLAY_INTENDED_VISIBLE.swap(true, Ordering::SeqCst) {
+    let already_visible = OVERLAY_INTENDED_VISIBLE.swap(true, Ordering::SeqCst);
+    eprintln!("thuki: [show_overlay] already_visible={already_visible}");
+    if already_visible {
         return;
     }
 
@@ -277,15 +279,19 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 
     match app_handle.get_webview_panel("main") {
         Ok(panel) => {
+            eprintln!("thuki: [show_overlay] calling show_and_make_key");
             panel.show_and_make_key();
+            eprintln!("thuki: [show_overlay] emitting show event");
             emit_overlay_visibility(
                 app_handle,
                 OVERLAY_VISIBILITY_SHOW,
                 selected_text,
                 window_anchor,
             );
+            eprintln!("thuki: [show_overlay] done");
         }
-        Err(_) => {
+        Err(e) => {
+            eprintln!("thuki: [show_overlay] get_webview_panel FAILED: {e:?}");
             // Reset the flag so future activation attempts are not permanently blocked.
             OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
         }
@@ -323,7 +329,9 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 /// Uses an atomic flag as the single source of truth for intended visibility,
 /// which avoids race conditions with the native panel state during animations.
 fn toggle_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
-    if OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst) {
+    let vis = OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst);
+    eprintln!("thuki: [toggle_overlay] called, OVERLAY_INTENDED_VISIBLE={vis}");
+    if vis {
         request_overlay_hide(app_handle);
     } else {
         show_overlay(app_handle, ctx);
@@ -365,6 +373,7 @@ fn set_window_frame(app_handle: tauri::AppHandle, x: f64, y: f64, width: f64, he
 /// completes its exit animation and hides the native window.
 #[tauri::command]
 fn notify_overlay_hidden() {
+    eprintln!("thuki: [notify_overlay_hidden] called");
     OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
 }
 
@@ -400,14 +409,15 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
                 // screen again on the next launch.
                 let ax = permissions::is_accessibility_granted();
                 let sr = permissions::is_screen_recording_granted();
+                let im = permissions::is_input_monitoring_granted();
 
-                if !ax || !sr {
+                if !ax || !sr || !im {
                     let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Permissions);
                     show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
                     return;
                 }
 
-                // Both permissions granted. If not yet complete, show intro.
+                // All permissions granted. If not yet complete, show intro.
                 if !matches!(stage, onboarding::OnboardingStage::Complete) {
                     let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Intro);
                     show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
@@ -679,9 +689,27 @@ pub fn run() {
                     // simulating Cmd+C against Thuki's own WebView would produce
                     // a macOS alert sound.
                     let is_visible = OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst);
-                    let ctx = crate::context::capture_activation_context(is_visible);
                     let handle = app_handle.clone();
-                    let _ = app_handle.run_on_main_thread(move || toggle_overlay(&handle, ctx));
+                    let handle2 = app_handle.clone();
+                    // Dispatch context capture to a dedicated thread so the event
+                    // tap callback returns immediately. AX attribute lookups and
+                    // clipboard simulation can block for seconds (macOS AX default
+                    // timeout is ~6 s) when the focused app does not implement the
+                    // accessibility protocol. Blocking the tap callback freezes the
+                    // CFRunLoop and silently prevents all future key events from
+                    // being delivered to the activator.
+                    std::thread::spawn(move || {
+                        let t0 = std::time::Instant::now();
+                        eprintln!(
+                            "thuki: [activator] context capture started (is_visible={is_visible})"
+                        );
+                        let ctx = crate::context::capture_activation_context(is_visible);
+                        eprintln!(
+                            "thuki: [activator] context capture done in {:?}",
+                            t0.elapsed()
+                        );
+                        let _ = handle.run_on_main_thread(move || toggle_overlay(&handle2, ctx));
+                    });
                 });
                 app.manage(activator);
             }
@@ -748,6 +776,12 @@ pub fn run() {
             permissions::check_accessibility_permission,
             #[cfg(not(coverage))]
             permissions::open_accessibility_settings,
+            #[cfg(not(coverage))]
+            permissions::check_input_monitoring_permission,
+            #[cfg(not(coverage))]
+            permissions::request_input_monitoring_access,
+            #[cfg(not(coverage))]
+            permissions::open_input_monitoring_settings,
             #[cfg(not(coverage))]
             permissions::check_screen_recording_permission,
             #[cfg(not(coverage))]

@@ -14,11 +14,18 @@
 
 /// Returns `true` when at least one required permission has not been granted.
 ///
-/// Both Accessibility (hotkey listener) and Screen Recording (/screen command)
-/// must be granted for Thuki to function fully. If either is missing the
-/// onboarding screen is shown instead of the normal overlay.
-pub fn needs_onboarding(accessibility: bool, screen_recording: bool) -> bool {
-    !accessibility || !screen_recording
+/// All three permissions must be granted for Thuki to function fully:
+/// - Accessibility: required to create the CGEventTap
+/// - Input Monitoring: required for the tap to receive events from other apps
+/// - Screen Recording: required for the /screen command
+///
+/// If any is missing the onboarding screen is shown instead of the normal overlay.
+pub fn needs_onboarding(
+    accessibility: bool,
+    screen_recording: bool,
+    input_monitoring: bool,
+) -> bool {
+    !accessibility || !screen_recording || !input_monitoring
 }
 
 // ─── macOS Permission Checks ─────────────────────────────────────────────────
@@ -29,11 +36,45 @@ extern "C" {
     fn AXIsProcessTrusted() -> bool;
 }
 
+/// IOKit constants for Input Monitoring permission checks.
+#[cfg(target_os = "macos")]
+const IOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
+#[cfg(target_os = "macos")]
+const IOHID_ACCESS_TYPE_GRANTED: u32 = 1;
+
+#[cfg(target_os = "macos")]
+#[link(name = "IOKit", kind = "framework")]
+extern "C" {
+    /// Checks whether the process has Input Monitoring access.
+    /// Returns kIOHIDAccessTypeGranted (1) if granted, 0 if not determined,
+    /// 2 if denied.
+    fn IOHIDCheckAccess(request_type: u32) -> u32;
+
+    /// Requests Input Monitoring access, showing the system permission dialog
+    /// on first call. Returns true if access was granted.
+    fn IOHIDRequestAccess(request_type: u32) -> bool;
+}
+
 /// Returns whether the process currently has Accessibility permission.
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn is_accessibility_granted() -> bool {
     unsafe { AXIsProcessTrusted() }
+}
+
+/// Returns whether the process currently has Input Monitoring permission.
+///
+/// Input Monitoring (`kTCCServiceListenEvent`) is required for a CGEventTap at
+/// Session level to receive keyboard events from other applications. Without it,
+/// the tap only sees events generated within the Thuki process itself, making
+/// the double-tap hotkey invisible when the user's focus is elsewhere.
+///
+/// Unlike Screen Recording, Input Monitoring does not require a process restart
+/// after being granted; the CGEventTap immediately begins receiving cross-app events.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn is_input_monitoring_granted() -> bool {
+    unsafe { IOHIDCheckAccess(IOHID_REQUEST_TYPE_LISTEN_EVENT) == IOHID_ACCESS_TYPE_GRANTED }
 }
 
 /// Returns whether the process currently has Screen Recording permission.
@@ -59,6 +100,44 @@ pub fn is_screen_recording_granted() -> bool {
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn check_accessibility_permission() -> bool {
     is_accessibility_granted()
+}
+
+/// Returns whether Input Monitoring permission has been granted.
+#[tauri::command]
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn check_input_monitoring_permission() -> bool {
+    is_input_monitoring_granted()
+}
+
+/// Triggers the macOS Input Monitoring permission dialog.
+///
+/// `IOHIDRequestAccess` registers the app in TCC and shows the system-level
+/// "X would like to monitor input events" prompt. If the user previously denied
+/// the permission, the dialog is skipped and the call returns false; the
+/// onboarding UI then directs the user to System Settings directly.
+#[tauri::command]
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn request_input_monitoring_access() {
+    unsafe {
+        IOHIDRequestAccess(IOHID_REQUEST_TYPE_LISTEN_EVENT);
+    }
+}
+
+/// Opens System Settings to the Input Monitoring privacy pane.
+#[tauri::command]
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn open_input_monitoring_settings() -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(
+            "x-apple.systempreferences:com.apple.preference.security\
+             ?Privacy_ListenEvent",
+        )
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Opens System Settings to the Accessibility privacy pane so the user can
@@ -165,22 +244,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn needs_onboarding_false_when_both_granted() {
-        assert!(!needs_onboarding(true, true));
+    fn needs_onboarding_false_when_all_granted() {
+        assert!(!needs_onboarding(true, true, true));
     }
 
     #[test]
     fn needs_onboarding_true_when_accessibility_missing() {
-        assert!(needs_onboarding(false, true));
+        assert!(needs_onboarding(false, true, true));
     }
 
     #[test]
     fn needs_onboarding_true_when_screen_recording_missing() {
-        assert!(needs_onboarding(true, false));
+        assert!(needs_onboarding(true, false, true));
     }
 
     #[test]
-    fn needs_onboarding_true_when_both_missing() {
-        assert!(needs_onboarding(false, false));
+    fn needs_onboarding_true_when_input_monitoring_missing() {
+        assert!(needs_onboarding(true, true, false));
+    }
+
+    #[test]
+    fn needs_onboarding_true_when_all_missing() {
+        assert!(needs_onboarding(false, false, false));
     }
 }
