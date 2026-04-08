@@ -173,34 +173,86 @@ impl OverlayActivator {
     }
 }
 
-/// Persistence layer that maintains the event loop through permission cycles.
+/// Reason the event tap run loop exited.
+enum TapExitReason {
+    /// Activator was intentionally stopped via [`OverlayActivator`]. Do not retry.
+    Deactivated,
+    /// CGEventTap::new failed (Accessibility permission not yet granted). Retry
+    /// after waiting for the user to grant permission.
+    CreationFailed,
+    /// The tap was created and the run loop ran, but macOS disabled the tap
+    /// (timeout or user-input disable) or the run loop exited for an unexpected
+    /// reason. Retry immediately — no permission change is needed.
+    TapDied,
+}
+
+/// Persistence layer that maintains the event loop through permission and
+/// tap-death cycles.
+///
+/// Two distinct failure modes are handled separately:
+/// - **Permission failure** (`CreationFailed`): tap could not be installed at
+///   all. Waits [`PERMISSION_POLL_INTERVAL`] between attempts, up to
+///   [`MAX_PERMISSION_ATTEMPTS`] total.
+/// - **Tap death** (`TapDied`): tap was running but macOS disabled it (e.g.
+///   `TapDisabledByTimeout`). Retries immediately with no attempt limit so the
+///   listener recovers as fast as possible.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn run_loop_with_retry<F>(is_active: Arc<AtomicBool>, on_activation: Arc<F>)
 where
     F: Fn() + Send + Sync + 'static,
 {
-    for attempt in 1..=MAX_PERMISSION_ATTEMPTS {
-        if attempt > 1 {
-            std::thread::sleep(PERMISSION_POLL_INTERVAL);
-            if !request_authorization(false) {
-                continue;
+    let mut permission_failures: u32 = 0;
+
+    loop {
+        if !is_active.load(Ordering::SeqCst) {
+            return;
+        }
+
+        match try_initialize_tap(&is_active, &on_activation) {
+            TapExitReason::Deactivated => return,
+
+            TapExitReason::TapDied => {
+                // Tap was running then killed by macOS. Reinstall immediately.
+                eprintln!("thuki: [activator] tap died — reinstalling");
+                permission_failures = 0;
+            }
+
+            TapExitReason::CreationFailed => {
+                permission_failures += 1;
+                if permission_failures >= MAX_PERMISSION_ATTEMPTS {
+                    eprintln!(
+                        "thuki: [error] activation listener failed after \
+                         maximum retries; check system permissions."
+                    );
+                    return;
+                }
+                eprintln!(
+                    "thuki: [activator] tap creation failed \
+                     (attempt {permission_failures}/{MAX_PERMISSION_ATTEMPTS}); \
+                     retrying in {}s",
+                    PERMISSION_POLL_INTERVAL.as_secs()
+                );
+                std::thread::sleep(PERMISSION_POLL_INTERVAL);
             }
         }
-
-        if try_initialize_tap(&is_active, &on_activation) {
-            return; // Successfully established and running
-        }
     }
-
-    eprintln!("thuki: [error] activation listener failed after maximum retries. check system permissions.");
 }
 
 /// Core initialization of the Mach event tap.
+///
+/// Returns the reason the run loop exited so the caller can decide whether
+/// to retry.
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn try_initialize_tap<F>(is_active: &Arc<AtomicBool>, on_activation: &Arc<F>) -> bool
+fn try_initialize_tap<F>(is_active: &Arc<AtomicBool>, on_activation: &Arc<F>) -> TapExitReason
 where
     F: Fn() + Send + Sync + 'static,
 {
+    let im_granted = crate::permissions::is_input_monitoring_granted();
+    eprintln!(
+        "thuki: [activator] Input Monitoring permission: granted={im_granted} \
+         (cross-app hotkey requires this)"
+    );
+
     let state = Arc::new(Mutex::new(ActivationState {
         last_trigger: None,
         is_pressed: false,
@@ -211,14 +263,44 @@ where
     let cb_on_activation = on_activation.clone();
     let cb_state = state.clone();
 
-    // Create the event tap at the Session level. This requires Accessibility
-    // permission but does not require root/superuser privileges unlike HID level.
+    // Create the event tap at HID level — the lowest level before events reach
+    // any application. This is what Karabiner-Elements, BetterTouchTool, and
+    // every other reliable system-wide key interceptor uses.
+    //
+    // Session-level taps (kCGSessionEventTap) sit above the window server
+    // routing layer and are subject to focus-based filtering introduced in
+    // macOS 15 Sequoia: they silently receive zero events from other apps.
+    // HID-level taps bypass this entirely and require only Accessibility
+    // permission, which Thuki already holds.
     let tap_result = CGEventTap::new(
-        CGEventTapLocation::Session,
+        CGEventTapLocation::HID,
         CGEventTapPlacement::HeadInsertEventTap,
-        CGEventTapOptions::ListenOnly,
+        // Use Default (active) tap, not ListenOnly. Active taps at HID level
+        // are not disabled by secure input mode (iTerm Secure Keyboard Entry,
+        // password fields, etc.). We still return CallbackResult::Keep so no
+        // events are blocked or modified. Requires Accessibility permission,
+        // which Thuki already holds.
+        CGEventTapOptions::Default,
+        // Only register for FlagsChanged. TapDisabledByTimeout and
+        // TapDisabledByUserInput have sentinel values (0xFFFFFFFE/0xFFFFFFFF)
+        // that overflow the bitmask and cannot be included here — macOS delivers
+        // them to the callback automatically without registration.
         vec![CGEventType::FlagsChanged],
-        move |_proxy, _event_type, event: &CGEvent| -> CallbackResult {
+        move |_proxy, event_type, event: &CGEvent| -> CallbackResult {
+            // macOS auto-disables event taps whose callback is too slow.
+            // Stop the run loop so the outer retry loop reinstalls the tap.
+            if matches!(
+                event_type,
+                CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput
+            ) {
+                eprintln!(
+                    "thuki: [activator] event tap disabled by macOS \
+                     ({event_type:?}) — stopping run loop for reinstall"
+                );
+                CFRunLoop::get_current().stop();
+                return CallbackResult::Keep;
+            }
+
             if !cb_active.load(Ordering::SeqCst) {
                 CFRunLoop::get_current().stop();
                 return CallbackResult::Keep;
@@ -246,6 +328,7 @@ where
 
     match tap_result {
         Ok(tap) => {
+            eprintln!("thuki: [activator] event tap created (HID level) — listening for double-tap Control");
             unsafe {
                 let loop_source = tap
                     .mach_port()
@@ -258,9 +341,20 @@ where
 
                 CFRunLoop::run_current();
             }
-            true
+            eprintln!("thuki: [activator] event tap run loop exited");
+            // If still supposed to be active the run loop exited unexpectedly.
+            if is_active.load(Ordering::SeqCst) {
+                TapExitReason::TapDied
+            } else {
+                TapExitReason::Deactivated
+            }
         }
-        Err(()) => false,
+        Err(()) => {
+            eprintln!(
+                "thuki: [activator] event tap creation FAILED; check Accessibility permission"
+            );
+            TapExitReason::CreationFailed
+        }
     }
 }
 

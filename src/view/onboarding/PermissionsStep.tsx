@@ -8,6 +8,7 @@ import thukiLogo from '../../../src-tauri/icons/128x128.png';
 const POLL_INTERVAL_MS = 500;
 
 type AccessibilityStatus = 'pending' | 'requesting' | 'granted';
+type InputMonitoringStatus = 'idle' | 'requesting' | 'polling' | 'granted';
 type ScreenRecordingStatus = 'idle' | 'polling' | 'granted';
 
 /** Inline macOS-style keyboard key chip for showing hotkey symbols. */
@@ -80,7 +81,29 @@ const KeyboardIcon = () => (
   </svg>
 );
 
-/** Screen/camera icon for step 2. */
+/** Eye/monitoring icon for the Input Monitoring step. */
+const MonitoringIcon = ({ active }: { active: boolean }) => (
+  <svg
+    width="18"
+    height="18"
+    viewBox="0 0 18 18"
+    fill="none"
+    aria-hidden="true"
+  >
+    <ellipse
+      cx="9"
+      cy="9"
+      rx="7"
+      ry="5"
+      stroke={active ? '#ff8d5c' : '#6b6660'}
+      strokeWidth="1.5"
+    />
+    <circle cx="9" cy="9" r="2.5" fill={active ? '#ff8d5c' : '#6b6660'} />
+    <circle cx="9" cy="9" r="1" fill={active ? '#1c1814' : '#4a4a4e'} />
+  </svg>
+);
+
+/** Screen/camera icon for step 3. */
 const ScreenIcon = ({ active }: { active: boolean }) => (
   <svg
     width="18"
@@ -139,29 +162,34 @@ const Spinner = () => (
 
 /**
  * Onboarding screen shown at first launch when required macOS permissions
- * (Accessibility and Screen Recording) have not yet been granted.
+ * have not yet been granted.
  *
- * Follows a sequential flow: Accessibility first (polls until granted,
- * no restart needed), then Screen Recording (registers app via
- * CGRequestScreenCaptureAccess, polls TCC until granted, then prompts
- * quit+reopen since macOS requires a restart for the permission to take effect).
- *
- * Visual direction: Warm Ambient — dark base with a warm orange radial glow.
- * The outer container is transparent so the rounded panel corners are visible
- * against the macOS desktop.
+ * Follows a sequential flow:
+ * 1. Accessibility: polls until granted, no restart needed
+ * 2. Input Monitoring: requests via IOHIDRequestAccess, polls until granted,
+ *    no restart needed (CGEventTap begins receiving cross-app events immediately)
+ * 3. Screen Recording: registers app via CGRequestScreenCaptureAccess, polls
+ *    TCC until granted, then prompts quit+reopen (macOS requires restart)
  */
 export function PermissionsStep() {
   const [accessibilityStatus, setAccessibilityStatus] =
     useState<AccessibilityStatus>('pending');
+  const [inputMonitoringStatus, setInputMonitoringStatus] =
+    useState<InputMonitoringStatus>('idle');
   const [screenRecordingStatus, setScreenRecordingStatus] =
     useState<ScreenRecordingStatus>('idle');
+
   const axPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const imPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const screenPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // Guards that prevent a new poll tick from firing while a previous invoke
   // call is still in-flight. Without these, a slow IPC response (> POLL_INTERVAL_MS)
   // could queue multiple concurrent permission checks.
   const axInFlightRef = useRef(false);
+  const imInFlightRef = useRef(false);
   const screenInFlightRef = useRef(false);
+
   // Prevents state updates from resolving in-flight invocations after unmount.
   const mountedRef = useRef(true);
 
@@ -169,6 +197,13 @@ export function PermissionsStep() {
     if (axPollRef.current !== null) {
       clearInterval(axPollRef.current);
       axPollRef.current = null;
+    }
+  }, []);
+
+  const stopImPolling = useCallback(() => {
+    if (imPollRef.current !== null) {
+      clearInterval(imPollRef.current);
+      imPollRef.current = null;
     }
   }, []);
 
@@ -180,7 +215,7 @@ export function PermissionsStep() {
   }, []);
 
   // On mount: check whether Accessibility is already granted so we can skip
-  // step 1 and show step 2 immediately.
+  // step 1, and if so check Input Monitoring so we can skip step 2.
   useEffect(() => {
     // Reset on every mount so that a remount after unmount gets a fresh guard.
     mountedRef.current = true;
@@ -188,14 +223,23 @@ export function PermissionsStep() {
       if (!mountedRef.current) return;
       if (granted) {
         setAccessibilityStatus('granted');
+        void invoke<boolean>('check_input_monitoring_permission').then(
+          (imGranted) => {
+            if (!mountedRef.current) return;
+            if (imGranted) {
+              setInputMonitoringStatus('granted');
+            }
+          },
+        );
       }
     });
     return () => {
       mountedRef.current = false;
       stopAxPolling();
+      stopImPolling();
       stopScreenPolling();
     };
-  }, [stopAxPolling, stopScreenPolling]);
+  }, [stopAxPolling, stopImPolling, stopScreenPolling]);
 
   const handleGrantAccessibility = useCallback(async () => {
     setAccessibilityStatus('requesting');
@@ -215,6 +259,32 @@ export function PermissionsStep() {
       }
     }, POLL_INTERVAL_MS);
   }, [stopAxPolling]);
+
+  const handleGrantInputMonitoring = useCallback(async () => {
+    setInputMonitoringStatus('requesting');
+    // Register Thuki in TCC and trigger the system permission dialog.
+    await invoke('request_input_monitoring_access');
+    // Also open System Settings in case the user previously denied the dialog.
+    await invoke('open_input_monitoring_settings');
+    if (!mountedRef.current) return;
+    setInputMonitoringStatus('polling');
+    imPollRef.current = setInterval(async () => {
+      if (imInFlightRef.current) return;
+      imInFlightRef.current = true;
+      try {
+        const granted = await invoke<boolean>(
+          'check_input_monitoring_permission',
+        );
+        if (!mountedRef.current) return;
+        if (granted) {
+          stopImPolling();
+          setInputMonitoringStatus('granted');
+        }
+      } finally {
+        imInFlightRef.current = false;
+      }
+    }, POLL_INTERVAL_MS);
+  }, [stopImPolling]);
 
   const handleOpenScreenRecording = useCallback(async () => {
     // Register Thuki in TCC (adds it to the Screen Recording list) then open
@@ -248,6 +318,10 @@ export function PermissionsStep() {
 
   const accessibilityGranted = accessibilityStatus === 'granted';
   const isAxRequesting = accessibilityStatus === 'requesting';
+  const imGranted = inputMonitoringStatus === 'granted';
+  const isImRequesting =
+    inputMonitoringStatus === 'requesting' ||
+    inputMonitoringStatus === 'polling';
   const isScreenPolling = screenRecordingStatus === 'polling';
   const screenGranted = screenRecordingStatus === 'granted';
 
@@ -295,7 +369,7 @@ export function PermissionsStep() {
           }}
         />
 
-        {/* Logo mark + title — drag region so the user can reposition the
+        {/* Logo mark + title, drag region so the user can reposition the
             onboarding window when it overlaps System Settings. */}
         <div
           data-tauri-drag-region
@@ -381,8 +455,11 @@ export function PermissionsStep() {
             )}
           </StepCard>
 
-          {/* Step 2: Screen Recording */}
-          <StepCard active={accessibilityGranted} done={screenGranted}>
+          {/* Step 2: Input Monitoring */}
+          <StepCard
+            active={accessibilityGranted && !imGranted}
+            done={imGranted}
+          >
             <div
               style={{
                 width: 36,
@@ -392,13 +469,19 @@ export function PermissionsStep() {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                background: accessibilityGranted
-                  ? 'rgba(255,141,92,0.12)'
-                  : 'rgba(255,255,255,0.04)',
-                border: `1px solid ${accessibilityGranted ? 'rgba(255,141,92,0.25)' : 'rgba(255,255,255,0.06)'}`,
+                background: imGranted
+                  ? 'rgba(34,197,94,0.12)'
+                  : accessibilityGranted
+                    ? 'rgba(255,141,92,0.12)'
+                    : 'rgba(255,255,255,0.04)',
+                border: `1px solid ${imGranted ? 'rgba(34,197,94,0.2)' : accessibilityGranted ? 'rgba(255,141,92,0.25)' : 'rgba(255,255,255,0.06)'}`,
               }}
             >
-              <ScreenIcon active={accessibilityGranted} />
+              {imGranted ? (
+                <CheckIcon />
+              ) : (
+                <MonitoringIcon active={accessibilityGranted} />
+              )}
             </div>
             <div style={{ flex: 1 }}>
               <div
@@ -406,6 +489,52 @@ export function PermissionsStep() {
                   fontSize: 14,
                   fontWeight: 600,
                   color: accessibilityGranted ? '#f0f0f2' : '#4a4a4e',
+                  marginBottom: 2,
+                }}
+              >
+                Input Monitoring
+              </div>
+              <div style={{ fontSize: 12, color: '#6b6660', lineHeight: 1.35 }}>
+                Required for hotkey to work when another app is focused
+              </div>
+            </div>
+            {imGranted && (
+              <div style={{ flexShrink: 0 }}>
+                <Badge color="green">Granted</Badge>
+              </div>
+            )}
+          </StepCard>
+
+          {/* Step 3: Screen Recording */}
+          <StepCard
+            active={accessibilityGranted && imGranted}
+            done={screenGranted}
+          >
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background:
+                  accessibilityGranted && imGranted
+                    ? 'rgba(255,141,92,0.12)'
+                    : 'rgba(255,255,255,0.04)',
+                border: `1px solid ${accessibilityGranted && imGranted ? 'rgba(255,141,92,0.25)' : 'rgba(255,255,255,0.06)'}`,
+              }}
+            >
+              <ScreenIcon active={accessibilityGranted && imGranted} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div
+                style={{
+                  fontSize: 14,
+                  fontWeight: 600,
+                  color:
+                    accessibilityGranted && imGranted ? '#f0f0f2' : '#4a4a4e',
                   marginBottom: 2,
                 }}
               >
@@ -432,8 +561,22 @@ export function PermissionsStep() {
           </CTAButton>
         )}
 
-        {/* Step 2 CTAs: Open Settings (with polling) + Quit & Reopen */}
-        {accessibilityGranted && (
+        {/* Step 2 CTA: Grant Input Monitoring */}
+        {accessibilityGranted && !imGranted && (
+          <CTAButton
+            onClick={isImRequesting ? undefined : handleGrantInputMonitoring}
+            disabled={isImRequesting}
+            aria-label={
+              isImRequesting ? 'Checking...' : 'Grant Input Monitoring Access'
+            }
+            loading={isImRequesting}
+          >
+            {isImRequesting ? 'Checking...' : 'Grant Input Monitoring Access'}
+          </CTAButton>
+        )}
+
+        {/* Step 3 CTAs: Open Settings (with polling) + Quit & Reopen */}
+        {accessibilityGranted && imGranted && (
           <>
             {!screenGranted && (
               <CTAButton
