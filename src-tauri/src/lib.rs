@@ -379,7 +379,13 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
         #[cfg(target_os = "macos")]
         {
             let ax = permissions::is_accessibility_granted();
-            let sr = permissions::check_screen_recording_tcc_granted();
+            // Use CGPreflightScreenCaptureAccess for the startup check: it is
+            // fast (no blocking) and accurate after a process restart, which is
+            // the only path that reaches this code with a fresh TCC decision.
+            // check_screen_recording_tcc_granted (SCShareableContent) is used
+            // only during onboarding polling where live state is needed without
+            // requiring a restart.
+            let sr = permissions::is_screen_recording_granted();
 
             if let Ok(conn) = db.0.lock() {
                 if !ax || !sr {

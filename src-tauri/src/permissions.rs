@@ -124,36 +124,18 @@ pub fn request_screen_recording_access() {
     }
 }
 
-/// Returns `true` if Screen Recording has been granted in TCC without requiring
-/// a process restart.
+/// Returns `true` if Screen & System Audio Recording permission is currently
+/// granted. Delegates to `CGPreflightScreenCaptureAccess`, which correctly
+/// returns `false` when the permission has not been granted, fixing the
+/// historical false-positive from `CGWindowListCopyWindowInfo(0, 0)`.
 ///
-/// `CGPreflightScreenCaptureAccess` only returns `true` after a full process
-/// restart. `CGWindowListCopyWindowInfo` returns a non-null array as soon as
-/// TCC records the grant, making it suitable for polling during onboarding so
-/// the "Quit and Reopen" prompt appears immediately when the user toggles the
-/// permission on in System Settings.
+/// Called by PermissionsStep during onboarding polling so the "Quit & Reopen"
+/// prompt appears once the user toggles the permission on in System Settings.
 #[tauri::command]
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn check_screen_recording_tcc_granted() -> bool {
-    use std::ffi::c_void;
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        // option: kCGWindowListOptionAll = 0, relativeToWindow: kCGNullWindowID = 0
-        fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *const c_void;
-    }
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        fn CFRelease(cf: *const c_void);
-    }
-    unsafe {
-        let list = CGWindowListCopyWindowInfo(0, 0);
-        if list.is_null() {
-            return false;
-        }
-        CFRelease(list);
-        true
-    }
+    is_screen_recording_granted()
 }
 
 /// Quits Thuki and immediately relaunches it.
