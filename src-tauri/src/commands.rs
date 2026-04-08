@@ -353,9 +353,13 @@ pub async fn ask_ollama(
     let cancel_token = CancellationToken::new();
     generation.set(cancel_token.clone());
 
-    // Build user message content, prepending quoted context when present.
+    // Build user message content.  When quoted text is present, label it
+    // explicitly so the model knows the highlighted text is the primary
+    // subject and any attached images provide surrounding context.
     let content = match quoted_text {
-        Some(ref qt) if !qt.trim().is_empty() => format!("Context: \"{}\"\n\n{}", qt, message),
+        Some(ref qt) if !qt.trim().is_empty() => {
+            format!("[Highlighted Text]\n\"{}\"\n\n[Request]\n{}", qt, message)
+        }
         _ => message,
     };
 
@@ -409,13 +413,11 @@ pub async fn ask_ollama(
     let current_epoch = history.epoch.load(Ordering::SeqCst);
     if current_epoch == epoch_at_start && !accumulated.is_empty() {
         let mut conv = history.messages.lock().unwrap();
-        // Strip images from the persisted context — only the current turn's
-        // images are sent to Ollama; replaying base64 blobs on every
-        // subsequent turn would balloon payload size unnecessarily.
-        conv.push(ChatMessage {
-            images: None,
-            ..user_msg
-        });
+        // Preserve images in history so that follow-up messages can still
+        // reference earlier screenshots or attachments.  The full conversation
+        // (including base64 blobs) is replayed to Ollama on every turn, which
+        // is fine for a localhost-only setup.
+        conv.push(user_msg);
         conv.push(ChatMessage {
             role: "assistant".to_string(),
             content: accumulated,
