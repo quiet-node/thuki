@@ -85,6 +85,13 @@ mod tests {
     }
 
     #[test]
+    fn set_and_get_stage_round_trips_permissions() {
+        let conn = open_in_memory().unwrap();
+        set_stage(&conn, &OnboardingStage::Permissions).unwrap();
+        assert_eq!(get_stage(&conn).unwrap(), OnboardingStage::Permissions);
+    }
+
+    #[test]
     fn set_and_get_stage_round_trips_intro() {
         let conn = open_in_memory().unwrap();
         set_stage(&conn, &OnboardingStage::Intro).unwrap();

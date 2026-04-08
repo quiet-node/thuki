@@ -741,6 +741,15 @@ mod tests {
     }
 
     #[test]
+    fn set_config_returns_error_when_table_missing() {
+        let conn = open_in_memory().unwrap();
+        // Drop the table to force a SQL error on the next write.
+        conn.execute_batch("DROP TABLE app_config").unwrap();
+        let result = set_config(&conn, "key", "value");
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn set_config_independent_keys_do_not_interfere() {
         let conn = open_in_memory().unwrap();
         set_config(&conn, "onboarding_stage", "intro").unwrap();
