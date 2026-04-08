@@ -402,9 +402,8 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
                 // screen again on the next launch.
                 let ax = permissions::is_accessibility_granted();
                 let sr = permissions::is_screen_recording_granted();
-                let im = permissions::is_input_monitoring_granted();
 
-                if !ax || !sr || !im {
+                if !ax || !sr {
                     let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Permissions);
                     show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
                     return;
@@ -673,29 +672,36 @@ pub fn run() {
                 .build(app)?;
 
             // ── Activation listener (macOS only) ─────────────────────────
+            // Only start the event tap when Accessibility is already granted.
+            // Creating a CGEventTap without permission triggers a native macOS
+            // popup; deferring until after onboarding (and the quit+reopen for
+            // Screen Recording) avoids that redundant dialog entirely.
             #[cfg(target_os = "macos")]
             {
                 let app_handle = app.handle().clone();
                 let activator = activator::OverlayActivator::new();
-                activator.start(move || {
-                    // Skip AX + clipboard when hiding — no context needed and
-                    // simulating Cmd+C against Thuki's own WebView would produce
-                    // a macOS alert sound.
-                    let is_visible = OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst);
-                    let handle = app_handle.clone();
-                    let handle2 = app_handle.clone();
-                    // Dispatch context capture to a dedicated thread so the event
-                    // tap callback returns immediately. AX attribute lookups and
-                    // clipboard simulation can block for seconds (macOS AX default
-                    // timeout is ~6 s) when the focused app does not implement the
-                    // accessibility protocol. Blocking the tap callback freezes the
-                    // CFRunLoop and silently prevents all future key events from
-                    // being delivered to the activator.
-                    std::thread::spawn(move || {
-                        let ctx = crate::context::capture_activation_context(is_visible);
-                        let _ = handle.run_on_main_thread(move || toggle_overlay(&handle2, ctx));
+                if permissions::is_accessibility_granted() {
+                    activator.start(move || {
+                        // Skip AX + clipboard when hiding — no context needed and
+                        // simulating Cmd+C against Thuki's own WebView would produce
+                        // a macOS alert sound.
+                        let is_visible = OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst);
+                        let handle = app_handle.clone();
+                        let handle2 = app_handle.clone();
+                        // Dispatch context capture to a dedicated thread so the event
+                        // tap callback returns immediately. AX attribute lookups and
+                        // clipboard simulation can block for seconds (macOS AX default
+                        // timeout is ~6 s) when the focused app does not implement the
+                        // accessibility protocol. Blocking the tap callback freezes the
+                        // CFRunLoop and silently prevents all future key events from
+                        // being delivered to the activator.
+                        std::thread::spawn(move || {
+                            let ctx = crate::context::capture_activation_context(is_visible);
+                            let _ =
+                                handle.run_on_main_thread(move || toggle_overlay(&handle2, ctx));
+                        });
                     });
-                });
+                }
                 app.manage(activator);
             }
 
@@ -761,12 +767,6 @@ pub fn run() {
             permissions::check_accessibility_permission,
             #[cfg(not(coverage))]
             permissions::open_accessibility_settings,
-            #[cfg(not(coverage))]
-            permissions::check_input_monitoring_permission,
-            #[cfg(not(coverage))]
-            permissions::request_input_monitoring_access,
-            #[cfg(not(coverage))]
-            permissions::open_input_monitoring_settings,
             #[cfg(not(coverage))]
             permissions::check_screen_recording_permission,
             #[cfg(not(coverage))]

@@ -247,12 +247,6 @@ fn try_initialize_tap<F>(is_active: &Arc<AtomicBool>, on_activation: &Arc<F>) ->
 where
     F: Fn() + Send + Sync + 'static,
 {
-    let im_granted = crate::permissions::is_input_monitoring_granted();
-    eprintln!(
-        "thuki: [activator] Input Monitoring permission: granted={im_granted} \
-         (cross-app hotkey requires this)"
-    );
-
     let state = Arc::new(Mutex::new(ActivationState {
         last_trigger: None,
         is_pressed: false,
