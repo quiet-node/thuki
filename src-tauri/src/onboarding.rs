@@ -50,16 +50,25 @@ pub fn set_stage(conn: &Connection, stage: &OnboardingStage) -> rusqlite::Result
 /// Returns which onboarding stage to show at startup, or `None` if onboarding
 /// is complete.
 ///
-/// Reads only the persisted stage — no permission API calls. macOS 15 broke
-/// CGPreflightScreenCaptureAccess and CGWindowListCopyWindowInfo so neither is
-/// reliable at launch time. The PermissionsStep component owns all permission
-/// detection via its own mount-time and polling checks. The startup path just
-/// trusts the DB.
+/// Reads only the persisted stage: no permission API calls. Permission APIs
+/// (CGPreflightScreenCaptureAccess) can return stale results immediately after
+/// a process restart on macOS 15+. PermissionsStep owns live permission
+/// detection via its own polling checks. quit_and_relaunch writes "intro" to
+/// the DB before restarting so this path sees the correct stage on next launch.
 pub fn compute_startup_stage(conn: &Connection) -> rusqlite::Result<Option<OnboardingStage>> {
     match get_stage(conn)? {
         OnboardingStage::Complete => Ok(None),
         stage => Ok(Some(stage)),
     }
+}
+
+/// Persists the `Complete` stage, marking onboarding as finished.
+///
+/// Called by the `finish_onboarding` Tauri command after the user clicks
+/// "Get Started". Extracted so the DB write is covered by tests independently
+/// of the Tauri command wrapper.
+pub fn mark_complete(conn: &Connection) -> rusqlite::Result<()> {
+    set_stage(conn, &OnboardingStage::Complete)
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -94,6 +103,21 @@ mod tests {
         let conn = open_in_memory().unwrap();
         set_stage(&conn, &OnboardingStage::Intro).unwrap();
         set_stage(&conn, &OnboardingStage::Complete).unwrap();
+        assert_eq!(get_stage(&conn).unwrap(), OnboardingStage::Complete);
+    }
+
+    #[test]
+    fn mark_complete_sets_stage_to_complete() {
+        let conn = open_in_memory().unwrap();
+        mark_complete(&conn).unwrap();
+        assert_eq!(get_stage(&conn).unwrap(), OnboardingStage::Complete);
+    }
+
+    #[test]
+    fn mark_complete_overwrites_any_prior_stage() {
+        let conn = open_in_memory().unwrap();
+        set_stage(&conn, &OnboardingStage::Intro).unwrap();
+        mark_complete(&conn).unwrap();
         assert_eq!(get_stage(&conn).unwrap(), OnboardingStage::Complete);
     }
 

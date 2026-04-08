@@ -378,44 +378,31 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
     if LAUNCH_SHOW_PENDING.swap(false, Ordering::SeqCst) {
         #[cfg(target_os = "macos")]
         {
-            let ax = permissions::is_accessibility_granted();
-            // Use CGPreflightScreenCaptureAccess for the startup check: it is
-            // fast (no blocking) and accurate after a process restart, which is
-            // the only path that reaches this code with a fresh TCC decision.
-            // check_screen_recording_tcc_granted (SCShareableContent) is used
-            // only during onboarding polling where live state is needed without
-            // requiring a restart.
-            let sr = permissions::is_screen_recording_granted();
-
+            // Trust the DB stage exclusively at startup. Permission APIs
+            // (CGPreflightScreenCaptureAccess) can return stale results
+            // immediately after a process restart on macOS 15+. PermissionsStep
+            // owns all live permission detection via its own polling checks.
+            // quit_and_relaunch writes "intro" to the DB before restarting so
+            // this path sees the correct stage on the next launch without
+            // needing to call any permission API.
             if let Ok(conn) = db.0.lock() {
-                if !ax || !sr {
-                    // Permissions missing. Reset stage to "permissions" so
-                    // the next launch after granting will advance to intro.
-                    // This also handles revocation after a completed onboarding.
-                    let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Permissions);
-                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
-                    return;
-                }
-
-                // Both permissions granted. Read the persisted stage.
-                let stage = onboarding::get_stage(&conn)
-                    .unwrap_or(onboarding::OnboardingStage::Permissions);
-
-                match stage {
-                    onboarding::OnboardingStage::Complete => {
-                        // Onboarding finished previously — fall through to
-                        // show the normal overlay.
+                match onboarding::compute_startup_stage(&conn) {
+                    Ok(Some(stage)) => {
+                        show_onboarding_window(&app_handle, stage);
+                        return;
                     }
-                    _ => {
-                        // Stage is "permissions" (first launch after grant)
-                        // or "intro" (resumed). Advance to intro and show it.
-                        let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Intro);
-                        show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
+                    Ok(None) => {} // Complete: fall through to show the overlay.
+                    Err(_) => {
+                        // DB read failed; fall back to the permissions screen.
+                        show_onboarding_window(
+                            &app_handle,
+                            onboarding::OnboardingStage::Permissions,
+                        );
                         return;
                     }
                 }
             } else {
-                // Mutex poisoned — safe fallback.
+                // Mutex poisoned; safe fallback.
                 show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
                 return;
             }
@@ -436,8 +423,7 @@ fn finish_onboarding(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| format!("db lock poisoned: {e}"))?;
-    onboarding::set_stage(&conn, &onboarding::OnboardingStage::Complete)
-        .map_err(|e| format!("db write failed: {e}"))?;
+    onboarding::mark_complete(&conn).map_err(|e| format!("db write failed: {e}"))?;
     drop(conn);
 
     // Restore panel to overlay configuration and show the Ask Bar.
