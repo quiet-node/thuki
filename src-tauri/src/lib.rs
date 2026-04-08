@@ -378,29 +378,42 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
     if LAUNCH_SHOW_PENDING.swap(false, Ordering::SeqCst) {
         #[cfg(target_os = "macos")]
         {
-            // Trust the DB stage exclusively at startup. Permission APIs
-            // (CGPreflightScreenCaptureAccess) can return stale results
-            // immediately after a process restart on macOS 15+. PermissionsStep
-            // owns all live permission detection via its own polling checks.
-            // quit_and_relaunch writes "intro" to the DB before restarting so
-            // this path sees the correct stage on the next launch without
-            // needing to call any permission API.
             if let Ok(conn) = db.0.lock() {
-                match onboarding::compute_startup_stage(&conn) {
-                    Ok(Some(stage)) => {
-                        show_onboarding_window(&app_handle, stage);
-                        return;
-                    }
-                    Ok(None) => {} // Complete: fall through to show the overlay.
-                    Err(_) => {
-                        // DB read failed; fall back to the permissions screen.
-                        show_onboarding_window(
-                            &app_handle,
-                            onboarding::OnboardingStage::Permissions,
-                        );
-                        return;
-                    }
+                let stage = onboarding::get_stage(&conn)
+                    .unwrap_or(onboarding::OnboardingStage::Permissions);
+
+                // The "intro" stage means quit_and_relaunch already wrote it
+                // before restarting, confirming the user just granted all
+                // permissions. Skip the live permission check here: on macOS 15+
+                // CGPreflightScreenCaptureAccess can return a stale false negative
+                // immediately after a restart, which would wrongly loop the user
+                // back to the permissions screen.
+                if matches!(stage, onboarding::OnboardingStage::Intro) {
+                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
+                    return;
                 }
+
+                // For the "permissions" and "complete" stages, check live
+                // permissions. "permissions" is the standard first-launch path.
+                // "complete" detects revocation: if a user revokes a permission
+                // after finishing onboarding, they should see the permissions
+                // screen again on the next launch.
+                let ax = permissions::is_accessibility_granted();
+                let sr = permissions::is_screen_recording_granted();
+
+                if !ax || !sr {
+                    let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Permissions);
+                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
+                    return;
+                }
+
+                // Both permissions granted. If not yet complete, show intro.
+                if !matches!(stage, onboarding::OnboardingStage::Complete) {
+                    let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Intro);
+                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
+                    return;
+                }
+                // Complete: fall through to show the overlay.
             } else {
                 // Mutex poisoned; safe fallback.
                 show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
