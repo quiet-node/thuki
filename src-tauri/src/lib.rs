@@ -210,7 +210,6 @@ fn monitor_info_fallback() -> (f64, f64, f64, f64) {
 #[cfg(target_os = "macos")]
 fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
     let already_visible = OVERLAY_INTENDED_VISIBLE.swap(true, Ordering::SeqCst);
-    eprintln!("thuki: [show_overlay] already_visible={already_visible}");
     if already_visible {
         return;
     }
@@ -279,16 +278,13 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 
     match app_handle.get_webview_panel("main") {
         Ok(panel) => {
-            eprintln!("thuki: [show_overlay] calling show_and_make_key");
             panel.show_and_make_key();
-            eprintln!("thuki: [show_overlay] emitting show event");
             emit_overlay_visibility(
                 app_handle,
                 OVERLAY_VISIBILITY_SHOW,
                 selected_text,
                 window_anchor,
             );
-            eprintln!("thuki: [show_overlay] done");
         }
         Err(e) => {
             eprintln!("thuki: [show_overlay] get_webview_panel FAILED: {e:?}");
@@ -329,9 +325,7 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 /// Uses an atomic flag as the single source of truth for intended visibility,
 /// which avoids race conditions with the native panel state during animations.
 fn toggle_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
-    let vis = OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst);
-    eprintln!("thuki: [toggle_overlay] called, OVERLAY_INTENDED_VISIBLE={vis}");
-    if vis {
+    if OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst) {
         request_overlay_hide(app_handle);
     } else {
         show_overlay(app_handle, ctx);
@@ -373,7 +367,6 @@ fn set_window_frame(app_handle: tauri::AppHandle, x: f64, y: f64, width: f64, he
 /// completes its exit animation and hides the native window.
 #[tauri::command]
 fn notify_overlay_hidden() {
-    eprintln!("thuki: [notify_overlay_hidden] called");
     OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
 }
 
@@ -699,15 +692,7 @@ pub fn run() {
                     // CFRunLoop and silently prevents all future key events from
                     // being delivered to the activator.
                     std::thread::spawn(move || {
-                        let t0 = std::time::Instant::now();
-                        eprintln!(
-                            "thuki: [activator] context capture started (is_visible={is_visible})"
-                        );
                         let ctx = crate::context::capture_activation_context(is_visible);
-                        eprintln!(
-                            "thuki: [activator] context capture done in {:?}",
-                            t0.elapsed()
-                        );
                         let _ = handle.run_on_main_thread(move || toggle_overlay(&handle2, ctx));
                     });
                 });

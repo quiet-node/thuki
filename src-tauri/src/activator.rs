@@ -316,13 +316,10 @@ where
 
             // Check specific bitmask for the Control key state
             let is_press = flags.contains(CGEventFlags::CGEventFlagControl);
-            eprintln!("thuki: [activator] Ctrl key event: is_press={is_press}");
 
             let mut s = cb_state.lock().unwrap();
             if evaluate_activation(&mut s, is_press) {
-                eprintln!("thuki: [activator] double-tap detected — invoking activation handler");
                 cb_on_activation();
-                eprintln!("thuki: [activator] activation handler returned");
             }
 
             CallbackResult::Keep
