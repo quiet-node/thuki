@@ -402,9 +402,8 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
                 // screen again on the next launch.
                 let ax = permissions::is_accessibility_granted();
                 let sr = permissions::is_screen_recording_granted();
-                let im = permissions::is_input_monitoring_granted();
 
-                if !ax || !sr || !im {
+                if !ax || !sr {
                     let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Permissions);
                     show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
                     return;
@@ -761,12 +760,6 @@ pub fn run() {
             permissions::check_accessibility_permission,
             #[cfg(not(coverage))]
             permissions::open_accessibility_settings,
-            #[cfg(not(coverage))]
-            permissions::check_input_monitoring_permission,
-            #[cfg(not(coverage))]
-            permissions::request_input_monitoring_access,
-            #[cfg(not(coverage))]
-            permissions::open_input_monitoring_settings,
             #[cfg(not(coverage))]
             permissions::check_screen_recording_permission,
             #[cfg(not(coverage))]
