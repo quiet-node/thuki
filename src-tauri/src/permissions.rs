@@ -65,7 +65,7 @@ pub fn is_accessibility_granted() -> bool {
 /// Returns whether the process currently has Input Monitoring permission.
 ///
 /// Input Monitoring (`kTCCServiceListenEvent`) is required for a CGEventTap at
-/// Session level to receive keyboard events from other applications. Without it,
+/// HID level to receive keyboard events from other applications. Without it,
 /// the tap only sees events generated within the Thuki process itself, making
 /// the double-tap hotkey invisible when the user's focus is elsewhere.
 ///
