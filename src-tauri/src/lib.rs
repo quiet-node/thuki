@@ -19,6 +19,7 @@ pub mod commands;
 pub mod database;
 pub mod history;
 pub mod images;
+pub mod onboarding;
 pub mod screenshot;
 
 #[cfg(target_os = "macos")]
@@ -78,7 +79,7 @@ const ONBOARDING_EVENT: &str = "thuki://onboarding";
 /// Content fits tightly; native macOS shadow is re-enabled for onboarding
 /// so it renders outside the window boundary without extra transparent padding.
 const ONBOARDING_LOGICAL_WIDTH: f64 = 460.0;
-const ONBOARDING_LOGICAL_HEIGHT: f64 = 540.0;
+const ONBOARDING_LOGICAL_HEIGHT: f64 = 640.0;
 
 /// Tracks the intended visibility state of the overlay, preventing race conditions
 /// between the frontend exit animation and rapid activation toggles.
@@ -373,19 +374,91 @@ fn notify_overlay_hidden() {
 /// the frontend listener registration.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn notify_frontend_ready(app_handle: tauri::AppHandle) {
+fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history::Database>) {
     if LAUNCH_SHOW_PENDING.swap(false, Ordering::SeqCst) {
         #[cfg(target_os = "macos")]
         {
-            let ax = permissions::is_accessibility_granted();
-            let sc = permissions::is_screen_recording_granted();
-            if permissions::needs_onboarding(ax, sc) {
-                show_onboarding_window(&app_handle);
+            if let Ok(conn) = db.0.lock() {
+                let stage = onboarding::get_stage(&conn)
+                    .unwrap_or(onboarding::OnboardingStage::Permissions);
+
+                // The "intro" stage means quit_and_relaunch already wrote it
+                // before restarting, confirming the user just granted all
+                // permissions. Skip the live permission check here: on macOS 15+
+                // CGPreflightScreenCaptureAccess can return a stale false negative
+                // immediately after a restart, which would wrongly loop the user
+                // back to the permissions screen.
+                if matches!(stage, onboarding::OnboardingStage::Intro) {
+                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
+                    return;
+                }
+
+                // For the "permissions" and "complete" stages, check live
+                // permissions. "permissions" is the standard first-launch path.
+                // "complete" detects revocation: if a user revokes a permission
+                // after finishing onboarding, they should see the permissions
+                // screen again on the next launch.
+                let ax = permissions::is_accessibility_granted();
+                let sr = permissions::is_screen_recording_granted();
+
+                if !ax || !sr {
+                    let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Permissions);
+                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
+                    return;
+                }
+
+                // Both permissions granted. If not yet complete, show intro.
+                if !matches!(stage, onboarding::OnboardingStage::Complete) {
+                    let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Intro);
+                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
+                    return;
+                }
+                // Complete: fall through to show the overlay.
+            } else {
+                // Mutex poisoned; safe fallback.
+                show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
                 return;
             }
         }
         show_overlay(&app_handle, crate::context::ActivationContext::empty());
     }
+}
+
+// ─── Onboarding completion ───────────────────────────────────────────────────
+
+/// Called when the user clicks "Get Started" on the intro screen.
+/// Marks onboarding complete in the DB, restores the window to overlay mode,
+/// and immediately shows the Ask Bar — no relaunch required.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn finish_onboarding(
+    db: tauri::State<history::Database>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| format!("db lock poisoned: {e}"))?;
+    onboarding::mark_complete(&conn).map_err(|e| format!("db write failed: {e}"))?;
+    drop(conn);
+
+    // Restore panel to overlay configuration and show the Ask Bar.
+    // Must run on the macOS main thread because NSPanel APIs are not thread-safe.
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        // Resize the window back to the collapsed overlay dimensions before
+        // positioning, so the overlay appears at the correct size.
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+                OVERLAY_LOGICAL_WIDTH,
+                OVERLAY_LOGICAL_HEIGHT_COLLAPSED,
+            )));
+        }
+        // Restore NSPanel level, shadow, and style that show_onboarding_window
+        // changed for the onboarding appearance.
+        #[cfg(target_os = "macos")]
+        init_panel(&handle);
+        show_overlay(&handle, crate::context::ActivationContext::empty());
+    });
+
+    Ok(())
 }
 
 // ─── NSPanel initialisation ─────────────────────────────────────────────────
@@ -445,7 +518,7 @@ fn init_panel(app_handle: &tauri::AppHandle) {
 /// frontend receives the event before the window is visible.
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn show_onboarding_window(app_handle: &tauri::AppHandle) {
+fn show_onboarding_window(app_handle: &tauri::AppHandle, stage: onboarding::OnboardingStage) {
     let handle = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
         if let Some(window) = handle.get_webview_window("main") {
@@ -463,8 +536,7 @@ fn show_onboarding_window(app_handle: &tauri::AppHandle) {
                 // it for the overlay to avoid the key/non-key shadow flicker,
                 // but for onboarding the native shadow looks professional and
                 // renders outside the window boundary — no transparent padding
-                // needed. The app always restarts after onboarding completes,
-                // so this does not affect the overlay session.
+                // needed.
                 panel.set_has_shadow(true);
                 panel.show_and_make_key();
             }
@@ -474,8 +546,14 @@ fn show_onboarding_window(app_handle: &tauri::AppHandle) {
                 }
             }
         }
-        let _ = handle.emit(ONBOARDING_EVENT, ());
+        let _ = handle.emit(ONBOARDING_EVENT, OnboardingPayload { stage });
     });
+}
+
+/// Payload emitted to the frontend for every onboarding transition.
+#[derive(Clone, serde::Serialize)]
+struct OnboardingPayload {
+    stage: onboarding::OnboardingStage,
 }
 
 // ─── Image cleanup ──────────────────────────────────────────────────────────
@@ -679,7 +757,8 @@ pub fn run() {
             #[cfg(not(coverage))]
             permissions::check_screen_recording_tcc_granted,
             #[cfg(not(coverage))]
-            permissions::quit_and_relaunch
+            permissions::quit_and_relaunch,
+            finish_onboarding
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -747,7 +826,7 @@ mod tests {
     #[test]
     fn onboarding_logical_dimensions() {
         assert_eq!(ONBOARDING_LOGICAL_WIDTH, 460.0);
-        assert_eq!(ONBOARDING_LOGICAL_HEIGHT, 540.0);
+        assert_eq!(ONBOARDING_LOGICAL_HEIGHT, 640.0);
     }
 
     #[test]

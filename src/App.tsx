@@ -10,7 +10,8 @@ import type { Message } from './hooks/useOllama';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView, MAX_IMAGES } from './view/AskBarView';
-import { OnboardingView } from './view/OnboardingView';
+import { OnboardingView } from './view/onboarding/index';
+import type { OnboardingStage } from './view/onboarding/index';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import type { AttachedImage } from './types/image';
@@ -62,8 +63,9 @@ type OverlayState = 'visible' | 'hidden' | 'hiding';
 function App() {
   const [query, setQuery] = useState('');
   const [overlayState, setOverlayState] = useState<OverlayState>('hidden');
-  /** True once the backend signals that one or more permissions are missing. */
-  const [showOnboarding, setShowOnboarding] = useState(false);
+  /** Non-null when the backend signals onboarding is needed; holds the current stage. */
+  const [onboardingStage, setOnboardingStage] =
+    useState<OnboardingStage | null>(null);
 
   /**
    * Whether the ask-bar history panel is currently open.
@@ -1035,9 +1037,12 @@ function App() {
           requestHideOverlay();
         },
       );
-      unlistenOnboarding = await listen<void>(ONBOARDING_EVENT, () => {
-        setShowOnboarding(true);
-      });
+      unlistenOnboarding = await listen<{ stage: OnboardingStage }>(
+        ONBOARDING_EVENT,
+        ({ payload }) => {
+          setOnboardingStage(payload.stage);
+        },
+      );
       // Both listeners registered — safe to let Rust decide what to show on launch.
       await invoke('notify_frontend_ready');
     };
@@ -1150,8 +1155,13 @@ function App() {
     );
   }, []);
 
-  if (showOnboarding) {
-    return <OnboardingView />;
+  if (onboardingStage !== null) {
+    return (
+      <OnboardingView
+        stage={onboardingStage}
+        onComplete={() => setOnboardingStage(null)}
+      />
+    );
   }
 
   return (
