@@ -3230,7 +3230,7 @@ describe('App', () => {
       await act(async () => {});
 
       await act(async () => {
-        emitTauriEvent('thuki://onboarding', undefined);
+        emitTauriEvent('thuki://onboarding', { stage: 'permissions' });
       });
 
       expect(screen.getByText("Let's get Thuki set up")).toBeInTheDocument();
@@ -3254,6 +3254,25 @@ describe('App', () => {
       expect(
         screen.getByPlaceholderText('Ask Thuki anything...'),
       ).toBeInTheDocument();
+    });
+
+    it('dismisses onboarding and shows ask bar when onComplete is called', async () => {
+      invoke.mockResolvedValue(undefined);
+
+      render(<App />);
+      await act(async () => {});
+
+      await act(async () => {
+        emitTauriEvent('thuki://onboarding', { stage: 'intro' });
+      });
+
+      expect(screen.getByText('Before you dive in')).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /get started/i }));
+      });
+
+      expect(screen.queryByText('Before you dive in')).toBeNull();
     });
   });
 });
