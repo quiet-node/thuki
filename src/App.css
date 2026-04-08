@@ -14,9 +14,9 @@
   --color-neutral: #1a1a1c;
 
   /* Surface tokens derived from the palette */
-  --color-surface-base: rgba(26, 26, 28, 1);
-  --color-surface-elevated: rgba(42, 42, 46, 0.6);
-  --color-surface-border: rgba(255, 141, 92, 0.1);
+  --color-surface-base: rgba(22, 18, 15, 0.98);
+  --color-surface-elevated: rgba(38, 30, 24, 0.6);
+  --color-surface-border: rgba(255, 141, 92, 0.12);
 
   /* Text tokens */
   --color-text-primary: #f0f0f2;
@@ -31,12 +31,12 @@
 
   /* Elevation — input bar mode (compact floating effect, Spotlight-inspired) */
   --shadow-bar:
-    0 6px 20px -6px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 141, 92, 0.1);
+    0 6px 20px -6px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 141, 92, 0.12);
 
   /* Elevation — chat window mode (layered depth without excessive spread) */
   --shadow-chat:
-    0 4px 14px -3px rgba(0, 0, 0, 0.45), 0 1px 4px -1px rgba(0, 0, 0, 0.25),
-    0 0 0 1px rgba(255, 141, 92, 0.1);
+    0 4px 14px -3px rgba(0, 0, 0, 0.5), 0 1px 4px -1px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(255, 141, 92, 0.12);
 }
 
 html,
@@ -55,6 +55,30 @@ body {
   transition:
     box-shadow 0.5s cubic-bezier(0.12, 0.8, 0.2, 1.18),
     border-radius 0.5s cubic-bezier(0.12, 0.8, 0.2, 1.18);
+  background-image: radial-gradient(
+    ellipse 70% 40% at 50% 0%,
+    rgba(255, 141, 92, 0.08) 0%,
+    transparent 65%
+  );
+  border-top-color: rgba(255, 141, 92, 0.2);
+}
+
+/* Subtle glowing line at the very top edge — matches approved onboarding style */
+.morphing-container::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 15%;
+  right: 15%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 141, 92, 0.35),
+    transparent
+  );
+  pointer-events: none;
+  z-index: 1;
 }
 
 /* ─── Chat Bubble Styles ─── */
@@ -76,15 +100,16 @@ body {
 
 /**
  * AI bubble — frosted glass surface with a subtle border for depth.
- * Harmonizes with the dark overlay backdrop.
+ * Harmonizes with the warm ambient dark overlay backdrop.
  */
 .chat-bubble-ai {
-  background: rgba(50, 50, 56, 0.95);
+  background: rgba(36, 30, 26, 0.95);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.06);
+  border-top-color: rgba(255, 141, 92, 0.1);
   box-shadow:
-    0 2px 8px -2px rgba(0, 0, 0, 0.25),
+    0 2px 8px -2px rgba(0, 0, 0, 0.3),
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
