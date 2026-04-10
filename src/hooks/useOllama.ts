@@ -49,8 +49,8 @@ export function useOllama(
    * Submits a message to the Ollama backend and initiates the streaming response.
    * The backend manages conversation history — only the new user message is sent.
    *
-   * Avoids continuous array copy operations during streaming by maintaining the streaming
-   * chunk state separately from the main messages state until generation finishes.
+   * Streams tokens directly into the messages array. An empty assistant placeholder
+   * is added immediately, then updated in-place on each token until generation finishes.
    *
    * @param displayContent The user's query as it should appear in the chat bubble.
    * @param quotedText Optional selected text quoted alongside this message.

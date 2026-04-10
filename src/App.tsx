@@ -189,7 +189,7 @@ function App() {
    * complete response. We check for an assistant message rather than any message
    * so the button never appears during the very first user-only half-turn.
    */
-  const canSave = messages.some((m) => m.role === 'assistant');
+  const canSave = !isGenerating && messages.some((m) => m.role === 'assistant');
   const shouldRenderOverlay = overlayState === 'visible';
 
   /**
