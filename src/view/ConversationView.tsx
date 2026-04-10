@@ -118,15 +118,20 @@ export function ConversationView({
   }, []);
 
   /**
-   * Re-enable auto-scroll whenever a new message is added. Sending a message
-   * is an explicit "I want to see the response" action.
+   * Re-enable auto-scroll only when the user sends a new message.
+   * Sending a message is an explicit "I want to see the response" action.
+   * When an assistant message is finalized (streaming completes), we preserve
+   * the current scroll lock state so the user can keep reading where they are.
    */
   useEffect(() => {
     if (messages.length > prevMessagesLengthRef.current) {
-      shouldAutoScrollRef.current = true;
+      const newest = messages[messages.length - 1];
+      if (newest?.role === 'user') {
+        shouldAutoScrollRef.current = true;
+      }
     }
     prevMessagesLengthRef.current = messages.length;
-  }, [messages.length]);
+  }, [messages.length, messages]);
 
   /**
    * Auto-scroll the chat container to the bottom when new content arrives,
