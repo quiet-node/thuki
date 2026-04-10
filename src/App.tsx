@@ -386,6 +386,14 @@ function App() {
    * deferred until Framer Motion finishes the exit transition.
    */
   const requestHideOverlay = useCallback(() => {
+    // Cancel any in-flight work: active Ollama streaming, image processing,
+    // or screen capture. This ensures hiding the overlay (via double-tap
+    // Control, Escape, Cmd+W, or the X button) behaves like pressing Stop.
+    cancel();
+    pendingSubmitRef.current = null;
+    setIsSubmitPending(false);
+    setPendingUserMessage(null);
+
     windowAnchorRef.current = null;
     isPreExpandedRef.current = false;
     /* v8 ignore start -- DOM ref null guard: always set when overlay is visible */
@@ -407,7 +415,7 @@ function App() {
       }
       return 'hiding';
     });
-  }, []);
+  }, [cancel]);
 
   /** Ref attached to the chat-mode history dropdown for click-outside detection. */
   const historyDropdownRef = useRef<HTMLDivElement>(null);
