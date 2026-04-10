@@ -39,6 +39,14 @@ const OVERLAY_WIDTH = 600;
 const CONTAINER_VERTICAL_PADDING = 48;
 /** Max morphing-container height in chat mode (matches `max-h-[600px]`) + vertical padding. */
 const MAX_CHAT_WINDOW_HEIGHT = 600 + CONTAINER_VERTICAL_PADDING;
+/**
+ * Extra headroom (px) added when committing a native window resize during
+ * upward-growth streaming. The buffer lands in the transparent region above
+ * the morphing container, so the user never sees it. Content then fills
+ * smoothly via `justify-end` without any native resize calls until it
+ * catches up to the committed height.
+ */
+const UPWARD_GROWTH_BUFFER = 80;
 
 /** Must match `OVERLAY_LOGICAL_HEIGHT_COLLAPSED` in `src-tauri/src/lib.rs`. */
 const COLLAPSED_WINDOW_HEIGHT = 80;
@@ -220,6 +228,24 @@ function App() {
   const windowPosRef = useRef({ x: 0, bottomY: 0 });
 
   /**
+   * Mirror of `isGenerating` as a ref so the ResizeObserver closure can
+   * check streaming state without being recreated on each render.
+   */
+  const isGeneratingRef = useRef(false);
+  isGeneratingRef.current = isGenerating;
+
+  /**
+   * Last native window height committed via `set_window_frame` during an
+   * upward-growth session. During streaming, the window is grown in coarse
+   * steps (targetHeight + UPWARD_GROWTH_BUFFER) so the extra space lands
+   * in the transparent region above the morphing container. Content fills
+   * smoothly within the already-allocated window via `justify-end`, and no
+   * native resize calls are needed until content catches up to the committed
+   * height. This eliminates the per-token `set_window_frame` jitter.
+   */
+  const committedHeightRef = useRef(0);
+
+  /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
    * rendered Framer Motion container actually mounts in the DOM. This fixes
    * the bug where a standard useEffect would run before the DOM node was ready,
@@ -248,15 +274,33 @@ function App() {
               // This ensures the tightened drop shadows aren't clipped by the native window edge.
               const targetHeight =
                 Math.ceil(rect.height) + CONTAINER_VERTICAL_PADDING;
+
               if (growsUpwardRef.current) {
-                // Grow upward: pin the window bottom and expand the top edge.
                 const { x, bottomY } = windowPosRef.current;
-                const newY = bottomY - targetHeight;
+                if (
+                  isGeneratingRef.current &&
+                  targetHeight <= committedHeightRef.current
+                ) {
+                  // During streaming, content fits within the committed
+                  // window. justify-end keeps it at the bottom. No native
+                  // resize needed; this is what makes upward growth smooth.
+                  return;
+                }
+                // Commit a native resize. During streaming, add a buffer
+                // so content can grow into the transparent headroom without
+                // triggering another resize for several lines of text.
+                const newHeight = isGeneratingRef.current
+                  ? Math.min(
+                      targetHeight + UPWARD_GROWTH_BUFFER,
+                      MAX_CHAT_WINDOW_HEIGHT,
+                    )
+                  : targetHeight;
+                committedHeightRef.current = newHeight;
                 void invoke('set_window_frame', {
                   x,
-                  y: newY,
+                  y: bottomY - newHeight,
                   width: OVERLAY_WIDTH,
-                  height: targetHeight,
+                  height: newHeight,
                 });
               } else {
                 void getCurrentWindow().setSize(
@@ -273,6 +317,16 @@ function App() {
       observerRef.current = observer;
     }
   }, []);
+
+  /**
+   * When streaming finishes, reset the committed height so the next
+   * ResizeObserver event can trim the window to actual content height.
+   */
+  useEffect(() => {
+    if (!isGenerating) {
+      committedHeightRef.current = 0;
+    }
+  }, [isGenerating]);
 
   /**
    * Replays the entrance sequence by transitioning the overlay to the visible state.
@@ -293,6 +347,7 @@ function App() {
         windowY + MAX_CHAT_WINDOW_HEIGHT > screenBottomY;
       growsUpwardRef.current = shouldGrowUp;
       setGrowsUpward(shouldGrowUp);
+      committedHeightRef.current = 0;
       if (shouldGrowUp && windowX !== null && windowY !== null) {
         windowPosRef.current = {
           x: windowX,

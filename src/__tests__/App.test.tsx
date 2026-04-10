@@ -392,7 +392,7 @@ describe('App', () => {
       }
     }
 
-    it('calls set_window_frame when near screen bottom', async () => {
+    it('commits exact height when not streaming (initial ask bar)', async () => {
       spyOnResizeObserver();
 
       render(<App />);
@@ -414,6 +414,7 @@ describe('App', () => {
       const container = document.querySelector('.morphing-container');
       expect(container).not.toBeNull();
 
+      // Not streaming yet, so exact height is committed (no buffer)
       act(() => {
         triggerResize(container!, 60);
       });
@@ -427,7 +428,7 @@ describe('App', () => {
       });
     });
 
-    it('grows incrementally with each resize event', async () => {
+    it('adds buffer during streaming and skips resize events within it', async () => {
       spyOnResizeObserver();
 
       render(<App />);
@@ -447,7 +448,7 @@ describe('App', () => {
       const container = document.querySelector('.morphing-container');
       expect(container).not.toBeNull();
 
-      // First event: ask bar only
+      // Initial non-streaming render: exact height
       invoke.mockClear();
       act(() => {
         triggerResize(container!, 60);
@@ -459,16 +460,49 @@ describe('App', () => {
         height: 108,
       });
 
-      // Second event: content grew
+      // Start streaming: submit a message
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // Content grows during streaming: 200px content → 248 target.
+      // Buffer: min(248 + 80, 648) = 328. Committed with buffer.
       invoke.mockClear();
       act(() => {
         triggerResize(container!, 200);
       });
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
         x: 50,
-        y: 800 - 248,
+        y: 800 - 328,
         width: 600,
-        height: 248,
+        height: 328,
+      });
+
+      // Content grows to 250px (target 298): still within buffer (328). Skipped.
+      invoke.mockClear();
+      act(() => {
+        triggerResize(container!, 250);
+      });
+      expect(invoke).not.toHaveBeenCalledWith(
+        'set_window_frame',
+        expect.anything(),
+      );
+
+      // Content grows to 300px (target 348): exceeds buffer (328). New commit.
+      invoke.mockClear();
+      act(() => {
+        triggerResize(container!, 300);
+      });
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 50,
+        y: 800 - 428, // min(348+80, 648) = 428
+        width: 600,
+        height: 428,
       });
     });
 
