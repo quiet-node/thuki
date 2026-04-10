@@ -15,7 +15,9 @@ async function showOverlay(selectedText: string | null = null) {
     emitTauriEvent('thuki://visibility', {
       state: 'show',
       selected_text: selectedText,
-      window_anchor: null,
+      window_x: null,
+      window_y: null,
+      screen_bottom_y: null,
     });
   });
 }
@@ -31,6 +33,73 @@ describe('App', () => {
     await act(async () => {});
 
     expect(invoke).toHaveBeenCalledWith('get_model_config');
+  });
+
+  it('grows upward when near bottom screen edge', async () => {
+    const { container } = render(<App />);
+    await act(async () => {});
+
+    await act(async () => {
+      emitTauriEvent('thuki://visibility', {
+        state: 'show',
+        selected_text: null,
+        window_x: 50,
+        window_y: 1000,
+        screen_bottom_y: 1100,
+      });
+    });
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: 'hi' } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+    });
+    // This should morph into max-height window
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(r));
+    });
+    expect(
+      (container.querySelector('.morphing-container') as HTMLElement).style
+        .height,
+    ).toBe('600px');
+  });
+
+  it('keeps full chat height after clicking the expanded upward chat surface', async () => {
+    const { container } = render(<App />);
+    await act(async () => {});
+
+    await act(async () => {
+      emitTauriEvent('thuki://visibility', {
+        state: 'show',
+        selected_text: null,
+        window_x: 50,
+        window_y: 1000,
+        screen_bottom_y: 1100,
+      });
+    });
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: 'hi' } });
+      fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+    });
+
+    const morphingContainer = container.querySelector(
+      '.morphing-container',
+    ) as HTMLElement;
+    expect(morphingContainer.style.height).toBe('600px');
+
+    const chatArea = container.querySelector('.chat-area');
+    expect(chatArea).not.toBeNull();
+
+    act(() => {
+      fireEvent.mouseDown(chatArea!);
+      fireEvent.mouseUp(window);
+    });
+
+    expect(morphingContainer.style.height).toBe('600px');
   });
 
   it('renders nothing when overlay is hidden', async () => {
@@ -217,7 +286,7 @@ describe('App', () => {
     expect(__mockWindow.startDragging).toHaveBeenCalled();
   });
 
-  it('clears anchor ref on mouseup after drag', async () => {
+  it('clears upward growth on mouseup after drag', async () => {
     render(<App />);
     await act(async () => {});
 
@@ -232,12 +301,11 @@ describe('App', () => {
       fireEvent.mouseDown(container!);
     });
 
-    // startDragging was called — now fire mouseup to cover the mouseup handler
+    // startDragging was called; fire mouseup to cover the mouseup handler
     act(() => {
       fireEvent.mouseUp(window);
     });
 
-    // No assertion needed — just exercising the mouseup callback (windowAnchorRef = null)
     expect(__mockWindow.startDragging).toHaveBeenCalled();
   });
 
@@ -317,25 +385,48 @@ describe('App', () => {
     );
   });
 
-  it('applies justify-end layout when overlay opens with anchor', async () => {
+  it('applies justify-end when window is near screen bottom', async () => {
     render(<App />);
     await act(async () => {});
 
-    // Show overlay with a window anchor (upward-growth mode)
+    // Show overlay near screen bottom: window_y=750, screen_bottom=900.
+    // 750 + MAX_CHAT_WINDOW_HEIGHT(648) = 1398 > 900 → grows upward.
     await act(async () => {
       emitTauriEvent('thuki://visibility', {
         state: 'show',
         selected_text: null,
-        window_anchor: { x: 100, bottom_y: 800, min_y: 50 },
+        window_x: 100,
+        window_y: 750,
+        screen_bottom_y: 900,
       });
     });
 
-    // The outer container should use justify-end for bottom-pinning
     const outer = document.querySelector('.justify-end');
     expect(outer).not.toBeNull();
   });
 
-  describe('ResizeObserver window sizing with anchor', () => {
+  it('applies justify-start when window has room below', async () => {
+    render(<App />);
+    await act(async () => {});
+
+    // Show overlay near top: window_y=100, screen_bottom=900.
+    // 100 + 648 = 748 < 900 → grows downward.
+    await act(async () => {
+      emitTauriEvent('thuki://visibility', {
+        state: 'show',
+        selected_text: null,
+        window_x: 100,
+        window_y: 100,
+        screen_bottom_y: 900,
+      });
+    });
+
+    const outer = document.querySelector('.justify-start');
+    expect(outer).not.toBeNull();
+    expect(document.querySelector('.justify-end')).toBeNull();
+  });
+
+  describe('ResizeObserver upward growth', () => {
     let capturedCallback: ResizeObserverCallback | null = null;
 
     function spyOnResizeObserver() {
@@ -368,18 +459,20 @@ describe('App', () => {
       }
     }
 
-    it('calls set_window_frame with content height on first anchor event, not max height', async () => {
+    it('commits exact height when not streaming (initial ask bar)', async () => {
       spyOnResizeObserver();
 
       render(<App />);
       await act(async () => {});
 
-      // Show with anchor — bottom_y=884 means the window is at the bottom of a 900px screen
+      // window_y=804, screen_bottom=900. bottomY = 804+80 = 884.
       await act(async () => {
         emitTauriEvent('thuki://visibility', {
           state: 'show',
           selected_text: null,
-          window_anchor: { x: 100, bottom_y: 884, min_y: 40 },
+          window_x: 100,
+          window_y: 804,
+          screen_bottom_y: 900,
         });
       });
 
@@ -387,27 +480,22 @@ describe('App', () => {
 
       const container = document.querySelector('.morphing-container');
       expect(container).not.toBeNull();
-      expect(capturedCallback).not.toBeNull();
 
-      // Simulate first observer event: only the askbar is visible (~60px content)
+      // Not streaming yet, so exact height is committed (no buffer)
       act(() => {
         triggerResize(container!, 60);
       });
 
-      // REGRESSION: must use content height (60+48=108), NOT max height (648)
+      // bottomY(884) - targetHeight(108) = 776
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
         x: 100,
-        y: 884 - 108, // 776 — window bottom stays pinned, top moves to fit content
+        y: 776,
         width: 600,
         height: 108,
       });
-      expect(invoke).not.toHaveBeenCalledWith(
-        'set_window_frame',
-        expect.objectContaining({ height: 648 }),
-      );
     });
 
-    it('grows incrementally: each resize event updates position and height', async () => {
+    it('uses setSize (not set_window_frame) after drag clears upward growth', async () => {
       spyOnResizeObserver();
 
       render(<App />);
@@ -417,147 +505,16 @@ describe('App', () => {
         emitTauriEvent('thuki://visibility', {
           state: 'show',
           selected_text: null,
-          window_anchor: { x: 50, bottom_y: 800, min_y: 40 },
+          window_x: 100,
+          window_y: 804,
+          screen_bottom_y: 900,
         });
       });
 
       const container = document.querySelector('.morphing-container');
       expect(container).not.toBeNull();
 
-      // First event: askbar only
-      invoke.mockClear();
-      act(() => {
-        triggerResize(container!, 60);
-      });
-      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
-        x: 50,
-        y: 800 - 108,
-        width: 600,
-        height: 108,
-      });
-
-      // Second event: chat started, content grew
-      invoke.mockClear();
-      act(() => {
-        triggerResize(container!, 200);
-      });
-      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
-        x: 50,
-        y: 800 - 248,
-        width: 600,
-        height: 248,
-      });
-    });
-
-    it('immediately expands to max height when isGenerating becomes true with upward anchor', async () => {
-      spyOnResizeObserver();
-
-      render(<App />);
-      await act(async () => {});
-
-      // Show with anchor
-      await act(async () => {
-        emitTauriEvent('thuki://visibility', {
-          state: 'show',
-          selected_text: null,
-          window_anchor: { x: 100, bottom_y: 884, min_y: 40 },
-        });
-      });
-
-      // Small initial resize (ask bar only, isGenerating=false)
-      const container = document.querySelector('.morphing-container');
-      expect(container).not.toBeNull();
-      act(() => {
-        triggerResize(container!, 60);
-      });
-
-      // Submit a message — causes isGenerating to become true
-      invoke.mockClear();
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      act(() => {
-        fireEvent.change(textarea, { target: { value: 'hello' } });
-      });
-      act(() => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-      });
-      await act(async () => {});
-
-      // Must immediately call set_window_frame with max height
-      // max = min(648, 884 - 40 = 844) = 648; newY = 884 - 648 = 236
-      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
-        x: 100,
-        y: 236,
-        width: 600,
-        height: 648,
-      });
-
-      // Subsequent resize events must be no-ops (isPreExpandedRef is now true)
-      invoke.mockClear();
-      act(() => {
-        triggerResize(container!, 100);
-      });
-      expect(invoke).not.toHaveBeenCalledWith(
-        'set_window_frame',
-        expect.anything(),
-      );
-    });
-
-    it('locks at max height and skips further resize events', async () => {
-      spyOnResizeObserver();
-
-      render(<App />);
-      await act(async () => {});
-
-      await act(async () => {
-        emitTauriEvent('thuki://visibility', {
-          state: 'show',
-          selected_text: null,
-          window_anchor: { x: 100, bottom_y: 884, min_y: 40 },
-        });
-      });
-
-      const container = document.querySelector('.morphing-container');
-      expect(container).not.toBeNull();
-
-      // Grow to max height (content=600 → window=648)
-      invoke.mockClear();
-      act(() => {
-        triggerResize(container!, 600);
-      });
-      expect(invoke).toHaveBeenCalledWith(
-        'set_window_frame',
-        expect.objectContaining({ height: 648 }),
-      );
-
-      // Next event should be a no-op (isPreExpandedRef is now true)
-      invoke.mockClear();
-      act(() => {
-        triggerResize(container!, 620);
-      });
-      expect(invoke).not.toHaveBeenCalledWith(
-        'set_window_frame',
-        expect.anything(),
-      );
-    });
-
-    it('uses setSize (not set_window_frame) after drag clears the anchor', async () => {
-      spyOnResizeObserver();
-
-      render(<App />);
-      await act(async () => {});
-
-      await act(async () => {
-        emitTauriEvent('thuki://visibility', {
-          state: 'show',
-          selected_text: null,
-          window_anchor: { x: 100, bottom_y: 884, min_y: 40 },
-        });
-      });
-
-      const container = document.querySelector('.morphing-container');
-      expect(container).not.toBeNull();
-
-      // Simulate drag: mousedown then mouseup clears the anchor
+      // Drag clears upward growth
       act(() => {
         fireEvent.mouseDown(container!);
       });
@@ -568,7 +525,6 @@ describe('App', () => {
       invoke.mockClear();
       __mockWindow.setSize.mockClear?.();
 
-      // After drag, anchor is null — ResizeObserver should use setSize, not set_window_frame
       act(() => {
         triggerResize(container!, 60);
       });
@@ -579,78 +535,41 @@ describe('App', () => {
       expect(__mockWindow.setSize).toHaveBeenCalled();
     });
 
-    it('clamps to available space when screen gap is smaller than MAX_CHAT_WINDOW_HEIGHT', async () => {
+    it('resets upward growth on session reopen', async () => {
       spyOnResizeObserver();
 
       render(<App />);
       await act(async () => {});
 
-      // Available space: bottom_y - min_y = 300 - 100 = 200, which is < MAX_CHAT_WINDOW_HEIGHT (648)
+      // Session 1: near bottom, grows upward
       await act(async () => {
         emitTauriEvent('thuki://visibility', {
           state: 'show',
           selected_text: null,
-          window_anchor: { x: 50, bottom_y: 300, min_y: 100 },
-        });
-      });
-
-      const container = document.querySelector('.morphing-container');
-      expect(container).not.toBeNull();
-
-      invoke.mockClear();
-      // Content height (300) → targetHeight (348) exceeds available space (200) → clamped to 200
-      act(() => {
-        triggerResize(container!, 300);
-      });
-      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
-        x: 50,
-        y: 100, // bottom_y (300) - clamped height (200) = 100
-        width: 600,
-        height: 200, // clamped to available space, not targetHeight (348) or MAX (648)
-      });
-
-      // isPreExpandedRef is now true — next event is a no-op
-      invoke.mockClear();
-      act(() => {
-        triggerResize(container!, 400);
-      });
-      expect(invoke).not.toHaveBeenCalledWith(
-        'set_window_frame',
-        expect.anything(),
-      );
-    });
-
-    it('isPreExpandedRef resets on session reopen, allowing incremental growth again', async () => {
-      spyOnResizeObserver();
-
-      render(<App />);
-      await act(async () => {});
-
-      // Session 1: grow to max height, locking isPreExpandedRef
-      await act(async () => {
-        emitTauriEvent('thuki://visibility', {
-          state: 'show',
-          selected_text: null,
-          window_anchor: { x: 100, bottom_y: 884, min_y: 40 },
+          window_x: 100,
+          window_y: 804,
+          screen_bottom_y: 900,
         });
       });
 
       const container1 = document.querySelector('.morphing-container');
       act(() => {
-        triggerResize(container1!, 600); // locks isPreExpandedRef = true
+        triggerResize(container1!, 60);
       });
 
-      // Close the overlay — requestHideOverlay resets isPreExpandedRef to false
+      // Close
       await act(async () => {
         emitTauriEvent('thuki://visibility', { state: 'hide-request' });
       });
 
-      // Session 2: reopen with new anchor — incremental growth must work again
+      // Session 2: reopen near bottom again
       await act(async () => {
         emitTauriEvent('thuki://visibility', {
           state: 'show',
           selected_text: null,
-          window_anchor: { x: 100, bottom_y: 884, min_y: 40 },
+          window_x: 100,
+          window_y: 804,
+          screen_bottom_y: 900,
         });
       });
 
@@ -658,15 +577,15 @@ describe('App', () => {
       expect(container2).not.toBeNull();
 
       invoke.mockClear();
-      // Small content — must NOT be skipped even though the previous session was locked
       act(() => {
         triggerResize(container2!, 60);
       });
+      // bottomY = 804+80 = 884. 884-108 = 776.
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
         x: 100,
-        y: 776, // bottom_y (884) - neededHeight (108) = 776
+        y: 776,
         width: 600,
-        height: 108, // content height (60) + padding (48)
+        height: 108,
       });
     });
   });

@@ -91,20 +91,6 @@ static OVERLAY_INTENDED_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// registered, so the show event is guaranteed to have a listener.
 static LAUNCH_SHOW_PENDING: AtomicBool = AtomicBool::new(true);
 
-/// Fixed-bottom anchor emitted when the bar is positioned above the selection.
-/// The frontend pins the window bottom to `bottom_y` as the conversation grows.
-#[derive(Clone, serde::Serialize)]
-struct WindowAnchor {
-    /// Logical X of the window top-left (preserved during height changes).
-    x: f64,
-    /// Logical Y the window bottom must stay pinned to.
-    bottom_y: f64,
-    /// Minimum Y the window top may reach (monitor top + menu-bar clearance).
-    /// On above-monitors this is negative, preventing the frontend's clamp
-    /// from yanking the window back onto the primary display.
-    min_y: f64,
-}
-
 /// Payload emitted to the frontend on every visibility transition.
 #[derive(Clone, serde::Serialize)]
 struct VisibilityPayload {
@@ -112,9 +98,14 @@ struct VisibilityPayload {
     state: &'static str,
     /// Selected text captured at activation time, if any.
     selected_text: Option<String>,
-    /// Present when the window was flipped above the selection. The frontend
-    /// uses this to keep the window bottom anchored as the chat grows.
-    window_anchor: Option<WindowAnchor>,
+    /// Logical X of the window at show time. Used with `window_y` and
+    /// `screen_bottom_y` to decide growth direction, and as the pinned X
+    /// coordinate for `set_window_frame` calls during upward growth.
+    window_x: Option<f64>,
+    /// Logical Y of the window top-left at show time.
+    window_y: Option<f64>,
+    /// Logical Y of the screen bottom edge (monitor origin + height).
+    screen_bottom_y: Option<f64>,
 }
 
 /// Emits a visibility transition to the frontend animation controller.
@@ -122,14 +113,18 @@ fn emit_overlay_visibility(
     app_handle: &tauri::AppHandle,
     state: &'static str,
     selected_text: Option<String>,
-    window_anchor: Option<WindowAnchor>,
+    window_x: Option<f64>,
+    window_y: Option<f64>,
+    screen_bottom_y: Option<f64>,
 ) {
     let _ = app_handle.emit(
         OVERLAY_VISIBILITY_EVENT,
         VisibilityPayload {
             state,
             selected_text,
-            window_anchor,
+            window_x,
+            window_y,
+            screen_bottom_y,
         },
     );
 }
@@ -180,10 +175,6 @@ mod cg_displays {
     }
 }
 
-/// Minimum Y offset from the top of any monitor — menu bar plus edge margin.
-/// Must match `MENU_BAR_HEIGHT + SCREEN_MARGIN` in `context.rs`.
-const MONITOR_TOP_CLEARANCE: f64 = 40.0;
-
 /// Returns the Quartz-coordinate bounds of the display containing
 /// `(global_x, global_y)`, falling back to the main display.
 #[cfg(target_os = "macos")]
@@ -192,7 +183,7 @@ fn find_target_monitor(global_x: f64, global_y: f64) -> (f64, f64, f64, f64) {
 }
 
 /// Returns Quartz-coordinate bounds of the main display as a fallback
-/// when no anchor point is available.
+/// when no positioning context is available.
 #[cfg(target_os = "macos")]
 fn monitor_info_fallback() -> (f64, f64, f64, f64) {
     cg_displays::main_display()
@@ -255,26 +246,21 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
         let global = crate::context::WindowPlacement {
             x: p.x + mon_x,
             y: p.y + mon_y,
-            anchor_bottom_y: p.anchor_bottom_y.map(|y| y + mon_y),
         };
 
         let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
             global.x, global.y,
         )));
-        // Menu-bar clearance in global coordinates for this monitor.
-        let global_min_y = mon_y + MONITOR_TOP_CLEARANCE;
-        Some((global, global_min_y))
+        let screen_bottom = mon_y + screen_h;
+        Some((global, screen_bottom))
     } else {
         None
     };
 
-    let window_anchor = placement.and_then(|(p, min_y)| {
-        p.anchor_bottom_y.map(|bottom_y| WindowAnchor {
-            x: p.x,
-            bottom_y,
-            min_y,
-        })
-    });
+    let (window_x, window_y, screen_bottom_y) = match &placement {
+        Some((p, sb)) => (Some(p.x), Some(p.y), Some(*sb)),
+        None => (None, None, None),
+    };
 
     match app_handle.get_webview_panel("main") {
         Ok(panel) => {
@@ -283,7 +269,9 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
                 app_handle,
                 OVERLAY_VISIBILITY_SHOW,
                 selected_text,
-                window_anchor,
+                window_x,
+                window_y,
+                screen_bottom_y,
             );
         }
         Err(e) => {
@@ -298,7 +286,14 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 /// window hide is deferred until the frontend exit animation completes.
 fn request_overlay_hide(app_handle: &tauri::AppHandle) {
     if OVERLAY_INTENDED_VISIBLE.swap(false, Ordering::SeqCst) {
-        emit_overlay_visibility(app_handle, OVERLAY_VISIBILITY_HIDE_REQUEST, None, None);
+        emit_overlay_visibility(
+            app_handle,
+            OVERLAY_VISIBILITY_HIDE_REQUEST,
+            None,
+            None,
+            None,
+            None,
+        );
     }
 }
 
@@ -316,7 +311,14 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
     if let Some(window) = app_handle.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
-        emit_overlay_visibility(app_handle, OVERLAY_VISIBILITY_SHOW, ctx.selected_text, None);
+        emit_overlay_visibility(
+            app_handle,
+            OVERLAY_VISIBILITY_SHOW,
+            ctx.selected_text,
+            None,
+            None,
+            None,
+        );
     }
 }
 
@@ -853,13 +855,5 @@ mod tests {
     fn overlay_logical_dimensions() {
         assert_eq!(OVERLAY_LOGICAL_WIDTH, 600.0);
         assert_eq!(OVERLAY_LOGICAL_HEIGHT_COLLAPSED, 80.0);
-    }
-
-    #[test]
-    fn monitor_top_clearance_matches_context() {
-        assert_eq!(
-            MONITOR_TOP_CLEARANCE,
-            crate::context::MENU_BAR_HEIGHT + crate::context::SCREEN_MARGIN
-        );
     }
 }
