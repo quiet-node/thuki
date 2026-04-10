@@ -350,12 +350,6 @@ const WINDOW_BOTTOM_PADDING: f64 = 32.0;
 pub(crate) const SCREEN_MARGIN: f64 = 16.0;
 /// macOS menu bar height approximation (logical pts).
 pub(crate) const MENU_BAR_HEIGHT: f64 = 24.0;
-/// Minimum screen space (logical pts) needed below the initial window bottom
-/// for the conversation to expand freely. Derived from the frontend's
-/// `max-h-[600px]` CSS constraint plus a small safety margin.
-/// When less space is available, the window is pinned to grow upward instead.
-const UPWARD_GROWTH_THRESHOLD: f64 = 600.0;
-
 /// Result of the window placement calculation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowPlacement {
@@ -363,11 +357,6 @@ pub struct WindowPlacement {
     pub x: f64,
     /// Logical Y of the window's top-left corner.
     pub y: f64,
-    /// When `Some`, the bar was flipped **above** the selection because the screen
-    /// bottom was too close. The value is the logical Y the window bottom should
-    /// stay pinned to as the conversation grows (so the frontend can reposition
-    /// upward by computing `y = anchor_bottom_y - current_window_height`).
-    pub anchor_bottom_y: Option<f64>,
 }
 
 /// Returns the top-center position for the no-selection spawn point.
@@ -381,11 +370,7 @@ fn top_center(
     let x_max = (screen_width - window_width - SCREEN_MARGIN).max(x_min);
     let x = ((screen_width - window_width) / 2.0).clamp(x_min, x_max);
     let y = MENU_BAR_HEIGHT + SCREEN_MARGIN + 120.0;
-    WindowPlacement {
-        x,
-        y,
-        anchor_bottom_y: None,
-    }
+    WindowPlacement { x, y }
 }
 
 /// Positions the window to the right of `anchor_x / anchor_bottom_y`, flipping
@@ -421,25 +406,19 @@ fn anchor_near(
     let below_y = anchor_bottom_y - ANCHOR_OFFSET_Y;
 
     if below_y + window_height <= screen_height - SCREEN_MARGIN {
-        // Enough room below → normal downward placement.
+        // Enough room below: place just below the selection.
         WindowPlacement {
             x,
             y: below_y.max(y_min),
-            anchor_bottom_y: None,
         }
     } else {
-        // Flip above: shift the window bottom down by WINDOW_BOTTOM_PADDING so
-        // the bar's visible content bottom (not the transparent window edge) sits
-        // ANCHOR_OFFSET_Y pts above anchor_top_y. Clamped to screen_height so
-        // the window never extends off the screen's lower edge.
+        // Not enough room below: flip above the selection. Shift by
+        // WINDOW_BOTTOM_PADDING so the bar's visible content bottom (not the
+        // transparent window edge) sits ANCHOR_OFFSET_Y pts above anchor_top_y.
         let fixed_bottom =
             (anchor_top_y - ANCHOR_OFFSET_Y + WINDOW_BOTTOM_PADDING).min(screen_height);
         let y = (fixed_bottom - window_height).max(y_min);
-        WindowPlacement {
-            x,
-            y,
-            anchor_bottom_y: Some(fixed_bottom),
-        }
+        WindowPlacement { x, y }
     }
 }
 
@@ -454,8 +433,8 @@ pub fn calculate_window_position(
     window_width: f64,
     window_height: f64,
 ) -> WindowPlacement {
-    let placement = if let Some(rect) = ctx.bounds {
-        // AX provided full bounds → anchor to the end of the selection.
+    if let Some(rect) = ctx.bounds {
+        // AX provided full bounds: position near the end of the selection.
         anchor_near(
             rect.x + rect.width,
             rect.y + rect.height,
@@ -485,23 +464,7 @@ pub fn calculate_window_position(
     } else {
         // No selection → top center of screen.
         top_center(screen_width, screen_height, window_width, window_height)
-    };
-
-    // Secondary check: if the flip logic above did not set an anchor, determine
-    // whether there is enough room below for the conversation to expand fully.
-    // If not, pin the window bottom so the conversation can grow upward instead
-    // of being clipped by the screen edge.
-    if placement.anchor_bottom_y.is_none() {
-        let initial_bottom = placement.y + window_height;
-        let space_below = screen_height - SCREEN_MARGIN - initial_bottom;
-        if space_below < UPWARD_GROWTH_THRESHOLD {
-            return WindowPlacement {
-                anchor_bottom_y: Some(initial_bottom),
-                ..placement
-            };
-        }
     }
-    placement
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -549,12 +512,10 @@ mod tests {
         let p = calculate_window_position(&ctx_no_selection(), SW, SH, WW, WH);
         assert_eq!(p.x, (SW - WW) / 2.0);
         assert_eq!(p.y, MENU_BAR_HEIGHT + SCREEN_MARGIN + 120.0);
-        assert_eq!(p.anchor_bottom_y, None);
     }
 
     #[test]
     fn text_with_no_bounds_and_no_mouse_falls_back_to_top_center() {
-        // Same top-center position — no anchor needed since the bar grows downward.
         let ctx = ActivationContext {
             selected_text: Some("hello world".to_string()),
             bounds: None,
@@ -565,40 +526,34 @@ mod tests {
         let x_max = (SW - WW - SCREEN_MARGIN).max(x_min);
         assert_eq!(p.x, ((SW - WW) / 2.0).clamp(x_min, x_max));
         assert_eq!(p.y, MENU_BAR_HEIGHT + SCREEN_MARGIN + 120.0);
-        assert_eq!(p.anchor_bottom_y, None);
     }
 
     #[test]
-    fn text_with_no_bounds_uses_mouse_as_anchor() {
-        // Mouse at (400, 300). placement.y ≈ 298. space_below = 900-16-378 = 506 < 600 → anchor.
+    fn text_with_no_bounds_uses_mouse_position() {
+        // Mouse at (400, 300). below_y = 298. Room below → normal placement.
         let ctx = ctx_text_no_bounds_with_mouse(400.0, 300.0);
         let p = calculate_window_position(&ctx, SW, SH, WW, WH);
         assert_eq!(p.x, 400.0 + ANCHOR_OFFSET_X);
         let expected_y = 300.0 - ANCHOR_OFFSET_Y;
         assert!((p.y - expected_y).abs() < 0.01);
-        assert_eq!(p.anchor_bottom_y, Some(expected_y + WH));
     }
 
     #[test]
-    fn selection_with_room_anchors_to_end() {
-        // Selection at x=100, y=300, w=80, h=20 → end at (180, 320).
-        // placement.y ≈ 318. space_below = 900-16-398 = 486 < 600 → anchor pinned.
+    fn selection_positions_near_end() {
+        // Selection at x=100, y=300, w=80, h=20. End at (180, 320).
         let ctx = ctx_with_bounds(100.0, 300.0, 80.0, 20.0);
         let p = calculate_window_position(&ctx, SW, SH, WW, WH);
         assert_eq!(p.x, 180.0 + ANCHOR_OFFSET_X);
         let expected_y = 320.0 - ANCHOR_OFFSET_Y;
         assert!((p.y - expected_y).abs() < 0.01);
-        assert_eq!(p.anchor_bottom_y, Some(expected_y + WH));
     }
 
     #[test]
-    fn no_anchor_when_plenty_of_room_below() {
-        // Selection near top of screen: placement.y ≈ 18. space_below = 900-16-98 = 786 > 600.
+    fn selection_near_top_clamps_to_menu_bar() {
+        // Selection near top of screen: below_y = 18, clamped to y_min = 40.
         let ctx = ctx_with_bounds(100.0, 0.0, 80.0, 20.0);
         let p = calculate_window_position(&ctx, SW, SH, WW, WH);
-        // below_y = 20-2 = 18, clamped to y_min = 40.
         assert_eq!(p.y, MENU_BAR_HEIGHT + SCREEN_MARGIN);
-        assert_eq!(p.anchor_bottom_y, None);
     }
 
     #[test]
@@ -621,15 +576,11 @@ mod tests {
 
     #[test]
     fn y_flips_above_when_selection_near_screen_bottom() {
-        // Selection: y=870, h=20 → bottom=890.
-        // below_y = 888. 888+80=968 > 900-16=884 → flip above.
-        // fixed_bottom = min(870 - 2 + 32, 900) = min(900, 900) = 900.
-        // y = (900-80).max(40) = 820.
-        // Visible content bottom = 900 - WINDOW_BOTTOM_PADDING(32) = 868 → 2px above sel top(870).
+        // Selection: y=870, h=20. below_y=888. 888+80=968 > 884 → flip above.
+        // fixed_bottom = min(870-2+32, 900) = 900. y = (900-80).max(40) = 820.
         let ctx = ctx_with_bounds(100.0, 870.0, 80.0, 20.0);
         let p = calculate_window_position(&ctx, SW, SH, WW, WH);
         assert_eq!(p.y, 820.0);
-        assert_eq!(p.anchor_bottom_y, Some(900.0));
     }
 
     #[test]
@@ -639,7 +590,6 @@ mod tests {
         let ctx = ctx_with_bounds(100.0, 10.0, 80.0, 20.0);
         let p = calculate_window_position(&ctx, SW, SH, WW, WH);
         assert_eq!(p.y, MENU_BAR_HEIGHT + SCREEN_MARGIN);
-        assert_eq!(p.anchor_bottom_y, None);
     }
 
     #[test]
@@ -657,11 +607,12 @@ mod tests {
     }
 
     #[test]
-    fn very_tall_screen_no_anchor_bottom() {
+    fn very_tall_screen_positions_below() {
         let ctx = ctx_with_bounds(100.0, 100.0, 80.0, 20.0);
         let tall_screen = 2000.0;
         let p = calculate_window_position(&ctx, SW, tall_screen, WW, WH);
-        assert_eq!(p.anchor_bottom_y, None);
+        // below_y = 118. 118+80=198 < 2000-16=1984 → placed below.
+        assert_eq!(p.y, 120.0 - ANCHOR_OFFSET_Y);
     }
 
     #[test]

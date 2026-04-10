@@ -40,12 +40,16 @@ const CONTAINER_VERTICAL_PADDING = 48;
 /** Max morphing-container height in chat mode (matches `max-h-[600px]`) + vertical padding. */
 const MAX_CHAT_WINDOW_HEIGHT = 600 + CONTAINER_VERTICAL_PADDING;
 
-type WindowAnchor = { x: number; bottom_y: number; min_y: number };
+/** Must match `OVERLAY_LOGICAL_HEIGHT_COLLAPSED` in `src-tauri/src/lib.rs`. */
+const COLLAPSED_WINDOW_HEIGHT = 80;
+
 type OverlayVisibilityPayload =
   | {
       state: 'show';
       selected_text: string | null;
-      window_anchor: WindowAnchor | null;
+      window_x: number | null;
+      window_y: number | null;
+      screen_bottom_y: number | null;
     }
   | { state: 'hide-request' };
 type OverlayState = 'visible' | 'hidden' | 'hiding';
@@ -178,11 +182,10 @@ function App() {
   } | null>(null);
 
   /**
-   * True when the window was spawned with an upward-growth anchor. Used to
-   * flip the outer container to `justify-end` so the morphing container pins
-   * to the bottom of the pre-expanded window and content grows upward.
+   * True when the window is near the screen bottom and should grow upward.
+   * Flips the outer container to `justify-end` so content pins to the bottom.
    */
-  const [isAnchoredUpward, setIsAnchoredUpward] = useState(false);
+  const [growsUpward, setGrowsUpward] = useState(false);
 
   /**
    * Determines whether the UI has entered "chat mode" — i.e., the morphing
@@ -205,66 +208,16 @@ function App() {
   const observerRef = useRef<ResizeObserver | null>(null);
 
   /**
-   * Holds the window anchor for the "above selection" spawn case.
-   * Stored in a ref (not state) so the ResizeObserver closure can read the
-   * latest value without needing to be recreated on each anchor change.
+   * Mirror of `growsUpward` as a ref so the ResizeObserver closure can read
+   * it without being recreated on each state change.
    */
-  const windowAnchorRef = useRef<WindowAnchor | null>(null);
+  const growsUpwardRef = useRef(false);
 
   /**
-   * Set once the first ResizeObserver event has expanded the window to max
-   * height for an anchored session. While true, all subsequent observer
-   * events for the anchor path are skipped — the window stays at max and
-   * content grows inside it. Reset when the anchor is cleared.
+   * Stores the window's fixed bottom Y and X for upward-growth sessions.
+   * The bottom stays pinned while the top edge moves up as content grows.
    */
-  const isPreExpandedRef = useRef(false);
-
-  /**
-   * Ref attached to the outermost layout div. Used to set an explicit
-   * `minHeight` before calling `set_window_frame` in the anchor path so the
-   * CSS layout matches the new window dimensions before WKWebView's viewport
-   * size event arrives — preventing the one-frame flash where `h-screen` is
-   * still the old small height but the window has already repositioned upward.
-   */
-  const outerContainerRef = useRef<HTMLDivElement | null>(null);
-
-  /**
-   * When the LLM starts generating and the window has an upward anchor, expand
-   * immediately to max height before any streaming tokens arrive.
-   *
-   * Streamdown opens empty block elements (`<p></p>`) before their content,
-   * causing the morphing container to grow in sudden steps. Each step triggers
-   * a ResizeObserver → set_window_frame cycle that repositions the window
-   * upward — visible as a jittery jump during upward-anchor sessions.
-   *
-   * Expanding to max height in a single `useEffect` call (before the first
-   * token paint) gives the streaming text a fixed canvas to fill, eliminating
-   * all incremental upward repositioning during the response.
-   */
-  useEffect(() => {
-    if (!isGenerating || !windowAnchorRef.current || isPreExpandedRef.current)
-      return;
-    const anchor = windowAnchorRef.current;
-    const maxHeight = Math.min(
-      MAX_CHAT_WINDOW_HEIGHT,
-      anchor.bottom_y - anchor.min_y,
-    );
-    const newY = anchor.bottom_y - maxHeight;
-    isPreExpandedRef.current = true;
-    // Pre-set CSS min-height so justify-end positions correctly during the
-    // WKWebView viewport update lag that follows set_window_frame.
-    /* v8 ignore start -- DOM ref null guard: always set when overlay is visible */
-    if (outerContainerRef.current) {
-      outerContainerRef.current.style.minHeight = `${maxHeight}px`;
-    }
-    /* v8 ignore stop */
-    void invoke('set_window_frame', {
-      x: anchor.x,
-      y: newY,
-      width: OVERLAY_WIDTH,
-      height: maxHeight,
-    });
-  }, [isGenerating]);
+  const windowPosRef = useRef({ x: 0, bottomY: 0 });
 
   /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
@@ -272,9 +225,9 @@ function App() {
    * the bug where a standard useEffect would run before the DOM node was ready,
    * leaving the native window stuck at 600x700.
    *
-   * When a window anchor is present (bar spawned above selection), the observer
-   * also repositions the window upward to keep its bottom pinned to the anchor
-   * as the conversation grows.
+   * When `growsUpwardRef` is true (window near screen bottom), the observer
+   * also repositions the window upward to keep its bottom pinned as the
+   * conversation grows.
    */
   const setContainerRef = useCallback((node: HTMLDivElement | null) => {
     morphingContainerNodeRef.current = node;
@@ -295,39 +248,15 @@ function App() {
               // This ensures the tightened drop shadows aren't clipped by the native window edge.
               const targetHeight =
                 Math.ceil(rect.height) + CONTAINER_VERTICAL_PADDING;
-              const anchor = windowAnchorRef.current;
-              if (anchor) {
-                // Once the window has reached max height for this anchor
-                // session, skip all further adjustments — content scrolls
-                // internally inside the fixed-size window.
-                if (isPreExpandedRef.current) return;
-
-                const maxHeight = Math.min(
-                  MAX_CHAT_WINDOW_HEIGHT,
-                  anchor.bottom_y - anchor.min_y,
-                );
-                const neededHeight = Math.min(targetHeight, maxHeight);
-
-                // Lock the observer once max height is reached.
-                if (neededHeight >= maxHeight) {
-                  isPreExpandedRef.current = true;
-                }
-
-                // Pre-set CSS min-height before the native resize so the
-                // WKWebView layout is correct during its viewport update lag.
-                if (outerContainerRef.current) {
-                  outerContainerRef.current.style.minHeight = `${neededHeight}px`;
-                }
-                // Grow upward incrementally: pin the window bottom to the
-                // anchor and expand the top edge as content grows. Because
-                // `set_window_frame` applies position + size atomically on
-                // the main thread, there is no inter-frame jitter.
-                const newY = anchor.bottom_y - neededHeight;
+              if (growsUpwardRef.current) {
+                // Grow upward: pin the window bottom and expand the top edge.
+                const { x, bottomY } = windowPosRef.current;
+                const newY = bottomY - targetHeight;
                 void invoke('set_window_frame', {
-                  x: anchor.x,
+                  x,
                   y: newY,
                   width: OVERLAY_WIDTH,
-                  height: neededHeight,
+                  height: targetHeight,
                 });
               } else {
                 void getCurrentWindow().setSize(
@@ -350,15 +279,26 @@ function App() {
    * Clears conversation state for a fresh session each time the overlay appears.
    */
   const replayEntranceAnimation = useCallback(
-    (context: string | null, anchor: WindowAnchor | null) => {
-      windowAnchorRef.current = anchor;
-      isPreExpandedRef.current = false;
-      /* v8 ignore start -- DOM ref null guard: always set when overlay is visible */
-      if (outerContainerRef.current) {
-        outerContainerRef.current.style.minHeight = '';
+    (
+      context: string | null,
+      windowX: number | null,
+      windowY: number | null,
+      screenBottomY: number | null,
+    ) => {
+      // Decide growth direction: if the collapsed window plus a full chat
+      // would overflow the screen bottom, grow upward instead.
+      const shouldGrowUp =
+        windowY !== null &&
+        screenBottomY !== null &&
+        windowY + MAX_CHAT_WINDOW_HEIGHT > screenBottomY;
+      growsUpwardRef.current = shouldGrowUp;
+      setGrowsUpward(shouldGrowUp);
+      if (shouldGrowUp && windowX !== null && windowY !== null) {
+        windowPosRef.current = {
+          x: windowX,
+          bottomY: windowY + COLLAPSED_WINDOW_HEIGHT,
+        };
       }
-      /* v8 ignore stop */
-      setIsAnchoredUpward(anchor !== null);
       setSessionId((id) => id + 1);
       setQuery('');
       setSelectedContext(context);
@@ -387,13 +327,7 @@ function App() {
    */
   const requestHideOverlay = useCallback(() => {
     cancel();
-    windowAnchorRef.current = null;
-    isPreExpandedRef.current = false;
-    /* v8 ignore start -- DOM ref null guard: always set when overlay is visible */
-    if (outerContainerRef.current) {
-      outerContainerRef.current.style.minHeight = '';
-    }
-    /* v8 ignore stop */
+    growsUpwardRef.current = false;
     screenCapturePendingRef.current = false;
     screenCaptureInputSnapshotRef.current = null;
     setSelectedContext(null);
@@ -573,23 +507,8 @@ function App() {
 
   /**
    * Shared reset sequence for all "start a new conversation" paths.
-   *
-   * Mirrors what `replayEntranceAnimation` does for the anchor-mode state so
-   * the Tauri window shrinks back to ask-bar height regardless of whether the
-   * session was launched from a text-selection anchor:
-   *
-   * - `isPreExpandedRef.current = false` unblocks the ResizeObserver in anchor
-   *   mode so it can call `set_window_frame` with the (smaller) ask-bar height.
-   * - Clearing `outerContainerRef.current.style.minHeight` removes the inline
-   *   CSS constraint that was keeping the outer container at the expanded height.
    */
   const resetForNewConversation = useCallback(() => {
-    isPreExpandedRef.current = false;
-    /* v8 ignore start -- DOM ref null guard */
-    if (outerContainerRef.current) {
-      outerContainerRef.current.style.minHeight = '';
-    }
-    /* v8 ignore stop */
     reset();
     resetHistory();
     setIsHistoryOpen(false);
@@ -1031,7 +950,9 @@ function App() {
           if (payload.state === 'show') {
             replayEntranceAnimation(
               payload.selected_text ?? null,
-              payload.window_anchor ?? null,
+              payload.window_x ?? null,
+              payload.window_y ?? null,
+              payload.screen_bottom_y ?? null,
             );
             return;
           }
@@ -1143,14 +1064,13 @@ function App() {
     e.preventDefault();
     void getCurrentWindow().startDragging();
 
-    // After the user repositions the window, drop the upward-grow anchor so
+    // After the user repositions the window, drop the upward-grow mode so
     // subsequent conversation growth tracks the new position downward.
     window.addEventListener(
       'mouseup',
       () => {
-        windowAnchorRef.current = null;
-        isPreExpandedRef.current = false;
-        setIsAnchoredUpward(false);
+        growsUpwardRef.current = false;
+        setGrowsUpward(false);
       },
       { once: true },
     );
@@ -1169,9 +1089,8 @@ function App() {
     // Minimal padding (pt-2 pb-6) provides just enough physical clearance for the
     // tightened drop shadow to render without clipping at the native window edge.
     <div
-      ref={outerContainerRef}
       onMouseDown={handleDragStart}
-      className={`flex flex-col items-center ${isAnchoredUpward ? 'justify-end' : 'justify-start'} h-screen w-screen px-3 pt-2 pb-6 bg-transparent overflow-visible`}
+      className={`flex flex-col items-center ${growsUpward ? 'justify-end' : 'justify-start'} h-screen w-screen px-3 pt-2 pb-6 bg-transparent overflow-visible`}
     >
       <AnimatePresence mode="wait">
         {shouldRenderOverlay ? (
