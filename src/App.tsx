@@ -1,6 +1,12 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  useLayoutEffect,
+} from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -39,14 +45,6 @@ const OVERLAY_WIDTH = 600;
 const CONTAINER_VERTICAL_PADDING = 48;
 /** Max morphing-container height in chat mode (matches `max-h-[600px]`) + vertical padding. */
 const MAX_CHAT_WINDOW_HEIGHT = 600 + CONTAINER_VERTICAL_PADDING;
-/**
- * Extra headroom (px) added when committing a native window resize during
- * upward-growth streaming. The buffer lands in the transparent region above
- * the morphing container, so the user never sees it. Content then fills
- * smoothly via `justify-end` without any native resize calls until it
- * catches up to the committed height.
- */
-const UPWARD_GROWTH_BUFFER = 80;
 
 /** Must match `OVERLAY_LOGICAL_HEIGHT_COLLAPSED` in `src-tauri/src/lib.rs`. */
 const COLLAPSED_WINDOW_HEIGHT = 80;
@@ -235,15 +233,12 @@ function App() {
   isGeneratingRef.current = isGenerating;
 
   /**
-   * Last native window height committed via `set_window_frame` during an
-   * upward-growth session. During streaming, the window is grown in coarse
-   * steps (targetHeight + UPWARD_GROWTH_BUFFER) so the extra space lands
-   * in the transparent region above the morphing container. Content fills
-   * smoothly within the already-allocated window via `justify-end`, and no
-   * native resize calls are needed until content catches up to the committed
-   * height. This eliminates the per-token `set_window_frame` jitter.
+   * High-water mark for window height during streaming. While the LLM is
+   * generating, the window only grows (never shrinks) to prevent jitter
+   * from Streamdown's block-element reflows. Reset when generation ends
+   * or a new session starts.
    */
-  const committedHeightRef = useRef(0);
+  const maxHeightRef = useRef(0);
 
   /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
@@ -272,35 +267,28 @@ function App() {
               const rect = entry.target.getBoundingClientRect();
               // Total vertical room: 8px (pt-2) + 24px (pb-6) + 16px (motion py-2) = 48px.
               // This ensures the tightened drop shadows aren't clipped by the native window edge.
-              const targetHeight =
+              let targetHeight =
                 Math.ceil(rect.height) + CONTAINER_VERTICAL_PADDING;
 
-              if (growsUpwardRef.current) {
-                const { x, bottomY } = windowPosRef.current;
-                if (
-                  isGeneratingRef.current &&
-                  targetHeight <= committedHeightRef.current
-                ) {
-                  // During streaming, content fits within the committed
-                  // window. justify-end keeps it at the bottom. No native
-                  // resize needed; this is what makes upward growth smooth.
-                  return;
+              // During streaming, only allow the window to grow (never
+              // shrink) to prevent jitter from Streamdown block reflows.
+              if (isGeneratingRef.current) {
+                if (targetHeight > maxHeightRef.current) {
+                  maxHeightRef.current = targetHeight;
+                } else {
+                  targetHeight = maxHeightRef.current;
                 }
-                // Commit a native resize. During streaming, add a buffer
-                // so content can grow into the transparent headroom without
-                // triggering another resize for several lines of text.
-                const newHeight = isGeneratingRef.current
-                  ? Math.min(
-                      targetHeight + UPWARD_GROWTH_BUFFER,
-                      MAX_CHAT_WINDOW_HEIGHT,
-                    )
-                  : targetHeight;
-                committedHeightRef.current = newHeight;
+              }
+
+              if (growsUpwardRef.current) {
+                // Grow upward: pin the window bottom and expand the top edge.
+                const { x, bottomY } = windowPosRef.current;
+                const newY = bottomY - targetHeight;
                 void invoke('set_window_frame', {
                   x,
-                  y: bottomY - newHeight,
+                  y: newY,
                   width: OVERLAY_WIDTH,
-                  height: newHeight,
+                  height: targetHeight,
                 });
               } else {
                 void getCurrentWindow().setSize(
@@ -319,12 +307,12 @@ function App() {
   }, []);
 
   /**
-   * When streaming finishes, reset the committed height so the next
-   * ResizeObserver event can trim the window to actual content height.
+   * Reset the high-water mark when streaming finishes so the window can
+   * shrink back to its natural content height on the next resize event.
    */
   useEffect(() => {
     if (!isGenerating) {
-      committedHeightRef.current = 0;
+      maxHeightRef.current = 0;
     }
   }, [isGenerating]);
 
@@ -347,7 +335,7 @@ function App() {
         windowY + MAX_CHAT_WINDOW_HEIGHT > screenBottomY;
       growsUpwardRef.current = shouldGrowUp;
       setGrowsUpward(shouldGrowUp);
-      committedHeightRef.current = 0;
+      maxHeightRef.current = 0;
       if (shouldGrowUp && windowX !== null && windowY !== null) {
         windowPosRef.current = {
           x: windowX,
@@ -434,6 +422,7 @@ function App() {
   // Uses a ref-based approach to avoid the @eslint-react/set-state-in-effect
   // warning from calling setState synchronously inside an effect body.
   const prevHistoryOpenRef = useRef(isHistoryOpen);
+  const prevHeightRef = useRef<number>(COLLAPSED_WINDOW_HEIGHT);
   if (prevHistoryOpenRef.current && !isHistoryOpen) {
     setPendingNewConversation(false);
   }
@@ -450,18 +439,48 @@ function App() {
    * indirect chain that broke timing. ResizeObserver tracks async conversation
    * list load so `min-height` stays accurate as content populates.
    */
-  useEffect(() => {
+  useLayoutEffect(() => {
     /* v8 ignore start -- ResizeObserver + DOM mutations require a real browser */
+    const container = morphingContainerNodeRef.current;
+    if (!container) return;
+
+    // Track the height when we are NOT in chat mode natively.
+    if (!isChatMode) {
+      const h = container.offsetHeight;
+      // offsetHeight might read 0 if hidden, so default to collapsed
+      prevHeightRef.current = h > 0 ? h : COLLAPSED_WINDOW_HEIGHT;
+    }
+
     if (!isChatMode || !isHistoryOpen) {
-      if (morphingContainerNodeRef.current) {
-        morphingContainerNodeRef.current.style.minHeight = '';
+      if (isChatMode && growsUpward) {
+        // We know we are growing to the max height (600px).
+        // Halting paint and forcing the DOM to the PREVIOUS height first
+        // so we avoid the sudden layout flash/jump.
+        container.style.transition = 'none';
+        container.style.height = `${prevHeightRef.current}px`;
+        void container.offsetHeight; // Force layout calculation step
+
+        requestAnimationFrame(() => {
+          container.style.transition =
+            'height 0.25s cubic-bezier(0.16, 1, 0.3, 1)';
+          container.style.height = '600px';
+        });
+      } else {
+        // Safe reset state for everything else
+        container.style.transition =
+          'min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)';
+        container.style.height = '';
+        container.style.minHeight = '';
       }
       return;
     }
 
     const dropdown = historyDropdownRef.current;
-    const container = morphingContainerNodeRef.current;
-    if (!dropdown || !container) return;
+    if (!dropdown) return;
+
+    container.style.transition =
+      'min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)';
+    container.style.height = ''; // Let history panel dictate it via minHeight
 
     const sync = () => {
       container.style.minHeight = `${dropdown.offsetTop + dropdown.offsetHeight + 8}px`;
@@ -472,7 +491,7 @@ function App() {
     ro.observe(dropdown);
     return () => ro.disconnect();
     /* v8 ignore stop */
-  }, [isChatMode, isHistoryOpen]);
+  }, [isChatMode, isHistoryOpen, growsUpward]);
 
   /**
    * Toggles the save state of the current conversation.
@@ -1171,11 +1190,12 @@ function App() {
               <div
                 ref={setContainerRef}
                 style={{
+                  /* transition starts off using min-height, but runtime effects can change it */
                   transition: 'min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
                 }}
                 className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border max-h-[600px] overflow-hidden ${
                   isChatMode
-                    ? 'rounded-lg shadow-chat'
+                    ? `rounded-lg shadow-chat`
                     : 'rounded-2xl shadow-bar'
                 }`}
               >

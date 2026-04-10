@@ -35,6 +35,37 @@ describe('App', () => {
     expect(invoke).toHaveBeenCalledWith('get_model_config');
   });
 
+  it('grows upward when near bottom screen edge', async () => {
+    const { container } = render(<App />);
+    await act(async () => {});
+
+    await act(async () => {
+      emitTauriEvent('thuki://visibility', {
+        state: 'show',
+        selected_text: null,
+        window_x: 50,
+        window_y: 1000,
+        screen_bottom_y: 1100,
+      });
+    });
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: 'hi' } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+    });
+    // This should morph into max-height window
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(r));
+    });
+    expect(
+      (container.querySelector('.morphing-container') as HTMLElement).style
+        .height,
+    ).toBe('600px');
+  });
+
   it('renders nothing when overlay is hidden', async () => {
     const { container } = render(<App />);
     // Flush effects so listener registers
@@ -425,84 +456,6 @@ describe('App', () => {
         y: 776,
         width: 600,
         height: 108,
-      });
-    });
-
-    it('adds buffer during streaming and skips resize events within it', async () => {
-      spyOnResizeObserver();
-
-      render(<App />);
-      await act(async () => {});
-
-      // bottomY = 720 + 80 = 800
-      await act(async () => {
-        emitTauriEvent('thuki://visibility', {
-          state: 'show',
-          selected_text: null,
-          window_x: 50,
-          window_y: 720,
-          screen_bottom_y: 900,
-        });
-      });
-
-      const container = document.querySelector('.morphing-container');
-      expect(container).not.toBeNull();
-
-      // Initial non-streaming render: exact height
-      invoke.mockClear();
-      act(() => {
-        triggerResize(container!, 60);
-      });
-      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
-        x: 50,
-        y: 800 - 108,
-        width: 600,
-        height: 108,
-      });
-
-      // Start streaming: submit a message
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      act(() => {
-        fireEvent.change(textarea, { target: { value: 'hello' } });
-      });
-      act(() => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-      });
-      await act(async () => {});
-
-      // Content grows during streaming: 200px content → 248 target.
-      // Buffer: min(248 + 80, 648) = 328. Committed with buffer.
-      invoke.mockClear();
-      act(() => {
-        triggerResize(container!, 200);
-      });
-      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
-        x: 50,
-        y: 800 - 328,
-        width: 600,
-        height: 328,
-      });
-
-      // Content grows to 250px (target 298): still within buffer (328). Skipped.
-      invoke.mockClear();
-      act(() => {
-        triggerResize(container!, 250);
-      });
-      expect(invoke).not.toHaveBeenCalledWith(
-        'set_window_frame',
-        expect.anything(),
-      );
-
-      // Content grows to 300px (target 348): exceeds buffer (328). New commit.
-      invoke.mockClear();
-      act(() => {
-        triggerResize(container!, 300);
-      });
-      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
-        x: 50,
-        y: 800 - 428, // min(348+80, 648) = 428
-        width: 600,
-        height: 428,
       });
     });
 
