@@ -145,7 +145,7 @@ impl GenerationState {
     }
 
     /// Cancels the active generation, if any, and clears the stored token.
-    fn cancel(&self) {
+    pub fn cancel(&self) {
         if let Some(token) = self.token.lock().unwrap().take() {
             token.cancel();
         }

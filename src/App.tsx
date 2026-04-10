@@ -386,6 +386,7 @@ function App() {
    * deferred until Framer Motion finishes the exit transition.
    */
   const requestHideOverlay = useCallback(() => {
+    cancel();
     windowAnchorRef.current = null;
     isPreExpandedRef.current = false;
     /* v8 ignore start -- DOM ref null guard: always set when overlay is visible */
@@ -407,7 +408,7 @@ function App() {
       }
       return 'hiding';
     });
-  }, []);
+  }, [cancel]);
 
   /** Ref attached to the chat-mode history dropdown for click-outside detection. */
   const historyDropdownRef = useRef<HTMLDivElement>(null);
