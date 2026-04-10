@@ -12,8 +12,6 @@ import type { Message } from '../hooks/useOllama';
 interface ConversationViewProps {
   /** Array of completed messages in the conversation. */
   messages: Message[];
-  /** The actively streaming content for the current assistant response. */
-  streamingContent: string;
   /** Whether the underlying LLM engine is currently generating a response. */
   isGenerating: boolean;
   /** Callback fired when the user requests to close the overlay. */
@@ -59,7 +57,6 @@ interface ConversationViewProps {
  */
 export function ConversationView({
   messages,
-  streamingContent,
   isGenerating,
   onClose,
   onSave,
@@ -150,7 +147,7 @@ export function ConversationView({
     });
 
     return () => cancelAnimationFrame(raf);
-  }, [messages, streamingContent]);
+  }, [messages, isGenerating]);
 
   return (
     <motion.div
@@ -174,32 +171,37 @@ export function ConversationView({
         ref={scrollContainerRef}
         className="chat-messages-scroll px-5 py-4 flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto"
       >
-        {messages.map((msg, i) => (
-          <ChatBubble
-            key={msg.id}
-            role={msg.role}
-            content={msg.content}
-            quotedText={msg.quotedText}
-            index={i}
-            imagePaths={msg.imagePaths}
-            onImagePreview={onImagePreview}
-            errorKind={msg.errorKind}
-          />
-        ))}
+        {messages.map((msg, i) => {
+          const isLastAssistant =
+            isGenerating &&
+            i === messages.length - 1 &&
+            msg.role === 'assistant';
 
-        {/* Live-updating streaming bubble */}
-        {streamingContent ? (
-          <ChatBubble
-            key="streaming"
-            role="assistant"
-            content={streamingContent}
-            index={messages.length}
-            isStreaming
-          />
-        ) : null}
+          // Hide the empty assistant placeholder; the TypingIndicator
+          // already covers this visual state.
+          if (isLastAssistant && !msg.content) return null;
+
+          return (
+            <ChatBubble
+              key={msg.id}
+              role={msg.role}
+              content={msg.content}
+              quotedText={msg.quotedText}
+              index={i}
+              isStreaming={isLastAssistant}
+              imagePaths={msg.imagePaths}
+              onImagePreview={onImagePreview}
+              errorKind={msg.errorKind}
+            />
+          );
+        })}
 
         {/* Typing indicator (pulsing dots) shown before first token arrives */}
-        {isGenerating && !streamingContent ? <TypingIndicator /> : null}
+        {isGenerating &&
+        messages[messages.length - 1]?.role === 'assistant' &&
+        !messages[messages.length - 1]?.content ? (
+          <TypingIndicator />
+        ) : null}
       </div>
 
       <motion.div

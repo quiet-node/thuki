@@ -132,7 +132,7 @@ export function ChatBubble({
               <MarkdownRenderer content={content} isStreaming={isStreaming} />
             )}
           </div>
-          {!errorKind && (
+          {!errorKind && !isStreaming && (
             <div className="h-6 flex items-center">
               <CopyButton content={content} align="left" />
             </div>
