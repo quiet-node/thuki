@@ -66,6 +66,42 @@ describe('App', () => {
     ).toBe('600px');
   });
 
+  it('keeps full chat height after clicking the expanded upward chat surface', async () => {
+    const { container } = render(<App />);
+    await act(async () => {});
+
+    await act(async () => {
+      emitTauriEvent('thuki://visibility', {
+        state: 'show',
+        selected_text: null,
+        window_x: 50,
+        window_y: 1000,
+        screen_bottom_y: 1100,
+      });
+    });
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: 'hi' } });
+      fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+    });
+
+    const morphingContainer = container.querySelector(
+      '.morphing-container',
+    ) as HTMLElement;
+    expect(morphingContainer.style.height).toBe('600px');
+
+    const chatArea = container.querySelector('.chat-area');
+    expect(chatArea).not.toBeNull();
+
+    act(() => {
+      fireEvent.mouseDown(chatArea!);
+      fireEvent.mouseUp(window);
+    });
+
+    expect(morphingContainer.style.height).toBe('600px');
+  });
+
   it('renders nothing when overlay is hidden', async () => {
     const { container } = render(<App />);
     // Flush effects so listener registers
@@ -385,9 +421,9 @@ describe('App', () => {
       });
     });
 
-    const outer = document.querySelector('.justify-end');
+    const outer = document.querySelector('.justify-start');
     expect(outer).not.toBeNull();
-    expect(document.querySelector('.justify-start')).toBeNull();
+    expect(document.querySelector('.justify-end')).toBeNull();
   });
 
   describe('ResizeObserver upward growth', () => {

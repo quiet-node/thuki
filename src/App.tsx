@@ -44,7 +44,7 @@ const OVERLAY_WIDTH = 600;
 /** Total transparent padding around the morphing container: pt-2(8) + pb-6(24) + motion py-2(16). */
 const CONTAINER_VERTICAL_PADDING = 48;
 /** Max morphing-container height in chat mode (matches `max-h-[600px]`) + vertical padding. */
-// const MAX_CHAT_WINDOW_HEIGHT = 600 + CONTAINER_VERTICAL_PADDING;
+const MAX_CHAT_WINDOW_HEIGHT = 600 + CONTAINER_VERTICAL_PADDING;
 
 /** Must match `OVERLAY_LOGICAL_HEIGHT_COLLAPSED` in `src-tauri/src/lib.rs`. */
 const COLLAPSED_WINDOW_HEIGHT = 80;
@@ -199,6 +199,7 @@ function App() {
    * to chat-window mode are animated via Framer Motion `layout` prop.
    */
   const isChatMode = messages.length > 0 || isGenerating || isSubmitPending;
+  const previousIsChatModeRef = useRef(isChatMode);
 
   /**
    * The bookmark save button is active once the AI has produced at least one
@@ -239,6 +240,7 @@ function App() {
    * or a new session starts.
    */
   const maxHeightRef = useRef(0);
+  const hasMorphedUpwardRef = useRef(false);
 
   /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
@@ -325,10 +327,12 @@ function App() {
       context: string | null,
       windowX: number | null,
       windowY: number | null,
+      screenBottomY: number | null,
     ) => {
-      // Decide growth direction: if the collapsed window plus a full chat
-      // User explicitly requested to ALWAYS morph from the bottom and grow upward.
-      const shouldGrowUp = true;
+      const shouldGrowUp =
+        windowY !== null &&
+        screenBottomY !== null &&
+        windowY + MAX_CHAT_WINDOW_HEIGHT > screenBottomY;
       growsUpwardRef.current = shouldGrowUp;
       setGrowsUpward(shouldGrowUp);
       maxHeightRef.current = 0;
@@ -348,6 +352,7 @@ function App() {
       });
       pendingSubmitRef.current = null;
       screenCapturePendingRef.current = false;
+      hasMorphedUpwardRef.current = false;
       screenCaptureInputSnapshotRef.current = null;
       setIsSubmitPending(false);
       setPendingUserMessage(null);
@@ -425,6 +430,43 @@ function App() {
   prevHistoryOpenRef.current = isHistoryOpen;
 
   /**
+   * When a submit flips the UI from ask-bar mode into chat mode while the
+   * window is pinned near the bottom edge, animate the container from its
+   * current height to the fixed full chat height. This is intentionally scoped
+   * to the upward-growth path so the downward path remains unchanged.
+   */
+  useLayoutEffect(() => {
+    /* v8 ignore start -- ResizeObserver + DOM mutations require a real browser */
+    const container = morphingContainerNodeRef.current;
+    const wasChatMode = previousIsChatModeRef.current;
+    previousIsChatModeRef.current = isChatMode;
+
+    if (!container) return;
+    if (!growsUpward || isHistoryOpen || !isChatMode || wasChatMode) {
+      return;
+    }
+
+    hasMorphedUpwardRef.current = true;
+    const startHeight =
+      container.offsetHeight > 0
+        ? container.offsetHeight
+        : prevHeightRef.current;
+    container.style.transition = 'none';
+    container.style.minHeight = '';
+    container.style.height = `${startHeight}px`;
+    void container.offsetHeight;
+
+    const frameId = requestAnimationFrame(() => {
+      // 0.4s and slightly softer cubic bezier specifically for upward morph
+      container.style.transition = 'height 0.4s cubic-bezier(0.2, 0.8, 0.2, 1)';
+      container.style.height = '600px';
+    });
+
+    return () => cancelAnimationFrame(frameId);
+    /* v8 ignore stop */
+  }, [growsUpward, isChatMode, isHistoryOpen]);
+
+  /**
    * Observes the dropdown's height while it's open and mutates the morphing
    * container's `min-height` style directly (bypassing React state) so the
    * native window grows exactly as tall as the dropdown needs. A CSS transition
@@ -445,29 +487,17 @@ function App() {
       const h = container.offsetHeight;
       // offsetHeight might read 0 if hidden, so default to collapsed
       prevHeightRef.current = h > 0 ? h : COLLAPSED_WINDOW_HEIGHT;
+      container.style.transition =
+        'min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)';
+      container.style.height = '';
+      container.style.minHeight = '';
+      return;
     }
 
-    if (!isChatMode || !isHistoryOpen) {
-      if (isChatMode && growsUpward) {
-        // We know we are growing to the max height (600px).
-        // Halting paint and forcing the DOM to the PREVIOUS height first
-        // so we avoid the sudden layout flash/jump.
-        container.style.transition = 'none';
-        container.style.height = `${prevHeightRef.current}px`;
-        void container.offsetHeight; // Force layout calculation step
-
-        requestAnimationFrame(() => {
-          container.style.transition =
-            'height 0.25s cubic-bezier(0.16, 1, 0.3, 1)';
-          container.style.height = '600px';
-        });
-      } else {
-        // Safe reset state for everything else
-        container.style.transition =
-          'min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)';
-        container.style.height = '';
-        container.style.minHeight = '';
-      }
+    if (!isHistoryOpen) {
+      container.style.transition =
+        'min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)';
+      container.style.minHeight = '';
       return;
     }
 
@@ -487,7 +517,7 @@ function App() {
     ro.observe(dropdown);
     return () => ro.disconnect();
     /* v8 ignore stop */
-  }, [isChatMode, isHistoryOpen, growsUpward]);
+  }, [isChatMode, isHistoryOpen]);
 
   /**
    * Toggles the save state of the current conversation.
@@ -1022,7 +1052,7 @@ function App() {
               payload.selected_text ?? null,
               payload.window_x ?? null,
               payload.window_y ?? null,
-              // payload.screen_bottom_y ?? null,
+              payload.screen_bottom_y ?? null,
             );
             return;
           }
@@ -1188,7 +1218,6 @@ function App() {
                 style={{
                   transition:
                     'height 0.25s cubic-bezier(0.16, 1, 0.3, 1), min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
-                  ...(isChatMode && !isHistoryOpen ? { height: '600px' } : {}),
                 }}
                 className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border max-h-[600px] overflow-hidden ${
                   isChatMode
