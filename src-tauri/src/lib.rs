@@ -652,6 +652,7 @@ pub fn run() {
                         show_overlay(app, crate::context::ActivationContext::empty());
                     }
                     "quit" => {
+                        app.state::<crate::commands::GenerationState>().cancel();
                         app.exit(0);
                     }
                     _ => {}
