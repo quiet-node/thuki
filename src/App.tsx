@@ -240,7 +240,6 @@ function App() {
    * or a new session starts.
    */
   const maxHeightRef = useRef(0);
-  const hasMorphedUpwardRef = useRef(false);
 
   /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
@@ -284,8 +283,9 @@ function App() {
 
               if (growsUpwardRef.current) {
                 // Grow upward: pin the window bottom and expand the top edge.
+                // Clamp Y so the window never extends above the menu bar.
                 const { x, bottomY } = windowPosRef.current;
-                const newY = bottomY - targetHeight;
+                const newY = Math.max(0, bottomY - targetHeight);
                 void invoke('set_window_frame', {
                   x,
                   y: newY,
@@ -352,7 +352,6 @@ function App() {
       });
       pendingSubmitRef.current = null;
       screenCapturePendingRef.current = false;
-      hasMorphedUpwardRef.current = false;
       screenCaptureInputSnapshotRef.current = null;
       setIsSubmitPending(false);
       setPendingUserMessage(null);
@@ -372,6 +371,7 @@ function App() {
   const requestHideOverlay = useCallback(() => {
     cancel();
     growsUpwardRef.current = false;
+    setGrowsUpward(false);
     screenCapturePendingRef.current = false;
     screenCaptureInputSnapshotRef.current = null;
     setSelectedContext(null);
@@ -446,7 +446,6 @@ function App() {
       return;
     }
 
-    hasMorphedUpwardRef.current = true;
     const startHeight =
       container.offsetHeight > 0
         ? container.offsetHeight

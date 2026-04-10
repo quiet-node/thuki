@@ -98,8 +98,9 @@ struct VisibilityPayload {
     state: &'static str,
     /// Selected text captured at activation time, if any.
     selected_text: Option<String>,
-    /// Logical X of the window at show time. The frontend uses this together
-    /// with `window_y` and `screen_bottom_y` to decide growth direction.
+    /// Logical X of the window at show time. Used with `window_y` and
+    /// `screen_bottom_y` to decide growth direction, and as the pinned X
+    /// coordinate for `set_window_frame` calls during upward growth.
     window_x: Option<f64>,
     /// Logical Y of the window top-left at show time.
     window_y: Option<f64>,
