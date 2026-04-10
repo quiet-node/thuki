@@ -44,7 +44,7 @@ const OVERLAY_WIDTH = 600;
 /** Total transparent padding around the morphing container: pt-2(8) + pb-6(24) + motion py-2(16). */
 const CONTAINER_VERTICAL_PADDING = 48;
 /** Max morphing-container height in chat mode (matches `max-h-[600px]`) + vertical padding. */
-const MAX_CHAT_WINDOW_HEIGHT = 600 + CONTAINER_VERTICAL_PADDING;
+// const MAX_CHAT_WINDOW_HEIGHT = 600 + CONTAINER_VERTICAL_PADDING;
 
 /** Must match `OVERLAY_LOGICAL_HEIGHT_COLLAPSED` in `src-tauri/src/lib.rs`. */
 const COLLAPSED_WINDOW_HEIGHT = 80;
@@ -325,14 +325,10 @@ function App() {
       context: string | null,
       windowX: number | null,
       windowY: number | null,
-      screenBottomY: number | null,
     ) => {
       // Decide growth direction: if the collapsed window plus a full chat
-      // would overflow the screen bottom, grow upward instead.
-      const shouldGrowUp =
-        windowY !== null &&
-        screenBottomY !== null &&
-        windowY + MAX_CHAT_WINDOW_HEIGHT > screenBottomY;
+      // User explicitly requested to ALWAYS morph from the bottom and grow upward.
+      const shouldGrowUp = true;
       growsUpwardRef.current = shouldGrowUp;
       setGrowsUpward(shouldGrowUp);
       maxHeightRef.current = 0;
@@ -1026,7 +1022,7 @@ function App() {
               payload.selected_text ?? null,
               payload.window_x ?? null,
               payload.window_y ?? null,
-              payload.screen_bottom_y ?? null,
+              // payload.screen_bottom_y ?? null,
             );
             return;
           }
@@ -1190,8 +1186,9 @@ function App() {
               <div
                 ref={setContainerRef}
                 style={{
-                  /* transition starts off using min-height, but runtime effects can change it */
-                  transition: 'min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+                  transition:
+                    'height 0.25s cubic-bezier(0.16, 1, 0.3, 1), min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+                  ...(isChatMode && !isHistoryOpen ? { height: '600px' } : {}),
                 }}
                 className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border max-h-[600px] overflow-hidden ${
                   isChatMode

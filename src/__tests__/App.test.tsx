@@ -385,9 +385,9 @@ describe('App', () => {
       });
     });
 
-    const outer = document.querySelector('.justify-start');
+    const outer = document.querySelector('.justify-end');
     expect(outer).not.toBeNull();
-    expect(document.querySelector('.justify-end')).toBeNull();
+    expect(document.querySelector('.justify-start')).toBeNull();
   });
 
   describe('ResizeObserver upward growth', () => {
