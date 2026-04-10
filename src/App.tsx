@@ -113,15 +113,8 @@ function App() {
     [persistTurn],
   );
 
-  const {
-    messages,
-    streamingContent,
-    ask,
-    cancel,
-    isGenerating,
-    reset,
-    loadMessages,
-  } = useOllama(handleTurnComplete);
+  const { messages, ask, cancel, isGenerating, reset, loadMessages } =
+    useOllama(handleTurnComplete);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -1214,7 +1207,6 @@ function App() {
                           ? [...messages, pendingUserMessage]
                           : messages
                       }
-                      streamingContent={streamingContent}
                       isGenerating={isGenerating || isSubmitPending}
                       onClose={handleCloseOverlay}
                       onSave={handleSave}

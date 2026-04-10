@@ -11,7 +11,6 @@ describe('ConversationView', () => {
     render(
       <ConversationView
         messages={messages}
-        streamingContent=""
         isGenerating={false}
         onClose={vi.fn()}
       />,
@@ -20,11 +19,16 @@ describe('ConversationView', () => {
     expect(screen.getByText('Hi!')).toBeInTheDocument();
   });
 
-  it('renders streaming bubble when streamingContent is non-empty', () => {
+  it('renders streaming assistant message when isGenerating', () => {
     const { container } = render(
       <ConversationView
-        messages={[]}
-        streamingContent="streaming response..."
+        messages={[
+          {
+            id: '1',
+            role: 'assistant' as const,
+            content: 'streaming response...',
+          },
+        ]}
         isGenerating={true}
         onClose={vi.fn()}
       />,
@@ -35,11 +39,10 @@ describe('ConversationView', () => {
     expect(container.textContent).toContain('response...');
   });
 
-  it('shows TypingIndicator when isGenerating with no streaming content', () => {
+  it('shows TypingIndicator when isGenerating with empty assistant content', () => {
     const { container } = render(
       <ConversationView
-        messages={[]}
-        streamingContent=""
+        messages={[{ id: '1', role: 'assistant' as const, content: '' }]}
         isGenerating={true}
         onClose={vi.fn()}
       />,
@@ -49,11 +52,12 @@ describe('ConversationView', () => {
     expect(dots.length).toBeGreaterThanOrEqual(9);
   });
 
-  it('hides TypingIndicator when streaming content arrives', () => {
+  it('hides TypingIndicator when assistant content arrives', () => {
     const { container } = render(
       <ConversationView
-        messages={[]}
-        streamingContent="some token"
+        messages={[
+          { id: '1', role: 'assistant' as const, content: 'some token' },
+        ]}
         isGenerating={true}
         onClose={vi.fn()}
       />,
@@ -65,12 +69,7 @@ describe('ConversationView', () => {
   it('renders WindowControls with onClose', () => {
     const onClose = vi.fn();
     render(
-      <ConversationView
-        messages={[]}
-        streamingContent=""
-        isGenerating={false}
-        onClose={onClose}
-      />,
+      <ConversationView messages={[]} isGenerating={false} onClose={onClose} />,
     );
     expect(
       screen.getByRole('button', { name: 'Close window' }),
@@ -79,12 +78,7 @@ describe('ConversationView', () => {
 
   it('renders empty state with no messages (no .chat-bubble elements)', () => {
     const { container } = render(
-      <ConversationView
-        messages={[]}
-        streamingContent=""
-        isGenerating={false}
-        onClose={vi.fn()}
-      />,
+      <ConversationView messages={[]} isGenerating={false} onClose={vi.fn()} />,
     );
     expect(container.querySelectorAll('.chat-bubble')).toHaveLength(0);
   });
@@ -93,7 +87,6 @@ describe('ConversationView', () => {
     const { container, rerender } = render(
       <ConversationView
         messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
-        streamingContent=""
         isGenerating={false}
         onClose={vi.fn()}
       />,
@@ -122,8 +115,10 @@ describe('ConversationView', () => {
     act(() => {
       rerender(
         <ConversationView
-          messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
-          streamingContent="new token"
+          messages={[
+            { id: '1', role: 'user' as const, content: 'first' },
+            { id: '2', role: 'assistant' as const, content: 'new token' },
+          ]}
           isGenerating={true}
           onClose={vi.fn()}
         />,
@@ -138,7 +133,6 @@ describe('ConversationView', () => {
     const { container, rerender } = render(
       <ConversationView
         messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
-        streamingContent=""
         isGenerating={false}
         onClose={vi.fn()}
       />,
@@ -169,7 +163,6 @@ describe('ConversationView', () => {
             { id: '1', role: 'user' as const, content: 'first' },
             { id: '2', role: 'user' as const, content: 'second question' },
           ]}
-          streamingContent=""
           isGenerating={true}
           onClose={vi.fn()}
         />,
@@ -184,8 +177,10 @@ describe('ConversationView', () => {
   it('auto-scroll stays disabled when assistant message is finalized', () => {
     const { container, rerender } = render(
       <ConversationView
-        messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
-        streamingContent="streaming reply"
+        messages={[
+          { id: '1', role: 'user' as const, content: 'first' },
+          { id: '2', role: 'assistant' as const, content: 'streaming reply' },
+        ]}
         isGenerating={true}
         onClose={vi.fn()}
       />,
@@ -219,7 +214,6 @@ describe('ConversationView', () => {
               content: 'streaming reply',
             },
           ]}
-          streamingContent=""
           isGenerating={false}
           onClose={vi.fn()}
         />,
@@ -235,7 +229,6 @@ describe('ConversationView', () => {
     const { container, rerender } = render(
       <ConversationView
         messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
-        streamingContent=""
         isGenerating={false}
         onClose={vi.fn()}
       />,
@@ -282,8 +275,10 @@ describe('ConversationView', () => {
     act(() => {
       rerender(
         <ConversationView
-          messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
-          streamingContent="new tokens"
+          messages={[
+            { id: '1', role: 'user' as const, content: 'first' },
+            { id: '2', role: 'assistant' as const, content: 'new tokens' },
+          ]}
           isGenerating={true}
           onClose={vi.fn()}
         />,
@@ -297,7 +292,6 @@ describe('ConversationView', () => {
     const { container, rerender } = render(
       <ConversationView
         messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
-        streamingContent=""
         isGenerating={false}
         onClose={vi.fn()}
       />,
@@ -343,8 +337,10 @@ describe('ConversationView', () => {
     act(() => {
       rerender(
         <ConversationView
-          messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
-          streamingContent="new tokens"
+          messages={[
+            { id: '1', role: 'user' as const, content: 'first' },
+            { id: '2', role: 'assistant' as const, content: 'new tokens' },
+          ]}
           isGenerating={true}
           onClose={vi.fn()}
         />,
@@ -359,7 +355,6 @@ describe('ConversationView', () => {
     const { container, rerender } = render(
       <ConversationView
         messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
-        streamingContent=""
         isGenerating={false}
         onClose={vi.fn()}
       />,
@@ -386,8 +381,10 @@ describe('ConversationView', () => {
     act(() => {
       rerender(
         <ConversationView
-          messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
-          streamingContent="tokens"
+          messages={[
+            { id: '1', role: 'user' as const, content: 'first' },
+            { id: '2', role: 'assistant' as const, content: 'tokens' },
+          ]}
           isGenerating={true}
           onClose={vi.fn()}
         />,
@@ -400,7 +397,6 @@ describe('ConversationView', () => {
       render(
         <ConversationView
           messages={[]}
-          streamingContent=""
           isGenerating={false}
           onClose={vi.fn()}
           onHistoryOpen={vi.fn()}
@@ -415,7 +411,6 @@ describe('ConversationView', () => {
       render(
         <ConversationView
           messages={[]}
-          streamingContent=""
           isGenerating={false}
           onClose={vi.fn()}
         />,
@@ -428,7 +423,6 @@ describe('ConversationView', () => {
       render(
         <ConversationView
           messages={[]}
-          streamingContent=""
           isGenerating={false}
           onClose={vi.fn()}
           onHistoryOpen={onHistoryOpen}
@@ -442,7 +436,6 @@ describe('ConversationView', () => {
       render(
         <ConversationView
           messages={[]}
-          streamingContent=""
           isGenerating={false}
           onClose={vi.fn()}
           onSave={vi.fn()}
@@ -458,7 +451,6 @@ describe('ConversationView', () => {
       render(
         <ConversationView
           messages={[]}
-          streamingContent=""
           isGenerating={false}
           onClose={vi.fn()}
           onSave={onSave}
@@ -474,7 +466,6 @@ describe('ConversationView', () => {
       render(
         <ConversationView
           messages={[]}
-          streamingContent=""
           isGenerating={false}
           onClose={vi.fn()}
           onSave={vi.fn()}
@@ -490,7 +481,6 @@ describe('ConversationView', () => {
       render(
         <ConversationView
           messages={[]}
-          streamingContent=""
           isGenerating={false}
           onClose={vi.fn()}
           onSave={vi.fn()}
@@ -514,7 +504,6 @@ describe('ConversationView', () => {
     render(
       <ConversationView
         messages={messages}
-        streamingContent=""
         isGenerating={false}
         onClose={vi.fn()}
       />,

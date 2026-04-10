@@ -71,13 +71,14 @@ describe('useOllama', () => {
       });
     });
 
-    it('adds user message immediately on ask', async () => {
+    it('adds user message and empty assistant placeholder immediately on ask', async () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
         await result.current.ask('my question');
       });
 
+      expect(result.current.messages).toHaveLength(2);
       expect(result.current.messages[0]).toEqual(
         expect.objectContaining({
           role: 'user',
@@ -85,6 +86,12 @@ describe('useOllama', () => {
         }),
       );
       expect(result.current.messages[0].id).toEqual(expect.any(String));
+      expect(result.current.messages[1]).toEqual(
+        expect.objectContaining({
+          role: 'assistant',
+          content: '',
+        }),
+      );
     });
 
     it('stores quotedText on user message when provided', async () => {
@@ -119,7 +126,7 @@ describe('useOllama', () => {
       );
     });
 
-    it('accumulates streaming tokens into streamingContent', async () => {
+    it('accumulates streaming tokens into the assistant message', async () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
@@ -134,10 +141,13 @@ describe('useOllama', () => {
         channel!.simulateMessage({ type: 'Token', data: ', world' });
       });
 
-      expect(result.current.streamingContent).toBe('Hello, world');
+      const assistantMsg = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistantMsg?.content).toBe('Hello, world');
     });
 
-    it('moves content to messages on Done chunk', async () => {
+    it('keeps assistant message in place on Done chunk', async () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
@@ -152,7 +162,6 @@ describe('useOllama', () => {
         channel!.simulateMessage({ type: 'Done' });
       });
 
-      expect(result.current.streamingContent).toBe('');
       expect(result.current.isGenerating).toBe(false);
       expect(result.current.messages).toContainEqual(
         expect.objectContaining({
@@ -231,8 +240,8 @@ describe('useOllama', () => {
         await result.current.ask('', undefined, ['/tmp/img1.jpg']);
       });
 
-      // Should have created a user message (not returned early)
-      expect(result.current.messages).toHaveLength(1);
+      // Should have created a user message + assistant placeholder
+      expect(result.current.messages).toHaveLength(2);
       expect(result.current.messages[0]).toEqual(
         expect.objectContaining({
           role: 'user',
@@ -352,7 +361,7 @@ describe('useOllama', () => {
       expect(result.current.isGenerating).toBe(false);
     });
 
-    it('Error chunk creates assistant message with errorKind set', async () => {
+    it('Error chunk updates assistant placeholder with errorKind', async () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
@@ -381,7 +390,7 @@ describe('useOllama', () => {
       );
     });
 
-    it('Error chunk with partial tokens preserves prior content in separate message', async () => {
+    it('Error chunk with partial tokens replaces content with error', async () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
@@ -399,7 +408,7 @@ describe('useOllama', () => {
         });
       });
 
-      // The error message should appear as its own assistant message with errorKind
+      // The error replaces the assistant placeholder content
       const errorMsg = result.current.messages.find((m) => m.errorKind);
       expect(errorMsg).toBeDefined();
       expect(errorMsg?.errorKind).toBe('Other');
@@ -415,11 +424,11 @@ describe('useOllama', () => {
         await result.current.ask('test');
       });
 
-      const assistantMsg = result.current.messages.find(
-        (m) => m.role === 'assistant',
+      const errorMsg = result.current.messages.find(
+        (m) => m.errorKind === 'Other',
       );
-      expect(assistantMsg?.errorKind).toBe('Other');
-      expect(assistantMsg?.content).toBeTruthy();
+      expect(errorMsg?.errorKind).toBe('Other');
+      expect(errorMsg?.content).toBeTruthy();
     });
   });
 
@@ -440,8 +449,11 @@ describe('useOllama', () => {
         channel!.simulateMessage({ type: 'Token', data: '' });
       });
 
-      // streamingContent should still be empty (no crash)
-      expect(result.current.streamingContent).toBe('');
+      // Assistant content should still be empty (no crash)
+      const assistantMsg = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistantMsg?.content).toBe('');
     });
   });
 
@@ -494,7 +506,7 @@ describe('useOllama', () => {
   // ─── Cancelled chunk handling ───────────────────────────────────────────────
 
   describe('Cancelled chunk', () => {
-    it('finalizes partial content as assistant message on Cancelled', async () => {
+    it('keeps partial content as assistant message on Cancelled', async () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
@@ -510,7 +522,6 @@ describe('useOllama', () => {
         channel!.simulateMessage({ type: 'Cancelled' });
       });
 
-      expect(result.current.streamingContent).toBe('');
       expect(result.current.isGenerating).toBe(false);
       expect(result.current.messages).toContainEqual(
         expect.objectContaining({
@@ -520,7 +531,7 @@ describe('useOllama', () => {
       );
     });
 
-    it('does not add empty assistant message when cancelled with no tokens', async () => {
+    it('removes assistant placeholder when cancelled with no tokens', async () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
@@ -534,9 +545,8 @@ describe('useOllama', () => {
         channel!.simulateMessage({ type: 'Cancelled' });
       });
 
-      expect(result.current.streamingContent).toBe('');
       expect(result.current.isGenerating).toBe(false);
-      // Only the user message should exist — no empty assistant message
+      // Only the user message should exist — empty assistant placeholder was removed
       expect(result.current.messages).toHaveLength(1);
       expect(result.current.messages[0].role).toBe('user');
     });
@@ -566,7 +576,6 @@ describe('useOllama', () => {
       });
 
       expect(result.current.messages).toEqual([]);
-      expect(result.current.streamingContent).toBe('');
       expect(result.current.isGenerating).toBe(false);
       // Should also reset backend conversation history
       expect(invoke).toHaveBeenCalledWith('reset_conversation');
@@ -663,7 +672,7 @@ describe('useOllama', () => {
       expect(result.current.messages).toEqual(loaded);
     });
 
-    it('clears streaming and generating state when loading messages', async () => {
+    it('clears generating state when loading messages', async () => {
       invoke.mockRejectedValueOnce(new Error('boom'));
       const { result } = renderHook(() => useOllama());
 
@@ -676,7 +685,6 @@ describe('useOllama', () => {
         result.current.loadMessages([]);
       });
 
-      expect(result.current.streamingContent).toBe('');
       expect(result.current.isGenerating).toBe(false);
     });
   });

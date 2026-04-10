@@ -43,7 +43,6 @@ export function useOllama(
   onTurnComplete?: (userMsg: Message, assistantMsg: Message) => void,
 ) {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [streamingContent, setStreamingContent] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
 
   /**
@@ -78,57 +77,54 @@ export function useOllama(
           imagePaths && imagePaths.length > 0 ? imagePaths : undefined,
       };
 
-      setMessages((prev) => [...prev, userMsg]);
-      setStreamingContent('');
+      const assistantId = crypto.randomUUID();
+      const assistantMsg: Message = {
+        id: assistantId,
+        role: 'assistant',
+        content: '',
+      };
+
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setIsGenerating(true);
 
       const channel = new Channel<StreamChunk>();
-      // Use block-scoped variable to accumulate the stream and occasionally flush to React state,
-      // mitigating rendering lag from hundreds of fast chunk events.
       let currentContent = '';
 
       channel.onmessage = (chunk) => {
         if (chunk.type === 'Token') {
           currentContent += chunk.data;
-          setStreamingContent(currentContent);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, content: currentContent } : m,
+            ),
+          );
         } else if (chunk.type === 'Done') {
-          const assistantMsg: Message = {
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: currentContent,
-          };
-          setMessages((prev) => [...prev, assistantMsg]);
-          setStreamingContent('');
           setIsGenerating(false);
           // Notify the caller that a complete turn has finished so it can
           // persist both messages to SQLite if the conversation is saved.
-          onTurnComplete?.(userMsg, assistantMsg);
+          onTurnComplete?.(userMsg, {
+            ...assistantMsg,
+            content: currentContent,
+          });
         } else if (chunk.type === 'Cancelled') {
-          // Finalize partial content as a complete message so the user
-          // retains everything generated before they hit stop.
-          if (currentContent) {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: crypto.randomUUID(),
-                role: 'assistant',
-                content: currentContent,
-              },
-            ]);
+          // Remove the empty assistant placeholder if nothing was generated.
+          if (!currentContent) {
+            setMessages((prev) => prev.filter((m) => m.id !== assistantId));
           }
-          setStreamingContent('');
           setIsGenerating(false);
         } else {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: 'assistant',
-              content: chunk.data.message,
-              errorKind: chunk.data.kind,
-            },
-          ]);
-          setStreamingContent('');
+          // Replace the streaming placeholder with an error message.
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    content: chunk.data.message,
+                    errorKind: chunk.data.kind,
+                  }
+                : m,
+            ),
+          );
           setIsGenerating(false);
         }
       };
@@ -150,7 +146,6 @@ export function useOllama(
             errorKind: 'Other' as const,
           },
         ]);
-        setStreamingContent('');
         setIsGenerating(false);
       }
     },
@@ -166,7 +161,6 @@ export function useOllama(
   /** Resets all conversation state to prepare for a fresh session. */
   const reset = useCallback(() => {
     setMessages([]);
-    setStreamingContent('');
     setIsGenerating(false);
     void invoke('reset_conversation');
   }, []);
@@ -182,13 +176,11 @@ export function useOllama(
    */
   const loadMessages = useCallback((msgs: Message[]) => {
     setMessages(msgs);
-    setStreamingContent('');
     setIsGenerating(false);
   }, []);
 
   return {
     messages,
-    streamingContent,
     ask,
     cancel,
     isGenerating,
