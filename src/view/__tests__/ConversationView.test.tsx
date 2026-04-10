@@ -134,7 +134,7 @@ describe('ConversationView', () => {
     expect(scrollEl.scrollTop).toBe(0);
   });
 
-  it('auto-scroll re-enables when a new message is added', () => {
+  it('auto-scroll re-enables when a new user message is added', () => {
     const { container, rerender } = render(
       <ConversationView
         messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
@@ -160,7 +160,7 @@ describe('ConversationView', () => {
       scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
     });
 
-    // Add a new message — this should re-enable auto-scroll because
+    // Add a new user message — this should re-enable auto-scroll because
     // sending a message is an explicit "I want to see the response" action
     act(() => {
       rerender(
@@ -178,7 +178,57 @@ describe('ConversationView', () => {
 
     // Auto-scroll should have re-engaged (scrollTop set via rAF in test env
     // may not fire, but the branch is exercised — the key assertion is that
-    // adding a message doesn't leave auto-scroll disabled)
+    // adding a user message doesn't leave auto-scroll disabled)
+  });
+
+  it('auto-scroll stays disabled when assistant message is finalized', () => {
+    const { container, rerender } = render(
+      <ConversationView
+        messages={[{ id: '1', role: 'user' as const, content: 'first' }]}
+        streamingContent="streaming reply"
+        isGenerating={true}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const scrollEl = container.querySelector(
+      '.chat-messages-scroll',
+    ) as HTMLElement;
+    expect(scrollEl).not.toBeNull();
+
+    Object.defineProperty(scrollEl, 'scrollTop', {
+      value: 0,
+      configurable: true,
+      writable: true,
+    });
+
+    // User scrolls up during streaming — disables auto-scroll
+    act(() => {
+      scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+    });
+
+    // Streaming finishes: assistant message is committed to the messages array
+    act(() => {
+      rerender(
+        <ConversationView
+          messages={[
+            { id: '1', role: 'user' as const, content: 'first' },
+            {
+              id: '2',
+              role: 'assistant' as const,
+              content: 'streaming reply',
+            },
+          ]}
+          streamingContent=""
+          isGenerating={false}
+          onClose={vi.fn()}
+        />,
+      );
+    });
+
+    // scrollTop should remain 0: auto-scroll was NOT re-enabled by the
+    // assistant message, so the user can keep reading where they scrolled
+    expect(scrollEl.scrollTop).toBe(0);
   });
 
   it('auto-scroll re-enables when user scrolls back to bottom via wheel', async () => {
