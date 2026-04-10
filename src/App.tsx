@@ -123,15 +123,8 @@ function App() {
     [persistTurn],
   );
 
-  const {
-    messages,
-    streamingContent,
-    ask,
-    cancel,
-    isGenerating,
-    reset,
-    loadMessages,
-  } = useOllama(handleTurnComplete);
+  const { messages, ask, cancel, isGenerating, reset, loadMessages } =
+    useOllama(handleTurnComplete);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -206,7 +199,7 @@ function App() {
    * complete response. We check for an assistant message rather than any message
    * so the button never appears during the very first user-only half-turn.
    */
-  const canSave = messages.some((m) => m.role === 'assistant');
+  const canSave = !isGenerating && messages.some((m) => m.role === 'assistant');
   const shouldRenderOverlay = overlayState === 'visible';
 
   /**
@@ -1233,7 +1226,6 @@ function App() {
                           ? [...messages, pendingUserMessage]
                           : messages
                       }
-                      streamingContent={streamingContent}
                       isGenerating={isGenerating || isSubmitPending}
                       onClose={handleCloseOverlay}
                       onSave={handleSave}
