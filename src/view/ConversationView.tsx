@@ -147,7 +147,7 @@ export function ConversationView({
     });
 
     return () => cancelAnimationFrame(raf);
-  }, [messages]);
+  }, [messages, isGenerating]);
 
   return (
     <motion.div
