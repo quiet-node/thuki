@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { invoke, Channel } from '@tauri-apps/api/core';
 
 /** Mirrors the Rust OllamaErrorKind enum sent over IPC. */
@@ -46,6 +46,10 @@ export function useOllama(
   const [streamingContent, setStreamingContent] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
 
+  // Epoch counter: bumped on every reset so that stale channel callbacks from
+  // a previous generation can detect they are outdated and bail out.
+  const epochRef = useRef(0);
+
   /**
    * Submits a message to the Ollama backend and initiates the streaming response.
    * The backend manages conversation history — only the new user message is sent.
@@ -82,12 +86,19 @@ export function useOllama(
       setStreamingContent('');
       setIsGenerating(true);
 
+      // Snapshot the epoch so this channel's callbacks can detect a reset.
+      const epochAtStart = epochRef.current;
+
       const channel = new Channel<StreamChunk>();
       // Use block-scoped variable to accumulate the stream and occasionally flush to React state,
       // mitigating rendering lag from hundreds of fast chunk events.
       let currentContent = '';
 
       channel.onmessage = (chunk) => {
+        // A reset occurred since this generation started; discard all
+        // remaining chunks so stale content never re-populates the UI.
+        if (epochRef.current !== epochAtStart) return;
+
         if (chunk.type === 'Token') {
           currentContent += chunk.data;
           setStreamingContent(currentContent);
@@ -165,6 +176,7 @@ export function useOllama(
 
   /** Resets all conversation state to prepare for a fresh session. */
   const reset = useCallback(() => {
+    epochRef.current += 1;
     setMessages([]);
     setStreamingContent('');
     setIsGenerating(false);

@@ -573,6 +573,118 @@ describe('useOllama', () => {
     });
   });
 
+  // ─── Stale channel after reset ───────────────────────────────────────────────
+
+  describe('stale channel after reset', () => {
+    it('ignores Token chunks arriving after reset()', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello');
+      });
+
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', data: 'Partial' });
+      });
+      expect(result.current.streamingContent).toBe('Partial');
+
+      // Reset clears state and bumps the epoch
+      act(() => {
+        result.current.reset();
+      });
+      expect(result.current.messages).toEqual([]);
+      expect(result.current.streamingContent).toBe('');
+
+      // Old channel sends more chunks after the reset
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', data: ' stale token' });
+      });
+
+      // Should remain empty; the stale token must be discarded
+      expect(result.current.streamingContent).toBe('');
+      expect(result.current.messages).toEqual([]);
+    });
+
+    it('ignores Cancelled chunk arriving after reset()', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello');
+      });
+
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', data: 'Partial' });
+      });
+
+      act(() => {
+        result.current.reset();
+      });
+
+      // Old channel delivers Cancelled after reset
+      act(() => {
+        channel!.simulateMessage({ type: 'Cancelled' });
+      });
+
+      // The partial content must NOT reappear as a finalized message
+      expect(result.current.messages).toEqual([]);
+      expect(result.current.isGenerating).toBe(false);
+    });
+
+    it('ignores Done chunk arriving after reset()', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+
+      await act(async () => {
+        await result.current.ask('hello');
+      });
+
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', data: 'Full answer' });
+      });
+
+      act(() => {
+        result.current.reset();
+      });
+
+      // Old channel delivers Done after reset
+      act(() => {
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      expect(result.current.messages).toEqual([]);
+      expect(onTurnComplete).not.toHaveBeenCalled();
+    });
+
+    it('ignores Error chunk arriving after reset()', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello');
+      });
+
+      const channel = getChannel();
+
+      act(() => {
+        result.current.reset();
+      });
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'Other', message: 'Something went wrong\nHTTP 500' },
+        });
+      });
+
+      expect(result.current.messages).toEqual([]);
+    });
+  });
+
   // ─── onTurnComplete callback ─────────────────────────────────────────────────
 
   describe('onTurnComplete callback', () => {
