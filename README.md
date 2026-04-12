@@ -1,7 +1,6 @@
 <h1 align="center">
-  Thuki
+  Thuki - WIP
 </h1>
-
 
 <p align="center">
   <img src="public/thuki-logo.png" alt="Thuki logo" width="300" />
@@ -30,19 +29,26 @@
 
 ---
 
-⚠️ **BETA: Active Development.** This project is in active development. Features may change, bugs may occur, and AI model outputs are not guaranteed to be perfect or accurate. Use at your own risk. Always verify important information with trusted sources.
-
----
-
 **No API keys. No subscriptions. No cloud. No telemetry. Free forever.**
-
-What is Thuki?
 
 Thuki is a lightweight macOS overlay powered by local AI models running entirely on your own machine, built for quick, uninterrupted asks without ever leaving what you're doing.
 
-How to use Thuki?
+## See It in Action
 
-Highlight a piece of text you have a question about in any app, double-tap Control <kbd>⌃</kbd>, and Thuki floats up right on top, with your selection pre-filled and ready. Ask your question, then save the conversation or toss it away and get straight back to work. No app switching. No breaking your flow. Everything happens in one Space, exactly where you already are.
+### Basic Usage
+
+Double-tap Control <kbd>⌃</kbd> to summon Thuki from anywhere. Ask a question, get an answer, and dismiss. Use `/screen` or the screenshot button to capture your screen and attach it as context.
+
+<!-- VIDEO EMBED: Upload your .mp4 by dragging it into a GitHub issue comment box.
+     GitHub will generate a URL like https://github.com/user-attachments/assets/....
+     Replace YOUR_BASIC_USAGE_VIDEO_URL below with that URL, then delete this comment. -->
+
+### Overlay Mode
+
+Thuki floats above every app, including fullscreen ones. Highlight text anywhere, double-tap Control <kbd>⌃</kbd>, and Thuki opens with your selection pre-filled as a quote, ready to ask about.
+
+<!-- VIDEO EMBED: Same process as above. Drag the overlay demo .mp4 into a GitHub issue comment,
+     copy the generated URL, and replace YOUR_OVERLAY_VIDEO_URL below. -->
 
 ## Why Thuki?
 
