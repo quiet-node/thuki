@@ -41,7 +41,7 @@ Thuki (thư kí - Vietnamese for secretary) is a lightweight macOS overlay power
 
 Double-tap Control <kbd>⌃</kbd> to summon Thuki from anywhere. Ask a question, get an answer, and dismiss. Use `/screen` or the screenshot button to capture your screen and attach it as context.
 
-https://github.com/user-attachments/assets/ec598bba-defc-4fed-842c-c536eafc861d
+https://github.com/user-attachments/assets/57df0efe-24eb-4875-a83d-e605e0c6f8b4
 
 
 ### Overlay Mode
