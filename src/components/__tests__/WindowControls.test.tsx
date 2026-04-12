@@ -12,8 +12,8 @@ describe('WindowControls', () => {
 
   it('close button has correct styling (bg-[#FF5F57])', () => {
     const { container } = render(<WindowControls onClose={vi.fn()} />);
-    const closeBtn = container.querySelector('.bg-\\[\\#FF5F57\\]');
-    expect(closeBtn).not.toBeNull();
+    const closeDot = container.querySelector('.bg-\\[\\#FF5F57\\]');
+    expect(closeDot).not.toBeNull();
   });
 
   it('renders decorative minimize and zoom dots (aria-hidden elements)', () => {

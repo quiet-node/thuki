@@ -132,27 +132,31 @@ export const WindowControls = memo(function WindowControls({
   return (
     <div className="shrink-0">
       <div className="group flex items-center px-4 py-2.5">
-        {/* Close button — reveals × icon on group hover */}
+        {/* Close button — reveals × icon on group hover.
+            Padding enlarges the hit area to ~24×24px without changing the
+            12×12px visual dot; negative margin preserves flex spacing. */}
         <button
           type="button"
           onClick={onClose}
-          className="w-3 h-3 rounded-full bg-[#FF5F57] flex items-center justify-center transition-transform duration-150 hover:scale-125 active:scale-90"
+          className="group/close-btn p-1.5 -m-1.5 flex items-center justify-center rounded-full cursor-pointer"
           aria-label="Close window"
         >
-          <svg
-            width="6"
-            height="6"
-            viewBox="0 0 6 6"
-            className="opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-            aria-hidden="true"
-          >
-            <path
-              d="M0.5 0.5L5.5 5.5M5.5 0.5L0.5 5.5"
-              stroke="rgba(0,0,0,0.6)"
-              strokeWidth="1.2"
-              strokeLinecap="round"
-            />
-          </svg>
+          <div className="w-3 h-3 rounded-full bg-[#FF5F57] flex items-center justify-center transition-transform duration-150 group-hover/close-btn:scale-125 group-active/close-btn:scale-90">
+            <svg
+              width="6"
+              height="6"
+              viewBox="0 0 6 6"
+              className="opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+              aria-hidden="true"
+            >
+              <path
+                d="M0.5 0.5L5.5 5.5M5.5 0.5L0.5 5.5"
+                stroke="rgba(0,0,0,0.6)"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </div>
         </button>
 
         {/* Minimize — decorative only */}
