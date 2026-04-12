@@ -7,22 +7,28 @@ Use the color tokens, typography, and motion principles exactly as specified.
 
 ## 1. Product Identity
 
-**Name:** Thuki (pronounced "too-kee", from Vietnamese "thu ky" meaning secretary)
+**Name:** Thuki (pronounced "too-kee", from Vietnamese "thư kí" meaning secretary)
 
-**Tagline:** _Your AI secretary. Always there. Always private._
+**Tagline:** _A context-aware floating AI assistant for macOS. Fully local, free, works everywhere._
 
-**One-liner:** A floating AI overlay for macOS that you summon with a double-tap of
-Control. Fully local. Zero cloud. Free forever.
+**One-liner:** Double-tap Control and Thuki pops up right on top of whatever you're
+working on, even fullscreen apps. Ask a question, get an answer, toss the convo, back
+to work. All in one Space.
 
-**Personality:** Calm, minimal, precise. Not flashy. Not corporate. The vibe is a
-premium tool that respects your focus and your privacy. Think: Arc browser meets
-macOS Spotlight.
+**Personality:** Calm, minimal, precise. Personal, not corporate. Built by someone who
+wanted this tool and couldn't find it. The vibe is a focused utility that respects your
+attention and your privacy. Think: Arc browser meets macOS Spotlight.
 
-**Target audience:** Developers, power users, and anyone who wants fast AI answers
-without leaving their current app or giving up their data.
+**Target audience:** Developers and power users who want fast AI answers without
+switching apps, creating accounts, or sending data to a server.
 
-**Core differentiator:** It floats above every app, including fullscreen ones. No
-other AI tool does this.
+**Core differentiator:** Floats above every app, including fullscreen ones. Highlight
+any text first and Thuki opens with it pre-filled as context. Your favorite AI chat
+apps can't do either of those things.
+
+**Tech:** Runs locally via Ollama, ships with Gemma 4 (Google's latest open-source
+model) by default. No API keys, no subscriptions, no telemetry. Conversations stored
+in a local SQLite database. Free and open source under Apache 2.0.
 
 ---
 
