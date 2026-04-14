@@ -78,8 +78,6 @@ interface ChatBubbleProps {
   errorKind?: OllamaErrorKind;
   /** Accumulated thinking/reasoning content from the model, if thinking mode was used. */
   thinkingContent?: string;
-  /** Duration of the thinking phase in milliseconds. */
-  thinkingDurationMs?: number;
   /** Whether the model is currently in the thinking phase (streaming thinking tokens). */
   isThinking?: boolean;
   /** Absolute file paths of images attached to this message, if any. */
@@ -128,7 +126,6 @@ export function ChatBubble({
   onImagePreview,
   errorKind,
   thinkingContent,
-  thinkingDurationMs,
   isThinking,
 }: ChatBubbleProps) {
   const isUser = role === 'user';
@@ -193,7 +190,6 @@ export function ChatBubble({
               <ThinkingBlock
                 thinkingContent={thinkingContent}
                 isThinking={isThinking ?? false}
-                durationMs={thinkingDurationMs}
               />
             )}
             {errorKind ? (

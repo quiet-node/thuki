@@ -5,7 +5,6 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 export interface ThinkingBlockProps {
   thinkingContent: string;
   isThinking: boolean;
-  durationMs?: number;
 }
 
 const THINKING_TEXT = 'Thinking...';
@@ -64,26 +63,15 @@ function ThinkingLabel() {
 }
 
 /**
- * Formats the thinking duration into a human-readable string.
- */
-function formatDuration(ms: number): string {
-  if (ms < 1000) return 'less than a second';
-  const seconds = Math.round(ms / 1000);
-  return `${seconds} second${seconds === 1 ? '' : 's'}`;
-}
-
-/**
  * Collapsible thinking/reasoning section rendered above an AI response.
  *
- * While `isThinking` is true the block auto-expands, showing a timeline rail
- * with a spinning clock icon and streaming thinking tokens. When thinking
- * completes (isThinking transitions false) the block auto-collapses to a
- * one-line summary. The user can click to toggle expansion at any time.
+ * While `isThinking` is true the block shows an animated "Thinking..." label.
+ * When thinking completes the label changes to "Thinking process". The user
+ * can click to toggle expansion at any time to see the reasoning content.
  */
 export function ThinkingBlock({
   thinkingContent,
   isThinking,
-  durationMs,
 }: ThinkingBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -93,11 +81,6 @@ export function ThinkingBlock({
   const displayContent = thinkingContent
     .replace(/^\s*Thinking Process[:\s]*\n*/i, '')
     .trimStart();
-
-  const durationText =
-    !isThinking && durationMs !== undefined
-      ? `Thought for ${formatDuration(durationMs)}`
-      : null;
 
   return (
     <div data-testid="thinking-block" className="mb-2">
@@ -120,7 +103,9 @@ export function ThinkingBlock({
         {isThinking ? (
           <ThinkingLabel />
         ) : (
-          <span className="text-sm text-text-secondary/60">{durationText}</span>
+          <span className="text-sm text-text-secondary/60">
+            Thinking process
+          </span>
         )}
       </button>
 
