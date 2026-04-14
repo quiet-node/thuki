@@ -505,7 +505,6 @@ describe('ConversationView', () => {
               role: 'assistant' as const,
               content: 'The answer is 42.',
               thinkingContent: 'Let me think about this...',
-              thinkingDurationMs: 3000,
             },
           ]}
           isGenerating={false}

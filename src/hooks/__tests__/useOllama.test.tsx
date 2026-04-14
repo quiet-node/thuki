@@ -743,32 +743,7 @@ describe('useOllama', () => {
       );
     });
 
-    it('tracks thinking duration from first ThinkingToken to first Token', async () => {
-      const { result } = renderHook(() => useOllama());
-
-      await act(async () => {
-        await result.current.ask('hello', undefined, undefined, true);
-      });
-
-      const channel = getChannel();
-      expect(channel).not.toBeNull();
-
-      act(() => {
-        channel!.simulateMessage({
-          type: 'ThinkingToken',
-          data: 'reasoning',
-        });
-        channel!.simulateMessage({ type: 'Token', data: 'answer' });
-      });
-
-      const assistantMsg = result.current.messages.find(
-        (m) => m.role === 'assistant',
-      );
-      expect(assistantMsg?.thinkingDurationMs).toBeGreaterThanOrEqual(0);
-      expect(assistantMsg?.thinkingDurationMs).toBeDefined();
-    });
-
-    it('includes thinkingContent and thinkingDurationMs in onTurnComplete on Done', async () => {
+    it('includes thinkingContent in onTurnComplete on Done', async () => {
       const onTurnComplete = vi.fn();
       const { result } = renderHook(() => useOllama(onTurnComplete));
 
@@ -791,10 +766,9 @@ describe('useOllama', () => {
       const [, assistantMsg] = onTurnComplete.mock.calls[0];
       expect(assistantMsg.content).toBe('the answer');
       expect(assistantMsg.thinkingContent).toBe('thinking deeply');
-      expect(assistantMsg.thinkingDurationMs).toBeGreaterThanOrEqual(0);
     });
 
-    it('does not set thinkingContent/thinkingDurationMs when no thinking happened', async () => {
+    it('does not set thinkingContent when no thinking happened', async () => {
       const onTurnComplete = vi.fn();
       const { result } = renderHook(() => useOllama(onTurnComplete));
 
@@ -811,7 +785,6 @@ describe('useOllama', () => {
 
       const [, assistantMsg] = onTurnComplete.mock.calls[0];
       expect(assistantMsg.thinkingContent).toBeUndefined();
-      expect(assistantMsg.thinkingDurationMs).toBeUndefined();
     });
 
     it('preserves thinking content when cancelled with thinking but no regular tokens', async () => {

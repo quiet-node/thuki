@@ -24,15 +24,11 @@ describe('ThinkingBlock', () => {
     expect(screen.queryByTestId('timeline-rail')).not.toBeInTheDocument();
   });
 
-  it('shows "Thought for X seconds" in collapsed state', () => {
+  it('shows "Thinking process" in collapsed state when done', () => {
     render(
-      <ThinkingBlock
-        thinkingContent="Some reasoning."
-        isThinking={false}
-        durationMs={3500}
-      />,
+      <ThinkingBlock thinkingContent="Some reasoning." isThinking={false} />,
     );
-    expect(screen.getByText('Thought for 4 seconds')).toBeInTheDocument();
+    expect(screen.getByText('Thinking process')).toBeInTheDocument();
   });
 
   it('expands on click to show thinking content', () => {
@@ -40,7 +36,6 @@ describe('ThinkingBlock', () => {
       <ThinkingBlock
         thinkingContent="I analyzed the code."
         isThinking={false}
-        durationMs={2000}
       />,
     );
 
@@ -58,7 +53,6 @@ describe('ThinkingBlock', () => {
       <ThinkingBlock
         thinkingContent="Some thinking content."
         isThinking={false}
-        durationMs={5000}
       />,
     );
 
@@ -78,7 +72,6 @@ describe('ThinkingBlock', () => {
       <ThinkingBlock
         thinkingContent="Thinking Process:\n\nActual reasoning here."
         isThinking={false}
-        durationMs={4000}
       />,
     );
 
@@ -95,7 +88,6 @@ describe('ThinkingBlock', () => {
       <ThinkingBlock
         thinkingContent="Some **bold** text."
         isThinking={false}
-        durationMs={2000}
       />,
     );
 
@@ -109,11 +101,7 @@ describe('ThinkingBlock', () => {
 
   it('shows Done label with checkmark when expanded after done', () => {
     render(
-      <ThinkingBlock
-        thinkingContent="Done thinking."
-        isThinking={false}
-        durationMs={2000}
-      />,
+      <ThinkingBlock thinkingContent="Done thinking." isThinking={false} />,
     );
 
     fireEvent.click(
@@ -150,13 +138,7 @@ describe('ThinkingBlock', () => {
   });
 
   it('does not spin clock icon when done', () => {
-    render(
-      <ThinkingBlock
-        thinkingContent="Done."
-        isThinking={false}
-        durationMs={2000}
-      />,
-    );
+    render(<ThinkingBlock thinkingContent="Done." isThinking={false} />);
 
     fireEvent.click(
       screen.getByRole('button', { name: 'Toggle thinking details' }),
@@ -167,49 +149,9 @@ describe('ThinkingBlock', () => {
     ).toBe(false);
   });
 
-  it('formats sub-second durations as "less than a second"', () => {
-    render(
-      <ThinkingBlock
-        thinkingContent="Quick thought."
-        isThinking={false}
-        durationMs={500}
-      />,
-    );
-    expect(
-      screen.getByText('Thought for less than a second'),
-    ).toBeInTheDocument();
-  });
-
-  it('formats singular second correctly', () => {
-    render(
-      <ThinkingBlock
-        thinkingContent="Brief thought."
-        isThinking={false}
-        durationMs={1000}
-      />,
-    );
-    expect(screen.getByText('Thought for 1 second')).toBeInTheDocument();
-  });
-
-  it('shows animated label instead of duration while still thinking', () => {
-    render(
-      <ThinkingBlock
-        thinkingContent="Still going"
-        isThinking={true}
-        durationMs={3000}
-      />,
-    );
-    expect(screen.queryByText(/Thought for/)).not.toBeInTheDocument();
-    expect(screen.getByTestId('thinking-label')).toBeInTheDocument();
-  });
-
   it('sets aria-expanded correctly on the toggle button', () => {
     render(
-      <ThinkingBlock
-        thinkingContent="Test content."
-        isThinking={false}
-        durationMs={2000}
-      />,
+      <ThinkingBlock thinkingContent="Test content." isThinking={false} />,
     );
     const button = screen.getByRole('button', {
       name: 'Toggle thinking details',
@@ -222,11 +164,7 @@ describe('ThinkingBlock', () => {
 
   it('rotates chevron based on expanded state', () => {
     render(
-      <ThinkingBlock
-        thinkingContent="Chevron test."
-        isThinking={false}
-        durationMs={1000}
-      />,
+      <ThinkingBlock thinkingContent="Chevron test." isThinking={false} />,
     );
     const chevron = screen.getByTestId('thinking-chevron');
     expect(chevron.style.transform).toBe('rotate(90deg)');
@@ -238,13 +176,7 @@ describe('ThinkingBlock', () => {
   });
 
   it('renders thinking text in normal color (not grayed out)', () => {
-    render(
-      <ThinkingBlock
-        thinkingContent="Normal text."
-        isThinking={false}
-        durationMs={1000}
-      />,
-    );
+    render(<ThinkingBlock thinkingContent="Normal text." isThinking={false} />);
 
     fireEvent.click(
       screen.getByRole('button', { name: 'Toggle thinking details' }),

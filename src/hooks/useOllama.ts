@@ -20,8 +20,6 @@ export interface Message {
   errorKind?: OllamaErrorKind;
   /** Accumulated thinking/reasoning content from the model, if thinking mode was used. */
   thinkingContent?: string;
-  /** Duration of the thinking phase in milliseconds. */
-  thinkingDurationMs?: number;
 }
 
 /**
@@ -96,14 +94,9 @@ export function useOllama(
       const channel = new Channel<StreamChunk>();
       let currentContent = '';
       let currentThinkingContent = '';
-      let thinkingStartTime = 0;
-      let thinkingDurationMs = 0;
 
       channel.onmessage = (chunk) => {
         if (chunk.type === 'ThinkingToken') {
-          if (thinkingStartTime === 0) {
-            thinkingStartTime = Date.now();
-          }
           currentThinkingContent += chunk.data;
           setMessages((prev) =>
             prev.map((m) =>
@@ -113,21 +106,10 @@ export function useOllama(
             ),
           );
         } else if (chunk.type === 'Token') {
-          // Calculate thinking duration on the first regular token after thinking
-          if (thinkingStartTime !== 0 && thinkingDurationMs === 0) {
-            thinkingDurationMs = Date.now() - thinkingStartTime;
-          }
           currentContent += chunk.data;
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === assistantId
-                ? {
-                    ...m,
-                    content: currentContent,
-                    thinkingDurationMs:
-                      thinkingStartTime !== 0 ? thinkingDurationMs : undefined,
-                  }
-                : m,
+              m.id === assistantId ? { ...m, content: currentContent } : m,
             ),
           );
         } else if (chunk.type === 'Done') {
@@ -138,8 +120,6 @@ export function useOllama(
             ...assistantMsg,
             content: currentContent,
             thinkingContent: currentThinkingContent || undefined,
-            thinkingDurationMs:
-              thinkingStartTime !== 0 ? thinkingDurationMs : undefined,
           });
         } else if (chunk.type === 'Cancelled') {
           // Remove the empty assistant placeholder if nothing was generated.
