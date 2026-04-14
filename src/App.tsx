@@ -51,18 +51,26 @@ const COLLAPSED_WINDOW_HEIGHT = 80;
 
 /**
  * Parses a message to detect all valid slash commands present as whole words.
- * Returns flags for each known command type.
+ * Derives detectable commands from the COMMANDS registry so adding a command
+ * to the registry is sufficient (no hardcoded trigger strings here).
+ * Also returns the message with command triggers stripped for the LLM.
  */
 export function parseCommands(text: string): {
-  hasScreen: boolean;
-  hasThink: boolean;
+  found: Set<string>;
+  strippedMessage: string;
 } {
   const words = text.trim().split(/\s+/);
-  const triggers = new Set(words);
-  return {
-    hasScreen: triggers.has('/screen'),
-    hasThink: triggers.has('/think'),
-  };
+  const triggerSet = new Set(COMMANDS.map((c) => c.trigger));
+  const found = new Set<string>();
+  const remaining: string[] = [];
+  for (const word of words) {
+    if (triggerSet.has(word)) {
+      found.add(word);
+    } else {
+      remaining.push(word);
+    }
+  }
+  return { found, strippedMessage: remaining.join(' ') };
 }
 
 type OverlayVisibilityPayload =
@@ -156,6 +164,7 @@ function App() {
   const pendingSubmitRef = useRef<{
     query: string;
     context: string | undefined;
+    think: boolean;
   } | null>(null);
   /** True while waiting for images to finish processing before a deferred
    *  submit. Drives the "waiting" UI state in the ask bar. */
@@ -891,7 +900,12 @@ function App() {
 
     // Parse all valid commands from anywhere in the message.
     const trimmedQuery = query.trim();
-    const { hasScreen, hasThink } = parseCommands(trimmedQuery);
+    const { found, strippedMessage } = parseCommands(trimmedQuery);
+    const hasScreen = found.has('/screen');
+    const hasThink = found.has('/think');
+
+    // Nothing to send if the message is only commands with no content or images.
+    if (!strippedMessage && attachedImages.length === 0 && !hasScreen) return;
 
     if (hasScreen) {
       // Fire-and-forget: the async path handles cleanup and ask() invocation.
@@ -908,29 +922,22 @@ function App() {
       .slice(0, quote.maxContextLength);
     const context = sanitized?.trim() ? sanitized : undefined;
 
-    if (hasThink) {
-      // Check that there is non-command content (or images) to submit.
-      const words = trimmedQuery.trim().split(/\s+/);
-      const nonCommandContent = words
-        .filter((w) => !COMMANDS.some((c) => c.trigger === w))
-        .join(' ');
-      if (!nonCommandContent && attachedImages.length === 0) return;
-      executeSubmit(trimmedQuery, context, true);
-      return;
-    }
-
     // If all images are ready (or there are none), submit immediately.
     const hasPendingImages = attachedImages.some(
       (img) => img.filePath === null,
     );
     if (!hasPendingImages) {
-      executeSubmit(query, context);
+      executeSubmit(trimmedQuery, context, hasThink || undefined);
       return;
     }
 
     // Images are still processing — store the intent and wait. The effect
     // below will fire the actual ask() once every image has resolved.
-    pendingSubmitRef.current = { query, context };
+    pendingSubmitRef.current = {
+      query: trimmedQuery,
+      context,
+      think: hasThink,
+    };
     setIsSubmitPending(true);
 
     // Show the user's message immediately in the chat view. Use file paths
@@ -939,7 +946,7 @@ function App() {
     setPendingUserMessage({
       id: crypto.randomUUID(),
       role: 'user',
-      content: query,
+      content: trimmedQuery,
       quotedText: context,
       imagePaths: attachedImages.map((img) => img.filePath ?? img.blobUrl),
     });
@@ -981,14 +988,16 @@ function App() {
     const allReady = attachedImages.every((img) => img.filePath !== null);
     if (!allReady) return;
 
-    const { query: pendingQuery, context } = pendingSubmitRef.current;
+    const { query: pendingQuery, context, think } = pendingSubmitRef.current;
     pendingSubmitRef.current = null;
     setIsSubmitPending(false);
     // Clear the preview message — ask() will add the real one with file paths.
     setPendingUserMessage(null);
 
     const images = attachedImages.map((img) => img.filePath as string);
-    void ask(pendingQuery, context, images);
+    void ask(pendingQuery, context, images, think || undefined);
+    // Note: the display content in the pending bubble (set in handleSubmit)
+    // already includes command triggers for visibility in the chat.
     setSelectedContext(null);
     for (const img of attachedImages) {
       URL.revokeObjectURL(img.blobUrl);
