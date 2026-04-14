@@ -132,5 +132,5 @@ export function buildPrompt(
     return null;
   }
 
-  return cmd.promptTemplate.replace('$LANG', lang).replace('$INPUT', input);
+  return cmd.promptTemplate.replace(/\$LANG|\$INPUT/g, (m) => (m === '$LANG' ? lang : input));
 }
