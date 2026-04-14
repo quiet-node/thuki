@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1](https://github.com/quiet-node/thuki/compare/v0.6.0...v0.6.1) (2026-04-14)
+
+
+### Bug Fixes
+
+* intercept drops at root level and add max-images UX feedback ([#90](https://github.com/quiet-node/thuki/issues/90)) ([c304af8](https://github.com/quiet-node/thuki/commit/c304af8e1ffc32567228bd6910ecacdad1150991))
+
 ## [0.6.0](https://github.com/quiet-node/thuki/compare/v0.5.2...v0.6.0) (2026-04-14)
 
 
