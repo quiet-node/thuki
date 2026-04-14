@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
@@ -6,32 +6,6 @@ export interface ThinkingBlockProps {
   thinkingContent: string;
   isThinking: boolean;
   durationMs?: number;
-}
-
-/**
- * Extracts a meaningful summary from the thinking content.
- * Skips lines that are just labels (e.g., "Thinking Process:") and grabs
- * the first substantive sentence. Falls back to a truncated version if
- * no sentence-ending punctuation is found.
- */
-function extractSummary(content: string): string {
-  // Skip label-only lines like "Thinking Process:" at the start
-  const cleaned = content.replace(
-    /^[\s\S]*?(?:Thinking Process[:\s]*\n+)/i,
-    '',
-  );
-  const text = cleaned.trim() || content.trim();
-  // Strip leading list numbering (e.g., "1. ") and markdown bold markers
-  const stripped = text.replace(/^\d+\.\s*/, '').replace(/\*\*/g, '');
-  // Match up to the first sentence-ending punctuation or newline,
-  // but skip periods that follow a single digit (list numbering mid-text)
-  const match = stripped.match(/^(.+?)(?<!\d)[.!?\n]/);
-  if (match) {
-    const summary = match[1].trim();
-    return summary.length > 80 ? summary.slice(0, 80) + '...' : summary;
-  }
-  const plain = stripped.slice(0, 80).trim();
-  return plain + (stripped.length > 80 ? '...' : '');
 }
 
 /**
@@ -56,21 +30,7 @@ export function ThinkingBlock({
   isThinking,
   durationMs,
 }: ThinkingBlockProps) {
-  const [isExpanded, setIsExpanded] = useState(isThinking);
-  const prevIsThinkingRef = useRef(isThinking);
-
-  /* eslint-disable @eslint-react/set-state-in-effect -- intentional: syncing
-     expanded state with isThinking prop transitions (false->true expands,
-     true->false collapses). This is a controlled prop-to-state sync. */
-  useEffect(() => {
-    if (isThinking && !prevIsThinkingRef.current) {
-      setIsExpanded(true);
-    } else if (!isThinking && prevIsThinkingRef.current) {
-      setIsExpanded(false);
-    }
-    prevIsThinkingRef.current = isThinking;
-  }, [isThinking]);
-  /* eslint-enable @eslint-react/set-state-in-effect */
+  const [isExpanded, setIsExpanded] = useState(false);
 
   if (!thinkingContent) return null;
 
@@ -79,15 +39,14 @@ export function ThinkingBlock({
     .replace(/^\s*Thinking Process[:\s]*\n*/i, '')
     .trimStart();
 
-  const summary = isThinking ? 'Thinking...' : extractSummary(thinkingContent);
   const durationText =
     !isThinking && durationMs !== undefined
       ? `Thought for ${formatDuration(durationMs)}`
-      : null;
+      : 'Thinking...';
 
   return (
     <div data-testid="thinking-block" className="mb-2">
-      {/* Clickable summary row */}
+      {/* Clickable summary row: chevron + "Thought for Xs" */}
       <button
         type="button"
         onClick={() => setIsExpanded((prev) => !prev)}
@@ -103,12 +62,7 @@ export function ThinkingBlock({
         >
           &#9650;
         </span>
-        <span className="text-sm text-text-secondary italic">{summary}</span>
-        {durationText && (
-          <span className="text-xs text-text-secondary/50 ml-1">
-            {durationText}
-          </span>
-        )}
+        <span className="text-sm text-text-secondary/60">{durationText}</span>
       </button>
 
       {/* Expandable content */}
@@ -126,39 +80,39 @@ export function ThinkingBlock({
               <div className="flex gap-2">
                 {/* Timeline rail */}
                 <div className="flex flex-col items-center flex-shrink-0">
-                  {/* Clock icon */}
+                  {/* Clock icon (no circle border, just the icon) */}
                   <div
                     data-testid="clock-icon"
-                    className={`w-5 h-5 rounded-full border border-text-secondary/40 flex items-center justify-center ${isThinking ? 'animate-spin' : ''}`}
+                    className={`w-5 h-5 flex items-center justify-center ${isThinking ? 'animate-spin' : ''}`}
                   >
                     <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 12 12"
+                      width="16"
+                      height="16"
+                      viewBox="0 0 16 16"
                       fill="none"
-                      className="text-text-secondary/70"
+                      className="text-text-secondary/50"
                     >
                       <circle
-                        cx="6"
-                        cy="6"
-                        r="5"
+                        cx="8"
+                        cy="8"
+                        r="7"
                         stroke="currentColor"
                         strokeWidth="1.2"
                       />
                       <line
-                        x1="6"
-                        y1="3"
-                        x2="6"
-                        y2="6"
+                        x1="8"
+                        y1="4"
+                        x2="8"
+                        y2="8"
                         stroke="currentColor"
                         strokeWidth="1.2"
                         strokeLinecap="round"
                       />
                       <line
-                        x1="6"
-                        y1="6"
-                        x2="8"
-                        y2="6"
+                        x1="8"
+                        y1="8"
+                        x2="11"
+                        y2="8"
                         stroke="currentColor"
                         strokeWidth="1.2"
                         strokeLinecap="round"
@@ -169,8 +123,8 @@ export function ThinkingBlock({
                   <div className="w-px flex-1 bg-text-secondary/20 min-h-[20px]" />
                 </div>
 
-                {/* Thinking text rendered as markdown */}
-                <div className="flex-1 text-sm text-text-secondary/70 select-text min-w-0">
+                {/* Thinking text rendered as markdown (normal text color) */}
+                <div className="flex-1 text-sm select-text min-w-0">
                   <MarkdownRenderer
                     content={displayContent}
                     isStreaming={isThinking}
@@ -178,22 +132,29 @@ export function ThinkingBlock({
                 </div>
               </div>
 
-              {/* Done row (separate from the text, own row below) */}
+              {/* Done row (separate, with extra top spacing) */}
               {!isThinking && (
-                <div className="flex items-center gap-1.5 mt-1">
+                <div className="flex items-center gap-1.5 mt-3">
                   <div
                     data-testid="checkmark-icon"
-                    className="w-5 h-5 rounded-full border border-text-secondary/40 flex items-center justify-center"
+                    className="w-5 h-5 flex items-center justify-center"
                   >
                     <svg
-                      width="10"
-                      height="10"
-                      viewBox="0 0 10 10"
+                      width="16"
+                      height="16"
+                      viewBox="0 0 16 16"
                       fill="none"
-                      className="text-text-secondary/70"
+                      className="text-text-secondary/50"
                     >
+                      <circle
+                        cx="8"
+                        cy="8"
+                        r="7"
+                        stroke="currentColor"
+                        strokeWidth="1.2"
+                      />
                       <path
-                        d="M2 5.5L4 7.5L8 3"
+                        d="M5 8.5L7 10.5L11 5.5"
                         stroke="currentColor"
                         strokeWidth="1.3"
                         strokeLinecap="round"
