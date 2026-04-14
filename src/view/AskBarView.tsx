@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
 import { ImageThumbnails } from '../components/ImageThumbnails';
@@ -141,6 +141,52 @@ const CAMERA_ICON = (
 );
 
 /**
+ * Renders text with command triggers highlighted in violet for the mirror div.
+ * Splits on command boundaries and wraps each trigger in a colored span.
+ */
+export function renderHighlightedText(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    let earliest = -1;
+    let matchedTrigger = '';
+    for (const cmd of COMMANDS) {
+      const idx = remaining.indexOf(cmd.trigger);
+      if (idx !== -1 && (earliest === -1 || idx < earliest)) {
+        const before = idx === 0 || remaining[idx - 1] === ' ';
+        const after =
+          idx + cmd.trigger.length >= remaining.length ||
+          remaining[idx + cmd.trigger.length] === ' ';
+        if (before && after) {
+          earliest = idx;
+          matchedTrigger = cmd.trigger;
+        }
+      }
+    }
+
+    if (earliest === -1) {
+      parts.push(<span key={parts.length}>{remaining}</span>);
+      break;
+    }
+
+    if (earliest > 0) {
+      parts.push(
+        <span key={parts.length}>{remaining.slice(0, earliest)}</span>,
+      );
+    }
+    parts.push(
+      <span key={parts.length} className="text-violet-400">
+        {matchedTrigger}
+      </span>,
+    );
+    remaining = remaining.slice(earliest + matchedTrigger.length);
+  }
+
+  return <>{parts}</>;
+}
+
+/**
  * Maximum number of manually attached images per message. The backend allows
  * one additional image from /screen capture, for a total of 4 per message
  * (MAX_IMAGES_PER_MESSAGE in images.rs).
@@ -207,6 +253,9 @@ export function AskBarView({
   onImagePreview,
   onScreenshot,
 }: AskBarViewProps) {
+  /** Ref to the mirror div behind the textarea for command highlighting. */
+  const mirrorRef = useRef<HTMLDivElement>(null);
+
   /** True when the UI should be locked — either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
   const canSubmit =
@@ -231,19 +280,22 @@ export function AskBarView({
   const [dismissedQuery, setDismissedQuery] = useState('');
 
   /**
-   * Derived: show the suggestion popover when the query starts with "/" and
-   * has not yet had a space added (user is still typing the trigger token),
-   * the UI is not busy, and the user has not explicitly dismissed this prefix.
+   * Finds the last word starting with "/" in the query to use as the active
+   * command prefix. This allows command suggestions to appear anywhere in the
+   * text, not just at the start.
    */
   const rawQuery = query.trimStart();
+  const lastSlashWord = useMemo(() => {
+    // Find the last word that starts with "/"
+    const match = rawQuery.match(/(?:^|\s)(\/\S*)$/);
+    return match ? match[1] : '';
+  }, [rawQuery]);
+
   const showSuggestions =
-    !isBusy &&
-    rawQuery.startsWith('/') &&
-    !rawQuery.includes(' ') &&
-    rawQuery !== dismissedQuery;
+    !isBusy && lastSlashWord.length > 0 && lastSlashWord !== dismissedQuery;
 
   /** The active command prefix (e.g. "/sc"). Empty when not suggesting. */
-  const commandPrefix = showSuggestions ? rawQuery : '';
+  const commandPrefix = showSuggestions ? lastSlashWord : '';
 
   /** Commands that match the current prefix (memoized to keep stable reference). */
   const filteredCommands = useMemo(
@@ -264,14 +316,22 @@ export function AskBarView({
   }, [commandPrefix]);
   /* eslint-enable @eslint-react/set-state-in-effect */
 
-  /** Applies the selected trigger by setting the query to "trigger " (with trailing space). */
+  /**
+   * Applies the selected trigger by replacing the partial slash word at the
+   * end of the query with the full trigger + trailing space.
+   */
   const handleCommandSelect = useCallback(
     (trigger: string) => {
       setDismissedQuery('');
       setHighlightedIndex(0);
-      setQuery(trigger + ' ');
+      // Replace the partial slash word at the end with the completed trigger
+      const beforeSlash = rawQuery.slice(
+        0,
+        rawQuery.length - lastSlashWord.length,
+      );
+      setQuery(beforeSlash + trigger + ' ');
     },
-    [setQuery],
+    [setQuery, rawQuery, lastSlashWord],
   );
 
   /**
@@ -338,7 +398,7 @@ export function AskBarView({
             highlightedIndex < filteredCommands.length
           ) {
             const selectedTrigger = filteredCommands[highlightedIndex].trigger;
-            if (rawQuery !== selectedTrigger) {
+            if (lastSlashWord !== selectedTrigger) {
               // Partial match: complete the trigger into the input.
               e.preventDefault();
               handleCommandSelect(selectedTrigger);
@@ -350,7 +410,7 @@ export function AskBarView({
         }
         if (e.key === 'Escape') {
           e.preventDefault();
-          setDismissedQuery(rawQuery);
+          setDismissedQuery(lastSlashWord);
           return;
         }
       }
@@ -365,7 +425,7 @@ export function AskBarView({
       filteredCommands,
       highlightedIndex,
       handleCommandSelect,
-      rawQuery,
+      lastSlashWord,
       onSubmit,
     ],
   );
@@ -395,6 +455,14 @@ export function AskBarView({
     },
     [isBusy, attachedImages.length, onImagesAttached],
   );
+
+  /** Syncs the mirror div scroll position with the textarea. */
+  const handleTextareaScroll = useCallback(() => {
+    /* v8 ignore start -- both refs are always set by React when this fires */
+    if (!mirrorRef.current || !inputRef.current) return;
+    /* v8 ignore stop */
+    mirrorRef.current.scrollTop = inputRef.current.scrollTop;
+  }, [inputRef]);
 
   /** Handles clipboard paste — extracts image items from clipboardData. */
   const handlePaste = useCallback(
@@ -527,18 +595,31 @@ export function AskBarView({
             </button>
           )}
 
-          <textarea
-            ref={inputRef}
-            value={query}
-            onChange={handleTextareaChange}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            disabled={isBusy}
-            autoFocus
-            rows={1}
-            placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
-            className="flex-1 min-w-0 bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
-          />
+          <div className="relative flex-1 min-w-0">
+            {/* Mirror div: renders the same text with highlighted commands.
+                Sits behind the transparent textarea so colored spans show through. */}
+            <div
+              ref={mirrorRef}
+              aria-hidden="true"
+              className="absolute inset-0 pointer-events-none bg-transparent text-text-primary text-sm py-2 px-1 leading-relaxed whitespace-pre-wrap break-words overflow-hidden"
+            >
+              {renderHighlightedText(query)}
+            </div>
+            <textarea
+              ref={inputRef}
+              value={query}
+              onChange={handleTextareaChange}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              onScroll={handleTextareaScroll}
+              disabled={isBusy}
+              autoFocus
+              rows={1}
+              placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
+              className="relative w-full bg-transparent border-none outline-none text-transparent text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
+              style={{ caretColor: 'var(--color-text-primary)' }}
+            />
+          </div>
 
           {isAtMaxImages ? (
             <Tooltip label="Maximum 3 images attached">
