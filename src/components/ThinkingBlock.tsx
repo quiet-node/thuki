@@ -74,6 +74,11 @@ export function ThinkingBlock({
 
   if (!thinkingContent) return null;
 
+  // Strip "Thinking Process:" label that Gemma4 prepends to thinking tokens
+  const displayContent = thinkingContent
+    .replace(/^\s*Thinking Process[:\s]*\n*/i, '')
+    .trimStart();
+
   const summary = isThinking ? 'Thinking...' : extractSummary(thinkingContent);
   const durationText =
     !isThinking && durationMs !== undefined
@@ -116,90 +121,89 @@ export function ThinkingBlock({
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="flex gap-3 mt-2">
-              {/* Timeline rail */}
-              <div
-                data-testid="timeline-rail"
-                className="flex flex-col items-center gap-1 py-1"
-              >
-                {/* Clock icon */}
-                <div
-                  data-testid="clock-icon"
-                  className={`w-5 h-5 rounded-full border border-text-secondary/40 flex items-center justify-center ${isThinking ? 'animate-spin' : ''}`}
-                >
-                  <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 12 12"
-                    fill="none"
-                    className="text-text-secondary/70"
+            <div data-testid="timeline-rail" className="mt-1.5">
+              {/* Clock + thinking text row */}
+              <div className="flex gap-2">
+                {/* Timeline rail */}
+                <div className="flex flex-col items-center flex-shrink-0">
+                  {/* Clock icon */}
+                  <div
+                    data-testid="clock-icon"
+                    className={`w-5 h-5 rounded-full border border-text-secondary/40 flex items-center justify-center ${isThinking ? 'animate-spin' : ''}`}
                   >
-                    <circle
-                      cx="6"
-                      cy="6"
-                      r="5"
-                      stroke="currentColor"
-                      strokeWidth="1.2"
-                    />
-                    <line
-                      x1="6"
-                      y1="3"
-                      x2="6"
-                      y2="6"
-                      stroke="currentColor"
-                      strokeWidth="1.2"
-                      strokeLinecap="round"
-                    />
-                    <line
-                      x1="6"
-                      y1="6"
-                      x2="8"
-                      y2="6"
-                      stroke="currentColor"
-                      strokeWidth="1.2"
-                      strokeLinecap="round"
-                    />
-                  </svg>
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 12 12"
+                      fill="none"
+                      className="text-text-secondary/70"
+                    >
+                      <circle
+                        cx="6"
+                        cy="6"
+                        r="5"
+                        stroke="currentColor"
+                        strokeWidth="1.2"
+                      />
+                      <line
+                        x1="6"
+                        y1="3"
+                        x2="6"
+                        y2="6"
+                        stroke="currentColor"
+                        strokeWidth="1.2"
+                        strokeLinecap="round"
+                      />
+                      <line
+                        x1="6"
+                        y1="6"
+                        x2="8"
+                        y2="6"
+                        stroke="currentColor"
+                        strokeWidth="1.2"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  </div>
+                  {/* Vertical line */}
+                  <div className="w-px flex-1 bg-text-secondary/20 min-h-[20px]" />
                 </div>
 
-                {/* Vertical line */}
-                <div className="w-px flex-1 bg-text-secondary/20 min-h-[20px]" />
+                {/* Thinking text rendered as markdown */}
+                <div className="flex-1 text-sm text-text-secondary/70 select-text min-w-0">
+                  <MarkdownRenderer
+                    content={displayContent}
+                    isStreaming={isThinking}
+                  />
+                </div>
+              </div>
 
-                {/* Checkmark icon + "Done" label (only when done) */}
-                {!isThinking && (
-                  <div className="flex items-center gap-1.5">
-                    <div
-                      data-testid="checkmark-icon"
-                      className="w-5 h-5 rounded-full border border-text-secondary/40 flex items-center justify-center"
+              {/* Done row (separate from the text, own row below) */}
+              {!isThinking && (
+                <div className="flex items-center gap-1.5 mt-1">
+                  <div
+                    data-testid="checkmark-icon"
+                    className="w-5 h-5 rounded-full border border-text-secondary/40 flex items-center justify-center"
+                  >
+                    <svg
+                      width="10"
+                      height="10"
+                      viewBox="0 0 10 10"
+                      fill="none"
+                      className="text-text-secondary/70"
                     >
-                      <svg
-                        width="10"
-                        height="10"
-                        viewBox="0 0 10 10"
-                        fill="none"
-                        className="text-text-secondary/70"
-                      >
-                        <path
-                          d="M2 5.5L4 7.5L8 3"
-                          stroke="currentColor"
-                          strokeWidth="1.3"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </div>
-                    <span className="text-xs text-text-secondary/50">Done</span>
+                      <path
+                        d="M2 5.5L4 7.5L8 3"
+                        stroke="currentColor"
+                        strokeWidth="1.3"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
                   </div>
-                )}
-              </div>
-
-              {/* Thinking text rendered as markdown */}
-              <div className="flex-1 text-sm text-text-secondary/70 py-1 select-text">
-                <MarkdownRenderer
-                  content={thinkingContent}
-                  isStreaming={isThinking}
-                />
-              </div>
+                  <span className="text-xs text-text-secondary/50">Done</span>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
