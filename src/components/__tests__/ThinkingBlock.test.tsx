@@ -10,9 +10,12 @@ describe('ThinkingBlock', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('shows "Thinking..." in summary while isThinking', () => {
+  it('shows animated "Thinking..." label while isThinking', () => {
     render(<ThinkingBlock thinkingContent="Working on it" isThinking={true} />);
-    expect(screen.getByText('Thinking...')).toBeInTheDocument();
+    expect(screen.getByTestId('thinking-label')).toBeInTheDocument();
+    expect(screen.getByTestId('thinking-label').textContent).toBe(
+      'Thinking...',
+    );
   });
 
   it('is collapsed by default, even while thinking', () => {
@@ -188,7 +191,7 @@ describe('ThinkingBlock', () => {
     expect(screen.getByText('Thought for 1 second')).toBeInTheDocument();
   });
 
-  it('does not show duration while still thinking', () => {
+  it('shows animated label instead of duration while still thinking', () => {
     render(
       <ThinkingBlock
         thinkingContent="Still going"
@@ -197,6 +200,7 @@ describe('ThinkingBlock', () => {
       />,
     );
     expect(screen.queryByText(/Thought for/)).not.toBeInTheDocument();
+    expect(screen.getByTestId('thinking-label')).toBeInTheDocument();
   });
 
   it('sets aria-expanded correctly on the toggle button', () => {

@@ -894,8 +894,8 @@ function App() {
         trimmedQuery['/think'.length] === ' ');
 
     if (isThinkCommand) {
-      const cleanQuery = trimmedQuery.slice('/think'.length).trimStart();
-      if (!cleanQuery && attachedImages.length === 0) return;
+      const textAfterCommand = trimmedQuery.slice('/think'.length).trimStart();
+      if (!textAfterCommand && attachedImages.length === 0) return;
 
       // Sanitize context before forwarding.
       // eslint-disable-next-line no-control-regex
@@ -905,7 +905,10 @@ function App() {
         .slice(0, quote.maxContextLength);
       const contextThink = sanitizedThink?.trim() ? sanitizedThink : undefined;
 
-      executeSubmit(cleanQuery, contextThink, true);
+      // Keep "/think" prefix in display content so the user bubble shows
+      // which command was used. The backend receives the full text too,
+      // which is fine (the model treats it as part of the prompt).
+      executeSubmit(trimmedQuery, contextThink, true);
       return;
     }
 

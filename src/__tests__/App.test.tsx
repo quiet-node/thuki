@@ -3141,7 +3141,7 @@ describe('App', () => {
   // ─── /think command ─────────────────────────────────────────────────────────
 
   describe('/think command', () => {
-    it('sends think:true to ask_ollama and strips /think prefix from message', async () => {
+    it('sends think:true to ask_ollama and keeps /think prefix in message', async () => {
       enableChannelCapture();
 
       render(<App />);
@@ -3164,7 +3164,7 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith(
         'ask_ollama',
         expect.objectContaining({
-          message: 'why is the sky blue?',
+          message: '/think why is the sky blue?',
           think: true,
         }),
       );
@@ -3243,7 +3243,7 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith(
         'ask_ollama',
         expect.objectContaining({
-          message: 'explain this code',
+          message: '/think explain this code',
           quotedText: 'some selected text',
           think: true,
         }),

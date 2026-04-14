@@ -532,7 +532,7 @@ describe('ConversationView', () => {
       );
       // The bubble should render with ThinkingBlock visible
       expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
-      expect(screen.getByText('Thinking...')).toBeInTheDocument();
+      expect(screen.getByTestId('thinking-label')).toBeInTheDocument();
     });
 
     it('does not show TypingIndicator when assistant has thinkingContent but no content', () => {

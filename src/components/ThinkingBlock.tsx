@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
@@ -6,6 +6,43 @@ export interface ThinkingBlockProps {
   thinkingContent: string;
   isThinking: boolean;
   durationMs?: number;
+}
+
+const THINKING_TEXT = 'Thinking...';
+/** Milliseconds each character stays highlighted during the sweep. */
+const SWEEP_STEP_MS = 100;
+
+/**
+ * Animated "Thinking..." label with a character-by-character highlight sweep.
+ * One letter at a time lights up to full brightness, then dims back as the
+ * highlight moves to the next character. Loops continuously.
+ */
+function ThinkingLabel() {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    timerRef.current = setInterval(() => {
+      setActiveIndex((prev) => (prev + 1) % THINKING_TEXT.length);
+    }, SWEEP_STEP_MS);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
+  return (
+    <span className="text-sm" data-testid="thinking-label">
+      {THINKING_TEXT.split('').map((char, i) => (
+        <span
+          key={i}
+          className="transition-opacity duration-100"
+          style={{ opacity: i === activeIndex ? 1 : 0.4 }}
+        >
+          {char}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 /**
@@ -42,11 +79,11 @@ export function ThinkingBlock({
   const durationText =
     !isThinking && durationMs !== undefined
       ? `Thought for ${formatDuration(durationMs)}`
-      : 'Thinking...';
+      : null;
 
   return (
     <div data-testid="thinking-block" className="mb-2">
-      {/* Clickable summary row: chevron + "Thought for Xs" */}
+      {/* Clickable summary row: chevron + label */}
       <button
         type="button"
         onClick={() => setIsExpanded((prev) => !prev)}
@@ -62,7 +99,11 @@ export function ThinkingBlock({
         >
           &#9650;
         </span>
-        <span className="text-sm text-text-secondary/60">{durationText}</span>
+        {isThinking ? (
+          <ThinkingLabel />
+        ) : (
+          <span className="text-sm text-text-secondary/60">{durationText}</span>
+        )}
       </button>
 
       {/* Expandable content */}
