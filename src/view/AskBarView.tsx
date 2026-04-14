@@ -231,6 +231,11 @@ interface AskBarViewProps {
   onImagePreview: (id: string) => void;
   /** Called when the user clicks the screenshot capture button. */
   onScreenshot: () => void;
+  /**
+   * Drag state passed down from the root window handler.
+   * "normal" = violet ring; "max" = red ring + label; undefined = no ring.
+   */
+  isDragOver?: 'normal' | 'max';
 }
 
 /**
@@ -255,6 +260,7 @@ export function AskBarView({
   onImageRemove,
   onImagePreview,
   onScreenshot,
+  isDragOver,
 }: AskBarViewProps) {
   /** Ref to the mirror div behind the textarea for command highlighting. */
   const mirrorRef = useRef<HTMLDivElement>(null);
@@ -264,7 +270,15 @@ export function AskBarView({
   const canSubmit =
     (query.trim().length > 0 || attachedImages.length > 0) && !isBusy;
   const isAtMaxImages = attachedImages.length >= MAX_IMAGES;
-  const [isDragOver, setIsDragOver] = useState(false);
+
+  /** True briefly after a paste attempt is rejected because max images reached. */
+  const [pasteMaxError, setPasteMaxError] = useState(false);
+
+  useEffect(() => {
+    if (!pasteMaxError) return;
+    const timer = setTimeout(() => setPasteMaxError(false), 2000);
+    return () => clearTimeout(timer);
+  }, [pasteMaxError]);
 
   // ─── Command suggestion state ─────────────────────────────────────────────
 
@@ -456,32 +470,6 @@ export function AskBarView({
     ],
   );
 
-  /**
-   * Filters and forwards valid image files to the parent for processing.
-   * Rejects non-image files and files exceeding the 30MB size cap.
-   */
-  const processImageFiles = useCallback(
-    (files: FileList | null) => {
-      if (!files || isBusy) return;
-      const remaining = MAX_IMAGES - attachedImages.length;
-      if (remaining <= 0) return;
-
-      const accepted: File[] = [];
-      for (let i = 0; i < files.length && accepted.length < remaining; i++) {
-        if (
-          files[i].type.startsWith('image/') &&
-          files[i].size <= MAX_IMAGE_SIZE_BYTES
-        ) {
-          accepted.push(files[i]);
-        }
-      }
-      if (accepted.length > 0) {
-        onImagesAttached(accepted);
-      }
-    },
-    [isBusy, attachedImages.length, onImagesAttached],
-  );
-
   /** Syncs the mirror div scroll position with the textarea. */
   const handleTextareaScroll = useCallback(() => {
     /* v8 ignore start -- both refs are always set by React when this fires */
@@ -497,7 +485,13 @@ export function AskBarView({
       if (!items || isBusy) return;
 
       const remaining = MAX_IMAGES - attachedImages.length;
-      if (remaining <= 0) return;
+      if (remaining <= 0) {
+        const hasImageItem = Array.from(items).some((item) =>
+          item.type.startsWith('image/'),
+        );
+        if (hasImageItem) setPasteMaxError(true);
+        return;
+      }
 
       const imageFiles: File[] = [];
       for (let i = 0; i < items.length && imageFiles.length < remaining; i++) {
@@ -516,34 +510,16 @@ export function AskBarView({
     [isBusy, attachedImages.length, onImagesAttached],
   );
 
-  const handleDragOver = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      if (!isBusy) setIsDragOver(true);
-    },
-    [isBusy],
-  );
-
-  const handleDragLeave = useCallback(() => {
-    setIsDragOver(false);
-  }, []);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setIsDragOver(false);
-      processImageFiles(e.dataTransfer?.files ?? null);
-    },
-    [processImageFiles],
-  );
+  const showMaxLabel = isDragOver === 'max' || pasteMaxError;
+  const ringClass =
+    isDragOver === 'max'
+      ? 'ring-2 ring-red-500/60 ring-inset rounded-lg'
+      : isDragOver === 'normal'
+        ? 'ring-2 ring-primary/40 ring-inset rounded-lg'
+        : '';
 
   return (
-    <div
-      className={`flex flex-col w-full shrink-0 ${isDragOver ? 'ring-2 ring-primary/40 ring-inset rounded-lg' : ''}`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
+    <div className={`flex flex-col w-full shrink-0 ${ringClass}`}>
       {selectedText && (
         <div className="px-4 pt-2 pb-0">
           <p className="italic text-xs text-text-secondary select-text whitespace-pre-wrap">
@@ -556,6 +532,9 @@ export function AskBarView({
             &rdquo;
           </p>
         </div>
+      )}
+      {showMaxLabel && (
+        <p className="px-4 pt-2 pb-0 text-xs text-red-400">Max 3 images</p>
       )}
       {attachedImages.length > 0 && (
         <div className="px-4 pt-2 pb-0">

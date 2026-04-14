@@ -1916,6 +1916,170 @@ describe('App', () => {
       });
     });
 
+    it('dropping image onto root window div attaches image in ask-bar mode', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const rootDiv = document.querySelector('.h-screen')!;
+      expect(rootDiv).not.toBeNull();
+      const file = new File(['data'], 'photo.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.drop(rootDiv, {
+          preventDefault: vi.fn(),
+          dataTransfer: { files: [file] },
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('dropping image onto root window div attaches image in chat mode (second image after conversation)', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Send a plain text message and complete the generation to enter chat mode
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // Complete the AI response so isGenerating becomes false
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hi!' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      // Confirm we are in chat mode with generation complete
+      expect(screen.getByPlaceholderText('Reply...')).toBeInTheDocument();
+
+      // Now in chat mode — drop image onto root div (not AskBarView specifically)
+      const rootDiv = document.querySelector('.h-screen')!;
+      expect(rootDiv).not.toBeNull();
+      const file = new File(['data'], 'second.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.drop(rootDiv, {
+          preventDefault: vi.fn(),
+          dataTransfer: { files: [file] },
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('dragOver anywhere in window shows violet ring on AskBarView when under max', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const rootDiv = document.querySelector('.h-screen')!;
+      expect(rootDiv).not.toBeNull();
+      fireEvent.dragOver(rootDiv, { preventDefault: vi.fn() });
+
+      const askBarWrapper = document.querySelector(
+        '[class*="flex flex-col w-full shrink-0"]',
+      )!;
+      expect(askBarWrapper.classList.contains('ring-2')).toBe(true);
+      expect(askBarWrapper.classList.contains('ring-red-500/60')).toBe(false);
+    });
+
+    it('dragOver shows red ring and max label when already at max images', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste 3 images to reach max
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      for (let i = 0; i < 3; i++) {
+        const file = new File([`data${i}`], `img${i}.png`, {
+          type: 'image/png',
+        });
+        await act(async () => {
+          fireEvent.paste(textarea, {
+            clipboardData: {
+              items: [{ type: 'image/png', getAsFile: () => file }],
+            },
+          });
+        });
+      }
+
+      // Wait for 3 thumbnails
+      await vi.waitFor(() => {
+        expect(screen.getAllByRole('listitem')).toHaveLength(3);
+      });
+
+      // Now drag over — should show red ring and max label
+      const rootDiv = document.querySelector('.h-screen')!;
+      fireEvent.dragOver(rootDiv, { preventDefault: vi.fn() });
+
+      const askBarWrapper = document.querySelector(
+        '[class*="flex flex-col w-full shrink-0"]',
+      )!;
+      expect(askBarWrapper.classList.contains('ring-red-500/60')).toBe(true);
+      expect(screen.getByText('Max 3 images')).toBeInTheDocument();
+    });
+
+    it('dragLeave when cursor exits window clears drag-over ring', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const rootDiv = document.querySelector('.h-screen')!;
+      fireEvent.dragOver(rootDiv, { preventDefault: vi.fn() });
+      // relatedTarget null simulates cursor leaving the window entirely
+      fireEvent.dragLeave(rootDiv, { relatedTarget: null });
+
+      const askBarWrapper = document.querySelector(
+        '[class*="flex flex-col w-full shrink-0"]',
+      )!;
+      expect(askBarWrapper.classList.contains('ring-2')).toBe(false);
+    });
+
+    it('dragOver when generating does not show drag-over ring', async () => {
+      enableChannelCapture();
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Submit to trigger isGenerating
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hi' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      const rootDiv = document.querySelector('.h-screen')!;
+      fireEvent.dragOver(rootDiv, { preventDefault: vi.fn() });
+
+      const askBarWrapper = document.querySelector(
+        '[class*="flex flex-col w-full shrink-0"]',
+      )!;
+      expect(askBarWrapper.classList.contains('ring-2')).toBe(false);
+    });
+
     it('handleChatImagePreview opens modal for chat history image', async () => {
       enableChannelCaptureWithResponses({
         save_image_command: '/tmp/staged/img1.jpg',

@@ -1,6 +1,6 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AskBarView } from '../AskBarView';
 import type { AttachedImage } from '../../types/image';
 
@@ -495,7 +495,7 @@ describe('AskBarView', () => {
       expect(onImageRemove).toHaveBeenCalledWith('img-1');
     });
 
-    it('applies drag-over styling on dragOver event', () => {
+    it('applies violet ring when isDragOver is "normal"', () => {
       const { container } = render(
         <AskBarView
           {...IMAGE_DEFAULTS}
@@ -506,14 +506,15 @@ describe('AskBarView', () => {
           onSubmit={vi.fn()}
           onCancel={vi.fn()}
           inputRef={makeRef()}
+          isDragOver="normal"
         />,
       );
       const wrapper = container.firstElementChild!;
-      fireEvent.dragOver(wrapper, { preventDefault: vi.fn() });
       expect(wrapper.classList.contains('ring-2')).toBe(true);
+      expect(wrapper.classList.contains('ring-red-500/60')).toBe(false);
     });
 
-    it('removes drag-over styling on dragLeave', () => {
+    it('does not apply ring when isDragOver is undefined', () => {
       const { container } = render(
         <AskBarView
           {...IMAGE_DEFAULTS}
@@ -527,12 +528,10 @@ describe('AskBarView', () => {
         />,
       );
       const wrapper = container.firstElementChild!;
-      fireEvent.dragOver(wrapper, { preventDefault: vi.fn() });
-      fireEvent.dragLeave(wrapper);
       expect(wrapper.classList.contains('ring-2')).toBe(false);
     });
 
-    it('removes drag-over styling on drop', () => {
+    it('applies red ring when isDragOver is "max"', () => {
       const { container } = render(
         <AskBarView
           {...IMAGE_DEFAULTS}
@@ -543,23 +542,18 @@ describe('AskBarView', () => {
           onSubmit={vi.fn()}
           onCancel={vi.fn()}
           inputRef={makeRef()}
+          isDragOver="max"
         />,
       );
       const wrapper = container.firstElementChild!;
-      fireEvent.dragOver(wrapper, { preventDefault: vi.fn() });
-      fireEvent.drop(wrapper, {
-        preventDefault: vi.fn(),
-        dataTransfer: { files: [] },
-      });
-      expect(wrapper.classList.contains('ring-2')).toBe(false);
+      expect(wrapper.classList.contains('ring-2')).toBe(true);
+      expect(wrapper.classList.contains('ring-red-500/60')).toBe(true);
     });
 
-    it('calls onImagesAttached on drop with image files', async () => {
-      const onImagesAttached = vi.fn();
-      const { container } = render(
+    it('shows "Max 3 images" label when isDragOver is "max"', () => {
+      render(
         <AskBarView
           {...IMAGE_DEFAULTS}
-          onImagesAttached={onImagesAttached}
           query=""
           setQuery={vi.fn()}
           isChatMode={false}
@@ -567,27 +561,16 @@ describe('AskBarView', () => {
           onSubmit={vi.fn()}
           onCancel={vi.fn()}
           inputRef={makeRef()}
+          isDragOver="max"
         />,
       );
-      const wrapper = container.firstElementChild!;
-      const file = new File(['fake-img-data'], 'photo.png', {
-        type: 'image/png',
-      });
-      fireEvent.drop(wrapper, {
-        preventDefault: vi.fn(),
-        dataTransfer: { files: [file] },
-      });
-      await vi.waitFor(() => {
-        expect(onImagesAttached).toHaveBeenCalledTimes(1);
-      });
+      expect(screen.getByText('Max 3 images')).toBeInTheDocument();
     });
 
-    it('ignores non-image files on drop', () => {
-      const onImagesAttached = vi.fn();
-      const { container } = render(
+    it('does not show max label when isDragOver is "normal"', () => {
+      render(
         <AskBarView
           {...IMAGE_DEFAULTS}
-          onImagesAttached={onImagesAttached}
           query=""
           setQuery={vi.fn()}
           isChatMode={false}
@@ -595,109 +578,84 @@ describe('AskBarView', () => {
           onSubmit={vi.fn()}
           onCancel={vi.fn()}
           inputRef={makeRef()}
+          isDragOver="normal"
         />,
       );
-      const wrapper = container.firstElementChild!;
-      const file = new File(['text'], 'doc.txt', { type: 'text/plain' });
-      fireEvent.drop(wrapper, {
-        preventDefault: vi.fn(),
-        dataTransfer: { files: [file] },
-      });
-      expect(onImagesAttached).not.toHaveBeenCalled();
+      expect(screen.queryByText('Max 3 images')).toBeNull();
     });
 
-    it('ignores drop when already at max images', () => {
-      const onImagesAttached = vi.fn();
-      const { container } = render(
-        <AskBarView
-          {...IMAGE_DEFAULTS}
-          attachedImages={[
-            makeImage({ id: 'a' }),
-            makeImage({ id: 'b' }),
-            makeImage({ id: 'c' }),
-          ]}
-          onImagesAttached={onImagesAttached}
-          query=""
-          setQuery={vi.fn()}
-          isChatMode={false}
-          isGenerating={false}
-          onSubmit={vi.fn()}
-          onCancel={vi.fn()}
-          inputRef={makeRef()}
-        />,
-      );
-      const wrapper = container.firstElementChild!;
-      const file = new File(['x'], 'img.png', { type: 'image/png' });
-      fireEvent.drop(wrapper, {
-        preventDefault: vi.fn(),
-        dataTransfer: { files: [file] },
+    describe('paste at max images', () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
       });
-      expect(onImagesAttached).not.toHaveBeenCalled();
-    });
-
-    it('ignores drop when generating', () => {
-      const onImagesAttached = vi.fn();
-      const { container } = render(
-        <AskBarView
-          {...IMAGE_DEFAULTS}
-          onImagesAttached={onImagesAttached}
-          query=""
-          setQuery={vi.fn()}
-          isChatMode={false}
-          isGenerating={true}
-          onSubmit={vi.fn()}
-          onCancel={vi.fn()}
-          inputRef={makeRef()}
-        />,
-      );
-      const wrapper = container.firstElementChild!;
-      const file = new File(['x'], 'img.png', { type: 'image/png' });
-      fireEvent.drop(wrapper, {
-        preventDefault: vi.fn(),
-        dataTransfer: { files: [file] },
+      afterEach(() => {
+        vi.useRealTimers();
       });
-      expect(onImagesAttached).not.toHaveBeenCalled();
-    });
 
-    it('ignores drop with null files', () => {
-      const onImagesAttached = vi.fn();
-      const { container } = render(
-        <AskBarView
-          {...IMAGE_DEFAULTS}
-          onImagesAttached={onImagesAttached}
-          query=""
-          setQuery={vi.fn()}
-          isChatMode={false}
-          isGenerating={false}
-          onSubmit={vi.fn()}
-          onCancel={vi.fn()}
-          inputRef={makeRef()}
-        />,
-      );
-      const wrapper = container.firstElementChild!;
-      fireEvent.drop(wrapper, {
-        preventDefault: vi.fn(),
-        dataTransfer: { files: null },
+      it('shows error message when paste attempted at max images', () => {
+        const onImagesAttached = vi.fn();
+        render(
+          <AskBarView
+            {...IMAGE_DEFAULTS}
+            attachedImages={[
+              makeImage({ id: 'a' }),
+              makeImage({ id: 'b' }),
+              makeImage({ id: 'c' }),
+            ]}
+            onImagesAttached={onImagesAttached}
+            query=""
+            setQuery={vi.fn()}
+            isChatMode={false}
+            isGenerating={false}
+            onSubmit={vi.fn()}
+            onCancel={vi.fn()}
+            inputRef={makeRef()}
+          />,
+        );
+        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+        const file = new File(['x'], 'img.png', { type: 'image/png' });
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+        expect(onImagesAttached).not.toHaveBeenCalled();
+        expect(screen.getByText('Max 3 images')).toBeInTheDocument();
       });
-      expect(onImagesAttached).not.toHaveBeenCalled();
-    });
 
-    it('does not apply drag-over styling when generating', () => {
-      const { container } = render(
-        <AskBarView
-          {...IMAGE_DEFAULTS}
-          query=""
-          setQuery={vi.fn()}
-          isChatMode={false}
-          isGenerating={true}
-          onSubmit={vi.fn()}
-          onCancel={vi.fn()}
-          inputRef={makeRef()}
-        />,
-      );
-      const wrapper = container.firstElementChild!;
-      fireEvent.dragOver(wrapper, { preventDefault: vi.fn() });
-      expect(wrapper.classList.contains('ring-2')).toBe(false);
+      it('paste error message auto-dismisses after 2 seconds', () => {
+        render(
+          <AskBarView
+            {...IMAGE_DEFAULTS}
+            attachedImages={[
+              makeImage({ id: 'a' }),
+              makeImage({ id: 'b' }),
+              makeImage({ id: 'c' }),
+            ]}
+            onImagesAttached={vi.fn()}
+            query=""
+            setQuery={vi.fn()}
+            isChatMode={false}
+            isGenerating={false}
+            onSubmit={vi.fn()}
+            onCancel={vi.fn()}
+            inputRef={makeRef()}
+          />,
+        );
+        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+        const file = new File(['x'], 'img.png', { type: 'image/png' });
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+        expect(screen.getByText('Max 3 images')).toBeInTheDocument();
+
+        act(() => {
+          vi.advanceTimersByTime(2000);
+        });
+        expect(screen.queryByText('Max 3 images')).toBeNull();
+      });
     });
 
     it('calls onImagesAttached on paste with image', async () => {
@@ -1127,25 +1085,6 @@ describe('AskBarView', () => {
       );
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       expect((textarea as HTMLTextAreaElement).disabled).toBe(true);
-    });
-
-    it('does not apply drag-over styling when isSubmitPending', () => {
-      const { container } = render(
-        <AskBarView
-          {...IMAGE_DEFAULTS}
-          query=""
-          setQuery={vi.fn()}
-          isChatMode={false}
-          isGenerating={false}
-          isSubmitPending={true}
-          onSubmit={vi.fn()}
-          onCancel={vi.fn()}
-          inputRef={makeRef()}
-        />,
-      );
-      const wrapper = container.firstElementChild!;
-      fireEvent.dragOver(wrapper, { preventDefault: vi.fn() });
-      expect(wrapper.classList.contains('ring-2')).toBe(false);
     });
 
     it('ignores paste when isSubmitPending', () => {

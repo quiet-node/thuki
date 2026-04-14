@@ -21,6 +21,7 @@ import type { OnboardingStage } from './view/onboarding/index';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import type { AttachedImage } from './types/image';
+import { MAX_IMAGE_SIZE_BYTES } from './types/image';
 import { quote } from './config';
 import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from './config/commands';
 import './App.css';
@@ -157,6 +158,12 @@ function App() {
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
   /** URL of the image currently open in the preview modal (blob or asset URL). */
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+  /**
+   * Drag state passed to AskBarView for visual ring feedback.
+   * "normal" = under capacity (violet ring); "max" = at capacity (red ring + label).
+   * null = no active drag.
+   */
+  const [isDragOver, setIsDragOver] = useState<'normal' | 'max' | null>(null);
 
   /** When the user submits while images are still processing, the submit
    *  intent is stored here. The effect below watches `attachedImages` and
@@ -720,6 +727,62 @@ function App() {
   }, []);
 
   /**
+   * Root-level drag handlers. Attached to the `h-screen w-screen` root div so
+   * file drops anywhere in the window are intercepted — including the
+   * ConversationView area, which has no drop handlers of its own. Without this,
+   * the WebView navigates to display the dropped image full-screen when the user
+   * drops a second image after the first conversation turn.
+   *
+   * `dragover` must always call `e.preventDefault()` to signal the browser that
+   * this element accepts drops; without it the `drop` event never fires.
+   */
+  const handleRootDragOver = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      if (isGenerating || isSubmitPending) return;
+      setIsDragOver(attachedImages.length >= MAX_IMAGES ? 'max' : 'normal');
+    },
+    [isGenerating, isSubmitPending, attachedImages.length],
+  );
+
+  const handleRootDragLeave = useCallback((e: React.DragEvent) => {
+    // Only clear when the cursor truly exits the window. `dragleave` fires
+    // when moving between child elements too; checking `relatedTarget` lets us
+    // ignore those internal transitions.
+    if (!(e.currentTarget as Element).contains(e.relatedTarget as Node)) {
+      setIsDragOver(null);
+    }
+  }, []);
+
+  const handleRootDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragOver(null);
+      if (isGenerating || isSubmitPending) return;
+      const files = e.dataTransfer?.files;
+      if (!files) return;
+      const remaining = MAX_IMAGES - attachedImages.length;
+      if (remaining <= 0) return;
+      const accepted: File[] = [];
+      for (let i = 0; i < files.length && accepted.length < remaining; i++) {
+        if (
+          files[i].type.startsWith('image/') &&
+          files[i].size <= MAX_IMAGE_SIZE_BYTES
+        ) {
+          accepted.push(files[i]);
+        }
+      }
+      if (accepted.length > 0) handleImagesAttached(accepted);
+    },
+    [
+      isGenerating,
+      isSubmitPending,
+      attachedImages.length,
+      handleImagesAttached,
+    ],
+  );
+
+  /**
    * Invokes the Rust `capture_screenshot` command, which hides the window,
    * lets the user drag-select a screen region, then returns the captured image
    * as a base64 PNG string (or null if the user cancelled).
@@ -1214,6 +1277,9 @@ function App() {
     // tightened drop shadow to render without clipping at the native window edge.
     <div
       onMouseDown={handleDragStart}
+      onDragOver={handleRootDragOver}
+      onDragLeave={handleRootDragLeave}
+      onDrop={handleRootDrop}
       className={`flex flex-col items-center ${growsUpward ? 'justify-end' : 'justify-start'} h-screen w-screen px-3 pt-2 pb-6 bg-transparent overflow-visible`}
     >
       <AnimatePresence mode="wait">
@@ -1338,6 +1404,7 @@ function App() {
                   onImageRemove={handleImageRemove}
                   onImagePreview={handleAskBarImagePreview}
                   onScreenshot={handleScreenshot}
+                  isDragOver={isDragOver ?? undefined}
                 />
               </div>
 
