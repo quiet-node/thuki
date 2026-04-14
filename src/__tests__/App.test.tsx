@@ -2728,7 +2728,7 @@ describe('App', () => {
       );
     });
 
-    it('keeps /screen prefix and sends full text as message', async () => {
+    it('keeps the /screen trigger in the message sent to the backend', async () => {
       enableChannelCaptureWithResponses({
         capture_full_screen_command: '/tmp/screen.jpg',
       });

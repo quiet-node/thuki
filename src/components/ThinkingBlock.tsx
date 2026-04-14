@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
@@ -8,42 +8,60 @@ export interface ThinkingBlockProps {
   durationMs?: number;
 }
 
+const THINKING_TEXT = 'Thinking...';
+/** How many milliseconds between position advances along the text. */
+const SWEEP_STEP_MS = 80;
+/** How many characters on each side of the peak are partially illuminated. */
+const SPREAD = 3;
+/** Base opacity for characters outside the glow zone. */
+const BASE_OPACITY = 0.35;
+
 /**
- * Spinning starburst icon + italic "Thinking..." text.
- * Matches Claude.ai's thinking indicator: a rotating sparkle/starburst
- * icon with smooth CSS animation, paired with static dimmed italic text.
+ * Computes a smooth bell-curve opacity for each character based on its
+ * distance from the current sweep position. Characters near the peak
+ * glow brightly while neighbors taper off smoothly, creating a flowing
+ * wave of light across the text.
+ */
+function getCharOpacity(charIndex: number, sweepPos: number): number {
+  const len = THINKING_TEXT.length;
+  // Shortest distance on the circular loop
+  const raw = Math.abs(charIndex - sweepPos);
+  const dist = Math.min(raw, len - raw);
+  if (dist > SPREAD) return BASE_OPACITY;
+  // Cosine falloff: 1.0 at center, tapering to BASE_OPACITY at edge
+  const t = dist / SPREAD;
+  return BASE_OPACITY + (1 - BASE_OPACITY) * Math.cos((t * Math.PI) / 2);
+}
+
+/**
+ * Animated "Thinking..." label with a smooth sweeping glow.
+ * A soft highlight wave travels across the text, illuminating nearby
+ * characters with a cosine falloff for a premium, fluid feel.
  */
 function ThinkingLabel() {
+  const [sweepPos, setSweepPos] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    timerRef.current = setInterval(() => {
+      setSweepPos((prev) => (prev + 1) % THINKING_TEXT.length);
+    }, SWEEP_STEP_MS);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
   return (
-    <span
-      className="flex items-center gap-2 text-sm"
-      data-testid="thinking-label"
-    >
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 16 16"
-        fill="none"
-        className="animate-spin text-primary"
-        style={{ animationDuration: '1.5s' }}
-      >
-        {/* 8-ray starburst */}
-        {[0, 45, 90, 135, 180, 225, 270, 315].map((angle) => (
-          <line
-            key={angle}
-            x1="8"
-            y1="8"
-            x2="8"
-            y2="2"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            transform={`rotate(${angle} 8 8)`}
-            opacity={0.4 + (angle / 315) * 0.6}
-          />
-        ))}
-      </svg>
-      <span className="text-text-secondary/60 italic">Thinking...</span>
+    <span className="text-sm text-text-secondary" data-testid="thinking-label">
+      {THINKING_TEXT.split('').map((char, i) => (
+        <span
+          key={i}
+          className="transition-opacity duration-150 ease-in-out"
+          style={{ opacity: getCharOpacity(i, sweepPos) }}
+        >
+          {char}
+        </span>
+      ))}
     </span>
   );
 }

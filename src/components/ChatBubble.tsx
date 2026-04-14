@@ -10,23 +10,23 @@ import { quote } from '../config';
 import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
 import type { OllamaErrorKind } from '../hooks/useOllama';
 
-/** Slash command triggers for prefix detection in user messages. */
-const COMMAND_TRIGGERS = COMMANDS.map((c) => c.trigger);
-
 /**
- * Renders user message content, highlighting any slash command prefix
- * (e.g., "/think", "/screen") in the brand accent color with bold weight.
+ * Renders user message content with slash commands styled distinctly.
+ * Detects a leading slash command (e.g. /think, /screen) and renders it
+ * in bold with a teal accent color so it stands out in the orange bubble.
  */
-function renderUserContent(content: string) {
-  for (const trigger of COMMAND_TRIGGERS) {
+function renderUserContent(content: string): React.ReactNode {
+  const trimmed = content.trimStart();
+  for (const cmd of COMMANDS) {
     if (
-      content.startsWith(trigger) &&
-      (content.length === trigger.length || content[trigger.length] === ' ')
+      trimmed.startsWith(cmd.trigger) &&
+      (trimmed.length === cmd.trigger.length ||
+        trimmed[cmd.trigger.length] === ' ')
     ) {
-      const rest = content.slice(trigger.length);
+      const rest = trimmed.slice(cmd.trigger.length);
       return (
         <>
-          <span className="text-primary font-bold">{trigger}</span>
+          <span className="font-bold text-white/60">{cmd.trigger}</span>
           {rest}
         </>
       );
