@@ -1,6 +1,6 @@
 {
   "name": "thuki",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "A floating AI secretary for macOS, powered by local Ollama models",
   "license": "Apache-2.0",
   "repository": {
