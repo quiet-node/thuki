@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 export interface ThinkingBlockProps {
   thinkingContent: string;
@@ -8,13 +9,29 @@ export interface ThinkingBlockProps {
 }
 
 /**
- * Extracts the first sentence from the thinking content to use as a summary.
- * Matches up to the first period, exclamation, question mark, or newline.
- * Falls back to the full string if no sentence-ending punctuation is found.
+ * Extracts a meaningful summary from the thinking content.
+ * Skips lines that are just labels (e.g., "Thinking Process:") and grabs
+ * the first substantive sentence. Falls back to a truncated version if
+ * no sentence-ending punctuation is found.
  */
 function extractSummary(content: string): string {
-  const match = content.match(/^(.+?)[.!?\n]/);
-  return match ? match[1] : content;
+  // Skip label-only lines like "Thinking Process:" at the start
+  const cleaned = content.replace(
+    /^[\s\S]*?(?:Thinking Process[:\s]*\n+)/i,
+    '',
+  );
+  const text = cleaned.trim() || content.trim();
+  // Strip leading list numbering (e.g., "1. ") and markdown bold markers
+  const stripped = text.replace(/^\d+\.\s*/, '').replace(/\*\*/g, '');
+  // Match up to the first sentence-ending punctuation or newline,
+  // but skip periods that follow a single digit (list numbering mid-text)
+  const match = stripped.match(/^(.+?)(?<!\d)[.!?\n]/);
+  if (match) {
+    const summary = match[1].trim();
+    return summary.length > 80 ? summary.slice(0, 80) + '...' : summary;
+  }
+  const plain = stripped.slice(0, 80).trim();
+  return plain + (stripped.length > 80 ? '...' : '');
 }
 
 /**
@@ -148,34 +165,40 @@ export function ThinkingBlock({
                 {/* Vertical line */}
                 <div className="w-px flex-1 bg-text-secondary/20 min-h-[20px]" />
 
-                {/* Checkmark icon (only when done) */}
+                {/* Checkmark icon + "Done" label (only when done) */}
                 {!isThinking && (
-                  <div
-                    data-testid="checkmark-icon"
-                    className="w-5 h-5 rounded-full border border-text-secondary/40 flex items-center justify-center"
-                  >
-                    <svg
-                      width="10"
-                      height="10"
-                      viewBox="0 0 10 10"
-                      fill="none"
-                      className="text-text-secondary/70"
+                  <div className="flex items-center gap-1.5">
+                    <div
+                      data-testid="checkmark-icon"
+                      className="w-5 h-5 rounded-full border border-text-secondary/40 flex items-center justify-center"
                     >
-                      <path
-                        d="M2 5.5L4 7.5L8 3"
-                        stroke="currentColor"
-                        strokeWidth="1.3"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
+                      <svg
+                        width="10"
+                        height="10"
+                        viewBox="0 0 10 10"
+                        fill="none"
+                        className="text-text-secondary/70"
+                      >
+                        <path
+                          d="M2 5.5L4 7.5L8 3"
+                          stroke="currentColor"
+                          strokeWidth="1.3"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </div>
+                    <span className="text-xs text-text-secondary/50">Done</span>
                   </div>
                 )}
               </div>
 
-              {/* Thinking text */}
-              <div className="flex-1 text-sm text-text-secondary/70 whitespace-pre-wrap py-1 select-text">
-                {thinkingContent}
+              {/* Thinking text rendered as markdown */}
+              <div className="flex-1 text-sm text-text-secondary/70 py-1 select-text">
+                <MarkdownRenderer
+                  content={thinkingContent}
+                  isStreaming={isThinking}
+                />
               </div>
             </div>
           </motion.div>

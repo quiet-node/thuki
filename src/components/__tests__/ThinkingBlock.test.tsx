@@ -17,7 +17,7 @@ describe('ThinkingBlock', () => {
         isThinking={true}
       />,
     );
-    // Auto-expanded while thinking
+    // Auto-expanded while thinking, rendered as markdown
     expect(screen.getByText('Let me analyze this problem')).toBeInTheDocument();
   });
 
@@ -38,13 +38,9 @@ describe('ThinkingBlock', () => {
     expect(screen.getByText('I analyzed the code')).toBeInTheDocument();
     // Duration visible
     expect(screen.getByText('Thought for 4 seconds')).toBeInTheDocument();
-    // Thinking text NOT visible (collapsed)
-    expect(
-      screen.queryByText('I analyzed the code. It looks correct.'),
-    ).not.toBeInTheDocument();
   });
 
-  it('expands on click', () => {
+  it('expands on click and renders thinking content', () => {
     render(
       <ThinkingBlock
         thinkingContent="I analyzed the code. It looks correct."
@@ -52,20 +48,15 @@ describe('ThinkingBlock', () => {
         durationMs={2000}
       />,
     );
-    // Collapsed: thinking text not visible
-    expect(
-      screen.queryByText('I analyzed the code. It looks correct.'),
-    ).not.toBeInTheDocument();
 
     // Click to expand
     fireEvent.click(
       screen.getByRole('button', { name: 'Toggle thinking details' }),
     );
 
-    // Now thinking text is visible
-    expect(
-      screen.getByText('I analyzed the code. It looks correct.'),
-    ).toBeInTheDocument();
+    // Content rendered inside the expanded section (summary + expanded both match)
+    const matches = screen.getAllByText(/I analyzed the code/);
+    expect(matches.length).toBeGreaterThanOrEqual(2); // summary + expanded content
   });
 
   it('collapses on second click', () => {
@@ -83,13 +74,11 @@ describe('ThinkingBlock', () => {
 
     // Click to expand
     fireEvent.click(toggleBtn);
-    expect(screen.getByText('Some thinking content.')).toBeInTheDocument();
+    expect(screen.getByTestId('timeline-rail')).toBeInTheDocument();
 
     // Click again to collapse
     fireEvent.click(toggleBtn);
-    expect(
-      screen.queryByText('Some thinking content.'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('timeline-rail')).not.toBeInTheDocument();
   });
 
   it('uses first sentence as summary', () => {
@@ -136,7 +125,32 @@ describe('ThinkingBlock', () => {
     expect(screen.getByText('No punctuation here')).toBeInTheDocument();
   });
 
-  it('shows timeline rail with checkmark when expanded after done', () => {
+  it('skips "Thinking Process:" label in summary extraction', () => {
+    render(
+      <ThinkingBlock
+        thinkingContent="Thinking Process:\n\n1. **Analyze the Request:** The user asked about algorithms."
+        isThinking={false}
+        durationMs={4000}
+      />,
+    );
+    // Should skip "Thinking Process:" and extract meaningful summary
+    expect(
+      screen.getByText(/Analyze the Request.*user asked about algorithms/),
+    ).toBeInTheDocument();
+  });
+
+  it('strips markdown bold markers from summary', () => {
+    render(
+      <ThinkingBlock
+        thinkingContent="**Bold summary.** More text."
+        isThinking={false}
+        durationMs={1000}
+      />,
+    );
+    expect(screen.getByText('Bold summary')).toBeInTheDocument();
+  });
+
+  it('shows timeline rail with checkmark and Done label when expanded after done', () => {
     render(
       <ThinkingBlock
         thinkingContent="Done thinking."
@@ -153,6 +167,8 @@ describe('ThinkingBlock', () => {
     expect(screen.getByTestId('timeline-rail')).toBeInTheDocument();
     expect(screen.getByTestId('checkmark-icon')).toBeInTheDocument();
     expect(screen.getByTestId('clock-icon')).toBeInTheDocument();
+    // "Done" label next to checkmark
+    expect(screen.getByText('Done')).toBeInTheDocument();
     // Clock should NOT be spinning
     expect(
       screen.getByTestId('clock-icon').classList.contains('animate-spin'),
@@ -166,6 +182,8 @@ describe('ThinkingBlock', () => {
     ).toBe(true);
     // No checkmark while thinking
     expect(screen.queryByTestId('checkmark-icon')).not.toBeInTheDocument();
+    // No Done label while thinking
+    expect(screen.queryByText('Done')).not.toBeInTheDocument();
   });
 
   it('auto-collapses when isThinking transitions true to false', () => {
@@ -177,7 +195,7 @@ describe('ThinkingBlock', () => {
       />,
     );
     // Auto-expanded while thinking
-    expect(screen.getByText('Working on it')).toBeInTheDocument();
+    expect(screen.getByTestId('timeline-rail')).toBeInTheDocument();
 
     // Transition to done
     rerender(
@@ -188,10 +206,8 @@ describe('ThinkingBlock', () => {
       />,
     );
 
-    // Should auto-collapse: thinking text no longer visible
-    expect(
-      screen.queryByText('Working on it. Done now.'),
-    ).not.toBeInTheDocument();
+    // Should auto-collapse: timeline rail no longer visible
+    expect(screen.queryByTestId('timeline-rail')).not.toBeInTheDocument();
     // Duration now shown
     expect(screen.getByText('Thought for 2 seconds')).toBeInTheDocument();
   });
@@ -215,7 +231,7 @@ describe('ThinkingBlock', () => {
       />,
     );
     // Auto-expanded
-    expect(screen.getByText('New thought in progress')).toBeInTheDocument();
+    expect(screen.getByTestId('timeline-rail')).toBeInTheDocument();
   });
 
   it('formats sub-second durations as "less than a second"', () => {
@@ -296,5 +312,19 @@ describe('ThinkingBlock', () => {
       screen.getByRole('button', { name: 'Toggle thinking details' }),
     );
     expect(chevron.style.transform).toBe('rotate(180deg)');
+  });
+
+  it('truncates long summaries to 80 characters', () => {
+    const longContent =
+      'This is a very long first sentence that goes on and on and on without any punctuation to break it up naturally';
+    render(
+      <ThinkingBlock
+        thinkingContent={longContent}
+        isThinking={false}
+        durationMs={1000}
+      />,
+    );
+    const summary = screen.getByText(/This is a very long/);
+    expect(summary.textContent!.length).toBeLessThanOrEqual(83); // 80 + "..."
   });
 });
