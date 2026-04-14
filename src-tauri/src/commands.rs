@@ -108,7 +108,6 @@ struct OllamaChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     think: bool,
     options: OllamaOptions,
 }
@@ -1320,7 +1319,7 @@ mod tests {
     }
 
     #[test]
-    fn ollama_chat_request_omits_think_when_false() {
+    fn ollama_chat_request_sends_think_false_explicitly() {
         let req = OllamaChatRequest {
             model: "test".to_string(),
             messages: vec![],
@@ -1333,7 +1332,7 @@ mod tests {
             },
         };
         let json = serde_json::to_value(&req).unwrap();
-        assert!(json.get("think").is_none());
+        assert_eq!(json["think"], false);
     }
 
     #[test]
