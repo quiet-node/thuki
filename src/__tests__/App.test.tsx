@@ -3138,6 +3138,141 @@ describe('App', () => {
     });
   });
 
+  // ─── /think command ─────────────────────────────────────────────────────────
+
+  describe('/think command', () => {
+    it('sends think:true to ask_ollama and strips /think prefix from message', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/think why is the sky blue?' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: 'why is the sky blue?',
+          think: true,
+        }),
+      );
+    });
+
+    it('does nothing when /think has no query and no images', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/think' } });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+    });
+
+    it('does not treat /think in the middle of a message as a command', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: 'hello /think world' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: 'hello /think world',
+          think: false,
+        }),
+      );
+    });
+
+    it('forwards selected context when /think is used with quoted text', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay('some selected text');
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/think explain this code' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: 'explain this code',
+          quotedText: 'some selected text',
+          think: true,
+        }),
+      );
+    });
+
+    it('sends think:true with /think followed by only a space', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/think ' } });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      // "/think " with only a space after prefix, no actual query, no images => no submit
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+    });
+  });
+
   describe('Onboarding', () => {
     it('shows onboarding screen when thuki://onboarding event fires', async () => {
       enableChannelCaptureWithResponses({

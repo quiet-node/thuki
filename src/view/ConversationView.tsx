@@ -178,8 +178,10 @@ export function ConversationView({
             msg.role === 'assistant';
 
           // Hide the empty assistant placeholder; the TypingIndicator
-          // already covers this visual state.
-          if (isLastAssistant && !msg.content) return null;
+          // already covers this visual state. When thinking content is
+          // present, render the bubble so the ThinkingBlock is visible.
+          if (isLastAssistant && !msg.content && !msg.thinkingContent)
+            return null;
 
           return (
             <ChatBubble
@@ -192,6 +194,11 @@ export function ConversationView({
               imagePaths={msg.imagePaths}
               onImagePreview={onImagePreview}
               errorKind={msg.errorKind}
+              thinkingContent={msg.thinkingContent}
+              thinkingDurationMs={msg.thinkingDurationMs}
+              isThinking={
+                isLastAssistant && !msg.content && !!msg.thinkingContent
+              }
             />
           );
         })}
@@ -199,7 +206,8 @@ export function ConversationView({
         {/* Typing indicator (pulsing dots) shown before first token arrives */}
         {isGenerating &&
         messages[messages.length - 1]?.role === 'assistant' &&
-        !messages[messages.length - 1]?.content ? (
+        !messages[messages.length - 1]?.content &&
+        !messages[messages.length - 1]?.thinkingContent ? (
           <TypingIndicator />
         ) : null}
       </div>

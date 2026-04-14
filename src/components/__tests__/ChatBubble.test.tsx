@@ -262,9 +262,7 @@ describe('ChatBubble', () => {
     });
 
     it('does not render ThinkingBlock for AI message without thinkingContent', () => {
-      render(
-        <ChatBubble role="assistant" content="Hello" index={0} />,
-      );
+      render(<ChatBubble role="assistant" content="Hello" index={0} />);
       expect(screen.queryByTestId('thinking-block')).toBeNull();
     });
 

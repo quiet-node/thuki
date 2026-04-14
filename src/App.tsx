@@ -749,12 +749,12 @@ function App() {
 
   /** Fires the actual ask() call and cleans up attached images + input. */
   const executeSubmit = useCallback(
-    (submitQuery: string, context: string | undefined) => {
+    (submitQuery: string, context: string | undefined, think?: boolean) => {
       const readyPaths = attachedImages
         .filter((img) => img.filePath !== null)
         .map((img) => img.filePath as string);
       const images = readyPaths.length > 0 ? readyPaths : undefined;
-      ask(submitQuery, context, images);
+      ask(submitQuery, context, images, think);
       setSelectedContext(null);
       setQuery('');
       for (const img of attachedImages) {
@@ -884,6 +884,28 @@ function App() {
     if (isScreenCommand) {
       // Fire-and-forget: the async path handles cleanup and ask() invocation.
       void handleScreenSubmit();
+      return;
+    }
+
+    // Detect /think command at the very start of the message.
+    const isThinkCommand =
+      trimmedQuery.startsWith('/think') &&
+      (trimmedQuery.length === '/think'.length ||
+        trimmedQuery['/think'.length] === ' ');
+
+    if (isThinkCommand) {
+      const cleanQuery = trimmedQuery.slice('/think'.length).trimStart();
+      if (!cleanQuery && attachedImages.length === 0) return;
+
+      // Sanitize context before forwarding.
+      // eslint-disable-next-line no-control-regex
+      const CONTROL_CHARS_THINK = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
+      const sanitizedThink = selectedContext
+        ?.replace(CONTROL_CHARS_THINK, '')
+        .slice(0, quote.maxContextLength);
+      const contextThink = sanitizedThink?.trim() ? sanitizedThink : undefined;
+
+      executeSubmit(cleanQuery, contextThink, true);
       return;
     }
 

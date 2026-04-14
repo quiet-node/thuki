@@ -495,6 +495,67 @@ describe('ConversationView', () => {
     });
   });
 
+  describe('Thinking props forwarding', () => {
+    it('renders ThinkingBlock when assistant message has thinkingContent', () => {
+      render(
+        <ConversationView
+          messages={[
+            {
+              id: '1',
+              role: 'assistant' as const,
+              content: 'The answer is 42.',
+              thinkingContent: 'Let me think about this...',
+              thinkingDurationMs: 3000,
+            },
+          ]}
+          isGenerating={false}
+          onClose={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+    });
+
+    it('renders ChatBubble (not null) when thinking but no content yet during generation', () => {
+      render(
+        <ConversationView
+          messages={[
+            {
+              id: '1',
+              role: 'assistant' as const,
+              content: '',
+              thinkingContent: 'Reasoning in progress...',
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+        />,
+      );
+      // The bubble should render with ThinkingBlock visible
+      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      expect(screen.getByText('Thinking...')).toBeInTheDocument();
+    });
+
+    it('does not show TypingIndicator when assistant has thinkingContent but no content', () => {
+      const { container } = render(
+        <ConversationView
+          messages={[
+            {
+              id: '1',
+              role: 'assistant' as const,
+              content: '',
+              thinkingContent: 'Reasoning...',
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+        />,
+      );
+      // TypingIndicator renders 9 pulsing dots
+      const dots = container.querySelectorAll('.rounded-full.bg-primary\\/70');
+      expect(dots).toHaveLength(0);
+    });
+  });
+
   it('renders multiple messages correctly (10 messages)', () => {
     const messages = Array.from({ length: 10 }, (_, i) => ({
       id: `msg-${i}`,
