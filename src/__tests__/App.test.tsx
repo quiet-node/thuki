@@ -1965,7 +1965,7 @@ describe('App', () => {
       // Confirm we are in chat mode with generation complete
       expect(screen.getByPlaceholderText('Reply...')).toBeInTheDocument();
 
-      // Now in chat mode — drop image onto root div (not AskBarView specifically)
+      // Now in chat mode. Drop image onto root div (not AskBarView specifically)
       const rootDiv = document.querySelector('.h-screen')!;
       expect(rootDiv).not.toBeNull();
       const file = new File(['data'], 'second.png', { type: 'image/png' });
@@ -2028,7 +2028,7 @@ describe('App', () => {
         expect(screen.getAllByRole('listitem')).toHaveLength(3);
       });
 
-      // Now drag over — should show red ring and max label
+      // Now drag over; should show red ring and max label
       const rootDiv = document.querySelector('.h-screen')!;
       fireEvent.dragOver(rootDiv, { preventDefault: vi.fn() });
 
@@ -2078,6 +2078,97 @@ describe('App', () => {
         '[class*="flex flex-col w-full shrink-0"]',
       )!;
       expect(askBarWrapper.classList.contains('ring-2')).toBe(false);
+    });
+
+    it('handleRootDrop ignores drop during generation', async () => {
+      enableChannelCapture();
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hi' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      const rootDiv = document.querySelector('.h-screen')!;
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      fireEvent.drop(rootDiv, {
+        preventDefault: vi.fn(),
+        dataTransfer: { files: [file] },
+      });
+
+      expect(
+        screen.queryByRole('list', { name: /attached images/i }),
+      ).toBeNull();
+    });
+
+    it('handleRootDrop ignores drop with no dataTransfer files', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const rootDiv = document.querySelector('.h-screen')!;
+      fireEvent.drop(rootDiv, { preventDefault: vi.fn() });
+
+      expect(
+        screen.queryByRole('list', { name: /attached images/i }),
+      ).toBeNull();
+    });
+
+    it('handleRootDrop ignores drop when already at max images', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img.jpg',
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      for (let i = 0; i < 3; i++) {
+        const img = new File([`d${i}`], `i${i}.png`, { type: 'image/png' });
+        await act(async () => {
+          fireEvent.paste(textarea, {
+            clipboardData: {
+              items: [{ type: 'image/png', getAsFile: () => img }],
+            },
+          });
+        });
+      }
+      await vi.waitFor(() => {
+        expect(screen.getAllByRole('listitem')).toHaveLength(3);
+      });
+
+      const rootDiv = document.querySelector('.h-screen')!;
+      const extra = new File(['extra'], 'extra.png', { type: 'image/png' });
+      fireEvent.drop(rootDiv, {
+        preventDefault: vi.fn(),
+        dataTransfer: { files: [extra] },
+      });
+
+      // Still exactly 3 — the drop was rejected
+      expect(screen.getAllByRole('listitem')).toHaveLength(3);
+    });
+
+    it('handleRootDrop ignores non-image files', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const rootDiv = document.querySelector('.h-screen')!;
+      const doc = new File(['text'], 'doc.txt', { type: 'text/plain' });
+      fireEvent.drop(rootDiv, {
+        preventDefault: vi.fn(),
+        dataTransfer: { files: [doc] },
+      });
+
+      expect(
+        screen.queryByRole('list', { name: /attached images/i }),
+      ).toBeNull();
     });
 
     it('handleChatImagePreview opens modal for chat history image', async () => {

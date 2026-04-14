@@ -656,6 +656,34 @@ describe('AskBarView', () => {
         });
         expect(screen.queryByText('Max 3 images')).toBeNull();
       });
+
+      it('does not show paste error when pasting non-image content at max images', () => {
+        render(
+          <AskBarView
+            {...IMAGE_DEFAULTS}
+            attachedImages={[
+              makeImage({ id: 'a' }),
+              makeImage({ id: 'b' }),
+              makeImage({ id: 'c' }),
+            ]}
+            onImagesAttached={vi.fn()}
+            query=""
+            setQuery={vi.fn()}
+            isChatMode={false}
+            isGenerating={false}
+            onSubmit={vi.fn()}
+            onCancel={vi.fn()}
+            inputRef={makeRef()}
+          />,
+        );
+        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'text/plain', getAsFile: () => null }],
+          },
+        });
+        expect(screen.queryByText('Max 3 images')).toBeNull();
+      });
     });
 
     it('calls onImagesAttached on paste with image', async () => {

@@ -223,7 +223,7 @@ interface AskBarViewProps {
   onHistoryOpen?: () => void;
   /** Currently attached images (may still be processing in the background). */
   attachedImages: AttachedImage[];
-  /** Called when the user pastes or drops image files. */
+  /** Called when the user pastes image files. */
   onImagesAttached: (files: File[]) => void;
   /** Called when the user removes an attached image by ID. */
   onImageRemove: (id: string) => void;
@@ -510,7 +510,10 @@ export function AskBarView({
     [isBusy, attachedImages.length, onImagesAttached],
   );
 
-  const showMaxLabel = isDragOver === 'max' || pasteMaxError;
+  // Suppress the paste error label while a drag is active so the drag-state
+  // ring and label always agree. Once the drag ends, the paste error (if still
+  // within its 2 s window) reappears.
+  const showMaxLabel = isDragOver === 'max' || (pasteMaxError && !isDragOver);
   const ringClass =
     isDragOver === 'max'
       ? 'ring-2 ring-red-500/60 ring-inset rounded-lg'

@@ -728,7 +728,7 @@ function App() {
 
   /**
    * Root-level drag handlers. Attached to the `h-screen w-screen` root div so
-   * file drops anywhere in the window are intercepted — including the
+   * file drops anywhere in the window are intercepted, including the
    * ConversationView area, which has no drop handlers of its own. Without this,
    * the WebView navigates to display the dropped image full-screen when the user
    * drops a second image after the first conversation turn.
@@ -749,9 +749,11 @@ function App() {
     // Only clear when the cursor truly exits the window. `dragleave` fires
     // when moving between child elements too; checking `relatedTarget` lets us
     // ignore those internal transitions.
+    /* v8 ignore start -- dragleave relatedTarget cannot be set in jsdom; the false branch (cursor on child element) requires a real browser drag sequence */
     if (!(e.currentTarget as Element).contains(e.relatedTarget as Node)) {
       setIsDragOver(null);
     }
+    /* v8 ignore stop */
   }, []);
 
   const handleRootDrop = useCallback(
