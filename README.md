@@ -70,6 +70,8 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **Isolated sandbox:** optionally run models in a hardened Docker container with capability dropping, read-only volumes, and localhost-only networking
 - **Image input:** paste or drag images and screenshots directly into the chat
 - **Screen capture:** type `/screen` to instantly capture your entire screen and attach it to your question as context
+- **Slash commands:** built-in prompt shortcuts for common tasks: `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`. Highlight text anywhere, summon Thuki, type a command, and hit Enter
+- **Extended reasoning:** type `/think` to have the model reason through a problem step by step before answering
 - **Privacy-first:** zero-trust architecture, all data stays on your device
 
 ## Getting Started
@@ -193,6 +195,8 @@ The app starts hidden. The hotkey or tray menu shows it. The window close button
 
 See [docs/configurations.md](docs/configurations.md) for the full configuration reference (quote display limits and system prompt).
 
+See [docs/commands.md](docs/commands.md) for the full slash command reference.
+
 ## Contributing
 
 Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
@@ -211,7 +215,7 @@ The big leap: from answering questions to taking action.
 
 - **Internet search:** let Thuki look things up in real time, not just reason from its training data
 - **Tool integrations via [MCP](https://modelcontextprotocol.io/):** connect Thuki to Gmail, Slack, Discord, Google Calendar, and any other MCP-compatible service; ask it to draft a reply, summarize a thread, or schedule a meeting without ever leaving your current app
-- **More slash commands:** `/screen` is live; `/summarize`, `/translate`, `/explain`, `/rewrite`, and more are on the way to instantly trigger built-in prompts without typing a full question
+- **More slash commands:** `/screen`, `/think`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, and `/todos` are live. More domain-specific commands are on the way
 
 ### Better AI Control
 
