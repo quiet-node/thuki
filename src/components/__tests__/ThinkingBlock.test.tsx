@@ -24,11 +24,11 @@ describe('ThinkingBlock', () => {
     expect(screen.queryByTestId('timeline-rail')).not.toBeInTheDocument();
   });
 
-  it('shows "Thinking process" in collapsed state when done', () => {
+  it('shows "Thought process" in collapsed state when done', () => {
     render(
       <ThinkingBlock thinkingContent="Some reasoning." isThinking={false} />,
     );
-    expect(screen.getByText('Thinking process')).toBeInTheDocument();
+    expect(screen.getByText('Thought process')).toBeInTheDocument();
   });
 
   it('expands on click to show thinking content', () => {

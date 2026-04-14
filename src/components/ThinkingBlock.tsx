@@ -104,7 +104,7 @@ export function ThinkingBlock({
           <ThinkingLabel />
         ) : (
           <span className="text-sm text-text-secondary/60">
-            Thinking process
+            Thought process
           </span>
         )}
       </button>
