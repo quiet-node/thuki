@@ -75,7 +75,13 @@ pub fn save_conversation(
             let image_json = m.image_paths.filter(|v| !v.is_empty()).map(|v| {
                 serde_json::to_string(&v).expect("Vec<String> serialization is infallible")
             });
-            (m.role, m.content, m.quoted_text, image_json, m.thinking_content)
+            (
+                m.role,
+                m.content,
+                m.quoted_text,
+                image_json,
+                m.thinking_content,
+            )
         })
         .collect();
 
@@ -323,7 +329,13 @@ mod tests {
                 let image_json = m.image_paths.filter(|v| !v.is_empty()).map(|v| {
                     serde_json::to_string(&v).expect("Vec<String> serialization is infallible")
                 });
-                (m.role, m.content, m.quoted_text, image_json, m.thinking_content)
+                (
+                    m.role,
+                    m.content,
+                    m.quoted_text,
+                    image_json,
+                    m.thinking_content,
+                )
             })
             .collect();
 

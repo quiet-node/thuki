@@ -18,6 +18,7 @@ function toPayload(msg: Message): SaveMessagePayload {
     content: msg.content,
     quoted_text: msg.quotedText ?? null,
     image_paths: msg.imagePaths ?? null,
+    thinking_content: msg.thinkingContent ?? null,
   };
 }
 
@@ -35,6 +36,7 @@ function fromPersisted(msg: PersistedMessage): Message {
     content: msg.content,
     quotedText: msg.quoted_text ?? undefined,
     imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : undefined,
+    thinkingContent: msg.thinking_content ?? undefined,
   };
 }
 
@@ -112,6 +114,7 @@ export function useConversationHistory() {
           content: userMsg.content,
           quotedText: userMsg.quotedText ?? null,
           imagePaths: userMsg.imagePaths ?? null,
+          thinkingContent: null,
         }),
         invoke('persist_message', {
           conversationId,
@@ -119,6 +122,7 @@ export function useConversationHistory() {
           content: assistantMsg.content,
           quotedText: assistantMsg.quotedText ?? null,
           imagePaths: null,
+          thinkingContent: assistantMsg.thinkingContent ?? null,
         }),
       ]);
     },

@@ -32,6 +32,8 @@ export interface PersistedMessage {
   quoted_text: string | null;
   /** JSON-encoded array of image file paths, if any. */
   image_paths: string | null;
+  /** Thinking/reasoning content from the model, if thinking mode was used. */
+  thinking_content: string | null;
   /** Unix timestamp (seconds) the message was created. */
   created_at: number;
 }
@@ -52,4 +54,5 @@ export interface SaveMessagePayload {
   content: string;
   quoted_text: string | null;
   image_paths: string[] | null;
+  thinking_content: string | null;
 }

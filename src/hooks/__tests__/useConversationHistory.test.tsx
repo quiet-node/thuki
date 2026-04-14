@@ -44,12 +44,14 @@ describe('useConversationHistory', () => {
           content: 'Hello',
           quoted_text: null,
           image_paths: null,
+          thinking_content: null,
         },
         {
           role: 'assistant',
           content: 'Hi there',
           quoted_text: null,
           image_paths: null,
+          thinking_content: null,
         },
       ],
       model: MODEL,
@@ -88,12 +90,14 @@ describe('useConversationHistory', () => {
           content: 'Hello',
           quoted_text: null,
           image_paths: null,
+          thinking_content: null,
         },
         {
           role: 'assistant',
           content: 'Hi there',
           quoted_text: null,
           image_paths: null,
+          thinking_content: null,
         },
       ],
     });
@@ -162,6 +166,7 @@ describe('useConversationHistory', () => {
       content: 'Follow up',
       quotedText: 'ctx',
       imagePaths: null,
+      thinkingContent: null,
     });
     expect(invoke).toHaveBeenCalledWith('persist_message', {
       conversationId: 'conv-123',
@@ -169,6 +174,7 @@ describe('useConversationHistory', () => {
       content: 'Reply',
       quotedText: null,
       imagePaths: null,
+      thinkingContent: null,
     });
   });
 
@@ -206,12 +212,14 @@ describe('useConversationHistory', () => {
       'persist_message',
       expect.objectContaining({
         quotedText: null, // undefined → null
+        thinkingContent: null,
       }),
     );
     expect(invoke).toHaveBeenCalledWith(
       'persist_message',
       expect.objectContaining({
         quotedText: 'assistant ctx',
+        thinkingContent: null,
       }),
     );
   });
@@ -224,6 +232,7 @@ describe('useConversationHistory', () => {
         content: 'Saved question',
         quoted_text: null,
         image_paths: null,
+        thinking_content: null,
         created_at: 1,
       },
       {
@@ -232,6 +241,7 @@ describe('useConversationHistory', () => {
         content: 'Saved answer',
         quoted_text: 'ctx',
         image_paths: null,
+        thinking_content: null,
         created_at: 2,
       },
     ]);
@@ -271,6 +281,7 @@ describe('useConversationHistory', () => {
         content: 'Look at this',
         quoted_text: null,
         image_paths: '["/images/a.jpg","/images/b.jpg"]',
+        thinking_content: null,
         created_at: 1,
       },
       {
@@ -279,6 +290,7 @@ describe('useConversationHistory', () => {
         content: 'I see',
         quoted_text: null,
         image_paths: null,
+        thinking_content: null,
         created_at: 2,
       },
     ]);
@@ -345,6 +357,118 @@ describe('useConversationHistory', () => {
     expect(invoke).toHaveBeenCalledWith('list_conversations', {
       search: 'react',
     });
+  });
+
+  it('persistTurn() passes thinkingContent for assistant messages', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-123' });
+    invoke.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(MESSAGES, MODEL);
+    });
+
+    invoke.mockClear();
+
+    const userMsg: Message = {
+      id: 'u4',
+      role: 'user',
+      content: 'Think about this',
+    };
+    const assistantMsg: Message = {
+      id: 'a4',
+      role: 'assistant',
+      content: 'Here is my answer',
+      thinkingContent: 'Let me reason step by step',
+    };
+
+    await act(async () => {
+      await result.current.persistTurn(userMsg, assistantMsg);
+    });
+
+    expect(invoke).toHaveBeenCalledWith('persist_message', {
+      conversationId: 'conv-123',
+      role: 'assistant',
+      content: 'Here is my answer',
+      quotedText: null,
+      imagePaths: null,
+      thinkingContent: 'Let me reason step by step',
+    });
+  });
+
+  it('save() includes thinking_content in payload', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-think' });
+    invoke.mockResolvedValue(undefined);
+
+    const messagesWithThinking: Message[] = [
+      { id: 'u1', role: 'user', content: 'Think hard' },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Answer',
+        thinkingContent: 'Deep thoughts',
+      },
+    ];
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(messagesWithThinking, MODEL);
+    });
+
+    expect(invoke).toHaveBeenCalledWith('save_conversation', {
+      messages: [
+        {
+          role: 'user',
+          content: 'Think hard',
+          quoted_text: null,
+          image_paths: null,
+          thinking_content: null,
+        },
+        {
+          role: 'assistant',
+          content: 'Answer',
+          quoted_text: null,
+          image_paths: null,
+          thinking_content: 'Deep thoughts',
+        },
+      ],
+      model: MODEL,
+    });
+  });
+
+  it('loadConversation() restores thinkingContent from persisted data', async () => {
+    invoke.mockResolvedValueOnce([
+      {
+        id: 'm1',
+        role: 'user',
+        content: 'Question',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        created_at: 1,
+      },
+      {
+        id: 'm2',
+        role: 'assistant',
+        content: 'Answer',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: 'I thought about it',
+        created_at: 2,
+      },
+    ]);
+
+    const { result } = renderHook(() => useConversationHistory());
+    let loaded: Message[] = [];
+
+    await act(async () => {
+      loaded = await result.current.loadConversation('conv-think');
+    });
+
+    expect(loaded[0].thinkingContent).toBeUndefined();
+    expect(loaded[1].thinkingContent).toBe('I thought about it');
   });
 
   it('reset() clears conversationId and isSaved', async () => {
