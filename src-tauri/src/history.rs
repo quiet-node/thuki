@@ -68,13 +68,13 @@ pub fn save_conversation(
         database::create_conversation(&conn, placeholder_title.as_deref(), &model)
             .map_err(|e| e.to_string())?;
 
-    let batch: Vec<(String, String, Option<String>, Option<String>)> = messages
+    let batch: Vec<database::MessageBatchRow> = messages
         .into_iter()
         .map(|m| {
             let image_json = m.image_paths.filter(|v| !v.is_empty()).map(|v| {
                 serde_json::to_string(&v).expect("Vec<String> serialization is infallible")
             });
-            (m.role, m.content, m.quoted_text, image_json)
+            (m.role, m.content, m.quoted_text, image_json, None)
         })
         .collect();
 
@@ -105,6 +105,7 @@ pub fn persist_message(
         &content,
         quoted_text.as_deref(),
         image_json.as_deref(),
+        None,
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -312,13 +313,13 @@ mod tests {
         )
         .unwrap();
 
-        let batch: Vec<(String, String, Option<String>, Option<String>)> = messages
+        let batch: Vec<database::MessageBatchRow> = messages
             .into_iter()
             .map(|m| {
                 let image_json = m.image_paths.filter(|v| !v.is_empty()).map(|v| {
                     serde_json::to_string(&v).expect("Vec<String> serialization is infallible")
                 });
-                (m.role, m.content, m.quoted_text, image_json)
+                (m.role, m.content, m.quoted_text, image_json, None)
             })
             .collect();
 
