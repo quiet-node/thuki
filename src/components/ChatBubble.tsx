@@ -3,6 +3,7 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { ErrorCard } from './ErrorCard';
 import { CopyButton } from './CopyButton';
 import { ImageThumbnails } from './ImageThumbnails';
+import { ThinkingBlock } from './ThinkingBlock';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
@@ -22,6 +23,12 @@ interface ChatBubbleProps {
   isStreaming?: boolean;
   /** When set, renders an ErrorCard callout instead of markdown. */
   errorKind?: OllamaErrorKind;
+  /** Accumulated thinking/reasoning content from the model, if thinking mode was used. */
+  thinkingContent?: string;
+  /** Duration of the thinking phase in milliseconds. */
+  thinkingDurationMs?: number;
+  /** Whether the model is currently in the thinking phase (streaming thinking tokens). */
+  isThinking?: boolean;
   /** Absolute file paths of images attached to this message, if any. */
   imagePaths?: string[];
   /** Called when the user clicks a thumbnail to preview it. */
@@ -67,6 +74,9 @@ export function ChatBubble({
   imagePaths,
   onImagePreview,
   errorKind,
+  thinkingContent,
+  thinkingDurationMs,
+  isThinking,
 }: ChatBubbleProps) {
   const isUser = role === 'user';
 
@@ -126,6 +136,13 @@ export function ChatBubble({
         /* AI plain text — full width, no bubble chrome */
         <div className="flex flex-col w-full">
           <div className="text-sm leading-relaxed select-text py-1">
+            {thinkingContent && (
+              <ThinkingBlock
+                thinkingContent={thinkingContent}
+                isThinking={isThinking ?? false}
+                durationMs={thinkingDurationMs}
+              />
+            )}
             {errorKind ? (
               <ErrorCard kind={errorKind} message={content} />
             ) : (

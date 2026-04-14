@@ -248,6 +248,53 @@ describe('ChatBubble', () => {
     });
   });
 
+  describe('ThinkingBlock rendering', () => {
+    it('renders ThinkingBlock for AI message with thinkingContent', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="The answer is 42."
+          index={0}
+          thinkingContent="Let me reason about this..."
+        />,
+      );
+      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+    });
+
+    it('does not render ThinkingBlock for AI message without thinkingContent', () => {
+      render(
+        <ChatBubble role="assistant" content="Hello" index={0} />,
+      );
+      expect(screen.queryByTestId('thinking-block')).toBeNull();
+    });
+
+    it('does not render ThinkingBlock for user message even with thinkingContent', () => {
+      render(
+        <ChatBubble
+          role="user"
+          content="Hello"
+          index={0}
+          thinkingContent="Should not appear"
+        />,
+      );
+      expect(screen.queryByTestId('thinking-block')).toBeNull();
+    });
+
+    it('shows "Thinking..." state when isThinking is true', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          thinkingContent="Reasoning in progress..."
+          isThinking={true}
+        />,
+      );
+      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      expect(screen.getByText('Thinking...')).toBeInTheDocument();
+    });
+  });
+
   describe('Error messages (errorKind)', () => {
     it('renders ErrorCard instead of MarkdownRenderer when errorKind is set', () => {
       const { container } = render(
