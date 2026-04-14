@@ -201,7 +201,7 @@ const BULLETS_ICON = (
   </svg>
 );
 
-/** Checkbox icon for /action command. */
+/** Checkbox icon for /todos command. */
 const ACTION_ICON = (
   <svg
     width="14"

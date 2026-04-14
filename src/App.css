@@ -170,7 +170,7 @@ body {
   scrollbar-gutter: stable;
 }
 
-/* ─── Markdown Body — Prose Defaults ───
+/* ─── Markdown Body: Prose Defaults ───
  * Tailwind's preflight resets list-style to none globally. Streamdown adds no
  * list CSS of its own, so <ul>/<ol> inside .markdown-body lose their markers.
  * Restore standard list rendering scoped to markdown output only.
@@ -188,7 +188,7 @@ body {
 .markdown-body li {
   margin: 0.2rem 0;
 }
-/* Task lists (- [ ] / - [x]) must not show a disc bullet — the checkbox
+/* Task lists (- [ ] / - [x]) must not show a disc bullet; the checkbox
    input is the visual marker. GFM task list items carry a class of
    "task-list-item" on the <li> element. */
 .markdown-body li.task-list-item {

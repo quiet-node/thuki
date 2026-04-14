@@ -52,9 +52,10 @@ const BULLETS_CMD: Command = {
 };
 
 const ACTION_CMD: Command = {
-  trigger: '/action',
-  label: '/action',
-  description: 'Extract action items as a checklist',
+  trigger: '/todos',
+  label: '/todos',
+  description: 'Extract to-do items as a checkbox list',
+  promptTemplate: 'dummy $INPUT',
 };
 
 describe('CommandSuggestion', () => {
@@ -229,6 +230,6 @@ describe('CommandSuggestion', () => {
     expect(screen.getByText('/tldr')).toBeInTheDocument();
     expect(screen.getByText('/refine')).toBeInTheDocument();
     expect(screen.getByText('/bullets')).toBeInTheDocument();
-    expect(screen.getByText('/action')).toBeInTheDocument();
+    expect(screen.getByText('/todos')).toBeInTheDocument();
   });
 });

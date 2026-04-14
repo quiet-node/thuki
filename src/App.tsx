@@ -164,7 +164,9 @@ function App() {
 
   /** When the user submits while images are still processing, the submit
    *  intent is stored here. The effect below watches `attachedImages` and
-   *  fires the actual `ask()` once every image has a resolved `filePath`. */
+   *  fires the actual `ask()` once every image has a resolved `filePath`.
+   *  Also stores `promptOverride` when the deferred submit originates from
+   *  a utility command, and `context` for any quoted selected text. */
   const pendingSubmitRef = useRef<{
     query: string;
     context: string | undefined;
@@ -933,19 +935,21 @@ function App() {
     }
 
     if (utilityTrigger) {
-      const composedPrompt = buildPrompt(
-        utilityTrigger,
-        strippedMessage,
-        selectedContext?.trim() || undefined,
-      );
-      if (!composedPrompt) return; // No input text available.
-
+      // Sanitize selectedContext before passing to buildPrompt so that control
+      // characters from a hostile host-app selection cannot reach the model prompt.
       // eslint-disable-next-line no-control-regex
       const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
       const sanitized = selectedContext
         ?.replace(CONTROL_CHARS, '')
         .slice(0, quote.maxContextLength);
       const context = sanitized?.trim() ? sanitized : undefined;
+
+      const composedPrompt = buildPrompt(
+        utilityTrigger,
+        strippedMessage,
+        context,
+      );
+      if (!composedPrompt) return; // No input text available.
 
       // Show the full original query (including command trigger) in the chat
       // bubble, matching the behaviour of /screen and the normal submit path.
@@ -980,7 +984,7 @@ function App() {
       // Images still processing: store intent for deferred submit.
       pendingSubmitRef.current = {
         query: displayText,
-        context: undefined,
+        context,
         think: hasThink,
         promptOverride: composedPrompt,
       };

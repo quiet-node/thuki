@@ -2164,7 +2164,7 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      // Paste an image — thumbnail appears immediately (filePath null)
+      // Paste an image; thumbnail appears immediately (filePath null)
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
@@ -2191,7 +2191,7 @@ describe('App', () => {
       // Should show "Processing images" state
       expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
 
-      // Resolve the image — triggers deferred submit chain
+      // Resolve the image; triggers deferred submit chain
       resolveSave!('/tmp/staged/img1.jpg');
 
       // Flush async chain: promise → state update → effect → ask → invoke
