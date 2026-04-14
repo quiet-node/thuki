@@ -44,7 +44,7 @@ function ThinkingLabel() {
             animationDelay: `${i * CHAR_DELAY_MS}ms`,
           }}
         >
-          {char === ' ' ? '\u00A0' : char}
+          {char}
         </span>
       ))}
       <style>{`
