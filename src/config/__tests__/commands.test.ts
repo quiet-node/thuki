@@ -81,10 +81,10 @@ describe('COMMANDS registry', () => {
     expect(cmd?.description.length).toBeGreaterThan(0);
   });
 
-  it('includes the /action command', () => {
-    const cmd = COMMANDS.find((c: Command) => c.trigger === '/action');
+  it('includes the /todos command', () => {
+    const cmd = COMMANDS.find((c: Command) => c.trigger === '/todos');
     expect(cmd).toBeDefined();
-    expect(cmd?.label).toBe('/action');
+    expect(cmd?.label).toBe('/todos');
     expect(cmd?.description.length).toBeGreaterThan(0);
   });
 
@@ -194,9 +194,9 @@ describe('buildPrompt', () => {
     expect(result).toContain('Text: point one and point two');
   });
 
-  it('/action populates template correctly', () => {
-    const result = buildPrompt('/action', 'John should fix the bug by Friday');
-    expect(result).toContain('Extract every action item');
+  it('/todos populates template correctly', () => {
+    const result = buildPrompt('/todos', 'John should fix the bug by Friday');
+    expect(result).toContain('- [ ] ');
     expect(result).toContain('Text: John should fix the bug by Friday');
   });
 });

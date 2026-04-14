@@ -43,7 +43,7 @@ const SCREEN_ICON = (
   </svg>
 );
 
-/** Brain/lightbulb icon for /think command. */
+/** Brain icon for /think command. */
 const THINK_ICON = (
   <svg
     width="14"
@@ -53,17 +53,46 @@ const THINK_ICON = (
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
   >
-    <circle cx="8" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.5" />
     <path
-      d="M6 13h4"
+      d="M8 13C7 13 5.5 12.5 4.5 11.5C3.5 10.5 2.5 9.5 2.5 7.5C2.5 5.5 3.5 4 5 3C6 2.5 7 2.5 8 3"
       stroke="currentColor"
-      strokeWidth="1.5"
+      strokeWidth="1.3"
       strokeLinecap="round"
     />
     <path
-      d="M6.5 7.5c0-1 .7-1.5 1.5-1.5s1.5.5 1.5 1.5c0 .7-.5 1-1 1.2V10"
+      d="M8 13C9 13 10.5 12.5 11.5 11.5C12.5 10.5 13.5 9.5 13.5 7.5C13.5 5.5 12.5 4 11 3C10 2.5 9 2.5 8 3"
       stroke="currentColor"
-      strokeWidth="1.2"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+    />
+    <path
+      d="M8 3.5V12.5"
+      stroke="currentColor"
+      strokeWidth="1"
+      strokeLinecap="round"
+    />
+    <path
+      d="M5 6.5C5.5 6 6 6 6.5 6.5"
+      stroke="currentColor"
+      strokeWidth="1"
+      strokeLinecap="round"
+    />
+    <path
+      d="M4.5 9.5C5 9 6 9 6.5 9.5"
+      stroke="currentColor"
+      strokeWidth="1"
+      strokeLinecap="round"
+    />
+    <path
+      d="M11 6.5C10.5 6 10 6 9.5 6.5"
+      stroke="currentColor"
+      strokeWidth="1"
+      strokeLinecap="round"
+    />
+    <path
+      d="M11.5 9.5C11 9 10 9 9.5 9.5"
+      stroke="currentColor"
+      strokeWidth="1"
       strokeLinecap="round"
     />
   </svg>
@@ -233,7 +262,7 @@ function iconForTrigger(trigger: string): React.ReactNode {
       return REFINE_ICON;
     case '/bullets':
       return BULLETS_ICON;
-    case '/action':
+    case '/todos':
       return ACTION_ICON;
     default:
       return SCREEN_ICON;
@@ -279,7 +308,7 @@ export function CommandSuggestion({
           No commands found
         </div>
       ) : (
-        <ul className="pb-1 max-h-32 overflow-y-auto" role="presentation">
+        <ul className="pb-1 max-h-[112px] overflow-y-auto" role="presentation">
           {commands.map((cmd, index) => {
             const isHighlighted = index === highlightedIndex;
             return (

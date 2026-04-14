@@ -909,20 +909,28 @@ function App() {
     const hasScreen = found.has('/screen');
     const hasThink = found.has('/think');
 
+    // Check for utility commands with prompt templates.
+    const utilityTrigger = Array.from(found).find((t) => {
+      const cmd = COMMANDS.find((c) => c.trigger === t);
+      return !!cmd?.promptTemplate;
+    });
+
     // Nothing to send if the message is only commands with no content or images.
-    if (!strippedMessage && attachedImages.length === 0 && !hasScreen) return;
+    // Exception: a utility command or /think with pre-filled selected context is
+    // valid even if no additional text was typed after the trigger.
+    if (
+      !strippedMessage &&
+      attachedImages.length === 0 &&
+      !hasScreen &&
+      !((utilityTrigger || hasThink) && selectedContext?.trim())
+    )
+      return;
 
     if (hasScreen) {
       // Fire-and-forget: the async path handles cleanup and ask() invocation.
       void handleScreenSubmit(trimmedQuery, hasThink);
       return;
     }
-
-    // Check for utility commands with prompt templates.
-    const utilityTrigger = Array.from(found).find((t) => {
-      const cmd = COMMANDS.find((c) => c.trigger === t);
-      return !!cmd?.promptTemplate;
-    });
 
     if (utilityTrigger) {
       const composedPrompt = buildPrompt(

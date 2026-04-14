@@ -61,14 +61,14 @@ export const COMMANDS: readonly Command[] = [
     label: '/bullets',
     description: 'Extract key points as a bullet list',
     promptTemplate:
-      'Extract the key points from the following text as a bulleted list. Each bullet should be a concise, self-contained statement that captures one distinct idea. Order them by importance or logical sequence, whichever fits better. Leave out filler, repetition, and transitional fluff. Aim for bullets that someone could scan in 10 seconds and walk away informed.\n\nText: $INPUT',
+      'Extract the key points from the following text as a bulleted list. Each item must begin with "- " (a hyphen followed by a space). Do not use numbered lists, plain paragraphs, headers, or any other formatting. Output only the bulleted list, nothing else.\n\nExample output format:\n- First key point\n- Second key point\n- Third key point\n\nEach bullet should be a concise, self-contained statement. Order by importance or logical sequence. Leave out filler and repetition.\n\nText: $INPUT',
   },
   {
-    trigger: '/action',
-    label: '/action',
-    description: 'Extract action items as a checklist',
+    trigger: '/todos',
+    label: '/todos',
+    description: 'Extract to-do items as a checkbox list',
     promptTemplate:
-      'Extract every action item, task, commitment, and follow-up from the following text. Present them as a checklist. Each item should state: who is responsible (if mentioned), what needs to be done, and any deadline or timeframe (if mentioned). If no owner is specified, phrase the item as a general task. Order by urgency or sequence when possible. Ignore observations, opinions, and background that do not imply a concrete next step.\n\nText: $INPUT',
+      'Read the following text and respond in two parts:\n\n**Part 1 — Summary:** Write a short paragraph (3-5 sentences) explaining what this text is about. Cover: what the situation or topic is, who is involved, what the current state is, and why it matters or what is at stake. This should give someone who has not read the original text a clear picture of the context.\n\n**Part 2 — To-dos:** List every task, action item, commitment, and follow-up from the text as a markdown checkbox list. Every single item MUST begin with "- [ ] " (hyphen, space, open bracket, space, close bracket, space). Do not use numbered lists, plain bullets, headers, or any other format for the list items.\n\nSeparate the two parts with a blank line. Do not add any headings or labels like "Summary:" or "To-dos:" — just write the paragraph, then the list.\n\nExample output format:\nThis is a paragraph explaining what the text is about, who is involved, and what the situation is. It gives enough context to understand why the tasks matter. It is clear and direct.\n\n- [ ] First task to complete\n- [ ] Second task to complete\n- [ ] Third task to complete\n\nFor each to-do item, include who is responsible (if mentioned), what needs to be done, and any deadline or timeframe (if mentioned). Order by urgency or sequence when possible.\n\nText: $INPUT',
   },
 ] as const;
 
