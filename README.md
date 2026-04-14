@@ -219,7 +219,6 @@ More flexibility over the model powering Thuki.
 
 - **Native settings panel (⌘,):** a proper macOS preferences window to configure your model, Ollama endpoint, activation shortcut, slash commands, and system prompt. No config files needed.
 - **In-app model switching:** swap between any Ollama model from the UI without rebuilding (the backend already supports multiple models via `THUKI_SUPPORTED_AI_MODELS`; the picker UI is next)
-- **Thinking mode:** Gemma4 supports chain-of-thought reasoning via a `<|think|>` token in the system prompt. The model produces internal reasoning before answering, wrapped in special tokens. A future update will add stream-level filtering of thinking tokens, multi-turn history stripping (required by the Gemma4 spec), and an optional "show reasoning" toggle in the UI.
 - **Multiple provider support:** opt in to OpenAI, Anthropic, or any OpenAI-compatible endpoint as an alternative to local Ollama
 - **Custom activation shortcut:** change the double-tap trigger to any key or combo you prefer
 
