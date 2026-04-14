@@ -9,20 +9,29 @@ export interface ThinkingBlockProps {
 }
 
 const THINKING_TEXT = 'Thinking...';
-
+/** Delay between each character's flash start. */
+const CHAR_DELAY_MS = 80;
+/** How long a single character's flash lasts (rise + fall). */
+const FLASH_MS = 200;
+/** Pause after the last character finishes before the next sweep. */
+const PAUSE_MS = 800;
 /**
- * Total cycle duration per character: sweep time + pause.
- * 80ms per char x 10 chars = 800ms sweep, plus 600ms pause = 1400ms total.
+ * Total animation cycle per character. Must be long enough that the last
+ * character's flash (at delay 9*80=720ms) plus FLASH_MS finishes, then
+ * PAUSE_MS of idle time passes before the cycle repeats.
  */
-const CYCLE_MS = 1400;
-
-/** Percentage of the cycle spent sweeping (rest is pause). */
-const SWEEP_RATIO = 800 / CYCLE_MS;
+const TOTAL_CYCLE_MS =
+  (THINKING_TEXT.length - 1) * CHAR_DELAY_MS + FLASH_MS + PAUSE_MS;
+/** Flash peak as a percentage of the total cycle. */
+const PEAK_PCT = ((FLASH_MS * 0.4) / TOTAL_CYCLE_MS) * 100;
+/** Flash end as a percentage of the total cycle. */
+const END_PCT = (FLASH_MS / TOTAL_CYCLE_MS) * 100;
 
 /**
  * Animated "Thinking..." label using pure CSS keyframes.
- * Each character has a staggered animation delay creating a wave effect.
- * Zero JS re-renders after mount.
+ * Each character has a staggered animation delay. The total cycle duration
+ * is long enough that all characters finish flashing before the next round
+ * starts, creating a visible pause between sweeps.
  */
 function ThinkingLabel() {
   return (
@@ -32,8 +41,7 @@ function ThinkingLabel() {
           key={i}
           className="inline-block thinking-sweep-char"
           style={{
-            animationDelay: `${i * 80}ms`,
-            animationDuration: `${CYCLE_MS}ms`,
+            animationDelay: `${i * CHAR_DELAY_MS}ms`,
           }}
         >
           {char === ' ' ? '\u00A0' : char}
@@ -42,15 +50,13 @@ function ThinkingLabel() {
       <style>{`
         @keyframes thinkingSweep {
           0% { opacity: 0.35; }
-          ${(SWEEP_RATIO * 20).toFixed(0)}% { opacity: 1; }
-          ${(SWEEP_RATIO * 50).toFixed(0)}% { opacity: 0.35; }
+          ${PEAK_PCT.toFixed(1)}% { opacity: 1; }
+          ${END_PCT.toFixed(1)}% { opacity: 0.35; }
           100% { opacity: 0.35; }
         }
         .thinking-sweep-char {
           opacity: 0.35;
-          animation-name: thinkingSweep;
-          animation-timing-function: ease-in-out;
-          animation-iteration-count: infinite;
+          animation: thinkingSweep ${TOTAL_CYCLE_MS}ms ease-in-out infinite;
         }
       `}</style>
     </span>
