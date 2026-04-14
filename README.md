@@ -9,8 +9,13 @@
 </p>
 
 <p align="center">
+<a align="center" href="https://www.producthunt.com/products/thuki?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-thuki" target="_blank" rel="noopener noreferrer"><img alt="Thuki  - Floating AI for macOS. Free &amp; Local. No cloud, no API keys. | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1122707&amp;theme=light&amp;t=1776150241085"></a>  
+</p>
+
+<p align="center">
   A floating AI secretary for macOS. Fully local, completely free, zero data ever leaves your machine.
 </p>
+
 
 <p align="center">
   <img src="https://img.shields.io/badge/status-beta-yellow.svg" alt="Beta" />
