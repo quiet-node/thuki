@@ -124,7 +124,7 @@ export function ThinkingBlock({
                 </div>
 
                 {/* Thinking text rendered as markdown (normal text color) */}
-                <div className="flex-1 text-sm select-text min-w-0">
+                <div className="flex-1 text-sm select-text min-w-0 opacity-70">
                   <MarkdownRenderer
                     content={displayContent}
                     isStreaming={isThinking}
