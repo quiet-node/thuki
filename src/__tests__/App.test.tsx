@@ -3372,9 +3372,9 @@ describe('App', () => {
       await act(async () => {});
 
       await vi.waitFor(() => {
-        const askCall = vi.mocked(invoke).mock.calls.find(
-          (c) => c[0] === 'ask_ollama',
-        );
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
         expect(args.message).toContain('Please help rewrite the text below');
@@ -3403,9 +3403,9 @@ describe('App', () => {
       await act(async () => {});
 
       await vi.waitFor(() => {
-        const askCall = vi.mocked(invoke).mock.calls.find(
-          (c) => c[0] === 'ask_ollama',
-        );
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
         expect(args.message).toContain('Target language: jpn');
@@ -3434,9 +3434,9 @@ describe('App', () => {
       await act(async () => {});
 
       await vi.waitFor(() => {
-        const askCall = vi.mocked(invoke).mock.calls.find(
-          (c) => c[0] === 'ask_ollama',
-        );
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
         expect(args.message).toContain('Summarize the following text');
@@ -3514,9 +3514,9 @@ describe('App', () => {
       await act(async () => {});
 
       await vi.waitFor(() => {
-        const askCall = vi.mocked(invoke).mock.calls.find(
-          (c) => c[0] === 'ask_ollama',
-        );
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
         expect(args.message).toContain('Please help rewrite the text below');
@@ -3568,9 +3568,9 @@ describe('App', () => {
       await act(async () => {});
 
       await vi.waitFor(() => {
-        const askCall = vi.mocked(invoke).mock.calls.find(
-          (c) => c[0] === 'ask_ollama',
-        );
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
         // The prompt should use selectedContext as $INPUT
@@ -3648,9 +3648,9 @@ describe('App', () => {
       await act(async () => {});
 
       await vi.waitFor(() => {
-        const askCall = vi.mocked(invoke).mock.calls.find(
-          (c) => c[0] === 'ask_ollama',
-        );
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
         expect(args.message).toContain('Please help rewrite the text below');

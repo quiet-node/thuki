@@ -22,7 +22,11 @@ import { HistoryPanel } from './components/HistoryPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import type { AttachedImage } from './types/image';
 import { quote } from './config';
-import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER, buildPrompt } from './config/commands';
+import {
+  COMMANDS,
+  SCREEN_CAPTURE_PLACEHOLDER,
+  buildPrompt,
+} from './config/commands';
 import './App.css';
 
 /** Fallback model name used before get_model_config resolves at startup. */
@@ -936,16 +940,25 @@ function App() {
       const context = sanitized?.trim() ? sanitized : undefined;
 
       /* v8 ignore start -- defensive fallback: when selectedContext is null, buildPrompt requires strippedMessage to be non-empty, so strippedMessage.trim() is always truthy and || short-circuits before ?? evaluates */
-      const displayText = strippedMessage.trim() || (selectedContext?.trim() ?? '');
+      const displayText =
+        strippedMessage.trim() || (selectedContext?.trim() ?? '');
       /* v8 ignore stop */
 
-      const hasPendingImages = attachedImages.some((img) => img.filePath === null);
+      const hasPendingImages = attachedImages.some(
+        (img) => img.filePath === null,
+      );
       if (!hasPendingImages) {
         const readyPaths = attachedImages
           .filter((img) => img.filePath !== null)
           .map((img) => img.filePath as string);
         const images = readyPaths.length > 0 ? readyPaths : undefined;
-        ask(displayText, context, images, hasThink || undefined, composedPrompt);
+        ask(
+          displayText,
+          context,
+          images,
+          hasThink || undefined,
+          composedPrompt,
+        );
         setSelectedContext(null);
         setQuery('');
         for (const img of attachedImages) {
@@ -1054,7 +1067,12 @@ function App() {
     const allReady = attachedImages.every((img) => img.filePath !== null);
     if (!allReady) return;
 
-    const { query: pendingQuery, context, think, promptOverride } = pendingSubmitRef.current;
+    const {
+      query: pendingQuery,
+      context,
+      think,
+      promptOverride,
+    } = pendingSubmitRef.current;
     pendingSubmitRef.current = null;
     setIsSubmitPending(false);
     // Clear the preview message — ask() will add the real one with file paths.
