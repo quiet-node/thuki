@@ -13,7 +13,7 @@ describe('ThinkingBlock', () => {
   it('shows animated "Thinking..." label while isThinking', () => {
     render(<ThinkingBlock thinkingContent="Working on it" isThinking={true} />);
     expect(screen.getByTestId('thinking-label')).toBeInTheDocument();
-    expect(screen.getByTestId('thinking-label').textContent).toBe(
+    expect(screen.getByTestId('thinking-label').textContent).toContain(
       'Thinking...',
     );
   });

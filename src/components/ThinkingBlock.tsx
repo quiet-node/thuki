@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
@@ -9,85 +9,50 @@ export interface ThinkingBlockProps {
 }
 
 const THINKING_TEXT = 'Thinking...';
-/** How many milliseconds between position advances along the text. */
-const SWEEP_STEP_MS = 80;
-/** How many characters on each side of the peak are partially illuminated. */
-const SPREAD = 3;
-/** Base opacity for characters outside the glow zone. */
-const BASE_OPACITY = 0.35;
-/** Milliseconds of all-dim pause after each sweep completes. */
-const PAUSE_MS = 600;
-/**
- * Sweep position used during the inter-round pause. Set beyond the text
- * length so all characters fall outside the glow zone and dim to base.
- */
-const PAUSE_POS = -SPREAD - 1;
 
 /**
- * Computes a smooth bell-curve opacity for each character based on its
- * distance from the current sweep position. Characters near the peak
- * glow brightly while neighbors taper off smoothly, creating a flowing
- * wave of light across the text.
+ * Total cycle duration per character: sweep time + pause.
+ * 80ms per char x 10 chars = 800ms sweep, plus 600ms pause = 1400ms total.
  */
-function getCharOpacity(charIndex: number, sweepPos: number): number {
-  if (sweepPos < 0) return BASE_OPACITY;
-  const len = THINKING_TEXT.length;
-  const raw = Math.abs(charIndex - sweepPos);
-  const dist = Math.min(raw, len - raw);
-  if (dist > SPREAD) return BASE_OPACITY;
-  const t = dist / SPREAD;
-  return BASE_OPACITY + (1 - BASE_OPACITY) * Math.cos((t * Math.PI) / 2);
-}
+const CYCLE_MS = 1400;
+
+/** Percentage of the cycle spent sweeping (rest is pause). */
+const SWEEP_RATIO = 800 / CYCLE_MS;
 
 /**
- * Animated "Thinking..." label with a smooth sweeping glow.
- * A soft highlight wave travels across the text, pausing briefly
- * between rounds for a natural breathing rhythm.
+ * Animated "Thinking..." label using pure CSS keyframes.
+ * Each character has a staggered animation delay creating a wave effect.
+ * Zero JS re-renders after mount.
  */
 function ThinkingLabel() {
-  const [sweepPos, setSweepPos] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    function tick() {
-      if (cancelled) return;
-      setSweepPos((prev) => {
-        const next = prev < 0 ? 0 : prev + 1;
-        if (next >= THINKING_TEXT.length) {
-          // Sweep complete: pause, then restart
-          timerRef.current = setTimeout(() => {
-            if (!cancelled) {
-              setSweepPos(0);
-              timerRef.current = setTimeout(tick, SWEEP_STEP_MS);
-            }
-          }, PAUSE_MS);
-          return PAUSE_POS;
-        }
-        timerRef.current = setTimeout(tick, SWEEP_STEP_MS);
-        return next;
-      });
-    }
-
-    timerRef.current = setTimeout(tick, SWEEP_STEP_MS);
-    return () => {
-      cancelled = true;
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
   return (
     <span className="text-sm text-text-secondary" data-testid="thinking-label">
       {THINKING_TEXT.split('').map((char, i) => (
         <span
           key={i}
-          className="transition-opacity duration-150 ease-in-out"
-          style={{ opacity: getCharOpacity(i, sweepPos) }}
+          className="inline-block thinking-sweep-char"
+          style={{
+            animationDelay: `${i * 80}ms`,
+            animationDuration: `${CYCLE_MS}ms`,
+          }}
         >
-          {char}
+          {char === ' ' ? '\u00A0' : char}
         </span>
       ))}
+      <style>{`
+        @keyframes thinkingSweep {
+          0% { opacity: 0.35; }
+          ${(SWEEP_RATIO * 20).toFixed(0)}% { opacity: 1; }
+          ${(SWEEP_RATIO * 50).toFixed(0)}% { opacity: 0.35; }
+          100% { opacity: 0.35; }
+        }
+        .thinking-sweep-char {
+          opacity: 0.35;
+          animation-name: thinkingSweep;
+          animation-timing-function: ease-in-out;
+          animation-iteration-count: infinite;
+        }
+      `}</style>
     </span>
   );
 }
