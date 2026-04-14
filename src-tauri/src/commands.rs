@@ -117,7 +117,6 @@ struct OllamaChatRequest {
 #[derive(Deserialize)]
 struct OllamaChatResponseMessage {
     content: Option<String>,
-    #[allow(dead_code)] // Used in Task 3 when stream_ollama_chat handles thinking tokens
     thinking: Option<String>,
 }
 
@@ -248,6 +247,7 @@ pub async fn stream_ollama_chat(
     endpoint: &str,
     model: &str,
     messages: Vec<ChatMessage>,
+    think: bool,
     client: &reqwest::Client,
     cancel_token: CancellationToken,
     on_chunk: impl Fn(StreamChunk),
@@ -256,7 +256,7 @@ pub async fn stream_ollama_chat(
         model: model.to_string(),
         messages,
         stream: true,
-        think: false,
+        think,
         options: OllamaOptions {
             temperature: 1.0,
             top_p: 0.95,
@@ -305,11 +305,20 @@ pub async fn stream_ollama_chat(
                                         if let Ok(json) =
                                             serde_json::from_str::<OllamaChatResponse>(trimmed)
                                         {
-                                            if let Some(msg) = json.message {
-                                                if let Some(token) = msg.content {
+                                            if let Some(ref msg) = json.message {
+                                                if let Some(ref thinking) = msg.thinking {
+                                                    if !thinking.is_empty() {
+                                                        on_chunk(StreamChunk::ThinkingToken(
+                                                            thinking.clone(),
+                                                        ));
+                                                    }
+                                                }
+                                                if let Some(ref token) = msg.content {
                                                     if !token.is_empty() {
-                                                        accumulated.push_str(&token);
-                                                        on_chunk(StreamChunk::Token(token));
+                                                        accumulated.push_str(token);
+                                                        on_chunk(StreamChunk::Token(
+                                                            token.clone(),
+                                                        ));
                                                     }
                                                 }
                                             }
@@ -349,6 +358,7 @@ pub async fn ask_ollama(
     message: String,
     quoted_text: Option<String>,
     image_paths: Option<Vec<String>>,
+    think: bool,
     on_event: Channel<StreamChunk>,
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
@@ -405,6 +415,7 @@ pub async fn ask_ollama(
         &endpoint,
         &model_config.active,
         messages,
+        think,
         &client,
         cancel_token.clone(),
         |chunk| {
@@ -507,6 +518,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             messages,
+            false,
             &client,
             token,
             callback,
@@ -539,6 +551,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -562,6 +575,7 @@ mod tests {
             "http://127.0.0.1:1/api/chat",
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -592,6 +606,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -620,6 +635,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -656,6 +672,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -694,6 +711,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -733,6 +751,7 @@ mod tests {
             &format!("http://127.0.0.1:{}/api/chat", port),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -762,6 +781,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -794,6 +814,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -822,6 +843,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -871,6 +893,7 @@ mod tests {
             &format!("http://127.0.0.1:{}/api/chat", port),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -907,6 +930,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -949,6 +973,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             messages,
+            false,
             &client,
             token,
             callback,
@@ -975,6 +1000,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -1141,6 +1167,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -1237,6 +1264,7 @@ mod tests {
             "http://127.0.0.1:1/api/chat",
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -1268,6 +1296,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -1358,6 +1387,7 @@ mod tests {
             &format!("{}/api/chat", server.url()),
             "test-model",
             vec![],
+            false,
             &client,
             token,
             callback,
@@ -1370,5 +1400,129 @@ mod tests {
         assert!(
             matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::Other && e.message.contains("500"))
         );
+    }
+
+    /// Helper: builds a `/api/chat` response line with both thinking and content fields.
+    fn chat_line_with_thinking(thinking: &str, content: &str, done: bool) -> String {
+        format!(
+            "{{\"message\":{{\"role\":\"assistant\",\"content\":\"{}\",\"thinking\":\"{}\"}},\"done\":{}}}\n",
+            content, thinking, done
+        )
+    }
+
+    #[tokio::test]
+    async fn stream_ollama_chat_emits_thinking_tokens() {
+        let mut server = mockito::Server::new_async().await;
+        let body = format!(
+            "{}{}{}",
+            chat_line_with_thinking("step 1", "", false),
+            chat_line_with_thinking("", "Hello", false),
+            chat_line_with_thinking("", "", true),
+        );
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let (chunks, callback) = collect_chunks();
+
+        let accumulated = stream_ollama_chat(
+            &format!("{}/api/chat", server.url()),
+            "test-model",
+            vec![],
+            true,
+            &client,
+            token,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+        let chunks = chunks.lock().unwrap();
+
+        // ThinkingToken emitted for thinking field
+        assert!(matches!(&chunks[0], StreamChunk::ThinkingToken(t) if t == "step 1"));
+        // Token emitted for content field
+        assert!(matches!(&chunks[1], StreamChunk::Token(t) if t == "Hello"));
+        // Done emitted
+        assert!(matches!(&chunks[2], StreamChunk::Done));
+
+        // Accumulated return value contains only content, not thinking
+        assert_eq!(accumulated, "Hello");
+    }
+
+    #[tokio::test]
+    async fn stream_ollama_chat_sends_think_true_in_request() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"think":true}"#.to_string(),
+            ))
+            .with_body(chat_line("", true))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let (_, callback) = collect_chunks();
+
+        stream_ollama_chat(
+            &format!("{}/api/chat", server.url()),
+            "test-model",
+            vec![],
+            true,
+            &client,
+            token,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn stream_ollama_chat_empty_thinking_not_emitted() {
+        let mut server = mockito::Server::new_async().await;
+        let body = format!(
+            "{}{}",
+            chat_line_with_thinking("", "Hello", false),
+            chat_line_with_thinking("", "", true),
+        );
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let (chunks, callback) = collect_chunks();
+
+        stream_ollama_chat(
+            &format!("{}/api/chat", server.url()),
+            "test-model",
+            vec![],
+            true,
+            &client,
+            token,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+        let chunks = chunks.lock().unwrap();
+
+        // No ThinkingToken emitted for empty thinking field
+        assert!(chunks
+            .iter()
+            .all(|c| !matches!(c, StreamChunk::ThinkingToken(_))));
+        // Content token still emitted
+        assert!(chunks
+            .iter()
+            .any(|c| matches!(c, StreamChunk::Token(t) if t == "Hello")));
     }
 }

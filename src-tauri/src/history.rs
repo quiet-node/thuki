@@ -243,6 +243,7 @@ pub async fn generate_title(
         &endpoint,
         &model_config.active,
         title_messages,
+        false,
         &client,
         cancel_token,
         |_| {}, // No per-chunk side effects; we use the accumulated return value.
