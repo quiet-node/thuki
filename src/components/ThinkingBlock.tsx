@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
@@ -8,39 +8,42 @@ export interface ThinkingBlockProps {
   durationMs?: number;
 }
 
-const THINKING_TEXT = 'Thinking...';
-/** Milliseconds each character stays highlighted during the sweep. */
-const SWEEP_STEP_MS = 100;
-
 /**
- * Animated "Thinking..." label with a character-by-character highlight sweep.
- * One letter at a time lights up to full brightness, then dims back as the
- * highlight moves to the next character. Loops continuously.
+ * Spinning starburst icon + italic "Thinking..." text.
+ * Matches Claude.ai's thinking indicator: a rotating sparkle/starburst
+ * icon with smooth CSS animation, paired with static dimmed italic text.
  */
 function ThinkingLabel() {
-  const [activeIndex, setActiveIndex] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    timerRef.current = setInterval(() => {
-      setActiveIndex((prev) => (prev + 1) % THINKING_TEXT.length);
-    }, SWEEP_STEP_MS);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, []);
-
   return (
-    <span className="text-sm" data-testid="thinking-label">
-      {THINKING_TEXT.split('').map((char, i) => (
-        <span
-          key={i}
-          className="transition-opacity duration-100"
-          style={{ opacity: i === activeIndex ? 1 : 0.4 }}
-        >
-          {char}
-        </span>
-      ))}
+    <span
+      className="flex items-center gap-2 text-sm"
+      data-testid="thinking-label"
+    >
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 16 16"
+        fill="none"
+        className="animate-spin text-primary"
+        style={{ animationDuration: '1.5s' }}
+      >
+        {/* 8-ray starburst */}
+        {[0, 45, 90, 135, 180, 225, 270, 315].map((angle) => (
+          <line
+            key={angle}
+            x1="8"
+            y1="8"
+            x2="8"
+            y2="2"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            transform={`rotate(${angle} 8 8)`}
+            opacity={0.4 + (angle / 315) * 0.6}
+          />
+        ))}
+      </svg>
+      <span className="text-text-secondary/60 italic">Thinking...</span>
     </span>
   );
 }

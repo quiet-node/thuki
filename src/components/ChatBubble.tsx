@@ -7,8 +7,33 @@ import { ThinkingBlock } from './ThinkingBlock';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
-import { SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
+import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
 import type { OllamaErrorKind } from '../hooks/useOllama';
+
+/** Slash command triggers for prefix detection in user messages. */
+const COMMAND_TRIGGERS = COMMANDS.map((c) => c.trigger);
+
+/**
+ * Renders user message content, highlighting any slash command prefix
+ * (e.g., "/think", "/screen") in the brand accent color with bold weight.
+ */
+function renderUserContent(content: string) {
+  for (const trigger of COMMAND_TRIGGERS) {
+    if (
+      content.startsWith(trigger) &&
+      (content.length === trigger.length || content[trigger.length] === ' ')
+    ) {
+      const rest = content.slice(trigger.length);
+      return (
+        <>
+          <span className="text-primary font-bold">{trigger}</span>
+          {rest}
+        </>
+      );
+    }
+  }
+  return content;
+}
 
 interface ChatBubbleProps {
   /** The message role determines alignment and color treatment. */
@@ -122,7 +147,7 @@ export function ChatBubble({
             )}
             {content && (
               <span className="text-white/95 font-medium whitespace-pre-wrap">
-                {content}
+                {renderUserContent(content)}
               </span>
             )}
           </div>

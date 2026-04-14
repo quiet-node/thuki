@@ -2723,12 +2723,12 @@ describe('App', () => {
         'ask_ollama',
         expect.objectContaining({
           imagePaths: ['/tmp/screen.jpg'],
-          message: '',
+          message: '/screen',
         }),
       );
     });
 
-    it('strips the /screen trigger and sends the remaining text as message', async () => {
+    it('keeps /screen prefix and sends full text as message', async () => {
       enableChannelCaptureWithResponses({
         capture_full_screen_command: '/tmp/screen.jpg',
       });
@@ -2753,7 +2753,7 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith(
         'ask_ollama',
         expect.objectContaining({
-          message: 'what is this error?',
+          message: '/screen what is this error?',
           imagePaths: ['/tmp/screen.jpg'],
         }),
       );
@@ -2951,7 +2951,7 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith(
         'ask_ollama',
         expect.objectContaining({
-          message: 'describe',
+          message: '/screen describe',
           imagePaths: ['/tmp/attached.jpg', '/tmp/screen.jpg'],
         }),
       );
@@ -2980,7 +2980,7 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith(
         'ask_ollama',
         expect.objectContaining({
-          message: 'explain',
+          message: '/screen explain',
           quotedText: 'some context',
           imagePaths: ['/tmp/screen.jpg'],
         }),
@@ -3021,7 +3021,7 @@ describe('App', () => {
       // After capture resolves: ask_ollama should be called
       expect(invoke).toHaveBeenCalledWith(
         'ask_ollama',
-        expect.objectContaining({ message: 'check this' }),
+        expect.objectContaining({ message: '/screen check this' }),
       );
     });
 

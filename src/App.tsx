@@ -803,7 +803,7 @@ function App() {
     setPendingUserMessage({
       id: crypto.randomUUID(),
       role: 'user',
-      content: cleanQuery,
+      content: restoredQuery,
       quotedText: context,
       imagePaths: [...existingDisplayPaths, SCREEN_CAPTURE_PLACEHOLDER],
     });
@@ -850,7 +850,7 @@ function App() {
       .map((img) => img.filePath as string);
     readyPaths.push(screenshotPath);
 
-    ask(cleanQuery, context, readyPaths);
+    ask(restoredQuery, context, readyPaths);
     for (const img of attachedImages) {
       URL.revokeObjectURL(img.blobUrl);
     }
