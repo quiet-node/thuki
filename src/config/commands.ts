@@ -78,3 +78,59 @@ export const COMMANDS: readonly Command[] = [
  * renders a branded screen-capture loading tile instead of a broken image.
  */
 export const SCREEN_CAPTURE_PLACEHOLDER = 'blob:screen-capture-loading';
+
+/**
+ * Builds a fully composed prompt from a utility command's template.
+ *
+ * Input resolution (selected text primary, typed text fallback):
+ * 1. Selected text present, no typed text: selected text is $INPUT.
+ * 2. No selected text, typed text present: typed text is $INPUT.
+ * 3. Both present: selected text is $INPUT, typed text appended as instruction.
+ *
+ * For /translate, the first word of strippedMessage is treated as the target
+ * language identifier. The model interprets it flexibly (full name, ISO code,
+ * abbreviation). If the language word is the only typed content and there is
+ * no selected text, returns null (no input to translate).
+ *
+ * Returns null if the command has no template, is unknown, or input is empty.
+ */
+export function buildPrompt(
+  trigger: string,
+  strippedMessage: string,
+  selectedText?: string,
+): string | null {
+  const cmd = COMMANDS.find((c) => c.trigger === trigger);
+  if (!cmd?.promptTemplate) return null;
+
+  const typed = strippedMessage.trim();
+  const selected = selectedText?.trim() ?? '';
+
+  let lang = '';
+  let typedRemainder = typed;
+
+  if (trigger === '/translate' && typed) {
+    const spaceIdx = typed.indexOf(' ');
+    if (spaceIdx === -1) {
+      // Single word: treat as language code only.
+      lang = typed;
+      typedRemainder = '';
+    } else {
+      lang = typed.slice(0, spaceIdx);
+      typedRemainder = typed.slice(spaceIdx + 1).trim();
+    }
+  }
+
+  // Resolve $INPUT.
+  let input: string;
+  if (selected && typedRemainder) {
+    input = `${selected}\n\n[Additional instruction]: ${typedRemainder}`;
+  } else if (selected) {
+    input = selected;
+  } else if (typedRemainder) {
+    input = typedRemainder;
+  } else {
+    return null;
+  }
+
+  return cmd.promptTemplate.replace('$LANG', lang).replace('$INPUT', input);
+}
