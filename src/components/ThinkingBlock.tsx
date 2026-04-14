@@ -15,6 +15,13 @@ const SWEEP_STEP_MS = 80;
 const SPREAD = 3;
 /** Base opacity for characters outside the glow zone. */
 const BASE_OPACITY = 0.35;
+/** Milliseconds of all-dim pause after each sweep completes. */
+const PAUSE_MS = 600;
+/**
+ * Sweep position used during the inter-round pause. Set beyond the text
+ * length so all characters fall outside the glow zone and dim to base.
+ */
+const PAUSE_POS = -SPREAD - 1;
 
 /**
  * Computes a smooth bell-curve opacity for each character based on its
@@ -23,31 +30,50 @@ const BASE_OPACITY = 0.35;
  * wave of light across the text.
  */
 function getCharOpacity(charIndex: number, sweepPos: number): number {
+  if (sweepPos < 0) return BASE_OPACITY;
   const len = THINKING_TEXT.length;
-  // Shortest distance on the circular loop
   const raw = Math.abs(charIndex - sweepPos);
   const dist = Math.min(raw, len - raw);
   if (dist > SPREAD) return BASE_OPACITY;
-  // Cosine falloff: 1.0 at center, tapering to BASE_OPACITY at edge
   const t = dist / SPREAD;
   return BASE_OPACITY + (1 - BASE_OPACITY) * Math.cos((t * Math.PI) / 2);
 }
 
 /**
  * Animated "Thinking..." label with a smooth sweeping glow.
- * A soft highlight wave travels across the text, illuminating nearby
- * characters with a cosine falloff for a premium, fluid feel.
+ * A soft highlight wave travels across the text, pausing briefly
+ * between rounds for a natural breathing rhythm.
  */
 function ThinkingLabel() {
   const [sweepPos, setSweepPos] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    timerRef.current = setInterval(() => {
-      setSweepPos((prev) => (prev + 1) % THINKING_TEXT.length);
-    }, SWEEP_STEP_MS);
+    let cancelled = false;
+
+    function tick() {
+      if (cancelled) return;
+      setSweepPos((prev) => {
+        const next = prev < 0 ? 0 : prev + 1;
+        if (next >= THINKING_TEXT.length) {
+          // Sweep complete: pause, then restart
+          timerRef.current = setTimeout(() => {
+            if (!cancelled) {
+              setSweepPos(0);
+              timerRef.current = setTimeout(tick, SWEEP_STEP_MS);
+            }
+          }, PAUSE_MS);
+          return PAUSE_POS;
+        }
+        timerRef.current = setTimeout(tick, SWEEP_STEP_MS);
+        return next;
+      });
+    }
+
+    timerRef.current = setTimeout(tick, SWEEP_STEP_MS);
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+      cancelled = true;
+      if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, []);
 

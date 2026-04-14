@@ -26,7 +26,7 @@ function renderUserContent(content: string): React.ReactNode {
       const rest = trimmed.slice(cmd.trigger.length);
       return (
         <>
-          <span className="font-bold text-white/60">{cmd.trigger}</span>
+          <span className="font-bold text-[#3d1f00]">{cmd.trigger}</span>
           {rest}
         </>
       );
