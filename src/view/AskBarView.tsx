@@ -142,16 +142,18 @@ const CAMERA_ICON = (
 
 /**
  * Renders text with command triggers highlighted in violet for the mirror div.
- * Splits on command boundaries and wraps each trigger in a colored span.
+ * Only the first occurrence of each command is highlighted; duplicates render plain.
  */
 export function renderHighlightedText(text: string): React.ReactNode {
   const parts: React.ReactNode[] = [];
   let remaining = text;
+  const highlighted = new Set<string>();
 
   while (remaining.length > 0) {
     let earliest = -1;
     let matchedTrigger = '';
     for (const cmd of COMMANDS) {
+      if (highlighted.has(cmd.trigger)) continue;
       const idx = remaining.indexOf(cmd.trigger);
       if (idx !== -1 && (earliest === -1 || idx < earliest)) {
         const before = idx === 0 || remaining[idx - 1] === ' ';
@@ -180,6 +182,7 @@ export function renderHighlightedText(text: string): React.ReactNode {
         {matchedTrigger}
       </span>,
     );
+    highlighted.add(matchedTrigger);
     remaining = remaining.slice(earliest + matchedTrigger.length);
   }
 
@@ -297,13 +300,36 @@ export function AskBarView({
   /** The active command prefix (e.g. "/sc"). Empty when not suggesting. */
   const commandPrefix = showSuggestions ? lastSlashWord : '';
 
-  /** Commands that match the current prefix (memoized to keep stable reference). */
+  /** Commands already present in the text before the current slash word. */
+  const usedCommands = useMemo(() => {
+    const textBeforeSlash = rawQuery.slice(
+      0,
+      rawQuery.length - lastSlashWord.length,
+    );
+    return new Set(
+      COMMANDS.filter((cmd) => {
+        const idx = textBeforeSlash.indexOf(cmd.trigger);
+        if (idx === -1) return false;
+        const before = idx === 0 || textBeforeSlash[idx - 1] === ' ';
+        const after =
+          idx + cmd.trigger.length >= textBeforeSlash.length ||
+          textBeforeSlash[idx + cmd.trigger.length] === ' ';
+        return before && after;
+      }).map((cmd) => cmd.trigger),
+    );
+  }, [rawQuery, lastSlashWord]);
+
+  /** Commands that match the current prefix, excluding already-used ones. */
   const filteredCommands = useMemo(
     () =>
       showSuggestions
-        ? COMMANDS.filter((cmd) => cmd.trigger.startsWith(commandPrefix))
+        ? COMMANDS.filter(
+            (cmd) =>
+              cmd.trigger.startsWith(commandPrefix) &&
+              !usedCommands.has(cmd.trigger),
+          )
         : [],
-    [showSuggestions, commandPrefix],
+    [showSuggestions, commandPrefix, usedCommands],
   );
 
   // Reset the highlighted index whenever the command prefix changes

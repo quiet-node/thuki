@@ -12,21 +12,22 @@ import type { OllamaErrorKind } from '../hooks/useOllama';
 
 /**
  * Renders user message content with slash commands styled distinctly.
- * Finds ALL command triggers anywhere in the text and wraps each in a
- * styled span so they stand out in the orange user bubble.
+ * Only the FIRST occurrence of each command trigger is styled; duplicate
+ * triggers render as plain text (the first one is the active command).
  */
 function renderUserContent(content: string): React.ReactNode {
   const parts: React.ReactNode[] = [];
   let remaining = content;
+  const styledCommands = new Set<string>();
 
   while (remaining.length > 0) {
-    // Find the earliest command trigger in remaining text
+    // Find the earliest command trigger in remaining text (skip already-styled ones)
     let earliest = -1;
     let matchedTrigger = '';
     for (const cmd of COMMANDS) {
+      if (styledCommands.has(cmd.trigger)) continue;
       const idx = remaining.indexOf(cmd.trigger);
       if (idx !== -1 && (earliest === -1 || idx < earliest)) {
-        // Verify it's a whole word (preceded by start/space, followed by end/space)
         const before = idx === 0 || remaining[idx - 1] === ' ';
         const after =
           idx + cmd.trigger.length >= remaining.length ||
@@ -49,12 +50,13 @@ function renderUserContent(content: string): React.ReactNode {
         <span key={parts.length}>{remaining.slice(0, earliest)}</span>,
       );
     }
-    // The command itself, styled
+    // The command itself, styled (first occurrence only)
     parts.push(
       <span key={parts.length} className="font-semibold text-[#7C2D12]">
         {matchedTrigger}
       </span>,
     );
+    styledCommands.add(matchedTrigger);
     remaining = remaining.slice(earliest + matchedTrigger.length);
   }
 
