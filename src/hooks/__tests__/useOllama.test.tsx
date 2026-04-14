@@ -228,6 +228,69 @@ describe('useOllama', () => {
         resolveInvoke?.();
       });
     });
+
+    it('sends promptOverride as message to backend when provided', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (result.current.ask as any)(
+          'user visible text',
+          undefined,
+          undefined,
+          false,
+          'composed prompt for model',
+        );
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: 'composed prompt for model',
+        }),
+      );
+
+      // User message in state shows displayContent, not the override.
+      const userMsg = result.current.messages.find((m) => m.role === 'user');
+      expect(userMsg?.content).toBe('user visible text');
+    });
+
+    it('sends displayContent as message when no promptOverride provided', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello world');
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: 'hello world',
+        }),
+      );
+    });
+
+    it('sends displayContent when promptOverride is undefined', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (result.current.ask as any)(
+          'hello world',
+          undefined,
+          undefined,
+          false,
+          undefined,
+        );
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: 'hello world',
+        }),
+      );
+    });
   });
 
   // ─── imagePaths handling ─────────────────────────────────────────────────────
