@@ -233,8 +233,7 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (result.current.ask as any)(
+        await result.current.ask(
           'user visible text',
           undefined,
           undefined,
@@ -274,8 +273,7 @@ describe('useOllama', () => {
       const { result } = renderHook(() => useOllama());
 
       await act(async () => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (result.current.ask as any)(
+        await result.current.ask(
           'hello world',
           undefined,
           undefined,

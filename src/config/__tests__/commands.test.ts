@@ -132,7 +132,11 @@ describe('buildPrompt', () => {
   });
 
   it('uses selected text as $INPUT and appends typed text as instruction when both present', () => {
-    const result = buildPrompt('/rewrite', 'make it shorter', 'selected paragraph');
+    const result = buildPrompt(
+      '/rewrite',
+      'make it shorter',
+      'selected paragraph',
+    );
     expect(result).toContain('selected paragraph');
     expect(result).toContain('make it shorter');
   });

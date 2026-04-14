@@ -3348,6 +3348,385 @@ describe('App', () => {
     });
   });
 
+  // ─── Utility commands ───────────────────────────────────────────────────────
+
+  describe('Utility commands (buildPrompt routing)', () => {
+    it('routes /rewrite command through buildPrompt and calls ask_ollama with composed prompt', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/rewrite fix this text' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi.mocked(invoke).mock.calls.find(
+          (c) => c[0] === 'ask_ollama',
+        );
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        expect(args.message).toContain('Please help rewrite the text below');
+        expect(args.message).toContain('fix this text');
+      });
+    });
+
+    it('routes /translate with language arg through buildPrompt', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/translate jpn hello world' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi.mocked(invoke).mock.calls.find(
+          (c) => c[0] === 'ask_ollama',
+        );
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        expect(args.message).toContain('Target language: jpn');
+        expect(args.message).toContain('Text: hello world');
+      });
+    });
+
+    it('/think and utility command compose: /think /tldr some long text', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/think /tldr some long text' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi.mocked(invoke).mock.calls.find(
+          (c) => c[0] === 'ask_ollama',
+        );
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        expect(args.message).toContain('Summarize the following text');
+        expect(args.message).toContain('some long text');
+        expect(args.think).toBe(true);
+      });
+    });
+
+    it('utility command with no input text does not call ask_ollama', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/rewrite' } });
+      });
+
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+    });
+
+    it('utility command returns null composedPrompt when no usable input is found', async () => {
+      // /translate with only a language code (no text to translate) makes buildPrompt return null.
+      // strippedMessage = 'jpn' (non-empty, bypasses the early guard) but buildPrompt gets
+      // lang='jpn', typedRemainder='', selected='', so returns null.
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/translate jpn' } });
+      });
+
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+    });
+
+    it('utility command uses selected context when available', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      // Activate overlay with selected text as context
+      await showOverlay('original selected text');
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      // Type a command with extra instruction so strippedMessage is non-empty
+      // (bypasses the "no content" early guard) and selectedContext is also set.
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/rewrite make it concise' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi.mocked(invoke).mock.calls.find(
+          (c) => c[0] === 'ask_ollama',
+        );
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        expect(args.message).toContain('Please help rewrite the text below');
+        expect(args.message).toContain('original selected text');
+        expect(args.quotedText).toBe('original selected text');
+      });
+    });
+
+    it('utility command with bare trigger uses selected context as display text', async () => {
+      // strippedMessage is empty, selectedContext is present, images bypass the
+      // early-return guard. displayText falls through to selectedContext?.trim().
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/ctx.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay('my selected text');
+
+      // Paste an image and wait for backend resolution so hasPendingImages is false
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      invoke.mockClear();
+      enableChannelCapture();
+
+      // Submit just the command trigger (strippedMessage will be '')
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/rewrite' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi.mocked(invoke).mock.calls.find(
+          (c) => c[0] === 'ask_ollama',
+        );
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        // The prompt should use selectedContext as $INPUT
+        expect(args.message).toContain('my selected text');
+      });
+    });
+
+    it('displays stripped user input in chat bubble, not the prompt template', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/rewrite fix this text' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        expect(screen.getByText('fix this text')).toBeInTheDocument();
+      });
+    });
+
+    it('utility command with resolved attached images passes imagePaths and revokes blob URLs', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste an image and wait for backend resolution
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['fake-img-data'], 'photo.png', {
+        type: 'image/png',
+      });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      invoke.mockClear();
+      enableChannelCapture();
+
+      // Type /rewrite command and submit
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/rewrite fix this prose' },
+        });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi.mocked(invoke).mock.calls.find(
+          (c) => c[0] === 'ask_ollama',
+        );
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        expect(args.message).toContain('Please help rewrite the text below');
+        expect(args.imagePaths).toEqual(['/tmp/staged/img1.jpg']);
+      });
+    });
+
+    it('utility command with pending images defers submit until images resolve', async () => {
+      // Flush stale macrotasks from prior tests
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+
+      let resolveSave: ((path: string) => void) | null = null;
+      const savePromises: Promise<string>[] = [];
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // Accept channel for ask_ollama
+          }
+          if (cmd === 'save_image_command') {
+            const p = new Promise<string>((resolve) => {
+              resolveSave = resolve;
+            });
+            savePromises.push(p);
+            return p;
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Paste an image — thumbnail appears immediately (filePath null)
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      // Wait for this test's FileReader to complete and call save_image_command
+      await act(async () => {
+        await vi.waitFor(() => expect(savePromises).toHaveLength(1));
+      });
+
+      // Type /rewrite and submit while image is still processing
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/rewrite make it clearer' },
+        });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Should show pending state (stop button visible)
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+
+      // Resolve the image — triggers deferred submit chain
+      resolveSave!('/tmp/staged/img1.jpg');
+
+      // Flush async chain: promise -> state update -> effect -> ask -> invoke
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      // The displayed user message should be the stripped text, not the template
+      expect(screen.getByText('make it clearer')).toBeInTheDocument();
+    });
+  });
+
   describe('Onboarding', () => {
     it('shows onboarding screen when thuki://onboarding event fires', async () => {
       enableChannelCaptureWithResponses({

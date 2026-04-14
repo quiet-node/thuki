@@ -58,6 +58,11 @@ export function useOllama(
    * @param displayContent The user's query as it should appear in the chat bubble.
    * @param quotedText Optional selected text quoted alongside this message.
    * @param imagePaths Optional array of absolute file paths for attached images.
+   * @param think When true, enables Ollama's thinking/reasoning mode.
+   * @param promptOverride When provided, sent to the backend as the actual message
+   *   instead of displayContent. The chat bubble still shows displayContent.
+   *   Used by utility slash commands to send a composed prompt template while
+   *   displaying the user's original input.
    */
   const ask = useCallback(
     async (
@@ -65,6 +70,7 @@ export function useOllama(
       quotedText?: string,
       imagePaths?: string[],
       think?: boolean,
+      promptOverride?: string,
     ) => {
       if (
         (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) ||
@@ -146,7 +152,7 @@ export function useOllama(
 
       try {
         await invoke('ask_ollama', {
-          message: displayContent,
+          message: promptOverride ?? displayContent,
           quotedText: quotedText ?? null,
           imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : null,
           think: think ?? false,
