@@ -12,27 +12,53 @@ import type { OllamaErrorKind } from '../hooks/useOllama';
 
 /**
  * Renders user message content with slash commands styled distinctly.
- * Detects a leading slash command (e.g. /think, /screen) and renders it
- * in bold with a teal accent color so it stands out in the orange bubble.
+ * Finds ALL command triggers anywhere in the text and wraps each in a
+ * styled span so they stand out in the orange user bubble.
  */
 function renderUserContent(content: string): React.ReactNode {
-  const trimmed = content.trimStart();
-  for (const cmd of COMMANDS) {
-    if (
-      trimmed.startsWith(cmd.trigger) &&
-      (trimmed.length === cmd.trigger.length ||
-        trimmed[cmd.trigger.length] === ' ')
-    ) {
-      const rest = trimmed.slice(cmd.trigger.length);
-      return (
-        <>
-          <span className="font-semibolds text-[#7C2D12]">{cmd.trigger}</span>
-          {rest}
-        </>
+  const parts: React.ReactNode[] = [];
+  let remaining = content;
+
+  while (remaining.length > 0) {
+    // Find the earliest command trigger in remaining text
+    let earliest = -1;
+    let matchedTrigger = '';
+    for (const cmd of COMMANDS) {
+      const idx = remaining.indexOf(cmd.trigger);
+      if (idx !== -1 && (earliest === -1 || idx < earliest)) {
+        // Verify it's a whole word (preceded by start/space, followed by end/space)
+        const before = idx === 0 || remaining[idx - 1] === ' ';
+        const after =
+          idx + cmd.trigger.length >= remaining.length ||
+          remaining[idx + cmd.trigger.length] === ' ';
+        if (before && after) {
+          earliest = idx;
+          matchedTrigger = cmd.trigger;
+        }
+      }
+    }
+
+    if (earliest === -1) {
+      parts.push(<span key={parts.length}>{remaining}</span>);
+      break;
+    }
+
+    // Text before the command
+    if (earliest > 0) {
+      parts.push(
+        <span key={parts.length}>{remaining.slice(0, earliest)}</span>,
       );
     }
+    // The command itself, styled
+    parts.push(
+      <span key={parts.length} className="font-semibold text-[#7C2D12]">
+        {matchedTrigger}
+      </span>,
+    );
+    remaining = remaining.slice(earliest + matchedTrigger.length);
   }
-  return content;
+
+  return <>{parts}</>;
 }
 
 interface ChatBubbleProps {

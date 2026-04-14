@@ -239,6 +239,89 @@ describe('ChatBubble', () => {
     });
   });
 
+  describe('Slash command styling', () => {
+    it('styles a leading /screen command', () => {
+      const { container } = render(
+        <ChatBubble role="user" content="/screen explain this" index={0} />,
+      );
+      const styled = container.querySelector(
+        '.font-semibold.text-\\[\\#7C2D12\\]',
+      );
+      expect(styled).not.toBeNull();
+      expect(styled!.textContent).toBe('/screen');
+    });
+
+    it('styles a leading /think command', () => {
+      const { container } = render(
+        <ChatBubble
+          role="user"
+          content="/think why is the sky blue?"
+          index={0}
+        />,
+      );
+      const styled = container.querySelector(
+        '.font-semibold.text-\\[\\#7C2D12\\]',
+      );
+      expect(styled).not.toBeNull();
+      expect(styled!.textContent).toBe('/think');
+    });
+
+    it('styles multiple commands anywhere in the text', () => {
+      const { container } = render(
+        <ChatBubble
+          role="user"
+          content="/screen /think explain this"
+          index={0}
+        />,
+      );
+      const styled = container.querySelectorAll(
+        '.font-semibold.text-\\[\\#7C2D12\\]',
+      );
+      expect(styled).toHaveLength(2);
+      expect(styled[0].textContent).toBe('/screen');
+      expect(styled[1].textContent).toBe('/think');
+    });
+
+    it('styles a command in the middle of text', () => {
+      const { container } = render(
+        <ChatBubble role="user" content="please /think about this" index={0} />,
+      );
+      const styled = container.querySelector(
+        '.font-semibold.text-\\[\\#7C2D12\\]',
+      );
+      expect(styled).not.toBeNull();
+      expect(styled!.textContent).toBe('/think');
+    });
+
+    it('does not style partial matches like /screensaver', () => {
+      const { container } = render(
+        <ChatBubble role="user" content="/screensaver is nice" index={0} />,
+      );
+      const styled = container.querySelector(
+        '.font-semibold.text-\\[\\#7C2D12\\]',
+      );
+      expect(styled).toBeNull();
+    });
+
+    it('renders plain text when no commands are present', () => {
+      render(
+        <ChatBubble role="user" content="just a normal message" index={0} />,
+      );
+      expect(screen.getByText('just a normal message')).toBeInTheDocument();
+    });
+
+    it('handles a command at the end of text', () => {
+      const { container } = render(
+        <ChatBubble role="user" content="do /think" index={0} />,
+      );
+      const styled = container.querySelector(
+        '.font-semibold.text-\\[\\#7C2D12\\]',
+      );
+      expect(styled).not.toBeNull();
+      expect(styled!.textContent).toBe('/think');
+    });
+  });
+
   describe('Layout', () => {
     it('has max-width constraint (max-w-[80%])', () => {
       const { container } = render(
