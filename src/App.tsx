@@ -939,10 +939,9 @@ function App() {
         .slice(0, quote.maxContextLength);
       const context = sanitized?.trim() ? sanitized : undefined;
 
-      /* v8 ignore start -- defensive fallback: when selectedContext is null, buildPrompt requires strippedMessage to be non-empty, so strippedMessage.trim() is always truthy and || short-circuits before ?? evaluates */
-      const displayText =
-        strippedMessage.trim() || (selectedContext?.trim() ?? '');
-      /* v8 ignore stop */
+      // Show the full original query (including command trigger) in the chat
+      // bubble, matching the behaviour of /screen and the normal submit path.
+      const displayText = trimmedQuery;
 
       const hasPendingImages = attachedImages.some(
         (img) => img.filePath === null,

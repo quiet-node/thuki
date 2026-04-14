@@ -279,7 +279,7 @@ export function CommandSuggestion({
           No commands found
         </div>
       ) : (
-        <ul className="pb-1" role="presentation">
+        <ul className="pb-1 max-h-32 overflow-y-auto" role="presentation">
           {commands.map((cmd, index) => {
             const isHighlighted = index === highlightedIndex;
             return (

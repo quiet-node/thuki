@@ -3598,8 +3598,10 @@ describe('App', () => {
 
       await act(async () => {});
 
+      // renderUserContent splits command triggers into separate spans.
+      // Check body textContent to confirm the full original query appears.
       await vi.waitFor(() => {
-        expect(screen.getByText('fix this text')).toBeInTheDocument();
+        expect(document.body.textContent).toContain('/rewrite fix this text');
       });
     });
 
@@ -3722,8 +3724,9 @@ describe('App', () => {
         await new Promise((r) => setTimeout(r, 50));
       });
 
-      // The displayed user message should be the stripped text, not the template
-      expect(screen.getByText('make it clearer')).toBeInTheDocument();
+      // renderUserContent splits command triggers into separate spans.
+      // Check body textContent to confirm the full original query appears.
+      expect(document.body.textContent).toContain('/rewrite make it clearer');
     });
   });
 
