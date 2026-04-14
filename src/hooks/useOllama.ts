@@ -18,6 +18,10 @@ export interface Message {
   imagePaths?: string[];
   /** Present on assistant messages that represent an Ollama error callout. */
   errorKind?: OllamaErrorKind;
+  /** Accumulated thinking/reasoning content from the model, if thinking mode was used. */
+  thinkingContent?: string;
+  /** Duration of the thinking phase in milliseconds. */
+  thinkingDurationMs?: number;
 }
 
 /**
@@ -25,6 +29,7 @@ export interface Message {
  */
 export type StreamChunk =
   | { type: 'Token'; data: string }
+  | { type: 'ThinkingToken'; data: string }
   | { type: 'Done' }
   | { type: 'Cancelled' }
   | { type: 'Error'; data: { kind: OllamaErrorKind; message: string } };
@@ -61,6 +66,7 @@ export function useOllama(
       displayContent: string,
       quotedText?: string,
       imagePaths?: string[],
+      think?: boolean,
     ) => {
       if (
         (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) ||
@@ -89,13 +95,39 @@ export function useOllama(
 
       const channel = new Channel<StreamChunk>();
       let currentContent = '';
+      let currentThinkingContent = '';
+      let thinkingStartTime = 0;
+      let thinkingDurationMs = 0;
 
       channel.onmessage = (chunk) => {
-        if (chunk.type === 'Token') {
+        if (chunk.type === 'ThinkingToken') {
+          if (thinkingStartTime === 0) {
+            thinkingStartTime = Date.now();
+          }
+          currentThinkingContent += chunk.data;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, thinkingContent: currentThinkingContent }
+                : m,
+            ),
+          );
+        } else if (chunk.type === 'Token') {
+          // Calculate thinking duration on the first regular token after thinking
+          if (thinkingStartTime !== 0 && thinkingDurationMs === 0) {
+            thinkingDurationMs = Date.now() - thinkingStartTime;
+          }
           currentContent += chunk.data;
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === assistantId ? { ...m, content: currentContent } : m,
+              m.id === assistantId
+                ? {
+                    ...m,
+                    content: currentContent,
+                    thinkingDurationMs:
+                      thinkingStartTime !== 0 ? thinkingDurationMs : undefined,
+                  }
+                : m,
             ),
           );
         } else if (chunk.type === 'Done') {
@@ -105,10 +137,13 @@ export function useOllama(
           onTurnComplete?.(userMsg, {
             ...assistantMsg,
             content: currentContent,
+            thinkingContent: currentThinkingContent || undefined,
+            thinkingDurationMs:
+              thinkingStartTime !== 0 ? thinkingDurationMs : undefined,
           });
         } else if (chunk.type === 'Cancelled') {
           // Remove the empty assistant placeholder if nothing was generated.
-          if (!currentContent) {
+          if (!currentContent && !currentThinkingContent) {
             setMessages((prev) => prev.filter((m) => m.id !== assistantId));
           }
           setIsGenerating(false);
@@ -134,6 +169,7 @@ export function useOllama(
           message: displayContent,
           quotedText: quotedText ?? null,
           imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : null,
+          think: think ?? false,
           onEvent: channel,
         });
       } catch {

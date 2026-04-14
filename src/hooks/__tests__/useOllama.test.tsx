@@ -689,6 +689,158 @@ describe('useOllama', () => {
     });
   });
 
+  // ─── ThinkingToken handling ──────────────────────────────────────────────────
+
+  describe('ThinkingToken handling', () => {
+    it('accumulates ThinkingTokens into thinkingContent', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello', undefined, undefined, true);
+      });
+
+      const channel = getChannel();
+      expect(channel).not.toBeNull();
+
+      act(() => {
+        channel!.simulateMessage({ type: 'ThinkingToken', data: 'Let me ' });
+        channel!.simulateMessage({ type: 'ThinkingToken', data: 'think...' });
+      });
+
+      const assistantMsg = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistantMsg?.thinkingContent).toBe('Let me think...');
+    });
+
+    it('passes think parameter to invoke', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello', undefined, undefined, true);
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          think: true,
+        }),
+      );
+    });
+
+    it('passes think as false by default', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello');
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          think: false,
+        }),
+      );
+    });
+
+    it('tracks thinking duration from first ThinkingToken to first Token', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello', undefined, undefined, true);
+      });
+
+      const channel = getChannel();
+      expect(channel).not.toBeNull();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'ThinkingToken',
+          data: 'reasoning',
+        });
+        channel!.simulateMessage({ type: 'Token', data: 'answer' });
+      });
+
+      const assistantMsg = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistantMsg?.thinkingDurationMs).toBeGreaterThanOrEqual(0);
+      expect(assistantMsg?.thinkingDurationMs).toBeDefined();
+    });
+
+    it('includes thinkingContent and thinkingDurationMs in onTurnComplete on Done', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+
+      await act(async () => {
+        await result.current.ask('hello', undefined, undefined, true);
+      });
+
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'ThinkingToken',
+          data: 'thinking deeply',
+        });
+        channel!.simulateMessage({ type: 'Token', data: 'the answer' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      expect(onTurnComplete).toHaveBeenCalledOnce();
+      const [, assistantMsg] = onTurnComplete.mock.calls[0];
+      expect(assistantMsg.content).toBe('the answer');
+      expect(assistantMsg.thinkingContent).toBe('thinking deeply');
+      expect(assistantMsg.thinkingDurationMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('does not set thinkingContent/thinkingDurationMs when no thinking happened', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+
+      await act(async () => {
+        await result.current.ask('hello');
+      });
+
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', data: 'direct answer' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      const [, assistantMsg] = onTurnComplete.mock.calls[0];
+      expect(assistantMsg.thinkingContent).toBeUndefined();
+      expect(assistantMsg.thinkingDurationMs).toBeUndefined();
+    });
+
+    it('preserves thinking content when cancelled with thinking but no regular tokens', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello', undefined, undefined, true);
+      });
+
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'ThinkingToken',
+          data: 'partial thinking',
+        });
+        channel!.simulateMessage({ type: 'Cancelled' });
+      });
+
+      expect(result.current.isGenerating).toBe(false);
+      // Should keep the assistant message since thinkingContent is non-empty
+      const assistantMsg = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistantMsg).toBeDefined();
+      expect(assistantMsg?.thinkingContent).toBe('partial thinking');
+    });
+  });
+
   // ─── History ─────────────────────────────────────────────────────────────────
 
   describe('history', () => {
