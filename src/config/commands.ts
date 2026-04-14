@@ -21,6 +21,11 @@ export const COMMANDS: readonly Command[] = [
     label: '/screen',
     description: 'Capture your screen and include it as context',
   },
+  {
+    trigger: '/think',
+    label: '/think',
+    description: 'Think deeply before answering',
+  },
 ] as const;
 
 /**

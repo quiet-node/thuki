@@ -38,4 +38,11 @@ describe('COMMANDS registry', () => {
     expect(screen?.label).toBe('/screen');
     expect(screen?.description.length).toBeGreaterThan(0);
   });
+
+  it('includes the /think command', () => {
+    const think = COMMANDS.find((c: Command) => c.trigger === '/think');
+    expect(think).toBeDefined();
+    expect(think?.label).toBe('/think');
+    expect(think?.description.length).toBeGreaterThan(0);
+  });
 });

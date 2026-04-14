@@ -1327,9 +1327,9 @@ describe('AskBarView', () => {
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       // Initially row 0 is highlighted (only one command, so index stays 0)
       fireEvent.keyDown(textarea, { key: 'ArrowDown' });
-      // With one command, ArrowDown wraps back to 0; row is still highlighted
-      const option = screen.getByRole('option');
-      expect(option).toHaveAttribute('aria-selected', 'true');
+      // ArrowDown from index 0 moves to index 1
+      const options = screen.getAllByRole('option');
+      expect(options[1]).toHaveAttribute('aria-selected', 'true');
     });
 
     it('ArrowUp moves highlight to previous row (wraps)', () => {
@@ -1347,9 +1347,10 @@ describe('AskBarView', () => {
       );
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       fireEvent.keyDown(textarea, { key: 'ArrowUp' });
-      // Single command wraps back to index 0
-      const option = screen.getByRole('option');
-      expect(option).toHaveAttribute('aria-selected', 'true');
+      // ArrowUp wraps to the last option
+      const options = screen.getAllByRole('option');
+      const lastOption = options[options.length - 1];
+      expect(lastOption).toHaveAttribute('aria-selected', 'true');
     });
 
     it('clicking a suggestion row calls setQuery with trigger + space', () => {
@@ -1366,8 +1367,8 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const option = screen.getByRole('option');
-      fireEvent.mouseDown(option);
+      const options = screen.getAllByRole('option');
+      fireEvent.mouseDown(options[0]);
       expect(setQuery).toHaveBeenCalledWith('/screen ');
     });
 
