@@ -15,6 +15,48 @@ const FOO_CMD: Command = {
   description: 'A test command',
 };
 
+const THINK_CMD: Command = {
+  trigger: '/think',
+  label: '/think',
+  description: 'Think deeply before answering',
+};
+
+const TRANSLATE_CMD: Command = {
+  trigger: '/translate',
+  label: '/translate',
+  description: 'Translate text to another language',
+};
+
+const REWRITE_CMD: Command = {
+  trigger: '/rewrite',
+  label: '/rewrite',
+  description: 'Rewrite text for clarity and flow',
+};
+
+const TLDR_CMD: Command = {
+  trigger: '/tldr',
+  label: '/tldr',
+  description: 'Summarize text in 1-3 sentences',
+};
+
+const REFINE_CMD: Command = {
+  trigger: '/refine',
+  label: '/refine',
+  description: 'Fix grammar, spelling, and punctuation',
+};
+
+const BULLETS_CMD: Command = {
+  trigger: '/bullets',
+  label: '/bullets',
+  description: 'Extract key points as a bullet list',
+};
+
+const ACTION_CMD: Command = {
+  trigger: '/action',
+  label: '/action',
+  description: 'Extract action items as a checklist',
+};
+
 describe('CommandSuggestion', () => {
   it('shows "No commands found" when commands list is empty', () => {
     render(
@@ -143,5 +185,50 @@ describe('CommandSuggestion', () => {
         />,
       );
     }).not.toThrow();
+  });
+
+  it('renders an SVG icon for each command row', () => {
+    const allCmds = [
+      SCREEN_CMD,
+      THINK_CMD,
+      TRANSLATE_CMD,
+      REWRITE_CMD,
+      TLDR_CMD,
+      REFINE_CMD,
+      BULLETS_CMD,
+      ACTION_CMD,
+    ];
+    const { container } = render(
+      <CommandSuggestion
+        commands={allCmds}
+        highlightedIndex={-1}
+        onSelect={vi.fn()}
+      />,
+    );
+    const svgs = container.querySelectorAll('svg');
+    expect(svgs.length).toBe(allCmds.length);
+  });
+
+  it('renders utility command labels and descriptions', () => {
+    render(
+      <CommandSuggestion
+        commands={[
+          TRANSLATE_CMD,
+          REWRITE_CMD,
+          TLDR_CMD,
+          REFINE_CMD,
+          BULLETS_CMD,
+          ACTION_CMD,
+        ]}
+        highlightedIndex={0}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('/translate')).toBeInTheDocument();
+    expect(screen.getByText('/rewrite')).toBeInTheDocument();
+    expect(screen.getByText('/tldr')).toBeInTheDocument();
+    expect(screen.getByText('/refine')).toBeInTheDocument();
+    expect(screen.getByText('/bullets')).toBeInTheDocument();
+    expect(screen.getByText('/action')).toBeInTheDocument();
   });
 });

@@ -43,10 +43,198 @@ const SCREEN_ICON = (
   </svg>
 );
 
-/** Returns the icon for a given command trigger. Currently all commands use SCREEN_ICON. */
+/** Brain/lightbulb icon for /think command. */
+const THINK_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <circle cx="8" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.5" />
+    <path
+      d="M6 13h4"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    />
+    <path
+      d="M6.5 7.5c0-1 .7-1.5 1.5-1.5s1.5.5 1.5 1.5c0 .7-.5 1-1 1.2V10"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
+/** Globe icon for /translate command. */
+const TRANSLATE_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5" />
+    <ellipse
+      cx="8"
+      cy="8"
+      rx="3"
+      ry="6.5"
+      stroke="currentColor"
+      strokeWidth="1.2"
+    />
+    <path d="M1.5 8h13" stroke="currentColor" strokeWidth="1.2" />
+  </svg>
+);
+
+/** Pencil icon for /rewrite command. */
+const REWRITE_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <path
+      d="M11 2.5l2.5 2.5L5.5 13H3v-2.5L11 2.5z"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+/** Lines icon for /tldr command. */
+const TLDR_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <path
+      d="M3 3h10M3 7h10M3 11h6"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
+/** Sparkle icon for /refine command. */
+const REFINE_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <path
+      d="M8 1v3M8 12v3M1 8h3M12 8h3M3.5 3.5l2 2M10.5 10.5l2 2M12.5 3.5l-2 2M5.5 10.5l-2 2"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
+/** Bullet list icon for /bullets command. */
+const BULLETS_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <circle cx="3" cy="4" r="1.2" fill="currentColor" />
+    <circle cx="3" cy="8" r="1.2" fill="currentColor" />
+    <circle cx="3" cy="12" r="1.2" fill="currentColor" />
+    <path
+      d="M6.5 4h7M6.5 8h7M6.5 12h7"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
+/** Checkbox icon for /action command. */
+const ACTION_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <rect
+      x="1.5"
+      y="2"
+      width="5"
+      height="5"
+      rx="1"
+      stroke="currentColor"
+      strokeWidth="1.3"
+    />
+    <path
+      d="M3 4.5L4 5.5L6 3"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <rect
+      x="1.5"
+      y="9"
+      width="5"
+      height="5"
+      rx="1"
+      stroke="currentColor"
+      strokeWidth="1.3"
+    />
+    <path
+      d="M9 4.5h5.5M9 11.5h5.5"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
+/** Returns the icon for a given command trigger. */
 function iconForTrigger(trigger: string): React.ReactNode {
   switch (trigger) {
     case '/screen':
+      return SCREEN_ICON;
+    case '/think':
+      return THINK_ICON;
+    case '/translate':
+      return TRANSLATE_ICON;
+    case '/rewrite':
+      return REWRITE_ICON;
+    case '/tldr':
+      return TLDR_ICON;
+    case '/refine':
+      return REFINE_ICON;
+    case '/bullets':
+      return BULLETS_ICON;
+    case '/action':
+      return ACTION_ICON;
     default:
       return SCREEN_ICON;
   }
