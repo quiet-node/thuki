@@ -71,6 +71,8 @@ pub fn classify_stream_error(e: &reqwest::Error) -> OllamaError {
 pub enum StreamChunk {
     /// A single token chunk string.
     Token(String),
+    /// A single thinking/reasoning token chunk string.
+    ThinkingToken(String),
     /// Indicates the stream has fully completed.
     Done,
     /// The user explicitly cancelled generation.
@@ -106,6 +108,8 @@ struct OllamaChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    think: bool,
     options: OllamaOptions,
 }
 
@@ -113,6 +117,8 @@ struct OllamaChatRequest {
 #[derive(Deserialize)]
 struct OllamaChatResponseMessage {
     content: Option<String>,
+    #[allow(dead_code)] // Used in Task 3 when stream_ollama_chat handles thinking tokens
+    thinking: Option<String>,
 }
 
 /// Expected structured response chunk from Ollama `/api/chat`.
@@ -250,6 +256,7 @@ pub async fn stream_ollama_chat(
         model: model.to_string(),
         messages,
         stream: true,
+        think: false,
         options: OllamaOptions {
             temperature: 1.0,
             top_p: 0.95,
@@ -1273,6 +1280,64 @@ mod tests {
         assert!(
             matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::ModelNotFound)
         );
+    }
+
+    #[test]
+    fn thinking_token_serializes_correctly() {
+        let chunk = StreamChunk::ThinkingToken("reasoning step".to_string());
+        let json = serde_json::to_value(&chunk).unwrap();
+        assert_eq!(json["type"], "ThinkingToken");
+        assert_eq!(json["data"], "reasoning step");
+    }
+
+    #[test]
+    fn ollama_chat_request_omits_think_when_false() {
+        let req = OllamaChatRequest {
+            model: "test".to_string(),
+            messages: vec![],
+            stream: true,
+            think: false,
+            options: OllamaOptions {
+                temperature: 1.0,
+                top_p: 0.95,
+                top_k: 64,
+            },
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("think").is_none());
+    }
+
+    #[test]
+    fn ollama_chat_request_includes_think_when_true() {
+        let req = OllamaChatRequest {
+            model: "test".to_string(),
+            messages: vec![],
+            stream: true,
+            think: true,
+            options: OllamaOptions {
+                temperature: 1.0,
+                top_p: 0.95,
+                top_k: 64,
+            },
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["think"], true);
+    }
+
+    #[test]
+    fn ollama_response_message_deserializes_thinking_field() {
+        let json = r#"{"content":"hello","thinking":"let me think"}"#;
+        let msg: OllamaChatResponseMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.content.unwrap(), "hello");
+        assert_eq!(msg.thinking.unwrap(), "let me think");
+    }
+
+    #[test]
+    fn ollama_response_message_thinking_absent() {
+        let json = r#"{"content":"hello"}"#;
+        let msg: OllamaChatResponseMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.content.unwrap(), "hello");
+        assert!(msg.thinking.is_none());
     }
 
     #[tokio::test]
