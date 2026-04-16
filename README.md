@@ -208,7 +208,7 @@ Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get starte
 
 ## Community Ports
 
-Thuki is macOS-only, but the community has been busy bringing it to other platforms. Huge shoutout to these contributors! 🌍
+Thuki is macOS-only, but the community has been busy bringing it to other platforms. Huge shoutout to these contributors 🎊🚀!
 
 | Platform | Repo | Author |
 |----------|------|--------|
