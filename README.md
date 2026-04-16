@@ -206,6 +206,16 @@ See [docs/commands.md](docs/commands.md) for the full slash command reference.
 
 Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
+## Community Ports
+
+Thuki is macOS-only, but the community has been busy bringing it to other platforms. Huge shoutout to these contributors! 🌍
+
+| Platform | Repo | Author |
+|----------|------|--------|
+| Windows 10/11 | [ThukiWin](https://github.com/ayzekhdawy/thukiwin) | [@ayzekhdawy](https://github.com/ayzekhdawy) |
+
+> Each port is independently maintained by its author. For issues or questions about a specific port, head to that repo directly.
+
 ## Author
 
 Reach out to [Logan](https://x.com/quiet_node) on X with questions or feedback.
