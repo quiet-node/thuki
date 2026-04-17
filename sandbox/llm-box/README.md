@@ -20,7 +20,7 @@ The sandbox separates model initialization from the inference runtime, keeping c
 | **Breakout Mitigation** | Active | `cap_drop: ALL` strips every Linux kernel capability |
 | **Privilege Control** | Active | `no-new-privileges: true` blocks setuid/setgid escalation |
 | **Read-Only Filesystem** | Active (inference only) | `sandbox-server` root filesystem is read-only; only `/tmp` is writable. `sandbox-init` requires write access to pull the model. |
-| **Ephemeral Lifecycle** | Active | `bun run sandbox:stop` runs `down -v`, permanently destroying all model weights |
+| **Ephemeral Lifecycle** | Active | `bun run llm-box:stop` runs `down -v`, permanently destroying all model weights |
 | **Non-Executable Weights** | Active | GGUF format is math-only; no Python/Pickle code execution risk |
 
 > **Note on network egress:** The sandbox does not use `internal: true` on the Docker network. On macOS, Docker Desktop's networking layer does not support `internal: true` alongside host port binding, so the isolation strategy relies on `127.0.0.1` ingress restriction, `cap_drop: ALL`, and the read-only filesystem instead. Outbound connections from the container are not hard-blocked at the network level.
@@ -38,7 +38,7 @@ The sandbox is intended for:
 **Start the sandbox:**
 
 ```bash
-bun run sandbox:start
+bun run llm-box:start
 ```
 
 The first run pulls the model inside the init container, which may take several minutes depending on your connection. Subsequent starts are instant.
@@ -46,7 +46,7 @@ The first run pulls the model inside the init container, which may take several 
 **Stop and wipe the sandbox:**
 
 ```bash
-bun run sandbox:stop
+bun run llm-box:stop
 ```
 
 This runs `docker compose down -v`, which destroys the Docker volume and permanently removes all downloaded model weights from disk. Nothing persists after this command.
