@@ -1,0 +1,191 @@
+# SearXNG settings for Thuki local search sandbox.
+# Tuned for maximum result quality with no rate limiting since this runs locally.
+use_default_settings: true
+
+server:
+  secret_key: "thuki-searxng-local-dev-secret-key-change-if-exposed"
+  limiter: false
+  public_instance: false
+  image_proxy: true
+  method: "GET"
+
+ui:
+  static_use_hash: false
+  default_locale: "en"
+  query_in_title: true
+  infinite_scroll: false
+  default_theme: simple
+  center_alignment: true
+  results_on_new_tab: false
+  search_on_category_select: true
+  hotkeys: default
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  ban_time_on_fail: 0
+  max_ban_time_on_fail: 0
+  formats:
+    - html
+    - json
+  suspended_times:
+    SearxEngineAccessDenied: 0
+    SearxEngineCaptcha: 0
+    SearxEngineTooManyRequests: 0
+    cf_SearxEngineCaptcha: 0
+    cf_SearxEngineAccessDenied: 0
+    recaptcha_SearxEngineCaptcha: 0
+
+outgoing:
+  request_timeout: 15.0
+  max_request_timeout: 30.0
+  pool_connections: 100
+  pool_maxsize: 30
+  enable_http2: true
+  retries: 2
+  max_redirects: 30
+
+engines:
+  # General web: enable high-quality engines, boost weights for best sources
+  - name: google
+    engine: google
+    disabled: false
+    weight: 3
+
+  - name: bing
+    engine: bing
+    disabled: false
+    weight: 2
+
+  - name: duckduckgo
+    engine: duckduckgo
+    disabled: false
+    weight: 2
+
+  - name: brave
+    engine: brave
+    disabled: false
+    weight: 2
+
+  - name: mojeek
+    engine: mojeek
+    disabled: false
+    weight: 1
+
+  # News
+  - name: google news
+    engine: google_news
+    disabled: false
+
+  - name: bing news
+    engine: bing_news
+    disabled: false
+
+  # Academic / technical
+  - name: google scholar
+    engine: google_scholar
+    disabled: false
+    weight: 2
+
+  - name: semantic scholar
+    engine: semantic_scholar
+    disabled: false
+    weight: 2
+
+  - name: arxiv
+    engine: arxiv
+    disabled: false
+    weight: 2
+
+  - name: base
+    engine: base
+    disabled: false
+
+  - name: pubmed
+    engine: pubmed
+    disabled: false
+
+  # Developer / technical
+  - name: stackoverflow
+    engine: stackoverflow
+    disabled: false
+    weight: 2
+
+  - name: github
+    engine: github
+    disabled: false
+    weight: 2
+
+  - name: gitlab
+    engine: gitlab
+    disabled: false
+
+  - name: pypi
+    engine: pypi
+    disabled: false
+
+  - name: npm
+    engine: npm
+    disabled: false
+
+  - name: crates.io
+    engine: crates
+    disabled: false
+
+  # Reference / knowledge
+  - name: wikipedia
+    engine: wikipedia
+    disabled: false
+    weight: 3
+
+  - name: wikidata
+    engine: wikidata
+    disabled: false
+    weight: 2
+
+  - name: wikiquote
+    engine: wikiquote
+    disabled: false
+
+  - name: wikisource
+    engine: wikisource
+    disabled: false
+
+  - name: wikibooks
+    engine: wikibooks
+    disabled: false
+
+  - name: currency
+    engine: currency_convert
+    disabled: false
+
+  - name: wolframalpha
+    engine: wolframalpha_noapi
+    disabled: false
+    weight: 2
+
+  # Q&A / community
+  - name: reddit
+    engine: reddit
+    disabled: false
+    weight: 1
+
+  - name: hackernews
+    engine: hackernews
+    disabled: false
+    weight: 2
+
+  # Maps
+  - name: openstreetmap
+    engine: openstreetmap
+    disabled: false
+
+  # Videos
+  - name: youtube
+    engine: youtube_noapi
+    disabled: false
+
+  - name: vimeo
+    engine: vimeo
+    disabled: false
