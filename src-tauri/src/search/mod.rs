@@ -19,6 +19,7 @@ use crate::commands::{
     ConversationHistory, GenerationState, ModelConfig, SystemPrompt, DEFAULT_OLLAMA_URL,
 };
 
+pub mod config;
 mod llm;
 mod pipeline;
 mod rerank;
