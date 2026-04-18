@@ -13,6 +13,12 @@ use std::time::Duration;
 
 use super::types::{SearchError, SearxResponse, SearxResult};
 
+/// Base URL of the SearXNG sandbox (scheme + host + port, no path). Used by
+/// `search_all` / `search_all_with_base` to construct per-query endpoints.
+/// Hardcoded to the localhost-only sandbox binding.
+#[allow(dead_code)]
+pub const SEARXNG_BASE_URL: &str = "http://127.0.0.1:25017";
+
 /// Fully-qualified SearXNG search endpoint. Hardcoded to the localhost-only
 /// sandbox binding; the caller cannot override the host.
 pub const SEARXNG_ENDPOINT: &str = "http://127.0.0.1:25017/search";
@@ -94,6 +100,61 @@ pub async fn search(
         return Err(SearchError::NoResults);
     }
     Ok(results)
+}
+
+/// Run multiple SearXNG queries in parallel and return the URL-deduplicated
+/// union of results. Individual query failures (HTTP errors, empty results,
+/// invalid queries) do not abort the batch; they are silently treated as
+/// no-op contributions.
+///
+/// This matches the gap-round tolerance rule: the pipeline can accept
+/// partial coverage in a refinement round without erroring out.
+///
+/// Complexity: O(N) HTTP round-trips (parallelized). Dedup is O(R) over the
+/// total result count, bounded by the SearXNG per-query result cap.
+#[allow(dead_code)]
+pub async fn search_all(queries: &[String]) -> Result<Vec<SearxResult>, SearchError> {
+    search_all_with_base(SEARXNG_BASE_URL, queries).await
+}
+
+/// Test-friendly variant of `search_all`. Accepts an arbitrary base URL so
+/// tests can point to a mock server. Production code must use `search_all`,
+/// which passes the hardcoded `SEARXNG_BASE_URL` constant and is therefore
+/// not subject to SSRF from user input.
+///
+/// Complexity: O(N) HTTP round-trips (parallelized). Dedup is O(R) over the
+/// total result count, bounded by the SearXNG per-query result cap.
+#[allow(dead_code)]
+pub async fn search_all_with_base(
+    base: &str,
+    queries: &[String],
+) -> Result<Vec<SearxResult>, SearchError> {
+    if queries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let client = reqwest::Client::new();
+    let endpoint = format!("{}/search", base.trim_end_matches('/'));
+
+    let futures = queries.iter().map(|q| search(&client, &endpoint, q));
+    let results = futures_util::future::join_all(futures).await;
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut merged: Vec<SearxResult> = Vec::new();
+    for r in results {
+        match r {
+            Ok(items) => {
+                for item in items {
+                    if seen.insert(item.url.clone()) {
+                        merged.push(item);
+                    }
+                }
+            }
+            // Flaky or empty query in the batch does not poison the rest.
+            Err(_) => continue,
+        }
+    }
+    Ok(merged)
 }
 
 /// Decodes HTML entities (`&amp;`, `&lt;`, `&nbsp;`, numeric entities, etc.)
@@ -373,5 +434,122 @@ mod tests {
     #[test]
     fn endpoint_is_localhost_sandbox() {
         assert!(SEARXNG_ENDPOINT.starts_with("http://127.0.0.1:"));
+    }
+
+    #[test]
+    fn base_url_is_localhost_sandbox() {
+        assert!(SEARXNG_BASE_URL.starts_with("http://127.0.0.1:"));
+    }
+}
+
+#[cfg(test)]
+mod parallel_tests {
+    use super::*;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn fixture(q: &str, url: &str) -> serde_json::Value {
+        serde_json::json!({
+            "query": q,
+            "results": [{"url": url, "title": "t", "content": "c"}]
+        })
+    }
+
+    #[tokio::test]
+    async fn search_all_merges_unique_urls_across_queries() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fixture("a", "https://x.com/1")))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "b"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fixture("b", "https://x.com/2")))
+            .mount(&server)
+            .await;
+
+        let out = search_all_with_base(&server.uri(), &["a".to_string(), "b".to_string()])
+            .await
+            .unwrap();
+        let urls: Vec<&str> = out.iter().map(|r| r.url.as_str()).collect();
+        assert!(urls.contains(&"https://x.com/1"));
+        assert!(urls.contains(&"https://x.com/2"));
+        assert_eq!(urls.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_all_skips_queries_that_return_empty() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fixture("a", "https://x.com/1")))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "b"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"query": "b", "results": []})),
+            )
+            .mount(&server)
+            .await;
+
+        let out = search_all_with_base(&server.uri(), &["a".to_string(), "b".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_all_deduplicates_by_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fixture("x", "https://x.com/1")))
+            .mount(&server)
+            .await;
+
+        let out = search_all_with_base(&server.uri(), &["a".to_string(), "b".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_all_tolerates_one_query_failing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "ok"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(fixture("ok", "https://x.com/1")),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "bad"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let out = search_all_with_base(&server.uri(), &["ok".to_string(), "bad".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].url, "https://x.com/1");
+    }
+
+    #[tokio::test]
+    async fn search_all_empty_input_returns_empty() {
+        let out = search_all_with_base("http://127.0.0.1:1", &[])
+            .await
+            .unwrap();
+        assert!(out.is_empty());
     }
 }
