@@ -12,7 +12,7 @@
 //! per-chunk text small enough for the judge's prompt budget.
 
 /// Reader-extracted page, input to `chunk_pages`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Page {
     /// Source URL. Preserved on every chunk derived from this page so the
     /// synthesis prompt can keep citations accurate.

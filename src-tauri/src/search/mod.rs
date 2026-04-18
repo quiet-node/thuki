@@ -25,6 +25,7 @@ pub mod errors;
 pub mod judge;
 mod llm;
 mod pipeline;
+pub mod reader;
 mod rerank;
 mod searxng;
 mod types;
