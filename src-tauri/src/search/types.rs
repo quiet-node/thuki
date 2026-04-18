@@ -27,11 +27,16 @@ pub struct SearchResultPreview {
 /// - `Classifying` -> `Searching` -> `Token`* -> `Done`  (search branch)
 /// - `Cancelled` may replace `Done` when the user cancels mid-stream.
 /// - `Error` may replace any later event on a fatal backend failure.
+///
+/// Agentic-loop variants (introduced in search-v3) extend the lifecycle with
+/// sufficiency judging, reader stages, gap-refinement rounds, and warnings.
+/// `Classifying` and `Clarifying` are preserved here until Task 13 removes
+/// their call sites; prefer `AnalyzingQuery` in new code.
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum SearchEvent {
-    /// Router LLM call is in flight.
+    /// Router LLM call is in flight (legacy; prefer `AnalyzingQuery` in new code).
     Classifying,
     /// Router decided the query is ambiguous; pipeline terminates after
     /// emitting the clarifying question.
@@ -49,6 +54,20 @@ pub enum SearchEvent {
     Cancelled,
     /// Fatal pipeline error with a user-facing message.
     Error { message: String },
+    /// Agentic router/judge LLM call is in flight. Replaces `Classifying`
+    /// once Task 13 updates the pipeline call sites.
+    AnalyzingQuery,
+    /// Reader is fetching and extracting text from the ranked source URLs.
+    ReadingSources,
+    /// Sufficiency judge returned `Partial` or `Insufficient`; starting
+    /// another SearXNG round with gap-filling queries. `attempt` is 1-indexed;
+    /// `total` is the configured maximum number of gap rounds.
+    RefiningSearch { attempt: u32, total: u32 },
+    /// Final synthesis LLM call is in flight (answer assembly phase).
+    Composing,
+    /// Non-fatal pipeline warning that the frontend may surface as a subtle
+    /// indicator (e.g., a small icon in the sources footer).
+    Warning { warning: SearchWarning },
 }
 
 // ─── Router output ──────────────────────────────────────────────────────────
@@ -70,6 +89,141 @@ pub enum RouterDecision {
     /// Query is clear and requires fresh web results; run SearXNG with the
     /// LLM-optimised query, then synthesize.
     Search { optimized_query: String },
+}
+
+// ─── Agentic-loop types ─────────────────────────────────────────────────────
+
+/// The action the router/judge should take for the current query. Used inside
+/// [`RouterJudgeOutput`] to drive the agentic pipeline branch.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    /// Query is ambiguous; pipeline should surface a clarifying question.
+    Clarify,
+    /// Query is clear and ready to proceed (search or answer from context).
+    Proceed,
+}
+
+/// Degree to which the collected evidence answers the query. Returned by the
+/// sufficiency judge LLM call and used to decide whether to run additional
+/// gap-filling search rounds.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Sufficiency {
+    /// Collected evidence fully answers the query; no further rounds needed.
+    Sufficient,
+    /// Evidence partially answers the query; one or more gap rounds are
+    /// worthwhile.
+    Partial,
+    /// Evidence does not answer the query; gap rounds are required.
+    Insufficient,
+}
+
+/// Combined router and judge output for the agentic pipeline. Replaces the
+/// older split between `RouterDecision` and a separate judge response; the
+/// model emits one JSON object that covers both routing and sufficiency
+/// assessment. `RouterDecision` is preserved until Task 13 migrates call sites.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RouterJudgeOutput {
+    /// Whether the pipeline should clarify or proceed.
+    pub action: Action,
+    /// Present when `action` is `Clarify`; the question to surface to the user.
+    #[serde(default)]
+    pub clarifying_question: Option<String>,
+    /// Optional early-exit signal: if the router judges conversation history
+    /// as already sufficient, a search round can be skipped.
+    #[serde(default)]
+    pub history_sufficiency: Option<Sufficiency>,
+    /// LLM-rewritten query optimised for SearXNG when `action` is `Proceed`.
+    #[serde(default)]
+    pub optimized_query: Option<String>,
+}
+
+/// Verdict returned by the sufficiency judge after each search round. Drives
+/// the gap-refinement loop: `Partial` or `Insufficient` verdicts trigger
+/// another round using `gap_queries`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct JudgeVerdict {
+    /// How well the current evidence answers the query.
+    pub sufficiency: Sufficiency,
+    /// Free-text explanation used for logging and debug traces.
+    pub reasoning: String,
+    /// Queries to run in the next gap round. Empty when `sufficiency` is
+    /// `Sufficient`.
+    #[serde(default)]
+    pub gap_queries: Vec<String>,
+}
+
+/// Non-fatal conditions the pipeline can encounter. Emitted via
+/// `SearchEvent::Warning` so the frontend can show subtle indicators without
+/// aborting the response.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchWarning {
+    /// The reader service (Jina/similar) was unreachable; snippets fell back
+    /// to SearXNG content.
+    ReaderUnavailable,
+    /// Some URLs failed reader extraction; partial content was used.
+    ReaderPartialFailure,
+    /// The initial SearXNG round returned zero results.
+    NoResultsInitial,
+    /// The gap-refinement loop hit the configured maximum iteration count
+    /// before the judge returned `Sufficient`.
+    IterationCapExhausted,
+    /// The router/judge LLM call failed or returned unparseable JSON; the
+    /// pipeline fell back to a default branch.
+    RouterFailure,
+    /// The synthesis LLM stream was interrupted (e.g., timeout) before
+    /// completion; the response may be truncated.
+    SynthesisInterrupted,
+}
+
+/// Which phase of the multi-round retrieval loop an [`IterationTrace`] belongs
+/// to.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum IterationStage {
+    /// The first SearXNG round, issued with the original (or router-rewritten)
+    /// query.
+    Initial,
+    /// A subsequent gap-filling round. `round` is 1-indexed.
+    GapRound { round: u32 },
+}
+
+/// Diagnostic record for a single retrieval iteration, included in
+/// [`SearchMetadata`]. Useful for debugging agentic-loop behaviour and for
+/// future telemetry or trace UI.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct IterationTrace {
+    /// Which phase this iteration covers.
+    pub stage: IterationStage,
+    /// Queries submitted to SearXNG in this iteration.
+    pub queries: Vec<String>,
+    /// URLs the reader attempted to fetch in this iteration.
+    pub urls_fetched: Vec<String>,
+    /// Subset of `urls_fetched` for which the reader returned empty content.
+    pub reader_empty_urls: Vec<String>,
+    /// Sufficiency verdict the judge returned after reviewing this iteration's
+    /// evidence.
+    pub judge_verdict: Sufficiency,
+    /// Judge's free-text reasoning for the verdict.
+    pub judge_reasoning: String,
+    /// Wall-clock time spent on this iteration in milliseconds.
+    pub duration_ms: u64,
+}
+
+/// End-of-pipeline summary attached to the `Done` event payload (in a later
+/// task) and used for telemetry. Aggregates all [`IterationTrace`] records and
+/// top-level timing.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct SearchMetadata {
+    /// Ordered list of retrieval iterations, one per search round.
+    pub iterations: Vec<IterationTrace>,
+    /// Total wall-clock time for the full pipeline in milliseconds.
+    pub total_duration_ms: u64,
+    /// Number of times an individual LLM or HTTP call was retried due to
+    /// transient failures.
+    pub retries_performed: u32,
 }
 
 // ─── SearXNG response ───────────────────────────────────────────────────────
@@ -271,5 +425,85 @@ mod tests {
             .user_message()
             .contains("Empty query"));
         assert_eq!(SearchError::Cancelled.user_message(), "Cancelled");
+    }
+}
+
+#[cfg(test)]
+mod new_type_tests {
+    use super::*;
+
+    #[test]
+    fn sufficiency_round_trips_snake_case() {
+        assert_eq!(
+            serde_json::to_value(Sufficiency::Sufficient).unwrap(),
+            serde_json::json!("sufficient")
+        );
+        assert_eq!(
+            serde_json::to_value(Sufficiency::Partial).unwrap(),
+            serde_json::json!("partial")
+        );
+        assert_eq!(
+            serde_json::to_value(Sufficiency::Insufficient).unwrap(),
+            serde_json::json!("insufficient")
+        );
+        let back: Sufficiency = serde_json::from_str(r#""sufficient""#).unwrap();
+        assert_eq!(back, Sufficiency::Sufficient);
+        let back: Sufficiency = serde_json::from_str(r#""partial""#).unwrap();
+        assert_eq!(back, Sufficiency::Partial);
+        let back: Sufficiency = serde_json::from_str(r#""insufficient""#).unwrap();
+        assert_eq!(back, Sufficiency::Insufficient);
+    }
+
+    #[test]
+    fn judge_verdict_deserializes_with_gap_queries() {
+        let json =
+            r#"{"sufficiency":"partial","reasoning":"missing version","gap_queries":["q1"]}"#;
+        let v: JudgeVerdict = serde_json::from_str(json).unwrap();
+        assert_eq!(v.sufficiency, Sufficiency::Partial);
+        assert_eq!(v.reasoning, "missing version");
+        assert_eq!(v.gap_queries, vec!["q1"]);
+    }
+
+    #[test]
+    fn router_judge_output_deserializes_clarify_only() {
+        let json = r#"{"action":"clarify","clarifying_question":"Which framework?","history_sufficiency":null,"optimized_query":null}"#;
+        let o: RouterJudgeOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(o.action, Action::Clarify);
+        assert_eq!(o.clarifying_question, Some("Which framework?".to_string()));
+        assert_eq!(o.history_sufficiency, None);
+        assert_eq!(o.optimized_query, None);
+    }
+
+    #[test]
+    fn search_warning_serializes_snake_case() {
+        let v = serde_json::to_value(SearchWarning::ReaderUnavailable).unwrap();
+        assert_eq!(v, serde_json::json!("reader_unavailable"));
+    }
+
+    #[test]
+    fn search_event_refining_search_serializes_camel_case_tag() {
+        let event = SearchEvent::RefiningSearch {
+            attempt: 2,
+            total: 3,
+        };
+        let v = serde_json::to_value(event).unwrap();
+        assert_eq!(v["type"], "RefiningSearch");
+        assert_eq!(v["attempt"], 2);
+        assert_eq!(v["total"], 3);
+    }
+
+    #[test]
+    fn search_event_analyzing_query_serializes_camel_case_tag() {
+        let event = SearchEvent::AnalyzingQuery;
+        let v = serde_json::to_value(event).unwrap();
+        assert_eq!(v["type"], "AnalyzingQuery");
+    }
+
+    #[test]
+    fn iteration_stage_gap_round_serializes_snake_case_kind() {
+        let stage = IterationStage::GapRound { round: 2 };
+        let v = serde_json::to_value(stage).unwrap();
+        assert_eq!(v["kind"], "gap_round");
+        assert_eq!(v["round"], 2);
     }
 }

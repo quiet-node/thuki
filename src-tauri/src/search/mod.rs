@@ -25,7 +25,10 @@ mod rerank;
 mod searxng;
 mod types;
 
-pub use types::SearchEvent;
+pub use types::{
+    Action, IterationStage, IterationTrace, JudgeVerdict, RouterJudgeOutput, SearchEvent,
+    SearchMetadata, SearchWarning, Sufficiency,
+};
 
 /// Umbrella Tauri command implementing the full `/search` pipeline.
 ///
