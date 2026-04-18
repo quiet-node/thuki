@@ -260,6 +260,19 @@ pub enum SearchError {
     LlmHttp(u16),
     /// Ollama returned content that could not be parsed as a RouterDecision.
     LlmBadJson,
+    /// Merged router or router-judge call failed: either no JSON was found in
+    /// the response, or the JSON could not be deserialized as RouterJudgeOutput.
+    /// The inner string carries diagnostic detail for logging; do not surface it
+    /// to the user.
+    // Constructed by `call_router_merged`; suppress until Task 13 wires it.
+    #[allow(dead_code)]
+    Router(String),
+    /// Sufficiency-judge call failed: either no JSON was found in the response,
+    /// or the JSON could not be deserialized as JudgeVerdict. The inner string
+    /// carries diagnostic detail for logging.
+    // Constructed by `call_judge`; suppress until Task 14 wires it.
+    #[allow(dead_code)]
+    Judge(String),
     /// SearXNG is not reachable.
     SearxUnavailable,
     /// SearXNG responded with a non-2xx status.
@@ -281,6 +294,12 @@ impl SearchError {
             Self::LlmHttp(status) => format!("Ollama request failed\nHTTP {status}"),
             Self::LlmBadJson => {
                 "Search routing failed\nThe model returned an invalid response.".to_string()
+            }
+            Self::Router(_) => {
+                "Search routing failed\nThe model returned an invalid response.".to_string()
+            }
+            Self::Judge(_) => {
+                "Search analysis failed\nThe model returned an invalid response.".to_string()
             }
             Self::SearxUnavailable => {
                 "Search service unreachable\nRun `bun run search-box:start` and try again."
@@ -416,6 +435,12 @@ mod tests {
         assert!(SearchError::LlmBadJson
             .user_message()
             .contains("invalid response"));
+        assert!(SearchError::Router("diag".into())
+            .user_message()
+            .contains("invalid response"));
+        assert!(SearchError::Judge("diag".into())
+            .user_message()
+            .contains("analysis failed"));
         assert!(SearchError::SearxUnavailable
             .user_message()
             .contains("search-box:start"));
