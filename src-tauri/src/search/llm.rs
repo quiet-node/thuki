@@ -159,13 +159,19 @@ fn build_router_messages(history: &[ChatMessage], query: &str) -> Vec<ChatMessag
 /// the conversation history and the user's query. The sources block is
 /// concatenated to the system prompt so it never appears as a user-authored
 /// turn (which leads small models into "describe the document" mode).
+///
+/// `today` is a `YYYY-MM-DD` string injected at call time; it replaces the
+/// `{{TODAY}}` placeholder in the prompt template so the model is always
+/// anchored to the real calendar date rather than its training cutoff.
 pub fn build_synthesis_messages(
     history: &[ChatMessage],
     query: &str,
     results: &[SearxResult],
+    today: &str,
 ) -> Vec<ChatMessage> {
-    let mut system = String::with_capacity(SYNTHESIS_SYSTEM_PROMPT.len() + 1024);
-    system.push_str(SYNTHESIS_SYSTEM_PROMPT);
+    let prompt = SYNTHESIS_SYSTEM_PROMPT.replace("{{TODAY}}", today);
+    let mut system = String::with_capacity(prompt.len() + 1024);
+    system.push_str(&prompt);
     system.push_str("\n\n# Sources\n\n");
     system.push_str(&format_sources(results));
 
@@ -272,7 +278,7 @@ mod tests {
             url: "https://u".into(),
             content: "C".into(),
         }];
-        let msgs = build_synthesis_messages(&[], "q", &results);
+        let msgs = build_synthesis_messages(&[], "q", &results, "2026-04-17");
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, "system");
         assert!(msgs[0].content.contains("# Sources"));
@@ -291,12 +297,38 @@ mod tests {
             url: "https://u".into(),
             content: "C".into(),
         }];
-        let msgs = build_synthesis_messages(&history, "now", &results);
+        let msgs = build_synthesis_messages(&history, "now", &results, "2026-04-17");
         assert_eq!(msgs.len(), 4);
         assert_eq!(msgs[1].role, "user");
         assert_eq!(msgs[1].content, "earlier");
         assert_eq!(msgs[3].role, "user");
         assert_eq!(msgs[3].content, "now");
+    }
+
+    #[test]
+    fn build_synthesis_messages_injects_today_and_removes_placeholder() {
+        let msgs = build_synthesis_messages(&[], "q", &[], "2026-04-17");
+        let system = &msgs[0].content;
+        assert!(
+            system.contains("Today's date is 2026-04-17"),
+            "system prompt must contain the injected date"
+        );
+        assert!(
+            !system.contains("{{TODAY}}"),
+            "placeholder must not appear in the final prompt"
+        );
+    }
+
+    #[test]
+    fn build_synthesis_messages_prompt_contains_date_grounding_rules() {
+        let msgs = build_synthesis_messages(&[], "q", &[], "2026-04-17");
+        let system = &msgs[0].content;
+        // No-unsupported-dates rule.
+        assert!(system.contains("NEVER state a date"));
+        // Prefer-most-recent-date rule.
+        assert!(system.contains("prefer the most recent date"));
+        // Existing no-meta-commentary rule still present.
+        assert!(system.contains("Do NOT describe, summarize, list, or meta-commentate"));
     }
 
     #[test]

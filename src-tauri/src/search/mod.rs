@@ -50,6 +50,7 @@ pub async fn search_pipeline(
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());
 
+    let today = pipeline::today_iso();
     let result = pipeline::run(
         &ollama_endpoint,
         searxng::SEARXNG_ENDPOINT,
@@ -59,6 +60,7 @@ pub async fn search_pipeline(
         &system_prompt.0,
         &history,
         message,
+        &today,
         |event| {
             let _ = on_event.send(event);
         },

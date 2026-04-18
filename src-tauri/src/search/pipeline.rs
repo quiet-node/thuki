@@ -23,6 +23,18 @@ use super::llm::{build_answer_from_context_messages, build_synthesis_messages, c
 use super::searxng;
 use super::types::{RouterDecision, SearchError, SearchEvent};
 
+/// Returns the current UTC date formatted as `YYYY-MM-DD`.
+///
+/// Uses `time::OffsetDateTime::now_utc()` to avoid the unsoundness of
+/// local-offset calculation in multi-threaded processes on Unix (documented
+/// in the `time` crate README). UTC is appropriate here: the date string is
+/// injected into the synthesis prompt purely to prevent the model from
+/// substituting its training-cutoff year; sub-day precision is irrelevant.
+pub fn today_iso() -> String {
+    let d = time::OffsetDateTime::now_utc().date();
+    format!("{:04}-{:02}-{:02}", d.year(), d.month() as u8, d.day())
+}
+
 /// Runs the full search pipeline end-to-end. Emits every user-visible state
 /// transition through `on_event`. Returns an internal `SearchError` for
 /// diagnostic tests; the caller is responsible for converting terminal errors
@@ -31,8 +43,12 @@ use super::types::{RouterDecision, SearchError, SearchEvent};
 ///
 /// `ollama_endpoint` is the fully-qualified `/api/chat` URL; `searxng_endpoint`
 /// is the fully-qualified SearXNG `/search` URL. Both are surfaced as
-/// parameters for testability — production callers pass the compiled-in
+/// parameters for testability: production callers pass the compiled-in
 /// constants defined in `commands.rs` and `search::searxng`.
+///
+/// `today` is a `YYYY-MM-DD` string injected into the synthesis prompt to
+/// anchor the model to the real calendar date. Pass `today_iso()` at the
+/// call site for production use, or a fixed string in tests.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     ollama_endpoint: &str,
@@ -43,6 +59,7 @@ pub async fn run(
     chat_system_prompt: &str,
     history: &ConversationHistory,
     query: String,
+    today: &str,
     on_event: impl Fn(SearchEvent),
 ) -> Result<(), SearchError> {
     let trimmed = query.trim();
@@ -114,6 +131,7 @@ pub async fn run(
                 user_msg,
                 user_query,
                 optimized_query,
+                today,
                 &on_event,
             )
             .await
@@ -132,7 +150,7 @@ fn snapshot_history(history: &ConversationHistory) -> (u64, Vec<ChatMessage>) {
 }
 
 /// Clarify branch: emit the clarifying event, persist the pair, emit `Done`.
-/// No LLM streaming is needed — the router already produced the full output.
+/// No LLM streaming is needed: the router already produced the full output.
 fn run_clarify_branch(
     history: &ConversationHistory,
     epoch_at_start: u64,
@@ -172,6 +190,7 @@ async fn run_search_branch(
     user_msg: ChatMessage,
     user_query: String,
     optimized_query: String,
+    today: &str,
     on_event: &impl Fn(SearchEvent),
 ) -> Result<(), SearchError> {
     if cancel_token.is_cancelled() {
@@ -195,7 +214,7 @@ async fn run_search_branch(
             .collect(),
     });
 
-    let messages = build_synthesis_messages(history_snapshot, &user_query, &results);
+    let messages = build_synthesis_messages(history_snapshot, &user_query, &results, today);
 
     run_streaming_branch(
         ollama_endpoint,
@@ -259,7 +278,7 @@ async fn run_streaming_branch(
 pub(super) fn translate_chunk(chunk: StreamChunk) -> SearchEvent {
     match chunk {
         StreamChunk::Token(t) => SearchEvent::Token { content: t },
-        // Thinking mode is not exposed for the search pipeline — suppressing
+        // Thinking mode is not exposed for the search pipeline: suppressing
         // these tokens keeps the event stream minimal. A dedicated event can
         // be added later without touching the frontend types.
         StreamChunk::ThinkingToken(_) => SearchEvent::Token {
@@ -316,6 +335,26 @@ mod tests {
             events_clone.lock().unwrap().push(e);
         };
         (events, callback)
+    }
+
+    // ── today_iso ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn today_iso_returns_valid_yyyy_mm_dd() {
+        let s = today_iso();
+        // Must be exactly 10 chars: YYYY-MM-DD.
+        assert_eq!(s.len(), 10, "expected YYYY-MM-DD (10 chars), got: {s}");
+        // Positions 4 and 7 must be dashes.
+        let b = s.as_bytes();
+        assert_eq!(b[4], b'-', "expected dash at position 4");
+        assert_eq!(b[7], b'-', "expected dash at position 7");
+        // All other positions must be ASCII digits.
+        for i in [0, 1, 2, 3, 5, 6, 8, 9] {
+            assert!(
+                b[i].is_ascii_digit(),
+                "position {i} is not a digit in '{s}'"
+            );
+        }
     }
 
     // ── translate_chunk ─────────────────────────────────────────────────────
@@ -483,6 +522,7 @@ mod tests {
             "chat prompt",
             &h,
             "q".into(),
+            "2026-04-17",
             cb,
         )
         .await
@@ -509,6 +549,7 @@ mod tests {
             "chat",
             &h,
             "   ".into(),
+            "2026-04-17",
             cb,
         )
         .await
@@ -546,6 +587,7 @@ mod tests {
             "chat-prompt",
             &h,
             "who is him".into(),
+            "2026-04-17",
             cb,
         )
         .await
@@ -604,6 +646,7 @@ mod tests {
             "chat",
             &h,
             "what is 2+2".into(),
+            "2026-04-17",
             cb,
         )
         .await
@@ -662,11 +705,13 @@ mod tests {
         let stream_line =
             "{\"message\":{\"role\":\"assistant\",\"content\":\"answer [1]\"},\"done\":false}\n\
                            {\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
+        // Assert the synthesis call body contains the injected date string.
         let stream_mock = ollama
             .mock("POST", "/api/chat")
-            .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"stream":true}"#.to_string(),
-            ))
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::PartialJsonString(r#"{"stream":true}"#.to_string()),
+                mockito::Matcher::Regex("2026-04-17".to_string()),
+            ]))
             .with_body(stream_line)
             .create_async()
             .await;
@@ -685,6 +730,7 @@ mod tests {
             "chat",
             &h,
             "what is rust".into(),
+            "2026-04-17",
             cb,
         )
         .await
@@ -743,6 +789,7 @@ mod tests {
             "chat",
             &h,
             "q".into(),
+            "2026-04-17",
             cb,
         )
         .await
@@ -794,6 +841,7 @@ mod tests {
             user_msg,
             "q".into(),
             "q".into(),
+            "2026-04-17",
             &cb,
         )
         .await

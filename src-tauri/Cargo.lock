@@ -4255,6 +4255,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-nspanel",
+ "time",
  "tokio",
  "tokio-util",
  "uuid",
