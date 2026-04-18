@@ -757,12 +757,238 @@ where
                     return Ok(());
                 }
 
-                // Not sufficient. Task 15 adds the gap loop here.
-                // For Task 14: fall to the exhaustion fallback.
-                warnings.push(SearchWarning::IterationCapExhausted);
-                on_event(SearchEvent::Warning {
-                    warning: SearchWarning::IterationCapExhausted,
-                });
+                // Initial round not sufficient. Enter gap-refinement loop.
+                // Seed the URL dedup set from the initial round so gap rounds
+                // never re-fetch pages we already have.
+                let mut accumulated_urls: std::collections::HashSet<String> =
+                    top_urls.iter().map(|r| r.url.clone()).collect();
+
+                let mut current_queries = chunk_verdict.gap_queries.clone();
+
+                for attempt in 2..=(config::MAX_ITERATIONS as u32) {
+                    if current_queries.is_empty() {
+                        break;
+                    }
+                    if cancel_token.is_cancelled() {
+                        on_event(SearchEvent::Cancelled);
+                        return Ok(());
+                    }
+
+                    on_event(SearchEvent::RefiningSearch {
+                        attempt,
+                        total: config::MAX_ITERATIONS as u32,
+                    });
+
+                    let round_start = std::time::Instant::now();
+                    on_event(SearchEvent::Searching);
+
+                    let gap_results =
+                        searxng::search_all_with_endpoint(searxng_endpoint, &current_queries)
+                            .await
+                            .unwrap_or_default();
+
+                    // Dedup against all URLs fetched in prior rounds.
+                    let new_urls: Vec<_> = gap_results
+                        .into_iter()
+                        .filter(|r| accumulated_urls.insert(r.url.clone()))
+                        .collect();
+
+                    if new_urls.is_empty() {
+                        // No new content this round: record a trace and advance
+                        // the counter. Clear current_queries so the next
+                        // iteration's guard exits the loop.
+                        metadata.iterations.push(IterationTrace {
+                            stage: IterationStage::GapRound { round: attempt - 1 },
+                            queries: current_queries.clone(),
+                            urls_fetched: vec![],
+                            reader_empty_urls: vec![],
+                            judge_verdict: Sufficiency::Insufficient,
+                            judge_reasoning: "no new search results".into(),
+                            duration_ms: round_start.elapsed().as_millis() as u64,
+                        });
+                        current_queries.clear();
+                        continue;
+                    }
+
+                    // Rerank new URLs and take the top K.
+                    let round_top_urls: Vec<SearxResult> = rerank::rerank(&query, new_urls)
+                        .into_iter()
+                        .take(config::TOP_K_URLS)
+                        .collect();
+
+                    // Emit Sources so the frontend can show updated citations
+                    // (frontend handles dedup by URL).
+                    let preview: Vec<SearchResultPreview> = round_top_urls
+                        .iter()
+                        .map(|r| SearchResultPreview {
+                            title: r.title.clone(),
+                            url: r.url.clone(),
+                        })
+                        .collect();
+                    on_event(SearchEvent::Sources { results: preview });
+
+                    // Fetch full page content for the new URLs.
+                    if cancel_token.is_cancelled() {
+                        on_event(SearchEvent::Cancelled);
+                        return Ok(());
+                    }
+                    on_event(SearchEvent::ReadingSources);
+                    let round_reader_urls: Vec<String> =
+                        round_top_urls.iter().map(|r| r.url.clone()).collect();
+                    let round_reader_result = match reader_client
+                        .fetch_batch_cancellable(&round_reader_urls, &cancel_token)
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(reader::ReaderError::Cancelled) => {
+                            on_event(SearchEvent::Cancelled);
+                            return Ok(());
+                        }
+                        Err(reader::ReaderError::ServiceUnavailable) => {
+                            // Warning dedup: emit at most once across all rounds.
+                            if !warnings.contains(&SearchWarning::ReaderUnavailable) {
+                                warnings.push(SearchWarning::ReaderUnavailable);
+                                on_event(SearchEvent::Warning {
+                                    warning: SearchWarning::ReaderUnavailable,
+                                });
+                            }
+                            reader::ReaderBatchResult::default()
+                        }
+                        Err(reader::ReaderError::BatchTimeout) => {
+                            if !warnings.contains(&SearchWarning::ReaderPartialFailure) {
+                                warnings.push(SearchWarning::ReaderPartialFailure);
+                                on_event(SearchEvent::Warning {
+                                    warning: SearchWarning::ReaderPartialFailure,
+                                });
+                            }
+                            reader::ReaderBatchResult::default()
+                        }
+                    };
+
+                    // Detect >50% partial failure, deduplicated with prior rounds.
+                    let round_partial_threshold =
+                        (round_reader_urls.len() as f64 * 0.5).ceil() as usize;
+                    if !warnings.contains(&SearchWarning::ReaderUnavailable)
+                        && !round_reader_urls.is_empty()
+                        && round_reader_result.failed_urls.len() > round_partial_threshold
+                        && !warnings.contains(&SearchWarning::ReaderPartialFailure)
+                    {
+                        warnings.push(SearchWarning::ReaderPartialFailure);
+                        on_event(SearchEvent::Warning {
+                            warning: SearchWarning::ReaderPartialFailure,
+                        });
+                    }
+
+                    // Extend the accumulated chunk pool and rerank globally.
+                    let round_chunks =
+                        chunker::chunk_pages(&round_reader_result.pages, config::CHUNK_TOKEN_SIZE);
+                    accumulated_chunks.extend(round_chunks);
+                    let round_top_chunks: Vec<chunker::Chunk> =
+                        rerank::rerank_chunks(&accumulated_chunks, &query, config::TOP_K_CHUNKS)
+                            .into_iter()
+                            .cloned()
+                            .collect();
+
+                    // Build judge sources; fall back to initial snippets when
+                    // reader degraded and produced no chunks at all.
+                    let round_judge_sources: Vec<JudgeSource> = if round_top_chunks.is_empty() {
+                        snippet_sources.clone()
+                    } else {
+                        round_top_chunks
+                            .iter()
+                            .map(|c| JudgeSource {
+                                title: c.source_title.clone(),
+                                url: c.source_url.clone(),
+                                text: c.text.clone(),
+                            })
+                            .collect()
+                    };
+
+                    let round_verdict = judge.call(&query, &round_judge_sources).await?;
+
+                    metadata.iterations.push(IterationTrace {
+                        stage: IterationStage::GapRound { round: attempt - 1 },
+                        queries: current_queries.clone(),
+                        urls_fetched: round_reader_urls.clone(),
+                        reader_empty_urls: round_reader_result.empty_urls.clone(),
+                        judge_verdict: round_verdict.sufficiency,
+                        judge_reasoning: round_verdict.reasoning.clone(),
+                        duration_ms: round_start.elapsed().as_millis() as u64,
+                    });
+
+                    if matches!(round_verdict.sufficiency, Sufficiency::Sufficient) {
+                        metadata.total_duration_ms = iter_start.elapsed().as_millis() as u64;
+                        let synth_results: Vec<SearxResult> = round_judge_sources
+                            .iter()
+                            .map(|s| SearxResult {
+                                title: s.title.clone(),
+                                url: s.url.clone(),
+                                content: s.text.clone(),
+                            })
+                            .collect();
+                        let synth_messages = build_synthesis_messages(
+                            &history_snapshot,
+                            &query,
+                            &synth_results,
+                            today,
+                        );
+                        on_event(SearchEvent::Composing);
+                        run_streaming_branch(
+                            ollama_endpoint,
+                            model,
+                            client,
+                            cancel_token,
+                            synth_messages,
+                            history,
+                            epoch_at_start,
+                            user_msg,
+                            &on_event,
+                        )
+                        .await;
+                        return Ok(());
+                    }
+
+                    current_queries = round_verdict.gap_queries.clone();
+                }
+
+                // Gap loop exhausted. Synthesize a best-effort answer from all
+                // accumulated chunks.
+                if !warnings.contains(&SearchWarning::IterationCapExhausted) {
+                    warnings.push(SearchWarning::IterationCapExhausted);
+                    on_event(SearchEvent::Warning {
+                        warning: SearchWarning::IterationCapExhausted,
+                    });
+                }
+
+                let fallback_chunks: Vec<chunker::Chunk> =
+                    rerank::rerank_chunks(&accumulated_chunks, &query, config::TOP_K_CHUNKS)
+                        .into_iter()
+                        .cloned()
+                        .collect();
+
+                let fallback_sources: Vec<JudgeSource> = if fallback_chunks.is_empty() {
+                    snippet_sources.clone()
+                } else {
+                    fallback_chunks
+                        .iter()
+                        .map(|c| JudgeSource {
+                            title: c.source_title.clone(),
+                            url: c.source_url.clone(),
+                            text: c.text.clone(),
+                        })
+                        .collect()
+                };
+
+                let fallback_results: Vec<SearxResult> = fallback_sources
+                    .iter()
+                    .map(|s| SearxResult {
+                        title: s.title.clone(),
+                        url: s.url.clone(),
+                        content: s.text.clone(),
+                    })
+                    .collect();
+                let fallback_messages =
+                    build_synthesis_messages(&history_snapshot, &query, &fallback_results, today);
                 metadata.total_duration_ms = iter_start.elapsed().as_millis() as u64;
                 on_event(SearchEvent::Composing);
                 run_streaming_branch(
@@ -770,7 +996,7 @@ where
                     model,
                     client,
                     cancel_token,
-                    messages,
+                    fallback_messages,
                     history,
                     epoch_at_start,
                     user_msg,
@@ -1595,6 +1821,17 @@ mod agentic_tests {
         }
     }
 
+    /// Like `insufficient_verdict` but with no gap queries. Used in the
+    /// exhaustion test so the gap loop breaks immediately on the empty-queries
+    /// guard rather than attempting real SearXNG calls.
+    fn insufficient_verdict_no_gaps() -> JudgeVerdict {
+        JudgeVerdict {
+            sufficiency: Sufficiency::Insufficient,
+            reasoning: "not enough".into(),
+            gap_queries: vec![],
+        }
+    }
+
     fn partial_verdict() -> JudgeVerdict {
         JudgeVerdict {
             sufficiency: Sufficiency::Partial,
@@ -2069,11 +2306,16 @@ mod agentic_tests {
         let (events, cb) = collect_events();
         let router = proceed_search_router("test query");
 
-        // Both judge calls return insufficient.
+        // Both judge calls return insufficient with no gap queries so the gap
+        // loop exits immediately on the empty-queries guard rather than
+        // attempting SearXNG calls that have no mock in this test.
         let judge = QueueJudge(std::sync::Mutex::new(
-            vec![insufficient_verdict(), insufficient_verdict()]
-                .into_iter()
-                .collect(),
+            vec![
+                insufficient_verdict_no_gaps(),
+                insufficient_verdict_no_gaps(),
+            ]
+            .into_iter()
+            .collect(),
         ));
 
         run_agentic(
@@ -2694,6 +2936,549 @@ mod agentic_tests {
             )),
             "expected ReaderPartialFailure warning in: {evs:?}"
         );
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // ── Gap loop tests ─────────────────────────────────────────────────────────
+
+    // Test 1: gap round 2 returns sufficient; pipeline synthesizes after gap.
+    //
+    // Judge sequence: Insufficient (snippets) -> Insufficient (chunks, gap_queries=["gap1"])
+    //                 -> Sufficient (chunks after gap round 2).
+    // MAX_ITERATIONS = 3, so attempt=2 is the first gap round.
+    #[tokio::test]
+    async fn gap_round_succeeds_within_cap() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "initial result",
+                "markdown": "initial page content about the topic",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        let ollama_server = MockServer::start().await;
+
+        // Initial SearXNG query returns one URL.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "test query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        // Gap query "q1" (from insufficient_verdict helper) returns a different URL.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let stream = stream_line_token("gap answer");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("test query");
+
+        // Sequence: snippets partial (triggers reader), chunks insufficient with
+        // gap_queries=["q1"] (from insufficient_verdict helper), gap round 2
+        // fetches "q1" URL and judge returns sufficient.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                // snippets judge: partial triggers reader escalation
+                partial_verdict(),
+                // chunks judge after initial reader: insufficient, gap_queries=["q1"]
+                insufficient_verdict(),
+                // gap round 2 judge: sufficient
+                sufficient_verdict(),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "test query".into(),
+            "2026-04-18",
+            cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+
+        // RefiningSearch with attempt=2, total=3 must appear.
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::RefiningSearch {
+                    attempt: 2,
+                    total: 3
+                }
+            )),
+            "expected RefiningSearch attempt=2 total=3 in: {evs:?}"
+        );
+
+        // Composing and Done must appear (synthesis ran).
+        assert!(evs.iter().any(|e| matches!(e, SearchEvent::Composing)));
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+
+        // No IterationCapExhausted (succeeded before cap).
+        assert!(
+            !evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::Warning {
+                    warning: SearchWarning::IterationCapExhausted
+                }
+            )),
+            "unexpected IterationCapExhausted in: {evs:?}"
+        );
+
+        // Metadata: 2 iteration traces (Initial + GapRound { round: 1 }).
+        drop(evs);
+        // (metadata is not directly accessible from outside; we verify through
+        // the event stream shape which is the observable contract)
+    }
+
+    // Test 2: judge always insufficient; all MAX_ITERATIONS rounds fire.
+    //
+    // Each verdict provides a fresh gap query so the loop does not exit early.
+    // The test verifies RefiningSearch for both attempt=2 and attempt=3, and
+    // IterationCapExhausted emitted exactly once.
+    #[tokio::test]
+    async fn gap_round_exhausts_all_iterations() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        // Respond to any reader call with a valid page so chunks accumulate.
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/page",
+                "title": "page",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        let ollama_server = MockServer::start().await;
+
+        // Initial query.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "test query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        // Gap round 2 query.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "gap2"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/b")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        // Gap round 3 query.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "gap3"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/c")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let stream = stream_line_token("exhausted answer");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("test query");
+
+        // MAX_ITERATIONS=3: snippets judge + chunks judge (initial) + gap round 2
+        // judge + gap round 3 judge = 4 calls total, all insufficient with
+        // unique gap queries to keep the loop alive.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                // snippets: partial, enter reader
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Partial,
+                    reasoning: "partial".into(),
+                    gap_queries: vec!["gap2".into()],
+                },
+                // initial chunks: insufficient -> gap round 2
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "not enough".into(),
+                    gap_queries: vec!["gap2".into()],
+                },
+                // gap round 2 chunks: insufficient -> gap round 3
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "still not enough".into(),
+                    gap_queries: vec!["gap3".into()],
+                },
+                // gap round 3 chunks: insufficient -> loop exhausted
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "exhausted".into(),
+                    gap_queries: vec!["gap4".into()],
+                },
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "test query".into(),
+            "2026-04-18",
+            cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+
+        // Both gap round events must have fired.
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::RefiningSearch {
+                    attempt: 2,
+                    total: 3
+                }
+            )),
+            "expected RefiningSearch attempt=2 in: {evs:?}"
+        );
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::RefiningSearch {
+                    attempt: 3,
+                    total: 3
+                }
+            )),
+            "expected RefiningSearch attempt=3 in: {evs:?}"
+        );
+
+        // IterationCapExhausted exactly once.
+        let exhaustion_count = evs
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    SearchEvent::Warning {
+                        warning: SearchWarning::IterationCapExhausted
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            exhaustion_count, 1,
+            "expected exactly 1 IterationCapExhausted, got {exhaustion_count} in: {evs:?}"
+        );
+
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // Test 3: gap round where all SearXNG queries return empty breaks loop
+    // silently.
+    //
+    // Initial round: Insufficient with gap_queries=["q1","q2","q3"].
+    // Gap round 1: SearXNG mock returns empty for all 3 queries.
+    // Loop should exit early with IterationCapExhausted and synthesize on
+    // initial chunks.
+    #[tokio::test]
+    async fn gap_round_empty_searxng_breaks_loop_silently() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "initial",
+                "markdown": "some initial content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        let ollama_server = MockServer::start().await;
+
+        // Initial query returns one result.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "test query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        // Gap queries (q1, q2, q3) have no mock: wiremock returns 404.
+        // search_all_with_endpoint uses unwrap_or_default() so 404 becomes
+        // an empty result set, exercising the "no new URLs" branch.
+
+        let stream = stream_line_token("best effort from initial");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("test query");
+
+        // snippets: partial -> reader; chunks: insufficient with 3 gap queries
+        // -> gap round starts; gap round finds no new URLs -> loop breaks.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Partial,
+                    reasoning: "partial".into(),
+                    gap_queries: vec!["q1".into(), "q2".into(), "q3".into()],
+                },
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "not enough".into(),
+                    gap_queries: vec!["q1".into(), "q2".into(), "q3".into()],
+                },
+                // No third verdict needed: empty SearXNG means no judge call
+                // for the gap round beyond the trace push.
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "test query".into(),
+            "2026-04-18",
+            cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+
+        // IterationCapExhausted must fire (loop ran out).
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::Warning {
+                    warning: SearchWarning::IterationCapExhausted
+                }
+            )),
+            "expected IterationCapExhausted in: {evs:?}"
+        );
+
+        // RefiningSearch must have appeared (gap round 2 started).
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::RefiningSearch {
+                    attempt: 2,
+                    total: 3
+                }
+            )),
+            "expected RefiningSearch attempt=2 in: {evs:?}"
+        );
+
+        // No RefiningSearch for attempt=3 (loop broke after empty round 2).
+        assert!(
+            !evs.iter()
+                .any(|e| matches!(e, SearchEvent::RefiningSearch { attempt: 3, .. })),
+            "unexpected RefiningSearch attempt=3 in: {evs:?}"
+        );
+
+        // Pipeline still synthesized an answer.
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // Test 4: ReaderUnavailable across multiple gap rounds does not produce
+    // duplicate warning events.
+    //
+    // All reader calls fail with ServiceUnavailable. The warning must appear
+    // exactly once in the event stream even though multiple rounds encounter it.
+    // We use a port that refuses connections (127.0.0.1:1) to trigger
+    // ServiceUnavailable rather than a mock HTTP 503 (which would be Failed,
+    // not ServiceUnavailable in the reader client logic).
+    #[tokio::test]
+    async fn gap_round_reader_unavailable_warning_deduplicated() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Reader is pointed at a refused port for all rounds.
+        let reader_base_url = "http://127.0.0.1:1";
+
+        let searx_server = MockServer::start().await;
+        let ollama_server = MockServer::start().await;
+
+        // Initial query.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "test query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        // Gap round 2 query.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "gap2"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/b")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let stream = stream_line_token("degraded answer");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("test query");
+
+        // snippets: partial -> reader unavailable in initial round;
+        // chunks judge (snippet fallback): insufficient, gap_queries=["gap2"];
+        // gap round 2 judge (snippet fallback again, reader still unavailable):
+        // insufficient with no further gap queries -> exhaustion.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Partial,
+                    reasoning: "partial".into(),
+                    gap_queries: vec!["gap2".into()],
+                },
+                // chunks judge after initial reader failure: insufficient
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "not enough".into(),
+                    gap_queries: vec!["gap2".into()],
+                },
+                // gap round 2 chunks judge: insufficient, no more queries
+                insufficient_verdict_no_gaps(),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            reader_base_url,
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "test query".into(),
+            "2026-04-18",
+            cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+
+        // ReaderUnavailable exactly once.
+        let unavail_count = evs
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    SearchEvent::Warning {
+                        warning: SearchWarning::ReaderUnavailable
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            unavail_count, 1,
+            "expected exactly 1 ReaderUnavailable event, got {unavail_count} in: {evs:?}"
+        );
+
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
     }
 }

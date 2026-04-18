@@ -117,6 +117,48 @@ pub async fn search_all(queries: &[String]) -> Result<Vec<SearxResult>, SearchEr
     search_all_with_base(SEARXNG_BASE_URL, queries).await
 }
 
+/// Run multiple SearXNG queries in parallel against a fully-qualified endpoint
+/// URL. Unlike [`search_all_with_base`], this accepts the complete endpoint
+/// (e.g. `http://127.0.0.1:25017/search`) rather than just the base. Used by
+/// the agentic gap loop, which already holds the endpoint URL.
+///
+/// Production callers should use [`search_all`] which uses the compiled-in
+/// constant. This variant is public for use within the `search` module and for
+/// tests that already have an endpoint URL.
+///
+/// Complexity: O(N) HTTP round-trips (parallelized). Dedup is O(R) over the
+/// total result count, bounded by the SearXNG per-query result cap.
+#[allow(dead_code)]
+pub async fn search_all_with_endpoint(
+    endpoint: &str,
+    queries: &[String],
+) -> Result<Vec<SearxResult>, SearchError> {
+    if queries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let client = reqwest::Client::new();
+    let futures = queries.iter().map(|q| search(&client, endpoint, q));
+    let results = futures_util::future::join_all(futures).await;
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut merged: Vec<SearxResult> = Vec::new();
+    for r in results {
+        match r {
+            Ok(items) => {
+                for item in items {
+                    if seen.insert(item.url.clone()) {
+                        merged.push(item);
+                    }
+                }
+            }
+            // Flaky or empty query in the batch does not poison the rest.
+            Err(_) => continue,
+        }
+    }
+    Ok(merged)
+}
+
 /// Test-friendly variant of `search_all`. Accepts an arbitrary base URL so
 /// tests can point to a mock server. Production code must use `search_all`,
 /// which passes the hardcoded `SEARXNG_BASE_URL` constant and is therefore
