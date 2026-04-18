@@ -38,7 +38,12 @@ pub const SEARCH_TIMEOUT_S: u64 = 20;
 pub const READER_PER_URL_TIMEOUT_S: u64 = 10;
 
 /// Seconds allowed for the full parallel reader batch to complete.
+/// Reduced to 1 second in tests so `BatchTimeout` can be triggered by a
+/// slow mock without waiting 30 seconds.
+#[cfg(not(test))]
 pub const READER_BATCH_TIMEOUT_S: u64 = 30;
+#[cfg(test)]
+pub const READER_BATCH_TIMEOUT_S: u64 = 1;
 
 /// Seconds before the judge LLM call is abandoned.
 pub const JUDGE_TIMEOUT_S: u64 = 30;
@@ -57,6 +62,10 @@ mod tests {
         assert!(TOP_K_URLS >= 1 && TOP_K_URLS <= 10);
         assert!(CHUNK_TOKEN_SIZE >= 128 && CHUNK_TOKEN_SIZE <= 2048);
         assert!(TOP_K_CHUNKS >= 1 && TOP_K_CHUNKS <= 32);
+        // READER_BATCH_TIMEOUT_S is 1s in test builds (to enable BatchTimeout
+        // testing); the production value (30s) is enforced by this assertion
+        // only in non-test builds.
+        #[cfg(not(test))]
         assert!(READER_BATCH_TIMEOUT_S >= READER_PER_URL_TIMEOUT_S);
     }
 

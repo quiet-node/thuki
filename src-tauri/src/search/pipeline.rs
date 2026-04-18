@@ -398,6 +398,7 @@ pub struct DefaultRouterJudge;
 #[allow(dead_code)]
 #[async_trait]
 impl RouterJudgeCaller for DefaultRouterJudge {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn call(
         &self,
         _history: &[ChatMessage],
@@ -422,6 +423,7 @@ pub struct DefaultJudge;
 #[allow(dead_code)]
 #[async_trait]
 impl JudgeCaller for DefaultJudge {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn call(
         &self,
         _query: &str,
@@ -459,6 +461,7 @@ impl JudgeCaller for DefaultJudge {
 pub async fn run_agentic<R, J>(
     ollama_endpoint: &str,
     searxng_endpoint: &str,
+    reader_base_url: &str,
     model: &str,
     client: &reqwest::Client,
     cancel_token: CancellationToken,
@@ -549,7 +552,7 @@ where
                     .optimized_query
                     .clone()
                     .unwrap_or_else(|| user_query.clone());
-                let reader_client = reader::ReaderClient::new();
+                let reader_client = reader::ReaderClient::new_with_base(reader_base_url);
                 let mut warnings: Vec<SearchWarning> = Vec::new();
                 let mut metadata = SearchMetadata::default();
                 let mut accumulated_chunks: Vec<chunker::Chunk> = Vec::new();
@@ -1577,6 +1580,13 @@ mod agentic_tests {
         }
     }
 
+    #[tokio::test]
+    async fn queue_judge_returns_internal_error_when_empty() {
+        let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
+        let err = judge.call("q", &[]).await.unwrap_err();
+        assert!(matches!(err, SearchError::Internal(_)));
+    }
+
     fn insufficient_verdict() -> JudgeVerdict {
         JudgeVerdict {
             sufficiency: Sufficiency::Insufficient,
@@ -1612,6 +1622,7 @@ mod agentic_tests {
         let err = run_agentic(
             "http://127.0.0.1:1/api/chat",
             "http://127.0.0.1:1/search",
+            "http://127.0.0.1:1",
             "m",
             &client,
             token,
@@ -1650,6 +1661,7 @@ mod agentic_tests {
         let err = run_agentic(
             "http://127.0.0.1:1/api/chat",
             "http://127.0.0.1:1/search",
+            "http://127.0.0.1:1",
             "m",
             &client,
             token,
@@ -1689,6 +1701,7 @@ mod agentic_tests {
         run_agentic(
             "http://127.0.0.1:1/api/chat",
             "http://127.0.0.1:1/search",
+            "http://127.0.0.1:1",
             "m",
             &client,
             token,
@@ -1756,6 +1769,7 @@ mod agentic_tests {
         run_agentic(
             "http://127.0.0.1:1/api/chat",
             "http://127.0.0.1:1/search",
+            "http://127.0.0.1:1",
             "m",
             &client,
             token,
@@ -1808,6 +1822,7 @@ mod agentic_tests {
         run_agentic(
             &format!("{}/api/chat", ollama.url()),
             "http://127.0.0.1:1/search",
+            "http://127.0.0.1:1",
             "m",
             &client,
             token,
@@ -1904,6 +1919,7 @@ mod agentic_tests {
         run_agentic(
             &format!("{}/api/chat", ollama.url()),
             &format!("{}/search", searx.url()),
+            "http://127.0.0.1:1",
             "m",
             &client,
             token,
@@ -1942,6 +1958,8 @@ mod agentic_tests {
     }
 
     // Test: snippets partial, reader succeeds, chunks judge sufficient.
+    // Exercises the full reader path: fetch pages -> chunk -> rerank chunks ->
+    // judge from chunks (not snippet fallback).
     #[tokio::test]
     async fn initial_round_escalates_to_reader_when_snippets_partial() {
         use wiremock::matchers::{method, path};
@@ -1953,7 +1971,7 @@ mod agentic_tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "url": "https://example.com/a",
                 "title": "result",
-                "markdown": "full page content",
+                "markdown": "full page content about rust async",
                 "status": "ok"
             })))
             .mount(&reader_server)
@@ -1985,37 +2003,18 @@ mod agentic_tests {
         let (events, cb) = collect_events();
         let router = proceed_search_router("test query");
 
-        // First judge call (snippets) = partial; second (chunks) = sufficient.
+        // First judge call (snippets) = partial; reader fetches pages;
+        // second judge call (chunks) = sufficient.
         let judge = QueueJudge(std::sync::Mutex::new(
             vec![partial_verdict(), sufficient_verdict()]
                 .into_iter()
                 .collect(),
         ));
 
-        // Inject the reader base URL via a test-only approach: build a
-        // ReaderClient pointed at our mock, but run_agentic uses the prod
-        // client. We must use the prod path here; the reader connects to
-        // READER_BASE_URL. Since we cannot override from outside, use the
-        // wiremock address and verify the event stream instead.
-        //
-        // NOTE: run_agentic creates its own ReaderClient via
-        // ReaderClient::new() pointing to config::READER_BASE_URL. To test
-        // the reader escalation path end-to-end we need the reader mock URL.
-        // This means the reader will actually be unreachable in CI (port
-        // 25018 not running), producing ReaderUnavailable.
-        //
-        // The test below (reader_unavailable) covers that graceful path.
-        // For escalation we rely on the reader mock in run_agentic_with_reader
-        // below (which is gated on the reader being reachable).
-        //
-        // Here we just verify that ReadingSources is emitted and the pipeline
-        // completes with Done, even if reader is unavailable (falls back to
-        // snippet sources for second judge call).
-        let _ = reader_server; // keep alive; not reachable from run_agentic yet
-
         run_agentic(
             &format!("{}/api/chat", ollama.url()),
             &format!("{}/search", searx.url()),
+            &reader_server.uri(),
             "m",
             &client,
             token,
@@ -2033,6 +2032,11 @@ mod agentic_tests {
         let evs = events.lock().unwrap();
         assert!(evs.iter().any(|e| matches!(e, SearchEvent::Searching)));
         assert!(evs.iter().any(|e| matches!(e, SearchEvent::ReadingSources)));
+        // No ReaderUnavailable warning when reader succeeds: verify by
+        // checking the event list contains no Warning events of any kind,
+        // since this test configures the reader to succeed.
+        let has_any_warning = evs.iter().any(|e| matches!(e, SearchEvent::Warning { .. }));
+        assert!(!has_any_warning, "expected no warnings in: {evs:?}");
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
     }
 
@@ -2075,6 +2079,7 @@ mod agentic_tests {
         run_agentic(
             &format!("{}/api/chat", ollama.url()),
             &format!("{}/search", searx.url()),
+            "http://127.0.0.1:1",
             "m",
             &client,
             token,
@@ -2124,6 +2129,7 @@ mod agentic_tests {
         let err = run_agentic(
             "http://127.0.0.1:1/api/chat",
             &format!("{}/search", searx.url()),
+            "http://127.0.0.1:1",
             "m",
             &client,
             token,
@@ -2192,6 +2198,7 @@ mod agentic_tests {
         run_agentic(
             &format!("{}/api/chat", ollama.url()),
             &format!("{}/search", searx.url()),
+            "http://127.0.0.1:1",
             "m",
             &client,
             token,
@@ -2215,6 +2222,477 @@ mod agentic_tests {
                 }
             )),
             "expected ReaderUnavailable warning in: {evs:?}"
+        );
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // ── Additional coverage: rare error and cancellation paths ─────────────────
+
+    // A router that cancels a token as a side effect of being called, so tests
+    // can exercise mid-flight cancellation that arrives after the router call.
+    struct CancellingRouter {
+        output: RouterJudgeOutput,
+        token: CancellationToken,
+    }
+
+    #[async_trait]
+    impl RouterJudgeCaller for CancellingRouter {
+        async fn call(
+            &self,
+            _h: &[ChatMessage],
+            _q: &str,
+        ) -> Result<RouterJudgeOutput, SearchError> {
+            self.token.cancel();
+            Ok(self.output.clone())
+        }
+    }
+
+    // Cancel fires mid-CLARIFY streaming (after router returns Clarify).
+    #[tokio::test]
+    async fn clarify_cancels_mid_stream_when_token_fired_after_router() {
+        let token = CancellationToken::new();
+        let router = CancellingRouter {
+            output: RouterJudgeOutput {
+                action: Action::Clarify,
+                clarifying_question: Some(
+                    "which specific project version are you asking about here".into(),
+                ),
+                history_sufficiency: None,
+                optimized_query: None,
+            },
+            token: token.clone(),
+        };
+        let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
+        let client = reqwest::Client::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            "http://127.0.0.1:1/search",
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, SearchEvent::Cancelled)),
+            "expected Cancelled event in: {evs:?}"
+        );
+    }
+
+    // Cancel fires after router Proceed but before SearXNG.
+    #[tokio::test]
+    async fn proceed_cancels_before_searxng() {
+        let token = CancellationToken::new();
+        let router = CancellingRouter {
+            output: RouterJudgeOutput {
+                action: Action::Proceed,
+                clarifying_question: None,
+                history_sufficiency: Some(Sufficiency::Insufficient),
+                optimized_query: Some("q".into()),
+            },
+            token: token.clone(),
+        };
+        let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
+        let client = reqwest::Client::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            "http://127.0.0.1:1/search",
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, SearchEvent::Cancelled)),
+            "expected Cancelled event in: {evs:?}"
+        );
+    }
+
+    // SearXNG returns a non-NoResults error (e.g. HTTP 503).
+    #[tokio::test]
+    async fn initial_round_propagates_searxng_http_error() {
+        let mut searx = mockito::Server::new_async().await;
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(503)
+            .with_body("down")
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (_, cb) = collect_events();
+        let router = proceed_search_router("q");
+        let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
+
+        let err = run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx.url()),
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, SearchError::SearxHttp(503));
+    }
+
+    // A judge that fires the CancellationToken the first time it is called, so
+    // we can exercise the cancel-before-reader escalation path.
+    struct CancelsOnJudgeCall {
+        token: CancellationToken,
+        verdict: JudgeVerdict,
+    }
+
+    #[async_trait]
+    impl JudgeCaller for CancelsOnJudgeCall {
+        async fn call(&self, _q: &str, _s: &[JudgeSource]) -> Result<JudgeVerdict, SearchError> {
+            self.token.cancel();
+            Ok(self.verdict.clone())
+        }
+    }
+
+    // Cancel fires between snippet judge (partial) and reader escalation.
+    #[tokio::test]
+    async fn proceed_cancels_before_reader_after_snippets_partial() {
+        let mut searx = mockito::Server::new_async().await;
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_one_result("https://example.com/a"))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+        let judge = CancelsOnJudgeCall {
+            token: token.clone(),
+            verdict: partial_verdict(),
+        };
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx.url()),
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, SearchEvent::Cancelled)),
+            "expected Cancelled in: {evs:?}"
+        );
+    }
+
+    // Reader returns Cancelled (cancellation fires during reader fetch).
+    #[tokio::test]
+    async fn reader_cancelled_mid_batch_emits_cancelled_event() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        // Respond slowly so the cancel fires mid-fetch.
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(200))
+                    .set_body_json(serde_json::json!({
+                        "url": "u", "title": "t", "markdown": "m", "status": "ok"
+                    })),
+            )
+            .mount(&reader_server)
+            .await;
+
+        let mut searx = mockito::Server::new_async().await;
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_one_result("https://example.com/a"))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // First judge returns partial (to enter reader stage).
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict()].into_iter().collect(),
+        ));
+
+        // Cancel the token after a brief delay so it fires mid-reader-fetch.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            token_clone.cancel();
+        });
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx.url()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, SearchEvent::Cancelled)),
+            "expected Cancelled event in: {evs:?}"
+        );
+    }
+
+    // Reader batch times out (READER_BATCH_TIMEOUT_S=1s in tests);
+    // pipeline emits ReaderPartialFailure warning and continues.
+    #[tokio::test]
+    async fn reader_batch_timeout_emits_partial_failure_warning_and_continues() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        // Respond after 2s -- longer than READER_BATCH_TIMEOUT_S=1s in tests.
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(2))
+                    .set_body_json(serde_json::json!({
+                        "url": "u", "title": "t", "markdown": "m", "status": "ok"
+                    })),
+            )
+            .mount(&reader_server)
+            .await;
+
+        let mut ollama = mockito::Server::new_async().await;
+        let mut searx = mockito::Server::new_async().await;
+
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_one_result("https://example.com/a"))
+            .create_async()
+            .await;
+
+        let stream = stream_line_token("ok");
+        let _stream_mock = ollama
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"stream":true}"#.to_string(),
+            ))
+            .with_body(stream)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // snippets = partial; reader batch times out; second judge (snippet
+        // fallback since no chunks) = sufficient.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict(), sufficient_verdict()]
+                .into_iter()
+                .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama.url()),
+            &format!("{}/search", searx.url()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::Warning {
+                    warning: SearchWarning::ReaderPartialFailure
+                }
+            )),
+            "expected ReaderPartialFailure from BatchTimeout in: {evs:?}"
+        );
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // Reader: >50% of URLs fail (HTTP 502), triggers ReaderPartialFailure.
+    // Uses 2 SearXNG results: one reader responds with 502 (Failed), the other
+    // with 200+ok. The failed URL count (1 HTTP fail at "/extract") triggers the
+    // >partial_threshold (ceil(2*0.5)=1, 1>1=false) rule... need more than 50%.
+    //
+    // To reliably trigger the >50% branch, we use 1 URL where reader responds
+    // 502 (Failed). With 1 URL: threshold = ceil(1*0.5)=1, 1>1=false.
+    //
+    // To have failed_urls.len() > partial_threshold, we need at least 2 URLs
+    // with more than 1 failure. With 2 URLs: threshold=1, failures must be >1.
+    // Use a reader mock that returns 502 for both. Since both fail as HTTP (not
+    // connect-refused), service_unavailable_count=0, any_succeeded=false, and
+    // the reader returns Ok(result) with 2 failed_urls. Then 2 > 1 = true.
+    #[tokio::test]
+    async fn reader_majority_http_failures_emits_partial_failure_warning() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        // All reader calls return HTTP 502 (classified as Failed, not
+        // ServiceUnavailable). Any_succeeded stays false; service_unavailable
+        // count stays 0; the reader returns Ok with failed_urls.len()=2.
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(502))
+            .mount(&reader_server)
+            .await;
+
+        let mut ollama = mockito::Server::new_async().await;
+        let mut searx = mockito::Server::new_async().await;
+
+        // Two results: both will fail at reader.
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(
+                serde_json::json!({
+                    "results": [
+                        { "title": "r1", "url": "https://example.com/a", "content": "c" },
+                        { "title": "r2", "url": "https://example.com/b", "content": "c" },
+                    ]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let stream = stream_line_token("ok");
+        let _stream_mock = ollama
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"stream":true}"#.to_string(),
+            ))
+            .with_body(stream)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // snippets = partial; reader returns 0 pages + 2 failed;
+        // second judge gets snippet fallback (no chunks) and returns sufficient.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict(), sufficient_verdict()]
+                .into_iter()
+                .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama.url()),
+            &format!("{}/search", searx.url()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::Warning {
+                    warning: SearchWarning::ReaderPartialFailure
+                }
+            )),
+            "expected ReaderPartialFailure warning in: {evs:?}"
         );
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
     }
