@@ -34,6 +34,32 @@ services:
     networks:
       - search_net
 
+  reader:
+    build:
+      context: ./reader
+    image: thuki-reader:local
+    container_name: thuki-reader
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:25018:8000"
+    networks:
+      - search_net
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=2).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 networks:
   search_net:
     driver: bridge
