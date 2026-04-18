@@ -19,6 +19,7 @@
 //! the scorer has fixed O(N · T) time and O(N + T) space per call, where
 //! `N ≤ MAX_RESULTS` and `T ≤ MAX_QUERY_TOKENS`.
 
+use super::chunker::Chunk;
 use super::types::SearxResult;
 
 /// Upper bound on query tokens retained after tokenisation. Queries reaching
@@ -203,15 +204,20 @@ fn field_norm(len: f64, avg_len: f64) -> f64 {
     1.0 - BM25_B + BM25_B * (len / avg_len)
 }
 
-/// Splits `text` into lowercase alphanumeric tokens.
+/// Splits `text` into lowercase alphanumeric tokens with no length cap.
 ///
 /// The tokenizer is deliberately minimal: Unicode-aware via
 /// [`char::is_alphanumeric`], locale-free lowercase, no stemming, no
 /// stopword list. Stemming and language-specific stopwording would require
 /// per-locale tables and offer marginal gains on short web snippets reranked
-/// against an already keyword-optimised query. Output length is capped at
-/// [`MAX_QUERY_TOKENS`] to bound scoring cost.
-fn tokenize(text: &str) -> Vec<String> {
+/// against an already keyword-optimised query.
+///
+/// Callers that need a bounded output for query strings should use
+/// [`tokenize`] instead, which truncates at [`MAX_QUERY_TOKENS`]. This
+/// uncapped variant is appropriate for corpus documents (titles, bodies,
+/// chunk text) where truncating would silently drop terms and distort BM25
+/// term-frequency and IDF calculations.
+fn tokenize_uncapped(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     for ch in text.chars() {
@@ -219,14 +225,24 @@ fn tokenize(text: &str) -> Vec<String> {
             current.extend(ch.to_lowercase());
         } else if !current.is_empty() {
             tokens.push(std::mem::take(&mut current));
-            if tokens.len() == MAX_QUERY_TOKENS {
-                return tokens;
-            }
         }
     }
-    if !current.is_empty() && tokens.len() < MAX_QUERY_TOKENS {
+    if !current.is_empty() {
         tokens.push(current);
     }
+    tokens
+}
+
+/// Splits `text` into lowercase alphanumeric tokens, capped at
+/// [`MAX_QUERY_TOKENS`].
+///
+/// Wraps [`tokenize_uncapped`] and truncates at [`MAX_QUERY_TOKENS`] as a
+/// defence-in-depth bound against pathologically long query inputs. Use this
+/// for query strings; use [`tokenize_uncapped`] for corpus documents to
+/// avoid truncating their term inventory.
+fn tokenize(text: &str) -> Vec<String> {
+    let mut tokens = tokenize_uncapped(text);
+    tokens.truncate(MAX_QUERY_TOKENS);
     tokens
 }
 
@@ -264,6 +280,82 @@ pub fn rerank(query: &str, results: Vec<SearxResult>) -> Vec<SearxResult> {
     });
 
     indices.into_iter().map(|i| results[i].clone()).collect()
+}
+
+/// Rerank chunks by single-field BM25 over their text content.
+///
+/// The URL-level reranker (`rerank`, already in this module) uses BM25F over
+/// title and content plus Reciprocal Rank Fusion with SearXNG's engine order.
+/// At the chunk level there is no secondary ordering to fuse with (chunks come
+/// from the reader pre-ranked only by source-page order, which is meaningless
+/// relative to query match). We therefore use vanilla Okapi BM25 over the
+/// chunk text alone.
+///
+/// Returns up to `top_k` chunk references, highest scoring first. Ordering is
+/// stable across ties (original index is the tiebreaker).
+///
+/// Complexity: O(N * (T + Q)) where N = number of chunks, T = average tokens
+/// per chunk, Q = number of query tokens. Bounded in practice because the
+/// pipeline caps chunks at roughly `TOP_K_URLS * pages_per_url * chunks_per_page`
+/// and queries are short.
+#[allow(dead_code)]
+pub fn rerank_chunks<'a>(chunks: &'a [Chunk], query: &str, top_k: usize) -> Vec<&'a Chunk> {
+    if chunks.is_empty() || top_k == 0 {
+        return Vec::new();
+    }
+
+    let query_tokens = tokenize(query);
+    if query_tokens.is_empty() {
+        return chunks.iter().take(top_k).collect();
+    }
+
+    // Use the uncapped tokenizer for chunk text so terms beyond the first 128
+    // words are not silently dropped from the corpus term inventory.
+    let tokenized: Vec<Vec<String>> = chunks.iter().map(|c| tokenize_uncapped(&c.text)).collect();
+
+    let avgdl = {
+        let total: usize = tokenized.iter().map(|t| t.len()).sum();
+        (total as f64 / tokenized.len() as f64).max(1.0)
+    };
+
+    let n = chunks.len() as f64;
+
+    // Document frequency: number of chunks containing each query term.
+    let mut df: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
+    for tokens in &tokenized {
+        let unique: std::collections::HashSet<&str> = tokens.iter().map(String::as_str).collect();
+        for t in unique {
+            *df.entry(t).or_insert(0.0) += 1.0;
+        }
+    }
+
+    let mut scored: Vec<(usize, f64)> = Vec::with_capacity(chunks.len());
+    for (i, tokens) in tokenized.iter().enumerate() {
+        let dl = tokens.len() as f64;
+        let mut score = 0.0f64;
+        for qt in &query_tokens {
+            let freq = tokens.iter().filter(|t| t.as_str() == qt.as_str()).count() as f64;
+            if freq == 0.0 {
+                continue;
+            }
+            let doc_freq = *df.get(qt.as_str()).unwrap_or(&0.0);
+            let idf = ((n - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln();
+            let denom = freq + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avgdl);
+            score += idf * (freq * (BM25_K1 + 1.0)) / denom;
+        }
+        scored.push((i, score));
+    }
+
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+    scored
+        .into_iter()
+        .take(top_k)
+        .map(|(i, _)| &chunks[i])
+        .collect()
 }
 
 #[cfg(test)]
@@ -499,5 +591,73 @@ mod tests {
         let mut s: String = (0..MAX_QUERY_TOKENS).map(|i| format!("w{i} ")).collect();
         s.push_str("overflow");
         assert_eq!(tokenize(&s).len(), MAX_QUERY_TOKENS);
+    }
+}
+
+#[cfg(test)]
+mod chunk_rerank_tests {
+    use super::*;
+    use crate::search::chunker::Chunk;
+
+    fn chunk(url: &str, text: &str) -> Chunk {
+        Chunk {
+            source_url: url.to_string(),
+            source_title: "t".to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn rerank_chunks_returns_at_most_top_k() {
+        let chunks = vec![
+            chunk("u1", "alpha beta"),
+            chunk("u2", "gamma delta"),
+            chunk("u3", "epsilon zeta"),
+        ];
+        let top = rerank_chunks(&chunks, "alpha", 2);
+        assert_eq!(top.len(), 2);
+    }
+
+    #[test]
+    fn rerank_chunks_favors_query_term_matches() {
+        let chunks = vec![
+            chunk("u1", "no match here at all"),
+            chunk("u2", "this chunk mentions curl and CVE together"),
+        ];
+        let top = rerank_chunks(&chunks, "curl CVE", 1);
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].source_url, "u2");
+    }
+
+    #[test]
+    fn rerank_chunks_handles_empty_input() {
+        let top = rerank_chunks(&[], "query", 5);
+        assert!(top.is_empty());
+    }
+
+    #[test]
+    fn rerank_chunks_handles_zero_top_k() {
+        let chunks = vec![chunk("u1", "foo")];
+        let top = rerank_chunks(&chunks, "foo", 0);
+        assert!(top.is_empty());
+    }
+
+    #[test]
+    fn rerank_chunks_stable_for_identical_scores() {
+        let chunks = vec![chunk("u1", "foo"), chunk("u2", "foo")];
+        let top = rerank_chunks(&chunks, "foo", 2);
+        assert_eq!(top.len(), 2);
+        // Stable: original index tiebreaker, so u1 before u2.
+        assert_eq!(top[0].source_url, "u1");
+        assert_eq!(top[1].source_url, "u2");
+    }
+
+    #[test]
+    fn rerank_chunks_empty_query_returns_first_top_k() {
+        let chunks = vec![chunk("u1", "foo"), chunk("u2", "bar"), chunk("u3", "baz")];
+        let top = rerank_chunks(&chunks, "", 2);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].source_url, "u1");
+        assert_eq!(top[1].source_url, "u2");
     }
 }
