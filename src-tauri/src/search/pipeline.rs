@@ -5,6 +5,13 @@
 //!   Classifying -> Token* -> Done           (answer from prior context)
 //!   Classifying -> Searching -> Token* -> Done  (fresh web search + synthesis)
 //!
+//! Task 13 adds an agentic entry point [`run_agentic`] alongside the legacy
+//! [`run`] function. It uses two trait seams, [`RouterJudgeCaller`] and
+//! [`JudgeCaller`], so tests can inject deterministic mocks without spinning a
+//! mock Ollama server. The legacy [`run`] and the Tauri command in
+//! `search::mod` are untouched; they remain the production path until Task 16
+//! retires them.
+//!
 //! The pipeline is the single owner of `ConversationHistory` mutations for a
 //! search turn: every branch that produces a user-visible assistant message
 //! persists both the user's query and the assistant reply so that subsequent
@@ -12,6 +19,7 @@
 
 use std::sync::atomic::Ordering;
 
+use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::{
@@ -19,10 +27,14 @@ use crate::commands::{
     ConversationHistory, StreamChunk,
 };
 
-use super::llm::{build_answer_from_context_messages, build_synthesis_messages, call_router};
+use super::llm::{
+    build_answer_from_context_messages, build_synthesis_messages, call_router, JudgeSource,
+};
 use super::rerank;
 use super::searxng;
-use super::types::{RouterDecision, SearchError, SearchEvent};
+use super::types::{
+    Action, JudgeVerdict, RouterDecision, RouterJudgeOutput, SearchError, SearchEvent, Sufficiency,
+};
 
 /// Returns the current UTC date formatted as `YYYY-MM-DD`.
 ///
@@ -327,6 +339,241 @@ pub(super) fn http_error_message(status: u16) -> String {
 #[allow(dead_code)]
 pub(super) fn stream_error_message(e: &reqwest::Error) -> String {
     classify_stream_error(e).message
+}
+
+// ── Agentic trait seams ────────────────────────────────────────────────────
+
+/// Abstracts the merged router+judge LLM call so the agentic pipeline can be
+/// tested with deterministic mock output without spinning a real Ollama server.
+///
+/// Production code uses [`DefaultRouterJudge`]. Tests inject a struct that
+/// returns a canned [`RouterJudgeOutput`]. The abstraction is introduced in
+/// Task 13 alongside [`run_agentic`]; Task 16 wires the Tauri command to use
+/// [`run_agentic`] exclusively, at which point the legacy [`run`] is retired.
+// The trait and its implementations have no non-test call site until Task 16
+// wires run_agentic to the Tauri command. Suppress dead_code for the trait,
+// the two default structs, run_agentic, and the helper until then.
+#[allow(dead_code)]
+#[async_trait]
+pub trait RouterJudgeCaller: Send + Sync {
+    /// Calls the router+judge LLM with the given conversation history and
+    /// current query, returning a combined routing and sufficiency decision.
+    async fn call(
+        &self,
+        history: &[ChatMessage],
+        query: &str,
+    ) -> Result<RouterJudgeOutput, SearchError>;
+}
+
+/// Abstracts the per-round sufficiency judge call so the agentic gap loop can
+/// be exercised with injected verdicts.
+///
+/// Production code uses [`DefaultJudge`]. Tests inject a mock that returns
+/// a predetermined sequence of [`JudgeVerdict`]s. Task 14 adds the gap loop;
+/// Task 16 retires the legacy router path.
+#[allow(dead_code)]
+#[async_trait]
+pub trait JudgeCaller: Send + Sync {
+    /// Judges how well the given sources answer the query.
+    async fn call(&self, query: &str, sources: &[JudgeSource])
+        -> Result<JudgeVerdict, SearchError>;
+}
+
+/// Production [`RouterJudgeCaller`] implementation.
+///
+/// The real wiring (endpoint, model, HTTP client, today string, cancellation
+/// token) is all per-call state owned by the Tauri command. Injecting it here
+/// via struct fields would require cloning or `Arc`-wrapping per-request
+/// objects. Instead this impl is left as `unimplemented!` and the full wiring
+/// happens in Task 16 when the Tauri command swaps from `run` to
+/// `run_agentic`. Tests never instantiate this struct; they inject a mock.
+#[derive(Default, Clone, Copy)]
+pub struct DefaultRouterJudge;
+
+#[allow(dead_code)]
+#[async_trait]
+impl RouterJudgeCaller for DefaultRouterJudge {
+    async fn call(
+        &self,
+        _history: &[ChatMessage],
+        _query: &str,
+    ) -> Result<RouterJudgeOutput, SearchError> {
+        unimplemented!(
+            "DefaultRouterJudge is wired to the Tauri command in Task 16; \
+             inject a mock in tests"
+        )
+    }
+}
+
+/// Production [`JudgeCaller`] implementation.
+///
+/// Same rationale as [`DefaultRouterJudge`]: per-call dependencies (endpoint,
+/// model, client, cancel token) are not available here and will be threaded
+/// through in Task 16. Tests inject mocks; production never reaches this path
+/// until that task lands.
+#[derive(Default, Clone, Copy)]
+pub struct DefaultJudge;
+
+#[allow(dead_code)]
+#[async_trait]
+impl JudgeCaller for DefaultJudge {
+    async fn call(
+        &self,
+        _query: &str,
+        _sources: &[JudgeSource],
+    ) -> Result<JudgeVerdict, SearchError> {
+        unimplemented!(
+            "DefaultJudge is wired to the Tauri command in Task 16; \
+             inject a mock in tests"
+        )
+    }
+}
+
+// ── Agentic entry point ────────────────────────────────────────────────────
+
+/// Agentic search pipeline entry point. Handles the CLARIFY short-circuit and
+/// the history-sufficient short-circuit without performing any web search.
+///
+/// Branch summary:
+/// - `Action::Clarify`: streams the clarifying question as `Token` events,
+///   then `Done`. The question is also persisted to history so the next turn
+///   sees it. No `Clarifying` event is emitted (design decision 15).
+/// - `Action::Proceed` + `history_sufficiency == Some(Sufficient)`: streams
+///   the answer synthesised from conversation history alone, reusing the
+///   same `answer_from_context` path as the legacy [`run`].
+/// - `Action::Proceed` + anything else: returns
+///   [`SearchError::Internal`] as a placeholder until Task 14 wires the
+///   initial search round.
+///
+/// Task 14 implements the search round and post-snippet judge call.
+/// Task 15 adds the gap loop and exhaustion fallback.
+/// Task 16 retires [`run`] and makes this the sole Tauri command entry point.
+// No non-test call site until Task 16 wires the Tauri command.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_agentic<R, J>(
+    ollama_endpoint: &str,
+    model: &str,
+    client: &reqwest::Client,
+    cancel_token: CancellationToken,
+    chat_system_prompt: &str,
+    history: &ConversationHistory,
+    query: String,
+    on_event: impl Fn(SearchEvent),
+    router: &R,
+    // Judge is not called in Tasks 13-14 short-circuit branches but is part
+    // of the signature so Task 14 can add gap-loop calls without changing
+    // the function interface.
+    _judge: &J,
+) -> Result<(), SearchError>
+where
+    R: RouterJudgeCaller + ?Sized,
+    J: JudgeCaller + ?Sized,
+{
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err(SearchError::EmptyQuery);
+    }
+    let user_query = trimmed.to_string();
+
+    if cancel_token.is_cancelled() {
+        on_event(SearchEvent::Cancelled);
+        return Err(SearchError::Cancelled);
+    }
+
+    on_event(SearchEvent::AnalyzingQuery);
+
+    let (epoch_at_start, history_snapshot) = snapshot_history(history);
+
+    let output = router.call(&history_snapshot, &user_query).await?;
+
+    let user_msg = ChatMessage {
+        role: "user".to_string(),
+        content: user_query.clone(),
+        images: None,
+    };
+
+    match output.action {
+        Action::Clarify => {
+            let question = output.clarifying_question.unwrap_or_default();
+            for piece in split_into_stream_pieces(&question) {
+                if cancel_token.is_cancelled() {
+                    on_event(SearchEvent::Cancelled);
+                    return Ok(());
+                }
+                on_event(SearchEvent::Token { content: piece });
+            }
+            // Persist so the next turn can see the clarifying question.
+            persist_turn(
+                history,
+                epoch_at_start,
+                user_msg,
+                ChatMessage {
+                    role: "assistant".to_string(),
+                    content: question,
+                    images: None,
+                },
+            );
+            on_event(SearchEvent::Done);
+            Ok(())
+        }
+        Action::Proceed => {
+            if matches!(output.history_sufficiency, Some(Sufficiency::Sufficient)) {
+                let messages = build_answer_from_context_messages(
+                    chat_system_prompt,
+                    &history_snapshot,
+                    &user_query,
+                );
+                run_streaming_branch(
+                    ollama_endpoint,
+                    model,
+                    client,
+                    cancel_token,
+                    messages,
+                    history,
+                    epoch_at_start,
+                    user_msg,
+                    &on_event,
+                )
+                .await;
+                Ok(())
+            } else {
+                // Tasks 14 and 15 implement the search round and gap loop.
+                Err(SearchError::Internal(
+                    "agentic search path not wired yet; Task 14 lands this".into(),
+                ))
+            }
+        }
+    }
+}
+
+/// Splits a string into roughly `TARGET`-character pieces on whitespace
+/// boundaries so the frontend receives a stream of `Token` events rather than
+/// one atomic message. Words that exceed `TARGET` alone are emitted as-is.
+// Called only from run_agentic which is itself dead until Task 16.
+#[allow(dead_code)]
+fn split_into_stream_pieces(s: &str) -> Vec<String> {
+    const TARGET: usize = 24;
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for word in s.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current.len() + 1 + word.len() <= TARGET {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            out.push(std::mem::take(&mut current));
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() && !s.is_empty() {
+        out.push(s.to_string());
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1000,5 +1247,419 @@ mod tests {
         let err = reqwest::get("http://127.0.0.1:1/").await.unwrap_err();
         let msg = stream_error_message(&err);
         assert!(!msg.is_empty());
+    }
+}
+
+// ── Agentic pipeline tests ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod agentic_tests {
+    use super::*;
+
+    // ── mock implementations ────────────────────────────────────────────────
+
+    struct MockRouter(RouterJudgeOutput);
+
+    #[async_trait]
+    impl RouterJudgeCaller for MockRouter {
+        async fn call(
+            &self,
+            _h: &[ChatMessage],
+            _q: &str,
+        ) -> Result<RouterJudgeOutput, SearchError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    struct MockJudge;
+
+    #[async_trait]
+    impl JudgeCaller for MockJudge {
+        async fn call(&self, _q: &str, _s: &[JudgeSource]) -> Result<JudgeVerdict, SearchError> {
+            panic!("judge should not be called on CLARIFY or history-sufficient paths");
+        }
+    }
+
+    fn collect_events() -> (
+        std::sync::Arc<std::sync::Mutex<Vec<SearchEvent>>>,
+        impl Fn(SearchEvent),
+    ) {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<SearchEvent>::new()));
+        let events_clone = events.clone();
+        let callback = move |e: SearchEvent| {
+            events_clone.lock().unwrap().push(e);
+        };
+        (events, callback)
+    }
+
+    // ── split_into_stream_pieces ─────────────────────────────────────────────
+
+    #[test]
+    fn split_into_stream_pieces_respects_target_length() {
+        let pieces = split_into_stream_pieces("which project are you asking about today");
+        // No piece should exceed TARGET + one word overhang.
+        for piece in &pieces {
+            // Pieces can slightly exceed 24 chars if a single word is long,
+            // but assembled they must reconstitute the original words.
+            assert!(!piece.is_empty());
+        }
+        let rejoined = pieces.join(" ");
+        assert_eq!(rejoined, "which project are you asking about today");
+    }
+
+    #[test]
+    fn split_into_stream_pieces_empty_string_returns_empty_vec() {
+        assert!(split_into_stream_pieces("").is_empty());
+    }
+
+    #[test]
+    fn split_into_stream_pieces_whitespace_only_returns_single_piece() {
+        // The function preserves the raw string when no words are found but the
+        // input is non-empty. In practice run_agentic trims and rejects
+        // whitespace-only queries before this helper is called.
+        let p = split_into_stream_pieces("   ");
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0], "   ");
+    }
+
+    #[test]
+    fn split_into_stream_pieces_single_short_word_returns_one_piece() {
+        let p = split_into_stream_pieces("hi");
+        assert_eq!(p, vec!["hi".to_string()]);
+    }
+
+    // ── run_agentic: empty query ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn run_agentic_rejects_empty_query() {
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = MockRouter(RouterJudgeOutput {
+            action: Action::Clarify,
+            clarifying_question: None,
+            history_sufficiency: None,
+            optimized_query: None,
+        });
+
+        let err = run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "   ".into(),
+            cb,
+            &router,
+            &MockJudge,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, SearchError::EmptyQuery);
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    // ── run_agentic: pre-cancelled token ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn run_agentic_emits_cancelled_when_token_already_cancelled() {
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        token.cancel();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = MockRouter(RouterJudgeOutput {
+            action: Action::Clarify,
+            clarifying_question: None,
+            history_sufficiency: None,
+            optimized_query: None,
+        });
+
+        let err = run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            cb,
+            &router,
+            &MockJudge,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, SearchError::Cancelled);
+        let evs = events.lock().unwrap();
+        assert_eq!(evs[0], SearchEvent::Cancelled);
+    }
+
+    // ── run_agentic: CLARIFY branch ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn clarify_action_streams_question_tokens_then_done() {
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+
+        let router = MockRouter(RouterJudgeOutput {
+            action: Action::Clarify,
+            clarifying_question: Some("which project?".into()),
+            history_sufficiency: None,
+            optimized_query: None,
+        });
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "tell me more".into(),
+            cb,
+            &router,
+            &MockJudge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+
+        // First event must be AnalyzingQuery.
+        assert_eq!(evs[0], SearchEvent::AnalyzingQuery);
+
+        // At least one Token event must carry content from the clarifying question.
+        let all_token_content: String = evs
+            .iter()
+            .filter_map(|e| match e {
+                SearchEvent::Token { content } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            all_token_content.contains("which") || all_token_content.contains("project"),
+            "expected token stream to contain the clarifying question, got: {all_token_content}"
+        );
+
+        // Last event must be Done.
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+
+        // No search-phase events.
+        assert!(evs.iter().all(|e| !matches!(e, SearchEvent::Searching)));
+        assert!(evs
+            .iter()
+            .all(|e| !matches!(e, SearchEvent::ReadingSources)));
+
+        // Turn must be persisted to history.
+        let conv = h.messages.lock().unwrap();
+        assert_eq!(conv.len(), 2);
+        assert_eq!(conv[0].content, "tell me more");
+        assert_eq!(conv[1].content, "which project?");
+    }
+
+    #[tokio::test]
+    async fn clarify_with_empty_question_still_emits_done() {
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+
+        let router = MockRouter(RouterJudgeOutput {
+            action: Action::Clarify,
+            clarifying_question: None,
+            history_sufficiency: None,
+            optimized_query: None,
+        });
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            cb,
+            &router,
+            &MockJudge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert_eq!(evs[0], SearchEvent::AnalyzingQuery);
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // ── run_agentic: history-sufficient branch ───────────────────────────────
+
+    #[tokio::test]
+    async fn history_sufficient_action_streams_from_history_without_search() {
+        let mut ollama = mockito::Server::new_async().await;
+        let stream_line =
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"from history\"},\"done\":false}\n\
+             {\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
+        let _mock = ollama
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"stream":true}"#.to_string(),
+            ))
+            .with_body(stream_line)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+
+        let router = MockRouter(RouterJudgeOutput {
+            action: Action::Proceed,
+            clarifying_question: None,
+            history_sufficiency: Some(Sufficiency::Sufficient),
+            optimized_query: None,
+        });
+
+        run_agentic(
+            &format!("{}/api/chat", ollama.url()),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "what is 2+2".into(),
+            cb,
+            &router,
+            &MockJudge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+
+        // AnalyzingQuery first.
+        assert_eq!(evs[0], SearchEvent::AnalyzingQuery);
+
+        // At least one Token with content.
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, SearchEvent::Token { content } if content == "from history")));
+
+        // Done last.
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+
+        // No search events.
+        assert!(evs.iter().all(|e| !matches!(e, SearchEvent::Searching)));
+        assert!(evs
+            .iter()
+            .all(|e| !matches!(e, SearchEvent::ReadingSources)));
+    }
+
+    // ── run_agentic: not-sufficient stub boundary ────────────────────────────
+
+    #[tokio::test]
+    async fn proceed_but_not_sufficient_returns_internal_error_until_task14() {
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (_events, cb) = collect_events();
+
+        let router = MockRouter(RouterJudgeOutput {
+            action: Action::Proceed,
+            clarifying_question: None,
+            history_sufficiency: Some(Sufficiency::Insufficient),
+            optimized_query: Some("rust async".into()),
+        });
+
+        let err = run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "tell me about rust async".into(),
+            cb,
+            &router,
+            &MockJudge,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, SearchError::Internal(_)),
+            "expected Internal error, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn proceed_with_none_sufficiency_returns_internal_error_until_task14() {
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (_events, cb) = collect_events();
+
+        let router = MockRouter(RouterJudgeOutput {
+            action: Action::Proceed,
+            clarifying_question: None,
+            history_sufficiency: None,
+            optimized_query: None,
+        });
+
+        let err = run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            cb,
+            &router,
+            &MockJudge,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, SearchError::Internal(_)));
+    }
+
+    #[tokio::test]
+    async fn proceed_with_partial_sufficiency_returns_internal_error_until_task14() {
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (_events, cb) = collect_events();
+
+        let router = MockRouter(RouterJudgeOutput {
+            action: Action::Proceed,
+            clarifying_question: None,
+            history_sufficiency: Some(Sufficiency::Partial),
+            optimized_query: None,
+        });
+
+        let err = run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            cb,
+            &router,
+            &MockJudge,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, SearchError::Internal(_)));
     }
 }

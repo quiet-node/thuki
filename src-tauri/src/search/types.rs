@@ -283,6 +283,13 @@ pub enum SearchError {
     EmptyQuery,
     /// Pipeline cancelled via the shared CancellationToken.
     Cancelled,
+    /// Internal pipeline invariant violated or a stub branch was reached. The
+    /// inner string is for logging only and must not be shown to the user.
+    /// Used as a placeholder in unfinished agentic branches until the
+    /// implementing task fills them in.
+    // Constructed by run_agentic which has no non-test call site until Task 16.
+    #[allow(dead_code)]
+    Internal(String),
 }
 
 impl SearchError {
@@ -309,6 +316,7 @@ impl SearchError {
             Self::NoResults => "No results found\nTry rephrasing your query.".to_string(),
             Self::EmptyQuery => "Empty query\nType a search query after /search.".to_string(),
             Self::Cancelled => "Cancelled".to_string(),
+            Self::Internal(_) => "Something went wrong.\nPlease try again.".to_string(),
         }
     }
 }
@@ -450,6 +458,9 @@ mod tests {
             .user_message()
             .contains("Empty query"));
         assert_eq!(SearchError::Cancelled.user_message(), "Cancelled");
+        assert!(SearchError::Internal("diag".into())
+            .user_message()
+            .contains("Something went wrong"));
     }
 }
 
