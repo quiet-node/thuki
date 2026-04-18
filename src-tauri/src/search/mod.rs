@@ -21,6 +21,7 @@ use crate::commands::{
 
 mod llm;
 mod pipeline;
+mod rerank;
 mod searxng;
 mod types;
 

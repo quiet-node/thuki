@@ -20,6 +20,7 @@ use crate::commands::{
 };
 
 use super::llm::{build_answer_from_context_messages, build_synthesis_messages, call_router};
+use super::rerank;
 use super::searxng;
 use super::types::{RouterDecision, SearchError, SearchEvent};
 
@@ -201,6 +202,12 @@ async fn run_search_branch(
     on_event(SearchEvent::Searching);
 
     let results = searxng::search(client, searxng_endpoint, &optimized_query).await?;
+
+    // Rerank the retrieved set by fusing BM25F field-weighted lexical scores
+    // with the upstream engine order via Reciprocal Rank Fusion. The same
+    // order is then used for both the frontend Sources footer and the
+    // synthesis prompt, so the answer and its citations are consistent.
+    let results = rerank::rerank(&optimized_query, results);
 
     // Forward result previews to the frontend so it can render a sources
     // footer below the synthesized answer.
@@ -750,6 +757,93 @@ mod tests {
         let conv = h.messages.lock().unwrap();
         assert_eq!(conv.len(), 2);
         assert!(conv[1].content.contains("answer [1]"));
+    }
+
+    #[tokio::test]
+    async fn run_search_path_reranks_sources_via_bm25f_rrf() {
+        // SearXNG returns the matching doc in position 2 (out of 3). The
+        // reranker must lift it to position 0 in the emitted Sources event.
+        let mut ollama = mockito::Server::new_async().await;
+        let mut searx = mockito::Server::new_async().await;
+
+        let router_body = serde_json::json!({
+            "message": {
+                "content": r#"{"action":"search","optimized_query":"rust async runtime"}"#,
+            }
+        })
+        .to_string();
+        let _router_mock = ollama
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"stream":false}"#.to_string(),
+            ))
+            .with_body(router_body)
+            .create_async()
+            .await;
+
+        let searx_body = serde_json::json!({
+            "results": [
+                { "title": "totally unrelated header", "url": "https://a",
+                  "content": "nothing to see here filler" },
+                { "title": "another filler doc", "url": "https://c",
+                  "content": "more filler body text" },
+                { "title": "rust async runtime design", "url": "https://b",
+                  "content": "walkthrough of rust async runtime internals" },
+            ]
+        })
+        .to_string();
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body)
+            .create_async()
+            .await;
+
+        let stream_line =
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"done\":false}\n\
+             {\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
+        let _stream_mock = ollama
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"stream":true}"#.to_string(),
+            ))
+            .with_body(stream_line)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+
+        run(
+            &format!("{}/api/chat", ollama.url()),
+            &format!("{}/search", searx.url()),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "rust async runtime".into(),
+            "2026-04-17",
+            cb,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        let sources = evs
+            .iter()
+            .find_map(|e| match e {
+                SearchEvent::Sources { results } => Some(results.clone()),
+                _ => None,
+            })
+            .expect("Sources event missing");
+        assert_eq!(sources.len(), 3);
+        assert_eq!(
+            sources[0].url, "https://b",
+            "expected rerank to lift the matching doc to position 0, got {sources:?}"
+        );
     }
 
     #[tokio::test]
