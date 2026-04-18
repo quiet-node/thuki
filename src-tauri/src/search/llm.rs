@@ -26,6 +26,12 @@ pub const ROUTER_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_router
 /// avoid meta-commentary over the reference material.
 pub const SYNTHESIS_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_synthesis.txt");
 
+/// System prompt for the universal sufficiency judge. Used by the pre-synthesis
+/// judge call over snippets and over reader chunks.
+// Task 11 wires this into the agentic loop; suppress the warning until then.
+#[allow(dead_code)]
+pub const JUDGE_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_judge.txt");
+
 /// Hard timeout for the non-streaming router call. Picked to accommodate cold
 /// model starts on first pipeline invocation.
 pub const ROUTER_TIMEOUT_SECS: u64 = 45;
@@ -626,5 +632,29 @@ mod tests {
         .unwrap();
         mock.assert_async().await;
         assert_eq!(decision, RouterDecision::AnswerFromContext);
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    #[test]
+    fn judge_prompt_declares_verdict_schema() {
+        let p = JUDGE_SYSTEM_PROMPT;
+        assert!(p.contains("sufficiency"));
+        assert!(p.contains("reasoning"));
+        assert!(p.contains("gap_queries"));
+        assert!(p.contains("sufficient"));
+        assert!(p.contains("partial"));
+        assert!(p.contains("insufficient"));
+    }
+
+    #[test]
+    fn synthesis_prompt_still_has_today_placeholder_and_citation_guidance() {
+        let p = SYNTHESIS_SYSTEM_PROMPT;
+        assert!(p.contains("{{TODAY}}"));
+        assert!(p.contains("[1]"));
+        assert!(p.contains("full-page chunk"));
     }
 }
