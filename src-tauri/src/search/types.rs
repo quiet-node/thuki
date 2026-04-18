@@ -1,10 +1,9 @@
 //! Shared types for the `/search` pipeline: streamed frontend events, internal
-//! router decisions deserialised from the LLM, SearXNG response shapes, and
-//! structured pipeline errors.
+//! agentic output types, SearXNG response shapes, and structured pipeline errors.
 //!
 //! All types that cross the Tauri IPC boundary (see [`SearchEvent`]) are
 //! serialised with a `type` tag so the frontend can discriminate cleanly.
-//! Internal types ([`RouterDecision`], [`SearxResult`]) never leave Rust.
+//! Internal types ([`SearxResult`]) never leave Rust.
 
 use serde::{Deserialize, Serialize};
 
@@ -72,25 +71,6 @@ pub enum SearchEvent {
 
 // ─── Router output ──────────────────────────────────────────────────────────
 
-/// Decoded router decision returned by the classifier LLM call.
-///
-/// Uses an externally tagged enum (`action` field) so the model never has to
-/// emit conditionally-present fields. Each variant carries exactly the data
-/// relevant to its branch, which matches what small instruction-tuned models
-/// produce most reliably.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(tag = "action", rename_all = "snake_case")]
-pub enum RouterDecision {
-    /// Query is ambiguous; surface the clarifying question.
-    Clarify { question: String },
-    /// Prior conversation already contains the answer or the query is stable
-    /// general knowledge; stream the answer using the chat system prompt.
-    AnswerFromContext,
-    /// Query is clear and requires fresh web results; run SearXNG with the
-    /// LLM-optimised query, then synthesize.
-    Search { optimized_query: String },
-}
-
 // ─── Agentic-loop types ─────────────────────────────────────────────────────
 
 /// The action the router/judge should take for the current query. Used inside
@@ -119,10 +99,9 @@ pub enum Sufficiency {
     Insufficient,
 }
 
-/// Combined router and judge output for the agentic pipeline. Replaces the
-/// older split between `RouterDecision` and a separate judge response; the
-/// model emits one JSON object that covers both routing and sufficiency
-/// assessment. `RouterDecision` is preserved until Task 13 migrates call sites.
+/// Combined router and judge output for the agentic pipeline. The model emits
+/// one JSON object that covers both routing classification and history-sufficiency
+/// assessment.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RouterJudgeOutput {
     /// Whether the pipeline should clarify or proceed.
@@ -258,20 +237,16 @@ pub enum SearchError {
     LlmUnavailable,
     /// Ollama responded with a non-2xx status.
     LlmHttp(u16),
-    /// Ollama returned content that could not be parsed as a RouterDecision.
+    /// Ollama returned content that could not be decoded as JSON.
     LlmBadJson,
-    /// Merged router or router-judge call failed: either no JSON was found in
-    /// the response, or the JSON could not be deserialized as RouterJudgeOutput.
-    /// The inner string carries diagnostic detail for logging; do not surface it
-    /// to the user.
-    // Constructed by `call_router_merged`; suppress until Task 13 wires it.
-    #[allow(dead_code)]
+    /// Merged router+judge call failed: either no JSON was found in the
+    /// response, or the JSON could not be deserialized as RouterJudgeOutput.
+    /// The inner string carries diagnostic detail for logging; do not surface
+    /// it to the user.
     Router(String),
     /// Sufficiency-judge call failed: either no JSON was found in the response,
     /// or the JSON could not be deserialized as JudgeVerdict. The inner string
     /// carries diagnostic detail for logging.
-    // Constructed by `call_judge`; suppress until Task 14 wires it.
-    #[allow(dead_code)]
     Judge(String),
     /// SearXNG is not reachable.
     SearxUnavailable,
@@ -362,49 +337,6 @@ mod tests {
         .unwrap();
         assert_eq!(err["type"], "Error");
         assert_eq!(err["message"], "boom");
-    }
-
-    #[test]
-    fn router_decision_parses_clarify() {
-        let json = r#"{"action":"clarify","question":"Which?"}"#;
-        let d: RouterDecision = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            d,
-            RouterDecision::Clarify {
-                question: "Which?".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn router_decision_parses_answer_from_context() {
-        let json = r#"{"action":"answer_from_context"}"#;
-        let d: RouterDecision = serde_json::from_str(json).unwrap();
-        assert_eq!(d, RouterDecision::AnswerFromContext);
-    }
-
-    #[test]
-    fn router_decision_parses_search() {
-        let json = r#"{"action":"search","optimized_query":"rust async"}"#;
-        let d: RouterDecision = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            d,
-            RouterDecision::Search {
-                optimized_query: "rust async".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn router_decision_rejects_unknown_action() {
-        let json = r#"{"action":"explode"}"#;
-        assert!(serde_json::from_str::<RouterDecision>(json).is_err());
-    }
-
-    #[test]
-    fn router_decision_rejects_missing_action() {
-        let json = r#"{"question":"what"}"#;
-        assert!(serde_json::from_str::<RouterDecision>(json).is_err());
     }
 
     #[test]

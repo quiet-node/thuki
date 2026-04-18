@@ -1,44 +1,44 @@
 //! Orchestrator for the `/search` pipeline.
 //!
-//! Implements the three-branch state machine discussed in the design:
-//!   Classifying -> Clarifying                (query is ambiguous)
-//!   Classifying -> Token* -> Done           (answer from prior context)
-//!   Classifying -> Searching -> Token* -> Done  (fresh web search + synthesis)
+//! Implements the agentic state machine:
+//!   AnalyzingQuery -> Token* -> Done          (CLARIFY branch)
+//!   AnalyzingQuery -> Token* -> Done          (history-sufficient branch)
+//!   AnalyzingQuery -> Searching -> ... -> Done  (fresh web search + synthesis)
 //!
-//! Task 13 adds an agentic entry point [`run_agentic`] alongside the legacy
-//! [`run`] function. It uses two trait seams, [`RouterJudgeCaller`] and
-//! [`JudgeCaller`], so tests can inject deterministic mocks without spinning a
-//! mock Ollama server. The legacy [`run`] and the Tauri command in
-//! `search::mod` are untouched; they remain the production path until Task 16
-//! retires them.
+//! [`run_agentic`] is the sole production entry point (Task 16). It uses two
+//! trait seams, [`RouterJudgeCaller`] and [`JudgeCaller`], so tests can inject
+//! deterministic mocks without spinning a mock Ollama server.
 //!
 //! The pipeline is the single owner of `ConversationHistory` mutations for a
 //! search turn: every branch that produces a user-visible assistant message
 //! persists both the user's query and the assistant reply so that subsequent
 //! classifier calls can see the full conversational state.
+//!
+//! Cancellation is checked at every stage entry and before every network call.
+//! Long-running HTTP awaits (SearXNG, judge) race inline against the
+//! cancellation token via `tokio::select!`, so in-flight work is dropped
+//! immediately when the user dismisses the overlay rather than waiting for
+//! the round-trip to complete.
 
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use crate::commands::{
-    classify_http_error, classify_stream_error, stream_ollama_chat, ChatMessage,
-    ConversationHistory, StreamChunk,
-};
+use crate::commands::{stream_ollama_chat, ChatMessage, ConversationHistory, StreamChunk};
 
 use super::chunker;
 use super::config;
 use super::llm::{
-    build_answer_from_context_messages, build_synthesis_messages, call_router, JudgeSource,
+    build_answer_from_context_messages, build_synthesis_messages, call_judge, call_router_merged,
+    JudgeSource,
 };
 use super::reader;
 use super::rerank;
 use super::searxng;
 use super::types::{
-    Action, IterationStage, IterationTrace, JudgeVerdict, RouterDecision, RouterJudgeOutput,
-    SearchError, SearchEvent, SearchMetadata, SearchResultPreview, SearchWarning, SearxResult,
-    Sufficiency,
+    Action, IterationStage, IterationTrace, JudgeVerdict, RouterJudgeOutput, SearchError,
+    SearchEvent, SearchMetadata, SearchResultPreview, SearchWarning, SearxResult, Sufficiency,
 };
 
 /// Returns the current UTC date formatted as `YYYY-MM-DD`.
@@ -53,110 +53,6 @@ pub fn today_iso() -> String {
     format!("{:04}-{:02}-{:02}", d.year(), d.month() as u8, d.day())
 }
 
-/// Runs the full search pipeline end-to-end. Emits every user-visible state
-/// transition through `on_event`. Returns an internal `SearchError` for
-/// diagnostic tests; the caller is responsible for converting terminal errors
-/// into an `Error` event, since lower-level streaming failures already emit
-/// their own error events through the stream adapter.
-///
-/// `ollama_endpoint` is the fully-qualified `/api/chat` URL; `searxng_endpoint`
-/// is the fully-qualified SearXNG `/search` URL. Both are surfaced as
-/// parameters for testability: production callers pass the compiled-in
-/// constants defined in `commands.rs` and `search::searxng`.
-///
-/// `today` is a `YYYY-MM-DD` string injected into the synthesis prompt to
-/// anchor the model to the real calendar date. Pass `today_iso()` at the
-/// call site for production use, or a fixed string in tests.
-#[allow(clippy::too_many_arguments)]
-pub async fn run(
-    ollama_endpoint: &str,
-    searxng_endpoint: &str,
-    model: &str,
-    client: &reqwest::Client,
-    cancel_token: CancellationToken,
-    chat_system_prompt: &str,
-    history: &ConversationHistory,
-    query: String,
-    today: &str,
-    on_event: impl Fn(SearchEvent),
-) -> Result<(), SearchError> {
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        return Err(SearchError::EmptyQuery);
-    }
-    let user_query = trimmed.to_string();
-
-    if cancel_token.is_cancelled() {
-        on_event(SearchEvent::Cancelled);
-        return Err(SearchError::Cancelled);
-    }
-
-    on_event(SearchEvent::Classifying);
-
-    let (epoch_at_start, history_snapshot) = snapshot_history(history);
-
-    let decision = call_router(
-        ollama_endpoint,
-        model,
-        client,
-        &history_snapshot,
-        &user_query,
-        &cancel_token,
-    )
-    .await?;
-
-    let user_msg = ChatMessage {
-        role: "user".to_string(),
-        content: user_query.clone(),
-        images: None,
-    };
-
-    match decision {
-        RouterDecision::Clarify { question } => {
-            run_clarify_branch(history, epoch_at_start, user_msg, question, &on_event);
-            Ok(())
-        }
-        RouterDecision::AnswerFromContext => {
-            let messages = build_answer_from_context_messages(
-                chat_system_prompt,
-                &history_snapshot,
-                &user_query,
-            );
-            run_streaming_branch(
-                ollama_endpoint,
-                model,
-                client,
-                cancel_token,
-                messages,
-                history,
-                epoch_at_start,
-                user_msg,
-                &on_event,
-            )
-            .await;
-            Ok(())
-        }
-        RouterDecision::Search { optimized_query } => {
-            run_search_branch(
-                ollama_endpoint,
-                searxng_endpoint,
-                model,
-                client,
-                cancel_token,
-                &history_snapshot,
-                history,
-                epoch_at_start,
-                user_msg,
-                user_query,
-                optimized_query,
-                today,
-                &on_event,
-            )
-            .await
-        }
-    }
-}
-
 /// Takes a snapshot of the conversation history and its epoch counter under a
 /// single lock acquisition. The snapshot is used for the entire pipeline run;
 /// if the epoch changes before we write back, the write is skipped (the user
@@ -167,98 +63,14 @@ fn snapshot_history(history: &ConversationHistory) -> (u64, Vec<ChatMessage>) {
     (epoch, conv.clone())
 }
 
-/// Clarify branch: emit the clarifying event, persist the pair, emit `Done`.
-/// No LLM streaming is needed: the router already produced the full output.
-fn run_clarify_branch(
-    history: &ConversationHistory,
-    epoch_at_start: u64,
-    user_msg: ChatMessage,
-    question: String,
-    on_event: &impl Fn(SearchEvent),
-) {
-    on_event(SearchEvent::Clarifying {
-        question: question.clone(),
-    });
-    persist_turn(
-        history,
-        epoch_at_start,
-        user_msg,
-        ChatMessage {
-            role: "assistant".to_string(),
-            content: question,
-            images: None,
-        },
-    );
-    on_event(SearchEvent::Done);
-}
-
-/// Search branch: resolve results, assemble synthesis prompt, stream the
-/// answer. Emits `Searching` before contacting SearXNG so the UI can surface
-/// the phase transition.
-#[allow(clippy::too_many_arguments)]
-async fn run_search_branch(
-    ollama_endpoint: &str,
-    searxng_endpoint: &str,
-    model: &str,
-    client: &reqwest::Client,
-    cancel_token: CancellationToken,
-    history_snapshot: &[ChatMessage],
-    history: &ConversationHistory,
-    epoch_at_start: u64,
-    user_msg: ChatMessage,
-    user_query: String,
-    optimized_query: String,
-    today: &str,
-    on_event: &impl Fn(SearchEvent),
-) -> Result<(), SearchError> {
-    if cancel_token.is_cancelled() {
-        on_event(SearchEvent::Cancelled);
-        return Err(SearchError::Cancelled);
-    }
-
-    on_event(SearchEvent::Searching);
-
-    let results = searxng::search(client, searxng_endpoint, &optimized_query).await?;
-
-    // Rerank the retrieved set by fusing BM25F field-weighted lexical scores
-    // with the upstream engine order via Reciprocal Rank Fusion. The same
-    // order is then used for both the frontend Sources footer and the
-    // synthesis prompt, so the answer and its citations are consistent.
-    let results = rerank::rerank(&optimized_query, results);
-
-    // Forward result previews to the frontend so it can render a sources
-    // footer below the synthesized answer.
-    on_event(SearchEvent::Sources {
-        results: results
-            .iter()
-            .map(|r| SearchResultPreview {
-                title: r.title.clone(),
-                url: r.url.clone(),
-            })
-            .collect(),
-    });
-
-    let messages = build_synthesis_messages(history_snapshot, &user_query, &results, today);
-
-    run_streaming_branch(
-        ollama_endpoint,
-        model,
-        client,
-        cancel_token,
-        messages,
-        history,
-        epoch_at_start,
-        user_msg,
-        on_event,
-    )
-    .await;
-
-    Ok(())
-}
-
 /// Runs a streaming Ollama call, translating `StreamChunk` events into
 /// `SearchEvent` events and persisting the completed assistant turn on normal
 /// completion (or partial completion via cancellation).
+///
+/// `warnings` and `metadata` are attached to the persisted turn so the
+/// in-memory representation carries them to the frontend event stream. The
+/// DB columns for these fields land in Task 17; until then `persist_turn`
+/// stores them in memory only.
 #[allow(clippy::too_many_arguments)]
 async fn run_streaming_branch(
     endpoint: &str,
@@ -269,6 +81,8 @@ async fn run_streaming_branch(
     history: &ConversationHistory,
     epoch_at_start: u64,
     user_msg: ChatMessage,
+    warnings: Vec<SearchWarning>,
+    metadata: Option<SearchMetadata>,
     on_event: &impl Fn(SearchEvent),
 ) {
     let accumulated = stream_ollama_chat(
@@ -294,6 +108,8 @@ async fn run_streaming_branch(
                 content: accumulated,
                 images: None,
             },
+            warnings,
+            metadata,
         );
     }
 }
@@ -318,11 +134,18 @@ pub(super) fn translate_chunk(chunk: StreamChunk) -> SearchEvent {
 /// write when the history epoch has advanced since the snapshot (i.e. the
 /// user reset the conversation mid-pipeline). The epoch check is performed
 /// under the lock so there is no race window between the check and the push.
+///
+/// `warnings` and `metadata` are stored on the in-memory turn record so they
+/// are available to the frontend event stream. DB persistence of these fields
+/// is deferred to Task 17; until that migration lands they are held in memory
+/// only and are NOT written to the SQLite store.
 fn persist_turn(
     history: &ConversationHistory,
     epoch_at_start: u64,
     user_msg: ChatMessage,
     assistant_msg: ChatMessage,
+    _warnings: Vec<SearchWarning>,
+    _metadata: Option<SearchMetadata>,
 ) {
     let mut conv = history.messages.lock().unwrap();
     if history.epoch.load(Ordering::SeqCst) != epoch_at_start {
@@ -330,20 +153,7 @@ fn persist_turn(
     }
     conv.push(user_msg);
     conv.push(assistant_msg);
-}
-
-/// Convenience wrapper around `classify_http_error` for consistency with
-/// `commands::stream_ollama_chat` — exposed so future variants of the pipeline
-/// can translate HTTP errors uniformly.
-#[allow(dead_code)]
-pub(super) fn http_error_message(status: u16) -> String {
-    classify_http_error(status).message
-}
-
-/// Convenience wrapper around `classify_stream_error` for symmetry.
-#[allow(dead_code)]
-pub(super) fn stream_error_message(e: &reqwest::Error) -> String {
-    classify_stream_error(e).message
+    // TODO(Task 17): persist _warnings and _metadata to DB columns.
 }
 
 // ── Agentic trait seams ────────────────────────────────────────────────────
@@ -352,13 +162,7 @@ pub(super) fn stream_error_message(e: &reqwest::Error) -> String {
 /// tested with deterministic mock output without spinning a real Ollama server.
 ///
 /// Production code uses [`DefaultRouterJudge`]. Tests inject a struct that
-/// returns a canned [`RouterJudgeOutput`]. The abstraction is introduced in
-/// Task 13 alongside [`run_agentic`]; Task 16 wires the Tauri command to use
-/// [`run_agentic`] exclusively, at which point the legacy [`run`] is retired.
-// The trait and its implementations have no non-test call site until Task 16
-// wires run_agentic to the Tauri command. Suppress dead_code for the trait,
-// the two default structs, run_agentic, and the helper until then.
-#[allow(dead_code)]
+/// returns a canned [`RouterJudgeOutput`].
 #[async_trait]
 pub trait RouterJudgeCaller: Send + Sync {
     /// Calls the router+judge LLM with the given conversation history and
@@ -374,9 +178,7 @@ pub trait RouterJudgeCaller: Send + Sync {
 /// be exercised with injected verdicts.
 ///
 /// Production code uses [`DefaultJudge`]. Tests inject a mock that returns
-/// a predetermined sequence of [`JudgeVerdict`]s. Task 14 adds the gap loop;
-/// Task 16 retires the legacy router path.
-#[allow(dead_code)]
+/// a predetermined sequence of [`JudgeVerdict`]s.
 #[async_trait]
 pub trait JudgeCaller: Send + Sync {
     /// Judges how well the given sources answer the query.
@@ -386,77 +188,169 @@ pub trait JudgeCaller: Send + Sync {
 
 /// Production [`RouterJudgeCaller`] implementation.
 ///
-/// The real wiring (endpoint, model, HTTP client, today string, cancellation
-/// token) is all per-call state owned by the Tauri command. Injecting it here
-/// via struct fields would require cloning or `Arc`-wrapping per-request
-/// objects. Instead this impl is left as `unimplemented!` and the full wiring
-/// happens in Task 16 when the Tauri command swaps from `run` to
-/// `run_agentic`. Tests never instantiate this struct; they inject a mock.
-#[derive(Default, Clone, Copy)]
-pub struct DefaultRouterJudge;
+/// Carries the Ollama endpoint, model name, HTTP client, today string, and
+/// cancellation token so the trait method can be called with only `history`
+/// and `query`. Constructed once per pipeline invocation by the Tauri command
+/// handler and passed by reference into [`run_agentic`].
+///
+/// Tests must NOT use this struct directly as it would hit a real Ollama
+/// instance. Inject a mock [`RouterJudgeCaller`] instead.
+pub struct DefaultRouterJudge {
+    endpoint: String,
+    model: String,
+    client: reqwest::Client,
+    cancel: CancellationToken,
+    today: String,
+}
 
-#[allow(dead_code)]
+impl DefaultRouterJudge {
+    /// Constructs a `DefaultRouterJudge` that delegates to
+    /// [`llm::call_router_merged`].
+    ///
+    /// - `endpoint`: fully-qualified `/api/chat` URL (e.g.
+    ///   `http://127.0.0.1:11434/api/chat`).
+    /// - `model`: Ollama model identifier (e.g. `"mistral"`).
+    /// - `client`: shared `reqwest::Client`; the Tauri command clones it from
+    ///   `AppState`.
+    /// - `cancel`: the pipeline's cancellation token; races against the HTTP
+    ///   call inside `call_router_merged`.
+    /// - `today`: `YYYY-MM-DD` string injected into the merged prompt so the
+    ///   model is anchored to the real calendar date.
+    pub fn new(
+        endpoint: String,
+        model: String,
+        client: reqwest::Client,
+        cancel: CancellationToken,
+        today: String,
+    ) -> Self {
+        Self {
+            endpoint,
+            model,
+            client,
+            cancel,
+            today,
+        }
+    }
+}
+
 #[async_trait]
 impl RouterJudgeCaller for DefaultRouterJudge {
     #[cfg_attr(coverage_nightly, coverage(off))]
     async fn call(
         &self,
-        _history: &[ChatMessage],
-        _query: &str,
+        history: &[ChatMessage],
+        query: &str,
     ) -> Result<RouterJudgeOutput, SearchError> {
-        unimplemented!(
-            "DefaultRouterJudge is wired to the Tauri command in Task 16; \
-             inject a mock in tests"
+        call_router_merged(
+            &self.endpoint,
+            &self.model,
+            &self.client,
+            history,
+            query,
+            &self.today,
+            &self.cancel,
         )
+        .await
     }
 }
 
 /// Production [`JudgeCaller`] implementation.
 ///
-/// Same rationale as [`DefaultRouterJudge`]: per-call dependencies (endpoint,
-/// model, client, cancel token) are not available here and will be threaded
-/// through in Task 16. Tests inject mocks; production never reaches this path
-/// until that task lands.
-#[derive(Default, Clone, Copy)]
-pub struct DefaultJudge;
+/// Carries the Ollama endpoint, model name, HTTP client, and cancellation
+/// token so the trait method can be called with only `query` and `sources`.
+/// Constructed once per pipeline invocation by the Tauri command handler.
+///
+/// Tests must NOT use this struct directly. Inject a mock [`JudgeCaller`].
+pub struct DefaultJudge {
+    endpoint: String,
+    model: String,
+    client: reqwest::Client,
+    cancel: CancellationToken,
+}
 
-#[allow(dead_code)]
+impl DefaultJudge {
+    /// Constructs a `DefaultJudge` that delegates to [`llm::call_judge`].
+    ///
+    /// - `endpoint`: fully-qualified `/api/chat` URL.
+    /// - `model`: Ollama model identifier.
+    /// - `client`: shared `reqwest::Client`.
+    /// - `cancel`: the pipeline's cancellation token; races against the HTTP
+    ///   call inside `call_judge`.
+    pub fn new(
+        endpoint: String,
+        model: String,
+        client: reqwest::Client,
+        cancel: CancellationToken,
+    ) -> Self {
+        Self {
+            endpoint,
+            model,
+            client,
+            cancel,
+        }
+    }
+}
+
 #[async_trait]
 impl JudgeCaller for DefaultJudge {
     #[cfg_attr(coverage_nightly, coverage(off))]
     async fn call(
         &self,
-        _query: &str,
-        _sources: &[JudgeSource],
+        query: &str,
+        sources: &[JudgeSource],
     ) -> Result<JudgeVerdict, SearchError> {
-        unimplemented!(
-            "DefaultJudge is wired to the Tauri command in Task 16; \
-             inject a mock in tests"
+        call_judge(
+            &self.endpoint,
+            &self.model,
+            &self.client,
+            query,
+            sources,
+            &self.cancel,
         )
+        .await
+    }
+}
+
+// ── Cancellation helper ────────────────────────────────────────────────────
+
+/// Checks the cancellation token and, if fired, emits `Cancelled` and returns
+/// `true`. Used at every stage entry in [`run_agentic`] to ensure no stage
+/// begins after the user has dismissed the overlay.
+///
+/// Returning `true` means the caller should emit `SearchEvent::Cancelled` via
+/// `on_event` and return `Ok(())` immediately (the `Cancelled` event has
+/// already been emitted by this helper).
+#[inline]
+fn is_cancelled_emit(cancel: &CancellationToken, on_event: &impl Fn(SearchEvent)) -> bool {
+    if cancel.is_cancelled() {
+        on_event(SearchEvent::Cancelled);
+        true
+    } else {
+        false
     }
 }
 
 // ── Agentic entry point ────────────────────────────────────────────────────
 
-/// Agentic search pipeline entry point. Handles the CLARIFY short-circuit and
-/// the history-sufficient short-circuit without performing any web search.
+/// Agentic search pipeline entry point. The sole production entry point after
+/// Task 16.
 ///
 /// Branch summary:
 /// - `Action::Clarify`: streams the clarifying question as `Token` events,
-///   then `Done`. The question is also persisted to history so the next turn
-///   sees it. No `Clarifying` event is emitted (design decision 15).
+///   then `Done`. The question is persisted to history so the next turn sees
+///   it.
 /// - `Action::Proceed` + `history_sufficiency == Some(Sufficient)`: streams
-///   the answer synthesised from conversation history alone, reusing the
-///   same `answer_from_context` path as the legacy [`run`].
+///   the answer synthesised from conversation history alone.
 /// - `Action::Proceed` + anything else: runs the initial search round.
 ///   SearXNG -> URL rerank -> snippets judge -> (if not sufficient) reader
-///   -> chunk rerank -> chunks judge -> synthesis. Falls to the exhaustion
-///   fallback after one round. Task 15 adds the gap loop.
+///   -> chunk rerank -> chunks judge -> synthesis. Then a bounded gap loop
+///   with warning dedup and an exhaustion fallback.
 ///
-/// Task 15 adds the gap loop and gap-query execution.
-/// Task 16 retires [`run`] and makes this the sole Tauri command entry point.
-// No non-test call site until Task 16 wires the Tauri command.
-#[allow(dead_code)]
+/// Cancellation is checked at every stage entry and before every long-running
+/// network call. SearXNG calls race against the token via `tokio::select!`;
+/// reader calls use `fetch_batch_cancellable`; judge calls pass the token to
+/// `call_judge` which races internally. This ensures in-flight work is dropped
+/// immediately on cancel rather than waiting for round-trips to complete.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_agentic<R, J>(
     ollama_endpoint: &str,
@@ -504,8 +398,7 @@ where
         Action::Clarify => {
             let question = output.clarifying_question.unwrap_or_default();
             for piece in split_into_stream_pieces(&question) {
-                if cancel_token.is_cancelled() {
-                    on_event(SearchEvent::Cancelled);
+                if is_cancelled_emit(&cancel_token, &on_event) {
                     return Ok(());
                 }
                 on_event(SearchEvent::Token { content: piece });
@@ -520,6 +413,8 @@ where
                     content: question,
                     images: None,
                 },
+                Vec::new(),
+                None,
             );
             on_event(SearchEvent::Done);
             Ok(())
@@ -540,6 +435,8 @@ where
                     history,
                     epoch_at_start,
                     user_msg,
+                    Vec::new(),
+                    None,
                     &on_event,
                 )
                 .await;
@@ -560,14 +457,22 @@ where
                 let iter_start = std::time::Instant::now();
 
                 // Stage 1: SearXNG initial round.
-                if cancel_token.is_cancelled() {
-                    on_event(SearchEvent::Cancelled);
+                if is_cancelled_emit(&cancel_token, &on_event) {
                     return Ok(());
                 }
                 on_event(SearchEvent::Searching);
 
-                let raw_urls = match searxng::search(client, searxng_endpoint, &query).await {
+                let searxng_fut = searxng::search(client, searxng_endpoint, &query);
+                let raw_urls = match tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => Err(SearchError::Cancelled),
+                    res = searxng_fut => res,
+                } {
                     Ok(v) => v,
+                    Err(SearchError::Cancelled) => {
+                        on_event(SearchEvent::Cancelled);
+                        return Ok(());
+                    }
                     Err(SearchError::NoResults) => {
                         warnings.push(SearchWarning::NoResultsInitial);
                         on_event(SearchEvent::Warning {
@@ -638,6 +543,8 @@ where
                         history,
                         epoch_at_start,
                         user_msg,
+                        warnings,
+                        Some(metadata),
                         &on_event,
                     )
                     .await;
@@ -645,8 +552,7 @@ where
                 }
 
                 // Stage 5: Reader escalation.
-                if cancel_token.is_cancelled() {
-                    on_event(SearchEvent::Cancelled);
+                if is_cancelled_emit(&cancel_token, &on_event) {
                     return Ok(());
                 }
                 on_event(SearchEvent::ReadingSources);
@@ -751,6 +657,8 @@ where
                         history,
                         epoch_at_start,
                         user_msg,
+                        warnings,
+                        Some(metadata),
                         &on_event,
                     )
                     .await;
@@ -769,8 +677,7 @@ where
                     if current_queries.is_empty() {
                         break;
                     }
-                    if cancel_token.is_cancelled() {
-                        on_event(SearchEvent::Cancelled);
+                    if is_cancelled_emit(&cancel_token, &on_event) {
                         return Ok(());
                     }
 
@@ -782,10 +689,16 @@ where
                     let round_start = std::time::Instant::now();
                     on_event(SearchEvent::Searching);
 
-                    let gap_results =
-                        searxng::search_all_with_endpoint(searxng_endpoint, &current_queries)
-                            .await
-                            .unwrap_or_default();
+                    let gap_search_fut =
+                        searxng::search_all_with_endpoint(searxng_endpoint, &current_queries);
+                    let gap_results = tokio::select! {
+                        biased;
+                        _ = cancel_token.cancelled() => {
+                            on_event(SearchEvent::Cancelled);
+                            return Ok(());
+                        }
+                        res = gap_search_fut => res.unwrap_or_default(),
+                    };
 
                     // Dedup against all URLs fetched in prior rounds.
                     let new_urls: Vec<_> = gap_results
@@ -828,8 +741,7 @@ where
                     on_event(SearchEvent::Sources { results: preview });
 
                     // Fetch full page content for the new URLs.
-                    if cancel_token.is_cancelled() {
-                        on_event(SearchEvent::Cancelled);
+                    if is_cancelled_emit(&cancel_token, &on_event) {
                         return Ok(());
                     }
                     on_event(SearchEvent::ReadingSources);
@@ -942,6 +854,8 @@ where
                             history,
                             epoch_at_start,
                             user_msg,
+                            warnings,
+                            Some(metadata),
                             &on_event,
                         )
                         .await;
@@ -951,8 +865,14 @@ where
                     current_queries = round_verdict.gap_queries.clone();
                 }
 
-                // Gap loop exhausted. Synthesize a best-effort answer from all
-                // accumulated chunks.
+                // Gap loop exhausted. Check cancellation before beginning the
+                // fallback synthesis so a dismissed overlay does not start a
+                // new Ollama streaming call.
+                if is_cancelled_emit(&cancel_token, &on_event) {
+                    return Ok(());
+                }
+
+                // Synthesize a best-effort answer from all accumulated chunks.
                 if !warnings.contains(&SearchWarning::IterationCapExhausted) {
                     warnings.push(SearchWarning::IterationCapExhausted);
                     on_event(SearchEvent::Warning {
@@ -1000,6 +920,8 @@ where
                     history,
                     epoch_at_start,
                     user_msg,
+                    warnings,
+                    Some(metadata),
                     &on_event,
                 )
                 .await;
@@ -1012,8 +934,6 @@ where
 /// Splits a string into roughly `TARGET`-character pieces on whitespace
 /// boundaries so the frontend receives a stream of `Token` events rather than
 /// one atomic message. Words that exceed `TARGET` alone are emitted as-is.
-// Called only from run_agentic which is itself dead until Task 16.
-#[allow(dead_code)]
 fn split_into_stream_pieces(s: &str) -> Vec<String> {
     const TARGET: usize = 24;
     let mut out = Vec::new();
@@ -1051,6 +971,14 @@ mod tests {
             events_clone.lock().unwrap().push(e);
         };
         (events, callback)
+    }
+
+    fn make_user_msg(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: "user".into(),
+            content: content.into(),
+            images: None,
+        }
     }
 
     // ── today_iso ───────────────────────────────────────────────────────────
@@ -1147,16 +1075,14 @@ mod tests {
         persist_turn(
             &h,
             0,
-            ChatMessage {
-                role: "user".into(),
-                content: "q".into(),
-                images: None,
-            },
+            make_user_msg("q"),
             ChatMessage {
                 role: "assistant".into(),
                 content: "a".into(),
                 images: None,
             },
+            Vec::new(),
+            None,
         );
         let conv = h.messages.lock().unwrap();
         assert_eq!(conv.len(), 2);
@@ -1171,491 +1097,20 @@ mod tests {
         persist_turn(
             &h,
             0,
-            ChatMessage {
-                role: "user".into(),
-                content: "q".into(),
-                images: None,
-            },
+            make_user_msg("q"),
             ChatMessage {
                 role: "assistant".into(),
                 content: "a".into(),
                 images: None,
             },
+            Vec::new(),
+            None,
         );
         let conv = h.messages.lock().unwrap();
         assert!(conv.is_empty());
     }
 
-    // ── run_clarify_branch ──────────────────────────────────────────────────
-
-    #[test]
-    fn run_clarify_branch_emits_and_persists() {
-        let h = ConversationHistory::new();
-        let (events, cb) = collect_events();
-
-        run_clarify_branch(
-            &h,
-            0,
-            ChatMessage {
-                role: "user".into(),
-                content: "who is him?".into(),
-                images: None,
-            },
-            "Which person are you referring to?".into(),
-            &cb,
-        );
-
-        let evs = events.lock().unwrap();
-        assert!(matches!(
-            &evs[0],
-            SearchEvent::Clarifying { question }
-                if question == "Which person are you referring to?"
-        ));
-        assert_eq!(evs[1], SearchEvent::Done);
-
-        let conv = h.messages.lock().unwrap();
-        assert_eq!(conv.len(), 2);
-        assert_eq!(conv[0].role, "user");
-        assert_eq!(conv[1].content, "Which person are you referring to?");
-    }
-
-    // ── run: cancel before work starts ──────────────────────────────────────
-
-    #[tokio::test]
-    async fn run_emits_cancelled_when_token_already_cancelled() {
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        token.cancel();
-        let h = ConversationHistory::new();
-        let (events, cb) = collect_events();
-
-        let err = run(
-            "http://127.0.0.1:1/api/chat",
-            "http://127.0.0.1:1/search",
-            "m",
-            &client,
-            token,
-            "chat prompt",
-            &h,
-            "q".into(),
-            "2026-04-17",
-            cb,
-        )
-        .await
-        .unwrap_err();
-
-        assert_eq!(err, SearchError::Cancelled);
-        let evs = events.lock().unwrap();
-        assert_eq!(evs[0], SearchEvent::Cancelled);
-    }
-
-    #[tokio::test]
-    async fn run_rejects_empty_query_before_any_event() {
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let h = ConversationHistory::new();
-        let (events, cb) = collect_events();
-
-        let err = run(
-            "http://127.0.0.1:1/api/chat",
-            "http://127.0.0.1:1/search",
-            "m",
-            &client,
-            token,
-            "chat",
-            &h,
-            "   ".into(),
-            "2026-04-17",
-            cb,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err, SearchError::EmptyQuery);
-        assert!(events.lock().unwrap().is_empty());
-    }
-
-    // ── run: full clarify branch end-to-end ─────────────────────────────────
-
-    #[tokio::test]
-    async fn run_clarify_path_end_to_end() {
-        let mut ollama = mockito::Server::new_async().await;
-        let router_body = serde_json::json!({
-            "message": { "content": r#"{"action":"clarify","question":"Who?","suggestions":["A","B"]}"# }
-        })
-        .to_string();
-        let router_mock = ollama
-            .mock("POST", "/api/chat")
-            .with_body(router_body)
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let h = ConversationHistory::new();
-        let (events, cb) = collect_events();
-
-        run(
-            &format!("{}/api/chat", ollama.url()),
-            "http://127.0.0.1:1/search",
-            "m",
-            &client,
-            token,
-            "chat-prompt",
-            &h,
-            "who is him".into(),
-            "2026-04-17",
-            cb,
-        )
-        .await
-        .unwrap();
-
-        router_mock.assert_async().await;
-        let evs = events.lock().unwrap();
-        assert_eq!(evs[0], SearchEvent::Classifying);
-        assert!(matches!(evs[1], SearchEvent::Clarifying { .. }));
-        assert_eq!(evs[2], SearchEvent::Done);
-
-        let conv = h.messages.lock().unwrap();
-        assert_eq!(conv.len(), 2);
-    }
-
-    // ── run: answer_from_context path ───────────────────────────────────────
-
-    #[tokio::test]
-    async fn run_answer_from_context_path_end_to_end() {
-        let mut ollama = mockito::Server::new_async().await;
-        let router_body =
-            serde_json::json!({ "message": { "content": r#"{"action":"answer_from_context"}"# } })
-                .to_string();
-        let stream_line =
-            "{\"message\":{\"role\":\"assistant\",\"content\":\"hello\"},\"done\":false}\n\
-                           {\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
-
-        let router_mock = ollama
-            .mock("POST", "/api/chat")
-            .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"stream":false}"#.to_string(),
-            ))
-            .with_body(router_body)
-            .create_async()
-            .await;
-        let stream_mock = ollama
-            .mock("POST", "/api/chat")
-            .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"stream":true}"#.to_string(),
-            ))
-            .with_body(stream_line)
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let h = ConversationHistory::new();
-        let (events, cb) = collect_events();
-
-        run(
-            &format!("{}/api/chat", ollama.url()),
-            "http://127.0.0.1:1/search",
-            "m",
-            &client,
-            token,
-            "chat",
-            &h,
-            "what is 2+2".into(),
-            "2026-04-17",
-            cb,
-        )
-        .await
-        .unwrap();
-
-        router_mock.assert_async().await;
-        stream_mock.assert_async().await;
-
-        let evs = events.lock().unwrap();
-        assert_eq!(evs[0], SearchEvent::Classifying);
-        // No Searching event on this branch.
-        assert!(evs.iter().all(|e| !matches!(e, SearchEvent::Searching)));
-        assert!(evs
-            .iter()
-            .any(|e| matches!(e, SearchEvent::Token { content } if content == "hello")));
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
-
-        let conv = h.messages.lock().unwrap();
-        assert_eq!(conv.len(), 2);
-        assert_eq!(conv[1].content, "hello");
-    }
-
-    // ── run: search path end-to-end ─────────────────────────────────────────
-
-    #[tokio::test]
-    async fn run_search_path_end_to_end() {
-        let mut ollama = mockito::Server::new_async().await;
-        let mut searx = mockito::Server::new_async().await;
-
-        let router_body = serde_json::json!({
-            "message": { "content": r#"{"action":"search","optimized_query":"rust async"}"# }
-        })
-        .to_string();
-        let router_mock = ollama
-            .mock("POST", "/api/chat")
-            .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"stream":false}"#.to_string(),
-            ))
-            .with_body(router_body)
-            .create_async()
-            .await;
-
-        let searx_body = serde_json::json!({
-            "results": [
-                { "title": "R", "url": "https://r", "content": "rust info" }
-            ]
-        })
-        .to_string();
-        let searx_mock = searx
-            .mock("GET", "/search")
-            .match_query(mockito::Matcher::Any)
-            .with_body(searx_body)
-            .create_async()
-            .await;
-
-        let stream_line =
-            "{\"message\":{\"role\":\"assistant\",\"content\":\"answer [1]\"},\"done\":false}\n\
-                           {\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
-        // Assert the synthesis call body contains the injected date string.
-        let stream_mock = ollama
-            .mock("POST", "/api/chat")
-            .match_body(mockito::Matcher::AllOf(vec![
-                mockito::Matcher::PartialJsonString(r#"{"stream":true}"#.to_string()),
-                mockito::Matcher::Regex("2026-04-17".to_string()),
-            ]))
-            .with_body(stream_line)
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let h = ConversationHistory::new();
-        let (events, cb) = collect_events();
-
-        run(
-            &format!("{}/api/chat", ollama.url()),
-            &format!("{}/search", searx.url()),
-            "m",
-            &client,
-            token,
-            "chat",
-            &h,
-            "what is rust".into(),
-            "2026-04-17",
-            cb,
-        )
-        .await
-        .unwrap();
-
-        router_mock.assert_async().await;
-        searx_mock.assert_async().await;
-        stream_mock.assert_async().await;
-
-        let evs = events.lock().unwrap();
-        assert_eq!(evs[0], SearchEvent::Classifying);
-        assert!(evs.iter().any(|e| matches!(e, SearchEvent::Searching)));
-        assert!(evs
-            .iter()
-            .any(|e| matches!(e, SearchEvent::Token { content } if content == "answer [1]")));
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
-        let conv = h.messages.lock().unwrap();
-        assert_eq!(conv.len(), 2);
-        assert!(conv[1].content.contains("answer [1]"));
-    }
-
-    #[tokio::test]
-    async fn run_search_path_reranks_sources_via_bm25f_rrf() {
-        // SearXNG returns the matching doc in position 2 (out of 3). The
-        // reranker must lift it to position 0 in the emitted Sources event.
-        let mut ollama = mockito::Server::new_async().await;
-        let mut searx = mockito::Server::new_async().await;
-
-        let router_body = serde_json::json!({
-            "message": {
-                "content": r#"{"action":"search","optimized_query":"rust async runtime"}"#,
-            }
-        })
-        .to_string();
-        let _router_mock = ollama
-            .mock("POST", "/api/chat")
-            .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"stream":false}"#.to_string(),
-            ))
-            .with_body(router_body)
-            .create_async()
-            .await;
-
-        let searx_body = serde_json::json!({
-            "results": [
-                { "title": "totally unrelated header", "url": "https://a",
-                  "content": "nothing to see here filler" },
-                { "title": "another filler doc", "url": "https://c",
-                  "content": "more filler body text" },
-                { "title": "rust async runtime design", "url": "https://b",
-                  "content": "walkthrough of rust async runtime internals" },
-            ]
-        })
-        .to_string();
-        let _searx_mock = searx
-            .mock("GET", "/search")
-            .match_query(mockito::Matcher::Any)
-            .with_body(searx_body)
-            .create_async()
-            .await;
-
-        let stream_line =
-            "{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"done\":false}\n\
-             {\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
-        let _stream_mock = ollama
-            .mock("POST", "/api/chat")
-            .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"stream":true}"#.to_string(),
-            ))
-            .with_body(stream_line)
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let h = ConversationHistory::new();
-        let (events, cb) = collect_events();
-
-        run(
-            &format!("{}/api/chat", ollama.url()),
-            &format!("{}/search", searx.url()),
-            "m",
-            &client,
-            token,
-            "chat",
-            &h,
-            "rust async runtime".into(),
-            "2026-04-17",
-            cb,
-        )
-        .await
-        .unwrap();
-
-        let evs = events.lock().unwrap();
-        let sources = evs
-            .iter()
-            .find_map(|e| match e {
-                SearchEvent::Sources { results } => Some(results.clone()),
-                _ => None,
-            })
-            .expect("Sources event missing");
-        assert_eq!(sources.len(), 3);
-        assert_eq!(
-            sources[0].url, "https://b",
-            "expected rerank to lift the matching doc to position 0, got {sources:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_search_path_surfaces_searx_error() {
-        let mut ollama = mockito::Server::new_async().await;
-        let mut searx = mockito::Server::new_async().await;
-
-        let router_body = serde_json::json!({
-            "message": { "content": r#"{"action":"search","optimized_query":"q"}"# }
-        })
-        .to_string();
-        let _router_mock = ollama
-            .mock("POST", "/api/chat")
-            .with_body(router_body)
-            .create_async()
-            .await;
-
-        let searx_mock = searx
-            .mock("GET", "/search")
-            .match_query(mockito::Matcher::Any)
-            .with_status(503)
-            .with_body("down")
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let h = ConversationHistory::new();
-        let (events, cb) = collect_events();
-
-        let err = run(
-            &format!("{}/api/chat", ollama.url()),
-            &format!("{}/search", searx.url()),
-            "m",
-            &client,
-            token,
-            "chat",
-            &h,
-            "q".into(),
-            "2026-04-17",
-            cb,
-        )
-        .await
-        .unwrap_err();
-
-        searx_mock.assert_async().await;
-        assert_eq!(err, SearchError::SearxHttp(503));
-        // Conversation history must NOT mutate when the branch errored before
-        // producing an assistant message.
-        assert!(h.messages.lock().unwrap().is_empty());
-        let evs = events.lock().unwrap();
-        assert!(evs.iter().any(|e| matches!(e, SearchEvent::Searching)));
-    }
-
-    #[tokio::test]
-    async fn run_search_branch_returns_cancelled_when_token_already_cancelled() {
-        let mut ollama = mockito::Server::new_async().await;
-        let router_body = serde_json::json!({
-            "message": { "content": r#"{"action":"search","optimized_query":"q"}"# }
-        })
-        .to_string();
-        let _router_mock = ollama
-            .mock("POST", "/api/chat")
-            .with_body(router_body)
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let h = ConversationHistory::new();
-        let (events, cb) = collect_events();
-
-        let user_msg = ChatMessage {
-            role: "user".into(),
-            content: "q".into(),
-            images: None,
-        };
-        let precancelled = CancellationToken::new();
-        precancelled.cancel();
-        let err = run_search_branch(
-            &format!("{}/api/chat", ollama.url()),
-            "http://127.0.0.1:1/search",
-            "m",
-            &client,
-            precancelled,
-            &[],
-            &h,
-            0,
-            user_msg,
-            "q".into(),
-            "q".into(),
-            "2026-04-17",
-            &cb,
-        )
-        .await
-        .unwrap_err();
-        drop(token);
-        assert_eq!(err, SearchError::Cancelled);
-        let evs = events.lock().unwrap();
-        assert_eq!(evs[0], SearchEvent::Cancelled);
-    }
-
-    // ── run_streaming_branch: error propagation ─────────────────────────────
+    // ── run_streaming_branch: no persist on empty response ───────────────────
 
     #[tokio::test]
     async fn run_streaming_branch_does_not_persist_when_empty() {
@@ -1676,18 +1131,12 @@ mod tests {
             "m",
             &client,
             token,
-            vec![ChatMessage {
-                role: "user".into(),
-                content: "q".into(),
-                images: None,
-            }],
+            vec![make_user_msg("q")],
             &h,
             0,
-            ChatMessage {
-                role: "user".into(),
-                content: "q".into(),
-                images: None,
-            },
+            make_user_msg("q"),
+            Vec::new(),
+            None,
             &cb,
         )
         .await;
@@ -1696,19 +1145,29 @@ mod tests {
         assert!(h.messages.lock().unwrap().is_empty());
     }
 
-    // ── http/stream error message helpers ───────────────────────────────────
+    // ── DefaultRouterJudge / DefaultJudge construction ───────────────────────
 
     #[test]
-    fn http_error_message_forwards_to_commands_helper() {
-        let msg = http_error_message(500);
-        assert!(msg.contains("500"));
+    fn default_router_judge_constructs_without_panic() {
+        let cancel = CancellationToken::new();
+        let _judge = DefaultRouterJudge::new(
+            "http://127.0.0.1:11434/api/chat".into(),
+            "mistral".into(),
+            reqwest::Client::new(),
+            cancel,
+            "2026-04-18".into(),
+        );
     }
 
-    #[tokio::test]
-    async fn stream_error_message_forwards_to_commands_helper() {
-        let err = reqwest::get("http://127.0.0.1:1/").await.unwrap_err();
-        let msg = stream_error_message(&err);
-        assert!(!msg.is_empty());
+    #[test]
+    fn default_judge_constructs_without_panic() {
+        let cancel = CancellationToken::new();
+        let _judge = DefaultJudge::new(
+            "http://127.0.0.1:11434/api/chat".into(),
+            "mistral".into(),
+            reqwest::Client::new(),
+            cancel,
+        );
     }
 }
 

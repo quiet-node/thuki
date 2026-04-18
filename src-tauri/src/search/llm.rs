@@ -1,14 +1,10 @@
 //! LLM operations for the `/search` pipeline.
 //!
-//! Three concerns live here:
-//! 1. The non-streaming **router call** that classifies the user's query into
-//!    a [`RouterDecision`]. Uses Ollama's `format: "json"` mode with a
-//!    deterministic sampling profile so the output is strictly parseable.
-//! 2. The **merged router+judge call** (`call_router_merged`) and the
-//!    **universal sufficiency judge call** (`call_judge`), added for the v3
-//!    agentic pipeline. Task 13 swaps the pipeline call site from
-//!    `call_router` to `call_router_merged`; Task 16 retires the legacy path.
-//! 3. Prompt-assembly helpers that produce the message array fed to the
+//! Two concerns live here:
+//! 1. The **merged router+judge call** (`call_router_merged`) and the
+//!    **universal sufficiency judge call** (`call_judge`) used by the agentic
+//!    pipeline via the [`RouterJudgeCaller`] and [`JudgeCaller`] traits.
+//! 2. Prompt-assembly helpers that produce the message array fed to the
 //!    streaming answer stage (either `answer_from_context` or `search`).
 //!
 //! All functions are pure with respect to external state (no globals, no
@@ -20,31 +16,19 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::ChatMessage;
 
-use super::types::{JudgeVerdict, RouterDecision, RouterJudgeOutput, SearchError, SearxResult};
-
-/// Router system prompt: instructs the classifier LLM on the allowed actions
-/// and their JSON output shapes.
-pub const ROUTER_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_router.txt");
+use super::types::{JudgeVerdict, RouterJudgeOutput, SearchError, SearxResult};
 
 /// Synthesis system prompt: instructs the answering LLM to cite sources and
 /// avoid meta-commentary over the reference material.
 pub const SYNTHESIS_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_synthesis.txt");
 
 /// System prompt for the universal sufficiency judge. Used by the pre-synthesis
-/// judge call over snippets and over reader chunks. Consumed by
-/// [`call_judge`] introduced in Task 11.
-// The constant is used inside `call_judge` which itself has no non-test call
-// site until Task 13 wires it; suppress the transitive dead-code warning.
-#[allow(dead_code)]
+/// judge call over snippets and over reader chunks.
 pub const JUDGE_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_judge.txt");
 
-/// New merged router+judge prompt. Instructs the model to emit a single JSON
+/// Merged router+judge prompt. Instructs the model to emit a single JSON
 /// object covering both routing classification and history-sufficiency
-/// assessment. Added alongside `ROUTER_SYSTEM_PROMPT`; the pipeline swaps to
-/// this one in Task 13.
-// Consumed by `call_router_merged`; suppress the dead-code warning until
-// Task 13 wires it into the pipeline call site.
-#[allow(dead_code)]
+/// assessment.
 pub const ROUTER_MERGED_SYSTEM_PROMPT: &str =
     include_str!("../../prompts/search_router_merged.txt");
 
@@ -66,8 +50,6 @@ pub const ROUTER_MAX_TOKENS: i32 = 512;
 /// Free-standing so the pipeline can construct instances from whichever source
 /// stage is currently active without depending on internal snippet or chunk
 /// types.
-// No non-test call site until Task 14 builds the initial retrieval round.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct JudgeSource {
     /// Display title of the source document.
@@ -167,48 +149,6 @@ async fn request_json(
     Ok(parsed.message.content)
 }
 
-// ─── Router call ────────────────────────────────────────────────────────────
-
-/// Runs the classifier LLM call against Ollama's `/api/chat` endpoint with
-/// `format: "json"` and deterministic sampling, returning a parsed
-/// [`RouterDecision`].
-///
-/// Races the request against `cancel_token`; cancellation drops the HTTP
-/// connection and returns [`SearchError::Cancelled`] without waiting for the
-/// model to finish.
-///
-/// # Errors
-/// - [`SearchError::Cancelled`] — token cancelled before or during the request.
-/// - [`SearchError::LlmUnavailable`] — transport failure.
-/// - [`SearchError::LlmHttp`] — non-2xx status from Ollama.
-/// - [`SearchError::LlmBadJson`] — response body could not be decoded, or the
-///   inner `message.content` was not a valid `RouterDecision`.
-pub async fn call_router(
-    endpoint: &str,
-    model: &str,
-    client: &reqwest::Client,
-    history: &[ChatMessage],
-    query: &str,
-    cancel_token: &CancellationToken,
-) -> Result<RouterDecision, SearchError> {
-    if cancel_token.is_cancelled() {
-        return Err(SearchError::Cancelled);
-    }
-
-    let messages = build_router_messages(history, query);
-    let raw = request_json(
-        endpoint,
-        model,
-        client,
-        messages,
-        cancel_token,
-        ROUTER_TIMEOUT_SECS,
-    )
-    .await?;
-
-    serde_json::from_str::<RouterDecision>(raw.trim()).map_err(|_| SearchError::LlmBadJson)
-}
-
 // ─── Merged router+judge call ────────────────────────────────────────────────
 
 /// Merged router+judge call that returns [`RouterJudgeOutput`] in a single
@@ -229,8 +169,6 @@ pub async fn call_router(
 /// - [`SearchError::LlmHttp`] — non-2xx status from Ollama.
 /// - [`SearchError::Router`] — no JSON object in the response, or the JSON
 ///   did not match [`RouterJudgeOutput`].
-// Suppress dead-code lint until Task 13 swaps the pipeline call site.
-#[allow(dead_code)]
 pub async fn call_router_merged(
     endpoint: &str,
     model: &str,
@@ -282,8 +220,6 @@ pub async fn call_router_merged(
 /// - [`SearchError::LlmHttp`] — non-2xx status from Ollama.
 /// - [`SearchError::Judge`] — no JSON in the response, or the JSON did not
 ///   match [`JudgeVerdict`].
-// Suppress dead-code lint until Task 14 wires the initial retrieval round.
-#[allow(dead_code)]
 pub async fn call_judge(
     endpoint: &str,
     model: &str,
@@ -331,8 +267,6 @@ pub async fn call_judge(
 /// Builds the user-turn message for a judge call. Formats the question and
 /// numbered source list so the model can assess coverage without seeing any
 /// system metadata.
-// Private; used only by `call_judge` which is itself dead until Task 14.
-#[allow(dead_code)]
 fn build_judge_user_message(query: &str, sources: &[JudgeSource]) -> String {
     let text_len: usize = sources.iter().map(|s| s.text.len()).sum();
     let mut s = String::with_capacity(256 + text_len);
@@ -352,8 +286,8 @@ fn build_judge_user_message(query: &str, sources: &[JudgeSource]) -> String {
 }
 
 /// Builds a message array of the form `[system, ...history, user]` using the
-/// supplied `system` prompt string. Shared by [`build_router_messages`] and
-/// [`call_router_merged`].
+/// supplied `system` prompt string. Used by [`call_router_merged`] and
+/// related prompt-assembly helpers.
 fn build_messages_with_system(
     system: &str,
     history: &[ChatMessage],
@@ -372,13 +306,6 @@ fn build_messages_with_system(
         images: None,
     });
     msgs
-}
-
-/// Builds the router message array: `[system, ...history, user]`. The router
-/// operates on the same conversation history the chat pipeline uses so it can
-/// resolve pronouns ("him", "it") against earlier turns.
-fn build_router_messages(history: &[ChatMessage], query: &str) -> Vec<ChatMessage> {
-    build_messages_with_system(ROUTER_SYSTEM_PROMPT, history, query)
 }
 
 // ─── Synthesis prompt assembly ──────────────────────────────────────────────
@@ -472,30 +399,6 @@ mod tests {
             content: content.to_string(),
             images: None,
         }
-    }
-
-    // ── build_router_messages ───────────────────────────────────────────────
-
-    #[test]
-    fn build_router_messages_prepends_system_and_appends_user() {
-        let history = vec![mk_msg("user", "hi"), mk_msg("assistant", "hello")];
-        let msgs = build_router_messages(&history, "who is him?");
-        assert_eq!(msgs.len(), 4);
-        assert_eq!(msgs[0].role, "system");
-        assert!(msgs[0].content.contains("search routing classifier"));
-        assert_eq!(msgs[1].role, "user");
-        assert_eq!(msgs[1].content, "hi");
-        assert_eq!(msgs[2].role, "assistant");
-        assert_eq!(msgs[3].role, "user");
-        assert_eq!(msgs[3].content, "who is him?");
-    }
-
-    #[test]
-    fn build_router_messages_with_empty_history() {
-        let msgs = build_router_messages(&[], "q");
-        assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].role, "system");
-        assert_eq!(msgs[1].role, "user");
     }
 
     // ── build_synthesis_messages ────────────────────────────────────────────
@@ -613,248 +516,6 @@ mod tests {
         assert_eq!(msgs.len(), 4);
         assert_eq!(msgs[1].content, "prev");
         assert_eq!(msgs[3].content, "q");
-    }
-
-    // ── call_router ─────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn call_router_parses_clarify_response() {
-        let mut server = mockito::Server::new_async().await;
-        let inner = r#"{"action":"clarify","question":"Who are you referring to? Give me a name or some context."}"#;
-        let body = serde_json::json!({ "message": { "content": inner } }).to_string();
-        let mock = server
-            .mock("POST", "/api/chat")
-            .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"stream":false,"format":"json"}"#.to_string(),
-            ))
-            .with_body(body)
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let decision = call_router(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            &client,
-            &[],
-            "q",
-            &token,
-        )
-        .await
-        .unwrap();
-        mock.assert_async().await;
-        assert_eq!(
-            decision,
-            RouterDecision::Clarify {
-                question: "Who are you referring to? Give me a name or some context.".into(),
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn call_router_parses_answer_from_context() {
-        let mut server = mockito::Server::new_async().await;
-        let body = serde_json::json!({
-            "message": { "content": r#"{"action":"answer_from_context"}"# }
-        })
-        .to_string();
-        let mock = server
-            .mock("POST", "/api/chat")
-            .with_body(body)
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let decision = call_router(
-            &format!("{}/api/chat", server.url()),
-            "m",
-            &client,
-            &[],
-            "q",
-            &token,
-        )
-        .await
-        .unwrap();
-        mock.assert_async().await;
-        assert_eq!(decision, RouterDecision::AnswerFromContext);
-    }
-
-    #[tokio::test]
-    async fn call_router_parses_search() {
-        let mut server = mockito::Server::new_async().await;
-        let body = serde_json::json!({
-            "message": { "content": r#"{"action":"search","optimized_query":"rust"}"# }
-        })
-        .to_string();
-        let mock = server
-            .mock("POST", "/api/chat")
-            .with_body(body)
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let decision = call_router(
-            &format!("{}/api/chat", server.url()),
-            "m",
-            &client,
-            &[],
-            "q",
-            &token,
-        )
-        .await
-        .unwrap();
-        mock.assert_async().await;
-        assert_eq!(
-            decision,
-            RouterDecision::Search {
-                optimized_query: "rust".into(),
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn call_router_returns_cancelled_when_token_already_cancelled() {
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        token.cancel();
-        let err = call_router(
-            "http://127.0.0.1:1/api/chat",
-            "m",
-            &client,
-            &[],
-            "q",
-            &token,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err, SearchError::Cancelled);
-    }
-
-    #[tokio::test]
-    async fn call_router_maps_transport_failure_to_unavailable() {
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let err = call_router(
-            "http://127.0.0.1:1/api/chat",
-            "m",
-            &client,
-            &[],
-            "q",
-            &token,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err, SearchError::LlmUnavailable);
-    }
-
-    #[tokio::test]
-    async fn call_router_maps_http_error_to_llm_http() {
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/api/chat")
-            .with_status(500)
-            .with_body("boom")
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let err = call_router(
-            &format!("{}/api/chat", server.url()),
-            "m",
-            &client,
-            &[],
-            "q",
-            &token,
-        )
-        .await
-        .unwrap_err();
-        mock.assert_async().await;
-        assert_eq!(err, SearchError::LlmHttp(500));
-    }
-
-    #[tokio::test]
-    async fn call_router_maps_undecodable_body_to_bad_json() {
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/api/chat")
-            .with_body("not json")
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let err = call_router(
-            &format!("{}/api/chat", server.url()),
-            "m",
-            &client,
-            &[],
-            "q",
-            &token,
-        )
-        .await
-        .unwrap_err();
-        mock.assert_async().await;
-        assert_eq!(err, SearchError::LlmBadJson);
-    }
-
-    #[tokio::test]
-    async fn call_router_maps_inner_non_router_json_to_bad_json() {
-        let mut server = mockito::Server::new_async().await;
-        let body =
-            serde_json::json!({ "message": { "content": r#"{"random":"shape"}"# } }).to_string();
-        let mock = server
-            .mock("POST", "/api/chat")
-            .with_body(body)
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let err = call_router(
-            &format!("{}/api/chat", server.url()),
-            "m",
-            &client,
-            &[],
-            "q",
-            &token,
-        )
-        .await
-        .unwrap_err();
-        mock.assert_async().await;
-        assert_eq!(err, SearchError::LlmBadJson);
-    }
-
-    #[tokio::test]
-    async fn call_router_trims_whitespace_around_inner_json() {
-        let mut server = mockito::Server::new_async().await;
-        let body = serde_json::json!({
-            "message": { "content": "  \n{\"action\":\"answer_from_context\"}\n  " }
-        })
-        .to_string();
-        let mock = server
-            .mock("POST", "/api/chat")
-            .with_body(body)
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let decision = call_router(
-            &format!("{}/api/chat", server.url()),
-            "m",
-            &client,
-            &[],
-            "q",
-            &token,
-        )
-        .await
-        .unwrap();
-        mock.assert_async().await;
-        assert_eq!(decision, RouterDecision::AnswerFromContext);
     }
 }
 
