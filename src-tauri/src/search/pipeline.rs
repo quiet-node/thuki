@@ -67,10 +67,9 @@ fn snapshot_history(history: &ConversationHistory) -> (u64, Vec<ChatMessage>) {
 /// `SearchEvent` events and persisting the completed assistant turn on normal
 /// completion (or partial completion via cancellation).
 ///
-/// `warnings` and `metadata` are attached to the persisted turn so the
-/// in-memory representation carries them to the frontend event stream. The
-/// DB columns for these fields land in Task 17; until then `persist_turn`
-/// stores them in memory only.
+/// `warnings` and `metadata` are forwarded to `persist_turn`; the DB columns
+/// for these fields were added in Task 17. The frontend serializes and passes
+/// them back via `persist_message` when saving the turn.
 #[allow(clippy::too_many_arguments)]
 async fn run_streaming_branch(
     endpoint: &str,
@@ -135,25 +134,28 @@ pub(super) fn translate_chunk(chunk: StreamChunk) -> SearchEvent {
 /// user reset the conversation mid-pipeline). The epoch check is performed
 /// under the lock so there is no race window between the check and the push.
 ///
-/// `warnings` and `metadata` are stored on the in-memory turn record so they
-/// are available to the frontend event stream. DB persistence of these fields
-/// is deferred to Task 17; until that migration lands they are held in memory
-/// only and are NOT written to the SQLite store.
+/// `warnings` and `metadata` are accepted but not written to SQLite here:
+/// the pipeline has no DB connection. They are available to the frontend via
+/// the `search_warnings` and `search_metadata` fields added to
+/// `SaveMessagePayload` in Task 17. The frontend passes them back when it
+/// calls `persist_message` at the end of the turn.
 fn persist_turn(
     history: &ConversationHistory,
     epoch_at_start: u64,
     user_msg: ChatMessage,
     assistant_msg: ChatMessage,
-    _warnings: Vec<SearchWarning>,
-    _metadata: Option<SearchMetadata>,
+    warnings: Vec<SearchWarning>,
+    metadata: Option<SearchMetadata>,
 ) {
+    // Acknowledge the parameters so clippy does not flag them as unused.
+    // The values are serialized by the frontend when it calls persist_message.
+    let _ = (warnings, metadata);
     let mut conv = history.messages.lock().unwrap();
     if history.epoch.load(Ordering::SeqCst) != epoch_at_start {
         return;
     }
     conv.push(user_msg);
     conv.push(assistant_msg);
-    // TODO(Task 17): persist _warnings and _metadata to DB columns.
 }
 
 // ── Agentic trait seams ────────────────────────────────────────────────────

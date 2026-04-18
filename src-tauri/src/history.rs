@@ -40,6 +40,12 @@ pub struct SaveMessagePayload {
     /// Sources footer for `/search` assistant messages. Serialised to JSON
     /// before hitting the `messages.search_sources` column.
     pub search_sources: Option<Vec<SaveSearchSource>>,
+    /// Already-serialised `Vec<SearchWarning>` JSON string for search turns.
+    /// Passed through verbatim to `messages.search_warnings`.
+    pub search_warnings: Option<String>,
+    /// Already-serialised `SearchMetadata` JSON string for search turns.
+    /// Passed through verbatim to `messages.search_metadata`.
+    pub search_metadata: Option<String>,
 }
 
 /// Response returned when saving a conversation.
@@ -99,6 +105,8 @@ pub fn save_conversation(
                 image_json,
                 m.thinking_content,
                 sources_json,
+                m.search_warnings,
+                m.search_metadata,
             )
         })
         .collect();
@@ -120,6 +128,8 @@ pub fn persist_message(
     image_paths: Option<Vec<String>>,
     thinking_content: Option<String>,
     search_sources: Option<Vec<SaveSearchSource>>,
+    search_warnings: Option<String>,
+    search_metadata: Option<String>,
     db: State<'_, Database>,
 ) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -138,6 +148,8 @@ pub fn persist_message(
         image_json.as_deref(),
         thinking_content.as_deref(),
         sources_json.as_deref(),
+        search_warnings.as_deref(),
+        search_metadata.as_deref(),
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -325,6 +337,8 @@ mod tests {
                 image_paths: Some(vec!["/tmp/img.jpg".to_string()]),
                 thinking_content: None,
                 search_sources: None,
+                search_warnings: None,
+                search_metadata: None,
             },
             SaveMessagePayload {
                 role: "assistant".to_string(),
@@ -342,6 +356,10 @@ mod tests {
                         url: "https://tokio.rs".into(),
                     },
                 ]),
+                search_warnings: Some(r#"["reader_unavailable"]"#.to_string()),
+                search_metadata: Some(
+                    r#"{"iterations":[],"total_duration_ms":10,"retries_performed":0}"#.to_string(),
+                ),
             },
         ];
 
@@ -375,6 +393,8 @@ mod tests {
                     image_json,
                     m.thinking_content,
                     sources_json,
+                    m.search_warnings,
+                    m.search_metadata,
                 )
             })
             .collect();
@@ -401,6 +421,17 @@ mod tests {
         let sources_json = loaded[1].search_sources.as_deref().unwrap();
         assert!(sources_json.contains("Rust docs"));
         assert!(sources_json.contains("https://tokio.rs"));
+        assert_eq!(
+            loaded[1].search_warnings.as_deref(),
+            Some(r#"["reader_unavailable"]"#)
+        );
+        assert!(loaded[1]
+            .search_metadata
+            .as_deref()
+            .unwrap()
+            .contains("total_duration_ms"));
+        assert!(loaded[0].search_warnings.is_none());
+        assert!(loaded[0].search_metadata.is_none());
     }
 
     #[test]
