@@ -1338,7 +1338,7 @@ describe('AskBarView', () => {
       );
       const options = screen.getAllByRole('option');
       fireEvent.mouseDown(options[0]);
-      expect(setQuery).toHaveBeenCalledWith('/screen ');
+      expect(setQuery).toHaveBeenCalledWith('/search ');
     });
 
     it('Tab does nothing when suggestions are not shown', () => {

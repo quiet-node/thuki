@@ -19,6 +19,16 @@ use crate::database;
 /// Thread-safe wrapper around the SQLite connection.
 pub struct Database(pub Mutex<Connection>);
 
+/// A single search result source preview sent by the frontend when saving
+/// an assistant message that was produced through the `/search` pipeline.
+/// Matches the Rust `SearchResultPreview` and frontend `SearchResultPreview`
+/// shape; kept as its own struct here to avoid a cross-module dependency.
+#[derive(Clone, Deserialize, Serialize)]
+pub struct SaveSearchSource {
+    pub title: String,
+    pub url: String,
+}
+
 /// Message payload sent from the frontend when saving a conversation.
 #[derive(Deserialize)]
 pub struct SaveMessagePayload {
@@ -27,6 +37,9 @@ pub struct SaveMessagePayload {
     pub quoted_text: Option<String>,
     pub image_paths: Option<Vec<String>>,
     pub thinking_content: Option<String>,
+    /// Sources footer for `/search` assistant messages. Serialised to JSON
+    /// before hitting the `messages.search_sources` column.
+    pub search_sources: Option<Vec<SaveSearchSource>>,
 }
 
 /// Response returned when saving a conversation.
@@ -75,12 +88,17 @@ pub fn save_conversation(
             let image_json = m.image_paths.filter(|v| !v.is_empty()).map(|v| {
                 serde_json::to_string(&v).expect("Vec<String> serialization is infallible")
             });
+            let sources_json = m.search_sources.filter(|v| !v.is_empty()).map(|v| {
+                serde_json::to_string(&v)
+                    .expect("Vec<SaveSearchSource> serialization is infallible")
+            });
             (
                 m.role,
                 m.content,
                 m.quoted_text,
                 image_json,
                 m.thinking_content,
+                sources_json,
             )
         })
         .collect();
@@ -93,6 +111,7 @@ pub fn save_conversation(
 /// Appends a single message to an already-saved conversation.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub fn persist_message(
     conversation_id: String,
     role: String,
@@ -100,12 +119,16 @@ pub fn persist_message(
     quoted_text: Option<String>,
     image_paths: Option<Vec<String>>,
     thinking_content: Option<String>,
+    search_sources: Option<Vec<SaveSearchSource>>,
     db: State<'_, Database>,
 ) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let image_json = image_paths
         .filter(|v| !v.is_empty())
         .map(|v| serde_json::to_string(&v).expect("Vec<String> serialization is infallible"));
+    let sources_json = search_sources.filter(|v| !v.is_empty()).map(|v| {
+        serde_json::to_string(&v).expect("Vec<SaveSearchSource> serialization is infallible")
+    });
     database::insert_message(
         &conn,
         &conversation_id,
@@ -114,6 +137,7 @@ pub fn persist_message(
         quoted_text.as_deref(),
         image_json.as_deref(),
         thinking_content.as_deref(),
+        sources_json.as_deref(),
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -300,6 +324,7 @@ mod tests {
                 quoted_text: None,
                 image_paths: Some(vec!["/tmp/img.jpg".to_string()]),
                 thinking_content: None,
+                search_sources: None,
             },
             SaveMessagePayload {
                 role: "assistant".to_string(),
@@ -307,6 +332,16 @@ mod tests {
                 quoted_text: None,
                 image_paths: None,
                 thinking_content: Some("Let me think about Rust...".to_string()),
+                search_sources: Some(vec![
+                    SaveSearchSource {
+                        title: "Rust docs".into(),
+                        url: "https://doc.rust-lang.org".into(),
+                    },
+                    SaveSearchSource {
+                        title: "Tokio".into(),
+                        url: "https://tokio.rs".into(),
+                    },
+                ]),
             },
         ];
 
@@ -329,12 +364,17 @@ mod tests {
                 let image_json = m.image_paths.filter(|v| !v.is_empty()).map(|v| {
                     serde_json::to_string(&v).expect("Vec<String> serialization is infallible")
                 });
+                let sources_json = m.search_sources.filter(|v| !v.is_empty()).map(|v| {
+                    serde_json::to_string(&v)
+                        .expect("Vec<SaveSearchSource> serialization is infallible")
+                });
                 (
                     m.role,
                     m.content,
                     m.quoted_text,
                     image_json,
                     m.thinking_content,
+                    sources_json,
                 )
             })
             .collect();
@@ -351,12 +391,16 @@ mod tests {
             Some(r#"["/tmp/img.jpg"]"#)
         );
         assert_eq!(loaded[0].thinking_content, None);
+        assert!(loaded[0].search_sources.is_none());
         assert_eq!(loaded[1].role, "assistant");
         assert!(loaded[1].image_paths.is_none());
         assert_eq!(
             loaded[1].thinking_content.as_deref(),
             Some("Let me think about Rust...")
         );
+        let sources_json = loaded[1].search_sources.as_deref().unwrap();
+        assert!(sources_json.contains("Rust docs"));
+        assert!(sources_json.contains("https://tokio.rs"));
     }
 
     #[test]

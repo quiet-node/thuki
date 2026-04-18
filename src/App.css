@@ -268,3 +268,166 @@ body {
   color: rgba(240, 240, 242, 0.65);
   background: transparent;
 }
+
+/* ─── /search: inline citation anchors + pill footer ───
+ * Hover linking is driven by `data-active-citation="N"` on the bubble root.
+ * When set, EVERY element with matching `data-citation="N"` (whether it's an
+ * inline <a> in the answer or a <button> pill in the footer) highlights.
+ * We never change padding/width/font-size on hover — only color/bg — so the
+ * text reflow is zero.
+ */
+.citation-link {
+  color: rgba(232, 131, 90, 0.75);
+  text-decoration: none;
+  cursor: pointer;
+  font-size: 0.85em;
+  vertical-align: baseline;
+  padding: 0 1px;
+  border-radius: 3px;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
+}
+.citation-link:hover {
+  color: #e8835a;
+  background-color: rgba(232, 131, 90, 0.14);
+}
+.search-bubble[data-active-citation='1'] .citation-link[data-citation='1'],
+.search-bubble[data-active-citation='2'] .citation-link[data-citation='2'],
+.search-bubble[data-active-citation='3'] .citation-link[data-citation='3'],
+.search-bubble[data-active-citation='4'] .citation-link[data-citation='4'],
+.search-bubble[data-active-citation='5'] .citation-link[data-citation='5'],
+.search-bubble[data-active-citation='6'] .citation-link[data-citation='6'],
+.search-bubble[data-active-citation='7'] .citation-link[data-citation='7'],
+.search-bubble[data-active-citation='8'] .citation-link[data-citation='8'],
+.search-bubble[data-active-citation='9'] .citation-link[data-citation='9'],
+.search-bubble[data-active-citation='10'] .citation-link[data-citation='10'] {
+  color: #e8835a;
+  background-color: rgba(232, 131, 90, 0.18);
+}
+
+/* Letter-avatar sources trigger. Flat, no border — the stacked avatars
+ * and count text do the heavy visual lifting. */
+.sources-trigger > span:last-child {
+  transition: color 150ms ease;
+}
+.sources-trigger:hover > span:last-child {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* /search: minimal source list rows
+ * Plain numbered list. Title + domain brighten on hover OR when the matching
+ * citation anchor elsewhere is hovered. No layout-shifting transforms.
+ */
+.source-row {
+  transition: opacity 150ms ease;
+}
+.source-row-title,
+.source-row-domain,
+.source-row-num {
+  transition: color 150ms ease;
+}
+.source-row:hover .source-row-title,
+.search-bubble[data-active-citation='1']
+  .source-row[data-citation='1']
+  .source-row-title,
+.search-bubble[data-active-citation='2']
+  .source-row[data-citation='2']
+  .source-row-title,
+.search-bubble[data-active-citation='3']
+  .source-row[data-citation='3']
+  .source-row-title,
+.search-bubble[data-active-citation='4']
+  .source-row[data-citation='4']
+  .source-row-title,
+.search-bubble[data-active-citation='5']
+  .source-row[data-citation='5']
+  .source-row-title,
+.search-bubble[data-active-citation='6']
+  .source-row[data-citation='6']
+  .source-row-title,
+.search-bubble[data-active-citation='7']
+  .source-row[data-citation='7']
+  .source-row-title,
+.search-bubble[data-active-citation='8']
+  .source-row[data-citation='8']
+  .source-row-title,
+.search-bubble[data-active-citation='9']
+  .source-row[data-citation='9']
+  .source-row-title,
+.search-bubble[data-active-citation='10']
+  .source-row[data-citation='10']
+  .source-row-title {
+  color: rgba(255, 255, 255, 0.95);
+}
+.source-row:hover .source-row-domain,
+.search-bubble[data-active-citation='1']
+  .source-row[data-citation='1']
+  .source-row-domain,
+.search-bubble[data-active-citation='2']
+  .source-row[data-citation='2']
+  .source-row-domain,
+.search-bubble[data-active-citation='3']
+  .source-row[data-citation='3']
+  .source-row-domain,
+.search-bubble[data-active-citation='4']
+  .source-row[data-citation='4']
+  .source-row-domain,
+.search-bubble[data-active-citation='5']
+  .source-row[data-citation='5']
+  .source-row-domain,
+.search-bubble[data-active-citation='6']
+  .source-row[data-citation='6']
+  .source-row-domain,
+.search-bubble[data-active-citation='7']
+  .source-row[data-citation='7']
+  .source-row-domain,
+.search-bubble[data-active-citation='8']
+  .source-row[data-citation='8']
+  .source-row-domain,
+.search-bubble[data-active-citation='9']
+  .source-row[data-citation='9']
+  .source-row-domain,
+.search-bubble[data-active-citation='10']
+  .source-row[data-citation='10']
+  .source-row-domain {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* ─── /search stage indicator: shimmer sweep on label text ───
+ * A lighter band glides left-to-right across the muted label text while the
+ * pipeline is running. Uses background-clip: text so the gradient is painted
+ * through the glyphs themselves — no wrapper element required.
+ * Option B pattern: wide gradient (4x element width) with dim plateaus ensures
+ * text remains visible at pause positions.
+ */
+.search-stage-label,
+.thinking-label-shimmer,
+.loading-label {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.28) 0%,
+    rgba(255, 255, 255, 0.28) 40%,
+    rgba(255, 255, 255, 0.55) 50%,
+    rgba(255, 255, 255, 0.28) 60%,
+    rgba(255, 255, 255, 0.28) 100%
+  );
+  background-size: 400% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: search-stage-shimmer 3s ease-in-out infinite;
+}
+
+@keyframes search-stage-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  75% {
+    background-position: 0% 0;
+  }
+  100% {
+    background-position: 0% 0;
+  }
+}

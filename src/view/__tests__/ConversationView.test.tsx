@@ -531,7 +531,9 @@ describe('ConversationView', () => {
       );
       // The bubble should render with ThinkingBlock visible
       expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
-      expect(screen.getByTestId('thinking-label')).toBeInTheDocument();
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Thinking...',
+      );
     });
 
     it('does not show TypingIndicator when assistant has thinkingContent but no content', () => {
@@ -571,5 +573,59 @@ describe('ConversationView', () => {
     for (let i = 0; i < 10; i++) {
       expect(screen.getByText(`Message ${i}`)).toBeInTheDocument();
     }
+  });
+
+  describe('search integration', () => {
+    it('renders the loading label next to the dots while classifying', () => {
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            { id: 'a', role: 'assistant', content: '' },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage="classifying"
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Classifying query',
+      );
+    });
+
+    it('renders the loading label as "Searching the web" when searching', () => {
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            { id: 'a', role: 'assistant', content: '' },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage="searching"
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Searching the web',
+      );
+    });
+
+    it('shows dots only (no label) when searchStage is null', () => {
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            { id: 'a', role: 'assistant', content: '' },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId('loading-label')).toBeNull();
+      expect(screen.getByRole('status')).toHaveAttribute(
+        'aria-label',
+        'AI is thinking',
+      );
+    });
   });
 });

@@ -21,6 +21,7 @@ pub mod history;
 pub mod images;
 pub mod onboarding;
 pub mod screenshot;
+pub mod search;
 
 #[cfg(target_os = "macos")]
 mod activator;
@@ -737,6 +738,10 @@ pub fn run() {
             commands::ask_ollama,
             #[cfg(not(coverage))]
             commands::cancel_generation,
+            #[cfg(not(coverage))]
+            commands::open_url,
+            #[cfg(not(coverage))]
+            search::search_pipeline,
             #[cfg(not(coverage))]
             commands::reset_conversation,
             #[cfg(not(coverage))]

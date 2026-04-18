@@ -1,9 +1,16 @@
 import { motion } from 'framer-motion';
 import { useRef, useEffect } from 'react';
 import { ChatBubble } from '../components/ChatBubble';
-import { TypingIndicator } from '../components/TypingIndicator';
+import { LoadingStage } from '../components/LoadingStage';
 import { WindowControls } from '../components/WindowControls';
 import type { Message } from '../hooks/useOllama';
+import type { SearchStage } from '../types/search';
+
+/** Human-readable label shown next to the loading dots for each search stage. */
+const SEARCH_STAGE_LABELS: Record<Exclude<SearchStage, null>, string> = {
+  classifying: 'Classifying query',
+  searching: 'Searching the web',
+};
 
 /**
  * Props for the ConversationView component.
@@ -43,6 +50,12 @@ interface ConversationViewProps {
   onNewConversation?: () => void;
   /** Called when the user clicks a thumbnail to preview it. */
   onImagePreview?: (path: string) => void;
+  /**
+   * Current `/search` pipeline stage. When non-null and the last assistant
+   * message has no content yet, a transient stage pill is rendered in place
+   * of the typing indicator.
+   */
+  searchStage?: SearchStage;
 }
 
 /**
@@ -65,6 +78,7 @@ export function ConversationView({
   onHistoryOpen,
   onNewConversation,
   onImagePreview,
+  searchStage = null,
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -198,16 +212,21 @@ export function ConversationView({
               isThinking={
                 isLastAssistant && !msg.content && !!msg.thinkingContent
               }
+              searchSources={msg.searchSources}
             />
           );
         })}
 
-        {/* Typing indicator (pulsing dots) shown before first token arrives */}
+        {/* Loading row: always show 9-dot indicator when waiting for first
+            content. For search turns, show the stage label inline as plain
+            text next to the dots. */}
         {isGenerating &&
         messages[messages.length - 1]?.role === 'assistant' &&
         !messages[messages.length - 1]?.content &&
         !messages[messages.length - 1]?.thinkingContent ? (
-          <TypingIndicator />
+          <LoadingStage
+            label={searchStage ? SEARCH_STAGE_LABELS[searchStage] : null}
+          />
         ) : null}
       </div>
 

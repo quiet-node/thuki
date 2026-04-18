@@ -12,10 +12,9 @@ describe('ThinkingBlock', () => {
 
   it('shows animated "Thinking..." label while isThinking', () => {
     render(<ThinkingBlock thinkingContent="Working on it" isThinking={true} />);
-    expect(screen.getByTestId('thinking-label')).toBeInTheDocument();
-    expect(screen.getByTestId('thinking-label').textContent).toContain(
-      'Thinking...',
-    );
+    const label = screen.getByTestId('loading-label');
+    expect(label).toBeInTheDocument();
+    expect(label.textContent).toBe('Thinking...');
   });
 
   it('is collapsed by default, even while thinking', () => {

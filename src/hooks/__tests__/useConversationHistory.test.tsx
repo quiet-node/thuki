@@ -45,6 +45,7 @@ describe('useConversationHistory', () => {
           quoted_text: null,
           image_paths: null,
           thinking_content: null,
+          search_sources: null,
         },
         {
           role: 'assistant',
@@ -52,6 +53,7 @@ describe('useConversationHistory', () => {
           quoted_text: null,
           image_paths: null,
           thinking_content: null,
+          search_sources: null,
         },
       ],
       model: MODEL,
@@ -91,6 +93,7 @@ describe('useConversationHistory', () => {
           quoted_text: null,
           image_paths: null,
           thinking_content: null,
+          search_sources: null,
         },
         {
           role: 'assistant',
@@ -98,6 +101,7 @@ describe('useConversationHistory', () => {
           quoted_text: null,
           image_paths: null,
           thinking_content: null,
+          search_sources: null,
         },
       ],
     });
@@ -167,6 +171,7 @@ describe('useConversationHistory', () => {
       quotedText: 'ctx',
       imagePaths: null,
       thinkingContent: null,
+      searchSources: null,
     });
     expect(invoke).toHaveBeenCalledWith('persist_message', {
       conversationId: 'conv-123',
@@ -175,6 +180,7 @@ describe('useConversationHistory', () => {
       quotedText: null,
       imagePaths: null,
       thinkingContent: null,
+      searchSources: null,
     });
   });
 
@@ -233,6 +239,7 @@ describe('useConversationHistory', () => {
         quoted_text: null,
         image_paths: null,
         thinking_content: null,
+        search_sources: null,
         created_at: 1,
       },
       {
@@ -242,6 +249,7 @@ describe('useConversationHistory', () => {
         quoted_text: 'ctx',
         image_paths: null,
         thinking_content: null,
+        search_sources: null,
         created_at: 2,
       },
     ]);
@@ -282,6 +290,7 @@ describe('useConversationHistory', () => {
         quoted_text: null,
         image_paths: '["/images/a.jpg","/images/b.jpg"]',
         thinking_content: null,
+        search_sources: null,
         created_at: 1,
       },
       {
@@ -291,6 +300,7 @@ describe('useConversationHistory', () => {
         quoted_text: null,
         image_paths: null,
         thinking_content: null,
+        search_sources: null,
         created_at: 2,
       },
     ]);
@@ -394,6 +404,7 @@ describe('useConversationHistory', () => {
       quotedText: null,
       imagePaths: null,
       thinkingContent: 'Let me reason step by step',
+      searchSources: null,
     });
   });
 
@@ -425,6 +436,7 @@ describe('useConversationHistory', () => {
           quoted_text: null,
           image_paths: null,
           thinking_content: null,
+          search_sources: null,
         },
         {
           role: 'assistant',
@@ -432,6 +444,7 @@ describe('useConversationHistory', () => {
           quoted_text: null,
           image_paths: null,
           thinking_content: 'Deep thoughts',
+          search_sources: null,
         },
       ],
       model: MODEL,
@@ -447,6 +460,7 @@ describe('useConversationHistory', () => {
         quoted_text: null,
         image_paths: null,
         thinking_content: null,
+        search_sources: null,
         created_at: 1,
       },
       {
@@ -456,6 +470,7 @@ describe('useConversationHistory', () => {
         quoted_text: null,
         image_paths: null,
         thinking_content: 'I thought about it',
+        search_sources: null,
         created_at: 2,
       },
     ]);
@@ -469,6 +484,96 @@ describe('useConversationHistory', () => {
 
     expect(loaded[0].thinkingContent).toBeUndefined();
     expect(loaded[1].thinkingContent).toBe('I thought about it');
+  });
+
+  it('loadConversation() restores searchSources + fromSearch on assistant messages', async () => {
+    invoke.mockResolvedValueOnce([
+      {
+        id: 'u1',
+        role: 'user',
+        content: '/search rust',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        created_at: 1,
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Rust is a systems language.',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources:
+          '[{"title":"Rust Docs","url":"https://doc.rust-lang.org"},{"title":"Tokio","url":"https://tokio.rs"}]',
+        created_at: 2,
+      },
+      {
+        id: 'a2',
+        role: 'assistant',
+        content: 'No sources here.',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: '[]',
+        created_at: 3,
+      },
+    ]);
+
+    const { result } = renderHook(() => useConversationHistory());
+    let loaded: Message[] = [];
+
+    await act(async () => {
+      loaded = await result.current.loadConversation('conv-search');
+    });
+
+    // User message: no sources.
+    expect(loaded[0].searchSources).toBeUndefined();
+    expect(loaded[0].fromSearch).toBeUndefined();
+    // Assistant with real sources: sources parsed, fromSearch flagged.
+    expect(loaded[1].searchSources).toHaveLength(2);
+    expect(loaded[1].searchSources?.[0].url).toBe('https://doc.rust-lang.org');
+    expect(loaded[1].fromSearch).toBe(true);
+    // Assistant with empty sources array: treated as no sources.
+    expect(loaded[2].searchSources).toBeUndefined();
+    expect(loaded[2].fromSearch).toBeUndefined();
+  });
+
+  it('persistTurn() sends searchSources on assistant messages', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-src' });
+    invoke.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(MESSAGES, MODEL);
+    });
+    invoke.mockClear();
+
+    const userMsg: Message = {
+      id: 'u5',
+      role: 'user',
+      content: 'follow',
+    };
+    const assistantMsg: Message = {
+      id: 'a5',
+      role: 'assistant',
+      content: 'result [1]',
+      searchSources: [{ title: 'Doc', url: 'https://doc.example' }],
+    };
+
+    await act(async () => {
+      await result.current.persistTurn(userMsg, assistantMsg);
+    });
+
+    expect(invoke).toHaveBeenCalledWith(
+      'persist_message',
+      expect.objectContaining({
+        role: 'assistant',
+        searchSources: [{ title: 'Doc', url: 'https://doc.example' }],
+      }),
+    );
   });
 
   it('reset() clears conversationId and isSaved', async () => {

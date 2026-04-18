@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Message } from './useOllama';
+import type { SearchResultPreview } from '../types/search';
 import type {
   ConversationSummary,
   PersistedMessage,
@@ -19,16 +20,20 @@ function toPayload(msg: Message): SaveMessagePayload {
     quoted_text: msg.quotedText ?? null,
     image_paths: msg.imagePaths ?? null,
     thinking_content: msg.thinkingContent ?? null,
+    search_sources: msg.searchSources ?? null,
   };
 }
 
 /**
  * Maps a `PersistedMessage` returned by `load_conversation` back to a
- * frontend `Message`, preserving optional `quotedText`.
+ * frontend `Message`, preserving optional fields.
  */
 function fromPersisted(msg: PersistedMessage): Message {
   const imagePaths = msg.image_paths
     ? (JSON.parse(msg.image_paths) as string[])
+    : undefined;
+  const searchSources = msg.search_sources
+    ? (JSON.parse(msg.search_sources) as SearchResultPreview[])
     : undefined;
   return {
     id: msg.id,
@@ -37,6 +42,12 @@ function fromPersisted(msg: PersistedMessage): Message {
     quotedText: msg.quoted_text ?? undefined,
     imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : undefined,
     thinkingContent: msg.thinking_content ?? undefined,
+    searchSources:
+      searchSources && searchSources.length > 0 ? searchSources : undefined,
+    fromSearch:
+      searchSources !== undefined && searchSources.length > 0
+        ? true
+        : undefined,
   };
 }
 
@@ -115,6 +126,7 @@ export function useConversationHistory() {
           quotedText: userMsg.quotedText ?? null,
           imagePaths: userMsg.imagePaths ?? null,
           thinkingContent: null,
+          searchSources: null,
         }),
         invoke('persist_message', {
           conversationId,
@@ -123,6 +135,7 @@ export function useConversationHistory() {
           quotedText: assistantMsg.quotedText ?? null,
           imagePaths: null,
           thinkingContent: assistantMsg.thinkingContent ?? null,
+          searchSources: assistantMsg.searchSources ?? null,
         }),
       ]);
     },

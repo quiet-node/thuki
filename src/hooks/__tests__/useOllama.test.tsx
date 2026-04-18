@@ -916,4 +916,345 @@ describe('useOllama', () => {
       ]);
     });
   });
+
+  // ─── askSearch() ────────────────────────────────────────────────────────────
+
+  describe('askSearch()', () => {
+    it('invokes search_pipeline with the trimmed query', async () => {
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('  rust async  ');
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        'search_pipeline',
+        expect.objectContaining({ message: 'rust async' }),
+      );
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', content: 'ok' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await pending;
+      });
+    });
+
+    it('resolves immediately with final=true on empty query', async () => {
+      const { result } = renderHook(() => useOllama());
+      let outcome: { final: boolean } | undefined;
+      await act(async () => {
+        outcome = await result.current.askSearch('   ');
+      });
+      expect(outcome).toEqual({ final: true });
+      expect(invoke).not.toHaveBeenCalled();
+    });
+
+    it('resolves with final=true when a token is received followed by Done', async () => {
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Classifying' });
+        channel!.simulateMessage({ type: 'Searching' });
+        channel!.simulateMessage({ type: 'Token', content: 'hello' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      let outcome: { final: boolean } | undefined;
+      await act(async () => {
+        outcome = await pending;
+      });
+      expect(outcome).toEqual({ final: true });
+      expect(result.current.isGenerating).toBe(false);
+      expect(result.current.searchStage).toBe(null);
+      const last = result.current.messages[result.current.messages.length - 1];
+      expect(last.role).toBe('assistant');
+      expect(last.content).toBe('hello');
+      expect(last.fromSearch).toBe(true);
+    });
+
+    it('resolves with final=false on Clarifying-only turn', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('who is him?');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Classifying' });
+        channel!.simulateMessage({
+          type: 'Clarifying',
+          question: 'Which person? Give me a name or some context.',
+        });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      let outcome: { final: boolean } | undefined;
+      await act(async () => {
+        outcome = await pending;
+      });
+      expect(outcome).toEqual({ final: false });
+      const last = result.current.messages[result.current.messages.length - 1];
+      expect(last.content).toBe(
+        'Which person? Give me a name or some context.',
+      );
+      expect(onTurnComplete).toHaveBeenCalledTimes(1);
+      const [, assistantMsg] = onTurnComplete.mock.calls[0];
+      expect(assistantMsg.content).toContain('Which person?');
+    });
+
+    it('updates searchStage through the pipeline phases', async () => {
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Classifying' });
+      });
+      expect(result.current.searchStage).toBe('classifying');
+      act(() => {
+        channel!.simulateMessage({ type: 'Searching' });
+      });
+      expect(result.current.searchStage).toBe('searching');
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', content: 'x' });
+      });
+      expect(result.current.searchStage).toBe(null);
+      act(() => {
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await pending;
+      });
+    });
+
+    it('drops the empty placeholder on Cancelled with no content', async () => {
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Cancelled' });
+      });
+      let outcome: { final: boolean } | undefined;
+      await act(async () => {
+        outcome = await pending;
+      });
+      expect(outcome).toEqual({ final: true });
+      expect(
+        result.current.messages.filter((m) => m.role === 'assistant'),
+      ).toHaveLength(0);
+    });
+
+    it('keeps partial content on Cancelled after tokens arrived', async () => {
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', content: 'part' });
+        channel!.simulateMessage({ type: 'Cancelled' });
+      });
+      await act(async () => {
+        await pending;
+      });
+      const assistant = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistant?.content).toBe('part');
+    });
+
+    it('renders an Error event as an error bubble', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          message: "Ollama isn't running",
+        });
+      });
+      let outcome: { final: boolean } | undefined;
+      await act(async () => {
+        outcome = await pending;
+      });
+      expect(outcome).toEqual({ final: true });
+      const last = result.current.messages[result.current.messages.length - 1];
+      expect(last.content).toBe("Ollama isn't running");
+      expect(last.errorKind).toBe('Other');
+      expect(onTurnComplete).not.toHaveBeenCalled();
+    });
+
+    it('guards against concurrent invocations', async () => {
+      const { result } = renderHook(() => useOllama());
+      let firstPending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        firstPending = result.current.askSearch('first');
+      });
+      expect(invoke).toHaveBeenCalledTimes(1);
+      let secondOutcome: { final: boolean } | undefined;
+      await act(async () => {
+        secondOutcome = await result.current.askSearch('second');
+      });
+      expect(secondOutcome).toEqual({ final: true });
+      expect(invoke).toHaveBeenCalledTimes(1);
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await firstPending;
+      });
+    });
+
+    it('surfaces a synthetic error when invoke rejects', async () => {
+      invoke.mockImplementationOnce(async () => {
+        throw new Error('ipc failed');
+      });
+      const { result } = renderHook(() => useOllama());
+      let outcome: { final: boolean } | undefined;
+      await act(async () => {
+        outcome = await result.current.askSearch('q');
+      });
+      expect(outcome).toEqual({ final: true });
+      const last = result.current.messages[result.current.messages.length - 1];
+      expect(last.errorKind).toBe('Other');
+      expect(last.content).toContain('Could not start search');
+    });
+
+    it('persists a pure clarification turn without suggestions', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Clarifying',
+          question: 'Which one?',
+        });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await pending;
+      });
+      const [, assistantMsg] = onTurnComplete.mock.calls[0];
+      expect(assistantMsg.content).toBe('Which one?');
+    });
+
+    it('does not persist an empty turn on Done', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await pending;
+      });
+      // No Clarifying, no tokens — nothing to persist. But the Done event is
+      // final regardless so the promise must resolve with final=true per the
+      // spec (no tokens and no clarification means the pipeline is exhausted).
+      expect(onTurnComplete).not.toHaveBeenCalled();
+    });
+
+    it('persists searchSources to the assistant message on Sources + Token + Done', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Sources',
+          results: [
+            { title: 'Rust', url: 'https://rust-lang.org' },
+            { title: 'Tokio', url: 'https://tokio.rs' },
+          ],
+        });
+        channel!.simulateMessage({ type: 'Token', content: 'answer' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await pending;
+      });
+      const [, assistantMsg] = onTurnComplete.mock.calls[0];
+      expect(assistantMsg.searchSources).toHaveLength(2);
+      expect(assistantMsg.searchSources[0].url).toBe('https://rust-lang.org');
+      const lastMsg =
+        result.current.messages[result.current.messages.length - 1];
+      expect(lastMsg.searchSources).toHaveLength(2);
+    });
+  });
+
+  // ─── reset/loadMessages interaction with searchStage ────────────────────────
+
+  describe('search state cleanup', () => {
+    it('reset clears the search stage indicator', async () => {
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Searching' });
+      });
+      expect(result.current.searchStage).toBe('searching');
+      act(() => {
+        result.current.reset();
+      });
+      expect(result.current.searchStage).toBe(null);
+      act(() => {
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await pending;
+      });
+    });
+
+    it('loadMessages clears the search stage indicator', async () => {
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Classifying' });
+      });
+      expect(result.current.searchStage).toBe('classifying');
+      act(() => {
+        result.current.loadMessages([]);
+      });
+      expect(result.current.searchStage).toBe(null);
+      act(() => {
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await pending;
+      });
+    });
+  });
 });

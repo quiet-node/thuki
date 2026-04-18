@@ -1,5 +1,10 @@
 import { useState, useCallback } from 'react';
 import { invoke, Channel } from '@tauri-apps/api/core';
+import type {
+  SearchEvent,
+  SearchResultPreview,
+  SearchStage,
+} from '../types/search';
 
 /** Mirrors the Rust OllamaErrorKind enum sent over IPC. */
 export type OllamaErrorKind = 'NotRunning' | 'ModelNotFound' | 'Other';
@@ -20,6 +25,16 @@ export interface Message {
   errorKind?: OllamaErrorKind;
   /** Accumulated thinking/reasoning content from the model, if thinking mode was used. */
   thinkingContent?: string;
+  /**
+   * Marks an assistant message that was produced through the `/search`
+   * pipeline rather than the normal chat path.
+   */
+  fromSearch?: boolean;
+  /**
+   * Search result source links forwarded by the pipeline. Shown as a sources
+   * footer below the answer so users can visit the original pages.
+   */
+  searchSources?: SearchResultPreview[];
 }
 
 /**
@@ -42,11 +57,24 @@ export type StreamChunk =
  *   Used by the caller to persist completed turns to SQLite.
  * @returns An object containing the message history, a submit callback function, and operational states.
  */
+/**
+ * Result payload delivered to callers when a `/search` pipeline turn finishes.
+ * `final: true` means the answer was fully delivered and the caller should
+ * clear the sticky "searchActive" flag. `final: false` means the pipeline
+ * emitted a Clarifying event and is waiting for another user turn, so the
+ * flag must persist.
+ */
+export interface SearchOutcome {
+  final: boolean;
+}
+
 export function useOllama(
   onTurnComplete?: (userMsg: Message, assistantMsg: Message) => void,
 ) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  /** Transient stage indicator for the active `/search` pipeline, if any. */
+  const [searchStage, setSearchStage] = useState<SearchStage>(null);
 
   /**
    * Submits a message to the Ollama backend and initiates the streaming response.
@@ -174,6 +202,143 @@ export function useOllama(
     [isGenerating, onTurnComplete],
   );
 
+  /**
+   * Submits a `/search` pipeline turn.
+   *
+   * @param query Text sent to the backend pipeline (stripped of `/search` trigger).
+   * @param displayContent Text shown in the user's chat bubble. Defaults to
+   *   `query` when omitted; pass the full original input (with `/search`) so
+   *   the bubble reflects exactly what the user typed.
+   * @returns `{ final: true }` when the answer was delivered or cancelled.
+   *   `{ final: false }` when a Clarifying event was emitted — caller must keep
+   *   `searchActive=true` so the next turn still routes through the pipeline.
+   */
+  const askSearch = useCallback(
+    async (query: string, displayContent?: string): Promise<SearchOutcome> => {
+      const trimmed = query.trim();
+      if (!trimmed || isGenerating) return { final: true };
+
+      const userMsg: Message = {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: displayContent ?? trimmed,
+      };
+      const assistantId = crypto.randomUUID();
+      const assistantMsg: Message = {
+        id: assistantId,
+        role: 'assistant',
+        content: '',
+        fromSearch: true,
+      };
+
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      setIsGenerating(true);
+      setSearchStage(null);
+
+      const channel = new Channel<SearchEvent>();
+      let currentContent = '';
+      let sawToken = false;
+      let wasClarification = false;
+      let pendingSources: SearchResultPreview[] | undefined;
+      let errored = false;
+      let cancelled = false;
+
+      const updateAssistant = (patch: Partial<Message>) => {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantId ? { ...m, ...patch } : m)),
+        );
+      };
+
+      return new Promise<SearchOutcome>((resolve) => {
+        const finish = (final: boolean) => {
+          setIsGenerating(false);
+          setSearchStage(null);
+          if (!errored && !cancelled) {
+            if (wasClarification) {
+              onTurnComplete?.(userMsg, {
+                ...assistantMsg,
+                content: currentContent,
+              });
+            } else if (currentContent) {
+              updateAssistant({ searchSources: pendingSources });
+              onTurnComplete?.(userMsg, {
+                ...assistantMsg,
+                content: currentContent,
+                searchSources: pendingSources,
+              });
+            }
+          }
+          resolve({ final });
+        };
+
+        channel.onmessage = (event) => {
+          switch (event.type) {
+            case 'Classifying':
+              setSearchStage('classifying');
+              updateAssistant({ content: '' });
+              break;
+            case 'Searching':
+              setSearchStage('searching');
+              break;
+            case 'Clarifying':
+              wasClarification = true;
+              currentContent = event.question;
+              setSearchStage(null);
+              updateAssistant({ content: event.question });
+              break;
+            case 'Sources':
+              pendingSources = event.results;
+              break;
+            case 'Token':
+              sawToken = true;
+              currentContent += event.content;
+              setSearchStage(null);
+              updateAssistant({ content: currentContent });
+              break;
+            case 'Done':
+              // Clarify-only turns: pipeline is paused for user input, keep
+              // searchActive. Token-bearing turns: answer delivered, drop it.
+              finish(sawToken || !wasClarification);
+              break;
+            case 'Cancelled':
+              cancelled = true;
+              if (!currentContent) {
+                setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+              }
+              finish(true);
+              break;
+            case 'Error':
+              errored = true;
+              updateAssistant({
+                content: event.message,
+                errorKind: 'Other',
+              });
+              finish(true);
+              break;
+          }
+        };
+
+        invoke('search_pipeline', {
+          message: trimmed,
+          onEvent: channel,
+        }).catch(() => {
+          /* v8 ignore start -- defensive guard: invoke rejection races
+             ahead of channel events in practice so errored/cancelled are
+             always false here; the check protects against future changes. */
+          if (errored || cancelled) return;
+          /* v8 ignore stop */
+          errored = true;
+          updateAssistant({
+            content: 'Something went wrong\nCould not start search.',
+            errorKind: 'Other',
+          });
+          finish(true);
+        });
+      });
+    },
+    [isGenerating, onTurnComplete],
+  );
+
   /** Cancels the currently active generation by signalling the Rust backend. */
   const cancel = useCallback(async () => {
     if (!isGenerating) return;
@@ -184,6 +349,7 @@ export function useOllama(
   const reset = useCallback(() => {
     setMessages([]);
     setIsGenerating(false);
+    setSearchStage(null);
     void invoke('reset_conversation');
   }, []);
 
@@ -199,13 +365,16 @@ export function useOllama(
   const loadMessages = useCallback((msgs: Message[]) => {
     setMessages(msgs);
     setIsGenerating(false);
+    setSearchStage(null);
   }, []);
 
   return {
     messages,
     ask,
+    askSearch,
     cancel,
     isGenerating,
+    searchStage,
     reset,
     loadMessages,
   };

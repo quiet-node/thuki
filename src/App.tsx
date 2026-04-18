@@ -152,8 +152,25 @@ function App() {
     [persistTurn],
   );
 
-  const { messages, ask, cancel, isGenerating, reset, loadMessages } =
-    useOllama(handleTurnComplete);
+  const {
+    messages,
+    ask,
+    askSearch,
+    cancel,
+    isGenerating,
+    searchStage,
+    reset,
+    loadMessages,
+  } = useOllama(handleTurnComplete);
+
+  /**
+   * Sticky flag: once the user invokes `/search`, subsequent submits in the
+   * same conversation route through the search pipeline automatically until
+   * the pipeline delivers a final answer (or the conversation is reset/loaded
+   * /closed). The backend LLM classifies each turn and decides whether to
+   * clarify, answer from context, or perform a fresh web search.
+   */
+  const [searchActive, setSearchActive] = useState(false);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -388,6 +405,7 @@ function App() {
       setIsSubmitPending(false);
       setPendingUserMessage(null);
       setCaptureError(null);
+      setSearchActive(false);
 
       reset();
       resetHistory();
@@ -581,6 +599,7 @@ function App() {
       try {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
+        setSearchActive(false);
       } catch {
         // Load failed — current session is preserved intact.
       } finally {
@@ -609,6 +628,7 @@ function App() {
       try {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
+        setSearchActive(false);
       } catch {
         // Load failed — save already committed; dismiss panel, keep current view.
       } finally {
@@ -653,6 +673,7 @@ function App() {
     screenCaptureInputSnapshotRef.current = null;
     setIsSubmitPending(false);
     setPendingUserMessage(null);
+    setSearchActive(false);
   }, [reset, resetHistory]);
 
   /**
@@ -975,6 +996,30 @@ function App() {
     const { found, strippedMessage } = parseCommands(trimmedQuery);
     const hasScreen = found.has('/screen');
     const hasThink = found.has('/think');
+    const hasSearch = found.has('/search');
+
+    // `/search` entry point AND sticky follow-ups. Once a search turn is in
+    // flight, subsequent submits without an explicit slash command continue
+    // to route through the backend search pipeline so the LLM can clarify,
+    // re-answer from context, or fire a fresh SearXNG query as needed.
+    // An explicit `/screen` command takes precedence over search continuation
+    // so users can always attach a screenshot mid-conversation.
+    if (hasSearch || (searchActive && !hasScreen && found.size === 0)) {
+      const searchQuery = strippedMessage.trim();
+      if (!searchQuery) return;
+      // Pass the full typed query (with `/search`) as bubble display content so
+      // the user sees exactly what they typed; the backend receives only the
+      // stripped query without the trigger prefix.
+      const searchDisplay = hasSearch ? trimmedQuery : undefined;
+      setQuery('');
+      /* v8 ignore next */
+      inputRef.current!.style.height = 'auto';
+      setSearchActive(true);
+      void askSearch(searchQuery, searchDisplay).then(({ final }) => {
+        if (final) setSearchActive(false);
+      });
+      return;
+    }
 
     // Check for utility commands with prompt templates.
     const utilityTrigger = Array.from(found).find((t) => {
@@ -1118,6 +1163,9 @@ function App() {
     setSelectedContext,
     attachedImages,
     setCaptureError,
+    ask,
+    askSearch,
+    searchActive,
   ]);
 
   // When a pending submit exists and all images finish processing, fire it.
@@ -1429,6 +1477,7 @@ function App() {
                       onNewConversation={handleNewConversation}
                       onHistoryOpen={handleHistoryToggle}
                       onImagePreview={handleChatImagePreview}
+                      searchStage={searchStage}
                     />
                   ) : null}
                 </AnimatePresence>

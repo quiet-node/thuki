@@ -144,7 +144,7 @@ impl GenerationState {
     }
 
     /// Stores a new cancellation token, replacing any previous one.
-    fn set(&self, token: CancellationToken) {
+    pub fn set_token(&self, token: CancellationToken) {
         *self.token.lock().unwrap() = Some(token);
     }
 
@@ -156,7 +156,7 @@ impl GenerationState {
     }
 
     /// Clears the stored token without cancelling it (used on natural completion).
-    fn clear(&self) {
+    pub fn clear_token(&self) {
         *self.token.lock().unwrap() = None;
     }
 }
@@ -367,7 +367,7 @@ pub async fn ask_ollama(
 ) -> Result<(), String> {
     let endpoint = format!("{}/api/chat", DEFAULT_OLLAMA_URL.trim_end_matches('/'));
     let cancel_token = CancellationToken::new();
-    generation.set(cancel_token.clone());
+    generation.set_token(cancel_token.clone());
 
     // Build user message content.  When quoted text is present, label it
     // explicitly so the model knows the highlighted text is the primary
@@ -442,7 +442,24 @@ pub async fn ask_ollama(
         });
     }
 
-    generation.clear();
+    generation.clear_token();
+    Ok(())
+}
+
+/// Opens a URL in the system default browser (macOS `open` command).
+///
+/// Only `http://` and `https://` URLs are accepted; all other schemes are
+/// rejected to prevent command injection and accidental protocol handler abuse.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("Only http/https URLs are supported".to_string());
+    }
+    std::process::Command::new("open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| format!("Failed to open URL: {e}"))?;
     Ok(())
 }
 
@@ -1018,7 +1035,7 @@ mod tests {
         let token = CancellationToken::new();
         let token_clone = token.clone();
 
-        state.set(token);
+        state.set_token(token);
         assert!(!token_clone.is_cancelled());
 
         state.cancel();
@@ -1037,8 +1054,8 @@ mod tests {
         let token = CancellationToken::new();
         let token_clone = token.clone();
 
-        state.set(token);
-        state.clear();
+        state.set_token(token);
+        state.clear_token();
         assert!(!token_clone.is_cancelled());
     }
 
@@ -1050,8 +1067,8 @@ mod tests {
         let second = CancellationToken::new();
         let second_clone = second.clone();
 
-        state.set(first);
-        state.set(second);
+        state.set_token(first);
+        state.set_token(second);
 
         state.cancel();
         assert!(!first_clone.is_cancelled());

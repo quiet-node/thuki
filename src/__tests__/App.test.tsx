@@ -3985,6 +3985,223 @@ describe('App', () => {
     });
   });
 
+  // ─── /search command ───────────────────────────────────────────────────────
+
+  describe('/search command', () => {
+    it('routes /search submissions to search_pipeline with the stripped query', async () => {
+      enableChannelCapture();
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/search rust async' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'search_pipeline',
+        expect.objectContaining({ message: 'rust async' }),
+      );
+    });
+
+    it('continues routing follow-ups through search_pipeline after a Clarifying event', async () => {
+      enableChannelCapture();
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/search who is him' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      const firstChannel = getLastChannel();
+      await act(async () => {
+        firstChannel!.onmessage({
+          type: 'Clarifying',
+          question: 'Which person?',
+        });
+        firstChannel!.onmessage({ type: 'Done' });
+      });
+      // Flush askSearch promise + .then() so isGenerating updates.
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      // Follow-up without /search prefix should still route to search_pipeline.
+      const followupInvokeCountBefore = invoke.mock.calls.filter(
+        (c) => c[0] === 'search_pipeline',
+      ).length;
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'Donald Trump' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      const followupInvokeCountAfter = invoke.mock.calls.filter(
+        (c) => c[0] === 'search_pipeline',
+      ).length;
+      expect(followupInvokeCountAfter).toBe(followupInvokeCountBefore + 1);
+      const searchCalls = invoke.mock.calls.filter(
+        (c) => c[0] === 'search_pipeline',
+      );
+      expect(searchCalls[searchCalls.length - 1][1]).toMatchObject({
+        message: 'Donald Trump',
+      });
+    });
+
+    it('drops searchActive after a final Token+Done turn so the next submit uses ask_ollama', async () => {
+      enableChannelCapture();
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/search rust' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      const channel = getLastChannel();
+      await act(async () => {
+        channel!.onmessage({ type: 'Searching' });
+        channel!.onmessage({ type: 'Token', content: 'Rust is fast.' });
+        channel!.onmessage({ type: 'Done' });
+      });
+      // Flush the askSearch promise + .then() so searchActive resets to false.
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      const calls = invoke.mock.calls.filter(
+        (c) => c[0] === 'ask_ollama' || c[0] === 'search_pipeline',
+      );
+      const last = calls[calls.length - 1];
+      expect(last[0]).toBe('ask_ollama');
+      expect(last[1]).toMatchObject({ message: 'hello' });
+    });
+
+    it('follow-up after Clarifying still routes through search_pipeline', async () => {
+      enableChannelCapture();
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/search ambiguous' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      const firstChannel = getLastChannel();
+      await act(async () => {
+        firstChannel!.onmessage({
+          type: 'Clarifying',
+          question: 'First clarify?',
+        });
+        firstChannel!.onmessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      // User types their own clarification and submits — still routes to
+      // search_pipeline because searchActive persisted (final=false on clarify).
+      const countBefore = invoke.mock.calls.filter(
+        (c) => c[0] === 'search_pipeline',
+      ).length;
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'Einstein' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      const countAfter = invoke.mock.calls.filter(
+        (c) => c[0] === 'search_pipeline',
+      ).length;
+      expect(countAfter).toBe(countBefore + 1);
+      const allSearchCalls = invoke.mock.calls.filter(
+        (c) => c[0] === 'search_pipeline',
+      );
+      expect(allSearchCalls[allSearchCalls.length - 1][1]).toMatchObject({
+        message: 'Einstein',
+      });
+    });
+
+    it('ignores empty /search submissions with no text after the trigger', async () => {
+      enableChannelCapture();
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/search' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      expect(invoke.mock.calls.some((c) => c[0] === 'search_pipeline')).toBe(
+        false,
+      );
+    });
+
+    it('lets /screen override search continuation mid-conversation', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/s.jpg',
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/search him' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      const channel = getLastChannel();
+      await act(async () => {
+        channel!.onmessage({
+          type: 'Clarifying',
+          question: 'Which?',
+        });
+        channel!.onmessage({ type: 'Done' });
+      });
+
+      // With searchActive still on, /screen must take precedence.
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/screen what is this' },
+        });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+    });
+  });
+
   describe('Onboarding', () => {
     it('shows onboarding screen when thuki://onboarding event fires', async () => {
       enableChannelCaptureWithResponses({
