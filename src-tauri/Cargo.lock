@@ -4255,6 +4255,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-nspanel",
+ "thiserror 1.0.69",
  "time",
  "tokio",
  "tokio-util",

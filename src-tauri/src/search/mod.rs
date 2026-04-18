@@ -22,6 +22,7 @@ use crate::commands::{
 pub mod chunker;
 pub mod config;
 pub mod errors;
+pub mod judge;
 mod llm;
 mod pipeline;
 mod rerank;
