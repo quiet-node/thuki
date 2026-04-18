@@ -20,6 +20,7 @@ use crate::commands::{
 };
 
 pub mod config;
+pub mod errors;
 mod llm;
 mod pipeline;
 mod rerank;
