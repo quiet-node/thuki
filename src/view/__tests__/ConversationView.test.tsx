@@ -576,7 +576,7 @@ describe('ConversationView', () => {
   });
 
   describe('search integration', () => {
-    it('renders the loading label next to the dots while classifying', () => {
+    it('renders the loading label next to the dots while analyzing query', () => {
       render(
         <ConversationView
           messages={[
@@ -585,7 +585,7 @@ describe('ConversationView', () => {
           ]}
           isGenerating={true}
           onClose={vi.fn()}
-          searchStage="classifying"
+          searchStage={{ kind: 'analyzing_query' }}
         />,
       );
       expect(screen.getByTestId('loading-label').textContent).toBe(
@@ -602,7 +602,7 @@ describe('ConversationView', () => {
           ]}
           isGenerating={true}
           onClose={vi.fn()}
-          searchStage="searching"
+          searchStage={{ kind: 'searching' }}
         />,
       );
       expect(screen.getByTestId('loading-label').textContent).toBe(

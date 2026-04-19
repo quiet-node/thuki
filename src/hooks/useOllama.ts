@@ -60,9 +60,7 @@ export type StreamChunk =
 /**
  * Result payload delivered to callers when a `/search` pipeline turn finishes.
  * `final: true` means the answer was fully delivered and the caller should
- * clear the sticky "searchActive" flag. `final: false` means the pipeline
- * emitted a Clarifying event and is waiting for another user turn, so the
- * flag must persist.
+ * clear the sticky "searchActive" flag.
  */
 export interface SearchOutcome {
   final: boolean;
@@ -210,8 +208,6 @@ export function useOllama(
    *   `query` when omitted; pass the full original input (with `/search`) so
    *   the bubble reflects exactly what the user typed.
    * @returns `{ final: true }` when the answer was delivered or cancelled.
-   *   `{ final: false }` when a Clarifying event was emitted — caller must keep
-   *   `searchActive=true` so the next turn still routes through the pipeline.
    */
   const askSearch = useCallback(
     async (query: string, displayContent?: string): Promise<SearchOutcome> => {
@@ -238,7 +234,6 @@ export function useOllama(
       const channel = new Channel<SearchEvent>();
       let currentContent = '';
       let sawToken = false;
-      let wasClarification = false;
       let pendingSources: SearchResultPreview[] | undefined;
       let errored = false;
       let cancelled = false;
@@ -253,38 +248,38 @@ export function useOllama(
         const finish = (final: boolean) => {
           setIsGenerating(false);
           setSearchStage(null);
-          if (!errored && !cancelled) {
-            if (wasClarification) {
-              onTurnComplete?.(userMsg, {
-                ...assistantMsg,
-                content: currentContent,
-              });
-            } else if (currentContent) {
-              updateAssistant({ searchSources: pendingSources });
-              onTurnComplete?.(userMsg, {
-                ...assistantMsg,
-                content: currentContent,
-                searchSources: pendingSources,
-              });
-            }
+          if (!errored && !cancelled && currentContent) {
+            updateAssistant({ searchSources: pendingSources });
+            onTurnComplete?.(userMsg, {
+              ...assistantMsg,
+              content: currentContent,
+              searchSources: pendingSources,
+            });
           }
           resolve({ final });
         };
 
         channel.onmessage = (event) => {
           switch (event.type) {
-            case 'Classifying':
-              setSearchStage('classifying');
+            case 'AnalyzingQuery':
+              setSearchStage({ kind: 'analyzing_query' });
               updateAssistant({ content: '' });
               break;
             case 'Searching':
-              setSearchStage('searching');
+              setSearchStage({ kind: 'searching' });
               break;
-            case 'Clarifying':
-              wasClarification = true;
-              currentContent = event.question;
-              setSearchStage(null);
-              updateAssistant({ content: event.question });
+            case 'ReadingSources':
+              setSearchStage({ kind: 'reading_sources' });
+              break;
+            case 'RefiningSearch':
+              setSearchStage({
+                kind: 'refining_search',
+                attempt: event.attempt,
+                total: event.total,
+              });
+              break;
+            case 'Composing':
+              setSearchStage({ kind: 'composing' });
               break;
             case 'Sources':
               pendingSources = event.results;
@@ -295,10 +290,12 @@ export function useOllama(
               setSearchStage(null);
               updateAssistant({ content: currentContent });
               break;
+            case 'Warning':
+              // Warnings are informational; no UI state change needed here.
+              // Task 21 will add warning icon rendering.
+              break;
             case 'Done':
-              // Clarify-only turns: pipeline is paused for user input, keep
-              // searchActive. Token-bearing turns: answer delivered, drop it.
-              finish(sawToken || !wasClarification);
+              finish(sawToken);
               break;
             case 'Cancelled':
               cancelled = true;
