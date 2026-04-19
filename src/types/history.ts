@@ -37,6 +37,9 @@ export interface PersistedMessage {
   /** JSON-encoded `SearchResultPreview[]` for assistant messages produced
    *  through the `/search` pipeline. Null for other messages. */
   search_sources: string | null;
+  /** JSON-encoded `SearchWarning[]` emitted during a `/search` turn.
+   *  Null for non-search messages or turns with no warnings. */
+  search_warnings: string | null;
   /** Unix timestamp (seconds) the message was created. */
   created_at: number;
 }
@@ -59,4 +62,6 @@ export interface SaveMessagePayload {
   image_paths: string[] | null;
   thinking_content: string | null;
   search_sources: { title: string; url: string }[] | null;
+  /** Pre-serialized JSON string of `SearchWarning[]`, or null. */
+  search_warnings: string | null;
 }

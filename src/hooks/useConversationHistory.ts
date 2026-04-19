@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Message } from './useOllama';
-import type { SearchResultPreview } from '../types/search';
+import type { SearchResultPreview, SearchWarning } from '../types/search';
 import type {
   ConversationSummary,
   PersistedMessage,
@@ -21,6 +21,10 @@ function toPayload(msg: Message): SaveMessagePayload {
     image_paths: msg.imagePaths ?? null,
     thinking_content: msg.thinkingContent ?? null,
     search_sources: msg.searchSources ?? null,
+    search_warnings:
+      msg.searchWarnings && msg.searchWarnings.length > 0
+        ? JSON.stringify(msg.searchWarnings)
+        : null,
   };
 }
 
@@ -35,6 +39,9 @@ function fromPersisted(msg: PersistedMessage): Message {
   const searchSources = msg.search_sources
     ? (JSON.parse(msg.search_sources) as SearchResultPreview[])
     : undefined;
+  const searchWarnings = msg.search_warnings
+    ? (JSON.parse(msg.search_warnings) as SearchWarning[])
+    : undefined;
   return {
     id: msg.id,
     role: msg.role as 'user' | 'assistant',
@@ -48,6 +55,8 @@ function fromPersisted(msg: PersistedMessage): Message {
       searchSources !== undefined && searchSources.length > 0
         ? true
         : undefined,
+    searchWarnings:
+      searchWarnings && searchWarnings.length > 0 ? searchWarnings : undefined,
   };
 }
 
@@ -127,6 +136,7 @@ export function useConversationHistory() {
           imagePaths: userMsg.imagePaths ?? null,
           thinkingContent: null,
           searchSources: null,
+          searchWarnings: null,
         }),
         invoke('persist_message', {
           conversationId,
@@ -136,6 +146,11 @@ export function useConversationHistory() {
           imagePaths: null,
           thinkingContent: assistantMsg.thinkingContent ?? null,
           searchSources: assistantMsg.searchSources ?? null,
+          searchWarnings:
+            assistantMsg.searchWarnings &&
+            assistantMsg.searchWarnings.length > 0
+              ? JSON.stringify(assistantMsg.searchWarnings)
+              : null,
         }),
       ]);
     },

@@ -709,6 +709,89 @@ describe('ChatBubble', () => {
     });
   });
 
+  describe('search warning icon', () => {
+    it('renders the warning icon beside Sources when message has searchWarnings', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="answer"
+          index={0}
+          searchSources={[{ title: 'A', url: 'https://a.com' }]}
+          searchWarnings={['reader_unavailable']}
+        />,
+      );
+      expect(screen.getByRole('img', { name: /warning/i })).toBeInTheDocument();
+    });
+
+    it('renders the warning icon even when there are no sources', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="answer"
+          index={0}
+          searchWarnings={['no_results_initial']}
+        />,
+      );
+      expect(screen.getByRole('img', { name: /error/i })).toBeInTheDocument();
+    });
+
+    it('does not render the warning icon when searchWarnings is absent', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="answer"
+          index={0}
+          searchSources={[{ title: 'A', url: 'https://a.com' }]}
+        />,
+      );
+      expect(screen.queryByRole('img', { name: /warning/i })).toBeNull();
+    });
+
+    it('does not render the warning icon when searchWarnings is empty', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="answer"
+          index={0}
+          searchWarnings={[]}
+        />,
+      );
+      expect(screen.queryByRole('img')).toBeNull();
+    });
+
+    it('applies search-bubble--error class when any warning is error-severity', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="answer"
+          index={0}
+          searchWarnings={['router_failure']}
+        />,
+      );
+      const bubble = screen.getByTestId('chat-bubble');
+      expect(bubble.className).toContain('search-bubble--error');
+    });
+
+    it('does not apply search-bubble--error class for warn-severity warnings', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="answer"
+          index={0}
+          searchWarnings={['reader_unavailable']}
+        />,
+      );
+      const bubble = screen.getByTestId('chat-bubble');
+      expect(bubble.className).not.toContain('search-bubble--error');
+    });
+
+    it('does not apply search-bubble--error class when no warnings', () => {
+      render(<ChatBubble role="assistant" content="answer" index={0} />);
+      const bubble = screen.getByTestId('chat-bubble');
+      expect(bubble.className).not.toContain('search-bubble--error');
+    });
+  });
+
   describe('inline citation wrapping and hover linking', () => {
     const SOURCES = [
       { title: 'Rust Docs', url: 'https://doc.rust-lang.org' },

@@ -46,6 +46,7 @@ describe('useConversationHistory', () => {
           image_paths: null,
           thinking_content: null,
           search_sources: null,
+          search_warnings: null,
         },
         {
           role: 'assistant',
@@ -54,6 +55,7 @@ describe('useConversationHistory', () => {
           image_paths: null,
           thinking_content: null,
           search_sources: null,
+          search_warnings: null,
         },
       ],
       model: MODEL,
@@ -94,6 +96,7 @@ describe('useConversationHistory', () => {
           image_paths: null,
           thinking_content: null,
           search_sources: null,
+          search_warnings: null,
         },
         {
           role: 'assistant',
@@ -102,6 +105,7 @@ describe('useConversationHistory', () => {
           image_paths: null,
           thinking_content: null,
           search_sources: null,
+          search_warnings: null,
         },
       ],
     });
@@ -172,6 +176,7 @@ describe('useConversationHistory', () => {
       imagePaths: null,
       thinkingContent: null,
       searchSources: null,
+      searchWarnings: null,
     });
     expect(invoke).toHaveBeenCalledWith('persist_message', {
       conversationId: 'conv-123',
@@ -181,6 +186,7 @@ describe('useConversationHistory', () => {
       imagePaths: null,
       thinkingContent: null,
       searchSources: null,
+      searchWarnings: null,
     });
   });
 
@@ -405,6 +411,7 @@ describe('useConversationHistory', () => {
       imagePaths: null,
       thinkingContent: 'Let me reason step by step',
       searchSources: null,
+      searchWarnings: null,
     });
   });
 
@@ -437,6 +444,7 @@ describe('useConversationHistory', () => {
           image_paths: null,
           thinking_content: null,
           search_sources: null,
+          search_warnings: null,
         },
         {
           role: 'assistant',
@@ -445,6 +453,7 @@ describe('useConversationHistory', () => {
           image_paths: null,
           thinking_content: 'Deep thoughts',
           search_sources: null,
+          search_warnings: null,
         },
       ],
       model: MODEL,

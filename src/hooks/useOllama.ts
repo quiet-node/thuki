@@ -4,6 +4,7 @@ import type {
   SearchEvent,
   SearchResultPreview,
   SearchStage,
+  SearchWarning,
 } from '../types/search';
 
 /** Mirrors the Rust OllamaErrorKind enum sent over IPC. */
@@ -35,6 +36,12 @@ export interface Message {
    * footer below the answer so users can visit the original pages.
    */
   searchSources?: SearchResultPreview[];
+  /**
+   * Warnings emitted by the `/search` pipeline during this turn. Empty or
+   * absent means the pipeline completed without issues. Rendered by
+   * `SearchWarningIcon` beside the Sources collapsible in `ChatBubble`.
+   */
+  searchWarnings?: SearchWarning[];
 }
 
 /**
@@ -235,6 +242,7 @@ export function useOllama(
       let currentContent = '';
       let sawToken = false;
       let pendingSources: SearchResultPreview[] | undefined;
+      let warnings: SearchWarning[] = [];
       let errored = false;
       let cancelled = false;
 
@@ -249,11 +257,15 @@ export function useOllama(
           setIsGenerating(false);
           setSearchStage(null);
           if (!errored && !cancelled && currentContent) {
-            updateAssistant({ searchSources: pendingSources });
+            updateAssistant({
+              searchSources: pendingSources,
+              searchWarnings: warnings.length > 0 ? warnings : undefined,
+            });
             onTurnComplete?.(userMsg, {
               ...assistantMsg,
               content: currentContent,
               searchSources: pendingSources,
+              searchWarnings: warnings.length > 0 ? warnings : undefined,
             });
           }
           resolve({ final });
@@ -291,8 +303,7 @@ export function useOllama(
               updateAssistant({ content: currentContent });
               break;
             case 'Warning':
-              // Warnings are informational; no UI state change needed here.
-              // Task 21 will add warning icon rendering.
+              warnings = [...warnings, event.warning];
               break;
             case 'Done':
               finish(sawToken);

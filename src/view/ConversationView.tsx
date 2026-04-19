@@ -224,6 +224,7 @@ export function ConversationView({
                 isLastAssistant && !msg.content && !!msg.thinkingContent
               }
               searchSources={msg.searchSources}
+              searchWarnings={msg.searchWarnings}
             />
           );
         })}
@@ -235,9 +236,7 @@ export function ConversationView({
         messages[messages.length - 1]?.role === 'assistant' &&
         !messages[messages.length - 1]?.content &&
         !messages[messages.length - 1]?.thinkingContent ? (
-          <LoadingStage
-            label={searchStageLabel(searchStage)}
-          />
+          <LoadingStage label={searchStageLabel(searchStage)} />
         ) : null}
       </div>
 

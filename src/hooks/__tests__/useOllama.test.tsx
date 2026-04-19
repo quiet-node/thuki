@@ -1173,7 +1173,7 @@ describe('useOllama', () => {
       expect(lastMsg.searchSources).toHaveLength(2);
     });
 
-    it('Warning event is a no-op on UI state while streaming continues', async () => {
+    it('Warning event accumulates into message.searchWarnings while streaming continues', async () => {
       const { result } = renderHook(() => useOllama());
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
@@ -1194,6 +1194,70 @@ describe('useOllama', () => {
       });
       const last = result.current.messages[result.current.messages.length - 1];
       expect(last.content).toBe('ok');
+      expect(last.searchWarnings).toEqual(['reader_unavailable']);
+    });
+
+    it('askSearch accumulates warnings from Warning events into the persisted turn', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'AnalyzingQuery' });
+        channel!.simulateMessage({ type: 'Searching' });
+        channel!.simulateMessage({
+          type: 'Sources',
+          results: [{ title: 'A', url: 'https://a.com' }],
+        });
+        channel!.simulateMessage({ type: 'ReadingSources' });
+        channel!.simulateMessage({
+          type: 'Warning',
+          warning: 'reader_unavailable',
+        });
+        channel!.simulateMessage({ type: 'Composing' });
+        channel!.simulateMessage({ type: 'Token', content: 'answer' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await pending;
+      });
+      expect(onTurnComplete).toHaveBeenCalledOnce();
+      const [, assistantMsg] = onTurnComplete.mock.calls[0];
+      expect(assistantMsg.searchWarnings).toEqual(['reader_unavailable']);
+    });
+
+    it('askSearch passes multiple warnings through in order', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Warning',
+          warning: 'reader_unavailable',
+        });
+        channel!.simulateMessage({
+          type: 'Warning',
+          warning: 'iteration_cap_exhausted',
+        });
+        channel!.simulateMessage({ type: 'Token', content: 'answer' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await pending;
+      });
+      expect(onTurnComplete).toHaveBeenCalledOnce();
+      const [, assistantMsg] = onTurnComplete.mock.calls[0];
+      expect(assistantMsg.searchWarnings).toEqual([
+        'reader_unavailable',
+        'iteration_cap_exhausted',
+      ]);
     });
   });
 

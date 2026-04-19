@@ -9,8 +9,10 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
 import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
+import { SearchWarningIcon } from './SearchWarningIcon';
 import type { OllamaErrorKind } from '../hooks/useOllama';
-import type { SearchResultPreview } from '../types/search';
+import type { SearchResultPreview, SearchWarning } from '../types/search';
+import { SEARCH_WARNING_SEVERITY } from '../config/searchWarnings';
 
 /**
  * Extracts a bare hostname from a URL for the sources footer. Strips the
@@ -208,6 +210,9 @@ interface ChatBubbleProps {
   /** Source URLs forwarded from the SearXNG results. Rendered as a clickable
    * footer below the answer; clicking opens the URL in the default browser. */
   searchSources?: SearchResultPreview[];
+  /** Warnings emitted by the `/search` pipeline for this turn. Renders a
+   * `SearchWarningIcon` beside the Sources collapsible when non-empty. */
+  searchWarnings?: SearchWarning[];
 }
 
 /**
@@ -252,9 +257,19 @@ export function ChatBubble({
   thinkingContent,
   isThinking,
   searchSources,
+  searchWarnings,
 }: ChatBubbleProps) {
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
+
+  const activeWarnings = searchWarnings ?? [];
+  const warningSeverity: 'error' | 'warn' | null = activeWarnings.some(
+    (w) => SEARCH_WARNING_SEVERITY[w] === 'error',
+  )
+    ? 'error'
+    : activeWarnings.length > 0
+      ? 'warn'
+      : null;
 
   /** Ref on the markdown container so `wrapCitations` can post-process
    *  the rendered DOM after every token update. */
@@ -363,7 +378,8 @@ export function ChatBubble({
         /* AI plain text — full width, no bubble chrome */
         <div
           ref={containerRef}
-          className="search-bubble flex flex-col w-full"
+          data-testid="chat-bubble"
+          className={`search-bubble flex flex-col w-full${warningSeverity === 'error' ? ' search-bubble--error' : ''}`}
           onMouseOver={onAnswerMouseOver}
           onMouseOut={onAnswerMouseOut}
           onClick={onAnswerClick}
@@ -487,6 +503,7 @@ export function ChatBubble({
                   </span>
                 </button>
               )}
+              <SearchWarningIcon warnings={activeWarnings} />
             </div>
           )}
         </div>

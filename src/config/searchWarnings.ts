@@ -13,8 +13,7 @@ export const SEARCH_WARNING_COPY: Record<SearchWarning, string> = {
   reader_unavailable:
     "Couldn't read full pages. Showing results from search snippets only.",
   reader_partial_failure: "Some pages couldn't be loaded.",
-  no_results_initial:
-    'No search results found. Try rephrasing your question.',
+  no_results_initial: 'No search results found. Try rephrasing your question.',
   iteration_cap_exhausted:
     'Answer based on limited information. Try a more specific question for better results.',
   router_failure:
@@ -22,11 +21,12 @@ export const SEARCH_WARNING_COPY: Record<SearchWarning, string> = {
   synthesis_interrupted: 'Answer was cut off. Try again.',
 };
 
-export const SEARCH_WARNING_SEVERITY: Record<SearchWarning, 'warn' | 'error'> = {
-  reader_unavailable: 'warn',
-  reader_partial_failure: 'warn',
-  no_results_initial: 'error',
-  iteration_cap_exhausted: 'warn',
-  router_failure: 'error',
-  synthesis_interrupted: 'error',
-};
+export const SEARCH_WARNING_SEVERITY: Record<SearchWarning, 'warn' | 'error'> =
+  {
+    reader_unavailable: 'warn',
+    reader_partial_failure: 'warn',
+    no_results_initial: 'error',
+    iteration_cap_exhausted: 'warn',
+    router_failure: 'error',
+    synthesis_interrupted: 'error',
+  };

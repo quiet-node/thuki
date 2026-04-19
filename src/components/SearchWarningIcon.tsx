@@ -22,15 +22,11 @@ interface SearchWarningIconProps {
 export function SearchWarningIcon({ warnings }: SearchWarningIconProps) {
   if (warnings.length === 0) return null;
 
-  const isError = warnings.some(
-    (w) => SEARCH_WARNING_SEVERITY[w] === 'error',
-  );
+  const isError = warnings.some((w) => SEARCH_WARNING_SEVERITY[w] === 'error');
   const severity: 'warn' | 'error' = isError ? 'error' : 'warn';
   const label = isError ? 'error' : 'warning';
   const glyph = isError ? '\u2297' : '\u26A0'; // ⊗ vs ⚠
-  const tooltip = warnings
-    .map((w) => SEARCH_WARNING_COPY[w])
-    .join('\n');
+  const tooltip = warnings.map((w) => SEARCH_WARNING_COPY[w]).join('\n');
 
   return (
     <span
