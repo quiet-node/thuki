@@ -72,6 +72,7 @@ pub struct ReaderClient {
 
 impl ReaderClient {
     /// Build a client pointed at `config::READER_BASE_URL`.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new() -> Self {
         Self::new_with_base(READER_BASE_URL.to_string())
     }
@@ -165,6 +166,7 @@ impl ReaderClient {
 }
 
 impl Default for ReaderClient {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn default() -> Self {
         Self::new()
     }
@@ -332,5 +334,43 @@ mod tests {
         assert!(pages.pages.is_empty());
         assert!(pages.empty_urls.is_empty());
         assert!(pages.failed_urls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_batch_records_non_json_200_as_failed() {
+        // Line 216: r.json::<ExtractResponse>() fails (Err arm), maps to
+        // FetchOutcome::Failed.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(b"not json at all".to_vec(), "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let result = client
+            .fetch_batch(&["https://a.com/bad-json".to_string()])
+            .await
+            .unwrap();
+        assert!(result.pages.is_empty());
+        assert_eq!(result.failed_urls, vec!["https://a.com/bad-json".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn fetch_batch_records_builder_error_as_failed() {
+        // Line 202: reqwest errors that are neither is_connect() nor match the
+        // transient-string classifier land in FetchOutcome::Failed.
+        // "http://:1" produces "builder error: empty host" which satisfies
+        // both conditions.
+        let client = ReaderClient::new_with_base("http://:1".to_string());
+        let result = client
+            .fetch_batch(&["https://a.com/any".to_string()])
+            .await
+            .unwrap();
+        assert!(result.pages.is_empty());
+        assert_eq!(result.failed_urls, vec!["https://a.com/any".to_string()]);
     }
 }
