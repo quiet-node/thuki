@@ -167,8 +167,13 @@ async fn request_json(
 /// - [`SearchError::Cancelled`] — token cancelled before or during the request.
 /// - [`SearchError::LlmUnavailable`] — transport failure.
 /// - [`SearchError::LlmHttp`] — non-2xx status from Ollama.
-/// - [`SearchError::Router`] — no JSON object in the response, or the JSON
-///   did not match [`RouterJudgeOutput`].
+///
+/// Note: this function never returns [`SearchError::Router`]. If the first
+/// attempt produces output that does not parse as [`RouterJudgeOutput`], we
+/// retry once with a stricter user-message suffix. If that also fails, we
+/// fall back to a safe default (PROCEED + insufficient history + the raw
+/// user query) so the pipeline always produces an answer rather than
+/// surfacing a cryptic "invalid response" error.
 pub async fn call_router_merged(
     endpoint: &str,
     model: &str,
@@ -183,6 +188,8 @@ pub async fn call_router_merged(
     }
 
     let system = ROUTER_MERGED_SYSTEM_PROMPT.replace("{{TODAY}}", today);
+
+    // First attempt: standard prompt.
     let messages = build_messages_with_system(&system, history, query);
     let raw = request_json(
         endpoint,
@@ -193,11 +200,49 @@ pub async fn call_router_merged(
         ROUTER_TIMEOUT_SECS,
     )
     .await?;
+    if let Some(output) = try_parse_router_output(&raw) {
+        return Ok(output);
+    }
 
-    let slice = crate::search::judge::extract_json_object_public(&raw)
-        .ok_or_else(|| SearchError::Router("no JSON in router response".into()))?;
-    serde_json::from_str::<RouterJudgeOutput>(slice)
-        .map_err(|e| SearchError::Router(format!("router JSON: {e}")))
+    // Retry with a stricter user message so the model is more likely to
+    // emit a clean JSON object. Transport errors propagate; only JSON-shape
+    // errors fall through to the default. No explicit cancel check needed
+    // here: `request_json` races the token internally at its send site.
+    let strict_query = format!(
+        "{query}\n\nReply with ONLY the JSON object described by the system prompt. No prose, no markdown fences, no explanation."
+    );
+    let retry_messages = build_messages_with_system(&system, history, &strict_query);
+    let retry_raw = request_json(
+        endpoint,
+        model,
+        client,
+        retry_messages,
+        cancel_token,
+        ROUTER_TIMEOUT_SECS,
+    )
+    .await?;
+    if let Some(output) = try_parse_router_output(&retry_raw) {
+        return Ok(output);
+    }
+
+    // Both attempts produced unparseable output. Fall back to a safe default
+    // so the pipeline still produces a result. PROCEED with Insufficient
+    // history forces a fresh web search on the raw user query, which matches
+    // what a user who typed `/search <query>` almost always wants.
+    Ok(RouterJudgeOutput {
+        action: crate::search::types::Action::Proceed,
+        clarifying_question: None,
+        history_sufficiency: Some(crate::search::types::Sufficiency::Insufficient),
+        optimized_query: Some(query.to_string()),
+    })
+}
+
+/// Best-effort extraction of [`RouterJudgeOutput`] from raw LLM output.
+/// Returns `None` when the output contains no balanced JSON object or the
+/// shape does not match the expected schema.
+fn try_parse_router_output(raw: &str) -> Option<RouterJudgeOutput> {
+    let slice = crate::search::judge::extract_json_object_public(raw)?;
+    serde_json::from_str::<RouterJudgeOutput>(slice).ok()
 }
 
 // ─── Universal sufficiency judge call ────────────────────────────────────────
@@ -761,7 +806,7 @@ mod router_judge_tests {
     }
 
     #[tokio::test]
-    async fn merged_router_returns_router_error_when_no_json_in_response() {
+    async fn merged_router_falls_back_to_default_when_no_json_in_response() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
@@ -774,7 +819,7 @@ mod router_judge_tests {
 
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
-        let err = call_router_merged(
+        let output = call_router_merged(
             &format!("{}/api/chat", server.uri()),
             "m",
             &client,
@@ -784,12 +829,21 @@ mod router_judge_tests {
             &token,
         )
         .await
-        .unwrap_err();
-        assert!(matches!(err, SearchError::Router(_)));
+        .expect("router should fall back to safe defaults, not error");
+        assert!(matches!(
+            output.action,
+            crate::search::types::Action::Proceed
+        ));
+        assert_eq!(
+            output.history_sufficiency,
+            Some(crate::search::types::Sufficiency::Insufficient)
+        );
+        assert_eq!(output.optimized_query.as_deref(), Some("q"));
+        assert!(output.clarifying_question.is_none());
     }
 
     #[tokio::test]
-    async fn merged_router_returns_router_error_when_json_does_not_match_schema() {
+    async fn merged_router_falls_back_when_json_does_not_match_schema() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
@@ -802,6 +856,51 @@ mod router_judge_tests {
 
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
+        let output = call_router_merged(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            &[],
+            "q",
+            "2026-04-18",
+            &token,
+        )
+        .await
+        .expect("router should fall back to safe defaults, not error");
+        assert!(matches!(
+            output.action,
+            crate::search::types::Action::Proceed
+        ));
+        assert_eq!(
+            output.history_sufficiency,
+            Some(crate::search::types::Sufficiency::Insufficient)
+        );
+        assert_eq!(output.optimized_query.as_deref(), Some("q"));
+    }
+
+    #[tokio::test]
+    async fn merged_router_returns_cancelled_if_token_fires_between_attempts() {
+        use std::sync::Arc;
+        use wiremock::Request;
+
+        let server = MockServer::start().await;
+        let token = Arc::new(CancellationToken::new());
+        let token_clone = token.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(move |_req: &Request| {
+                // Cancel after the first attempt finishes, before the retry
+                // loop re-checks the token.
+                token_clone.cancel();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "message": { "role": "assistant", "content": "nope" },
+                    "done": true
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
         let err = call_router_merged(
             &format!("{}/api/chat", server.uri()),
             "m",
@@ -813,7 +912,59 @@ mod router_judge_tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, SearchError::Router(_)));
+        assert_eq!(err, SearchError::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn merged_router_retry_recovers_when_second_attempt_parses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use wiremock::Request;
+
+        let server = MockServer::start().await;
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(move |_req: &Request| {
+                let n = counter_clone.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "message": { "role": "assistant", "content": "I cannot." },
+                        "done": true
+                    }))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "message": { "role": "assistant", "content": "{\"action\":\"proceed\",\"clarifying_question\":null,\"history_sufficiency\":\"sufficient\",\"optimized_query\":\"cats\"}" },
+                        "done": true
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let output = call_router_merged(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            &[],
+            "q",
+            "2026-04-18",
+            &token,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            output.action,
+            crate::search::types::Action::Proceed
+        ));
+        assert_eq!(
+            output.history_sufficiency,
+            Some(crate::search::types::Sufficiency::Sufficient)
+        );
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
     }
 
     // ── call_judge ───────────────────────────────────────────────────────────
