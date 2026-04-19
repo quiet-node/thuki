@@ -14,11 +14,17 @@ import { createPortal } from 'react-dom';
 interface TooltipProps {
   /** Short label to display inside the tooltip. */
   label: string;
-  /** The trigger element — usually an icon button. */
+  /** The trigger element: usually an icon button. */
   children: React.ReactNode;
+  /**
+   * When true, the tooltip box preserves newlines in `label` and wraps long
+   * lines at a ~320px max width. Single-line icon tooltips should leave this
+   * off for the tight one-line presentation.
+   */
+  multiline?: boolean;
 }
 
-export function Tooltip({ label, children }: TooltipProps) {
+export function Tooltip({ label, children, multiline = false }: TooltipProps) {
   const [isVisible, setIsVisible] = useState(false);
   /** Defer portal mount until after first hover (lazy load). */
   const [hasActivated, setHasActivated] = useState(false);
@@ -37,9 +43,9 @@ export function Tooltip({ label, children }: TooltipProps) {
     /* v8 ignore stop */
     const rect = triggerRef.current.getBoundingClientRect();
     const rawLeft = rect.left + rect.width / 2;
-    // Conservative half-width estimate for the widest label ("Conversation history").
-    // Keeps the tooltip box fully inside the viewport near window edges.
-    const tooltipHalfWidth = 90;
+    // Conservative half-width estimate. Single-line tooltips fit "Conversation
+    // history" worst-case; multiline tooltips may use the full 320px max width.
+    const tooltipHalfWidth = multiline ? 160 : 90;
     const edgePadding = 8;
     const left = Math.max(
       tooltipHalfWidth + edgePadding,
@@ -112,7 +118,13 @@ export function Tooltip({ label, children }: TooltipProps) {
                     }}
                     className="absolute -top-1.5 h-3 w-3 -translate-x-1/2 rotate-45 border-l border-t border-surface-border bg-surface-base"
                   />
-                  <div className="relative rounded-lg border border-surface-border bg-surface-base px-2.5 py-1.5 text-[11px] text-text-primary shadow-chat whitespace-nowrap">
+                  <div
+                    className={`relative rounded-lg border border-surface-border bg-surface-base px-2.5 py-1.5 text-[11px] text-text-primary shadow-chat ${
+                      multiline
+                        ? 'max-w-xs whitespace-pre-line leading-snug'
+                        : 'whitespace-nowrap'
+                    }`}
+                  >
                     {label}
                   </div>
                 </motion.div>
