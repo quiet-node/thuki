@@ -940,4 +940,31 @@ mod router_judge_tests {
         .unwrap_err();
         assert!(matches!(err, SearchError::Judge(_)));
     }
+
+    #[tokio::test]
+    async fn request_json_returns_llm_http_error_on_non_success_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        // call_router_merged calls request_json internally; a 503 maps to
+        // SearchError::LlmHttp(503).
+        let err = call_router_merged(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            &[],
+            "q",
+            "2026-04-18",
+            &token,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, SearchError::LlmHttp(503));
+    }
 }
