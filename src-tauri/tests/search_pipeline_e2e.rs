@@ -193,7 +193,7 @@ async fn happy_path_snippets_sufficient_streams_answer() {
         &history,
         "What is rust async?".into(),
         "2026-04-18",
-        cb,
+        &cb,
         &router,
         &judge,
     )
@@ -315,7 +315,7 @@ async fn reader_escalation_with_chunks_sufficient() {
         &history,
         "explain async rust".into(),
         "2026-04-18",
-        cb,
+        &cb,
         &router,
         &judge,
     )
@@ -395,7 +395,7 @@ async fn reader_unavailable_degrades_to_snippets_and_warns() {
         &history,
         "some query".into(),
         "2026-04-18",
-        cb,
+        &cb,
         &router,
         &judge,
     )
@@ -499,7 +499,7 @@ async fn exhausted_gap_loop_warns_iteration_cap_and_streams_fallback() {
         &history,
         "initial query".into(),
         "2026-04-18",
-        cb,
+        &cb,
         &router,
         &judge,
     )
@@ -602,7 +602,7 @@ async fn cancel_midloop_does_not_persist_and_emits_cancelled() {
         &history,
         "cancel test".into(),
         "2026-04-18",
-        cb,
+        &cb,
         &router,
         &judge,
     )

@@ -91,7 +91,7 @@ pub async fn search_pipeline(
         &history,
         message,
         &today,
-        |event| {
+        &|event| {
             let _ = on_event.send(event);
         },
         &router,

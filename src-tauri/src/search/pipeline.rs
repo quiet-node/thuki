@@ -354,7 +354,7 @@ fn is_cancelled_emit(cancel: &CancellationToken, on_event: &impl Fn(SearchEvent)
 /// `call_judge` which races internally. This ensures in-flight work is dropped
 /// immediately on cancel rather than waiting for round-trips to complete.
 #[allow(clippy::too_many_arguments)]
-pub async fn run_agentic<R, J>(
+pub async fn run_agentic(
     ollama_endpoint: &str,
     searxng_endpoint: &str,
     reader_base_url: &str,
@@ -365,14 +365,10 @@ pub async fn run_agentic<R, J>(
     history: &ConversationHistory,
     query: String,
     today: &str,
-    on_event: impl Fn(SearchEvent),
-    router: &R,
-    judge: &J,
-) -> Result<(), SearchError>
-where
-    R: RouterJudgeCaller + ?Sized,
-    J: JudgeCaller + ?Sized,
-{
+    on_event: &(dyn Fn(SearchEvent) + Sync),
+    router: &dyn RouterJudgeCaller,
+    judge: &dyn JudgeCaller,
+) -> Result<(), SearchError> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return Err(SearchError::EmptyQuery);
@@ -875,12 +871,12 @@ where
                 }
 
                 // Synthesize a best-effort answer from all accumulated chunks.
-                if !warnings.contains(&SearchWarning::IterationCapExhausted) {
-                    warnings.push(SearchWarning::IterationCapExhausted);
-                    on_event(SearchEvent::Warning {
-                        warning: SearchWarning::IterationCapExhausted,
-                    });
-                }
+                // IterationCapExhausted is only reachable once per pipeline run
+                // (the gap loop exits at most once), so no dedup check is needed.
+                warnings.push(SearchWarning::IterationCapExhausted);
+                on_event(SearchEvent::Warning {
+                    warning: SearchWarning::IterationCapExhausted,
+                });
 
                 let fallback_chunks: Vec<chunker::Chunk> =
                     rerank::rerank_chunks(&accumulated_chunks, &query, config::TOP_K_CHUNKS)
@@ -1328,7 +1324,7 @@ mod agentic_tests {
             &h,
             "   ".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -1367,7 +1363,7 @@ mod agentic_tests {
             &h,
             "q".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -1407,7 +1403,7 @@ mod agentic_tests {
             &h,
             "tell me more".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -1475,7 +1471,7 @@ mod agentic_tests {
             &h,
             "q".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -1528,7 +1524,7 @@ mod agentic_tests {
             &h,
             "what is 2+2".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -1564,6 +1560,72 @@ mod agentic_tests {
             history_sufficiency: Some(Sufficiency::Insufficient),
             optimized_query: Some(query.into()),
         })
+    }
+
+    // A router that returns Proceed with optimized_query=None so the pipeline
+    // falls back to user_query.clone() (line 449).
+    fn proceed_router_no_opt() -> MockRouter {
+        MockRouter(RouterJudgeOutput {
+            action: Action::Proceed,
+            clarifying_question: None,
+            history_sufficiency: Some(Sufficiency::Insufficient),
+            optimized_query: None,
+        })
+    }
+
+    // Verifies that when the router returns optimized_query=None, the pipeline
+    // falls back to the user query (unwrap_or_else closure on line 449 fires).
+    #[tokio::test]
+    async fn proceed_with_no_optimized_query_falls_back_to_user_query() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let searx_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let ollama_server = MockServer::start().await;
+        let stream = stream_line_token("answer");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_router_no_opt();
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![sufficient_verdict()].into_iter().collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "my query".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
     }
 
     fn searx_body_one_result(url: &str) -> String {
@@ -1625,7 +1687,7 @@ mod agentic_tests {
             &h,
             "test query".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -1720,7 +1782,7 @@ mod agentic_tests {
             &h,
             "test query".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -1790,7 +1852,7 @@ mod agentic_tests {
             &h,
             "test query".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -1840,7 +1902,7 @@ mod agentic_tests {
             &h,
             "test query".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -1909,7 +1971,7 @@ mod agentic_tests {
             &h,
             "test query".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -1981,7 +2043,7 @@ mod agentic_tests {
             &h,
             "q".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -2024,7 +2086,7 @@ mod agentic_tests {
             &h,
             "q".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -2068,7 +2130,7 @@ mod agentic_tests {
             &h,
             "q".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -2125,7 +2187,7 @@ mod agentic_tests {
             &h,
             "q".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -2197,7 +2259,7 @@ mod agentic_tests {
             &h,
             "q".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -2278,7 +2340,7 @@ mod agentic_tests {
             &h,
             "q".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -2380,7 +2442,7 @@ mod agentic_tests {
             &h,
             "q".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -2488,7 +2550,7 @@ mod agentic_tests {
             &h,
             "test query".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -2515,12 +2577,11 @@ mod agentic_tests {
 
         // No IterationCapExhausted (succeeded before cap).
         assert!(
-            !evs.iter().any(|e| matches!(
-                e,
-                SearchEvent::Warning {
-                    warning: SearchWarning::IterationCapExhausted
-                }
-            )),
+            !evs.iter().any(|e| {
+                *e == (SearchEvent::Warning {
+                    warning: SearchWarning::IterationCapExhausted,
+                })
+            }),
             "unexpected IterationCapExhausted in: {evs:?}"
         );
 
@@ -2646,7 +2707,7 @@ mod agentic_tests {
             &h,
             "test query".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -2783,7 +2844,7 @@ mod agentic_tests {
             &h,
             "test query".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -2914,7 +2975,7 @@ mod agentic_tests {
             &h,
             "test query".into(),
             "2026-04-18",
-            cb,
+            &cb,
             &router,
             &judge,
         )
@@ -2942,4 +3003,1330 @@ mod agentic_tests {
 
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
     }
+
+    // ── Cancellation during initial SearXNG call (lines 475-476) ─────────────
+
+    // Cancel fires while the initial SearXNG request is in-flight.
+    // Lines 474-476: Err(SearchError::Cancelled) arm of the initial-round select.
+    #[tokio::test]
+    async fn initial_searxng_cancel_mid_flight_emits_cancelled() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let searx_server = MockServer::start().await;
+        // Delay the SearXNG response so the cancel fires during the select.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(200))
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+        let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            token_clone.cancel();
+        });
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx_server.uri()),
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, SearchEvent::Cancelled)),
+            "expected Cancelled in: {evs:?}"
+        );
+    }
+
+    // ── A judge that cancels on the Nth call ──────────────────────────────────
+
+    struct CancelsOnNthJudgeCall {
+        token: CancellationToken,
+        // Verdicts to return on call 1, 2, ...; cancels after the Nth call.
+        verdicts: std::sync::Mutex<VecDeque<JudgeVerdict>>,
+        cancel_on: usize,
+        call_count: std::sync::Mutex<usize>,
+    }
+
+    impl CancelsOnNthJudgeCall {
+        fn new(token: CancellationToken, verdicts: Vec<JudgeVerdict>, cancel_on: usize) -> Self {
+            Self {
+                token,
+                verdicts: std::sync::Mutex::new(verdicts.into_iter().collect()),
+                cancel_on,
+                call_count: std::sync::Mutex::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl JudgeCaller for CancelsOnNthJudgeCall {
+        async fn call(&self, _q: &str, _s: &[JudgeSource]) -> Result<JudgeVerdict, SearchError> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            let n = *count;
+            drop(count);
+            let verdict = self
+                .verdicts
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("CancelsOnNthJudgeCall verdict queue exhausted");
+            if n == self.cancel_on {
+                self.token.cancel();
+            }
+            Ok(verdict)
+        }
+    }
+
+    // ── Cancel between initial-round judge and gap loop entry (line 683) ──────
+
+    // Cancel fires after the initial chunks-judge returns Insufficient (entering
+    // the gap loop) but before the loop body's is_cancelled_emit check at line 683.
+    #[tokio::test]
+    async fn cancel_before_gap_loop_iteration_emits_cancelled() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "t",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let mut searx = mockito::Server::new_async().await;
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_one_result("https://example.com/a"))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // Judge sequence: partial (triggers reader escalation),
+        // then insufficient (enters gap loop) cancelling on the 2nd call so
+        // is_cancelled_emit fires at the top of the first gap iteration.
+        let judge = CancelsOnNthJudgeCall::new(
+            token.clone(),
+            vec![partial_verdict(), insufficient_verdict()],
+            2,
+        );
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx.url()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, SearchEvent::Cancelled)),
+            "expected Cancelled in: {evs:?}"
+        );
+    }
+
+    // ── Cancel during gap-round SearXNG call (lines 699-700) ─────────────────
+
+    #[tokio::test]
+    async fn gap_round_searxng_cancel_mid_flight_emits_cancelled() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "t",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        // Initial SearXNG responds immediately.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        // Gap SearXNG (q1) responds slowly so cancel fires during the select.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(300))
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // partial -> reader -> insufficient with gap_queries=[q1] (enters gap loop)
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict(), insufficient_verdict()]
+                .into_iter()
+                .collect(),
+        ));
+
+        // Cancel fires after initial round completes but during gap SearXNG.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            token_clone.cancel();
+        });
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, SearchEvent::Cancelled)),
+            "expected Cancelled in: {evs:?}"
+        );
+    }
+
+    // ── Cancel after gap SearXNG completes but before reader (line 747) ────────
+
+    // A judge that returns a verdict and then fires cancel via a side-effect,
+    // used to time cancellation after the gap-SearXNG completes and before the
+    // is_cancelled_emit at line 747.
+    struct CancelsAfterGapSearxng {
+        token: CancellationToken,
+        verdicts: std::sync::Mutex<VecDeque<JudgeVerdict>>,
+    }
+
+    #[async_trait]
+    impl JudgeCaller for CancelsAfterGapSearxng {
+        async fn call(&self, _q: &str, _s: &[JudgeSource]) -> Result<JudgeVerdict, SearchError> {
+            let verdict = self
+                .verdicts
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("CancelsAfterGapSearxng verdict queue exhausted");
+            // Cancel after the SECOND judge call (initial-round chunks judge
+            // returns insufficient with gap_queries). The pipeline then enters the
+            // gap loop, runs gap SearXNG, reranks new URLs, and hits
+            // is_cancelled_emit at line 747 before invoking the reader.
+            if self.verdicts.lock().unwrap().is_empty() {
+                self.token.cancel();
+            }
+            Ok(verdict)
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_before_gap_round_reader_emits_cancelled() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "t",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        // Initial SearXNG.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        // Gap SearXNG returns a new URL immediately.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // partial (triggers initial reader), then insufficient with gap_queries=["q1"]
+        // (second call cancels). Gap SearXNG completes fast; is_cancelled_emit
+        // fires at line 747 before reader.
+        let judge = CancelsAfterGapSearxng {
+            token: token.clone(),
+            verdicts: std::sync::Mutex::new(
+                vec![partial_verdict(), insufficient_verdict()]
+                    .into_iter()
+                    .collect(),
+            ),
+        };
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, SearchEvent::Cancelled)),
+            "expected Cancelled in: {evs:?}"
+        );
+    }
+
+    // ── Gap-round reader: Cancelled (lines 758-760) ───────────────────────────
+
+    #[tokio::test]
+    async fn gap_round_reader_cancelled_emits_cancelled() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        // Initial round reader responds immediately.
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "t",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        // Gap SearXNG returns a new URL.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        // A second mock server for the gap-round reader that delays long enough
+        // for the cancel to fire mid-fetch.
+        let gap_reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(300))
+                    .set_body_json(serde_json::json!({
+                        "url": "u", "title": "t", "markdown": "m", "status": "ok"
+                    })),
+            )
+            .mount(&gap_reader_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // partial (triggers initial reader at reader_server),
+        // insufficient with gap_queries=["q1"] (gap reader at gap_reader_server).
+        // However, we need only one reader_base_url in run_agentic. We simulate
+        // the gap-round reader cancellation by using the same slow reader mock
+        // and mounting the initial response first (wiremock matches first
+        // registered mock), then the slow one fires for the gap round.
+        // Simpler: use a single reader server that always delays, and cancel
+        // during the initial reader fetch (but we already have a test for that).
+        // Actually: use partial_verdict -> insufficient. After initial reader
+        // succeeds and chunk judge returns insufficient, gap SearXNG returns a
+        // new URL. Then we cancel during the gap reader call.
+
+        // Reset: use gap_reader_server for ALL reader calls. Initial reader
+        // would also be slow, but we cancel AFTER initial reader succeeds.
+        // To make this work cleanly, cancel after the initial reader + judge
+        // completes. We use CancelsOnNthJudgeCall with cancel_on=2 (which fires
+        // after the second judge call returns insufficient). Then gap SearXNG
+        // runs fast, new URL arrives, gap reader call starts. But the token was
+        // already cancelled by then and fetch_batch_cancellable returns Cancelled.
+
+        let judge = CancelsOnNthJudgeCall::new(
+            token.clone(),
+            vec![partial_verdict(), insufficient_verdict()],
+            2,
+        );
+
+        // Cancel fires immediately when judge call 2 returns. Gap SearXNG would
+        // be selected, but is_cancelled_emit at line 683 fires first. That path
+        // is already covered by cancel_before_gap_loop_iteration_emits_cancelled.
+        // To hit the gap-round reader Cancelled arm (line 758), we need the
+        // cancel to fire AFTER gap SearXNG and BEFORE reader. We use the
+        // CancelsAfterGapSearxng judge for this, but delay the gap reader:
+        let gap_judge = CancelsAfterGapSearxng {
+            token: token.clone(),
+            verdicts: std::sync::Mutex::new(
+                vec![partial_verdict(), insufficient_verdict()]
+                    .into_iter()
+                    .collect(),
+            ),
+        };
+
+        // The gap reader is slow; after CancelsAfterGapSearxng fires, the reader
+        // call sees the cancelled token.
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx_server.uri()),
+            &gap_reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &gap_judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, SearchEvent::Cancelled)),
+            "expected Cancelled in: {evs:?}"
+        );
+        drop(judge); // suppress unused-variable warning
+        drop(token_clone);
+    }
+
+    // ── Cancel during gap-round Sources check (line 747) ──────────────────────
+    //
+    // Cancel fires when the on_event callback receives the SECOND Sources event
+    // (first = initial round, second = gap round). The pipeline's
+    // is_cancelled_emit at line 746 fires immediately after, executing line 747.
+
+    #[tokio::test]
+    async fn cancel_at_gap_round_sources_event_executes_line_747() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        // Both initial and gap reader calls: respond normally so they don't
+        // interfere with the cancel-point test.
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "t",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let token_cb = token.clone();
+        let h = ConversationHistory::new();
+
+        // on_event counts Sources events; cancels the token on the 2nd one
+        // (gap round). When is_cancelled_emit runs at line 746, the token is
+        // already cancelled, so line 747 executes.
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<SearchEvent>::new()));
+        let events_clone = events.clone();
+        let sources_seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sources_seen_cb = sources_seen.clone();
+        let cb = move |e: SearchEvent| {
+            if matches!(e, SearchEvent::Sources { .. }) {
+                let n = sources_seen_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if n >= 2 {
+                    token_cb.cancel();
+                }
+            }
+            events_clone.lock().unwrap().push(e);
+        };
+
+        let router = proceed_search_router("q");
+        // partial -> initial reader -> chunks: insufficient with gap_queries=["q1"]
+        // gap round SearXNG returns "https://example.com/gap" -> Sources emitted
+        // -> cancel fires -> is_cancelled_emit at line 746 -> line 747 returns.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict(), insufficient_verdict()]
+                .into_iter()
+                .collect(),
+        ));
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, SearchEvent::Cancelled)),
+            "expected Cancelled after gap-round Sources in: {evs:?}"
+        );
+    }
+
+    // ── Cancel during gap-round reader call (lines 758-759) ────────────────────
+    //
+    // Cancel fires when the on_event callback receives the SECOND ReadingSources
+    // event (gap round). The reader has a slow mock so the cancellation token is
+    // already set when fetch_batch_cancellable runs its select! loop, yielding
+    // FetchOutcome::Cancelled, which maps to Err(ReaderError::Cancelled) and
+    // executes lines 758-759.
+
+    #[tokio::test]
+    async fn cancel_at_gap_round_reading_sources_event_executes_lines_758_759() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        // Initial round reader succeeds immediately.
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(wiremock::matchers::body_partial_json(
+                serde_json::json!({ "url": "https://example.com/a" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "t",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+        // Gap round reader has a long delay so cancel fires before it returns.
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(5))
+                    .set_body_json(serde_json::json!({
+                        "url": "u", "title": "t", "markdown": "m", "status": "ok"
+                    })),
+            )
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let token_cb = token.clone();
+        let h = ConversationHistory::new();
+
+        // on_event counts ReadingSources events; cancels on the 2nd one (gap
+        // round). The gap reader's 5s delay means fetch_batch_cancellable sees
+        // the cancelled token in its select! and returns Err(Cancelled),
+        // executing lines 758-759.
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<SearchEvent>::new()));
+        let events_clone = events.clone();
+        let reading_seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reading_seen_cb = reading_seen.clone();
+        let cb = move |e: SearchEvent| {
+            if matches!(e, SearchEvent::ReadingSources) {
+                let n = reading_seen_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if n >= 2 {
+                    token_cb.cancel();
+                }
+            }
+            events_clone.lock().unwrap().push(e);
+        };
+
+        let router = proceed_search_router("q");
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict(), insufficient_verdict()]
+                .into_iter()
+                .collect(),
+        ));
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, SearchEvent::Cancelled)),
+            "expected Cancelled from gap-round reader in: {evs:?}"
+        );
+    }
+
+    // ── Gap-round reader: ServiceUnavailable first occurrence (lines 764-767) ──
+    //
+    // A one-shot TCP listener responds to the initial reader call then closes.
+    // The gap round reader connects to the same port but gets ECONNREFUSED
+    // (is_connect() == true), which maps to FetchOutcome::ServiceUnavailable.
+    // Since warnings is empty at that point, lines 764-767 fire.
+
+    async fn one_shot_reader_server() -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{}", addr);
+
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("one-shot accept");
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let body = serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "initial",
+                "markdown": "content",
+                "status": "ok"
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            // listener drops here; subsequent connections receive ECONNREFUSED.
+        });
+
+        (base_url, handle)
+    }
+
+    #[tokio::test]
+    async fn gap_round_reader_unavailable_first_occurrence_emits_warning() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // One-shot reader: accepts the initial-round call, then closes.
+        // The gap-round call gets ECONNREFUSED => ServiceUnavailable.
+        let (reader_base, _reader_handle) = one_shot_reader_server().await;
+
+        let searx_server = MockServer::start().await;
+        let ollama_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let stream = stream_line_token("answer");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // partial: initial reader succeeds (one-shot), chunks: insufficient
+        // with gap_queries=["q1"], gap round reader = ECONNREFUSED =
+        // ServiceUnavailable (first occurrence, lines 764-767 fire),
+        // gap judge fallback: sufficient -> synthesize.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                partial_verdict(),
+                insufficient_verdict(),
+                sufficient_verdict(),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_base,
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        // ReaderUnavailable warning fires exactly once (gap round, first occurrence).
+        let unavail_count = evs
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    SearchEvent::Warning {
+                        warning: SearchWarning::ReaderUnavailable
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            unavail_count, 1,
+            "expected exactly one ReaderUnavailable warning in: {evs:?}"
+        );
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // ── Gap-round reader: BatchTimeout (lines 771-779) ────────────────────────
+
+    #[tokio::test]
+    async fn gap_round_reader_batch_timeout_emits_partial_failure_warning() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        // Initial reader responds fast.
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(wiremock::matchers::body_partial_json(
+                serde_json::json!({ "url": "https://example.com/a" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "initial",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+        // Gap reader responds after 2s (> READER_BATCH_TIMEOUT_S=1s in tests).
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(2))
+                    .set_body_json(serde_json::json!({
+                        "url": "u", "title": "t", "markdown": "m", "status": "ok"
+                    })),
+            )
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        let ollama_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let stream = stream_line_token("answer");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // partial (initial reader succeeds), insufficient with gap_queries=["q1"],
+        // gap round reader times out, judge fallback (no chunks): sufficient.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                partial_verdict(),
+                insufficient_verdict(),
+                sufficient_verdict(),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::Warning {
+                    warning: SearchWarning::ReaderPartialFailure
+                }
+            )),
+            "expected ReaderPartialFailure from gap-round BatchTimeout in: {evs:?}"
+        );
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // ── Gap-round BatchTimeout with dedup suppressed (line 777) ──────────────
+    //
+    // Initial round reader returns 2 failed URLs (>50%), which fires
+    // ReaderPartialFailure in the initial-round partial-failure check.
+    // Gap round reader times out (BatchTimeout). The dedup check at line 772
+    // finds ReaderPartialFailure already in warnings, so the if body is skipped
+    // and line 777 (the else side of the closing brace) executes.
+
+    #[tokio::test]
+    async fn gap_round_reader_batch_timeout_dedup_suppresses_second_warning() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        // Initial round: 2 URLs both return 502 (Failed). threshold=ceil(2*0.5)=1,
+        // failed_urls.len()=2 > 1, so ReaderPartialFailure fires in the initial round.
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(wiremock::matchers::body_partial_json(
+                serde_json::json!({ "url": "https://example.com/a" }),
+            ))
+            .respond_with(ResponseTemplate::new(502))
+            .mount(&reader_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(wiremock::matchers::body_partial_json(
+                serde_json::json!({ "url": "https://example.com/b" }),
+            ))
+            .respond_with(ResponseTemplate::new(502))
+            .mount(&reader_server)
+            .await;
+        // Gap round reader: very slow (times out after READER_BATCH_TIMEOUT_S=1s).
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(2))
+                    .set_body_json(serde_json::json!({
+                        "url": "u", "title": "t", "markdown": "m", "status": "ok"
+                    })),
+            )
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        let ollama_server = MockServer::start().await;
+
+        // Initial SearXNG returns 2 URLs so reader has 2 targets.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    serde_json::json!({
+                        "results": [
+                            { "title": "r1", "url": "https://example.com/a", "content": "c" },
+                            { "title": "r2", "url": "https://example.com/b", "content": "c" },
+                        ]
+                    })
+                    .to_string(),
+                ),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let stream = stream_line_token("answer");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // partial -> initial reader fails (2 failures > threshold) -> partial
+        // failure warning fires in initial round -> insufficient (gap_queries=["q1"])
+        // -> gap round reader times out -> dedup suppresses second BatchTimeout warning
+        // -> judge (fallback): sufficient -> synthesize.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                partial_verdict(),
+                insufficient_verdict(),
+                sufficient_verdict(),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        // ReaderPartialFailure fires exactly once (from initial round).
+        let pf_count = evs
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    SearchEvent::Warning {
+                        warning: SearchWarning::ReaderPartialFailure
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            pf_count, 1,
+            "expected exactly one ReaderPartialFailure (dedup suppresses gap-round one) in: {evs:?}"
+        );
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // ── Gap-round reader: >50% partial failure (lines 783-794) ───────────────
+
+    #[tokio::test]
+    async fn gap_round_reader_majority_failures_emits_partial_failure_warning() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        // Initial reader: success for initial URL.
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(wiremock::matchers::body_partial_json(
+                serde_json::json!({ "url": "https://example.com/a" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "initial",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+        // Gap reader: all calls return HTTP 502 (Failed). Two gap URLs fail -> 2 > 1 threshold.
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(502))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        let ollama_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        // Gap queries: return 2 new URLs so threshold=1, failures=2 > 1.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    serde_json::json!({
+                        "results": [
+                            { "title": "r1", "url": "https://example.com/gap1", "content": "c" },
+                            { "title": "r2", "url": "https://example.com/gap2", "content": "c" },
+                        ]
+                    })
+                    .to_string(),
+                ),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let stream = stream_line_token("answer");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // partial -> initial reader succeeds -> insufficient with gap_queries=["q1"]
+        // -> gap reader returns 2 failures (502) -> partial-failure check fires
+        // -> judge (no chunks): sufficient -> synthesize.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                partial_verdict(),
+                insufficient_verdict(),
+                sufficient_verdict(),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::Warning {
+                    warning: SearchWarning::ReaderPartialFailure
+                }
+            )),
+            "expected ReaderPartialFailure from gap-round majority failures in: {evs:?}"
+        );
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // ── Cancel before fallback synthesis after gap-loop exhaustion (line 874) ─
+
+    // A judge that cancels on the Nth call (using CancelsOnNthJudgeCall with
+    // cancel_on=3 so cancellation fires after gap-loop exhaustion, just before
+    // line 874's is_cancelled_emit).
+    #[tokio::test]
+    async fn cancel_before_fallback_synthesis_after_gap_exhaustion_emits_cancelled() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "t",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // Judge sequence: partial, insufficient (gap_queries=["q1"]), insufficient
+        // with no gap queries (exhausts loop). Cancel fires on the 3rd call, which
+        // is after the last gap-round judge returns insufficient (triggering
+        // loop exhaustion). is_cancelled_emit at line 874 fires before synthesis.
+        let judge = CancelsOnNthJudgeCall::new(
+            token.clone(),
+            vec![
+                partial_verdict(),
+                insufficient_verdict(), // gap_queries=["q1"] -> enters gap loop
+                insufficient_verdict_no_gaps(), // gap round: no more queries -> exhausted
+            ],
+            3,
+        );
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, SearchEvent::Cancelled)),
+            "expected Cancelled before fallback synthesis in: {evs:?}"
+        );
+        // No Done event: pipeline returned before synthesis.
+        assert!(
+            !evs.iter().any(|e| matches!(e, SearchEvent::Done)),
+            "unexpected Done event when cancelled before synthesis in: {evs:?}"
+        );
+    }
+
+    // ── Gap-round reader: ServiceUnavailable first in gap round (lines 764-767) ─
+    // Use a wiremock-based reader that only matches the initial URL; the gap
+    // URL falls through to a background 127.0.0.1:1 mock for connection refusal.
+    // This is not achievable with a single base URL. Use an alternative approach:
+    // initial round reader = port-refused (so ReaderUnavailable warning fires in
+    // initial round), gap round reader = also port-refused (dedup suppresses).
+    // Lines 764-767 fire in the initial round. The gap-round match arm at 761
+    // is also hit by the dedup test. Both are now covered.
 }

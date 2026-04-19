@@ -221,8 +221,11 @@ mod tests {
         // before word-splitting the oversized paragraph.
         let small1 = "alpha beta"; // 2 tokens
         let small2 = "gamma delta"; // 2 tokens
-        // 30 words: oversized relative to target_tokens=20.
-        let oversized = (0..30).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+                                    // 30 words: oversized relative to target_tokens=20.
+        let oversized = (0..30)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         let body = format!("{small1}\n\n{small2}\n\n{oversized}");
         let chunks = split_into_budgeted_blocks(&body, 20);
         // First chunk: the two small paragraphs flushed together.

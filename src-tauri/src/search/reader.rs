@@ -356,7 +356,10 @@ mod tests {
             .await
             .unwrap();
         assert!(result.pages.is_empty());
-        assert_eq!(result.failed_urls, vec!["https://a.com/bad-json".to_string()]);
+        assert_eq!(
+            result.failed_urls,
+            vec!["https://a.com/bad-json".to_string()]
+        );
     }
 
     #[tokio::test]
