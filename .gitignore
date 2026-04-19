@@ -30,6 +30,12 @@ coverage
 # Rust build output
 target/
 
+# Python dev environments (reader sandbox pytest venv, etc.)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # Git worktrees
 .worktrees
 .claude/worktrees
