@@ -31,7 +31,10 @@ export type SearchEvent =
   | { type: 'Warning'; warning: SearchWarning }
   | { type: 'Done' }
   | { type: 'Cancelled' }
-  | { type: 'Error'; message: string };
+  | { type: 'Error'; message: string }
+  /** Pre-flight sandbox probe failed: the SearXNG or reader container is not
+   * running. The frontend renders a static setup-guidance card. */
+  | { type: 'SandboxUnavailable' };
 
 /**
  * Transient UI stage indicator shown while the search pipeline is running.

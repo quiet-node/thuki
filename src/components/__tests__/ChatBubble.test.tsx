@@ -994,4 +994,47 @@ describe('ChatBubble', () => {
       expect(invoke).not.toHaveBeenCalled();
     });
   });
+
+  describe('sandboxUnavailable', () => {
+    it('renders SandboxSetupCard when sandboxUnavailable is true', () => {
+      render(
+        <ChatBubble role="assistant" content="" index={0} sandboxUnavailable />,
+      );
+      expect(screen.getByTestId('sandbox-setup-card')).toBeInTheDocument();
+    });
+
+    it('does not render MarkdownRenderer when sandboxUnavailable is true', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="some content"
+          index={0}
+          sandboxUnavailable
+        />,
+      );
+      // MarkdownRenderer wraps output in a streamdown element; absence confirms it was not rendered.
+      expect(container.querySelector('[data-streamdown]')).toBeNull();
+    });
+
+    it('does not render ErrorCard when sandboxUnavailable is true', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="error text"
+          index={0}
+          sandboxUnavailable
+          errorKind="Other"
+        />,
+      );
+      expect(container.querySelector('[data-error-bar]')).toBeNull();
+      expect(screen.getByTestId('sandbox-setup-card')).toBeInTheDocument();
+    });
+
+    it('hides the action bar (copy button / sources) when sandboxUnavailable', () => {
+      render(
+        <ChatBubble role="assistant" content="" index={0} sandboxUnavailable />,
+      );
+      expect(screen.queryByRole('button', { name: 'Copy message' })).toBeNull();
+    });
+  });
 });

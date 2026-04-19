@@ -13,6 +13,7 @@ import { SearchWarningIcon } from './SearchWarningIcon';
 import type { OllamaErrorKind } from '../hooks/useOllama';
 import type { SearchResultPreview, SearchWarning } from '../types/search';
 import { SEARCH_WARNING_SEVERITY } from '../config/searchWarnings';
+import { SandboxSetupCard } from './SandboxSetupCard';
 
 /**
  * Extracts a bare hostname from a URL for the sources footer. Strips the
@@ -213,6 +214,8 @@ interface ChatBubbleProps {
   /** Warnings emitted by the `/search` pipeline for this turn. Renders a
    * `SearchWarningIcon` beside the Sources collapsible when non-empty. */
   searchWarnings?: SearchWarning[];
+  /** When true, renders a `SandboxSetupCard` instead of markdown or error bubble. */
+  sandboxUnavailable?: boolean;
 }
 
 /**
@@ -258,6 +261,7 @@ export function ChatBubble({
   isThinking,
   searchSources,
   searchWarnings,
+  sandboxUnavailable = false,
 }: ChatBubbleProps) {
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -394,13 +398,15 @@ export function ChatBubble({
                 isThinking={isThinking ?? false}
               />
             )}
-            {errorKind ? (
+            {sandboxUnavailable ? (
+              <SandboxSetupCard />
+            ) : errorKind ? (
               <ErrorCard kind={errorKind} message={content} />
             ) : (
               <MarkdownRenderer content={content} isStreaming={isStreaming} />
             )}
           </div>
-          {!errorKind && !isStreaming && (
+          {!errorKind && !sandboxUnavailable && !isStreaming && (
             <AnimatePresence initial={false}>
               {sourcesOpen && searchSources && searchSources.length > 0 && (
                 <motion.div
@@ -457,7 +463,7 @@ export function ChatBubble({
               )}
             </AnimatePresence>
           )}
-          {!errorKind && !isStreaming && (
+          {!errorKind && !sandboxUnavailable && !isStreaming && (
             <div className="h-6 flex items-center gap-3">
               {/* shrink-0 wrapper prevents CopyButton's internal w-full from
                   pushing the sources trigger to the opposite end. */}

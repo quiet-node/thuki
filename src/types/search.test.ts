@@ -37,4 +37,8 @@ describe('search types', () => {
     const s: SearchStage = null;
     expect(s).toBeNull();
   });
+  it('SearchEvent allows SandboxUnavailable variant', () => {
+    const e: SearchEvent = { type: 'SandboxUnavailable' };
+    expect(e.type).toBe('SandboxUnavailable');
+  });
 });

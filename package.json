@@ -25,7 +25,7 @@
     "typecheck": "tsc --noEmit",
     "llm-box:start": "docker compose -f sandbox/llm-box/docker-compose.yml up -d",
     "llm-box:stop": "docker compose -f sandbox/llm-box/docker-compose.yml down -v",
-    "search-box:start": "docker compose -f sandbox/search-box/docker-compose.yml up -d",
+    "search-box:start": "docker compose -f sandbox/search-box/docker-compose.yml up -d --build",
     "search-box:stop": "docker compose -f sandbox/search-box/docker-compose.yml down",
     "test": "vitest run",
     "test:watch": "vitest",

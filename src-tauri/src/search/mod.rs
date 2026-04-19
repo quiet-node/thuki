@@ -25,6 +25,7 @@ pub mod errors;
 pub mod judge;
 mod llm;
 pub mod pipeline;
+pub mod probe;
 pub mod reader;
 mod rerank;
 mod searxng;
@@ -32,6 +33,7 @@ mod types;
 
 pub use llm::JudgeSource;
 pub use pipeline::{run_agentic, JudgeCaller, RouterJudgeCaller};
+pub use probe::probe;
 pub use types::{
     Action, IterationStage, IterationTrace, JudgeVerdict, RouterJudgeOutput, SearchError,
     SearchEvent, SearchMetadata, SearchWarning, Sufficiency,
@@ -60,6 +62,14 @@ pub async fn search_pipeline(
     system_prompt: State<'_, SystemPrompt>,
     model_config: State<'_, ModelConfig>,
 ) -> Result<(), String> {
+    // Pre-flight: verify both sandbox services are reachable before touching
+    // the LLM or SearXNG. A 2-second probe prevents a long wait when the
+    // containers are simply not running.
+    if let Err(_e) = probe(&client, searxng::SEARXNG_BASE_URL, config::READER_BASE_URL).await {
+        let _ = on_event.send(SearchEvent::SandboxUnavailable);
+        return Ok(());
+    }
+
     let ollama_endpoint = format!("{}/api/chat", DEFAULT_OLLAMA_URL.trim_end_matches('/'));
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());
@@ -103,9 +113,15 @@ pub async fn search_pipeline(
         // Cancelled is already surfaced via the Cancelled event by `run_agentic`;
         // only emit an Error event for true failure paths.
         if e != types::SearchError::Cancelled && e != types::SearchError::EmptyQuery {
-            let _ = on_event.send(SearchEvent::Error {
-                message: e.user_message(),
-            });
+            // SandboxUnavailable gets its own typed event so the frontend can
+            // render the setup-guidance card rather than the generic error bubble.
+            if e == types::SearchError::SandboxUnavailable {
+                let _ = on_event.send(SearchEvent::SandboxUnavailable);
+            } else {
+                let _ = on_event.send(SearchEvent::Error {
+                    message: e.user_message(),
+                });
+            }
         }
     }
 

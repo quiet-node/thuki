@@ -211,8 +211,14 @@ export function ConversationView({
 
           // Hide the empty assistant placeholder; the TypingIndicator
           // already covers this visual state. When thinking content is
-          // present, render the bubble so the ThinkingBlock is visible.
-          if (isLastAssistant && !msg.content && !msg.thinkingContent)
+          // present, or when the sandbox probe reported unavailability,
+          // render the bubble so the relevant card is visible.
+          if (
+            isLastAssistant &&
+            !msg.content &&
+            !msg.thinkingContent &&
+            !msg.sandboxUnavailable
+          )
             return null;
 
           return (
@@ -232,6 +238,7 @@ export function ConversationView({
               }
               searchSources={msg.searchSources}
               searchWarnings={msg.searchWarnings}
+              sandboxUnavailable={msg.sandboxUnavailable}
             />
           );
         })}

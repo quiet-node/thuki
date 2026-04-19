@@ -42,6 +42,12 @@ export interface Message {
    * `SearchWarningIcon` beside the Sources collapsible in `ChatBubble`.
    */
   searchWarnings?: SearchWarning[];
+  /**
+   * True when the `/search` pipeline reported that the sandbox containers are
+   * not running. Causes `ChatBubble` to render a `SandboxSetupCard` instead
+   * of normal markdown or a generic error bubble.
+   */
+  sandboxUnavailable?: boolean;
 }
 
 /**
@@ -340,6 +346,11 @@ export function useOllama(
                 content: event.message,
                 errorKind: 'Other',
               });
+              finish(true);
+              break;
+            case 'SandboxUnavailable':
+              errored = true;
+              updateAssistant({ sandboxUnavailable: true });
               finish(true);
               break;
           }

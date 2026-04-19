@@ -415,6 +415,51 @@ describe('useConversationHistory', () => {
     });
   });
 
+  it('save() serialises searchWarnings to JSON in payload', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-warn-save' });
+    invoke.mockResolvedValue(undefined);
+
+    const messagesWithWarnings: Message[] = [
+      { id: 'u1', role: 'user', content: 'Search something' },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Here are results',
+        searchWarnings: ['reader_unavailable'],
+      },
+    ];
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(messagesWithWarnings, MODEL);
+    });
+
+    expect(invoke).toHaveBeenCalledWith('save_conversation', {
+      messages: [
+        {
+          role: 'user',
+          content: 'Search something',
+          quoted_text: null,
+          image_paths: null,
+          thinking_content: null,
+          search_sources: null,
+          search_warnings: null,
+        },
+        {
+          role: 'assistant',
+          content: 'Here are results',
+          quoted_text: null,
+          image_paths: null,
+          thinking_content: null,
+          search_sources: null,
+          search_warnings: JSON.stringify(['reader_unavailable']),
+        },
+      ],
+      model: MODEL,
+    });
+  });
+
   it('save() includes thinking_content in payload', async () => {
     invoke.mockResolvedValueOnce({ conversation_id: 'conv-think' });
     invoke.mockResolvedValue(undefined);
@@ -626,6 +671,81 @@ describe('useConversationHistory', () => {
     });
     expect(result.current.isSaved).toBe(false);
     expect(result.current.conversationId).toBeNull();
+  });
+
+  it('persistTurn() serialises searchWarnings to JSON on assistant messages', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-warn' });
+    invoke.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(MESSAGES, MODEL);
+    });
+    invoke.mockClear();
+
+    const userMsg: Message = {
+      id: 'u-w',
+      role: 'user',
+      content: 'q',
+    };
+    const assistantMsg: Message = {
+      id: 'a-w',
+      role: 'assistant',
+      content: 'answer',
+      searchWarnings: ['reader_unavailable'],
+    };
+
+    await act(async () => {
+      await result.current.persistTurn(userMsg, assistantMsg);
+    });
+
+    expect(invoke).toHaveBeenCalledWith('persist_message', {
+      conversationId: 'conv-warn',
+      role: 'assistant',
+      content: 'answer',
+      quotedText: null,
+      imagePaths: null,
+      thinkingContent: null,
+      searchSources: null,
+      searchWarnings: JSON.stringify(['reader_unavailable']),
+    });
+  });
+
+  it('loadConversation() parses search_warnings back to SearchWarning array', async () => {
+    invoke.mockResolvedValueOnce([
+      {
+        id: 'u1',
+        role: 'user',
+        content: 'query',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        created_at: 1,
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'answer',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: JSON.stringify(['reader_partial_failure']),
+        created_at: 2,
+      },
+    ]);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    let loaded: Message[] = [];
+    await act(async () => {
+      loaded = await result.current.loadConversation('conv-load-warn');
+    });
+
+    expect(loaded[1].searchWarnings).toEqual(['reader_partial_failure']);
   });
 
   it('unsave() is a no-op when not saved', async () => {

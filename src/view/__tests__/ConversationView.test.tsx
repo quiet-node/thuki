@@ -644,5 +644,90 @@ describe('ConversationView', () => {
         'AI is thinking',
       );
     });
+
+    it('renders reading_sources with gap label in gap round', () => {
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            { id: 'a', role: 'assistant', content: '' },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'reading_sources', gap: true }}
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Reading additional pages',
+      );
+    });
+
+    it('renders composing with gap label in gap round', () => {
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            { id: 'a', role: 'assistant', content: '' },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'composing', gap: true }}
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Composing refined answer',
+      );
+    });
+
+    it('renders the loading label as "Searching more angles" when searching with gap', () => {
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            { id: 'a', role: 'assistant', content: '' },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'searching', gap: true }}
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Searching more angles',
+      );
+    });
+
+    it('renders reading_sources without gap label in initial round', () => {
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            { id: 'a', role: 'assistant', content: '' },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'reading_sources' }}
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Reading sources',
+      );
+    });
+
+    it('renders composing without gap label in initial round', () => {
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            { id: 'a', role: 'assistant', content: '' },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'composing' }}
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Composing answer',
+      );
+    });
   });
 });

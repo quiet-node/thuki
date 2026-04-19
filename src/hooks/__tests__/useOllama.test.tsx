@@ -1313,5 +1313,98 @@ describe('useOllama', () => {
         await pending;
       });
     });
+
+    it('Searching after RefiningSearch sets gap:true stage', async () => {
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'RefiningSearch',
+          attempt: 1,
+          total: 3,
+        });
+        channel!.simulateMessage({ type: 'Searching' });
+      });
+      expect(result.current.searchStage).toEqual({
+        kind: 'searching',
+        gap: true,
+      });
+      act(() => {
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await pending;
+      });
+    });
+
+    it('ReadingSources after RefiningSearch sets gap:true stage', async () => {
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'RefiningSearch',
+          attempt: 1,
+          total: 3,
+        });
+        channel!.simulateMessage({ type: 'ReadingSources' });
+      });
+      expect(result.current.searchStage).toEqual({
+        kind: 'reading_sources',
+        gap: true,
+      });
+      act(() => {
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await pending;
+      });
+    });
+
+    it('SandboxUnavailable event sets sandboxUnavailable on assistant message', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'SandboxUnavailable' });
+      });
+      let outcome: { final: boolean } | undefined;
+      await act(async () => {
+        outcome = await pending;
+      });
+      expect(outcome).toEqual({ final: true });
+      const last = result.current.messages[result.current.messages.length - 1];
+      expect(last.sandboxUnavailable).toBe(true);
+      // onTurnComplete must not be called: no content was produced.
+      expect(onTurnComplete).not.toHaveBeenCalled();
+    });
+
+    it('SandboxUnavailable event does not set errorKind', async () => {
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'SandboxUnavailable' });
+      });
+      await act(async () => {
+        await pending;
+      });
+      const last = result.current.messages[result.current.messages.length - 1];
+      expect(last.errorKind).toBeUndefined();
+    });
   });
 });

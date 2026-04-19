@@ -67,6 +67,10 @@ pub enum SearchEvent {
     /// Non-fatal pipeline warning that the frontend may surface as a subtle
     /// indicator (e.g., a small icon in the sources footer).
     Warning { warning: SearchWarning },
+    /// Pre-flight sandbox probe failed: the SearXNG or reader container is not
+    /// running. The frontend renders a static setup-guidance card instead of a
+    /// generic error bubble.
+    SandboxUnavailable,
 }
 
 // ─── Router output ──────────────────────────────────────────────────────────
@@ -265,6 +269,10 @@ pub enum SearchError {
     // Constructed by run_agentic which has no non-test call site until Task 16.
     #[allow(dead_code)]
     Internal(String),
+    /// The search sandbox containers are not running. Raised when SearXNG
+    /// reports a connection-refused error, indicating the sandbox was never
+    /// started or died mid-pipeline.
+    SandboxUnavailable,
 }
 
 impl SearchError {
@@ -292,6 +300,13 @@ impl SearchError {
             Self::EmptyQuery => "Empty query\nType a search query after /search.".to_string(),
             Self::Cancelled => "Cancelled".to_string(),
             Self::Internal(_) => "Something went wrong.\nPlease try again.".to_string(),
+            Self::SandboxUnavailable => {
+                "Thuki's search sandbox isn't running.\n\
+                The /search command needs two local containers (SearXNG and a Trafilatura reader) to be up. \
+                See the setup steps in the repo README:\n\
+                https://github.com/quiet-node/thuki/blob/main/README.md#setup-the-search-sandbox-optional-required-for-search"
+                    .to_string()
+            }
         }
     }
 }
@@ -337,6 +352,12 @@ mod tests {
         .unwrap();
         assert_eq!(err["type"], "Error");
         assert_eq!(err["message"], "boom");
+    }
+
+    #[test]
+    fn search_event_sandbox_unavailable_serialises_correct_tag() {
+        let v = serde_json::to_value(SearchEvent::SandboxUnavailable).unwrap();
+        assert_eq!(v["type"], "SandboxUnavailable");
     }
 
     #[test]
@@ -393,6 +414,21 @@ mod tests {
         assert!(SearchError::Internal("diag".into())
             .user_message()
             .contains("Something went wrong"));
+        assert!(SearchError::SandboxUnavailable
+            .user_message()
+            .contains("search sandbox isn't running"));
+        assert!(SearchError::SandboxUnavailable
+            .user_message()
+            .contains("github.com/quiet-node/thuki"));
+    }
+
+    #[test]
+    fn sandbox_unavailable_message_differs_from_searx_unavailable() {
+        // SandboxUnavailable and SearxUnavailable must produce distinct user
+        // messages so the frontend can distinguish sandbox-down from other failures.
+        let sandbox_msg = SearchError::SandboxUnavailable.user_message();
+        let searx_msg = SearchError::SearxUnavailable.user_message();
+        assert_ne!(sandbox_msg, searx_msg);
     }
 }
 

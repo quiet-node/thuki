@@ -196,6 +196,38 @@ The app starts hidden. The hotkey or tray menu shows it. The window close button
 
 </details>
 
+## Setup the search sandbox (optional, required for /search)
+
+The `/search` command depends on two local Docker containers: a SearXNG meta-search engine and a Trafilatura reader. Both run entirely on your machine; no query ever leaves your device.
+
+**Prerequisite:** [Docker Desktop](https://www.docker.com/get-started) must be running.
+
+Start the sandbox:
+
+```bash
+bun run search-box:start
+```
+
+Verify both containers are up:
+
+```bash
+# Reader health check
+curl http://127.0.0.1:25018/healthz
+
+# SearXNG smoke test
+curl "http://127.0.0.1:25017/search?q=test&format=json"
+```
+
+Stop the sandbox when you are done:
+
+```bash
+bun run search-box:stop
+```
+
+Without this sandbox, `/search` will show a friendly setup error rather than fail silently.
+
+For the full technical reference, see [docs/agentic-search.md](docs/agentic-search.md).
+
 ## Configuration
 
 See [docs/configurations.md](docs/configurations.md) for the full configuration reference (quote display limits and system prompt).

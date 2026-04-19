@@ -52,8 +52,9 @@ pub const MAX_QUERY_CHARS: usize = 500;
 ///
 /// Errors:
 /// - [`SearchError::EmptyQuery`] when the query is whitespace-only.
-/// - [`SearchError::SearxUnavailable`] on transport failure (connection
-///   refused, DNS failure, timeout, body decode error).
+/// - [`SearchError::SandboxUnavailable`] on transport failure (connection
+///   refused, DNS failure, timeout): indicates the sandbox is not running.
+/// - [`SearchError::SearxUnavailable`] when the response body cannot be decoded as JSON.
 /// - [`SearchError::SearxHttp`] when the response status is not 2xx.
 /// - [`SearchError::NoResults`] when SearXNG returns an empty result set.
 pub async fn search(
@@ -73,7 +74,10 @@ pub async fn search(
         .timeout(SEARXNG_TIMEOUT)
         .send()
         .await
-        .map_err(|_| SearchError::SearxUnavailable)?;
+        // Any transport failure on the send (connection refused, DNS, timeout)
+        // means the sandbox containers are not running. Map the whole class to
+        // SandboxUnavailable so the frontend renders the setup-error bubble.
+        .map_err(|_| SearchError::SandboxUnavailable)?;
 
     if !response.status().is_success() {
         return Err(SearchError::SearxHttp(response.status().as_u16()));
@@ -337,12 +341,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_maps_transport_failure_to_unavailable() {
+    async fn search_maps_connect_refused_to_sandbox_unavailable() {
         let client = reqwest::Client::new();
         let err = search(&client, "http://127.0.0.1:1/search", "hi")
             .await
             .unwrap_err();
-        assert_eq!(err, SearchError::SearxUnavailable);
+        // Connection refused on localhost maps to SandboxUnavailable so the
+        // frontend can surface the setup-error bubble rather than a generic error.
+        assert_eq!(err, SearchError::SandboxUnavailable);
     }
 
     #[tokio::test]
