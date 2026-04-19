@@ -29,8 +29,8 @@ pub const JUDGE_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_judge.t
 /// Merged router+judge prompt. Instructs the model to emit a single JSON
 /// object covering both routing classification and history-sufficiency
 /// assessment.
-pub const ROUTER_MERGED_SYSTEM_PROMPT: &str =
-    include_str!("../../prompts/search_router_merged.txt");
+pub const SEARCH_PLAN_SYSTEM_PROMPT: &str =
+    include_str!("../../prompts/search_plan.txt");
 
 /// Hard timeout for the non-streaming router call. Picked to accommodate cold
 /// model starts on first pipeline invocation.
@@ -155,7 +155,7 @@ async fn request_json(
 /// Ollama roundtrip: routing classification plus, when proceeding, a
 /// sufficiency verdict on conversation history and an optimized search query.
 ///
-/// Uses [`ROUTER_MERGED_SYSTEM_PROMPT`] with `{{TODAY}}` replaced by the
+/// Uses [`SEARCH_PLAN_SYSTEM_PROMPT`] with `{{TODAY}}` replaced by the
 /// supplied `today` string so the model is anchored to the real calendar date.
 /// Pass the result of `pipeline::today_iso()` at the call site, or a fixed
 /// string in tests.
@@ -187,7 +187,7 @@ pub async fn call_router_merged(
         return Err(SearchError::Cancelled);
     }
 
-    let system = ROUTER_MERGED_SYSTEM_PROMPT.replace("{{TODAY}}", today);
+    let system = SEARCH_PLAN_SYSTEM_PROMPT.replace("{{TODAY}}", today);
 
     // First attempt: standard prompt.
     let messages = build_messages_with_system(&system, history, query);
@@ -588,8 +588,8 @@ mod prompt_tests {
     }
 
     #[test]
-    fn router_merged_prompt_has_today_placeholder_and_required_fields() {
-        let p = ROUTER_MERGED_SYSTEM_PROMPT;
+    fn search_plan_prompt_has_today_placeholder_and_required_fields() {
+        let p = SEARCH_PLAN_SYSTEM_PROMPT;
         assert!(p.contains("{{TODAY}}"));
         assert!(p.contains("\"action\""));
         assert!(p.contains("clarify"));

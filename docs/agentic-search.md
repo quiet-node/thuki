@@ -171,7 +171,7 @@ Small local models occasionally produce malformed JSON. If the first attempt doe
 
 ### The prompt
 
-The router prompt is at `src-tauri/prompts/search_router_merged.txt`. It is deliberately terse (models follow short instructions better than long ones) and it injects today's UTC date via a `{{TODAY}}` placeholder so the model anchors any time-sensitive routing to the real calendar date, not its training cutoff.
+The router prompt is at `src-tauri/prompts/search_plan.txt`. It is deliberately terse (models follow short instructions better than long ones) and it injects today's UTC date via a `{{TODAY}}` placeholder so the model anchors any time-sensitive routing to the real calendar date, not its training cutoff.
 
 ### Why "merged" and not "chained"
 
@@ -604,7 +604,7 @@ src-tauri/src/search/
 └── types.rs             Cross-IPC event enum, sufficiency, warning, metadata shapes
 
 src-tauri/prompts/
-├── search_router_merged.txt  Router+judge system prompt
+├── search_plan.txt           Router+judge system prompt
 ├── search_judge.txt          Universal sufficiency judge prompt
 ├── search_synthesis.txt      Answer-synthesis system prompt with few-shot example
 └── system_prompt.txt         Main Thuki chat system prompt (not search-specific)
