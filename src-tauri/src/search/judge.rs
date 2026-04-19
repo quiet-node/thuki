@@ -162,4 +162,14 @@ mod tests {
         );
         assert_eq!(extract_json_object_public("no braces"), None);
     }
+
+    #[test]
+    fn parse_rejects_unbalanced_opening_brace() {
+        // A '{' is found but the loop ends without a matching '}', so
+        // extract_json_object returns None, which maps to NoJson.
+        assert!(matches!(
+            parse_verdict("{ unbalanced"),
+            Err(JudgeParseError::NoJson)
+        ));
+    }
 }
