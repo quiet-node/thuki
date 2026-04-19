@@ -1,3 +1,21 @@
+"""Trafilatura-based reader sidecar for the Thuki agentic /search pipeline.
+
+The Rust backend hits `POST /extract` with a URL; this service fetches the page
+and returns LLM-ready markdown plus the page title. A single library call to
+`trafilatura.extract` does the boilerplate-stripping heavy lifting; everything
+else here is transport, validation, and safety bounds.
+
+Security posture (enforced at both container and app layer):
+- SSRF guard: rejects non-http(s) schemes and private / loopback / link-local
+  / multicast / reserved addresses so a malicious URL cannot reach internal
+  services.
+- Byte cap: fetch aborts once ``MAX_BYTES`` is exceeded, so a hostile server
+  cannot exhaust memory.
+- Timeout: 8s hard ceiling on upstream fetch.
+- Container hardening lives in ``sandbox/search-box/docker-compose.yml``
+  (cap_drop ALL, no-new-privileges, read-only rootfs, localhost-only port).
+"""
+
 from __future__ import annotations
 
 import ipaddress
@@ -11,29 +29,75 @@ from pydantic import BaseModel, Field
 app = FastAPI(title="thuki-reader", version="1.0.0")
 
 FETCH_TIMEOUT_SECONDS = 8.0
+"""Hard ceiling on upstream fetch. The pipeline has its own per-URL timeout
+above this; this value is the last line of defense inside the service."""
+
 MAX_BYTES = 2_000_000
+"""Hard cap on bytes pulled from upstream. Protects the service from hostile
+servers that stream unbounded content. 2 MB easily covers a long article with
+media-free HTML."""
 
 
 class ExtractRequest(BaseModel):
+    """Inbound shape for ``POST /extract``."""
+
     url: str = Field(..., min_length=1, max_length=2048)
+    """Full URL to fetch and extract. Validated by ``_validate_url`` before
+    any network call is made."""
 
 
 class ExtractResponse(BaseModel):
+    """Outbound shape for ``POST /extract``."""
+
     url: str
+    """Echoes the request URL for easier client-side reconciliation."""
+
     title: str
+    """Page title as extracted by trafilatura metadata. Empty string when the
+    page has no recoverable title."""
+
     markdown: str
-    status: str  # "ok" | "empty"
+    """Extracted page body as markdown. Empty string when trafilatura finds
+    no article content (typical for JS-rendered pages or paywalls)."""
+
+    status: str
+    """Either ``"ok"`` (non-empty markdown) or ``"empty"`` (no extractable
+    content). The Rust caller uses this to decide whether to treat the URL as
+    a reader hit or fall back to the search snippet."""
 
 
 def _is_private_host(host: str) -> bool:
+    """Return True if ``host`` is an address the reader must refuse to fetch.
+
+    Covers loopback, RFC1918 private, link-local, multicast, reserved IPv4
+    and IPv6 ranges, plus the literal string ``"localhost"`` for paranoia.
+    Non-IP hostnames that resolve elsewhere are allowed through; DNS-level
+    defense is out of scope for this service layer.
+    """
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return host in {"localhost"}
-    return ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast or ip.is_reserved
+    return (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+    )
 
 
 def _validate_url(url: str) -> None:
+    """Raise ``HTTPException`` if the URL fails the SSRF guard.
+
+    Three rejection cases, each with a distinct ``detail`` string for easier
+    debugging:
+
+    - ``unsupported_scheme``: anything other than http or https.
+    - ``missing_host``: URL parses but has no hostname component.
+    - ``private_host_blocked``: hostname is one of the ranges flagged by
+      :func:`_is_private_host`.
+    """
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise HTTPException(status_code=400, detail="unsupported_scheme")
@@ -44,6 +108,16 @@ def _validate_url(url: str) -> None:
 
 
 def fetch_html(url: str) -> str:
+    """Fetch ``url`` and return the decoded HTML body, capped at ``MAX_BYTES``.
+
+    Streams the response so oversized bodies are truncated rather than
+    buffered in full. Uses a custom User-Agent so the reader is identifiable
+    in server logs. Decoding falls back to ``utf-8`` with ``errors="replace"``
+    when the server does not declare an encoding.
+
+    Raises :class:`httpx.HTTPError` on network failures; the route handler
+    maps that to a 502 ``fetch_failed`` response.
+    """
     with httpx.Client(follow_redirects=True, timeout=FETCH_TIMEOUT_SECONDS) as client:
         with client.stream("GET", url, headers={"User-Agent": "Thuki-Reader/1.0"}) as r:
             r.raise_for_status()
@@ -59,6 +133,15 @@ def fetch_html(url: str) -> str:
 
 @app.post("/extract", response_model=ExtractResponse)
 def extract(req: ExtractRequest) -> ExtractResponse:
+    """Fetch ``req.url`` and return markdown + title.
+
+    Flow: validate URL, fetch HTML (mapping network errors to 502), run
+    trafilatura with ``favor_precision=True`` to prefer recall misses over
+    boilerplate inclusion, read the page title from trafilatura's metadata
+    pass. ``status`` is set to ``"empty"`` when trafilatura returns an empty
+    body so the Rust caller can surface a warning without inspecting the
+    markdown string.
+    """
     _validate_url(req.url)
     try:
         html = fetch_html(req.url)
@@ -87,4 +170,5 @@ def extract(req: ExtractRequest) -> ExtractResponse:
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
+    """Liveness probe used by the docker-compose healthcheck."""
     return {"status": "ok"}
