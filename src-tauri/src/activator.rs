@@ -322,7 +322,6 @@ where
 
     match tap_result {
         Ok(tap) => {
-            eprintln!("thuki: [activator] event tap created (HID level) — listening for double-tap Control");
             unsafe {
                 let loop_source = tap
                     .mach_port()
