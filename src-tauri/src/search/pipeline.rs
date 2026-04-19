@@ -706,6 +706,13 @@ pub async fn run_agentic(
 
                 let mut current_queries = chunk_verdict.gap_queries.clone();
 
+                // Set to true only when the loop body ran to completion at the
+                // final iteration and the judge verdict was not sufficient.
+                // All early-exit paths (empty current_queries guard, empty
+                // SearXNG new_urls, cancellation, Sufficient verdict) leave
+                // this false, suppressing the warning.
+                let mut hit_iteration_cap = false;
+
                 for attempt in 2..=(config::MAX_ITERATIONS as u32) {
                     if current_queries.is_empty() {
                         break;
@@ -890,6 +897,15 @@ pub async fn run_agentic(
                     }
 
                     current_queries = round_verdict.gap_queries.clone();
+
+                    // Flag the genuine cap-hit: the loop body ran fully at the
+                    // last allowed iteration and the verdict was not sufficient.
+                    // This is the only code path that sets the flag; every
+                    // early-exit (empty queries guard, empty SearXNG new_urls,
+                    // cancellation, Sufficient early-return) bypasses this line.
+                    if attempt == config::MAX_ITERATIONS as u32 {
+                        hit_iteration_cap = true;
+                    }
                 }
 
                 // Gap loop exhausted. Check cancellation before beginning the
@@ -900,12 +916,16 @@ pub async fn run_agentic(
                 }
 
                 // Synthesize a best-effort answer from all accumulated chunks.
-                // IterationCapExhausted is only reachable once per pipeline run
-                // (the gap loop exits at most once), so no dedup check is needed.
-                warnings.push(SearchWarning::IterationCapExhausted);
-                on_event(SearchEvent::Warning {
-                    warning: SearchWarning::IterationCapExhausted,
-                });
+                // Only emit IterationCapExhausted when the loop genuinely ran
+                // every iteration to completion without reaching a Sufficient
+                // verdict. Early exits (empty queries, empty SearXNG results,
+                // Sufficient at any round) leave hit_iteration_cap false.
+                if hit_iteration_cap {
+                    warnings.push(SearchWarning::IterationCapExhausted);
+                    on_event(SearchEvent::Warning {
+                        warning: SearchWarning::IterationCapExhausted,
+                    });
+                }
 
                 let fallback_chunks: Vec<chunker::Chunk> =
                     rerank::rerank_chunks(&accumulated_chunks, &query, config::TOP_K_CHUNKS)
@@ -1823,9 +1843,11 @@ mod agentic_tests {
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
     }
 
-    // Test: judge always insufficient; falls to IterationCapExhausted warning.
+    // Test: initial round returns insufficient with no gap queries; gap loop
+    // exits immediately on the empty-queries guard, so IterationCapExhausted
+    // must NOT fire.
     #[tokio::test]
-    async fn initial_round_exhausts_emits_iteration_cap_exhausted_warning() {
+    async fn initial_round_with_no_gap_queries_does_not_emit_iteration_cap_exhausted() {
         let mut ollama = mockito::Server::new_async().await;
         let mut searx = mockito::Server::new_async().await;
 
@@ -1852,9 +1874,10 @@ mod agentic_tests {
         let (events, cb) = collect_events();
         let router = proceed_search_router("test query");
 
-        // Both judge calls return insufficient with no gap queries so the gap
-        // loop exits immediately on the empty-queries guard rather than
-        // attempting SearXNG calls that have no mock in this test.
+        // Snippet judge returns insufficient (no gaps) so reader is skipped.
+        // Chunk judge returns insufficient with no gap queries so the gap loop
+        // exits immediately on the empty-queries guard without ever entering a
+        // gap round. hit_iteration_cap stays false, so no warning is emitted.
         let judge = QueueJudge(std::sync::Mutex::new(
             vec![
                 insufficient_verdict_no_gaps(),
@@ -1884,13 +1907,12 @@ mod agentic_tests {
 
         let evs = events.lock().unwrap();
         assert!(
-            evs.iter().any(|e| matches!(
-                e,
-                SearchEvent::Warning {
-                    warning: SearchWarning::IterationCapExhausted
-                }
-            )),
-            "expected IterationCapExhausted warning in: {evs:?}"
+            !evs.iter().any(|e| {
+                *e == (SearchEvent::Warning {
+                    warning: SearchWarning::IterationCapExhausted,
+                })
+            }),
+            "expected no IterationCapExhausted warning in: {evs:?}"
         );
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
     }
@@ -2781,13 +2803,13 @@ mod agentic_tests {
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
     }
 
-    // Test 3: gap round where all SearXNG queries return empty breaks loop
-    // silently.
+    // Test 3: gap round where all SearXNG queries return empty (no new URLs).
     //
     // Initial round: Insufficient with gap_queries=["q1","q2","q3"].
-    // Gap round 1: SearXNG mock returns empty for all 3 queries.
-    // Loop should exit early with IterationCapExhausted and synthesize on
-    // initial chunks.
+    // Gap round at attempt=2: SearXNG returns only already-seen URLs so
+    // new_urls is empty. current_queries is cleared and the loop continues.
+    // The for-range ends (no attempt=3 would run) before the judge is called,
+    // so hit_iteration_cap stays false. IterationCapExhausted must NOT fire.
     #[tokio::test]
     async fn gap_round_empty_searxng_breaks_loop_silently() {
         use wiremock::matchers::{method, path, query_param};
@@ -2876,15 +2898,16 @@ mod agentic_tests {
 
         let evs = events.lock().unwrap();
 
-        // IterationCapExhausted must fire (loop ran out).
+        // IterationCapExhausted must NOT fire: the loop exited via the
+        // no-new-URLs branch (current_queries cleared), never reaching the
+        // judge at attempt == MAX_ITERATIONS. hit_iteration_cap stays false.
         assert!(
-            evs.iter().any(|e| matches!(
-                e,
-                SearchEvent::Warning {
-                    warning: SearchWarning::IterationCapExhausted
-                }
-            )),
-            "expected IterationCapExhausted in: {evs:?}"
+            !evs.iter().any(|e| {
+                *e == (SearchEvent::Warning {
+                    warning: SearchWarning::IterationCapExhausted,
+                })
+            }),
+            "expected no IterationCapExhausted in: {evs:?}"
         );
 
         // RefiningSearch must have appeared (gap round 2 started).
@@ -2907,6 +2930,416 @@ mod agentic_tests {
         );
 
         // Pipeline still synthesized an answer.
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // Test 3b: boundary case -- attempt=3 runs in full, judge returns
+    // Insufficient with empty gap_queries. This IS a genuine cap-hit because
+    // the judge actually ran at the final iteration and returned non-Sufficient.
+    // IterationCapExhausted MUST fire.
+    #[tokio::test]
+    async fn gap_round_attempt3_full_run_insufficient_emits_cap_warning() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "page",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        let ollama_server = MockServer::start().await;
+
+        // Initial query.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "test query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        // Gap round at attempt=2 returns a new URL.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/b")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        // Gap round at attempt=3 returns another new URL.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q2"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/c")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let stream = stream_line_token("best effort");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("test query");
+
+        // Sequence: snippets partial, initial chunks insufficient with gap_queries=["q1"],
+        // attempt=2 judge insufficient with gap_queries=["q2"],
+        // attempt=3 judge insufficient with gap_queries=[] (empty: no further work).
+        // The loop completes attempt=3 in full, so hit_iteration_cap is set.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Partial,
+                    reasoning: "partial".into(),
+                    gap_queries: vec!["q1".into()],
+                },
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "need more".into(),
+                    gap_queries: vec!["q1".into()],
+                },
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "still insufficient".into(),
+                    gap_queries: vec!["q2".into()],
+                },
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "exhausted".into(),
+                    gap_queries: vec![],
+                },
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "test query".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+
+        // Attempt=3 ran to completion with Insufficient: warning must fire.
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::Warning {
+                    warning: SearchWarning::IterationCapExhausted
+                }
+            )),
+            "expected IterationCapExhausted when attempt=3 ran in full in: {evs:?}"
+        );
+
+        // Both gap rounds ran.
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::RefiningSearch {
+                    attempt: 2,
+                    total: 3
+                }
+            )),
+            "expected RefiningSearch attempt=2 in: {evs:?}"
+        );
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::RefiningSearch {
+                    attempt: 3,
+                    total: 3
+                }
+            )),
+            "expected RefiningSearch attempt=3 in: {evs:?}"
+        );
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // Test 3c: Sufficient verdict at attempt=2 causes early return before
+    // the post-loop block. IterationCapExhausted must NOT fire.
+    #[tokio::test]
+    async fn gap_round_sufficient_at_attempt2_no_cap_warning() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "page",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        let ollama_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "test query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/b")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let stream = stream_line_token("sufficient answer");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("test query");
+
+        // Attempt=2 judge returns Sufficient: pipeline returns early.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Partial,
+                    reasoning: "partial".into(),
+                    gap_queries: vec!["q1".into()],
+                },
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "need more".into(),
+                    gap_queries: vec!["q1".into()],
+                },
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Sufficient,
+                    reasoning: "done".into(),
+                    gap_queries: vec![],
+                },
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "test query".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+
+        assert!(
+            !evs.iter().any(|e| {
+                *e == (SearchEvent::Warning {
+                    warning: SearchWarning::IterationCapExhausted,
+                })
+            }),
+            "expected no IterationCapExhausted when Sufficient at attempt=2 in: {evs:?}"
+        );
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // Test 3d: Sufficient verdict at attempt=3 causes early return at the
+    // last possible round. IterationCapExhausted must NOT fire even though
+    // the final iteration ran.
+    #[tokio::test]
+    async fn gap_round_sufficient_at_attempt3_no_cap_warning() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "page",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        let ollama_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "test query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/b")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q2"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/c")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let stream = stream_line_token("sufficient on last attempt");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("test query");
+
+        // Attempt=3 (final iteration) judge returns Sufficient: pipeline
+        // returns early via the Sufficient branch, never setting hit_iteration_cap.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Partial,
+                    reasoning: "partial".into(),
+                    gap_queries: vec!["q1".into()],
+                },
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "need more".into(),
+                    gap_queries: vec!["q1".into()],
+                },
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "still need more".into(),
+                    gap_queries: vec!["q2".into()],
+                },
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Sufficient,
+                    reasoning: "done".into(),
+                    gap_queries: vec![],
+                },
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "test query".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+
+        assert!(
+            !evs.iter().any(|e| {
+                *e == (SearchEvent::Warning {
+                    warning: SearchWarning::IterationCapExhausted,
+                })
+            }),
+            "expected no IterationCapExhausted when Sufficient at attempt=3 in: {evs:?}"
+        );
+
+        // Both gap rounds fired.
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::RefiningSearch {
+                    attempt: 2,
+                    total: 3
+                }
+            )),
+            "expected RefiningSearch attempt=2 in: {evs:?}"
+        );
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                SearchEvent::RefiningSearch {
+                    attempt: 3,
+                    total: 3
+                }
+            )),
+            "expected RefiningSearch attempt=3 in: {evs:?}"
+        );
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
     }
 
