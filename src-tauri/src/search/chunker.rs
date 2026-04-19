@@ -205,4 +205,34 @@ mod tests {
             assert!(count_tokens(&c.text) <= 10);
         }
     }
+
+    #[test]
+    fn all_whitespace_paragraphs_yield_empty_vec() {
+        // All paragraphs are whitespace-only, so `paragraphs.is_empty()` is
+        // true after the filter and the early-return on line 74 fires.
+        let result = split_into_budgeted_blocks("\n\n   \n\n\t\n\n", 500);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn oversized_paragraph_after_small_paragraphs_flushes_accumulator() {
+        // Two small paragraphs accumulate in `current`, then an oversized
+        // paragraph arrives. The flush branch (lines 85-86) pushes `current`
+        // before word-splitting the oversized paragraph.
+        let small1 = "alpha beta"; // 2 tokens
+        let small2 = "gamma delta"; // 2 tokens
+        // 30 words: oversized relative to target_tokens=20.
+        let oversized = (0..30).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let body = format!("{small1}\n\n{small2}\n\n{oversized}");
+        let chunks = split_into_budgeted_blocks(&body, 20);
+        // First chunk: the two small paragraphs flushed together.
+        assert!(chunks[0].contains("alpha beta"));
+        assert!(chunks[0].contains("gamma delta"));
+        // Remaining chunks: word-split pieces of the oversized paragraph.
+        assert!(chunks.len() >= 2);
+        let oversized_text: String = chunks[1..].join(" ");
+        for w in 0..30 {
+            assert!(oversized_text.contains(&format!("word{w}")));
+        }
+    }
 }
