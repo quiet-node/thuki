@@ -29,8 +29,7 @@ pub const JUDGE_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_judge.t
 /// Merged router+judge prompt. Instructs the model to emit a single JSON
 /// object covering both routing classification and history-sufficiency
 /// assessment.
-pub const SEARCH_PLAN_SYSTEM_PROMPT: &str =
-    include_str!("../../prompts/search_plan.txt");
+pub const SEARCH_PLAN_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_plan.txt");
 
 /// Hard timeout for the non-streaming router call. Picked to accommodate cold
 /// model starts on first pipeline invocation.

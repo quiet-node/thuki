@@ -45,3 +45,4 @@ __pycache__/
 docs/superpowers/
 # Superpowers brainstorming visual-companion working files
 .superpowers/
+*.profraw
