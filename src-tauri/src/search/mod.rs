@@ -24,15 +24,17 @@ pub mod config;
 pub mod errors;
 pub mod judge;
 mod llm;
-mod pipeline;
+pub mod pipeline;
 pub mod reader;
 mod rerank;
 mod searxng;
 mod types;
 
+pub use llm::JudgeSource;
+pub use pipeline::{run_agentic, JudgeCaller, RouterJudgeCaller};
 pub use types::{
-    Action, IterationStage, IterationTrace, JudgeVerdict, RouterJudgeOutput, SearchEvent,
-    SearchMetadata, SearchWarning, Sufficiency,
+    Action, IterationStage, IterationTrace, JudgeVerdict, RouterJudgeOutput, SearchError,
+    SearchEvent, SearchMetadata, SearchWarning, Sufficiency,
 };
 
 /// Umbrella Tauri command implementing the full `/search` agentic pipeline.
