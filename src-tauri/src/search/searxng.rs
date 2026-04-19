@@ -594,4 +594,23 @@ mod parallel_tests {
             .unwrap();
         assert!(out.is_empty());
     }
+
+    #[tokio::test]
+    async fn search_all_with_empty_slice_returns_empty_without_network() {
+        // Covers lines 116-118: search_all delegates to search_all_with_base;
+        // the empty-slice guard in search_all_with_base fires before any HTTP
+        // call, so no network is needed.
+        let out = search_all(&[]).await.unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_all_with_endpoint_empty_slice_returns_empty_without_network() {
+        // Covers line 137: search_all_with_endpoint short-circuits on empty
+        // query slice before touching the network.
+        let out = search_all_with_endpoint("http://127.0.0.1:1/search", &[])
+            .await
+            .unwrap();
+        assert!(out.is_empty());
+    }
 }
