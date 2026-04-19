@@ -41,6 +41,46 @@ use super::types::{
     SearchEvent, SearchMetadata, SearchResultPreview, SearchWarning, SearxResult, Sufficiency,
 };
 
+/// Build the `JudgeSource` list fed to the sufficiency judge and the synthesis
+/// prompt from reranked chunks, deduplicated by source URL.
+///
+/// The reranker may return several chunks that came from the same page. Passing
+/// all of them to the synthesizer inflates the numbered citation list so that
+/// index `[k]` no longer maps 1:1 to a distinct source URL. Keeping only the
+/// highest-scoring chunk per URL guarantees that citation indices match the
+/// Sources footer positions shown in the UI, and keeps the judge's prompt
+/// focused on distinct sources rather than repeated paragraphs.
+fn chunks_to_judge_sources(chunks: &[chunker::Chunk]) -> Vec<JudgeSource> {
+    let mut seen: std::collections::HashSet<String> = Default::default();
+    chunks
+        .iter()
+        .filter(|c| seen.insert(c.source_url.clone()))
+        .map(|c| JudgeSource {
+            title: c.source_title.clone(),
+            url: c.source_url.clone(),
+            text: c.text.clone(),
+        })
+        .collect()
+}
+
+/// Emit the authoritative `Sources` event just before synthesis so the UI
+/// footer matches the citation indices the LLM will actually produce.
+///
+/// Earlier `Sources` events during the initial-search and gap-refine rounds
+/// advertise the URLs we are *considering*; this final event reflects the
+/// URLs the synthesis prompt actually received, so `[k]` in the streamed
+/// answer always maps to an entry the user can click.
+fn emit_final_sources(on_event: &(dyn Fn(SearchEvent) + Sync), sources: &[JudgeSource]) {
+    let previews: Vec<SearchResultPreview> = sources
+        .iter()
+        .map(|s| SearchResultPreview {
+            title: s.title.clone(),
+            url: s.url.clone(),
+        })
+        .collect();
+    on_event(SearchEvent::Sources { results: previews });
+}
+
 /// Returns the current UTC date formatted as `YYYY-MM-DD`.
 ///
 /// Uses `time::OffsetDateTime::now_utc()` to avoid the unsoundness of
@@ -531,6 +571,7 @@ pub async fn run_agentic(
                         .collect();
                     let messages =
                         build_synthesis_messages(&history_snapshot, &query, &synth_results, today);
+                    emit_final_sources(on_event, &snippet_sources);
                     on_event(SearchEvent::Composing);
                     run_streaming_branch(
                         ollama_endpoint,
@@ -609,14 +650,7 @@ pub async fn run_agentic(
                 let judge_sources: Vec<JudgeSource> = if top_chunks.is_empty() {
                     snippet_sources.clone()
                 } else {
-                    top_chunks
-                        .iter()
-                        .map(|c| JudgeSource {
-                            title: c.source_title.clone(),
-                            url: c.source_url.clone(),
-                            text: c.text.clone(),
-                        })
-                        .collect()
+                    chunks_to_judge_sources(&top_chunks)
                 };
 
                 let chunk_verdict = judge.call(&query, &judge_sources).await?;
@@ -645,6 +679,7 @@ pub async fn run_agentic(
 
                 if matches!(chunk_verdict.sufficiency, Sufficiency::Sufficient) {
                     metadata.total_duration_ms = iter_start.elapsed().as_millis() as u64;
+                    emit_final_sources(on_event, &judge_sources);
                     on_event(SearchEvent::Composing);
                     run_streaming_branch(
                         ollama_endpoint,
@@ -804,14 +839,7 @@ pub async fn run_agentic(
                     let round_judge_sources: Vec<JudgeSource> = if round_top_chunks.is_empty() {
                         snippet_sources.clone()
                     } else {
-                        round_top_chunks
-                            .iter()
-                            .map(|c| JudgeSource {
-                                title: c.source_title.clone(),
-                                url: c.source_url.clone(),
-                                text: c.text.clone(),
-                            })
-                            .collect()
+                        chunks_to_judge_sources(&round_top_chunks)
                     };
 
                     let round_verdict = judge.call(&query, &round_judge_sources).await?;
@@ -842,6 +870,7 @@ pub async fn run_agentic(
                             &synth_results,
                             today,
                         );
+                        emit_final_sources(on_event, &round_judge_sources);
                         on_event(SearchEvent::Composing);
                         run_streaming_branch(
                             ollama_endpoint,
@@ -887,14 +916,7 @@ pub async fn run_agentic(
                 let fallback_sources: Vec<JudgeSource> = if fallback_chunks.is_empty() {
                     snippet_sources.clone()
                 } else {
-                    fallback_chunks
-                        .iter()
-                        .map(|c| JudgeSource {
-                            title: c.source_title.clone(),
-                            url: c.source_url.clone(),
-                            text: c.text.clone(),
-                        })
-                        .collect()
+                    chunks_to_judge_sources(&fallback_chunks)
                 };
 
                 let fallback_results: Vec<SearxResult> = fallback_sources
@@ -908,6 +930,7 @@ pub async fn run_agentic(
                 let fallback_messages =
                     build_synthesis_messages(&history_snapshot, &query, &fallback_results, today);
                 metadata.total_duration_ms = iter_start.elapsed().as_millis() as u64;
+                emit_final_sources(on_event, &fallback_sources);
                 on_event(SearchEvent::Composing);
                 run_streaming_branch(
                     ollama_endpoint,
