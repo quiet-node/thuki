@@ -7,14 +7,21 @@ import type { Message } from '../hooks/useOllama';
 import type { SearchStage } from '../types/search';
 
 /** Human-readable label shown next to the loading dots for each search stage. */
-const SEARCH_STAGE_LABELS: Record<Exclude<SearchStage, null>['kind'], string> =
-  {
-    analyzing_query: 'Classifying query',
-    searching: 'Searching the web',
-    reading_sources: 'Reading sources',
-    refining_search: 'Refining search',
-    composing: 'Composing answer',
-  };
+function searchStageLabel(stage: SearchStage): string | null {
+  if (!stage) return null;
+  switch (stage.kind) {
+    case 'analyzing_query':
+      return 'Analyzing query';
+    case 'searching':
+      return 'Searching the web';
+    case 'reading_sources':
+      return 'Reading sources';
+    case 'refining_search':
+      return `Refining search (${stage.attempt}/${stage.total})`;
+    case 'composing':
+      return 'Composing answer';
+  }
+}
 
 /**
  * Props for the ConversationView component.
@@ -229,7 +236,7 @@ export function ConversationView({
         !messages[messages.length - 1]?.content &&
         !messages[messages.length - 1]?.thinkingContent ? (
           <LoadingStage
-            label={searchStage ? SEARCH_STAGE_LABELS[searchStage.kind] : null}
+            label={searchStageLabel(searchStage)}
           />
         ) : null}
       </div>

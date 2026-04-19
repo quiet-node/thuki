@@ -589,7 +589,7 @@ describe('ConversationView', () => {
         />,
       );
       expect(screen.getByTestId('loading-label').textContent).toBe(
-        'Classifying query',
+        'Analyzing query',
       );
     });
 
@@ -607,6 +607,23 @@ describe('ConversationView', () => {
       );
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Searching the web',
+      );
+    });
+
+    it('renders refining_search with attempt counter', () => {
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            { id: 'a', role: 'assistant', content: '' },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'refining_search', attempt: 2, total: 3 }}
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Refining search (2/3)',
       );
     });
 
