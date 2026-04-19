@@ -271,6 +271,12 @@ export function useOllama(
           resolve({ final });
         };
 
+        // Once the backend emits RefiningSearch, every subsequent Searching /
+        // ReadingSources / Composing belongs to a gap-refinement round. The UI
+        // uses this flag to swap in "looking at more resources" copy so users
+        // see that Thuki is digging deeper rather than repeating the same work.
+        let inGapRound = false;
+
         channel.onmessage = (event) => {
           switch (event.type) {
             case 'AnalyzingQuery':
@@ -278,12 +284,21 @@ export function useOllama(
               updateAssistant({ content: '' });
               break;
             case 'Searching':
-              setSearchStage({ kind: 'searching' });
+              setSearchStage(
+                inGapRound
+                  ? { kind: 'searching', gap: true }
+                  : { kind: 'searching' },
+              );
               break;
             case 'ReadingSources':
-              setSearchStage({ kind: 'reading_sources' });
+              setSearchStage(
+                inGapRound
+                  ? { kind: 'reading_sources', gap: true }
+                  : { kind: 'reading_sources' },
+              );
               break;
             case 'RefiningSearch':
+              inGapRound = true;
               setSearchStage({
                 kind: 'refining_search',
                 attempt: event.attempt,
@@ -291,7 +306,11 @@ export function useOllama(
               });
               break;
             case 'Composing':
-              setSearchStage({ kind: 'composing' });
+              setSearchStage(
+                inGapRound
+                  ? { kind: 'composing', gap: true }
+                  : { kind: 'composing' },
+              );
               break;
             case 'Sources':
               pendingSources = event.results;

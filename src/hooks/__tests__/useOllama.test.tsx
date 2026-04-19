@@ -1010,7 +1010,11 @@ describe('useOllama', () => {
       act(() => {
         channel!.simulateMessage({ type: 'Composing' });
       });
-      expect(result.current.searchStage).toEqual({ kind: 'composing' });
+      // RefiningSearch was seen above, so subsequent stages carry gap: true.
+      expect(result.current.searchStage).toEqual({
+        kind: 'composing',
+        gap: true,
+      });
       act(() => {
         channel!.simulateMessage({ type: 'Token', content: 'x' });
       });

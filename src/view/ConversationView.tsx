@@ -6,20 +6,27 @@ import { WindowControls } from '../components/WindowControls';
 import type { Message } from '../hooks/useOllama';
 import type { SearchStage } from '../types/search';
 
-/** Human-readable label shown next to the loading dots for each search stage. */
+/**
+ * Human-readable label shown next to the loading dots for each search stage.
+ *
+ * Gap-refinement rounds swap the verb so the user sees Thuki actively looking
+ * at more material rather than the same linear "Searching the web" → "Reading
+ * sources" repeated per round. The `RefiningSearch` event itself still
+ * announces the round transition with an attempt counter.
+ */
 function searchStageLabel(stage: SearchStage): string | null {
   if (!stage) return null;
   switch (stage.kind) {
     case 'analyzing_query':
       return 'Analyzing query';
     case 'searching':
-      return 'Searching the web';
+      return stage.gap ? 'Searching more angles' : 'Searching the web';
     case 'reading_sources':
-      return 'Reading sources';
+      return stage.gap ? 'Reading additional pages' : 'Reading sources';
     case 'refining_search':
       return `Refining search (${stage.attempt}/${stage.total})`;
     case 'composing':
-      return 'Composing answer';
+      return stage.gap ? 'Composing refined answer' : 'Composing answer';
   }
 }
 

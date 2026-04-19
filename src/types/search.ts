@@ -43,7 +43,7 @@ export type SearchEvent =
 export type SearchStage =
   | null
   | { kind: 'analyzing_query' }
-  | { kind: 'searching' }
-  | { kind: 'reading_sources' }
+  | { kind: 'searching'; gap?: boolean }
+  | { kind: 'reading_sources'; gap?: boolean }
   | { kind: 'refining_search'; attempt: number; total: number }
-  | { kind: 'composing' };
+  | { kind: 'composing'; gap?: boolean };
