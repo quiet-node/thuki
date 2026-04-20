@@ -47,6 +47,7 @@ describe('useConversationHistory', () => {
           thinking_content: null,
           search_sources: null,
           search_warnings: null,
+          search_metadata: null,
         },
         {
           role: 'assistant',
@@ -56,6 +57,7 @@ describe('useConversationHistory', () => {
           thinking_content: null,
           search_sources: null,
           search_warnings: null,
+          search_metadata: null,
         },
       ],
       model: MODEL,
@@ -97,6 +99,7 @@ describe('useConversationHistory', () => {
           thinking_content: null,
           search_sources: null,
           search_warnings: null,
+          search_metadata: null,
         },
         {
           role: 'assistant',
@@ -106,6 +109,7 @@ describe('useConversationHistory', () => {
           thinking_content: null,
           search_sources: null,
           search_warnings: null,
+          search_metadata: null,
         },
       ],
     });
@@ -177,6 +181,7 @@ describe('useConversationHistory', () => {
       thinkingContent: null,
       searchSources: null,
       searchWarnings: null,
+      searchMetadata: null,
     });
     expect(invoke).toHaveBeenCalledWith('persist_message', {
       conversationId: 'conv-123',
@@ -187,6 +192,7 @@ describe('useConversationHistory', () => {
       thinkingContent: null,
       searchSources: null,
       searchWarnings: null,
+      searchMetadata: null,
     });
   });
 
@@ -412,6 +418,7 @@ describe('useConversationHistory', () => {
       thinkingContent: 'Let me reason step by step',
       searchSources: null,
       searchWarnings: null,
+      searchMetadata: null,
     });
   });
 
@@ -445,6 +452,7 @@ describe('useConversationHistory', () => {
           thinking_content: null,
           search_sources: null,
           search_warnings: null,
+          search_metadata: null,
         },
         {
           role: 'assistant',
@@ -454,6 +462,7 @@ describe('useConversationHistory', () => {
           thinking_content: null,
           search_sources: null,
           search_warnings: JSON.stringify(['reader_unavailable']),
+          search_metadata: null,
         },
       ],
       model: MODEL,
@@ -490,6 +499,7 @@ describe('useConversationHistory', () => {
           thinking_content: null,
           search_sources: null,
           search_warnings: null,
+          search_metadata: null,
         },
         {
           role: 'assistant',
@@ -499,6 +509,7 @@ describe('useConversationHistory', () => {
           thinking_content: 'Deep thoughts',
           search_sources: null,
           search_warnings: null,
+          search_metadata: null,
         },
       ],
       model: MODEL,
@@ -709,6 +720,7 @@ describe('useConversationHistory', () => {
       thinkingContent: null,
       searchSources: null,
       searchWarnings: JSON.stringify(['reader_unavailable']),
+      searchMetadata: null,
     });
   });
 
@@ -778,5 +790,187 @@ describe('useConversationHistory', () => {
       'reset_conversation',
       expect.anything(),
     );
+  });
+
+  it('save() serialises searchTraces to JSON in payload', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-meta-save' });
+    invoke.mockResolvedValue(undefined);
+
+    const trace = {
+      id: 'round-1-search',
+      kind: 'search' as const,
+      status: 'completed' as const,
+      round: 1,
+      title: 'Searching the web',
+      summary: 'Found 4 results across 2 sites.',
+      queries: ['q'],
+      counts: { found: 4 },
+    };
+    const messagesWithMeta: Message[] = [
+      { id: 'u1', role: 'user', content: '/search q' },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Answer',
+        searchTraces: [trace],
+      },
+    ];
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(messagesWithMeta, MODEL);
+    });
+
+    expect(invoke).toHaveBeenCalledWith(
+      'save_conversation',
+      expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({
+            role: 'assistant',
+            search_metadata: JSON.stringify([trace]),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it('persistTurn() serialises searchTraces to JSON on assistant messages', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-meta' });
+    invoke.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(MESSAGES, MODEL);
+    });
+    invoke.mockClear();
+
+    const trace = {
+      id: 'compose',
+      kind: 'compose' as const,
+      status: 'completed' as const,
+      title: 'Synthesizing the answer',
+      summary:
+        'Pulling the strongest points together into a clear answer with citations.',
+      counts: { sources: 2 },
+    };
+    const userMsg: Message = { id: 'u-m', role: 'user', content: 'q' };
+    const assistantMsg: Message = {
+      id: 'a-m',
+      role: 'assistant',
+      content: 'answer',
+      searchTraces: [trace],
+    };
+
+    await act(async () => {
+      await result.current.persistTurn(userMsg, assistantMsg);
+    });
+
+    expect(invoke).toHaveBeenCalledWith('persist_message', {
+      conversationId: 'conv-meta',
+      role: 'assistant',
+      content: 'answer',
+      quotedText: null,
+      imagePaths: null,
+      thinkingContent: null,
+      searchSources: null,
+      searchWarnings: null,
+      searchMetadata: JSON.stringify([trace]),
+    });
+  });
+
+  it('loadConversation() parses SearchTraceStep[] from search_metadata', async () => {
+    const traces = [
+      {
+        id: 'round-1-search',
+        kind: 'search' as const,
+        status: 'completed' as const,
+        round: 1,
+        title: 'Searching the web',
+        summary: 'Found 4 results across 2 sites.',
+        queries: ['q'],
+      },
+    ];
+
+    invoke.mockResolvedValueOnce([
+      {
+        id: 'u1',
+        role: 'user',
+        content: 'query',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: null,
+        created_at: 1,
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'answer',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: JSON.stringify(traces),
+        created_at: 2,
+      },
+    ]);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    let loaded: Message[] = [];
+    await act(async () => {
+      loaded = await result.current.loadConversation('conv-meta-load');
+    });
+
+    expect(loaded[0].searchTraces).toBeUndefined();
+    expect(loaded[1].searchTraces).toEqual(traces);
+  });
+
+  it('loadConversation() converts legacy IterationTrace[] into SearchTraceStep[]', async () => {
+    invoke.mockResolvedValueOnce([
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'answer',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: JSON.stringify([
+          {
+            stage: { kind: 'initial' },
+            queries: ['legacy query'],
+            urls_fetched: ['https://example.com/a'],
+            reader_empty_urls: [],
+            judge_verdict: 'partial',
+            judge_reasoning: 'missing details',
+            duration_ms: 120,
+          },
+        ]),
+        created_at: 1,
+      },
+    ]);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    let loaded: Message[] = [];
+    await act(async () => {
+      loaded = await result.current.loadConversation('conv-meta-legacy');
+    });
+
+    expect(loaded[0].searchTraces).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'search' }),
+        expect.objectContaining({ kind: 'read' }),
+        expect.objectContaining({ kind: 'chunk_judge', verdict: 'partial' }),
+      ]),
+    );
+    expect(loaded[0].fromSearch).toBe(true);
   });
 });

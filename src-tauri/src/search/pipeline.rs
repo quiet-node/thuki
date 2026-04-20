@@ -38,7 +38,8 @@ use super::rerank;
 use super::searxng;
 use super::types::{
     Action, IterationStage, IterationTrace, JudgeVerdict, RouterJudgeOutput, SearchError,
-    SearchEvent, SearchMetadata, SearchResultPreview, SearchWarning, SearxResult, Sufficiency,
+    SearchEvent, SearchMetadata, SearchResultPreview, SearchTraceCounts, SearchTraceKind,
+    SearchTraceStatus, SearchTraceStep, SearchWarning, SearxResult, Sufficiency,
 };
 
 /// Build the `JudgeSource` list fed to the sufficiency judge and the synthesis
@@ -79,6 +80,136 @@ fn emit_final_sources(on_event: &(dyn Fn(SearchEvent) + Sync), sources: &[JudgeS
         })
         .collect();
     on_event(SearchEvent::Sources { results: previews });
+}
+
+fn emit_trace(on_event: &(dyn Fn(SearchEvent) + Sync), step: SearchTraceStep) {
+    on_event(SearchEvent::Trace { step });
+}
+
+fn trace_step(
+    id: impl Into<String>,
+    kind: SearchTraceKind,
+    status: SearchTraceStatus,
+    title: impl Into<String>,
+    summary: impl Into<String>,
+) -> SearchTraceStep {
+    SearchTraceStep {
+        id: id.into(),
+        kind,
+        status,
+        round: None,
+        title: title.into(),
+        summary: summary.into(),
+        detail: None,
+        queries: Vec::new(),
+        urls: Vec::new(),
+        domains: Vec::new(),
+        verdict: None,
+        counts: None,
+    }
+}
+
+fn to_u32_saturating(value: usize) -> u32 {
+    value.min(u32::MAX as usize) as u32
+}
+
+fn domain_of(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+        .map(|host| host.trim_start_matches("www.").to_string())
+        .unwrap_or_else(|| url.to_string())
+}
+
+fn unique_domains<I, S>(values: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut seen = std::collections::HashSet::new();
+    values
+        .into_iter()
+        .map(|value| domain_of(value.as_ref()))
+        .filter(|domain| seen.insert(domain.clone()))
+        .take(6)
+        .collect()
+}
+
+fn unique_urls<I, S>(values: I, limit: usize) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut seen = std::collections::HashSet::new();
+    values
+        .into_iter()
+        .map(|value| value.as_ref().trim().to_string())
+        .filter(|url| !url.is_empty())
+        .filter(|url| seen.insert(url.clone()))
+        .take(limit)
+        .collect()
+}
+
+fn snippet_judge_title() -> &'static str {
+    "Checking what the results already cover"
+}
+
+fn snippet_judge_running_summary() -> &'static str {
+    "Seeing whether the search results already answer the question on their own."
+}
+
+fn snippet_judge_summary(verdict: Sufficiency) -> String {
+    match verdict {
+        Sufficiency::Sufficient => "The results already line up on the key answer.".to_string(),
+        Sufficiency::Partial => {
+            "The results point in the right direction, but a few details are still missing."
+                .to_string()
+        }
+        Sufficiency::Insufficient => "The results still do not say enough yet.".to_string(),
+    }
+}
+
+fn snippet_judge_detail(verdict: Sufficiency, reasoning: &str) -> Option<String> {
+    let reasoning = reasoning.trim();
+    if reasoning.is_empty() {
+        return None;
+    }
+
+    Some(match verdict {
+        Sufficiency::Sufficient => {
+            format!("Across these results, the main takeaway is: {reasoning}")
+        }
+        Sufficiency::Partial => format!("So far, the results suggest: {reasoning}"),
+        Sufficiency::Insufficient => format!("What still seems unclear is: {reasoning}"),
+    })
+}
+
+fn compose_title() -> &'static str {
+    "Synthesizing the answer"
+}
+
+fn compose_summary(source_count: usize) -> String {
+    let _ = source_count;
+    "Pulling the strongest points together into a clear answer with citations.".to_string()
+}
+
+fn fallback_compose_summary(hit_iteration_cap: bool, source_count: usize) -> String {
+    if hit_iteration_cap {
+        "Pulling together the strongest evidence found so far into the best supported answer possible."
+            .to_string()
+    } else {
+        compose_summary(source_count)
+    }
+}
+
+fn judge_summary(subject: &str, verdict: Sufficiency) -> String {
+    match verdict {
+        Sufficiency::Sufficient => format!("The {subject} already cover the answer."),
+        Sufficiency::Partial => format!("The {subject} help, but some details are still missing."),
+        Sufficiency::Insufficient => {
+            format!("The {subject} are not enough yet, so Thuki needs to keep digging.")
+        }
+    }
 }
 
 /// Returns the current UTC date formatted as `YYYY-MM-DD`.
@@ -421,6 +552,16 @@ pub async fn run_agentic(
     }
 
     on_event(SearchEvent::AnalyzingQuery);
+    emit_trace(
+        on_event,
+        trace_step(
+            "analyze",
+            SearchTraceKind::Analyze,
+            SearchTraceStatus::Running,
+            "Understanding the question",
+            "Deciding whether this needs fresh web results or can be answered from the current conversation.",
+        ),
+    );
 
     let (epoch_at_start, history_snapshot) = snapshot_history(history);
 
@@ -435,6 +576,24 @@ pub async fn run_agentic(
     match output.action {
         Action::Clarify => {
             let question = output.clarifying_question.unwrap_or_default();
+            let analyze_step = trace_step(
+                "analyze",
+                SearchTraceKind::Analyze,
+                SearchTraceStatus::Completed,
+                "Understanding the question",
+                "This request could mean a few different things, so Thuki needs one more detail before searching.",
+            );
+            emit_trace(on_event, analyze_step);
+
+            let clarify_step = trace_step(
+                "clarify",
+                SearchTraceKind::Clarify,
+                SearchTraceStatus::Completed,
+                "Waiting for clarification",
+                "Search is paused until you clarify who or what you mean.",
+            );
+            emit_trace(on_event, clarify_step);
+
             for piece in split_into_stream_pieces(&question) {
                 if is_cancelled_emit(&cancel_token, &on_event) {
                     return Ok(());
@@ -459,6 +618,30 @@ pub async fn run_agentic(
         }
         Action::Proceed => {
             if matches!(output.history_sufficiency, Some(Sufficiency::Sufficient)) {
+                let mut analyze_step = trace_step(
+                    "analyze",
+                    SearchTraceKind::Analyze,
+                    SearchTraceStatus::Completed,
+                    "Understanding the question",
+                    "The current conversation already contains enough context, so no web search is needed.",
+                );
+                analyze_step.counts = Some(SearchTraceCounts {
+                    sources: Some(to_u32_saturating(history_snapshot.len())),
+                    ..SearchTraceCounts::default()
+                });
+                emit_trace(on_event, analyze_step);
+
+                emit_trace(
+                    on_event,
+                    trace_step(
+                        "history-answer",
+                        SearchTraceKind::HistoryAnswer,
+                        SearchTraceStatus::Running,
+                        "Answering from the current conversation",
+                        "Using what is already in this chat instead of opening web sources.",
+                    ),
+                );
+
                 let messages = build_answer_from_context_messages(
                     chat_system_prompt,
                     &history_snapshot,
@@ -487,18 +670,44 @@ pub async fn run_agentic(
                     .optimized_query
                     .clone()
                     .unwrap_or_else(|| user_query.clone());
+                let mut analyze_step = trace_step(
+                    "analyze",
+                    SearchTraceKind::Analyze,
+                    SearchTraceStatus::Completed,
+                    "Understanding the question",
+                    "This needs fresh web results, so Thuki is switching into search mode.",
+                );
+                if query != user_query {
+                    analyze_step.detail = Some(format!("Using search query: {query}"));
+                    analyze_step.queries = vec![query.clone()];
+                }
+                emit_trace(on_event, analyze_step);
+
                 let reader_client = reader::ReaderClient::new_with_base(reader_base_url);
                 let mut warnings: Vec<SearchWarning> = Vec::new();
                 let mut metadata = SearchMetadata::default();
                 let mut accumulated_chunks: Vec<chunker::Chunk> = Vec::new();
 
                 let iter_start = std::time::Instant::now();
+                let initial_round = 1_u32;
 
                 // Stage 1: SearXNG initial round.
                 if is_cancelled_emit(&cancel_token, &on_event) {
                     return Ok(());
                 }
-                on_event(SearchEvent::Searching);
+                let mut initial_search_step = trace_step(
+                    format!("round-{initial_round}-search"),
+                    SearchTraceKind::Search,
+                    SearchTraceStatus::Running,
+                    "Searching the web",
+                    "Looking for public pages that can answer the question.",
+                );
+                initial_search_step.round = Some(initial_round);
+                initial_search_step.queries = vec![query.clone()];
+                emit_trace(on_event, initial_search_step);
+                on_event(SearchEvent::Searching {
+                    queries: vec![query.clone()],
+                });
 
                 let searxng_fut = searxng::search(client, searxng_endpoint, &query);
                 let raw_urls = match tokio::select! {
@@ -512,6 +721,20 @@ pub async fn run_agentic(
                         return Ok(());
                     }
                     Err(SearchError::NoResults) => {
+                        let mut search_step = trace_step(
+                            format!("round-{initial_round}-search"),
+                            SearchTraceKind::Search,
+                            SearchTraceStatus::Completed,
+                            "Searching the web",
+                            "The search did not return any useful results.",
+                        );
+                        search_step.round = Some(initial_round);
+                        search_step.queries = vec![query.clone()];
+                        search_step.counts = Some(SearchTraceCounts {
+                            found: Some(0),
+                            ..SearchTraceCounts::default()
+                        });
+                        emit_trace(on_event, search_step);
                         warnings.push(SearchWarning::NoResultsInitial);
                         on_event(SearchEvent::Warning {
                             warning: SearchWarning::NoResultsInitial,
@@ -521,9 +744,70 @@ pub async fn run_agentic(
                     Err(e) => return Err(e),
                 };
 
+                let mut search_step = trace_step(
+                    format!("round-{initial_round}-search"),
+                    SearchTraceKind::Search,
+                    SearchTraceStatus::Completed,
+                    "Searching the web",
+                    format!(
+                        "Found {} results across {}.",
+                        if raw_urls.len() == 1 {
+                            "1 result".to_string()
+                        } else {
+                            format!("{} results", raw_urls.len())
+                        },
+                        if unique_domains(raw_urls.iter().map(|r| r.url.as_str())).len() == 1 {
+                            "1 site".to_string()
+                        } else {
+                            format!(
+                                "{} sites",
+                                unique_domains(raw_urls.iter().map(|r| r.url.as_str())).len()
+                            )
+                        }
+                    ),
+                );
+                search_step.round = Some(initial_round);
+                search_step.queries = vec![query.clone()];
+                search_step.urls = unique_urls(
+                    raw_urls.iter().map(|result| result.url.as_str()),
+                    raw_urls.len(),
+                );
+                search_step.domains = unique_domains(raw_urls.iter().map(|r| r.url.as_str()));
+                search_step.counts = Some(SearchTraceCounts {
+                    found: Some(to_u32_saturating(raw_urls.len())),
+                    ..SearchTraceCounts::default()
+                });
+                emit_trace(on_event, search_step);
+
                 // Stage 2: Rerank URLs, take top K.
                 let reranked = rerank::rerank(&query, raw_urls);
                 let top_urls: Vec<_> = reranked.into_iter().take(config::TOP_K_URLS).collect();
+
+                let mut rerank_step = trace_step(
+                    format!("round-{initial_round}-url-rerank"),
+                    SearchTraceKind::UrlRerank,
+                    SearchTraceStatus::Completed,
+                    "Picking the strongest pages",
+                    format!(
+                        "Ranked the results and kept {} for closer reading.",
+                        if top_urls.len() == 1 {
+                            "1 page".to_string()
+                        } else {
+                            format!("{} pages", top_urls.len())
+                        }
+                    ),
+                );
+                rerank_step.round = Some(initial_round);
+                rerank_step.urls = unique_urls(
+                    top_urls.iter().map(|result| result.url.as_str()),
+                    top_urls.len(),
+                );
+                rerank_step.domains = unique_domains(top_urls.iter().map(|r| r.url.as_str()));
+                rerank_step.counts = Some(SearchTraceCounts {
+                    kept: Some(to_u32_saturating(top_urls.len())),
+                    ..SearchTraceCounts::default()
+                });
+                emit_trace(on_event, rerank_step);
 
                 // Stage 3: Emit Sources preview.
                 let sources_preview: Vec<SearchResultPreview> = top_urls
@@ -547,7 +831,42 @@ pub async fn run_agentic(
                     })
                     .collect();
 
+                let mut snippet_judge_step = trace_step(
+                    format!("round-{initial_round}-snippet-judge"),
+                    SearchTraceKind::SnippetJudge,
+                    SearchTraceStatus::Running,
+                    snippet_judge_title(),
+                    snippet_judge_running_summary(),
+                );
+                snippet_judge_step.round = Some(initial_round);
+                snippet_judge_step.domains =
+                    unique_domains(top_urls.iter().map(|r| r.url.as_str()));
+                snippet_judge_step.counts = Some(SearchTraceCounts {
+                    sources: Some(to_u32_saturating(snippet_sources.len())),
+                    ..SearchTraceCounts::default()
+                });
+                emit_trace(on_event, snippet_judge_step);
+
                 let snippet_verdict = judge.call(&query, &snippet_sources).await?;
+
+                let mut snippet_judge_step = trace_step(
+                    format!("round-{initial_round}-snippet-judge"),
+                    SearchTraceKind::SnippetJudge,
+                    SearchTraceStatus::Completed,
+                    snippet_judge_title(),
+                    snippet_judge_summary(snippet_verdict.sufficiency),
+                );
+                snippet_judge_step.round = Some(initial_round);
+                snippet_judge_step.domains =
+                    unique_domains(top_urls.iter().map(|r| r.url.as_str()));
+                snippet_judge_step.verdict = Some(snippet_verdict.sufficiency);
+                snippet_judge_step.detail =
+                    snippet_judge_detail(snippet_verdict.sufficiency, &snippet_verdict.reasoning);
+                snippet_judge_step.counts = Some(SearchTraceCounts {
+                    sources: Some(to_u32_saturating(snippet_sources.len())),
+                    ..SearchTraceCounts::default()
+                });
+                emit_trace(on_event, snippet_judge_step);
 
                 if matches!(snippet_verdict.sufficiency, Sufficiency::Sufficient) {
                     metadata.iterations.push(IterationTrace {
@@ -558,6 +877,13 @@ pub async fn run_agentic(
                         judge_verdict: snippet_verdict.sufficiency,
                         judge_reasoning: snippet_verdict.reasoning.clone(),
                         duration_ms: iter_start.elapsed().as_millis() as u64,
+                    });
+                    on_event(SearchEvent::IterationComplete {
+                        trace: metadata
+                            .iterations
+                            .last()
+                            .expect("iteration was just pushed")
+                            .clone(),
                     });
                     metadata.total_duration_ms = iter_start.elapsed().as_millis() as u64;
                     // Convert snippet sources to SearxResult for synthesis.
@@ -572,6 +898,20 @@ pub async fn run_agentic(
                     let messages =
                         build_synthesis_messages(&history_snapshot, &query, &synth_results, today);
                     emit_final_sources(on_event, &snippet_sources);
+                    let mut compose_step = trace_step(
+                        "compose",
+                        SearchTraceKind::Compose,
+                        SearchTraceStatus::Running,
+                        compose_title(),
+                        compose_summary(snippet_sources.len()),
+                    );
+                    compose_step.domains =
+                        unique_domains(snippet_sources.iter().map(|s| s.url.as_str()));
+                    compose_step.counts = Some(SearchTraceCounts {
+                        sources: Some(to_u32_saturating(snippet_sources.len())),
+                        ..SearchTraceCounts::default()
+                    });
+                    emit_trace(on_event, compose_step);
                     on_event(SearchEvent::Composing);
                     run_streaming_branch(
                         ollama_endpoint,
@@ -594,10 +934,61 @@ pub async fn run_agentic(
                 if is_cancelled_emit(&cancel_token, &on_event) {
                     return Ok(());
                 }
-                on_event(SearchEvent::ReadingSources);
                 let reader_urls: Vec<String> = top_urls.iter().map(|r| r.url.clone()).collect();
+                let reader_domains = unique_domains(reader_urls.iter().map(|url| url.as_str()));
+                let mut read_step = trace_step(
+                    format!("round-{initial_round}-read"),
+                    SearchTraceKind::Read,
+                    SearchTraceStatus::Running,
+                    "Opening the shortlisted pages",
+                    format!(
+                        "Reading the full text behind {}.",
+                        if reader_urls.len() == 1 {
+                            "1 page".to_string()
+                        } else {
+                            format!("{} pages", reader_urls.len())
+                        }
+                    ),
+                );
+                read_step.round = Some(initial_round);
+                read_step.domains = reader_domains.clone();
+                read_step.counts = Some(SearchTraceCounts {
+                    processed: Some(0),
+                    total: Some(to_u32_saturating(reader_urls.len())),
+                    ..SearchTraceCounts::default()
+                });
+                emit_trace(on_event, read_step);
+                on_event(SearchEvent::ReadingSources);
+                let progress_urls =
+                    std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+                let progress_urls_for_callback = progress_urls.clone();
                 let reader_result = match reader_client
-                    .fetch_batch_cancellable(&reader_urls, &cancel_token)
+                    .fetch_batch_with_progress(&reader_urls, &cancel_token, &|url| {
+                        on_event(SearchEvent::FetchingUrl { url: url.clone() });
+                        let mut urls = progress_urls_for_callback.lock().unwrap();
+                        urls.push(url.clone());
+                        let processed = urls.len();
+                        let mut progress_step = trace_step(
+                            format!("round-{initial_round}-read"),
+                            SearchTraceKind::Read,
+                            SearchTraceStatus::Running,
+                            "Opening the shortlisted pages",
+                            format!(
+                                "Opened {} of {} pages so far.",
+                                processed,
+                                reader_urls.len()
+                            ),
+                        );
+                        progress_step.round = Some(initial_round);
+                        progress_step.domains =
+                            unique_domains(urls.iter().map(|value| value.as_str()));
+                        progress_step.counts = Some(SearchTraceCounts {
+                            processed: Some(to_u32_saturating(processed)),
+                            total: Some(to_u32_saturating(reader_urls.len())),
+                            ..SearchTraceCounts::default()
+                        });
+                        emit_trace(on_event, progress_step);
+                    })
                     .await
                 {
                     Ok(r) => r,
@@ -621,6 +1012,55 @@ pub async fn run_agentic(
                     }
                 };
 
+                let read_processed = reader_result.pages.len() + reader_result.empty_urls.len();
+                let read_failed = reader_result.failed_urls.len();
+                let mut read_step = trace_step(
+                    format!("round-{initial_round}-read"),
+                    SearchTraceKind::Read,
+                    SearchTraceStatus::Completed,
+                    "Opening the shortlisted pages",
+                    if warnings.contains(&SearchWarning::ReaderUnavailable) && read_processed == 0 {
+                        "The page reader was unavailable, so Thuki continued with snippets."
+                            .to_string()
+                    } else if read_processed == 0 {
+                        "No full pages could be opened cleanly, so Thuki kept working from lighter evidence.".to_string()
+                    } else {
+                        format!(
+                            "Opened {} of {} pages and extracted the readable text.",
+                            read_processed,
+                            reader_urls.len()
+                        )
+                    },
+                );
+                read_step.round = Some(initial_round);
+                read_step.domains = reader_domains;
+                read_step.counts = Some(SearchTraceCounts {
+                    processed: Some(to_u32_saturating(read_processed)),
+                    total: Some(to_u32_saturating(reader_urls.len())),
+                    empty: (!reader_result.empty_urls.is_empty())
+                        .then(|| to_u32_saturating(reader_result.empty_urls.len())),
+                    failed: (read_failed > 0).then(|| to_u32_saturating(read_failed)),
+                    ..SearchTraceCounts::default()
+                });
+                if warnings.contains(&SearchWarning::ReaderUnavailable) {
+                    read_step.detail = Some(
+                        "Thuki fell back to search snippets because the full-page reader could not be reached.".to_string(),
+                    );
+                } else if read_failed > 0 || !reader_result.empty_urls.is_empty() {
+                    read_step.detail = Some(format!(
+                        "{} page{} failed and {} page{} returned little or no readable text.",
+                        read_failed,
+                        if read_failed == 1 { "" } else { "s" },
+                        reader_result.empty_urls.len(),
+                        if reader_result.empty_urls.len() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ));
+                }
+                emit_trace(on_event, read_step);
+
                 // Detect partial failure: more than 50% of URLs failed without
                 // a full service-unavailable signal.
                 let partial_threshold = (reader_urls.len() as f64 * 0.5).ceil() as usize;
@@ -638,12 +1078,78 @@ pub async fn run_agentic(
                 // Stage 6: Chunk and rerank.
                 let new_chunks =
                     chunker::chunk_pages(&reader_result.pages, config::CHUNK_TOKEN_SIZE);
+                let mut chunk_step = trace_step(
+                    format!("round-{initial_round}-chunk"),
+                    SearchTraceKind::Chunk,
+                    SearchTraceStatus::Completed,
+                    "Split the pages into passages",
+                    if new_chunks.is_empty() {
+                        "No readable full-page text was available to split into passages."
+                            .to_string()
+                    } else {
+                        format!(
+                            "Split {} into {} for closer matching.",
+                            if reader_result.pages.len() == 1 {
+                                "1 page".to_string()
+                            } else {
+                                format!("{} pages", reader_result.pages.len())
+                            },
+                            if new_chunks.len() == 1 {
+                                "1 passage".to_string()
+                            } else {
+                                format!("{} passages", new_chunks.len())
+                            }
+                        )
+                    },
+                );
+                chunk_step.round = Some(initial_round);
+                chunk_step.counts = Some(SearchTraceCounts {
+                    pages: Some(to_u32_saturating(reader_result.pages.len())),
+                    chunks: Some(to_u32_saturating(new_chunks.len())),
+                    ..SearchTraceCounts::default()
+                });
+                emit_trace(on_event, chunk_step);
                 accumulated_chunks.extend(new_chunks);
                 let top_chunks: Vec<chunker::Chunk> =
                     rerank::rerank_chunks(&accumulated_chunks, &query, config::TOP_K_CHUNKS)
                         .into_iter()
                         .cloned()
                         .collect();
+
+                let chunk_sources =
+                    unique_domains(top_chunks.iter().map(|chunk| chunk.source_url.as_str()));
+                let mut chunk_rerank_step = trace_step(
+                    format!("round-{initial_round}-chunk-rerank"),
+                    SearchTraceKind::ChunkRerank,
+                    SearchTraceStatus::Completed,
+                    "Picked the strongest passages",
+                    if top_chunks.is_empty() {
+                        "No full-page passages were available to rank.".to_string()
+                    } else {
+                        format!(
+                            "Kept {} across {}.",
+                            if top_chunks.len() == 1 {
+                                "1 passage".to_string()
+                            } else {
+                                format!("{} passages", top_chunks.len())
+                            },
+                            if chunk_sources.len() == 1 {
+                                "1 source".to_string()
+                            } else {
+                                format!("{} sources", chunk_sources.len())
+                            }
+                        )
+                    },
+                );
+                chunk_rerank_step.round = Some(initial_round);
+                chunk_rerank_step.domains = chunk_sources.clone();
+                chunk_rerank_step.counts = Some(SearchTraceCounts {
+                    chunks: Some(to_u32_saturating(accumulated_chunks.len())),
+                    kept: Some(to_u32_saturating(top_chunks.len())),
+                    sources: Some(to_u32_saturating(chunk_sources.len())),
+                    ..SearchTraceCounts::default()
+                });
+                emit_trace(on_event, chunk_rerank_step);
 
                 // Stage 7: Chunks judge. Fall back to snippets when reader was
                 // degraded and produced no chunks.
@@ -653,7 +1159,41 @@ pub async fn run_agentic(
                     chunks_to_judge_sources(&top_chunks)
                 };
 
+                let mut chunk_judge_step = trace_step(
+                    format!("round-{initial_round}-chunk-judge"),
+                    SearchTraceKind::ChunkJudge,
+                    SearchTraceStatus::Running,
+                    "Checking whether the evidence is enough",
+                    "Verifying whether the strongest passages fully answer the question.",
+                );
+                chunk_judge_step.round = Some(initial_round);
+                chunk_judge_step.domains =
+                    unique_domains(judge_sources.iter().map(|source| source.url.as_str()));
+                chunk_judge_step.counts = Some(SearchTraceCounts {
+                    sources: Some(to_u32_saturating(judge_sources.len())),
+                    ..SearchTraceCounts::default()
+                });
+                emit_trace(on_event, chunk_judge_step);
+
                 let chunk_verdict = judge.call(&query, &judge_sources).await?;
+
+                let mut chunk_judge_step = trace_step(
+                    format!("round-{initial_round}-chunk-judge"),
+                    SearchTraceKind::ChunkJudge,
+                    SearchTraceStatus::Completed,
+                    "Checking whether the evidence is enough",
+                    judge_summary("passages", chunk_verdict.sufficiency),
+                );
+                chunk_judge_step.round = Some(initial_round);
+                chunk_judge_step.domains =
+                    unique_domains(judge_sources.iter().map(|source| source.url.as_str()));
+                chunk_judge_step.verdict = Some(chunk_verdict.sufficiency);
+                chunk_judge_step.detail = Some(chunk_verdict.reasoning.clone());
+                chunk_judge_step.counts = Some(SearchTraceCounts {
+                    sources: Some(to_u32_saturating(judge_sources.len())),
+                    ..SearchTraceCounts::default()
+                });
+                emit_trace(on_event, chunk_judge_step);
 
                 metadata.iterations.push(IterationTrace {
                     stage: IterationStage::Initial,
@@ -663,6 +1203,13 @@ pub async fn run_agentic(
                     judge_verdict: chunk_verdict.sufficiency,
                     judge_reasoning: chunk_verdict.reasoning.clone(),
                     duration_ms: iter_start.elapsed().as_millis() as u64,
+                });
+                on_event(SearchEvent::IterationComplete {
+                    trace: metadata
+                        .iterations
+                        .last()
+                        .expect("iteration was just pushed")
+                        .clone(),
                 });
 
                 // Build synthesis messages from judge sources (convert to SearxResult shape).
@@ -680,6 +1227,20 @@ pub async fn run_agentic(
                 if matches!(chunk_verdict.sufficiency, Sufficiency::Sufficient) {
                     metadata.total_duration_ms = iter_start.elapsed().as_millis() as u64;
                     emit_final_sources(on_event, &judge_sources);
+                    let mut compose_step = trace_step(
+                        "compose",
+                        SearchTraceKind::Compose,
+                        SearchTraceStatus::Running,
+                        compose_title(),
+                        compose_summary(judge_sources.len()),
+                    );
+                    compose_step.domains =
+                        unique_domains(judge_sources.iter().map(|source| source.url.as_str()));
+                    compose_step.counts = Some(SearchTraceCounts {
+                        sources: Some(to_u32_saturating(judge_sources.len())),
+                        ..SearchTraceCounts::default()
+                    });
+                    emit_trace(on_event, compose_step);
                     on_event(SearchEvent::Composing);
                     run_streaming_branch(
                         ollama_endpoint,
@@ -721,13 +1282,36 @@ pub async fn run_agentic(
                         return Ok(());
                     }
 
+                    let mut refine_step = trace_step(
+                        format!("round-{attempt}-refine"),
+                        SearchTraceKind::Refine,
+                        SearchTraceStatus::Completed,
+                        "Planned another search",
+                        "Thuki prepared a follow-up search to fill the remaining gaps.",
+                    );
+                    refine_step.round = Some(attempt);
+                    refine_step.queries = current_queries.clone();
+                    emit_trace(on_event, refine_step);
+
                     on_event(SearchEvent::RefiningSearch {
                         attempt,
                         total: config::MAX_ITERATIONS as u32,
                     });
 
                     let round_start = std::time::Instant::now();
-                    on_event(SearchEvent::Searching);
+                    let mut round_search_step = trace_step(
+                        format!("round-{attempt}-search"),
+                        SearchTraceKind::Search,
+                        SearchTraceStatus::Running,
+                        "Searching the web again",
+                        "Looking for the missing details from a different angle.",
+                    );
+                    round_search_step.round = Some(attempt);
+                    round_search_step.queries = current_queries.clone();
+                    emit_trace(on_event, round_search_step);
+                    on_event(SearchEvent::Searching {
+                        queries: current_queries.clone(),
+                    });
 
                     let gap_search_fut =
                         searxng::search_all_with_endpoint(searxng_endpoint, &current_queries);
@@ -739,6 +1323,7 @@ pub async fn run_agentic(
                         }
                         res = gap_search_fut => res.unwrap_or_default(),
                     };
+                    let gap_results_count = gap_results.len();
 
                     // Dedup against all URLs fetched in prior rounds.
                     let new_urls: Vec<_> = gap_results
@@ -747,6 +1332,21 @@ pub async fn run_agentic(
                         .collect();
 
                     if new_urls.is_empty() {
+                        let mut round_search_step = trace_step(
+                            format!("round-{attempt}-search"),
+                            SearchTraceKind::Search,
+                            SearchTraceStatus::Completed,
+                            "Searching the web again",
+                            "This follow-up search did not surface any new pages beyond what Thuki had already seen.",
+                        );
+                        round_search_step.round = Some(attempt);
+                        round_search_step.queries = current_queries.clone();
+                        round_search_step.counts = Some(SearchTraceCounts {
+                            found: Some(0),
+                            ..SearchTraceCounts::default()
+                        });
+                        emit_trace(on_event, round_search_step);
+
                         // No new content this round: record a trace and advance
                         // the counter. Clear current_queries so the next
                         // iteration's guard exits the loop.
@@ -759,15 +1359,78 @@ pub async fn run_agentic(
                             judge_reasoning: "no new search results".into(),
                             duration_ms: round_start.elapsed().as_millis() as u64,
                         });
+                        on_event(SearchEvent::IterationComplete {
+                            trace: metadata
+                                .iterations
+                                .last()
+                                .expect("iteration was just pushed")
+                                .clone(),
+                        });
                         current_queries.clear();
                         continue;
                     }
+
+                    let mut round_search_step = trace_step(
+                        format!("round-{attempt}-search"),
+                        SearchTraceKind::Search,
+                        SearchTraceStatus::Completed,
+                        "Searching the web again",
+                        format!(
+                            "Found {} fresh results worth checking.",
+                            if new_urls.len() == 1 {
+                                "1 result".to_string()
+                            } else {
+                                format!("{} results", new_urls.len())
+                            }
+                        ),
+                    );
+                    round_search_step.round = Some(attempt);
+                    round_search_step.queries = current_queries.clone();
+                    round_search_step.urls = unique_urls(
+                        new_urls.iter().map(|result| result.url.as_str()),
+                        new_urls.len(),
+                    );
+                    round_search_step.domains =
+                        unique_domains(new_urls.iter().map(|result| result.url.as_str()));
+                    round_search_step.counts = Some(SearchTraceCounts {
+                        found: Some(to_u32_saturating(gap_results_count)),
+                        kept: Some(to_u32_saturating(new_urls.len())),
+                        ..SearchTraceCounts::default()
+                    });
+                    emit_trace(on_event, round_search_step);
 
                     // Rerank new URLs and take the top K.
                     let round_top_urls: Vec<SearxResult> = rerank::rerank(&query, new_urls)
                         .into_iter()
                         .take(config::TOP_K_URLS)
                         .collect();
+
+                    let mut rerank_step = trace_step(
+                        format!("round-{attempt}-url-rerank"),
+                        SearchTraceKind::UrlRerank,
+                        SearchTraceStatus::Completed,
+                        "Picking the strongest pages",
+                        format!(
+                            "Kept {} from this follow-up round for deeper reading.",
+                            if round_top_urls.len() == 1 {
+                                "1 page".to_string()
+                            } else {
+                                format!("{} pages", round_top_urls.len())
+                            }
+                        ),
+                    );
+                    rerank_step.round = Some(attempt);
+                    rerank_step.urls = unique_urls(
+                        round_top_urls.iter().map(|result| result.url.as_str()),
+                        round_top_urls.len(),
+                    );
+                    rerank_step.domains =
+                        unique_domains(round_top_urls.iter().map(|result| result.url.as_str()));
+                    rerank_step.counts = Some(SearchTraceCounts {
+                        kept: Some(to_u32_saturating(round_top_urls.len())),
+                        ..SearchTraceCounts::default()
+                    });
+                    emit_trace(on_event, rerank_step);
 
                     // Emit Sources so the frontend can show updated citations
                     // (frontend handles dedup by URL).
@@ -784,11 +1447,63 @@ pub async fn run_agentic(
                     if is_cancelled_emit(&cancel_token, &on_event) {
                         return Ok(());
                     }
-                    on_event(SearchEvent::ReadingSources);
                     let round_reader_urls: Vec<String> =
                         round_top_urls.iter().map(|r| r.url.clone()).collect();
+                    let round_reader_domains =
+                        unique_domains(round_reader_urls.iter().map(|url| url.as_str()));
+                    let mut read_step = trace_step(
+                        format!("round-{attempt}-read"),
+                        SearchTraceKind::Read,
+                        SearchTraceStatus::Running,
+                        "Opening the shortlisted pages",
+                        format!(
+                            "Reading the full text behind {} from this round.",
+                            if round_reader_urls.len() == 1 {
+                                "1 page".to_string()
+                            } else {
+                                format!("{} pages", round_reader_urls.len())
+                            }
+                        ),
+                    );
+                    read_step.round = Some(attempt);
+                    read_step.domains = round_reader_domains.clone();
+                    read_step.counts = Some(SearchTraceCounts {
+                        processed: Some(0),
+                        total: Some(to_u32_saturating(round_reader_urls.len())),
+                        ..SearchTraceCounts::default()
+                    });
+                    emit_trace(on_event, read_step);
+                    on_event(SearchEvent::ReadingSources);
+                    let round_progress_urls =
+                        std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+                    let round_progress_urls_for_callback = round_progress_urls.clone();
                     let round_reader_result = match reader_client
-                        .fetch_batch_cancellable(&round_reader_urls, &cancel_token)
+                        .fetch_batch_with_progress(&round_reader_urls, &cancel_token, &|url| {
+                            on_event(SearchEvent::FetchingUrl { url: url.clone() });
+                            let mut urls = round_progress_urls_for_callback.lock().unwrap();
+                            urls.push(url.clone());
+                            let processed = urls.len();
+                            let mut progress_step = trace_step(
+                                format!("round-{attempt}-read"),
+                                SearchTraceKind::Read,
+                                SearchTraceStatus::Running,
+                                "Opening the shortlisted pages",
+                                format!(
+                                    "Opened {} of {} pages so far.",
+                                    processed,
+                                    round_reader_urls.len()
+                                ),
+                            );
+                            progress_step.round = Some(attempt);
+                            progress_step.domains =
+                                unique_domains(urls.iter().map(|value| value.as_str()));
+                            progress_step.counts = Some(SearchTraceCounts {
+                                processed: Some(to_u32_saturating(processed)),
+                                total: Some(to_u32_saturating(round_reader_urls.len())),
+                                ..SearchTraceCounts::default()
+                            });
+                            emit_trace(on_event, progress_step);
+                        })
                         .await
                     {
                         Ok(r) => r,
@@ -817,6 +1532,54 @@ pub async fn run_agentic(
                         }
                     };
 
+                    let round_processed =
+                        round_reader_result.pages.len() + round_reader_result.empty_urls.len();
+                    let round_failed = round_reader_result.failed_urls.len();
+                    let mut read_step = trace_step(
+                        format!("round-{attempt}-read"),
+                        SearchTraceKind::Read,
+                        SearchTraceStatus::Completed,
+                        "Opening the shortlisted pages",
+                        if warnings.contains(&SearchWarning::ReaderUnavailable)
+                            && round_processed == 0
+                        {
+                            "The page reader was unavailable, so this round fell back to snippets."
+                                .to_string()
+                        } else if round_processed == 0 {
+                            "No full pages could be opened cleanly in this round.".to_string()
+                        } else {
+                            format!(
+                                "Opened {} of {} pages and extracted readable text.",
+                                round_processed,
+                                round_reader_urls.len()
+                            )
+                        },
+                    );
+                    read_step.round = Some(attempt);
+                    read_step.domains = round_reader_domains;
+                    read_step.counts = Some(SearchTraceCounts {
+                        processed: Some(to_u32_saturating(round_processed)),
+                        total: Some(to_u32_saturating(round_reader_urls.len())),
+                        empty: (!round_reader_result.empty_urls.is_empty())
+                            .then(|| to_u32_saturating(round_reader_result.empty_urls.len())),
+                        failed: (round_failed > 0).then(|| to_u32_saturating(round_failed)),
+                        ..SearchTraceCounts::default()
+                    });
+                    if round_failed > 0 || !round_reader_result.empty_urls.is_empty() {
+                        read_step.detail = Some(format!(
+                            "{} page{} failed and {} page{} returned little or no readable text.",
+                            round_failed,
+                            if round_failed == 1 { "" } else { "s" },
+                            round_reader_result.empty_urls.len(),
+                            if round_reader_result.empty_urls.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ));
+                    }
+                    emit_trace(on_event, read_step);
+
                     // Detect >50% partial failure, deduplicated with prior rounds.
                     let round_partial_threshold =
                         (round_reader_urls.len() as f64 * 0.5).ceil() as usize;
@@ -834,12 +1597,82 @@ pub async fn run_agentic(
                     // Extend the accumulated chunk pool and rerank globally.
                     let round_chunks =
                         chunker::chunk_pages(&round_reader_result.pages, config::CHUNK_TOKEN_SIZE);
+                    let mut chunk_step = trace_step(
+                        format!("round-{attempt}-chunk"),
+                        SearchTraceKind::Chunk,
+                        SearchTraceStatus::Completed,
+                        "Split the pages into passages",
+                        if round_chunks.is_empty() {
+                            "No readable full-page text was available to split in this round."
+                                .to_string()
+                        } else {
+                            format!(
+                                "Split {} into {} for closer matching.",
+                                if round_reader_result.pages.len() == 1 {
+                                    "1 page".to_string()
+                                } else {
+                                    format!("{} pages", round_reader_result.pages.len())
+                                },
+                                if round_chunks.len() == 1 {
+                                    "1 passage".to_string()
+                                } else {
+                                    format!("{} passages", round_chunks.len())
+                                }
+                            )
+                        },
+                    );
+                    chunk_step.round = Some(attempt);
+                    chunk_step.counts = Some(SearchTraceCounts {
+                        pages: Some(to_u32_saturating(round_reader_result.pages.len())),
+                        chunks: Some(to_u32_saturating(round_chunks.len())),
+                        ..SearchTraceCounts::default()
+                    });
+                    emit_trace(on_event, chunk_step);
                     accumulated_chunks.extend(round_chunks);
                     let round_top_chunks: Vec<chunker::Chunk> =
                         rerank::rerank_chunks(&accumulated_chunks, &query, config::TOP_K_CHUNKS)
                             .into_iter()
                             .cloned()
                             .collect();
+
+                    let round_chunk_sources = unique_domains(
+                        round_top_chunks
+                            .iter()
+                            .map(|chunk| chunk.source_url.as_str()),
+                    );
+                    let mut chunk_rerank_step = trace_step(
+                        format!("round-{attempt}-chunk-rerank"),
+                        SearchTraceKind::ChunkRerank,
+                        SearchTraceStatus::Completed,
+                        "Picked the strongest passages",
+                        if round_top_chunks.is_empty() {
+                            "No full-page passages were available to rank in this round."
+                                .to_string()
+                        } else {
+                            format!(
+                                "Kept {} across {}.",
+                                if round_top_chunks.len() == 1 {
+                                    "1 passage".to_string()
+                                } else {
+                                    format!("{} passages", round_top_chunks.len())
+                                },
+                                if round_chunk_sources.len() == 1 {
+                                    "1 source".to_string()
+                                } else {
+                                    format!("{} sources", round_chunk_sources.len())
+                                }
+                            )
+                        },
+                    );
+                    chunk_rerank_step.round = Some(attempt);
+                    chunk_rerank_step.domains = round_chunk_sources.clone();
+                    chunk_rerank_step.counts = Some(SearchTraceCounts {
+                        chunks: Some(to_u32_saturating(accumulated_chunks.len())),
+                        kept: Some(to_u32_saturating(round_top_chunks.len())),
+                        sources: Some(to_u32_saturating(round_chunk_sources.len())),
+                        ..SearchTraceCounts::default()
+                    });
+                    emit_trace(on_event, chunk_rerank_step);
 
                     // Build judge sources; fall back to initial snippets when
                     // reader degraded and produced no chunks at all.
@@ -849,7 +1682,43 @@ pub async fn run_agentic(
                         chunks_to_judge_sources(&round_top_chunks)
                     };
 
+                    let mut chunk_judge_step = trace_step(
+                        format!("round-{attempt}-chunk-judge"),
+                        SearchTraceKind::ChunkJudge,
+                        SearchTraceStatus::Running,
+                        "Checking whether the evidence is enough",
+                        "Verifying whether the new passages close the remaining gaps.",
+                    );
+                    chunk_judge_step.round = Some(attempt);
+                    chunk_judge_step.domains = unique_domains(
+                        round_judge_sources.iter().map(|source| source.url.as_str()),
+                    );
+                    chunk_judge_step.counts = Some(SearchTraceCounts {
+                        sources: Some(to_u32_saturating(round_judge_sources.len())),
+                        ..SearchTraceCounts::default()
+                    });
+                    emit_trace(on_event, chunk_judge_step);
+
                     let round_verdict = judge.call(&query, &round_judge_sources).await?;
+
+                    let mut chunk_judge_step = trace_step(
+                        format!("round-{attempt}-chunk-judge"),
+                        SearchTraceKind::ChunkJudge,
+                        SearchTraceStatus::Completed,
+                        "Checking whether the evidence is enough",
+                        judge_summary("passages", round_verdict.sufficiency),
+                    );
+                    chunk_judge_step.round = Some(attempt);
+                    chunk_judge_step.domains = unique_domains(
+                        round_judge_sources.iter().map(|source| source.url.as_str()),
+                    );
+                    chunk_judge_step.verdict = Some(round_verdict.sufficiency);
+                    chunk_judge_step.detail = Some(round_verdict.reasoning.clone());
+                    chunk_judge_step.counts = Some(SearchTraceCounts {
+                        sources: Some(to_u32_saturating(round_judge_sources.len())),
+                        ..SearchTraceCounts::default()
+                    });
+                    emit_trace(on_event, chunk_judge_step);
 
                     metadata.iterations.push(IterationTrace {
                         stage: IterationStage::GapRound { round: attempt - 1 },
@@ -859,6 +1728,13 @@ pub async fn run_agentic(
                         judge_verdict: round_verdict.sufficiency,
                         judge_reasoning: round_verdict.reasoning.clone(),
                         duration_ms: round_start.elapsed().as_millis() as u64,
+                    });
+                    on_event(SearchEvent::IterationComplete {
+                        trace: metadata
+                            .iterations
+                            .last()
+                            .expect("iteration was just pushed")
+                            .clone(),
                     });
 
                     if matches!(round_verdict.sufficiency, Sufficiency::Sufficient) {
@@ -878,6 +1754,21 @@ pub async fn run_agentic(
                             today,
                         );
                         emit_final_sources(on_event, &round_judge_sources);
+                        let mut compose_step = trace_step(
+                            "compose",
+                            SearchTraceKind::Compose,
+                            SearchTraceStatus::Running,
+                            compose_title(),
+                            compose_summary(round_judge_sources.len()),
+                        );
+                        compose_step.domains = unique_domains(
+                            round_judge_sources.iter().map(|source| source.url.as_str()),
+                        );
+                        compose_step.counts = Some(SearchTraceCounts {
+                            sources: Some(to_u32_saturating(round_judge_sources.len())),
+                            ..SearchTraceCounts::default()
+                        });
+                        emit_trace(on_event, compose_step);
                         on_event(SearchEvent::Composing);
                         run_streaming_branch(
                             ollama_endpoint,
@@ -951,6 +1842,20 @@ pub async fn run_agentic(
                     build_synthesis_messages(&history_snapshot, &query, &fallback_results, today);
                 metadata.total_duration_ms = iter_start.elapsed().as_millis() as u64;
                 emit_final_sources(on_event, &fallback_sources);
+                let mut compose_step = trace_step(
+                    "compose",
+                    SearchTraceKind::Compose,
+                    SearchTraceStatus::Running,
+                    compose_title(),
+                    fallback_compose_summary(hit_iteration_cap, fallback_sources.len()),
+                );
+                compose_step.domains =
+                    unique_domains(fallback_sources.iter().map(|source| source.url.as_str()));
+                compose_step.counts = Some(SearchTraceCounts {
+                    sources: Some(to_u32_saturating(fallback_sources.len())),
+                    ..SearchTraceCounts::default()
+                });
+                emit_trace(on_event, compose_step);
                 on_event(SearchEvent::Composing);
                 run_streaming_branch(
                     ollama_endpoint,
@@ -1476,10 +2381,31 @@ mod agentic_tests {
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
 
         // No search-phase events.
-        assert!(evs.iter().all(|e| !matches!(e, SearchEvent::Searching)));
+        assert!(evs
+            .iter()
+            .all(|e| !matches!(e, SearchEvent::Searching { .. })));
         assert!(evs
             .iter()
             .all(|e| !matches!(e, SearchEvent::ReadingSources)));
+
+        let trace_steps = evs
+            .iter()
+            .filter_map(|event| match event {
+                SearchEvent::Trace { step } => Some(step),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(trace_steps.iter().any(|step| {
+            step.title == "Understanding the question"
+                && step.summary
+                    == "This request could mean a few different things, so Thuki needs one more detail before searching."
+                && step.detail.is_none()
+        }));
+        assert!(trace_steps.iter().any(|step| {
+            step.title == "Waiting for clarification"
+                && step.summary == "Search is paused until you clarify who or what you mean."
+                && step.detail.is_none()
+        }));
 
         // Turn must be persisted to history.
         let conv = h.messages.lock().unwrap();
@@ -1588,7 +2514,9 @@ mod agentic_tests {
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
 
         // No search events.
-        assert!(evs.iter().all(|e| !matches!(e, SearchEvent::Searching)));
+        assert!(evs
+            .iter()
+            .all(|e| !matches!(e, SearchEvent::Searching { .. })));
         assert!(evs
             .iter()
             .all(|e| !matches!(e, SearchEvent::ReadingSources)));
@@ -1740,7 +2668,9 @@ mod agentic_tests {
         let evs = events.lock().unwrap();
 
         assert_eq!(evs[0], SearchEvent::AnalyzingQuery);
-        assert!(evs.iter().any(|e| matches!(e, SearchEvent::Searching)));
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, SearchEvent::Searching { .. })));
         assert!(evs.iter().any(|e| matches!(e, SearchEvent::Sources { .. })));
         assert!(evs.iter().any(|e| matches!(e, SearchEvent::Composing)));
         assert!(
@@ -1833,7 +2763,9 @@ mod agentic_tests {
         .unwrap();
 
         let evs = events.lock().unwrap();
-        assert!(evs.iter().any(|e| matches!(e, SearchEvent::Searching)));
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, SearchEvent::Searching { .. })));
         assert!(evs.iter().any(|e| matches!(e, SearchEvent::ReadingSources)));
         // No ReaderUnavailable warning when reader succeeds: verify by
         // checking the event list contains no Warning events of any kind,
@@ -4785,4 +5717,105 @@ mod agentic_tests {
     // initial round), gap round reader = also port-refused (dedup suppresses).
     // Lines 764-767 fire in the initial round. The gap-round match arm at 761
     // is also hit by the dedup test. Both are now covered.
+
+    // ── IterationComplete events emitted per iteration ───────────────────────
+    //
+    // Verifies that `IterationComplete` events are emitted after each retrieval
+    // iteration (one per metadata.iterations.push), and that no `Metadata`
+    // bulk event is emitted. Uses the snippets-sufficient path (Site A) for
+    // the simplest setup: one SearXNG result, snippet judge returns Sufficient,
+    // no reader escalation. Exactly one IterationComplete must fire.
+    #[tokio::test]
+    async fn iteration_complete_emitted_per_iteration_no_bulk_metadata() {
+        let mut ollama = mockito::Server::new_async().await;
+        let mut searx = mockito::Server::new_async().await;
+
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_one_result("https://example.com/a"))
+            .create_async()
+            .await;
+
+        let stream = stream_line_token("answer");
+        let _stream_mock = ollama
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"stream":true}"#.to_string(),
+            ))
+            .with_body(stream)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("test query");
+        // Snippet judge returns Sufficient: Site A push fires, reader skipped.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![sufficient_verdict()].into_iter().collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama.url()),
+            &format!("{}/search", searx.url()),
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "test query".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+
+        // At least one IterationComplete event must have been emitted.
+        let iteration_complete_events: Vec<_> = evs
+            .iter()
+            .filter(|e| matches!(e, SearchEvent::IterationComplete { .. }))
+            .collect();
+        assert!(
+            !iteration_complete_events.is_empty(),
+            "expected at least one IterationComplete event in: {evs:?}"
+        );
+
+        // The trace must reflect the snippets-sufficient path:
+        // stage=Initial, urls_fetched=[], judge_verdict=Sufficient.
+        let first_trace = evs
+            .iter()
+            .find_map(|e| {
+                if let SearchEvent::IterationComplete { trace } = e {
+                    Some(trace)
+                } else {
+                    None
+                }
+            })
+            .expect("expected IterationComplete event");
+        assert!(
+            matches!(first_trace.stage, IterationStage::Initial),
+            "expected Initial stage, got: {:?}",
+            first_trace.stage
+        );
+        assert!(
+            first_trace.urls_fetched.is_empty(),
+            "expected no urls_fetched on snippet-sufficient path, got: {:?}",
+            first_trace.urls_fetched
+        );
+        assert_eq!(
+            first_trace.judge_verdict,
+            Sufficiency::Sufficient,
+            "expected Sufficient verdict"
+        );
+
+        // Pipeline completed successfully.
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
 }

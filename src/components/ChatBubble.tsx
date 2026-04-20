@@ -11,8 +11,13 @@ import { quote } from '../config';
 import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
 import { SearchWarningIcon } from './SearchWarningIcon';
 import type { OllamaErrorKind } from '../hooks/useOllama';
-import type { SearchResultPreview, SearchWarning } from '../types/search';
+import type {
+  SearchResultPreview,
+  SearchTraceStep,
+  SearchWarning,
+} from '../types/search';
 import { SEARCH_WARNING_SEVERITY } from '../config/searchWarnings';
+import { SearchTraceBlock } from './SearchTraceBlock';
 import { SandboxSetupCard } from './SandboxSetupCard';
 
 /**
@@ -216,6 +221,11 @@ interface ChatBubbleProps {
   searchWarnings?: SearchWarning[];
   /** When true, renders a `SandboxSetupCard` instead of markdown or error bubble. */
   sandboxUnavailable?: boolean;
+  /** User-facing search timeline data for `/search` turns. */
+  searchTraces?: SearchTraceStep[];
+  /** Whether the search pipeline is currently running. When true, renders a
+   * `SearchTraceBlock` in loading state even before any traces arrive. */
+  isSearching?: boolean;
 }
 
 /**
@@ -262,6 +272,8 @@ export function ChatBubble({
   searchSources,
   searchWarnings,
   sandboxUnavailable = false,
+  searchTraces,
+  isSearching = false,
 }: ChatBubbleProps) {
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -392,6 +404,13 @@ export function ChatBubble({
             ref={answerRef}
             className="text-sm leading-relaxed select-text py-1"
           >
+            {(isSearching || (searchTraces && searchTraces.length > 0)) && (
+              <SearchTraceBlock
+                traces={searchTraces ?? []}
+                isSearching={isSearching}
+                sources={searchSources}
+              />
+            )}
             {thinkingContent && (
               <ThinkingBlock
                 thinkingContent={thinkingContent}
@@ -490,7 +509,7 @@ export function ChatBubble({
                       return (
                         <span
                           key={src.url}
-                          className="shrink-0 w-[18px] h-[18px] rounded-full inline-flex items-center justify-center text-[9px] font-semibold text-white/90"
+                          className="shrink-0 h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[9px] font-semibold text-white/90"
                           style={{
                             background: bg,
                             border:

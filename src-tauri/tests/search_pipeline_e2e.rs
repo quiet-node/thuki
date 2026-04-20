@@ -208,8 +208,17 @@ async fn happy_path_snippets_sufficient_streams_answer() {
         "first event must be AnalyzingQuery"
     );
     assert!(
-        evs.iter().any(|e| matches!(e, SearchEvent::Searching)),
+        evs.iter()
+            .any(|e| matches!(e, SearchEvent::Searching { .. })),
         "Searching event missing"
+    );
+    assert!(
+        evs.iter().any(|e| matches!(
+            e,
+            SearchEvent::Trace { step }
+                if step.id == "analyze" || step.id == "round-1-search" || step.id == "compose"
+        )),
+        "Trace events missing"
     );
     assert!(
         evs.iter().any(|e| matches!(e, SearchEvent::Sources { .. })),
@@ -228,6 +237,13 @@ async fn happy_path_snippets_sufficient_streams_answer() {
         *evs.last().unwrap(),
         SearchEvent::Done,
         "last event must be Done"
+    );
+
+    // IterationComplete event must be emitted when a search path runs.
+    assert!(
+        evs.iter()
+            .any(|e| matches!(e, SearchEvent::IterationComplete { .. })),
+        "expected IterationComplete event in happy path"
     );
 
     // Reader must not be called.
@@ -325,7 +341,9 @@ async fn reader_escalation_with_chunks_sufficient() {
     let evs = events.lock().unwrap();
 
     assert_eq!(evs[0], SearchEvent::AnalyzingQuery);
-    assert!(evs.iter().any(|e| matches!(e, SearchEvent::Searching)));
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, SearchEvent::Searching { .. })));
     assert!(evs.iter().any(|e| matches!(e, SearchEvent::Sources { .. })));
     assert!(
         evs.iter().any(|e| matches!(e, SearchEvent::ReadingSources)),

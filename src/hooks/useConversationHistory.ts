@@ -1,7 +1,12 @@
 import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Message } from './useOllama';
-import type { SearchResultPreview, SearchWarning } from '../types/search';
+import type {
+  IterationTrace,
+  SearchResultPreview,
+  SearchTraceStep,
+  SearchWarning,
+} from '../types/search';
 import type {
   ConversationSummary,
   PersistedMessage,
@@ -12,6 +17,9 @@ import type {
 /**
  * Maps a frontend `Message` to the `SaveMessagePayload` shape expected by
  * the `save_conversation` and `generate_title` Tauri commands.
+ *
+ * `search_metadata` stores `SearchTraceStep[]` serialized as JSON. The column
+ * name is a legacy artifact that predates the richer live timeline model.
  */
 function toPayload(msg: Message): SaveMessagePayload {
   return {
@@ -25,12 +33,142 @@ function toPayload(msg: Message): SaveMessagePayload {
       msg.searchWarnings && msg.searchWarnings.length > 0
         ? JSON.stringify(msg.searchWarnings)
         : null,
+    // search_metadata stores SearchTraceStep[] serialized as JSON.
+    search_metadata:
+      msg.searchTraces && msg.searchTraces.length > 0
+        ? JSON.stringify(msg.searchTraces)
+        : null,
   };
+}
+
+function hostnameOrUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
+function isSearchTraceStep(value: unknown): value is SearchTraceStep {
+  if (!value || typeof value !== 'object') return false;
+
+  return (
+    'id' in value &&
+    'kind' in value &&
+    'status' in value &&
+    'title' in value &&
+    'summary' in value
+  );
+}
+
+function isIterationTrace(value: unknown): value is IterationTrace {
+  if (!value || typeof value !== 'object') return false;
+
+  return (
+    'stage' in value &&
+    'queries' in value &&
+    'judge_verdict' in value &&
+    'judge_reasoning' in value
+  );
+}
+
+function convertLegacyTraces(traces: IterationTrace[]): SearchTraceStep[] {
+  return traces.flatMap((trace, index) => {
+    const round = trace.stage.kind === 'initial' ? 1 : trace.stage.round + 1;
+    const baseId = `legacy-round-${round}-${index}`;
+    const domains = [...new Set(trace.urls_fetched.map(hostnameOrUrl))];
+    const searchStep: SearchTraceStep = {
+      id: `${baseId}-search`,
+      kind: 'search',
+      status: 'completed',
+      round,
+      title: round === 1 ? 'Searched the web' : 'Searched the web again',
+      summary:
+        trace.queries.length > 0
+          ? 'Loaded a saved search round from an older trace format.'
+          : 'Loaded a saved search round.',
+      queries: trace.queries,
+      domains,
+    };
+
+    const judgeStep: SearchTraceStep = {
+      id: `${baseId}-judge`,
+      kind: trace.urls_fetched.length > 0 ? 'chunk_judge' : 'snippet_judge',
+      status: 'completed',
+      round,
+      title:
+        trace.urls_fetched.length > 0
+          ? 'Checked whether the evidence was enough'
+          : 'Checked whether the snippets were enough',
+      summary:
+        trace.judge_verdict === 'sufficient'
+          ? 'This saved round had enough evidence to answer confidently.'
+          : trace.judge_verdict === 'partial'
+            ? 'This saved round helped, but still left some gaps.'
+            : 'This saved round did not gather enough evidence yet.',
+      detail: trace.judge_reasoning,
+      verdict: trace.judge_verdict,
+    };
+
+    if (trace.urls_fetched.length === 0) {
+      return [searchStep, judgeStep];
+    }
+
+    const readStep: SearchTraceStep = {
+      id: `${baseId}-read`,
+      kind: 'read',
+      status: 'completed',
+      round,
+      title: 'Opened source pages',
+      summary: `Read ${trace.urls_fetched.length} saved page${
+        trace.urls_fetched.length === 1 ? '' : 's'
+      }.`,
+      domains,
+      counts: {
+        processed: trace.urls_fetched.length,
+        total: trace.urls_fetched.length,
+        empty:
+          trace.reader_empty_urls.length > 0
+            ? trace.reader_empty_urls.length
+            : undefined,
+      },
+    };
+
+    return [searchStep, readStep, judgeStep];
+  });
+}
+
+function parseSearchMetadata(
+  raw: string | null,
+): SearchTraceStep[] | undefined {
+  if (!raw) return undefined;
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      return undefined;
+    }
+
+    if (parsed.every(isSearchTraceStep)) {
+      return parsed;
+    }
+
+    if (parsed.every(isIterationTrace)) {
+      return convertLegacyTraces(parsed);
+    }
+
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
  * Maps a `PersistedMessage` returned by `load_conversation` back to a
  * frontend `Message`, preserving optional fields.
+ *
+ * `search_metadata` is deserialized as `SearchTraceStep[]`. Older saved
+ * `IterationTrace[]` payloads are converted into coarse timeline steps.
  */
 function fromPersisted(msg: PersistedMessage): Message {
   const imagePaths = msg.image_paths
@@ -42,6 +180,7 @@ function fromPersisted(msg: PersistedMessage): Message {
   const searchWarnings = msg.search_warnings
     ? (JSON.parse(msg.search_warnings) as SearchWarning[])
     : undefined;
+  const searchTraces = parseSearchMetadata(msg.search_metadata);
   return {
     id: msg.id,
     role: msg.role as 'user' | 'assistant',
@@ -52,11 +191,14 @@ function fromPersisted(msg: PersistedMessage): Message {
     searchSources:
       searchSources && searchSources.length > 0 ? searchSources : undefined,
     fromSearch:
-      searchSources !== undefined && searchSources.length > 0
+      (searchSources !== undefined && searchSources.length > 0) ||
+      (searchTraces !== undefined && searchTraces.length > 0)
         ? true
         : undefined,
     searchWarnings:
       searchWarnings && searchWarnings.length > 0 ? searchWarnings : undefined,
+    searchTraces:
+      searchTraces && searchTraces.length > 0 ? searchTraces : undefined,
   };
 }
 
@@ -137,6 +279,7 @@ export function useConversationHistory() {
           thinkingContent: null,
           searchSources: null,
           searchWarnings: null,
+          searchMetadata: null,
         }),
         invoke('persist_message', {
           conversationId,
@@ -150,6 +293,10 @@ export function useConversationHistory() {
             assistantMsg.searchWarnings &&
             assistantMsg.searchWarnings.length > 0
               ? JSON.stringify(assistantMsg.searchWarnings)
+              : null,
+          searchMetadata:
+            assistantMsg.searchTraces && assistantMsg.searchTraces.length > 0
+              ? JSON.stringify(assistantMsg.searchTraces)
               : null,
         }),
       ]);

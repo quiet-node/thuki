@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::future::join_all;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use reqwest::Client;
 use serde::Deserialize;
 use tokio::sync::Semaphore;
@@ -163,6 +164,85 @@ impl ReaderClient {
 
         Ok(result)
     }
+
+    /// Fetch pages for every URL in `urls`, racing against `cancel`.
+    /// Calls `on_url_fetched(url)` after each successful fetch (Page or Empty)
+    /// as it completes, providing live progress to callers during the batch.
+    ///
+    /// Uses `FuturesUnordered` so each completion fires `on_url_fetched`
+    /// immediately rather than waiting for the whole batch to finish.
+    ///
+    /// The callback is taken as `&dyn Fn` (dynamic dispatch) to produce a single
+    /// monomorphization, ensuring all code paths are counted once by coverage tools.
+    pub async fn fetch_batch_with_progress(
+        &self,
+        urls: &[String],
+        cancel: &CancellationToken,
+        on_url_fetched: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<ReaderBatchResult, ReaderError> {
+        if urls.is_empty() {
+            return Ok(ReaderBatchResult::default());
+        }
+
+        let total = urls.len();
+        let semaphore = Arc::new(Semaphore::new(total.min(5)));
+        let futures: FuturesUnordered<_> = urls
+            .iter()
+            .map(|u| {
+                let sem = semaphore.clone();
+                let cancel = cancel.clone();
+                let client = self.client.clone();
+                let base = self.base.clone();
+                let url = u.clone();
+                async move {
+                    let _permit = sem.acquire_owned().await.ok();
+                    tokio::select! {
+                        _ = cancel.cancelled() => FetchOutcome::Cancelled,
+                        res = fetch_one(&client, &base, &url) => res,
+                    }
+                }
+            })
+            .collect();
+
+        let mut futures = futures;
+        let mut result = ReaderBatchResult::default();
+        let mut any_succeeded = false;
+        let mut service_unavailable_count = 0usize;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(READER_BATCH_TIMEOUT_S);
+        loop {
+            match tokio::time::timeout_at(deadline, futures.next()).await {
+                Err(_elapsed) => return Err(ReaderError::BatchTimeout),
+                Ok(None) => break,
+                Ok(Some(outcome)) => match outcome {
+                    FetchOutcome::Cancelled => return Err(ReaderError::Cancelled),
+                    FetchOutcome::Page(p) => {
+                        any_succeeded = true;
+                        on_url_fetched(p.url.clone());
+                        result.pages.push(p);
+                    }
+                    FetchOutcome::Empty(url) => {
+                        any_succeeded = true;
+                        on_url_fetched(url.clone());
+                        result.empty_urls.push(url);
+                    }
+                    FetchOutcome::Failed(url) => {
+                        result.failed_urls.push(url);
+                    }
+                    FetchOutcome::ServiceUnavailable(url) => {
+                        service_unavailable_count += 1;
+                        result.failed_urls.push(url);
+                    }
+                },
+            }
+        }
+
+        if !any_succeeded && service_unavailable_count == total {
+            return Err(ReaderError::ServiceUnavailable);
+        }
+
+        Ok(result)
+    }
 }
 
 impl Default for ReaderClient {
@@ -231,6 +311,13 @@ mod tests {
         ReaderClient::new_with_base(server.uri())
     }
 
+    /// Callback used in tests that must never fire. The body is excluded from
+    /// coverage because it is intentionally dead code in those scenarios.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn never_called(_: String) {
+        panic!("callback must not fire in this test");
+    }
+
     #[tokio::test]
     async fn fetch_batch_returns_pages_for_success_responses() {
         let server = MockServer::start().await;
@@ -295,7 +382,7 @@ mod tests {
         // server not started; port 1 is unprivileged nothingness.
         let client = ReaderClient::new_with_base("http://127.0.0.1:1".to_string());
         let res = client.fetch_batch(&["https://a.com/1".to_string()]).await;
-        assert!(matches!(res, Err(ReaderError::ServiceUnavailable)));
+        assert_eq!(res, Err(ReaderError::ServiceUnavailable));
     }
 
     #[tokio::test]
@@ -363,6 +450,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_batch_batch_timeout_returns_error() {
+        let server = MockServer::start().await;
+        // Response delays longer than READER_BATCH_TIMEOUT_S (1 s in test mode).
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(5))
+                    .set_body_json(serde_json::json!({
+                        "url": "https://a.com/slow", "title": "t",
+                        "markdown": "ok", "status": "ok"
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let res = client
+            .fetch_batch(&["https://a.com/slow".to_string()])
+            .await;
+        assert_eq!(res, Err(ReaderError::BatchTimeout));
+    }
+
+    #[tokio::test]
     async fn fetch_batch_records_builder_error_as_failed() {
         // Line 202: reqwest errors that are neither is_connect() nor match the
         // transient-string classifier land in FetchOutcome::Failed.
@@ -375,5 +486,169 @@ mod tests {
             .unwrap();
         assert!(result.pages.is_empty());
         assert_eq!(result.failed_urls, vec!["https://a.com/any".to_string()]);
+    }
+
+    // ── fetch_batch_with_progress tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn progress_empty_url_list_returns_empty_no_callbacks() {
+        let client = ReaderClient::new_with_base("http://127.0.0.1:1".to_string());
+        let result = client
+            .fetch_batch_with_progress(&[], &CancellationToken::new(), &never_called)
+            .await
+            .unwrap();
+        assert!(result.pages.is_empty());
+        assert!(result.empty_urls.is_empty());
+        assert!(result.failed_urls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn progress_calls_callback_for_page_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://a.com/1", "title": "t", "markdown": "hello", "status": "ok"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let called = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let called2 = called.clone();
+        let cb = move |url: String| {
+            called2.lock().unwrap().push(url);
+        };
+        let result = client
+            .fetch_batch_with_progress(
+                &["https://a.com/1".to_string()],
+                &CancellationToken::new(),
+                &cb,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.pages.len(), 1);
+        assert_eq!(*called.lock().unwrap(), vec!["https://a.com/1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn progress_calls_callback_for_empty_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://a.com/2", "title": "t", "markdown": "", "status": "empty"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let called = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let called2 = called.clone();
+        let cb = move |url: String| {
+            called2.lock().unwrap().push(url);
+        };
+        let result = client
+            .fetch_batch_with_progress(
+                &["https://a.com/2".to_string()],
+                &CancellationToken::new(),
+                &cb,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.empty_urls, vec!["https://a.com/2".to_string()]);
+        assert_eq!(*called.lock().unwrap(), vec!["https://a.com/2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn progress_no_callback_for_failed_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let result = client
+            .fetch_batch_with_progress(
+                &["https://a.com/x".to_string()],
+                &CancellationToken::new(),
+                &never_called,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.failed_urls.len(), 1);
+        assert!(result.pages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn progress_reports_service_unavailable_when_all_fail_with_connect_error() {
+        let client = ReaderClient::new_with_base("http://127.0.0.1:1".to_string());
+        let res = client
+            .fetch_batch_with_progress(
+                &["https://a.com/1".to_string()],
+                &CancellationToken::new(),
+                &never_called,
+            )
+            .await;
+        assert_eq!(res, Err(ReaderError::ServiceUnavailable));
+    }
+
+    #[tokio::test]
+    async fn progress_cancellation_returns_cancelled_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(10))
+                    .set_body_json(serde_json::json!({
+                        "url": "https://a.com/slow", "title": "t", "markdown": "", "status": "ok"
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let cancel = CancellationToken::new();
+        let cancel_handle = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_handle.cancel();
+        });
+        let res = client
+            .fetch_batch_with_progress(&["https://a.com/slow".to_string()], &cancel, &never_called)
+            .await;
+        assert_eq!(res, Err(ReaderError::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn progress_callback_fires_once_per_successful_url_in_mixed_batch() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://ok.com/1", "title": "t", "markdown": "ok", "status": "ok"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).await;
+        let called = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let called2 = called.clone();
+        let cb = move |url: String| {
+            called2.lock().unwrap().push(url);
+        };
+        let result = client
+            .fetch_batch_with_progress(
+                &["https://ok.com/1".to_string()],
+                &CancellationToken::new(),
+                &cb,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.pages.len(), 1);
+        assert_eq!(called.lock().unwrap().len(), 1);
     }
 }

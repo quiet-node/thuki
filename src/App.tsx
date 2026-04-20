@@ -419,11 +419,12 @@ function App() {
    * deferred until Framer Motion finishes the exit transition.
    */
   const requestHideOverlay = useCallback(() => {
-    cancel();
+    void cancel();
     growsUpwardRef.current = false;
     setGrowsUpward(false);
     screenCapturePendingRef.current = false;
     screenCaptureInputSnapshotRef.current = null;
+    setSearchActive(false);
     setSelectedContext(null);
     setPreviewImageUrl(null);
     setAttachedImages((prev) => {
@@ -1007,15 +1008,24 @@ function App() {
     if (hasSearch || (searchActive && !hasScreen && found.size === 0)) {
       const searchQuery = strippedMessage.trim();
       if (!searchQuery) return;
+      // Sanitize externally-sourced context before moving it into the user
+      // bubble so host-app control characters cannot leak into the UI.
+      // eslint-disable-next-line no-control-regex
+      const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
+      const sanitized = selectedContext
+        ?.replace(CONTROL_CHARS, '')
+        .slice(0, quote.maxContextLength);
+      const context = sanitized?.trim() ? sanitized : undefined;
       // Pass the full typed query (with `/search`) as bubble display content so
       // the user sees exactly what they typed; the backend receives only the
       // stripped query without the trigger prefix.
       const searchDisplay = hasSearch ? trimmedQuery : undefined;
       setQuery('');
+      setSelectedContext(null);
       /* v8 ignore next */
       inputRef.current!.style.height = 'auto';
       setSearchActive(true);
-      void askSearch(searchQuery, searchDisplay).then(({ final }) => {
+      void askSearch(searchQuery, searchDisplay, context).then(({ final }) => {
         if (final) setSearchActive(false);
       });
       return;
@@ -1257,8 +1267,10 @@ function App() {
       requestAnimationFrame(() => inputRef.current?.focus());
       return;
     }
-    cancel();
-  }, [isSubmitPending, cancel, setSelectedContext]);
+    void cancel();
+    setSearchActive(false);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [isSubmitPending, cancel, setSearchActive, setSelectedContext]);
 
   /** Fetches model configuration from the backend once at mount. */
   useEffect(() => {

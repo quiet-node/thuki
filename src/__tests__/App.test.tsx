@@ -140,6 +140,31 @@ describe('App', () => {
     expect(invoke).toHaveBeenCalledWith('notify_overlay_hidden');
   });
 
+  it('hides overlay on Escape key and cancels an active /search turn', async () => {
+    enableChannelCapture();
+    render(<App />);
+    await act(async () => {});
+
+    await showOverlay();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/search rust async' } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+
+    invoke.mockClear();
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+
+    expect(invoke).toHaveBeenCalledWith('cancel_generation');
+    expect(invoke).toHaveBeenCalledWith('notify_overlay_hidden');
+  });
+
   it('completes a full conversation turn', async () => {
     render(<App />);
     await act(async () => {});
@@ -634,29 +659,13 @@ describe('App', () => {
     });
 
     it('closes history panel when a conversation is loaded', async () => {
-      invoke.mockResolvedValueOnce({
-        active: 'gemma4:e2b',
-        all: ['gemma4:e2b'],
-      }); // get_model_config
-      invoke.mockResolvedValueOnce(undefined); // notify_frontend_ready
-      invoke.mockResolvedValueOnce([]); // reset_conversation (from replayEntranceAnimation)
-      invoke.mockResolvedValueOnce([
-        // load_conversation
-        {
-          id: 'm1',
-          role: 'user',
-          content: 'Hello',
-          quoted_text: null,
-          created_at: 1,
+      enableChannelCaptureWithResponses({
+        get_model_config: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b'],
         },
-        {
-          id: 'm2',
-          role: 'assistant',
-          content: 'Hi',
-          quoted_text: null,
-          created_at: 2,
-        },
-      ]);
+        list_conversations: [],
+      });
 
       render(<App />);
       await act(async () => {});
@@ -2492,6 +2501,70 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith('cancel_generation');
     });
 
+    it('stop button hard-aborts an active /search turn and resets search mode', async () => {
+      let resolveSearch!: () => void;
+      let resolveCancel!: () => void;
+
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'search_pipeline') {
+          return new Promise<void>((res) => {
+            resolveSearch = res;
+          });
+        }
+        if (cmd === 'cancel_generation') {
+          return new Promise<void>((res) => {
+            resolveCancel = res;
+          });
+        }
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/search what is Rust?' },
+        });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      const stopBtn = screen.getByRole('button', { name: /stop/i });
+      expect(stopBtn).toBeInTheDocument();
+
+      act(() => {
+        fireEvent.click(stopBtn);
+      });
+
+      expect(invoke).toHaveBeenCalledWith('cancel_generation');
+      expect(screen.queryByRole('button', { name: /stop/i })).toBeNull();
+      expect(textarea).not.toBeDisabled();
+
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      expect(textarea).toHaveValue('hello');
+
+      await act(async () => {
+        resolveCancel?.();
+        resolveSearch?.();
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      const calls = invoke.mock.calls.filter(
+        (c) => c[0] === 'ask_ollama' || c[0] === 'search_pipeline',
+      );
+      const last = calls[calls.length - 1];
+      expect(last[0]).toBe('ask_ollama');
+      expect(last[1]).toMatchObject({ message: 'hello' });
+    });
+
     it('cancelling during pending submit restores input (undo send)', async () => {
       // Flush stale macrotasks from prior tests
       await act(async () => {
@@ -4008,6 +4081,94 @@ describe('App', () => {
       );
     });
 
+    it('moves selected context into the /search user bubble and clears the ask bar preview', async () => {
+      enableChannelCapture();
+      const { container } = render(<App />);
+      await act(async () => {});
+      await showOverlay('selected snippet');
+
+      const findSelectedSnippet = () =>
+        screen.getAllByText(/selected snippet/i, { selector: 'p' });
+
+      expect(findSelectedSnippet()).toHaveLength(1);
+      expect(container.querySelectorAll('p.text-text-secondary')).toHaveLength(
+        1,
+      );
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/search explain this selection' },
+        });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      expect(textarea).toHaveValue('');
+      expect(findSelectedSnippet()).toHaveLength(1);
+      expect(container.querySelectorAll('p.text-text-secondary')).toHaveLength(
+        0,
+      );
+      expect(
+        container.querySelectorAll('p[class*="text-white/60"]'),
+      ).toHaveLength(1);
+    });
+
+    it('keeps searchActive after a clarify trace with question tokens', async () => {
+      enableChannelCapture();
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/search who is him' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      const firstChannel = getLastChannel();
+      await act(async () => {
+        firstChannel!.onmessage({
+          type: 'Trace',
+          step: {
+            id: 'clarify',
+            kind: 'clarify',
+            status: 'completed',
+            title: 'Waiting for clarification',
+            summary: 'Search is paused until you clarify who or what you mean.',
+          },
+        });
+        firstChannel!.onmessage({ type: 'Token', content: 'Which person?' });
+        firstChannel!.onmessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const followupInvokeCountBefore = invoke.mock.calls.filter(
+        (c) => c[0] === 'search_pipeline',
+      ).length;
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'Donald Trump' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      const followupInvokeCountAfter = invoke.mock.calls.filter(
+        (c) => c[0] === 'search_pipeline',
+      ).length;
+      expect(followupInvokeCountAfter).toBe(followupInvokeCountBefore + 1);
+      const searchCalls = invoke.mock.calls.filter(
+        (c) => c[0] === 'search_pipeline',
+      );
+      expect(searchCalls[searchCalls.length - 1][1]).toMatchObject({
+        message: 'Donald Trump',
+      });
+    });
+
     it('continues routing follow-ups through search_pipeline after a Clarifying event', async () => {
       enableChannelCapture();
       render(<App />);
@@ -4073,7 +4234,7 @@ describe('App', () => {
 
       const channel = getLastChannel();
       await act(async () => {
-        channel!.onmessage({ type: 'Searching' });
+        channel!.onmessage({ type: 'Searching', queries: [] });
         channel!.onmessage({ type: 'Token', content: 'Rust is fast.' });
         channel!.onmessage({ type: 'Done' });
       });

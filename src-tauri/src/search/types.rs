@@ -17,6 +17,96 @@ pub struct SearchResultPreview {
     pub url: String,
 }
 
+/// Streaming, user-facing timeline step for the `/search` pipeline.
+///
+/// Unlike [`IterationTrace`], which is a coarse per-round diagnostic summary,
+/// this type is designed for the live `SearchTraceBlock` UI. The backend may
+/// re-emit the same `id` with updated `status`, `summary`, or `counts` as a
+/// stage progresses.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchTraceKind {
+    Analyze,
+    Clarify,
+    HistoryAnswer,
+    Search,
+    UrlRerank,
+    SnippetJudge,
+    Read,
+    Chunk,
+    ChunkRerank,
+    ChunkJudge,
+    Refine,
+    Compose,
+}
+
+/// Lifecycle state for a live [`SearchTraceStep`].
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchTraceStatus {
+    Running,
+    Completed,
+}
+
+/// Optional compact metrics surfaced beside a [`SearchTraceStep`] in the UI.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SearchTraceCounts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub found: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processed: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pages: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sources: Option<u32>,
+}
+
+/// A single live search-trace timeline step for the frontend.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SearchTraceStep {
+    /// Stable identifier. Re-emitting the same id updates the same UI step.
+    pub id: String,
+    /// Semantic search-pipeline stage.
+    pub kind: SearchTraceKind,
+    /// Whether this stage is still running or has completed.
+    pub status: SearchTraceStatus,
+    /// 1-indexed retrieval round for looped search stages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<u32>,
+    /// Short stage title shown in the timeline header.
+    pub title: String,
+    /// Primary user-facing explanation for this stage.
+    pub summary: String,
+    /// Optional secondary explanation such as fallback context or missing info.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Queries used or planned in this stage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queries: Vec<String>,
+    /// Exact page URLs surfaced when users should see the concrete pages considered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub urls: Vec<String>,
+    /// Deduplicated source domains relevant to this stage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domains: Vec<String>,
+    /// Sufficiency verdict for judge stages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<Sufficiency>,
+    /// Compact counts displayed by the UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counts: Option<SearchTraceCounts>,
+}
+
 /// Structured event emitted to the frontend over the Tauri Channel during a
 /// `search_pipeline` invocation. Matches the `SearchEvent` TypeScript union.
 ///
@@ -35,13 +125,16 @@ pub struct SearchResultPreview {
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum SearchEvent {
+    /// User-facing timeline update for the live `SearchTraceBlock` UI.
+    Trace { step: SearchTraceStep },
     /// Router LLM call is in flight (legacy; prefer `AnalyzingQuery` in new code).
     Classifying,
     /// Router decided the query is ambiguous; pipeline terminates after
     /// emitting the clarifying question.
     Clarifying { question: String },
-    /// SearXNG lookup is in flight.
-    Searching,
+    /// SearXNG lookup is in flight. Carries the queries submitted to SearXNG so
+    /// the frontend can display them in the live search trace.
+    Searching { queries: Vec<String> },
     /// SearXNG results arrived; forwarded so the frontend can render the
     /// sources footer after synthesis completes.
     Sources { results: Vec<SearchResultPreview> },
@@ -58,6 +151,10 @@ pub enum SearchEvent {
     AnalyzingQuery,
     /// Reader is fetching and extracting text from the ranked source URLs.
     ReadingSources,
+    /// A single URL is about to be fetched by the reader. Emitted once per URL
+    /// before the HTTP request fires, so the frontend can stream in-progress URL
+    /// analysis live during a retrieval round.
+    FetchingUrl { url: String },
     /// Sufficiency judge returned `Partial` or `Insufficient`; starting
     /// another SearXNG round with gap-filling queries. `attempt` is 1-indexed;
     /// `total` is the configured maximum number of gap rounds.
@@ -71,6 +168,11 @@ pub enum SearchEvent {
     /// running. The frontend renders a static setup-guidance card instead of a
     /// generic error bubble.
     SandboxUnavailable,
+    /// Emitted after each retrieval iteration completes (after the judge
+    /// verdict is received). Allows the frontend to stream trace rows live
+    /// as the pipeline progresses rather than receiving all traces at once.
+    /// Not emitted for clarification-only or history-sufficient turns.
+    IterationComplete { trace: IterationTrace },
 }
 
 // ─── Router output ──────────────────────────────────────────────────────────
@@ -163,7 +265,7 @@ pub enum SearchWarning {
 
 /// Which phase of the multi-round retrieval loop an [`IterationTrace`] belongs
 /// to.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum IterationStage {
     /// The first SearXNG round, issued with the original (or router-rewritten)
@@ -176,7 +278,7 @@ pub enum IterationStage {
 /// Diagnostic record for a single retrieval iteration, included in
 /// [`SearchMetadata`]. Useful for debugging agentic-loop behaviour and for
 /// future telemetry or trace UI.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct IterationTrace {
     /// Which phase this iteration covers.
     pub stage: IterationStage,
@@ -198,7 +300,7 @@ pub struct IterationTrace {
 /// End-of-pipeline summary attached to the `Done` event payload (in a later
 /// task) and used for telemetry. Aggregates all [`IterationTrace`] records and
 /// top-level timing.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct SearchMetadata {
     /// Ordered list of retrieval iterations, one per search round.
     pub iterations: Vec<IterationTrace>,
@@ -337,8 +439,32 @@ mod tests {
 
     #[test]
     fn search_event_variants_serialise_distinct_tags() {
-        let searching = serde_json::to_value(SearchEvent::Searching).unwrap();
+        let trace = serde_json::to_value(SearchEvent::Trace {
+            step: SearchTraceStep {
+                id: "analyze".into(),
+                kind: SearchTraceKind::Analyze,
+                status: SearchTraceStatus::Running,
+                round: None,
+                title: "Understanding the question".into(),
+                summary: "Deciding whether to search".into(),
+                detail: None,
+                queries: vec![],
+                urls: vec![],
+                domains: vec![],
+                verdict: None,
+                counts: None,
+            },
+        })
+        .unwrap();
+        assert_eq!(trace["type"], "Trace");
+        assert_eq!(trace["step"]["kind"], "analyze");
+
+        let searching = serde_json::to_value(SearchEvent::Searching {
+            queries: vec!["rust async".into()],
+        })
+        .unwrap();
         assert_eq!(searching["type"], "Searching");
+        assert_eq!(searching["queries"][0], "rust async");
 
         let done = serde_json::to_value(SearchEvent::Done).unwrap();
         assert_eq!(done["type"], "Done");
@@ -509,5 +635,67 @@ mod new_type_tests {
         let v = serde_json::to_value(stage).unwrap();
         assert_eq!(v["kind"], "gap_round");
         assert_eq!(v["round"], 2);
+    }
+
+    #[test]
+    fn search_event_fetching_url_serializes_correct_tag() {
+        let event = SearchEvent::FetchingUrl {
+            url: "https://example.com".into(),
+        };
+        let v = serde_json::to_value(event).unwrap();
+        assert_eq!(v["type"], "FetchingUrl");
+        assert_eq!(v["url"], "https://example.com");
+    }
+
+    #[test]
+    fn search_event_iteration_complete_serializes_correct_tag_and_payload() {
+        let trace = IterationTrace {
+            stage: IterationStage::Initial,
+            queries: vec!["q1".into()],
+            urls_fetched: vec![],
+            reader_empty_urls: vec![],
+            judge_verdict: Sufficiency::Sufficient,
+            judge_reasoning: "ok".into(),
+            duration_ms: 42,
+        };
+        let event = SearchEvent::IterationComplete {
+            trace: trace.clone(),
+        };
+        let v = serde_json::to_value(event).unwrap();
+        assert_eq!(v["type"], "IterationComplete");
+        assert_eq!(v["trace"]["duration_ms"], 42);
+        assert_eq!(v["trace"]["judge_reasoning"], "ok");
+        assert!(v["trace"]["queries"].is_array());
+    }
+
+    #[test]
+    fn search_trace_step_serializes_optional_fields_cleanly() {
+        let step = SearchTraceStep {
+            id: "round-1-search".into(),
+            kind: SearchTraceKind::Search,
+            status: SearchTraceStatus::Completed,
+            round: Some(1),
+            title: "Searching the web".into(),
+            summary: "Found 5 results across 3 sites.".into(),
+            detail: Some("Using the rewritten query.".into()),
+            queries: vec!["rust async runtime".into()],
+            urls: vec!["https://rust-lang.org".into()],
+            domains: vec!["rust-lang.org".into(), "docs.rs".into()],
+            verdict: Some(Sufficiency::Partial),
+            counts: Some(SearchTraceCounts {
+                found: Some(5),
+                kept: Some(3),
+                ..SearchTraceCounts::default()
+            }),
+        };
+
+        let value = serde_json::to_value(step).unwrap();
+        assert_eq!(value["kind"], "search");
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["round"], 1);
+        assert_eq!(value["queries"][0], "rust async runtime");
+        assert_eq!(value["urls"][0], "https://rust-lang.org");
+        assert_eq!(value["counts"]["found"], 5);
+        assert_eq!(value["verdict"], "partial");
     }
 }

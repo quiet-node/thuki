@@ -369,7 +369,9 @@ fn set_window_frame(app_handle: tauri::AppHandle, x: f64, y: f64, width: f64, he
 /// Synchronizes the Rust-side visibility tracking when the frontend
 /// completes its exit animation and hides the native window.
 #[tauri::command]
-fn notify_overlay_hidden() {
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn notify_overlay_hidden(generation: tauri::State<crate::commands::GenerationState>) {
+    generation.cancel();
     OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
 }
 

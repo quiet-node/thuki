@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ChatBubble } from '../ChatBubble';
 import { invoke } from '../../testUtils/mocks/tauri';
+import type { SearchTraceStep } from '../../types/search';
 
 beforeEach(() => {
   invoke.mockClear();
@@ -1035,6 +1036,63 @@ describe('ChatBubble', () => {
         <ChatBubble role="assistant" content="" index={0} sandboxUnavailable />,
       );
       expect(screen.queryByRole('button', { name: 'Copy message' })).toBeNull();
+    });
+  });
+
+  describe('search trace', () => {
+    const trace: SearchTraceStep = {
+      id: 'round-1-search',
+      kind: 'search',
+      status: 'completed',
+      round: 1,
+      title: 'Searching the web',
+      summary: 'Found 3 results across 2 sites.',
+      queries: ['test query'],
+      domains: ['example.com'],
+    };
+
+    it('does not render SearchTraceBlock when no searchTraces and not searching', () => {
+      render(<ChatBubble role="assistant" content="answer" index={0} />);
+      expect(
+        screen.queryByTestId('search-trace-block'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders SearchTraceBlock when searchTraces has items', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="answer"
+          index={0}
+          searchTraces={[trace]}
+        />,
+      );
+      expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
+    });
+
+    it('renders SearchTraceBlock in loading state when isSearching with no traces', () => {
+      render(<ChatBubble role="assistant" content="" index={0} isSearching />);
+      expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
+      expect(screen.getByTestId('search-trace-loading')).toBeInTheDocument();
+    });
+
+    it('renders SearchTraceBlock above thinking block', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="answer"
+          index={0}
+          searchTraces={[trace]}
+          thinkingContent="thoughts"
+          isThinking={false}
+        />,
+      );
+      const traceBlock = screen.getByTestId('search-trace-block');
+      const thinkingBlock = screen.getByTestId('thinking-block');
+      expect(
+        traceBlock.compareDocumentPosition(thinkingBlock) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
     });
   });
 });

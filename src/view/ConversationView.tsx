@@ -211,13 +211,15 @@ export function ConversationView({
 
           // Hide the empty assistant placeholder; the TypingIndicator
           // already covers this visual state. When thinking content is
-          // present, or when the sandbox probe reported unavailability,
-          // render the bubble so the relevant card is visible.
+          // present, sandbox unavailability is flagged, or this is a
+          // search turn (fromSearch), render the bubble so the relevant
+          // card is visible immediately.
           if (
             isLastAssistant &&
             !msg.content &&
             !msg.thinkingContent &&
-            !msg.sandboxUnavailable
+            !msg.sandboxUnavailable &&
+            !msg.fromSearch
           )
             return null;
 
@@ -239,6 +241,12 @@ export function ConversationView({
               searchSources={msg.searchSources}
               searchWarnings={msg.searchWarnings}
               sandboxUnavailable={msg.sandboxUnavailable}
+              searchTraces={msg.searchTraces}
+              isSearching={
+                isGenerating &&
+                msg.fromSearch === true &&
+                i === messages.length - 1
+              }
             />
           );
         })}
@@ -249,7 +257,8 @@ export function ConversationView({
         {isGenerating &&
         messages[messages.length - 1]?.role === 'assistant' &&
         !messages[messages.length - 1]?.content &&
-        !messages[messages.length - 1]?.thinkingContent ? (
+        !messages[messages.length - 1]?.thinkingContent &&
+        !messages[messages.length - 1]?.fromSearch ? (
           <LoadingStage label={searchStageLabel(searchStage)} />
         ) : null}
       </div>
