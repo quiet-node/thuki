@@ -36,8 +36,9 @@ const SEARCH_STEPS: SearchTraceStep[] = [
     kind: 'url_rerank',
     status: 'completed',
     round: 1,
-    title: 'Picking the strongest pages',
-    summary: 'Ranked the results and kept 2 pages for closer reading.',
+    title: 'Rerank pages based on relevance',
+    summary:
+      'Rank the results based on their relevance to the question and kept the top 2.',
     urls: [
       'https://tokio.rs/tokio/tutorial',
       'https://docs.rs/tokio/latest/tokio/',

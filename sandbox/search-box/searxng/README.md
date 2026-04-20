@@ -62,7 +62,7 @@ Defined in `sandbox/search-box/docker-compose.yml`:
 `settings.yml` in this directory overrides the upstream defaults. Edit there for:
 
 - Default engine set (which upstreams to query)
-- Results cap (we keep SearXNG's default; the pipeline truncates to `TOP_K_URLS=5` in Rust)
+- Results cap (we keep SearXNG's default; the pipeline truncates to `TOP_K_URLS=10` in Rust)
 - Safe search level
 - Preferred language
 

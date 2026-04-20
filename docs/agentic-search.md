@@ -76,7 +76,7 @@ Here is the complete control flow for a `/search` invocation. Each box is implem
                                                ▼
                                      ┌─────────────────────┐
                                      │ BM25F + RRF rerank  │
-                                     │ → TOP_K_URLS (5)    │
+                                     │ → TOP_K_URLS (10)   │
                                      └─────────┬───────────┘
                                                │
                                                ▼
@@ -533,7 +533,7 @@ All tuning parameters live in one place: `src-tauri/src/search/config.rs`. They 
 |---|---|---|
 | `MAX_ITERATIONS` | 3 | Hard cap on the gap loop (initial + 2 gap rounds) |
 | `GAP_QUERIES_PER_ROUND` | 3 | Upper bound on gap queries the judge can emit per round |
-| `TOP_K_URLS` | 5 | Reranked URLs forwarded to reader and judge |
+| `TOP_K_URLS` | 10 | Reranked URLs forwarded to reader and judge |
 | `CHUNK_TOKEN_SIZE` | 500 | Approximate word budget per reader-content chunk |
 | `TOP_K_CHUNKS` | 8 | Top-scoring chunks passed to the synthesis prompt |
 | `LLM_RETRY_DELAY_MS` | 500 | Backoff before the single LLM retry on transient failure |

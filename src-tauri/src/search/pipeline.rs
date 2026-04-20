@@ -787,7 +787,7 @@ pub async fn run_agentic(
                     format!("round-{initial_round}-url-rerank"),
                     SearchTraceKind::UrlRerank,
                     SearchTraceStatus::Completed,
-                    "Picking the strongest pages",
+                    "Rerank pages based on relevance",
                     format!(
                         "Ranked the results and kept {} for closer reading.",
                         if top_urls.len() == 1 {
@@ -1409,7 +1409,7 @@ pub async fn run_agentic(
                         format!("round-{attempt}-url-rerank"),
                         SearchTraceKind::UrlRerank,
                         SearchTraceStatus::Completed,
-                        "Picking the strongest pages",
+                        "Rerank pages based on relevance",
                         format!(
                             "Kept {} from this follow-up round for deeper reading.",
                             if round_top_urls.len() == 1 {

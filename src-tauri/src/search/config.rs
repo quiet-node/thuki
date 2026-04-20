@@ -11,7 +11,7 @@ pub const MAX_ITERATIONS: usize = 3;
 pub const GAP_QUERIES_PER_ROUND: usize = 3;
 
 /// Number of top-ranked URLs forwarded to the reader after reranking.
-pub const TOP_K_URLS: usize = 5;
+pub const TOP_K_URLS: usize = 10;
 
 /// Approximate token budget for each retrieved page chunk.
 pub const CHUNK_TOKEN_SIZE: usize = 500;
