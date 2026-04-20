@@ -362,6 +362,21 @@ describe('ChatBubble', () => {
       expect(screen.queryByTestId('thinking-block')).toBeNull();
     });
 
+    it('renders the pending /think placeholder before thinking tokens arrive', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isThinkingPending={true}
+        />,
+      );
+      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Warming up...',
+      );
+    });
+
     it('does not render ThinkingBlock for user message even with thinkingContent', () => {
       render(
         <ChatBubble
@@ -388,6 +403,7 @@ describe('ChatBubble', () => {
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Thinking...',
       );
+      expect(screen.getByTestId('loading-label-prefix')).toBeInTheDocument();
     });
   });
 

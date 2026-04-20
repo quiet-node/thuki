@@ -973,4 +973,144 @@ describe('useConversationHistory', () => {
     );
     expect(loaded[0].fromSearch).toBe(true);
   });
+
+  it('loadConversation() ignores invalid search_metadata payloads', async () => {
+    invoke.mockResolvedValueOnce([
+      {
+        id: 'a-invalid-object',
+        role: 'assistant',
+        content: 'not array metadata',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: JSON.stringify({ not: 'an array' }),
+        created_at: 1,
+      },
+      {
+        id: 'a-invalid-item',
+        role: 'assistant',
+        content: 'invalid item metadata',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: JSON.stringify(['bad']),
+        created_at: 2,
+      },
+      {
+        id: 'a-empty-array',
+        role: 'assistant',
+        content: 'empty metadata',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: JSON.stringify([]),
+        created_at: 3,
+      },
+      {
+        id: 'a-malformed',
+        role: 'assistant',
+        content: 'malformed metadata',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: '{not json',
+        created_at: 4,
+      },
+    ]);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    let loaded: Message[] = [];
+    await act(async () => {
+      loaded = await result.current.loadConversation('conv-meta-invalid');
+    });
+
+    expect(loaded).toHaveLength(4);
+    expect(loaded.every((message) => message.searchTraces === undefined)).toBe(
+      true,
+    );
+  });
+
+  it('loadConversation() covers snippet-only and plural legacy trace variants', async () => {
+    invoke.mockResolvedValueOnce([
+      {
+        id: 'a-legacy-variants',
+        role: 'assistant',
+        content: 'answer',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: JSON.stringify([
+          {
+            stage: { kind: 'gap_round', round: 2 },
+            queries: [],
+            urls_fetched: [],
+            reader_empty_urls: [],
+            judge_verdict: 'sufficient',
+            judge_reasoning: 'enough evidence',
+            duration_ms: 90,
+          },
+          {
+            stage: { kind: 'initial' },
+            queries: [],
+            urls_fetched: ['not-a-url', 'https://b.com/guide'],
+            reader_empty_urls: ['not-a-url'],
+            judge_verdict: 'insufficient',
+            judge_reasoning: 'still missing details',
+            duration_ms: 120,
+          },
+        ]),
+        created_at: 1,
+      },
+    ]);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    let loaded: Message[] = [];
+    await act(async () => {
+      loaded = await result.current.loadConversation('conv-meta-variants');
+    });
+
+    expect(loaded[0].fromSearch).toBe(true);
+    expect(loaded[0].searchTraces).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'legacy-round-3-0-search',
+          round: 3,
+          title: 'Searched the web again',
+          summary: 'Loaded a saved search round.',
+        }),
+        expect.objectContaining({
+          id: 'legacy-round-3-0-judge',
+          kind: 'snippet_judge',
+          title: 'Checked whether the snippets were enough',
+          verdict: 'sufficient',
+          summary:
+            'This saved round had enough evidence to answer confidently.',
+        }),
+        expect.objectContaining({
+          id: 'legacy-round-1-1-read',
+          summary: 'Read 2 saved pages.',
+          domains: ['not-a-url', 'b.com'],
+          counts: expect.objectContaining({ empty: 1 }),
+        }),
+        expect.objectContaining({
+          id: 'legacy-round-1-1-judge',
+          kind: 'chunk_judge',
+          verdict: 'insufficient',
+          summary: 'This saved round did not gather enough evidence yet.',
+        }),
+      ]),
+    );
+  });
 });

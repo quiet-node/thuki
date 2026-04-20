@@ -516,6 +516,136 @@ describe('useOllama', () => {
       );
       expect(assistantMsg?.content).toBe('');
     });
+
+    it('drops the placeholder when only an empty ThinkingToken arrives before cancellation', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello', undefined, undefined, true);
+      });
+
+      const channel = getChannel();
+      expect(channel).not.toBeNull();
+
+      act(() => {
+        channel!.simulateMessage({ type: 'ThinkingToken', data: '' });
+        channel!.simulateMessage({ type: 'Cancelled' });
+      });
+
+      expect(
+        result.current.messages.find((message) => message.role === 'assistant'),
+      ).toBeUndefined();
+    });
+  });
+
+  describe('ask() race handling', () => {
+    it('waits for a pending cancel before restarting and only resumes one queued ask', async () => {
+      let latestChannel: ReturnType<typeof getChannel> = null;
+      let resolveFirstAskInvoke!: () => void;
+      let resolveCancel!: () => void;
+      const askMessages: string[] = [];
+
+      invoke.mockImplementation(async (cmd, args) => {
+        if (args && 'onEvent' in args) {
+          latestChannel = args.onEvent as ReturnType<typeof getChannel>;
+        }
+
+        if (cmd === 'ask_ollama') {
+          askMessages.push(String(args?.message ?? ''));
+          if (askMessages.length === 1) {
+            return new Promise<void>((resolve) => {
+              resolveFirstAskInvoke = resolve;
+            });
+          }
+          return;
+        }
+
+        if (cmd === 'cancel_generation') {
+          return new Promise<void>((resolve) => {
+            resolveCancel = resolve;
+          });
+        }
+      });
+
+      const { result } = renderHook(() => useOllama());
+
+      let secondAsk!: Promise<void>;
+      let thirdAsk!: Promise<void>;
+
+      act(() => {
+        void result.current.ask('first');
+      });
+
+      act(() => {
+        void result.current.cancel();
+        void result.current.cancel();
+        secondAsk = result.current.ask('second');
+        thirdAsk = result.current.ask('third');
+      });
+
+      expect(askMessages).toEqual(['first']);
+      expect(invoke).toHaveBeenCalledWith('cancel_generation');
+      expect(
+        invoke.mock.calls.filter(([cmd]) => cmd === 'cancel_generation'),
+      ).toHaveLength(1);
+
+      await act(async () => {
+        resolveCancel();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        await Promise.all([secondAsk, thirdAsk]);
+      });
+
+      expect(askMessages).toHaveLength(2);
+      expect(['second', 'third']).toContain(askMessages[1]);
+
+      act(() => {
+        latestChannel!.simulateMessage({ type: 'Done' });
+        resolveFirstAskInvoke();
+      });
+    });
+
+    it('ignores late ask events and invoke rejection after reset', async () => {
+      let channel: ReturnType<typeof getChannel> = null;
+      let rejectInvoke!: (error: Error) => void;
+
+      invoke.mockImplementation(async (cmd, args) => {
+        if (cmd === 'ask_ollama') {
+          channel = args?.onEvent as ReturnType<typeof getChannel>;
+          return new Promise<void>((_, reject) => {
+            rejectInvoke = reject;
+          });
+        }
+      });
+
+      const { result } = renderHook(() => useOllama());
+
+      act(() => {
+        void result.current.ask('late failure');
+      });
+
+      act(() => {
+        result.current.reset();
+      });
+
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', data: 'late' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      expect(result.current.messages).toEqual([]);
+
+      await act(async () => {
+        rejectInvoke(new Error('late fail'));
+        await Promise.resolve();
+      });
+
+      expect(result.current.messages).toEqual([]);
+      expect(result.current.isGenerating).toBe(false);
+    });
   });
 
   // ─── cancel() ───────────────────────────────────────────────────────────────
@@ -822,6 +952,19 @@ describe('useOllama', () => {
   // ─── ThinkingToken handling ──────────────────────────────────────────────────
 
   describe('ThinkingToken handling', () => {
+    it('marks the assistant placeholder as a /think turn when think is true', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('hello', undefined, undefined, true);
+      });
+
+      const assistantMsg = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistantMsg?.fromThink).toBe(true);
+    });
+
     it('accumulates ThinkingTokens into thinkingContent', async () => {
       const { result } = renderHook(() => useOllama());
 
@@ -1161,6 +1304,103 @@ describe('useOllama', () => {
       });
     });
 
+    it('handles FetchingUrl, finalizes traces on IterationComplete, and ignores empty tokens', async () => {
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Trace',
+          step: {
+            id: 'round-1-read',
+            kind: 'read',
+            status: 'running',
+            round: 1,
+            title: 'Opening the shortlisted pages',
+            summary: 'Opened 1 of 2 pages so far.',
+            counts: { processed: 1, total: 2 },
+          },
+        });
+        channel!.simulateMessage({
+          type: 'FetchingUrl',
+          url: 'https://example.com/page',
+        });
+      });
+
+      expect(result.current.searchStage).toEqual({ kind: 'reading_sources' });
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'IterationComplete',
+          trace: {
+            stage: { kind: 'initial' },
+            queries: ['q'],
+            urls_fetched: ['https://example.com/page'],
+            reader_empty_urls: [],
+            judge_verdict: 'partial',
+            judge_reasoning: 'needs more evidence',
+            duration_ms: 10,
+          },
+        });
+      });
+
+      const assistantAfterIteration = result.current.messages.find(
+        (message) => message.role === 'assistant',
+      );
+      expect(assistantAfterIteration?.searchTraces?.[0]).toEqual(
+        expect.objectContaining({ status: 'completed' }),
+      );
+
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', content: '' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      await act(async () => {
+        await expect(pending).resolves.toEqual({ final: false });
+      });
+    });
+
+    it('ignores IterationComplete events when no trace steps have started', async () => {
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'IterationComplete',
+          trace: {
+            stage: { kind: 'initial' },
+            queries: ['q'],
+            urls_fetched: [],
+            reader_empty_urls: [],
+            judge_verdict: 'partial',
+            judge_reasoning: 'needs more evidence',
+            duration_ms: 10,
+          },
+        });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      await act(async () => {
+        await expect(pending).resolves.toEqual({ final: false });
+      });
+
+      expect(
+        result.current.messages.find((message) => message.role === 'assistant')
+          ?.searchTraces,
+      ).toBeUndefined();
+    });
+
     it('drops the empty placeholder on Cancelled with no content', async () => {
       const { result } = renderHook(() => useOllama());
       let pending!: Promise<{ final: boolean }>;
@@ -1248,6 +1488,76 @@ describe('useOllama', () => {
       });
     });
 
+    it('waits for a pending cancel before restarting search and only resumes one queued request', async () => {
+      let latestChannel: ReturnType<typeof getChannel> = null;
+      let resolveFirstSearchInvoke!: () => void;
+      let resolveCancel!: () => void;
+      const searchMessages: string[] = [];
+
+      invoke.mockImplementation(async (cmd, args) => {
+        if (args && 'onEvent' in args) {
+          latestChannel = args.onEvent as ReturnType<typeof getChannel>;
+        }
+
+        if (cmd === 'search_pipeline') {
+          searchMessages.push(String(args?.message ?? ''));
+          if (searchMessages.length === 1) {
+            return new Promise<void>((resolve) => {
+              resolveFirstSearchInvoke = resolve;
+            });
+          }
+          return;
+        }
+
+        if (cmd === 'cancel_generation') {
+          return new Promise<void>((resolve) => {
+            resolveCancel = resolve;
+          });
+        }
+      });
+
+      const { result } = renderHook(() => useOllama());
+
+      let firstPending!: Promise<{ final: boolean }>;
+      let secondPending!: Promise<{ final: boolean }>;
+      let thirdPending!: Promise<{ final: boolean }>;
+
+      act(() => {
+        firstPending = result.current.askSearch('first');
+      });
+
+      act(() => {
+        void result.current.cancel();
+        secondPending = result.current.askSearch('second');
+        thirdPending = result.current.askSearch('third');
+      });
+
+      expect(searchMessages).toEqual(['first']);
+
+      await act(async () => {
+        resolveCancel();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(searchMessages).toHaveLength(2);
+      expect(['second', 'third']).toContain(searchMessages[1]);
+
+      act(() => {
+        latestChannel!.simulateMessage({ type: 'Done' });
+      });
+
+      await act(async () => {
+        await expect(firstPending).resolves.toEqual({ final: true });
+        await expect(secondPending).resolves.toEqual({ final: false });
+        await expect(thirdPending).resolves.toEqual({ final: true });
+      });
+
+      act(() => {
+        resolveFirstSearchInvoke();
+      });
+    });
+
     it('surfaces a synthetic error when invoke rejects', async () => {
       invoke.mockImplementationOnce(async () => {
         throw new Error('ipc failed');
@@ -1261,6 +1571,57 @@ describe('useOllama', () => {
       const last = result.current.messages[result.current.messages.length - 1];
       expect(last.errorKind).toBe('Other');
       expect(last.content).toContain('Could not start search');
+    });
+
+    it('ignores a late search_pipeline rejection after cancellation', async () => {
+      let rejectSearch!: (error: Error) => void;
+      let resolveCancel!: () => void;
+
+      invoke.mockImplementation(async (cmd, args) => {
+        if (cmd === 'search_pipeline') {
+          return new Promise<void>((_, reject) => {
+            rejectSearch = reject;
+          });
+        }
+
+        if (cmd === 'cancel_generation') {
+          return new Promise<void>((resolve) => {
+            resolveCancel = resolve;
+          });
+        }
+
+        if (args && 'onEvent' in args) {
+          return;
+        }
+      });
+
+      const { result } = renderHook(() => useOllama());
+      let pending!: Promise<{ final: boolean }>;
+
+      act(() => {
+        pending = result.current.askSearch('q');
+      });
+
+      act(() => {
+        void result.current.cancel();
+      });
+
+      await act(async () => {
+        resolveCancel();
+        await expect(pending).resolves.toEqual({ final: true });
+      });
+
+      expect(result.current.messages).toHaveLength(1);
+
+      await act(async () => {
+        rejectSearch(new Error('late fail'));
+        await Promise.resolve();
+      });
+
+      expect(result.current.messages).toHaveLength(1);
+      expect(
+        result.current.messages.find((message) => message.role === 'assistant'),
+      ).toBeUndefined();
     });
 
     it('does not persist an empty turn on Done', async () => {

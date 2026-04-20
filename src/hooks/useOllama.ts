@@ -28,6 +28,8 @@ export interface Message {
   thinkingContent?: string;
   /** Marks an assistant message produced through the `/search` pipeline. */
   fromSearch?: boolean;
+  /** Marks an assistant message produced through a `/think` turn. */
+  fromThink?: boolean;
   /** Source links forwarded by the search pipeline. */
   searchSources?: SearchResultPreview[];
   /** Warnings emitted by the `/search` pipeline during this turn. */
@@ -117,17 +119,12 @@ export function useOllama(
   const isActiveGeneration = (generationId: number) =>
     activeGenerationRef.current?.id === generationId;
 
-  const markVisibleOutput = (generationId: number) => {
-    if (activeGenerationRef.current?.id === generationId) {
-      activeGenerationRef.current.hasVisibleOutput = true;
-    }
+  const markVisibleOutput = () => {
+    activeGenerationRef.current!.hasVisibleOutput = true;
   };
 
-  const completeGeneration = (generationId: number) => {
-    if (activeGenerationRef.current?.id !== generationId) {
-      return null;
-    }
-    const active = activeGenerationRef.current;
+  const completeGeneration = () => {
+    const active = activeGenerationRef.current!;
     activeGenerationRef.current = null;
     return active;
   };
@@ -191,6 +188,7 @@ export function useOllama(
         id: assistantId,
         role: 'assistant',
         content: '',
+        fromThink: think ? true : undefined,
       };
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -209,7 +207,7 @@ export function useOllama(
         if (chunk.type === 'ThinkingToken') {
           currentThinkingContent += chunk.data;
           if (chunk.data) {
-            markVisibleOutput(generationId);
+            markVisibleOutput();
           }
           setMessages((prev) =>
             prev.map((message) =>
@@ -224,7 +222,7 @@ export function useOllama(
         if (chunk.type === 'Token') {
           currentContent += chunk.data;
           if (chunk.data) {
-            markVisibleOutput(generationId);
+            markVisibleOutput();
           }
           setMessages((prev) =>
             prev.map((message) =>
@@ -237,10 +235,7 @@ export function useOllama(
         }
 
         if (chunk.type === 'Done') {
-          const active = completeGeneration(generationId);
-          if (!active) {
-            return;
-          }
+          completeGeneration();
           setIsGenerating(false);
           setSearchStage(null);
           onTurnComplete?.(userMsg, {
@@ -252,10 +247,7 @@ export function useOllama(
         }
 
         if (chunk.type === 'Cancelled') {
-          const active = completeGeneration(generationId);
-          if (!active) {
-            return;
-          }
+          completeGeneration();
           if (!currentContent && !currentThinkingContent) {
             setMessages((prev) =>
               prev.filter((message) => message.id !== assistantId),
@@ -266,10 +258,7 @@ export function useOllama(
           return;
         }
 
-        const active = completeGeneration(generationId);
-        if (!active) {
-          return;
-        }
+        completeGeneration();
 
         setMessages((prev) =>
           prev.map((message) =>
@@ -298,16 +287,18 @@ export function useOllama(
         if (!isActiveGeneration(generationId)) {
           return;
         }
-        completeGeneration(generationId);
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: 'Something went wrong\nCould not reach Ollama.',
-            errorKind: 'Other',
-          },
-        ]);
+        completeGeneration();
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  content: 'Something went wrong\nCould not reach Ollama.',
+                  errorKind: 'Other',
+                }
+              : message,
+          ),
+        );
         setIsGenerating(false);
         setSearchStage(null);
       }
@@ -378,10 +369,7 @@ export function useOllama(
         const generationId = beginGeneration(assistantId, resolve);
 
         const finish = (final: boolean) => {
-          const active = completeGeneration(generationId);
-          if (!active) {
-            return;
-          }
+          const active = completeGeneration();
 
           setIsGenerating(false);
           setSearchStage(null);
@@ -476,7 +464,7 @@ export function useOllama(
               sawToken ||= event.content.length > 0;
               currentContent += event.content;
               if (event.content) {
-                markVisibleOutput(generationId);
+                markVisibleOutput();
               }
               setSearchStage(null);
               updateAssistant({ content: currentContent });
@@ -502,10 +490,7 @@ export function useOllama(
               break;
             }
             case 'Cancelled': {
-              const active = completeGeneration(generationId);
-              if (!active) {
-                return;
-              }
+              const active = completeGeneration();
               cancelled = true;
               if (!currentContent) {
                 setMessages((prev) =>
@@ -565,16 +550,13 @@ export function useOllama(
     abortActiveGeneration();
 
     if (!pendingCancelRef.current) {
-      let cancelPromise: Promise<void> | undefined = undefined;
-      cancelPromise = (async () => {
+      const cancelPromise = (async () => {
         try {
           await invoke('cancel_generation');
         } catch {
           // Local hard-abort already reset the UI; backend best-effort only.
         } finally {
-          if (pendingCancelRef.current === cancelPromise) {
-            pendingCancelRef.current = null;
-          }
+          pendingCancelRef.current = null;
         }
       })();
       pendingCancelRef.current = cancelPromise;

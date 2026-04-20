@@ -208,18 +208,24 @@ export function ConversationView({
             isGenerating &&
             i === messages.length - 1 &&
             msg.role === 'assistant';
+          const isThinkingPending =
+            isLastAssistant &&
+            msg.fromThink === true &&
+            !msg.content &&
+            !msg.thinkingContent;
 
           // Hide the empty assistant placeholder; the TypingIndicator
           // already covers this visual state. When thinking content is
           // present, sandbox unavailability is flagged, or this is a
-          // search turn (fromSearch), render the bubble so the relevant
+          // search or think turn, render the bubble so the relevant
           // card is visible immediately.
           if (
             isLastAssistant &&
             !msg.content &&
             !msg.thinkingContent &&
             !msg.sandboxUnavailable &&
-            !msg.fromSearch
+            !msg.fromSearch &&
+            !msg.fromThink
           )
             return null;
 
@@ -235,8 +241,12 @@ export function ConversationView({
               onImagePreview={onImagePreview}
               errorKind={msg.errorKind}
               thinkingContent={msg.thinkingContent}
+              isThinkingPending={isThinkingPending}
               isThinking={
-                isLastAssistant && !msg.content && !!msg.thinkingContent
+                isLastAssistant &&
+                msg.fromThink === true &&
+                !msg.content &&
+                !!msg.thinkingContent
               }
               searchSources={msg.searchSources}
               searchWarnings={msg.searchWarnings}
@@ -258,7 +268,8 @@ export function ConversationView({
         messages[messages.length - 1]?.role === 'assistant' &&
         !messages[messages.length - 1]?.content &&
         !messages[messages.length - 1]?.thinkingContent &&
-        !messages[messages.length - 1]?.fromSearch ? (
+        !messages[messages.length - 1]?.fromSearch &&
+        !messages[messages.length - 1]?.fromThink ? (
           <LoadingStage label={searchStageLabel(searchStage)} />
         ) : null}
       </div>

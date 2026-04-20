@@ -496,6 +496,27 @@ describe('ConversationView', () => {
   });
 
   describe('Thinking props forwarding', () => {
+    it('renders the /think pending placeholder before thinking tokens arrive', () => {
+      render(
+        <ConversationView
+          messages={[
+            {
+              id: '1',
+              role: 'assistant' as const,
+              content: '',
+              fromThink: true,
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Warming up...',
+      );
+    });
+
     it('renders ThinkingBlock when assistant message has thinkingContent', () => {
       render(
         <ConversationView
@@ -522,6 +543,7 @@ describe('ConversationView', () => {
               id: '1',
               role: 'assistant' as const,
               content: '',
+              fromThink: true,
               thinkingContent: 'Reasoning in progress...',
             },
           ]}

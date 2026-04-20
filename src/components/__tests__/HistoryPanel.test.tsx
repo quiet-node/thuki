@@ -85,6 +85,35 @@ describe('HistoryPanel', () => {
     expect(screen.getByText('Yesterday')).toBeInTheDocument();
   });
 
+  it('keeps multiple conversations from the same day in a single bucket', async () => {
+    const props = makeProps({
+      listConversations: vi.fn(async () => [
+        {
+          id: 'c1',
+          title: 'React basics',
+          model: 'gemma4:e2b',
+          updated_at: NOW,
+          message_count: 4,
+        },
+        {
+          id: 'c4',
+          title: 'Another React thread',
+          model: 'gemma4:e2b',
+          updated_at: NOW - 5_000,
+          message_count: 3,
+        },
+      ]),
+    });
+
+    render(<HistoryPanel {...props} />);
+
+    await act(async () => {});
+
+    expect(screen.getAllByText('Today')).toHaveLength(1);
+    expect(screen.getByText('React basics')).toBeInTheDocument();
+    expect(screen.getByText('Another React thread')).toBeInTheDocument();
+  });
+
   it('shows "No conversations yet" when list is empty', async () => {
     const props = makeProps({ listConversations: vi.fn(async () => []) });
     render(<HistoryPanel {...props} />);

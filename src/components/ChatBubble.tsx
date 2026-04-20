@@ -207,6 +207,8 @@ interface ChatBubbleProps {
   errorKind?: OllamaErrorKind;
   /** Accumulated thinking/reasoning content from the model, if thinking mode was used. */
   thinkingContent?: string;
+  /** Whether a `/think` turn is waiting for the first thinking tokens. */
+  isThinkingPending?: boolean;
   /** Whether the model is currently in the thinking phase (streaming thinking tokens). */
   isThinking?: boolean;
   /** Absolute file paths of images attached to this message, if any. */
@@ -268,6 +270,7 @@ export function ChatBubble({
   onImagePreview,
   errorKind,
   thinkingContent,
+  isThinkingPending,
   isThinking,
   searchSources,
   searchWarnings,
@@ -411,9 +414,10 @@ export function ChatBubble({
                 sources={searchSources}
               />
             )}
-            {thinkingContent && (
+            {(thinkingContent || isThinkingPending) && (
               <ThinkingBlock
                 thinkingContent={thinkingContent}
+                isPending={isThinkingPending ?? false}
                 isThinking={isThinking ?? false}
               />
             )}

@@ -4,11 +4,14 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { LoadingStage } from './LoadingStage';
 
 export interface ThinkingBlockProps {
-  thinkingContent: string;
+  thinkingContent?: string;
   isThinking: boolean;
+  isPending?: boolean;
+  pendingLabel?: string;
 }
 
 const THINKING_LABEL = 'Thinking...';
+const PENDING_LABEL = 'Warming up...';
 
 /**
  * Collapsible thinking/reasoning section rendered above an AI response.
@@ -20,15 +23,40 @@ const THINKING_LABEL = 'Thinking...';
 export function ThinkingBlock({
   thinkingContent,
   isThinking,
+  isPending = false,
+  pendingLabel = PENDING_LABEL,
 }: ThinkingBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const hasThinkingContent = Boolean(thinkingContent?.trim());
 
-  if (!thinkingContent) return null;
+  if (!hasThinkingContent && !isPending) return null;
+
+  if (isPending) {
+    return (
+      <div data-testid="thinking-block" className="mb-2">
+        <div data-testid="thinking-pending" className="inline-flex min-w-0">
+          <LoadingStage label={pendingLabel} />
+        </div>
+      </div>
+    );
+  }
 
   // Strip "Thinking Process:" label that Gemma4 prepends to thinking tokens
-  const displayContent = thinkingContent
+  const displayContent = thinkingContent!
     .replace(/^\s*Thinking Process[:\s]*\n*/i, '')
     .trimStart();
+  const summaryLabel = isThinking ? THINKING_LABEL : 'Thought process';
+  const chevron = (
+    <span
+      data-testid="thinking-chevron"
+      className="loading-label inline-block shrink-0 text-[9px] transition-transform duration-150"
+      style={{
+        transform: isExpanded ? 'rotate(180deg)' : 'rotate(90deg)',
+      }}
+    >
+      &#9650;
+    </span>
+  );
 
   return (
     <div data-testid="thinking-block" className="mb-2">
@@ -41,21 +69,25 @@ export function ThinkingBlock({
         aria-label="Toggle thinking details"
       >
         {isThinking ? (
-          <LoadingStage label={THINKING_LABEL} />
+          <span className="inline-flex min-w-0">
+            <LoadingStage label={summaryLabel} labelPrefix={chevron} />
+          </span>
         ) : (
           <>
-            {/* Chevron rotates between collapsed (right) and expanded (down). */}
             <span
               data-testid="thinking-chevron"
-              className="text-[10px] text-text-secondary inline-block transition-transform duration-150"
+              className="inline-block text-[9px] text-text-secondary/55 transition-transform duration-150"
               style={{
                 transform: isExpanded ? 'rotate(180deg)' : 'rotate(90deg)',
               }}
             >
               &#9650;
             </span>
-            <span className="text-sm text-text-secondary/60">
-              Thought process
+            <span
+              data-testid="thinking-summary-label"
+              className="text-[11px] font-medium tracking-[0.01em] text-text-secondary/58"
+            >
+              {summaryLabel}
             </span>
           </>
         )}

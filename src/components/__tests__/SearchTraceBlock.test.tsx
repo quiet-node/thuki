@@ -84,6 +84,18 @@ describe('SearchTraceBlock', () => {
     );
   });
 
+  it('renders the placeholder timeline row when expanded before traces arrive', () => {
+    render(<SearchTraceBlock traces={[]} isSearching />);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /toggle search trace/i }),
+    );
+
+    expect(screen.getByTestId('search-trace-pending-step')).toHaveTextContent(
+      'Spinning up the search pipeline.',
+    );
+  });
+
   it('starts collapsed while a search is live and expands on click', () => {
     render(<SearchTraceBlock traces={SEARCH_STEPS} isSearching />);
 
@@ -213,5 +225,67 @@ describe('SearchTraceBlock', () => {
       chevron.compareDocumentPosition(labelText) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it('renders rich verdict chips, plural rounds, and overflowed domain summaries', () => {
+    const richSteps: SearchTraceStep[] = [
+      {
+        id: 'judge-sufficient',
+        kind: 'snippet_judge',
+        status: 'completed',
+        round: 1,
+        title: 'Checked the snippets',
+        summary: 'The first pass already covered the key facts.',
+        verdict: 'sufficient',
+        counts: {
+          pages: 2,
+          chunks: 3,
+          empty: 1,
+          failed: 1,
+          sources: 4,
+        },
+        domains: ['a.com', 'b.com', 'c.com', 'd.com', 'e.com'],
+      },
+      {
+        id: 'judge-partial',
+        kind: 'chunk_judge',
+        status: 'completed',
+        round: 2,
+        title: 'Checked the passages',
+        summary: 'The answer is closer, but still incomplete.',
+        verdict: 'partial',
+      },
+      {
+        id: 'judge-insufficient',
+        kind: 'chunk_judge',
+        status: 'completed',
+        round: 2,
+        title: 'Checked the final evidence',
+        summary: 'The available evidence is still too thin.',
+        verdict: 'insufficient',
+      },
+    ];
+
+    render(<SearchTraceBlock traces={richSteps} isSearching={false} />);
+
+    const toggle = screen.getByRole('button', { name: /toggle search trace/i });
+    expect(toggle).toHaveTextContent('Search trace · 3 steps · 2 rounds');
+
+    fireEvent.click(toggle);
+
+    expect(
+      screen.getByTestId('search-trace-step-judge-sufficient'),
+    ).toHaveTextContent(
+      '2 pages · 3 passages · 1 empty · 1 failed · 4 sources · Enough evidence',
+    );
+    expect(
+      screen.getByTestId('search-trace-step-judge-partial'),
+    ).toHaveTextContent('Needs more detail');
+    expect(
+      screen.getByTestId('search-trace-step-judge-insufficient'),
+    ).toHaveTextContent('Still not enough');
+    expect(
+      screen.getByText('a.com · b.com · c.com · d.com · +1'),
+    ).toBeInTheDocument();
   });
 });

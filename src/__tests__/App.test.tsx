@@ -3503,6 +3503,48 @@ describe('App', () => {
       );
     });
 
+    it('shows a warming-up placeholder first, then swaps it to the thinking row when thinking tokens arrive', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/think explain recursion' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Warming up...',
+      );
+      expect(
+        screen.queryByRole('button', { name: 'Toggle thinking details' }),
+      ).toBeNull();
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'ThinkingToken',
+          data: 'Let me think this through.',
+        });
+      });
+
+      expect(screen.queryByText('Warming up...')).toBeNull();
+      expect(
+        screen.getByRole('button', { name: 'Toggle thinking details' }),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Thinking...',
+      );
+    });
+
     it('does nothing when /think has no query and no images', async () => {
       enableChannelCapture();
 
