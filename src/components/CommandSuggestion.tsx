@@ -7,6 +7,7 @@
  */
 
 import type React from 'react';
+import { useEffect, useRef } from 'react';
 import type { Command } from '../config/commands';
 import { Tooltip } from './Tooltip';
 
@@ -325,6 +326,15 @@ export function CommandSuggestion({
   highlightedIndex,
   onSelect,
 }: CommandSuggestionProps) {
+  const optionElementsRef = useRef<Array<HTMLLIElement | null>>([]);
+
+  useEffect(() => {
+    if (highlightedIndex < 0 || highlightedIndex >= commands.length) return;
+    optionElementsRef.current[highlightedIndex]?.scrollIntoView?.({
+      block: 'nearest',
+    });
+  }, [commands, highlightedIndex]);
+
   return (
     <div
       className="mb-1 rounded-xl border border-surface-border bg-surface-base backdrop-blur-2xl shadow-bar overflow-hidden"
@@ -343,15 +353,18 @@ export function CommandSuggestion({
           No commands found
         </div>
       ) : (
-        <ul className="pb-1 max-h-[112px] overflow-y-auto" role="presentation">
+        <ul className="pb-1 max-h-28 overflow-y-auto" role="presentation">
           {commands.map((cmd, index) => {
             const isHighlighted = index === highlightedIndex;
             return (
               <li
                 key={cmd.trigger}
+                ref={(node) => {
+                  optionElementsRef.current[index] = node;
+                }}
                 role="option"
                 aria-selected={isHighlighted}
-                className={`flex items-center gap-2.5 px-3 py-1.5 cursor-pointer select-none transition-colors duration-100 ${
+                className={`flex items-center gap-2.5 px-3 py-1.5 cursor-pointer select-none ${
                   isHighlighted
                     ? 'bg-white/8 text-text-primary'
                     : 'text-text-secondary hover:bg-white/5 hover:text-text-primary'

@@ -2172,6 +2172,19 @@ mod agentic_tests {
         }
     }
 
+    struct ErrorRouter(SearchError);
+
+    #[async_trait]
+    impl RouterJudgeCaller for ErrorRouter {
+        async fn call(
+            &self,
+            _h: &[ChatMessage],
+            _q: &str,
+        ) -> Result<RouterJudgeOutput, SearchError> {
+            Err(self.0.clone())
+        }
+    }
+
     fn collect_events() -> (
         std::sync::Arc<std::sync::Mutex<Vec<SearchEvent>>>,
         impl Fn(SearchEvent),
@@ -2182,6 +2195,20 @@ mod agentic_tests {
             events_clone.lock().unwrap().push(e);
         };
         (events, callback)
+    }
+
+    fn completed_trace_step<'a>(events: &'a [SearchEvent], id: &str) -> &'a SearchTraceStep {
+        events
+            .iter()
+            .find_map(|event| match event {
+                SearchEvent::Trace { step }
+                    if step.id == id && step.status == SearchTraceStatus::Completed =>
+                {
+                    Some(step)
+                }
+                _ => None,
+            })
+            .expect("expected completed trace step")
     }
 
     // ── split_into_stream_pieces ─────────────────────────────────────────────
@@ -2634,6 +2661,65 @@ mod agentic_tests {
         .unwrap();
 
         let evs = events.lock().unwrap();
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    #[tokio::test]
+    async fn optimized_query_rewrite_updates_analyze_trace() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let searx_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let ollama_server = MockServer::start().await;
+        let stream = stream_line_token("answer");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("rewritten query");
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![sufficient_verdict()].into_iter().collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "original query".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        let analyze_step = completed_trace_step(&evs, "analyze");
+        assert_eq!(
+            analyze_step.detail.as_deref(),
+            Some("Using search query: rewritten query")
+        );
+        assert_eq!(analyze_step.queries, vec!["rewritten query".to_string()]);
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
     }
 
@@ -3155,6 +3241,129 @@ mod agentic_tests {
         assert_eq!(err, SearchError::SearxHttp(503));
     }
 
+    #[tokio::test]
+    async fn router_error_is_returned_from_run_agentic() {
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (_, cb) = collect_events();
+        let router = ErrorRouter(SearchError::Internal("router failed".into()));
+        let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
+
+        let err = run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            "http://127.0.0.1:1/search",
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, SearchError::Internal("router failed".into()));
+    }
+
+    #[tokio::test]
+    async fn snippet_judge_error_is_returned_from_initial_round() {
+        let mut searx = mockito::Server::new_async().await;
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_one_result("https://example.com/a"))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (_, cb) = collect_events();
+        let router = proceed_search_router("q");
+        let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
+
+        let err = run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx.url()),
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, SearchError::Internal("queue empty".into()));
+    }
+
+    #[tokio::test]
+    async fn chunk_judge_error_is_returned_after_initial_reader() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "initial",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let mut searx = mockito::Server::new_async().await;
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_one_result("https://example.com/a"))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (_, cb) = collect_events();
+        let router = proceed_search_router("q");
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict()].into_iter().collect(),
+        ));
+
+        let err = run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx.url()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, SearchError::Internal("queue empty".into()));
+    }
+
     // A judge that fires the CancellationToken the first time it is called, so
     // we can exercise the cancel-before-reader escalation path.
     struct CancelsOnJudgeCall {
@@ -3473,6 +3682,83 @@ mod agentic_tests {
                 }
             )),
             "expected ReaderPartialFailure warning in: {evs:?}"
+        );
+        let read_step = completed_trace_step(&evs, "round-1-read");
+        assert_eq!(
+            read_step.detail.as_deref(),
+            Some("2 pages failed and 0 pages returned little or no readable text."),
+            "expected pluralized read-step detail in: {evs:?}"
+        );
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    #[tokio::test]
+    async fn initial_reader_detail_singularizes_failed_page_count() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(502))
+            .mount(&reader_server)
+            .await;
+
+        let mut ollama = mockito::Server::new_async().await;
+        let mut searx = mockito::Server::new_async().await;
+
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_one_result("https://example.com/a"))
+            .create_async()
+            .await;
+
+        let stream = stream_line_token("ok");
+        let _stream_mock = ollama
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"stream":true}"#.to_string(),
+            ))
+            .with_body(stream)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict(), sufficient_verdict()]
+                .into_iter()
+                .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama.url()),
+            &format!("{}/search", searx.url()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        let read_step = completed_trace_step(&evs, "round-1-read");
+        assert_eq!(
+            read_step.detail.as_deref(),
+            Some("1 page failed and 0 pages returned little or no readable text."),
+            "expected singular failed-page detail in: {evs:?}"
         );
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
     }
@@ -4600,6 +4886,91 @@ mod agentic_tests {
         );
     }
 
+    #[tokio::test]
+    async fn gap_round_judge_error_is_returned_after_gap_reader() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(wiremock::matchers::body_partial_json(
+                serde_json::json!({ "url": "https://example.com/a" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "initial",
+                "markdown": "initial content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(wiremock::matchers::body_partial_json(
+                serde_json::json!({ "url": "https://example.com/gap" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/gap",
+                "title": "gap",
+                "markdown": "gap content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (_, cb) = collect_events();
+        let router = proceed_search_router("q");
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict(), insufficient_verdict()]
+                .into_iter()
+                .collect(),
+        ));
+
+        let err = run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, SearchError::Internal("queue empty".into()));
+    }
+
     // ── Cancel during gap-round SearXNG call (lines 699-700) ─────────────────
 
     #[tokio::test]
@@ -5652,6 +6023,108 @@ mod agentic_tests {
             )),
             "expected ReaderPartialFailure from gap-round majority failures in: {evs:?}"
         );
+        let read_step = completed_trace_step(&evs, "round-2-read");
+        assert_eq!(
+            read_step.detail.as_deref(),
+            Some("2 pages failed and 0 pages returned little or no readable text."),
+            "expected pluralized gap-round read-step detail in: {evs:?}"
+        );
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    #[tokio::test]
+    async fn gap_round_reader_detail_singularizes_failed_page_count() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(wiremock::matchers::body_partial_json(
+                serde_json::json!({ "url": "https://example.com/a" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "initial",
+                "markdown": "content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(502))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        let ollama_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let stream = stream_line_token("answer");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stream))
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                partial_verdict(),
+                insufficient_verdict(),
+                sufficient_verdict(),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        let read_step = completed_trace_step(&evs, "round-2-read");
+        assert_eq!(
+            read_step.detail.as_deref(),
+            Some("1 page failed and 0 pages returned little or no readable text."),
+            "expected singular gap-round failed-page detail in: {evs:?}"
+        );
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
     }
 
@@ -5837,8 +6310,9 @@ mod agentic_tests {
                 }
             })
             .expect("expected IterationComplete event");
-        assert!(
-            matches!(first_trace.stage, IterationStage::Initial),
+        assert_eq!(
+            first_trace.stage,
+            IterationStage::Initial,
             "expected Initial stage, got: {:?}",
             first_trace.stage
         );

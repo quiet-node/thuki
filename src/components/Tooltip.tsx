@@ -26,7 +26,12 @@ interface TooltipProps {
   className?: string;
 }
 
-export function Tooltip({ label, children, multiline = false, className }: TooltipProps) {
+export function Tooltip({
+  label,
+  children,
+  multiline = false,
+  className,
+}: TooltipProps) {
   const [isVisible, setIsVisible] = useState(false);
   /** Defer portal mount until after first hover (lazy load). */
   const [hasActivated, setHasActivated] = useState(false);

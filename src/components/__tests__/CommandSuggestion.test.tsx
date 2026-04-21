@@ -259,4 +259,66 @@ describe('CommandSuggestion', () => {
     expect(screen.getByText('/bullets')).toBeInTheDocument();
     expect(screen.getByText('/todos')).toBeInTheDocument();
   });
+
+  it('scrolls the highlighted row into view when keyboard selection changes', () => {
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      const { rerender } = render(
+        <CommandSuggestion
+          commands={[
+            SEARCH_CMD,
+            SCREEN_CMD,
+            THINK_CMD,
+            TRANSLATE_CMD,
+            REWRITE_CMD,
+            TLDR_CMD,
+            REFINE_CMD,
+            BULLETS_CMD,
+            ACTION_CMD,
+          ]}
+          highlightedIndex={0}
+          onSelect={vi.fn()}
+        />,
+      );
+
+      scrollIntoView.mockClear();
+
+      rerender(
+        <CommandSuggestion
+          commands={[
+            SEARCH_CMD,
+            SCREEN_CMD,
+            THINK_CMD,
+            TRANSLATE_CMD,
+            REWRITE_CMD,
+            TLDR_CMD,
+            REFINE_CMD,
+            BULLETS_CMD,
+            ACTION_CMD,
+          ]}
+          highlightedIndex={6}
+          onSelect={vi.fn()}
+        />,
+      );
+
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+          configurable: true,
+          value: originalScrollIntoView,
+        });
+      } else {
+        // @ts-expect-error jsdom may not define scrollIntoView by default
+        delete HTMLElement.prototype.scrollIntoView;
+      }
+    }
+  });
 });
