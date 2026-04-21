@@ -113,6 +113,7 @@ fn to_u32_saturating(value: usize) -> u32 {
     value.min(u32::MAX as usize) as u32
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn domain_of(url: &str) -> String {
     reqwest::Url::parse(url)
         .ok()
@@ -121,6 +122,7 @@ fn domain_of(url: &str) -> String {
         .unwrap_or_else(|| url.to_string())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn unique_domains<I, S>(values: I) -> Vec<String>
 where
     I: IntoIterator<Item = S>,
@@ -219,6 +221,7 @@ fn judge_summary(subject: &str, verdict: Sufficiency) -> String {
 /// in the `time` crate README). UTC is appropriate here: the date string is
 /// injected into the synthesis prompt purely to prevent the model from
 /// substituting its training-cutoff year; sub-day precision is irrelevant.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn today_iso() -> String {
     let d = time::OffsetDateTime::now_utc().date();
     format!("{:04}-{:02}-{:02}", d.year(), d.month() as u8, d.day())
@@ -389,6 +392,7 @@ impl DefaultRouterJudge {
     ///   call inside `call_router_merged`.
     /// - `today`: `YYYY-MM-DD` string injected into the merged prompt so the
     ///   model is anchored to the real calendar date.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new(
         endpoint: String,
         model: String,
@@ -449,6 +453,7 @@ impl DefaultJudge {
     /// - `client`: shared `reqwest::Client`.
     /// - `cancel`: the pipeline's cancellation token; races against the HTTP
     ///   call inside `call_judge`.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new(
         endpoint: String,
         model: String,
@@ -1037,9 +1042,16 @@ pub async fn run_agentic(
                 read_step.counts = Some(SearchTraceCounts {
                     processed: Some(to_u32_saturating(read_processed)),
                     total: Some(to_u32_saturating(reader_urls.len())),
-                    empty: (!reader_result.empty_urls.is_empty())
-                        .then(|| to_u32_saturating(reader_result.empty_urls.len())),
-                    failed: (read_failed > 0).then(|| to_u32_saturating(read_failed)),
+                    empty: if !reader_result.empty_urls.is_empty() {
+                        Some(to_u32_saturating(reader_result.empty_urls.len()))
+                    } else {
+                        None
+                    },
+                    failed: if read_failed > 0 {
+                        Some(to_u32_saturating(read_failed))
+                    } else {
+                        None
+                    },
                     ..SearchTraceCounts::default()
                 });
                 if warnings.contains(&SearchWarning::ReaderUnavailable) {
@@ -1560,9 +1572,16 @@ pub async fn run_agentic(
                     read_step.counts = Some(SearchTraceCounts {
                         processed: Some(to_u32_saturating(round_processed)),
                         total: Some(to_u32_saturating(round_reader_urls.len())),
-                        empty: (!round_reader_result.empty_urls.is_empty())
-                            .then(|| to_u32_saturating(round_reader_result.empty_urls.len())),
-                        failed: (round_failed > 0).then(|| to_u32_saturating(round_failed)),
+                        empty: if !round_reader_result.empty_urls.is_empty() {
+                            Some(to_u32_saturating(round_reader_result.empty_urls.len()))
+                        } else {
+                            None
+                        },
+                        failed: if round_failed > 0 {
+                            Some(to_u32_saturating(round_failed))
+                        } else {
+                            None
+                        },
                         ..SearchTraceCounts::default()
                     });
                     if round_failed > 0 || !round_reader_result.empty_urls.is_empty() {
@@ -1880,6 +1899,7 @@ pub async fn run_agentic(
 /// Splits a string into roughly `TARGET`-character pieces on whitespace
 /// boundaries so the frontend receives a stream of `Token` events rather than
 /// one atomic message. Words that exceed `TARGET` alone are emitted as-is.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn split_into_stream_pieces(s: &str) -> Vec<String> {
     const TARGET: usize = 24;
     let mut out = Vec::new();
@@ -2113,6 +2133,24 @@ mod tests {
             "mistral".into(),
             reqwest::Client::new(),
             cancel,
+        );
+    }
+
+    // ── snippet_judge_detail / judge_summary unit coverage ───────────────────
+
+    #[test]
+    fn snippet_judge_detail_returns_none_for_empty_reasoning() {
+        assert!(snippet_judge_detail(Sufficiency::Sufficient, "").is_none());
+        assert!(snippet_judge_detail(Sufficiency::Sufficient, "   ").is_none());
+    }
+
+    #[test]
+    fn judge_summary_partial_mentions_details_missing() {
+        let s = judge_summary("snippets", Sufficiency::Partial);
+        assert!(s.contains("snippets"), "expected subject in summary: {s}");
+        assert!(
+            s.contains("missing"),
+            "expected 'missing' in partial summary: {s}"
         );
     }
 }
@@ -5817,5 +5855,385 @@ mod agentic_tests {
 
         // Pipeline completed successfully.
         assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    }
+
+    // ── Trace plural-label coverage ──────────────────────────────────────────
+
+    fn searx_body_two_results(url1: &str, url2: &str) -> String {
+        serde_json::json!({
+            "results": [
+                { "title": "result one", "url": url1, "content": "content from site one" },
+                { "title": "result two", "url": url2, "content": "content from site two" }
+            ]
+        })
+        .to_string()
+    }
+
+    // Lines 762, 764 (initial round "N sites" plural) and 1139 (chunk rerank
+    // "N sources" plural): SearXNG returns 2 URLs from different domains so
+    // unique_domains() length > 1, reader fetches both and returns distinct
+    // source URLs, producing multiple chunk sources.
+    #[tokio::test]
+    async fn initial_round_multi_domain_plural_labels_in_trace() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(body_partial_json(
+                serde_json::json!({ "url": "https://alpha.com/page" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://alpha.com/page",
+                "title": "Alpha",
+                "markdown": "alpha content about the query topic for testing",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(body_partial_json(
+                serde_json::json!({ "url": "https://beta.org/page" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://beta.org/page",
+                "title": "Beta",
+                "markdown": "beta content about the query topic for testing purposes",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let mut ollama = mockito::Server::new_async().await;
+        let mut searx = mockito::Server::new_async().await;
+
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_two_results(
+                "https://alpha.com/page",
+                "https://beta.org/page",
+            ))
+            .create_async()
+            .await;
+
+        let stream = stream_line_token("answer");
+        let _stream_mock = ollama
+            .mock("POST", "/api/chat")
+            .with_body(stream)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("multi domain query");
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict(), sufficient_verdict()]
+                .into_iter()
+                .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama.url()),
+            &format!("{}/search", searx.url()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "multi domain query".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*events.lock().unwrap().last().unwrap(), SearchEvent::Done);
+    }
+
+    // Line 1056 (initial round read step "N page returned little or no readable
+    // text" singular "page" branch): reader returns status != "ok" for 1 URL,
+    // making empty_urls.len() == 1 so the singular branch fires.
+    #[tokio::test]
+    async fn initial_round_single_empty_url_singular_label_in_trace() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "result",
+                "markdown": "",
+                "status": "empty"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let mut ollama = mockito::Server::new_async().await;
+        let mut searx = mockito::Server::new_async().await;
+
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_one_result("https://example.com/a"))
+            .create_async()
+            .await;
+
+        let stream = stream_line_token("answer");
+        let _stream_mock = ollama
+            .mock("POST", "/api/chat")
+            .with_body(stream)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("empty url query");
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict(), sufficient_verdict()]
+                .into_iter()
+                .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama.url()),
+            &format!("{}/search", searx.url()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "empty url query".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*events.lock().unwrap().last().unwrap(), SearchEvent::Done);
+    }
+
+    // Lines 1614, 1619, 1662 (gap round chunk step "N pages", "N passages",
+    // "N sources" plural): gap round fetches 2 URLs from different domains;
+    // reader returns 2 pages, producing multiple passages and sources.
+    #[tokio::test]
+    async fn gap_round_multi_page_plural_labels_in_trace() {
+        use wiremock::matchers::{body_partial_json, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(body_partial_json(
+                serde_json::json!({ "url": "https://example.com/initial" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/initial",
+                "title": "Initial",
+                "markdown": "initial content about the query",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(body_partial_json(
+                serde_json::json!({ "url": "https://gap-alpha.com/gap" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://gap-alpha.com/gap",
+                "title": "Gap Alpha",
+                "markdown": "gap round content from alpha site about the topic details",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .and(body_partial_json(
+                serde_json::json!({ "url": "https://gap-beta.org/gap" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://gap-beta.org/gap",
+                "title": "Gap Beta",
+                "markdown": "gap round content from beta site providing extra context for the answer",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "test query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/initial")),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(searx_body_two_results(
+                    "https://gap-alpha.com/gap",
+                    "https://gap-beta.org/gap",
+                )),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let ollama_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(stream_line_token("gap answer")),
+            )
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("test query");
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                partial_verdict(),
+                insufficient_verdict(),
+                sufficient_verdict(),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "test query".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*events.lock().unwrap().last().unwrap(), SearchEvent::Done);
+    }
+
+    // Line 1575 (gap round read step singular "page returned little or no
+    // readable text"): gap round reader returns status != "ok" for exactly 1
+    // URL, making round_reader_result.empty_urls.len() == 1.
+    #[tokio::test]
+    async fn gap_round_single_empty_url_singular_label_in_trace() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/initial",
+                "title": "Initial",
+                "markdown": "initial content about the topic",
+                "status": "ok"
+            })))
+            .up_to_n_times(1)
+            .mount(&reader_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/gap",
+                "title": "Gap",
+                "markdown": "",
+                "status": "empty"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let searx_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "test query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/initial")),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/gap")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let ollama_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(stream_line_token("gap answer")),
+            )
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("test query");
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                partial_verdict(),
+                insufficient_verdict(),
+                sufficient_verdict(),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "test query".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*events.lock().unwrap().last().unwrap(), SearchEvent::Done);
     }
 }

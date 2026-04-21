@@ -262,8 +262,13 @@ fn try_parse_router_output(raw: &str) -> Option<RouterJudgeOutput> {
 /// - [`SearchError::Cancelled`] — token cancelled before or during the request.
 /// - [`SearchError::LlmUnavailable`] — transport failure.
 /// - [`SearchError::LlmHttp`] — non-2xx status from Ollama.
-/// - [`SearchError::Judge`] — no JSON in the response, or the JSON did not
-///   match [`JudgeVerdict`].
+///
+/// Note: this function never returns [`SearchError::Judge`]. If the first
+/// attempt produces output that does not parse as [`JudgeVerdict`], we retry
+/// once with a stricter user-message suffix. If that also fails, we fall back
+/// to a safe default (`Partial` + empty `gap_queries` + diagnostic reasoning)
+/// so the pipeline always produces a result rather than surfacing a cryptic
+/// parse error.
 pub async fn call_judge(
     endpoint: &str,
     model: &str,
@@ -285,7 +290,7 @@ pub async fn call_judge(
         },
         ChatMessage {
             role: "user".to_string(),
-            content: user_msg,
+            content: user_msg.clone(),
             images: None,
         },
     ];
@@ -298,9 +303,59 @@ pub async fn call_judge(
         super::config::JUDGE_TIMEOUT_S,
     )
     .await?;
+    if let Ok(mut verdict) = crate::search::judge::parse_verdict(&raw) {
+        crate::search::judge::normalize_verdict(
+            &mut verdict,
+            crate::search::config::GAP_QUERIES_PER_ROUND,
+        );
+        return Ok(verdict);
+    }
 
-    let mut verdict = crate::search::judge::parse_verdict(&raw)
-        .map_err(|e| SearchError::Judge(format!("{e}")))?;
+    // Retry with a stricter user message so the model is more likely to
+    // emit a clean JSON object. Transport errors propagate; only JSON-shape
+    // errors fall through to the default. No explicit cancel check needed
+    // here: `request_json` races the token internally at its send site.
+    let strict_user_msg = format!(
+        "{user_msg}\n\nReply with ONLY the JSON object described by the system prompt. No prose, no markdown fences, no explanation."
+    );
+    let retry_messages = vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: JUDGE_SYSTEM_PROMPT.to_string(),
+            images: None,
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: strict_user_msg,
+            images: None,
+        },
+    ];
+    let retry_raw = request_json(
+        endpoint,
+        model,
+        client,
+        retry_messages,
+        cancel_token,
+        super::config::JUDGE_TIMEOUT_S,
+    )
+    .await?;
+    if let Ok(mut verdict) = crate::search::judge::parse_verdict(&retry_raw) {
+        crate::search::judge::normalize_verdict(
+            &mut verdict,
+            crate::search::config::GAP_QUERIES_PER_ROUND,
+        );
+        return Ok(verdict);
+    }
+
+    // Both attempts produced unparseable output. Fall back to a safe default
+    // so the pipeline still produces a result. Partial with no gap queries
+    // lets the pipeline proceed to synthesis on whatever evidence it already
+    // holds rather than aborting with a cryptic error.
+    let mut verdict = JudgeVerdict {
+        sufficiency: crate::search::types::Sufficiency::Partial,
+        reasoning: "judge response could not be parsed".to_string(),
+        gap_queries: vec![],
+    };
     crate::search::judge::normalize_verdict(
         &mut verdict,
         crate::search::config::GAP_QUERIES_PER_ROUND,
@@ -1065,7 +1120,7 @@ mod router_judge_tests {
     }
 
     #[tokio::test]
-    async fn judge_call_returns_judge_error_when_no_json_in_response() {
+    async fn judge_call_falls_back_to_partial_when_no_json_in_response() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
@@ -1078,6 +1133,123 @@ mod router_judge_tests {
 
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
+        let verdict = call_judge(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            "q",
+            &[],
+            &token,
+        )
+        .await
+        .expect("judge should fall back to safe defaults, not error");
+        assert!(matches!(
+            verdict.sufficiency,
+            crate::search::types::Sufficiency::Partial
+        ));
+        assert!(verdict.gap_queries.is_empty());
+        assert!(verdict.reasoning.contains("could not be parsed"));
+    }
+
+    #[tokio::test]
+    async fn judge_call_falls_back_when_json_does_not_match_schema() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": { "role": "assistant", "content": "{\"random\":\"shape\"}" },
+                "done": true
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let verdict = call_judge(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            "q",
+            &[],
+            &token,
+        )
+        .await
+        .expect("judge should fall back to safe defaults, not error");
+        assert!(matches!(
+            verdict.sufficiency,
+            crate::search::types::Sufficiency::Partial
+        ));
+        assert!(verdict.gap_queries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn judge_call_retry_recovers_when_second_attempt_parses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use wiremock::Request;
+
+        let server = MockServer::start().await;
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(move |_req: &Request| {
+                let n = counter_clone.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "message": { "role": "assistant", "content": "I cannot." },
+                        "done": true
+                    }))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "message": { "role": "assistant", "content": "{\"sufficiency\":\"sufficient\",\"reasoning\":\"all good\",\"gap_queries\":[]}" },
+                        "done": true
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let verdict = call_judge(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            "q",
+            &[],
+            &token,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            verdict.sufficiency,
+            crate::search::types::Sufficiency::Sufficient
+        ));
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn judge_call_returns_cancelled_if_token_fires_between_attempts() {
+        use std::sync::Arc;
+        use wiremock::Request;
+
+        let server = MockServer::start().await;
+        let token = Arc::new(CancellationToken::new());
+        let token_clone = token.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(move |_req: &Request| {
+                token_clone.cancel();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "message": { "role": "assistant", "content": "nope" },
+                    "done": true
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
         let err = call_judge(
             &format!("{}/api/chat", server.uri()),
             "m",
@@ -1088,7 +1260,7 @@ mod router_judge_tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, SearchError::Judge(_)));
+        assert_eq!(err, SearchError::Cancelled);
     }
 
     #[tokio::test]
