@@ -774,6 +774,19 @@ mod router_judge_tests {
         assert!(msgs[1].content.contains("LATEST USER MESSAGE:\nq"));
     }
 
+    #[test]
+    fn build_router_messages_replaces_blank_history_content_with_placeholder() {
+        let history = vec![ChatMessage {
+            role: "assistant".into(),
+            content: "   ".into(),
+            images: None,
+        }];
+
+        let msgs = build_router_messages("sys", &history, "q");
+
+        assert!(msgs[1].content.contains("[1] assistant: <empty>"));
+    }
+
     // ── call_router_merged ───────────────────────────────────────────────────
 
     #[tokio::test]
