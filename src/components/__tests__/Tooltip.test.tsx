@@ -109,4 +109,16 @@ describe('Tooltip', () => {
     expect(wrapper?.tagName.toLowerCase()).toBe('div');
     expect(wrapper?.classList.contains('inline-flex')).toBe(true);
   });
+
+  it('applies extra className to the wrapper div', () => {
+    const { container } = render(
+      <Tooltip label="Test" className="flex-1 min-w-0">
+        <span>content</span>
+      </Tooltip>,
+    );
+    const wrapper = container.firstElementChild;
+    expect(wrapper?.classList.contains('flex-1')).toBe(true);
+    expect(wrapper?.classList.contains('min-w-0')).toBe(true);
+    expect(wrapper?.classList.contains('inline-flex')).toBe(true);
+  });
 });

@@ -3,6 +3,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { CommandSuggestion } from '../CommandSuggestion';
 import type { Command } from '../../config/commands';
 
+const SEARCH_CMD: Command = {
+  trigger: '/search',
+  label: '/search',
+  description: 'Agentic web search: iterative reasoning & cited synthesis',
+};
+
 const SCREEN_CMD: Command = {
   trigger: '/screen',
   label: '/screen',
@@ -190,6 +196,7 @@ describe('CommandSuggestion', () => {
 
   it('renders an SVG icon for each command row', () => {
     const allCmds = [
+      SEARCH_CMD,
       SCREEN_CMD,
       THINK_CMD,
       TRANSLATE_CMD,
@@ -208,6 +215,26 @@ describe('CommandSuggestion', () => {
     );
     const svgs = container.querySelectorAll('svg');
     expect(svgs.length).toBe(allCmds.length);
+  });
+
+  it('renders a distinct icon for /search (not the screen monitor icon)', () => {
+    const { container: searchContainer } = render(
+      <CommandSuggestion
+        commands={[SEARCH_CMD]}
+        highlightedIndex={-1}
+        onSelect={vi.fn()}
+      />,
+    );
+    const { container: screenContainer } = render(
+      <CommandSuggestion
+        commands={[SCREEN_CMD]}
+        highlightedIndex={-1}
+        onSelect={vi.fn()}
+      />,
+    );
+    const searchSvg = searchContainer.querySelector('svg');
+    const screenSvg = screenContainer.querySelector('svg');
+    expect(searchSvg?.innerHTML).not.toBe(screenSvg?.innerHTML);
   });
 
   it('renders utility command labels and descriptions', () => {

@@ -22,9 +22,11 @@ interface TooltipProps {
    * off for the tight one-line presentation.
    */
   multiline?: boolean;
+  /** Extra classes appended to the wrapper div (e.g. flex layout helpers). */
+  className?: string;
 }
 
-export function Tooltip({ label, children, multiline = false }: TooltipProps) {
+export function Tooltip({ label, children, multiline = false, className }: TooltipProps) {
   const [isVisible, setIsVisible] = useState(false);
   /** Defer portal mount until after first hover (lazy load). */
   const [hasActivated, setHasActivated] = useState(false);
@@ -79,7 +81,7 @@ export function Tooltip({ label, children, multiline = false }: TooltipProps) {
       ref={triggerRef}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      className="inline-flex"
+      className={`inline-flex${className ? ` ${className}` : ''}`}
     >
       {children}
 

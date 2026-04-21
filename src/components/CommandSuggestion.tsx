@@ -8,6 +8,30 @@
 
 import type React from 'react';
 import type { Command } from '../config/commands';
+import { Tooltip } from './Tooltip';
+
+/** Globe icon for /search command (web search). */
+const SEARCH_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5" />
+    <ellipse
+      cx="8"
+      cy="8"
+      rx="3"
+      ry="6.5"
+      stroke="currentColor"
+      strokeWidth="1.2"
+    />
+    <path d="M1.5 8h13" stroke="currentColor" strokeWidth="1.2" />
+  </svg>
+);
 
 /** Hoisted static screen-capture SVG icon. */
 const SCREEN_ICON = (
@@ -98,26 +122,35 @@ const THINK_ICON = (
   </svg>
 );
 
-/** Globe icon for /translate command. */
+/** 文A icon for /translate command, matching Google Translate icon style. */
 const TRANSLATE_ICON = (
   <svg
     width="14"
     height="14"
     viewBox="0 0 16 16"
-    fill="none"
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
   >
-    <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5" />
-    <ellipse
-      cx="8"
-      cy="8"
-      rx="3"
-      ry="6.5"
-      stroke="currentColor"
-      strokeWidth="1.2"
-    />
-    <path d="M1.5 8h13" stroke="currentColor" strokeWidth="1.2" />
+    <text
+      x="0.5"
+      y="10"
+      fontSize="9.5"
+      fontWeight="600"
+      fill="currentColor"
+      fontFamily="system-ui, -apple-system, 'PingFang SC', sans-serif"
+    >
+      文
+    </text>
+    <text
+      x="8.5"
+      y="15.5"
+      fontSize="7.5"
+      fontWeight="700"
+      fill="currentColor"
+      fontFamily="system-ui, -apple-system, sans-serif"
+    >
+      A
+    </text>
   </svg>
 );
 
@@ -248,6 +281,8 @@ const ACTION_ICON = (
 /** Returns the icon for a given command trigger. */
 function iconForTrigger(trigger: string): React.ReactNode {
   switch (trigger) {
+    case '/search':
+      return SEARCH_ICON;
     case '/screen':
       return SCREEN_ICON;
     case '/think':
@@ -341,9 +376,11 @@ export function CommandSuggestion({
                 </span>
 
                 {/* Description */}
-                <span className="text-xs text-text-secondary min-w-0 truncate flex-1">
-                  {cmd.description}
-                </span>
+                <Tooltip label={cmd.description} className="flex-1 min-w-0">
+                  <span className="text-xs text-text-secondary truncate w-full">
+                    {cmd.description}
+                  </span>
+                </Tooltip>
 
                 {/* Tab badge on highlighted row only */}
                 {isHighlighted && (
