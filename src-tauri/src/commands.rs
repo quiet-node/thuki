@@ -906,6 +906,7 @@ mod tests {
         use std::sync::Arc;
         use tokio::io::AsyncWriteExt;
         use tokio::net::TcpListener;
+        use tokio::time::{timeout, Duration};
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -934,23 +935,40 @@ mod tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let token_clone = token.clone();
-        let (chunks, callback) = collect_chunks();
+        let chunks: Arc<StdMutex<Vec<StreamChunk>>> = Arc::new(StdMutex::new(Vec::new()));
+        let chunks_clone = chunks.clone();
+        let first_token_seen = Arc::new(tokio::sync::Notify::new());
+        let first_token_seen_clone = first_token_seen.clone();
+        let callback = move |chunk: StreamChunk| {
+            if matches!(&chunk, StreamChunk::Token(token) if token == "A") {
+                first_token_seen_clone.notify_one();
+            }
+            chunks_clone.lock().unwrap().push(chunk);
+        };
 
-        tokio::spawn(async move {
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        let cancel_task = tokio::spawn(async move {
+            timeout(Duration::from_secs(5), first_token_seen.notified())
+                .await
+                .expect("expected first token before cancellation");
             token_clone.cancel();
         });
 
-        stream_ollama_chat(
-            &format!("http://127.0.0.1:{}/api/chat", port),
-            "test-model",
-            vec![],
-            false,
-            &client,
-            token,
-            callback,
+        timeout(
+            Duration::from_secs(5),
+            stream_ollama_chat(
+                &format!("http://127.0.0.1:{}/api/chat", port),
+                "test-model",
+                vec![],
+                false,
+                &client,
+                token,
+                callback,
+            ),
         )
-        .await;
+        .await
+        .expect("expected stream cancellation path to complete");
+
+        cancel_task.await.unwrap();
 
         let chunks = chunks.lock().unwrap();
         assert!(chunks
