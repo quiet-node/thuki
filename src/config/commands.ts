@@ -21,7 +21,7 @@ export const COMMANDS: readonly Command[] = [
   {
     trigger: '/search',
     label: '/search',
-    description: 'Search the web and get an AI-summarized answer',
+    description: 'Agentic web search: live retrieval, iterative reasoning, and cited synthesis',
   },
   {
     trigger: '/screen',
