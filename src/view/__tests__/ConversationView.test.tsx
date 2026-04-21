@@ -789,7 +789,7 @@ describe('ConversationView', () => {
                   kind: 'read' as const,
                   status: 'running' as const,
                   round: 1,
-                  title: 'Opening the shortlisted pages',
+                  title: 'Reading the shortlisted pages',
                   summary: 'Opened 1 of 3 pages so far.',
                   domains: ['example.com'],
                   counts: { processed: 1, total: 3 },
@@ -804,7 +804,7 @@ describe('ConversationView', () => {
 
       expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
       expect(screen.getByTestId('loading-label')).toHaveTextContent(
-        'Opening the shortlisted pages',
+        'Reading the shortlisted pages',
       );
 
       fireEvent.click(

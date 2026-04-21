@@ -93,7 +93,7 @@ pub async fn search_pipeline(
     let result = pipeline::run_agentic(
         &ollama_endpoint,
         searxng::SEARXNG_ENDPOINT,
-        searxng::SEARXNG_BASE_URL,
+        config::READER_BASE_URL,
         &model_config.active,
         &client,
         cancel_token.clone(),

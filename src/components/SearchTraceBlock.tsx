@@ -29,7 +29,7 @@ function stepMetrics(step: SearchTraceStep): string[] {
     counts?.total !== undefined &&
     counts.total > 0
   ) {
-    chips.push(`${counts.processed}/${counts.total} opened`);
+    chips.push(`${counts.processed}/${counts.total} read`);
   }
   if (counts?.pages) chips.push(`${counts.pages} pages`);
   if (counts?.chunks) chips.push(`${counts.chunks} passages`);

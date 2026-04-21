@@ -51,7 +51,7 @@ const SEARCH_STEPS: SearchTraceStep[] = [
     kind: 'read',
     status: 'running',
     round: 1,
-    title: 'Opening the shortlisted pages',
+    title: 'Reading the shortlisted pages',
     summary: 'Opened 2 of 5 pages so far.',
     domains: ['tokio.rs', 'docs.rs'],
     counts: { processed: 2, total: 5 },
@@ -103,7 +103,7 @@ describe('SearchTraceBlock', () => {
       screen.queryByTestId('search-trace-timeline'),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId('loading-label')).toHaveTextContent(
-      'Opening the shortlisted pages',
+      'Reading the shortlisted pages',
     );
 
     fireEvent.click(
@@ -117,7 +117,7 @@ describe('SearchTraceBlock', () => {
     render(<SearchTraceBlock traces={SEARCH_STEPS} isSearching />);
 
     expect(screen.getByTestId('loading-label')).toHaveTextContent(
-      'Opening the shortlisted pages',
+      'Reading the shortlisted pages',
     );
   });
 
@@ -166,7 +166,7 @@ describe('SearchTraceBlock', () => {
     ).toBeInTheDocument();
 
     const readRow = screen.getByTestId('search-trace-step-round-1-read');
-    expect(within(readRow).getByText('2/5 opened')).toBeInTheDocument();
+    expect(within(readRow).getByText('2/5 read')).toBeInTheDocument();
   });
 
   it('opens a trace URL in the browser when clicked', () => {
@@ -188,7 +188,7 @@ describe('SearchTraceBlock', () => {
     const header = screen.getByTestId('search-trace-loading');
 
     expect(within(header).getByTestId('loading-label')).toHaveTextContent(
-      'Opening the shortlisted pages',
+      'Reading the shortlisted pages',
     );
     expect(screen.queryByText('Live')).not.toBeInTheDocument();
   });

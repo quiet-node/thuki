@@ -755,7 +755,7 @@ pub async fn run_agentic(
                     SearchTraceStatus::Completed,
                     "Searching the web",
                     format!(
-                        "Found {} results across {}.",
+                        "Found {} across {}.",
                         if raw_urls.len() == 1 {
                             "1 result".to_string()
                         } else {
@@ -945,9 +945,9 @@ pub async fn run_agentic(
                     format!("round-{initial_round}-read"),
                     SearchTraceKind::Read,
                     SearchTraceStatus::Running,
-                    "Opening the shortlisted pages",
+                    "Reading the shortlisted pages",
                     format!(
-                        "Reading the full text behind {}.",
+                        "Reading full text from {}.",
                         if reader_urls.len() == 1 {
                             "1 page".to_string()
                         } else {
@@ -977,12 +977,8 @@ pub async fn run_agentic(
                             format!("round-{initial_round}-read"),
                             SearchTraceKind::Read,
                             SearchTraceStatus::Running,
-                            "Opening the shortlisted pages",
-                            format!(
-                                "Opened {} of {} pages so far.",
-                                processed,
-                                reader_urls.len()
-                            ),
+                            "Reading the shortlisted pages",
+                            format!("Read {} of {} pages so far.", processed, reader_urls.len()),
                         );
                         progress_step.round = Some(initial_round);
                         progress_step.domains =
@@ -1023,15 +1019,15 @@ pub async fn run_agentic(
                     format!("round-{initial_round}-read"),
                     SearchTraceKind::Read,
                     SearchTraceStatus::Completed,
-                    "Opening the shortlisted pages",
+                    "Reading the shortlisted pages",
                     if warnings.contains(&SearchWarning::ReaderUnavailable) && read_processed == 0 {
                         "The page reader was unavailable, so Thuki continued with snippets."
                             .to_string()
                     } else if read_processed == 0 {
-                        "No full pages could be opened cleanly, so Thuki kept working from lighter evidence.".to_string()
+                        "No pages could be read cleanly, so Thuki kept working from lighter evidence.".to_string()
                     } else {
                         format!(
-                            "Opened {} of {} pages and extracted the readable text.",
+                            "Read {} of {} pages and extracted the text.",
                             read_processed,
                             reader_urls.len()
                         )
@@ -1467,9 +1463,9 @@ pub async fn run_agentic(
                         format!("round-{attempt}-read"),
                         SearchTraceKind::Read,
                         SearchTraceStatus::Running,
-                        "Opening the shortlisted pages",
+                        "Reading the shortlisted pages",
                         format!(
-                            "Reading the full text behind {} from this round.",
+                            "Reading full text from {} this round.",
                             if round_reader_urls.len() == 1 {
                                 "1 page".to_string()
                             } else {
@@ -1499,9 +1495,9 @@ pub async fn run_agentic(
                                 format!("round-{attempt}-read"),
                                 SearchTraceKind::Read,
                                 SearchTraceStatus::Running,
-                                "Opening the shortlisted pages",
+                                "Reading the shortlisted pages",
                                 format!(
-                                    "Opened {} of {} pages so far.",
+                                    "Read {} of {} pages so far.",
                                     processed,
                                     round_reader_urls.len()
                                 ),
@@ -1551,17 +1547,17 @@ pub async fn run_agentic(
                         format!("round-{attempt}-read"),
                         SearchTraceKind::Read,
                         SearchTraceStatus::Completed,
-                        "Opening the shortlisted pages",
+                        "Reading the shortlisted pages",
                         if warnings.contains(&SearchWarning::ReaderUnavailable)
                             && round_processed == 0
                         {
                             "The page reader was unavailable, so this round fell back to snippets."
                                 .to_string()
                         } else if round_processed == 0 {
-                            "No full pages could be opened cleanly in this round.".to_string()
+                            "No pages could be read cleanly in this round.".to_string()
                         } else {
                             format!(
-                                "Opened {} of {} pages and extracted readable text.",
+                                "Read {} of {} pages and extracted the text.",
                                 round_processed,
                                 round_reader_urls.len()
                             )
@@ -2253,7 +2249,11 @@ mod agentic_tests {
     async fn queue_judge_returns_internal_error_when_empty() {
         let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
         let err = judge.call("q", &[]).await.unwrap_err();
-        assert!(matches!(err, SearchError::Internal(_)));
+        assert_eq!(
+            std::mem::discriminant(&err),
+            std::mem::discriminant(&SearchError::Internal(String::new())),
+            "expected Internal error"
+        );
     }
 
     fn insufficient_verdict() -> JudgeVerdict {
@@ -2411,7 +2411,7 @@ mod agentic_tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(
-            all_token_content.contains("which") || all_token_content.contains("project"),
+            all_token_content.contains("which") | all_token_content.contains("project"),
             "expected token stream to contain the clarifying question, got: {all_token_content}"
         );
 
