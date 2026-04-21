@@ -237,6 +237,10 @@ fn snapshot_history(history: &ConversationHistory) -> (u64, Vec<ChatMessage>) {
     (epoch, conv.clone())
 }
 
+fn can_answer_from_history(history_snapshot: &[ChatMessage]) -> bool {
+    !history_snapshot.is_empty()
+}
+
 /// Runs a streaming Ollama call, translating `StreamChunk` events into
 /// `SearchEvent` events and persisting the completed assistant turn on normal
 /// completion (or partial completion via cancellation).
@@ -1348,7 +1352,11 @@ pub async fn run_agentic(
             .await
         }
         Action::Proceed => {
-            if matches!(output.history_sufficiency, Some(Sufficiency::Sufficient)) {
+            let can_short_circuit =
+                matches!(output.history_sufficiency, Some(Sufficiency::Sufficient))
+                    && can_answer_from_history(&history_snapshot);
+
+            if can_short_circuit {
                 run_history_answer_branch(
                     &shared,
                     SearchTurnInputs {
@@ -1374,6 +1382,14 @@ pub async fn run_agentic(
                     "Understanding the question",
                     "This needs fresh web results, so Thuki is switching into search mode.",
                 );
+                if matches!(output.history_sufficiency, Some(Sufficiency::Sufficient))
+                    && !can_answer_from_history(&history_snapshot)
+                {
+                    analyze_step.detail = Some(
+                        "The router marked conversation history as sufficient, but this thread has no prior turns yet. Falling back to live search."
+                            .to_string(),
+                    );
+                }
                 if query != user_query {
                     analyze_step.detail = Some(format!("Using search query: {query}"));
                     analyze_step.queries = vec![query.clone()];
@@ -2687,6 +2703,19 @@ mod agentic_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let h = ConversationHistory::new();
+        {
+            let mut history = h.messages.lock().unwrap();
+            history.push(ChatMessage {
+                role: "user".into(),
+                content: "who is the current owner of the repo?".into(),
+                images: None,
+            });
+            history.push(ChatMessage {
+                role: "assistant".into(),
+                content: "The repo owner is quiet-node.".into(),
+                images: None,
+            });
+        }
         let (events, cb) = collect_events();
 
         let router = MockRouter(RouterJudgeOutput {
@@ -2735,6 +2764,75 @@ mod agentic_tests {
         assert!(evs
             .iter()
             .all(|e| !matches!(e, SearchEvent::ReadingSources)));
+    }
+
+    #[tokio::test]
+    async fn empty_history_never_short_circuits_even_if_router_claims_sufficient() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let searx_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/date")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let ollama_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(stream_line_token("fresh answer")),
+            )
+            .mount(&ollama_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+
+        let router = MockRouter(RouterJudgeOutput {
+            action: Action::Proceed,
+            clarifying_question: None,
+            history_sufficiency: Some(Sufficiency::Sufficient),
+            optimized_query: Some("today date".into()),
+        });
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![sufficient_verdict()].into_iter().collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama_server.uri()),
+            &format!("{}/search", searx_server.uri()),
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "what is today's date".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+
+        assert!(evs
+            .iter()
+            .any(|event| matches!(event, SearchEvent::Searching { .. })));
+        assert!(evs
+            .iter()
+            .any(|event| matches!(event, SearchEvent::Sources { .. })));
+        assert!(evs.iter().any(
+            |event| matches!(event, SearchEvent::Token { content } if content == "fresh answer")
+        ));
     }
 
     // ── run_agentic: initial search round tests ──────────────────────────────

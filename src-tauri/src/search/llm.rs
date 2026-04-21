@@ -31,6 +31,11 @@ pub const JUDGE_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_judge.t
 /// assessment.
 pub const SEARCH_PLAN_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_plan.txt");
 
+/// Extra guardrails for the history-only answer branch. Appended after the
+/// normal chat system prompt so this branch cannot silently answer from model
+/// priors when the router makes a bad sufficiency call.
+const HISTORY_ONLY_SYSTEM_APPENDIX: &str = "\n\nYou are answering from the prior conversation only. Use only facts that already appear in earlier turns of this chat. Do not use your training knowledge, general world knowledge, the current date, or any external information. The latest user message is the question to answer, not evidence. If the prior conversation does not already contain the answer, reply exactly with: I can't answer that from this conversation alone.";
+
 /// Hard timeout for the non-streaming router call. Picked to accommodate cold
 /// model starts on first pipeline invocation.
 pub const ROUTER_TIMEOUT_SECS: u64 = 45;
@@ -189,7 +194,7 @@ pub async fn call_router_merged(
     let system = SEARCH_PLAN_SYSTEM_PROMPT.replace("{{TODAY}}", today);
 
     // First attempt: standard prompt.
-    let messages = build_messages_with_system(&system, history, query);
+    let messages = build_router_messages(&system, history, query);
     let raw = request_json(
         endpoint,
         model,
@@ -210,7 +215,7 @@ pub async fn call_router_merged(
     let strict_query = format!(
         "{query}\n\nReply with ONLY the JSON object described by the system prompt. No prose, no markdown fences, no explanation."
     );
-    let retry_messages = build_messages_with_system(&system, history, &strict_query);
+    let retry_messages = build_router_messages(&system, history, &strict_query);
     let retry_raw = request_json(
         endpoint,
         model,
@@ -384,27 +389,49 @@ fn build_judge_user_message(query: &str, sources: &[JudgeSource]) -> String {
     s
 }
 
-/// Builds a message array of the form `[system, ...history, user]` using the
-/// supplied `system` prompt string. Used by [`call_router_merged`] and
-/// related prompt-assembly helpers.
-fn build_messages_with_system(
-    system: &str,
-    history: &[ChatMessage],
-    query: &str,
-) -> Vec<ChatMessage> {
-    let mut msgs = Vec::with_capacity(history.len() + 2);
-    msgs.push(ChatMessage {
-        role: "system".to_string(),
-        content: system.to_string(),
-        images: None,
-    });
-    msgs.extend(history.iter().cloned());
-    msgs.push(ChatMessage {
-        role: "user".to_string(),
-        content: query.to_string(),
-        images: None,
-    });
-    msgs
+fn format_router_history(history: &[ChatMessage]) -> String {
+    if history.is_empty() {
+        return "<empty>\n".to_string();
+    }
+
+    let mut out = String::with_capacity(history.len() * 96);
+    for (index, message) in history.iter().enumerate() {
+        let content = message.content.trim();
+        let content = if content.is_empty() {
+            "<empty>"
+        } else {
+            content
+        };
+        out.push_str(&format!("[{}] {}: {}\n", index + 1, message.role, content));
+    }
+    out
+}
+
+/// Builds the router request as `[system, user]` with an explicit transcript
+/// block and a separately labeled latest user message. This makes the prior
+/// history boundary visible even when the thread is empty.
+fn build_router_messages(system: &str, history: &[ChatMessage], query: &str) -> Vec<ChatMessage> {
+    let mut user_content = String::with_capacity(query.len() + history.len() * 96 + 256);
+    user_content.push_str("PRIOR CONVERSATION TRANSCRIPT:\n");
+    user_content.push_str(&format_router_history(history));
+    user_content.push_str("\nLATEST USER MESSAGE:\n");
+    user_content.push_str(query);
+    user_content.push_str(
+        "\n\nOnly the PRIOR CONVERSATION TRANSCRIPT counts toward history_sufficiency. The LATEST USER MESSAGE does not count as already-answered history.",
+    );
+
+    vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: system.to_string(),
+            images: None,
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: user_content,
+            images: None,
+        },
+    ]
 }
 
 // ─── Synthesis prompt assembly ──────────────────────────────────────────────
@@ -450,19 +477,23 @@ pub fn build_synthesis_messages(
     msgs
 }
 
-/// Builds the message array for the `answer_from_context` stage. Uses the
-/// supplied `chat_system_prompt` unchanged; the answer is grounded in the
-/// conversation history alone (which already contains prior search results as
-/// assistant turns).
+/// Builds the message array for the `answer_from_context` stage. Appends a
+/// strict transcript-only guard to the supplied chat system prompt so the
+/// answer is grounded in the conversation history alone.
 pub fn build_answer_from_context_messages(
     chat_system_prompt: &str,
     history: &[ChatMessage],
     query: &str,
 ) -> Vec<ChatMessage> {
+    let mut system =
+        String::with_capacity(chat_system_prompt.len() + HISTORY_ONLY_SYSTEM_APPENDIX.len());
+    system.push_str(chat_system_prompt.trim_end());
+    system.push_str(HISTORY_ONLY_SYSTEM_APPENDIX);
+
     let mut msgs = Vec::with_capacity(history.len() + 2);
     msgs.push(ChatMessage {
         role: "system".to_string(),
-        content: chat_system_prompt.to_string(),
+        content: system,
         images: None,
     });
     msgs.extend(history.iter().cloned());
@@ -610,7 +641,13 @@ mod tests {
     fn build_answer_from_context_messages_uses_supplied_system_prompt() {
         let msgs = build_answer_from_context_messages("base prompt", &[], "q");
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].content, "base prompt");
+        assert!(msgs[0].content.starts_with("base prompt"));
+        assert!(msgs[0]
+            .content
+            .contains("You are answering from the prior conversation only."));
+        assert!(msgs[0]
+            .content
+            .contains("I can't answer that from this conversation alone."));
     }
 
     #[test]
@@ -650,6 +687,7 @@ mod prompt_tests {
     fn search_plan_prompt_has_today_placeholder_and_required_fields() {
         let p = SEARCH_PLAN_SYSTEM_PROMPT;
         assert!(p.contains("{{TODAY}}"));
+        assert!(p.contains("NOT part of the prior conversation transcript"));
         assert!(p.contains("\"action\""));
         assert!(p.contains("clarify"));
         assert!(p.contains("proceed"));
@@ -697,10 +735,24 @@ mod router_judge_tests {
         assert!(!msg.contains("[1]"));
     }
 
-    // ── build_messages_with_system ───────────────────────────────────────────
+    // ── build_router_messages ────────────────────────────────────────────────
 
     #[test]
-    fn build_messages_with_system_interleaves_history() {
+    fn build_router_messages_marks_empty_history_and_latest_query() {
+        let msgs = build_router_messages("sys", &[], "what is today's date?");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "system");
+        assert_eq!(msgs[0].content, "sys");
+        assert!(msgs[1]
+            .content
+            .contains("PRIOR CONVERSATION TRANSCRIPT:\n<empty>\n"));
+        assert!(msgs[1]
+            .content
+            .contains("LATEST USER MESSAGE:\nwhat is today's date?"));
+    }
+
+    #[test]
+    fn build_router_messages_flattens_history_with_roles() {
         let history = vec![
             ChatMessage {
                 role: "user".into(),
@@ -713,13 +765,13 @@ mod router_judge_tests {
                 images: None,
             },
         ];
-        let msgs = build_messages_with_system("sys", &history, "q");
-        assert_eq!(msgs.len(), 4);
+        let msgs = build_router_messages("sys", &history, "q");
+        assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, "system");
         assert_eq!(msgs[0].content, "sys");
-        assert_eq!(msgs[1].content, "prev");
-        assert_eq!(msgs[2].content, "reply");
-        assert_eq!(msgs[3].content, "q");
+        assert!(msgs[1].content.contains("[1] user: prev"));
+        assert!(msgs[1].content.contains("[2] assistant: reply"));
+        assert!(msgs[1].content.contains("LATEST USER MESSAGE:\nq"));
     }
 
     // ── call_router_merged ───────────────────────────────────────────────────
