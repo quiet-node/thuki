@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 interface CopyButtonProps {
   /** Raw text content to write to the clipboard. */
   content: string;
-  /** Which side of the action bar the button sits on — matches bubble tail side. */
+  /** Which side of the action bar the button sits on - matches bubble tail side. */
   align: 'left' | 'right';
 }
 
@@ -24,7 +24,7 @@ export function CopyButton({ content, align }: CopyButtonProps) {
       setCopied(true);
       timerRef.current = setTimeout(() => setCopied(false), 1500);
     } catch {
-      // fail silently — no clipboard access is not an error worth surfacing
+      // fail silently - no clipboard access is not an error worth surfacing
     }
   }, [content]);
 

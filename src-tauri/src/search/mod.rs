@@ -1,9 +1,9 @@
 //! `/search` pipeline module.
 //!
 //! Public surface:
-//! - [`SearchEvent`] — the streamed event type used on the frontend IPC
+//! - [`SearchEvent`] - the streamed event type used on the frontend IPC
 //!   channel.
-//! - [`search_pipeline`] — the single Tauri command that owns the entire
+//! - [`search_pipeline`] - the single Tauri command that owns the entire
 //!   classify -> route -> answer flow.
 //!
 //! Everything else is internal. The pipeline shares Ollama streaming
@@ -44,7 +44,7 @@ pub use types::{
 /// The frontend passes in the user's raw query plus a typed
 /// [`tauri::ipc::Channel`] to receive [`SearchEvent`]s. The backend is the
 /// sole owner of routing state, history mutation, cancellation, and error
-/// presentation — the frontend is a pure renderer of whichever events arrive.
+/// presentation - the frontend is a pure renderer of whichever events arrive.
 ///
 /// Reuses the shared [`GenerationState`] so a single `cancel_generation`
 /// invocation cancels either a chat or a search turn, whichever is active.

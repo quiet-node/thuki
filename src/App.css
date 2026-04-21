@@ -7,7 +7,7 @@
     'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
     Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
 
-  /* Brand palette — single source of truth for all color decisions */
+  /* Brand palette - single source of truth for all color decisions */
   --color-primary: #ff8d5c;
   --color-secondary: #bc5c0b;
   --color-tertiary: #e69c05;
@@ -29,11 +29,11 @@
   --color-sidebar: rgba(28, 28, 32, 0.95);
   --color-foreground: #f0f0f2;
 
-  /* Elevation — input bar mode (compact floating effect, Spotlight-inspired) */
+  /* Elevation - input bar mode (compact floating effect, Spotlight-inspired) */
   --shadow-bar:
     0 6px 20px -6px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 141, 92, 0.12);
 
-  /* Elevation — chat window mode (layered depth without excessive spread) */
+  /* Elevation - chat window mode (layered depth without excessive spread) */
   --shadow-chat:
     0 4px 14px -3px rgba(0, 0, 0, 0.5), 0 1px 4px -1px rgba(0, 0, 0, 0.3),
     0 0 0 1px rgba(255, 141, 92, 0.12);
@@ -63,7 +63,7 @@ body {
   border-top-color: rgba(255, 141, 92, 0.2);
 }
 
-/* Subtle glowing line at the very top edge — matches approved onboarding style */
+/* Subtle glowing line at the very top edge - matches approved onboarding style */
 .morphing-container::before {
   content: '';
   position: absolute;
@@ -88,7 +88,7 @@ body {
 }
 
 /**
- * User bubble — warm gradient from primary brand color to a deeper amber.
+ * User bubble - warm gradient from primary brand color to a deeper amber.
  * Subtle inner glow at the top for depth perception.
  */
 .chat-bubble-user {
@@ -99,7 +99,7 @@ body {
 }
 
 /**
- * AI bubble — frosted glass surface with a subtle border for depth.
+ * AI bubble - frosted glass surface with a subtle border for depth.
  * Harmonizes with the warm ambient dark overlay backdrop.
  */
 .chat-bubble-ai {
@@ -116,7 +116,7 @@ body {
 /* ─── Stop Button Border Trace ───
  * SVG border-trace using pathLength="100" so all dash math is in clean
  * percentages. Three layered strokes staggered via animation-delay (NOT
- * initial dashoffset — that causes different travel distances and speed
+ * initial dashoffset - that causes different travel distances and speed
  * drift). All three share the same keyframe and duration so they move
  * in lockstep, with the delay creating a fixed spatial offset.
  */
@@ -137,20 +137,20 @@ body {
   stroke-width: 1.5;
   stroke-linecap: round;
 }
-/* Head — bright leading segment, furthest along the path */
+/* Head - bright leading segment, furthest along the path */
 .stop-trace-head {
   stroke-dasharray: 15 85;
   animation: trace-border 2s linear infinite;
   animation-delay: -0.56s;
 }
-/* Mid — dimmer segment trailing the head */
+/* Mid - dimmer segment trailing the head */
 .stop-trace-mid {
   stroke-dasharray: 12 88;
   opacity: 0.4;
   animation: trace-border 2s linear infinite;
   animation-delay: -0.3s;
 }
-/* Tail — faintest segment, furthest behind */
+/* Tail - faintest segment, furthest behind */
 .stop-trace-tail {
   stroke-dasharray: 10 90;
   opacity: 0.12;
@@ -199,7 +199,7 @@ body {
   padding-left: 0.25rem;
 }
 
-/* ─── Code Block — Premium Brand Style ───
+/* ─── Code Block - Premium Brand Style ───
  * Streamdown's utility classes (border-border, bg-background, bg-sidebar) don't
  * resolve against our custom theme. Override every layer explicitly.
  *
@@ -245,7 +245,7 @@ body {
 }
 
 /* ─── Code Block Copy Button ───
- * Strip Streamdown's floating pill chrome — transparent ghost icon only.
+ * Strip Streamdown's floating pill chrome - transparent ghost icon only.
  * Plain CSS outside @layer overrides Tailwind utility classes in @layer utilities.
  */
 [data-streamdown='code-block-actions'] {
@@ -273,7 +273,7 @@ body {
  * Hover linking is driven by `data-active-citation="N"` on the bubble root.
  * When set, EVERY element with matching `data-citation="N"` (whether it's an
  * inline <a> in the answer or a <button> pill in the footer) highlights.
- * We never change padding/width/font-size on hover — only color/bg — so the
+ * We never change padding/width/font-size on hover - only color/bg - so the
  * text reflow is zero.
  */
 .citation-link {
@@ -306,7 +306,7 @@ body {
   background-color: rgba(232, 131, 90, 0.18);
 }
 
-/* Letter-avatar sources trigger. Flat, no border — the stacked avatars
+/* Letter-avatar sources trigger. Flat, no border - the stacked avatars
  * and count text do the heavy visual lifting. */
 .sources-trigger > span:last-child {
   transition: color 150ms ease;
@@ -397,7 +397,7 @@ body {
 /* ─── /search stage indicator: shimmer sweep on label text ───
  * A lighter band glides left-to-right across the muted label text while the
  * pipeline is running. Uses background-clip: text so the gradient is painted
- * through the glyphs themselves — no wrapper element required.
+ * through the glyphs themselves - no wrapper element required.
  * Option B pattern: wide gradient (4x element width) with dim plateaus ensures
  * text remains visible at pause positions.
  */

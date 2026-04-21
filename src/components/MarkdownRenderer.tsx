@@ -33,7 +33,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(
       <span className={`markdown-body ${className}`}>
         <Streamdown
           mode={isStreaming ? 'streaming' : 'static'}
-          /* Force dark syntax highlighting — the app has no .dark root class
+          /* Force dark syntax highlighting - the app has no .dark root class
              so the dual ["github-light","github-dark"] default resolves to
              github-light, giving code blocks a white background that clashes
              with the dark UI. */

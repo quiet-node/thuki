@@ -106,33 +106,13 @@ pub async fn search(
     Ok(results)
 }
 
-/// Run multiple SearXNG queries in parallel and return the URL-deduplicated
-/// union of results. Individual query failures (HTTP errors, empty results,
-/// invalid queries) do not abort the batch; they are silently treated as
-/// no-op contributions.
-///
-/// This matches the gap-round tolerance rule: the pipeline can accept
-/// partial coverage in a refinement round without erroring out.
-///
-/// Complexity: O(N) HTTP round-trips (parallelized). Dedup is O(R) over the
-/// total result count, bounded by the SearXNG per-query result cap.
-#[allow(dead_code)]
-pub async fn search_all(queries: &[String]) -> Result<Vec<SearxResult>, SearchError> {
-    search_all_with_base(SEARXNG_BASE_URL, queries).await
-}
-
 /// Run multiple SearXNG queries in parallel against a fully-qualified endpoint
 /// URL. Unlike [`search_all_with_base`], this accepts the complete endpoint
 /// (e.g. `http://127.0.0.1:25017/search`) rather than just the base. Used by
 /// the agentic gap loop, which already holds the endpoint URL.
 ///
-/// Production callers should use [`search_all`] which uses the compiled-in
-/// constant. This variant is public for use within the `search` module and for
-/// tests that already have an endpoint URL.
-///
 /// Complexity: O(N) HTTP round-trips (parallelized). Dedup is O(R) over the
 /// total result count, bounded by the SearXNG per-query result cap.
-#[allow(dead_code)]
 pub async fn search_all_with_endpoint(
     endpoint: &str,
     queries: &[String],
@@ -170,7 +150,7 @@ pub async fn search_all_with_endpoint(
 ///
 /// Complexity: O(N) HTTP round-trips (parallelized). Dedup is O(R) over the
 /// total result count, bounded by the SearXNG per-query result cap.
-#[allow(dead_code)]
+#[cfg(test)]
 pub async fn search_all_with_base(
     base: &str,
     queries: &[String],
@@ -275,7 +255,7 @@ mod tests {
     #[test]
     fn decode_entities_handles_numeric_entities() {
         assert_eq!(decode_entities("&#160;"), "\u{00A0}");
-        assert_eq!(decode_entities("&#x2014;"), "—");
+        assert_eq!(decode_entities("&#x2014;"), "\u{2014}");
     }
 
     #[test]
@@ -602,17 +582,8 @@ mod parallel_tests {
     }
 
     #[tokio::test]
-    async fn search_all_with_empty_slice_returns_empty_without_network() {
-        // Covers lines 116-118: search_all delegates to search_all_with_base;
-        // the empty-slice guard in search_all_with_base fires before any HTTP
-        // call, so no network is needed.
-        let out = search_all(&[]).await.unwrap();
-        assert!(out.is_empty());
-    }
-
-    #[tokio::test]
     async fn search_all_with_endpoint_empty_slice_returns_empty_without_network() {
-        // Covers line 137: search_all_with_endpoint short-circuits on empty
+        // Covers the early empty-slice guard in search_all_with_endpoint,
         // query slice before touching the network.
         let out = search_all_with_endpoint("http://127.0.0.1:1/search", &[])
             .await

@@ -141,6 +141,7 @@ describe('App', () => {
   });
 
   it('hides overlay on Escape key and cancels an active /search turn', async () => {
+    vi.useFakeTimers();
     enableChannelCapture();
     render(<App />);
     await act(async () => {});
@@ -157,12 +158,16 @@ describe('App', () => {
 
     invoke.mockClear();
 
-    act(() => {
+    await act(async () => {
       fireEvent.keyDown(window, { key: 'Escape' });
+      vi.advanceTimersByTime(351);
+      await Promise.resolve();
     });
 
     expect(invoke).toHaveBeenCalledWith('cancel_generation');
     expect(invoke).toHaveBeenCalledWith('notify_overlay_hidden');
+    expect(screen.queryByPlaceholderText('Ask Thuki anything...')).toBeNull();
+    vi.useRealTimers();
   });
 
   it('completes a full conversation turn', async () => {
@@ -216,7 +221,7 @@ describe('App', () => {
       screen.getByPlaceholderText('Ask Thuki anything...'),
     ).toBeInTheDocument();
 
-    // Then send hide-request — calls requestHideOverlay() (not handleCloseOverlay)
+    // Then send hide-request - calls requestHideOverlay() (not handleCloseOverlay)
     await act(async () => {
       emitTauriEvent('thuki://visibility', { state: 'hide-request' });
     });
@@ -619,13 +624,13 @@ describe('App', () => {
     render(<App />);
     await act(async () => {});
 
-    // Overlay is hidden initially — fire hide-request on hidden overlay
+    // Overlay is hidden initially - fire hide-request on hidden overlay
     // This exercises the 'hidden' branch in requestHideOverlay's state setter
     await act(async () => {
       emitTauriEvent('thuki://visibility', { state: 'hide-request' });
     });
 
-    // No crash, no change — overlay is already hidden
+    // No crash, no change - overlay is already hidden
     expect(document.querySelector('.morphing-container')).toBeNull();
   });
 
@@ -832,11 +837,11 @@ describe('App', () => {
         );
       });
 
-      // Reopen — bookmark should reset (save button enabled again)
+      // Reopen - bookmark should reset (save button enabled again)
       enableChannelCapture();
       await showOverlay();
 
-      // In ask-bar mode now — no save button visible, but history icon is
+      // In ask-bar mode now - no save button visible, but history icon is
       expect(
         screen.getByRole('button', { name: /open history/i }),
       ).toBeInTheDocument();
@@ -1118,7 +1123,7 @@ describe('App', () => {
         );
       });
 
-      // Click "Save & Start New" — save fails → should stay in chat mode
+      // Click "Save & Start New" - save fails → should stay in chat mode
       await act(async () => {
         fireEvent.click(
           screen.getByRole('button', { name: 'Save & Start New' }),
@@ -1188,7 +1193,7 @@ describe('App', () => {
         fireEvent.click(screen.getByRole('button', { name: /other chat/i }));
       });
 
-      // Save & Switch — isSaved is FALSE so save_conversation should be called
+      // Save & Switch - isSaved is FALSE so save_conversation should be called
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /save & switch/i }));
       });
@@ -1245,7 +1250,7 @@ describe('App', () => {
         fireEvent.click(screen.getByRole('button', { name: /other chat/i }));
       });
 
-      // Confirm "Save & Switch" — save_conversation will throw
+      // Confirm "Save & Switch" - save_conversation will throw
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /save & switch/i }));
       });
@@ -1318,13 +1323,13 @@ describe('App', () => {
         fireEvent.click(screen.getByRole('button', { name: /open history/i }));
       });
 
-      // Click a different conversation — isSaved=true means no dialog, loads directly
+      // Click a different conversation - isSaved=true means no dialog, loads directly
       invoke.mockClear();
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /switch target/i }));
       });
 
-      // No SwitchConfirmation dialog — save_conversation NOT called again
+      // No SwitchConfirmation dialog - save_conversation NOT called again
       expect(invoke).not.toHaveBeenCalledWith(
         'save_conversation',
         expect.anything(),
@@ -1395,7 +1400,7 @@ describe('App', () => {
         conversationId: 'conv-target',
       });
 
-      // Messages remain — still in chat mode
+      // Messages remain - still in chat mode
       expect(screen.getByText('Hi')).toBeInTheDocument();
 
       // Save button reverts to unsaved state ("Save conversation")
@@ -1433,7 +1438,7 @@ describe('App', () => {
         screen.getByPlaceholderText('Search past chats…'),
       ).toBeInTheDocument();
 
-      // Click outside — should close the dropdown
+      // Click outside - should close the dropdown
       await act(async () => {
         fireEvent.mouseDown(document.body);
       });
@@ -1469,7 +1474,7 @@ describe('App', () => {
       const searchInput = screen.getByPlaceholderText('Search past chats…');
       expect(searchInput).toBeInTheDocument();
 
-      // Click inside the dropdown — should NOT close it
+      // Click inside the dropdown - should NOT close it
       await act(async () => {
         fireEvent.mouseDown(searchInput);
       });
@@ -1537,7 +1542,7 @@ describe('App', () => {
         );
       });
 
-      // Messages remain, isSaved is now false — save button is re-enabled
+      // Messages remain, isSaved is now false - save button is re-enabled
       expect(screen.getByText('Hi')).toBeInTheDocument();
       expect(
         screen.getByRole('button', { name: /save conversation/i }),
@@ -1580,7 +1585,7 @@ describe('App', () => {
         fireEvent.click(screen.getByRole('button', { name: /open history/i }));
       });
 
-      // Click the conversation — load_conversation will throw
+      // Click the conversation - load_conversation will throw
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /^chat$/i }));
       });
@@ -1609,7 +1614,7 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      // Open ask-bar history (no conversation loaded — conversationId is null)
+      // Open ask-bar history (no conversation loaded - conversationId is null)
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /open history/i }));
       });
@@ -1856,7 +1861,7 @@ describe('App', () => {
         ).toBeInTheDocument();
       });
 
-      // Wait for FileReader + invoke to settle — failed image gets removed
+      // Wait for FileReader + invoke to settle - failed image gets removed
       await act(async () => {
         await vi.waitFor(() => {
           expect(invoke).toHaveBeenCalledWith(
@@ -1880,7 +1885,7 @@ describe('App', () => {
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
           if (args && 'onEvent' in args) {
-            // channel capture — no-op for this test
+            // channel capture - no-op for this test
           }
           if (cmd === 'save_image_command') {
             saveCallCount++;
@@ -2159,7 +2164,7 @@ describe('App', () => {
         dataTransfer: { files: [extra] },
       });
 
-      // Still exactly 3 — the drop was rejected
+      // Still exactly 3 - the drop was rejected
       expect(screen.getAllByRole('listitem')).toHaveLength(3);
     });
 
@@ -2291,7 +2296,7 @@ describe('App', () => {
         expect(screen.getByText('what is this?')).toBeInTheDocument();
       });
 
-      // Click the preview button in the chat bubble — should open the modal
+      // Click the preview button in the chat bubble - should open the modal
       // with the blob URL directly (no convertFileSrc wrapping).
       const previewButtons = screen.getAllByRole('button', {
         name: /preview/i,
@@ -2333,7 +2338,7 @@ describe('App', () => {
 
       invoke.mockClear();
 
-      // Click remove twice rapidly — the second call should be a no-op
+      // Click remove twice rapidly - the second call should be a no-op
       // (the functional updater in setAttachedImages will find no matching
       // image on the second pass, exercising the !img branch).
       const removeBtn = screen.getByRole('button', { name: /remove/i });
@@ -2354,7 +2359,7 @@ describe('App', () => {
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
           if (args && 'onEvent' in args) {
-            // channel capture — no-op
+            // channel capture - no-op
           }
           if (cmd === 'save_image_command') {
             return new Promise(() => {}); // never resolves
@@ -2366,7 +2371,7 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      // Paste an image — thumbnail appears immediately with null filePath
+      // Paste an image - thumbnail appears immediately with null filePath
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
@@ -2486,11 +2491,11 @@ describe('App', () => {
       });
       await act(async () => {});
 
-      // Should be generating — stop button visible
+      // Should be generating - stop button visible
       const stopBtn = screen.getByRole('button', { name: /stop/i });
       expect(stopBtn).toBeInTheDocument();
 
-      // Click stop — should call cancel_generation
+      // Click stop - should call cancel_generation
       invoke.mockClear();
       enableChannelCapture();
 
@@ -2689,16 +2694,16 @@ describe('App', () => {
 
       expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
 
-      // Resolve ONLY the first image — allReady should still be false
+      // Resolve ONLY the first image - allReady should still be false
       await act(async () => {
         resolvers[0]('/tmp/img1.jpg');
       });
       await act(async () => {});
 
-      // Still processing — second image not ready
+      // Still processing - second image not ready
       expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
 
-      // Resolve the second image — now allReady is true, submit fires
+      // Resolve the second image - now allReady is true, submit fires
       await act(async () => {
         resolvers[1]('/tmp/img2.jpg');
       });
@@ -2770,7 +2775,7 @@ describe('App', () => {
         ).toBeInTheDocument();
       });
 
-      // Reject the image — it should be removed and pending submit cancelled
+      // Reject the image - it should be removed and pending submit cancelled
       await act(async () => {
         rejectSave!(new Error('disk full'));
       });
@@ -2785,7 +2790,7 @@ describe('App', () => {
       // ask_ollama should never have been called
       expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
 
-      // The "Processing images" button should be gone — back to normal send
+      // The "Processing images" button should be gone - back to normal send
       expect(
         screen.getByRole('button', { name: /send message/i }),
       ).toBeInTheDocument();
@@ -2937,7 +2942,7 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
-    // Reopen overlay — should clear images and revoke blob URLs
+    // Reopen overlay - should clear images and revoke blob URLs
     await showOverlay();
 
     expect(URL.revokeObjectURL).toHaveBeenCalled();
@@ -2972,7 +2977,7 @@ describe('App', () => {
     const revokeSpy = vi.mocked(URL.revokeObjectURL);
     revokeSpy.mockClear();
 
-    // Hide overlay via Escape — requestHideOverlay should revoke blob URLs
+    // Hide overlay via Escape - requestHideOverlay should revoke blob URLs
     await act(async () => {
       fireEvent.keyDown(window, { key: 'Escape' });
     });
@@ -3010,7 +3015,7 @@ describe('App', () => {
     // Re-enable channel capture for second session
     enableChannelCapture();
 
-    // Reopen overlay — should reset session
+    // Reopen overlay - should reset session
     await showOverlay();
 
     // Should be back to input bar mode with placeholder
@@ -3267,6 +3272,7 @@ describe('App', () => {
           'save_image_command',
           expect.anything(),
         );
+        expect(screen.getAllByRole('listitem')).toHaveLength(1);
       });
 
       // Now type /screen and submit.
@@ -3274,20 +3280,32 @@ describe('App', () => {
         fireEvent.change(textarea, { target: { value: '/screen describe' } });
       });
 
-      await act(async () => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-      });
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+          await Promise.resolve();
+          await Promise.resolve();
+        });
 
-      await act(async () => {});
+        expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+        expect(invoke).toHaveBeenCalledWith(
+          'ask_ollama',
+          expect.objectContaining({
+            message: '/screen describe',
+            imagePaths: ['/tmp/attached.jpg', '/tmp/screen.jpg'],
+          }),
+        );
 
-      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
-      expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
-        expect.objectContaining({
-          message: '/screen describe',
-          imagePaths: ['/tmp/attached.jpg', '/tmp/screen.jpg'],
-        }),
-      );
+        await act(async () => {
+          getLastChannel()?.simulateMessage({ type: 'Token', data: 'done' });
+          getLastChannel()?.simulateMessage({ type: 'Done' });
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('handles /screen with selected context', async () => {
@@ -4057,7 +4075,7 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      // Paste an image — thumbnail appears immediately (filePath null)
+      // Paste an image - thumbnail appears immediately (filePath null)
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
@@ -4086,7 +4104,7 @@ describe('App', () => {
       // Should show pending state (stop button visible)
       expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
 
-      // Resolve the image — triggers deferred submit chain
+      // Resolve the image - triggers deferred submit chain
       resolveSave!('/tmp/staged/img1.jpg');
 
       // Flush async chain: promise -> state update -> effect -> ask -> invoke
@@ -4211,7 +4229,7 @@ describe('App', () => {
       });
     });
 
-    it('continues routing follow-ups through search_pipeline after a Clarifying event', async () => {
+    it('continues routing follow-ups through search_pipeline after a clarify trace', async () => {
       enableChannelCapture();
       render(<App />);
       await act(async () => {});
@@ -4228,9 +4246,16 @@ describe('App', () => {
       const firstChannel = getLastChannel();
       await act(async () => {
         firstChannel!.onmessage({
-          type: 'Clarifying',
-          question: 'Which person?',
+          type: 'Trace',
+          step: {
+            id: 'clarify',
+            kind: 'clarify',
+            status: 'completed',
+            title: 'Waiting for clarification',
+            summary: 'Search is paused until you clarify who or what you mean.',
+          },
         });
+        firstChannel!.onmessage({ type: 'Token', content: 'Which person?' });
         firstChannel!.onmessage({ type: 'Done' });
       });
       // Flush askSearch promise + .then() so isGenerating updates.
@@ -4300,7 +4325,7 @@ describe('App', () => {
       expect(last[1]).toMatchObject({ message: 'hello' });
     });
 
-    it('follow-up after Clarifying still routes through search_pipeline', async () => {
+    it('follow-up after a clarify trace still routes through search_pipeline', async () => {
       enableChannelCapture();
       render(<App />);
       await act(async () => {});
@@ -4316,16 +4341,23 @@ describe('App', () => {
       const firstChannel = getLastChannel();
       await act(async () => {
         firstChannel!.onmessage({
-          type: 'Clarifying',
-          question: 'First clarify?',
+          type: 'Trace',
+          step: {
+            id: 'clarify',
+            kind: 'clarify',
+            status: 'completed',
+            title: 'Waiting for clarification',
+            summary: 'Search is paused until you clarify who or what you mean.',
+          },
         });
+        firstChannel!.onmessage({ type: 'Token', content: 'First clarify?' });
         firstChannel!.onmessage({ type: 'Done' });
       });
       await act(async () => {
         await Promise.resolve();
       });
 
-      // User types their own clarification and submits — still routes to
+      // User types their own clarification and submits - still routes to
       // search_pipeline because searchActive persisted (final=false on clarify).
       const countBefore = invoke.mock.calls.filter(
         (c) => c[0] === 'search_pipeline',
@@ -4385,9 +4417,16 @@ describe('App', () => {
       const channel = getLastChannel();
       await act(async () => {
         channel!.onmessage({
-          type: 'Clarifying',
-          question: 'Which?',
+          type: 'Trace',
+          step: {
+            id: 'clarify',
+            kind: 'clarify',
+            status: 'completed',
+            title: 'Waiting for clarification',
+            summary: 'Search is paused until you clarify who or what you mean.',
+          },
         });
+        channel!.onmessage({ type: 'Token', content: 'Which?' });
         channel!.onmessage({ type: 'Done' });
       });
 

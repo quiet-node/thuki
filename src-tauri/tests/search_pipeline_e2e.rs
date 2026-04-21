@@ -19,7 +19,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use thuki_agent_lib::commands::ConversationHistory;
 use thuki_agent_lib::search::{
     run_agentic, Action, JudgeCaller, JudgeSource, JudgeVerdict, RouterJudgeCaller,
-    RouterJudgeOutput, SearchError, SearchEvent, SearchWarning, Sufficiency,
+    RouterJudgeOutput, SearchError, SearchEvent, SearchMetadata, SearchWarning, Sufficiency,
 };
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -30,6 +30,37 @@ fn collect_events() -> (Arc<Mutex<Vec<SearchEvent>>>, impl Fn(SearchEvent)) {
     let clone = events.clone();
     let cb = move |e: SearchEvent| clone.lock().unwrap().push(e);
     (events, cb)
+}
+
+fn done_metadata(events: &[SearchEvent]) -> &SearchMetadata {
+    match events.last().expect("expected final event") {
+        SearchEvent::Done {
+            metadata: Some(metadata),
+        } => metadata,
+        other => panic!("expected final Done event with metadata, got: {other:?}"),
+    }
+}
+
+fn assert_done_iterations(events: &[SearchEvent], expected_iterations: usize) {
+    let metadata = done_metadata(events);
+    assert_eq!(
+        metadata.iterations.len(),
+        expected_iterations,
+        "expected Done metadata with {expected_iterations} iterations, got: {metadata:?}"
+    );
+}
+
+fn assert_refining_search(events: &[SearchEvent], attempt: u32) {
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            SearchEvent::RefiningSearch {
+                attempt: actual_attempt,
+                ..
+            } if *actual_attempt == attempt
+        )),
+        "expected RefiningSearch attempt={attempt} in: {events:?}"
+    );
 }
 
 /// Minimal router mock: always returns the same `RouterJudgeOutput`.
@@ -233,11 +264,7 @@ async fn happy_path_snippets_sufficient_streams_answer() {
             .any(|e| matches!(e, SearchEvent::Token { content } if content == "hello world")),
         "expected token 'hello world'"
     );
-    assert_eq!(
-        *evs.last().unwrap(),
-        SearchEvent::Done,
-        "last event must be Done"
-    );
+    assert_done_iterations(&evs, 1);
 
     // IterationComplete event must be emitted when a search path runs.
     assert!(
@@ -353,7 +380,7 @@ async fn reader_escalation_with_chunks_sufficient() {
     assert!(evs
         .iter()
         .any(|e| matches!(e, SearchEvent::Token { content } if content == "chunks answer")),);
-    assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    assert_done_iterations(&evs, 1);
 
     // No warnings on clean reader escalation.
     assert!(
@@ -431,11 +458,7 @@ async fn reader_unavailable_degrades_to_snippets_and_warns() {
         )),
         "expected ReaderUnavailable warning in: {evs:?}"
     );
-    assert_eq!(
-        *evs.last().unwrap(),
-        SearchEvent::Done,
-        "pipeline must still reach Done"
-    );
+    assert_done_iterations(&evs, 1);
     assert!(
         evs.iter().any(|e| matches!(e, SearchEvent::Token { .. })),
         "expected at least one Token event"
@@ -447,7 +470,7 @@ async fn reader_unavailable_degrades_to_snippets_and_warns() {
 /// Judge always returns Insufficient with fresh gap queries so the loop runs to
 /// MAX_ITERATIONS (3 total rounds: initial + gap round 1 + gap round 2).
 ///
-/// Expected: RefiningSearch events for attempt=2 and attempt=3, a single
+/// Expected: RefiningSearch events for gap-round attempts 1 and 2, a single
 /// Warning { iteration_cap_exhausted }, and Done (fallback synthesis).
 #[tokio::test]
 async fn exhausted_gap_loop_warns_iteration_cap_and_streams_fallback() {
@@ -492,14 +515,14 @@ async fn exhausted_gap_loop_warns_iteration_cap_and_streams_fallback() {
     // initial round (snippets): Insufficient -> gap1
     // initial round (chunks, after reader): Insufficient -> gap1
     // gap round 1 (chunks): Insufficient -> gap2
-    // gap round 2 (chunks): Insufficient -> [] (exhausted)
+    // gap round 2 (chunks): Insufficient -> gap3 (final round still has more work)
     // Then IterationCapExhausted fallback synthesis.
     let judge = QueueJudge(Mutex::new(
         vec![
             verdict_insufficient(vec!["gap1".into()]),
             verdict_insufficient(vec!["gap1".into()]),
             verdict_insufficient(vec!["gap2".into()]),
-            verdict_insufficient(vec![]),
+            verdict_insufficient(vec!["gap3".into()]),
         ]
         .into_iter()
         .collect(),
@@ -526,18 +549,8 @@ async fn exhausted_gap_loop_warns_iteration_cap_and_streams_fallback() {
 
     let evs = events.lock().unwrap();
 
-    // RefiningSearch at attempt=2.
-    assert!(
-        evs.iter()
-            .any(|e| matches!(e, SearchEvent::RefiningSearch { attempt: 2, .. })),
-        "expected RefiningSearch attempt=2 in: {evs:?}"
-    );
-    // RefiningSearch at attempt=3.
-    assert!(
-        evs.iter()
-            .any(|e| matches!(e, SearchEvent::RefiningSearch { attempt: 3, .. })),
-        "expected RefiningSearch attempt=3 in: {evs:?}"
-    );
+    assert_refining_search(&evs, 1);
+    assert_refining_search(&evs, 2);
     // Exactly one IterationCapExhausted warning.
     let cap_warn_count = evs
         .iter()
@@ -556,7 +569,7 @@ async fn exhausted_gap_loop_warns_iteration_cap_and_streams_fallback() {
     );
     // Fallback synthesis: Composing then tokens then Done.
     assert!(evs.iter().any(|e| matches!(e, SearchEvent::Composing)));
-    assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+    assert_done_iterations(&evs, 3);
 }
 
 // ── Scenario 5 ────────────────────────────────────────────────────────────────
@@ -634,7 +647,7 @@ async fn cancel_midloop_does_not_persist_and_emits_cancelled() {
         "expected Cancelled event in: {evs:?}"
     );
     assert!(
-        !evs.iter().any(|e| matches!(e, SearchEvent::Done)),
+        !evs.iter().any(|e| matches!(e, SearchEvent::Done { .. })),
         "unexpected Done event after cancellation"
     );
     // No turn was persisted because no Ollama streaming completed.

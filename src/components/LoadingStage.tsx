@@ -25,7 +25,7 @@ interface LoadingStageProps {
 /**
  * Shared loading row: 9-dot `TypingIndicator` on the left, an optional
  * shimmer-animated label on the right. Used as the stable loading state for
- * both `/search` stages ("Classifying query", "Searching the web") and the
+ * both `/search` stages ("Analyzing query", "Searching the web") and the
  * `/think` flow ("Thinking..."). Keeps the visual pattern consistent across
  * long-running backend processes.
  *

@@ -232,7 +232,7 @@ pub fn today_iso() -> String {
 /// if the epoch changes before we write back, the write is skipped (the user
 /// started a new conversation mid-flight).
 fn snapshot_history(history: &ConversationHistory) -> (u64, Vec<ChatMessage>) {
-    let conv = history.messages.lock().unwrap();
+    let conv = lock_or_recover(&history.messages);
     let epoch = history.epoch.load(Ordering::SeqCst);
     (epoch, conv.clone())
 }
@@ -258,6 +258,8 @@ async fn run_streaming_branch(
     metadata: Option<SearchMetadata>,
     on_event: &impl Fn(SearchEvent),
 ) {
+    let saw_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let saw_done_for_callback = saw_done.clone();
     let accumulated = stream_ollama_chat(
         endpoint,
         model,
@@ -265,8 +267,11 @@ async fn run_streaming_branch(
         false,
         client,
         cancel_token,
-        |chunk| {
-            on_event(translate_chunk(chunk));
+        |chunk| match chunk {
+            StreamChunk::Done => {
+                saw_done_for_callback.store(true, Ordering::SeqCst);
+            }
+            other => on_event(translate_chunk(other)),
         },
     )
     .await;
@@ -282,8 +287,12 @@ async fn run_streaming_branch(
                 images: None,
             },
             warnings,
-            metadata,
+            metadata.clone(),
         );
+    }
+
+    if saw_done.load(Ordering::SeqCst) {
+        on_event(SearchEvent::Done { metadata });
     }
 }
 
@@ -297,7 +306,7 @@ pub(super) fn translate_chunk(chunk: StreamChunk) -> SearchEvent {
         StreamChunk::ThinkingToken(_) => SearchEvent::Token {
             content: String::new(),
         },
-        StreamChunk::Done => SearchEvent::Done,
+        StreamChunk::Done => SearchEvent::Done { metadata: None },
         StreamChunk::Cancelled => SearchEvent::Cancelled,
         StreamChunk::Error(e) => SearchEvent::Error { message: e.message },
     }
@@ -321,10 +330,8 @@ fn persist_turn(
     warnings: Vec<SearchWarning>,
     metadata: Option<SearchMetadata>,
 ) {
-    // Acknowledge the parameters so clippy does not flag them as unused.
-    // The values are serialized by the frontend when it calls persist_message.
     let _ = (warnings, metadata);
-    let mut conv = history.messages.lock().unwrap();
+    let mut conv = lock_or_recover(&history.messages);
     if history.epoch.load(Ordering::SeqCst) != epoch_at_start {
         return;
     }
@@ -508,6 +515,744 @@ fn is_cancelled_emit(cancel: &CancellationToken, on_event: &impl Fn(SearchEvent)
     }
 }
 
+/// Locks a mutex and recovers the inner value if a prior holder panicked.
+///
+/// The search pipeline should degrade gracefully after unrelated panics rather
+/// than aborting on poison. Recovering the inner value preserves in-memory
+/// state and keeps the user-visible search flow available.
+fn lock_or_recover<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Shared immutable inputs used by the extracted search-pipeline stages.
+struct SearchExecutionContext<'a> {
+    ollama_endpoint: &'a str,
+    searxng_endpoint: &'a str,
+    model: &'a str,
+    client: &'a reqwest::Client,
+    cancel_token: &'a CancellationToken,
+    chat_system_prompt: &'a str,
+    history: &'a ConversationHistory,
+    today: &'a str,
+    on_event: &'a (dyn Fn(SearchEvent) + Sync),
+}
+
+/// Per-turn values reused across extracted search stages.
+struct SearchTurnInputs<'a> {
+    history_snapshot: &'a [ChatMessage],
+    epoch_at_start: u64,
+    user_msg: ChatMessage,
+}
+
+/// Result of the extracted gap-refinement loop.
+enum GapLoopDisposition {
+    /// The loop found enough evidence and already streamed the answer.
+    Streamed,
+    /// The loop exhausted its options and the caller should stream a
+    /// best-effort fallback answer from the returned sources.
+    Fallback {
+        sources: Vec<JudgeSource>,
+        hit_iteration_cap: bool,
+    },
+}
+
+/// Converts synthesis and judge sources into the `SearxResult` shape expected
+/// by the synthesis prompt builder.
+fn judge_sources_to_results(sources: &[JudgeSource]) -> Vec<SearxResult> {
+    sources
+        .iter()
+        .map(|source| SearxResult {
+            title: source.title.clone(),
+            url: source.url.clone(),
+            content: source.text.clone(),
+        })
+        .collect()
+}
+
+/// Emits the final source list, compose trace step, and synthesis stream for a
+/// chosen set of evidence sources.
+async fn stream_synthesis_from_sources(
+    shared: &SearchExecutionContext<'_>,
+    turn: &SearchTurnInputs<'_>,
+    query: &str,
+    sources: &[JudgeSource],
+    warnings: Vec<SearchWarning>,
+    metadata: Option<SearchMetadata>,
+    compose_summary_text: String,
+) {
+    let synth_results = judge_sources_to_results(sources);
+    // KNOWN LIMITATION: fetched page content is not sanitized for prompt-injection attempts.
+    // Mitigation: the synthesis system prompt instructs the model to follow its role; the local
+    // Ollama model has no external auth or privileged actions to be hijacked. If this is extended
+    // to a cloud model or multi-user context, sanitization becomes mandatory.
+    let messages =
+        build_synthesis_messages(turn.history_snapshot, query, &synth_results, shared.today);
+
+    emit_final_sources(shared.on_event, sources);
+
+    let mut compose_step = trace_step(
+        "compose",
+        SearchTraceKind::Compose,
+        SearchTraceStatus::Running,
+        compose_title(),
+        compose_summary_text,
+    );
+    compose_step.domains = unique_domains(sources.iter().map(|source| source.url.as_str()));
+    compose_step.counts = Some(SearchTraceCounts {
+        sources: Some(to_u32_saturating(sources.len())),
+        ..SearchTraceCounts::default()
+    });
+    emit_trace(shared.on_event, compose_step);
+    (shared.on_event)(SearchEvent::Composing);
+
+    run_streaming_branch(
+        shared.ollama_endpoint,
+        shared.model,
+        shared.client,
+        shared.cancel_token.clone(),
+        messages,
+        shared.history,
+        turn.epoch_at_start,
+        turn.user_msg.clone(),
+        warnings,
+        metadata,
+        &shared.on_event,
+    )
+    .await;
+}
+
+/// Completes the clarification branch by streaming the clarifying question as
+/// token events, persisting it, and finishing the turn.
+async fn run_clarify_branch(
+    cancel_token: &CancellationToken,
+    history: &ConversationHistory,
+    epoch_at_start: u64,
+    user_msg: ChatMessage,
+    question: String,
+    on_event: &(dyn Fn(SearchEvent) + Sync),
+) -> Result<(), SearchError> {
+    let analyze_step = trace_step(
+        "analyze",
+        SearchTraceKind::Analyze,
+        SearchTraceStatus::Completed,
+        "Understanding the question",
+        "This request could mean a few different things, so Thuki needs one more detail before searching.",
+    );
+    emit_trace(on_event, analyze_step);
+
+    let clarify_step = trace_step(
+        "clarify",
+        SearchTraceKind::Clarify,
+        SearchTraceStatus::Completed,
+        "Waiting for clarification",
+        "Search is paused until you clarify who or what you mean.",
+    );
+    emit_trace(on_event, clarify_step);
+
+    for piece in split_into_stream_pieces(&question) {
+        if is_cancelled_emit(cancel_token, &on_event) {
+            return Ok(());
+        }
+        on_event(SearchEvent::Token { content: piece });
+    }
+
+    persist_turn(
+        history,
+        epoch_at_start,
+        user_msg,
+        ChatMessage {
+            role: "assistant".to_string(),
+            content: question,
+            images: None,
+        },
+        Vec::new(),
+        None,
+    );
+    on_event(SearchEvent::Done { metadata: None });
+    Ok(())
+}
+
+/// Completes the history-sufficient branch by synthesizing an answer from the
+/// current conversation without opening any web sources.
+async fn run_history_answer_branch(
+    shared: &SearchExecutionContext<'_>,
+    turn: SearchTurnInputs<'_>,
+    user_query: &str,
+) -> Result<(), SearchError> {
+    let mut analyze_step = trace_step(
+        "analyze",
+        SearchTraceKind::Analyze,
+        SearchTraceStatus::Completed,
+        "Understanding the question",
+        "The current conversation already contains enough context, so no web search is needed.",
+    );
+    analyze_step.counts = Some(SearchTraceCounts {
+        sources: Some(to_u32_saturating(turn.history_snapshot.len())),
+        ..SearchTraceCounts::default()
+    });
+    emit_trace(shared.on_event, analyze_step);
+
+    emit_trace(
+        shared.on_event,
+        trace_step(
+            "history-answer",
+            SearchTraceKind::HistoryAnswer,
+            SearchTraceStatus::Running,
+            "Answering from the current conversation",
+            "Using what is already in this chat instead of opening web sources.",
+        ),
+    );
+
+    let messages = build_answer_from_context_messages(
+        shared.chat_system_prompt,
+        turn.history_snapshot,
+        user_query,
+    );
+
+    run_streaming_branch(
+        shared.ollama_endpoint,
+        shared.model,
+        shared.client,
+        shared.cancel_token.clone(),
+        messages,
+        shared.history,
+        turn.epoch_at_start,
+        turn.user_msg,
+        Vec::new(),
+        None,
+        &shared.on_event,
+    )
+    .await;
+
+    Ok(())
+}
+
+/// Runs the bounded gap-refinement loop after the initial retrieval round.
+///
+/// The loop keeps URL dedup state and the globally reranked chunk pool local to
+/// this stage so its control flow can be reasoned about independently from the
+/// initial round.
+#[allow(clippy::too_many_arguments)]
+async fn run_gap_refinement_loop(
+    shared: &SearchExecutionContext<'_>,
+    turn: &SearchTurnInputs<'_>,
+    judge: &dyn JudgeCaller,
+    query: &str,
+    reader_client: &reader::ReaderClient,
+    snippet_sources: Vec<JudgeSource>,
+    warnings: &mut Vec<SearchWarning>,
+    metadata: &mut SearchMetadata,
+    mut accumulated_chunks: Vec<chunker::Chunk>,
+    mut accumulated_urls: std::collections::HashSet<String>,
+    mut current_queries: Vec<String>,
+    started_at: std::time::Instant,
+) -> Result<GapLoopDisposition, SearchError> {
+    let gap_round_total = (config::MAX_ITERATIONS as u32).saturating_sub(1);
+    let mut hit_iteration_cap = false;
+
+    for attempt in 2..=(config::MAX_ITERATIONS as u32) {
+        if current_queries.is_empty() {
+            break;
+        }
+        if is_cancelled_emit(shared.cancel_token, &shared.on_event) {
+            return Ok(GapLoopDisposition::Fallback {
+                sources: snippet_sources.clone(),
+                hit_iteration_cap: false,
+            });
+        }
+
+        let gap_round = attempt - 1;
+
+        let mut refine_step = trace_step(
+            format!("round-{attempt}-refine"),
+            SearchTraceKind::Refine,
+            SearchTraceStatus::Completed,
+            "Planned another search",
+            "Thuki prepared a follow-up search to fill the remaining gaps.",
+        );
+        refine_step.round = Some(attempt);
+        refine_step.queries = current_queries.clone();
+        emit_trace(shared.on_event, refine_step);
+
+        (shared.on_event)(SearchEvent::RefiningSearch {
+            attempt: gap_round,
+            total: gap_round_total,
+        });
+
+        let round_start = std::time::Instant::now();
+        let mut round_search_step = trace_step(
+            format!("round-{attempt}-search"),
+            SearchTraceKind::Search,
+            SearchTraceStatus::Running,
+            "Searching the web again",
+            "Looking for the missing details from a different angle.",
+        );
+        round_search_step.round = Some(attempt);
+        round_search_step.queries = current_queries.clone();
+        emit_trace(shared.on_event, round_search_step);
+        (shared.on_event)(SearchEvent::Searching {
+            queries: current_queries.clone(),
+        });
+
+        let gap_search_fut =
+            searxng::search_all_with_endpoint(shared.searxng_endpoint, &current_queries);
+        let gap_results = tokio::select! {
+            biased;
+            _ = shared.cancel_token.cancelled() => {
+                (shared.on_event)(SearchEvent::Cancelled);
+                return Ok(GapLoopDisposition::Fallback {
+                    sources: snippet_sources.clone(),
+                    hit_iteration_cap: false,
+                });
+            }
+            res = gap_search_fut => res.unwrap_or_default(),
+        };
+        let gap_results_count = gap_results.len();
+
+        let new_urls: Vec<_> = gap_results
+            .into_iter()
+            .filter(|result| accumulated_urls.insert(result.url.clone()))
+            .collect();
+
+        if new_urls.is_empty() {
+            let mut round_search_step = trace_step(
+                format!("round-{attempt}-search"),
+                SearchTraceKind::Search,
+                SearchTraceStatus::Completed,
+                "Searching the web again",
+                "This follow-up search did not surface any new pages beyond what Thuki had already seen.",
+            );
+            round_search_step.round = Some(attempt);
+            round_search_step.queries = current_queries.clone();
+            round_search_step.counts = Some(SearchTraceCounts {
+                found: Some(0),
+                ..SearchTraceCounts::default()
+            });
+            emit_trace(shared.on_event, round_search_step);
+
+            metadata.iterations.push(IterationTrace {
+                stage: IterationStage::GapRound { round: gap_round },
+                queries: current_queries.clone(),
+                urls_fetched: vec![],
+                reader_empty_urls: vec![],
+                judge_verdict: Sufficiency::Insufficient,
+                judge_reasoning: "no new search results".into(),
+                duration_ms: round_start.elapsed().as_millis() as u64,
+            });
+            (shared.on_event)(SearchEvent::IterationComplete {
+                trace: metadata
+                    .iterations
+                    .last()
+                    .expect("iteration was just pushed")
+                    .clone(),
+            });
+            current_queries.clear();
+            continue;
+        }
+
+        let mut round_search_step = trace_step(
+            format!("round-{attempt}-search"),
+            SearchTraceKind::Search,
+            SearchTraceStatus::Completed,
+            "Searching the web again",
+            format!(
+                "Found {} fresh results worth checking.",
+                if new_urls.len() == 1 {
+                    "1 result".to_string()
+                } else {
+                    format!("{} results", new_urls.len())
+                }
+            ),
+        );
+        round_search_step.round = Some(attempt);
+        round_search_step.queries = current_queries.clone();
+        round_search_step.urls = unique_urls(
+            new_urls.iter().map(|result| result.url.as_str()),
+            new_urls.len(),
+        );
+        round_search_step.domains =
+            unique_domains(new_urls.iter().map(|result| result.url.as_str()));
+        round_search_step.counts = Some(SearchTraceCounts {
+            found: Some(to_u32_saturating(gap_results_count)),
+            kept: Some(to_u32_saturating(new_urls.len())),
+            ..SearchTraceCounts::default()
+        });
+        emit_trace(shared.on_event, round_search_step);
+
+        let round_top_urls: Vec<SearxResult> = rerank::rerank(query, new_urls)
+            .into_iter()
+            .take(config::TOP_K_URLS)
+            .collect();
+
+        let mut rerank_step = trace_step(
+            format!("round-{attempt}-url-rerank"),
+            SearchTraceKind::UrlRerank,
+            SearchTraceStatus::Completed,
+            "Rerank pages based on relevance",
+            format!(
+                "Kept {} from this follow-up round for deeper reading.",
+                if round_top_urls.len() == 1 {
+                    "1 page".to_string()
+                } else {
+                    format!("{} pages", round_top_urls.len())
+                }
+            ),
+        );
+        rerank_step.round = Some(attempt);
+        rerank_step.urls = unique_urls(
+            round_top_urls.iter().map(|result| result.url.as_str()),
+            round_top_urls.len(),
+        );
+        rerank_step.domains =
+            unique_domains(round_top_urls.iter().map(|result| result.url.as_str()));
+        rerank_step.counts = Some(SearchTraceCounts {
+            kept: Some(to_u32_saturating(round_top_urls.len())),
+            ..SearchTraceCounts::default()
+        });
+        emit_trace(shared.on_event, rerank_step);
+
+        let preview: Vec<SearchResultPreview> = round_top_urls
+            .iter()
+            .map(|result| SearchResultPreview {
+                title: result.title.clone(),
+                url: result.url.clone(),
+            })
+            .collect();
+        (shared.on_event)(SearchEvent::Sources { results: preview });
+
+        if is_cancelled_emit(shared.cancel_token, &shared.on_event) {
+            return Ok(GapLoopDisposition::Fallback {
+                sources: snippet_sources.clone(),
+                hit_iteration_cap: false,
+            });
+        }
+
+        let round_reader_urls: Vec<String> = round_top_urls
+            .iter()
+            .map(|result| result.url.clone())
+            .collect();
+        let round_reader_domains = unique_domains(round_reader_urls.iter().map(|url| url.as_str()));
+        let mut read_step = trace_step(
+            format!("round-{attempt}-read"),
+            SearchTraceKind::Read,
+            SearchTraceStatus::Running,
+            "Reading the shortlisted pages",
+            format!(
+                "Reading full text from {} this round.",
+                if round_reader_urls.len() == 1 {
+                    "1 page".to_string()
+                } else {
+                    format!("{} pages", round_reader_urls.len())
+                }
+            ),
+        );
+        read_step.round = Some(attempt);
+        read_step.domains = round_reader_domains.clone();
+        read_step.counts = Some(SearchTraceCounts {
+            processed: Some(0),
+            total: Some(to_u32_saturating(round_reader_urls.len())),
+            ..SearchTraceCounts::default()
+        });
+        emit_trace(shared.on_event, read_step);
+        (shared.on_event)(SearchEvent::ReadingSources);
+
+        let round_progress_urls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let round_progress_urls_for_callback = round_progress_urls.clone();
+        let round_reader_result = match reader_client
+            .fetch_batch_with_progress(&round_reader_urls, shared.cancel_token, &|url| {
+                (shared.on_event)(SearchEvent::FetchingUrl { url: url.clone() });
+                let mut urls = lock_or_recover(round_progress_urls_for_callback.as_ref());
+                urls.push(url.clone());
+                let processed = urls.len();
+                let mut progress_step = trace_step(
+                    format!("round-{attempt}-read"),
+                    SearchTraceKind::Read,
+                    SearchTraceStatus::Running,
+                    "Reading the shortlisted pages",
+                    format!(
+                        "Read {} of {} pages so far.",
+                        processed,
+                        round_reader_urls.len()
+                    ),
+                );
+                progress_step.round = Some(attempt);
+                progress_step.domains = unique_domains(urls.iter().map(|value| value.as_str()));
+                progress_step.counts = Some(SearchTraceCounts {
+                    processed: Some(to_u32_saturating(processed)),
+                    total: Some(to_u32_saturating(round_reader_urls.len())),
+                    ..SearchTraceCounts::default()
+                });
+                emit_trace(shared.on_event, progress_step);
+            })
+            .await
+        {
+            Ok(result) => result,
+            Err(reader::ReaderError::Cancelled) => {
+                (shared.on_event)(SearchEvent::Cancelled);
+                return Ok(GapLoopDisposition::Fallback {
+                    sources: snippet_sources.clone(),
+                    hit_iteration_cap: false,
+                });
+            }
+            Err(reader::ReaderError::ServiceUnavailable) => {
+                if !warnings.contains(&SearchWarning::ReaderUnavailable) {
+                    warnings.push(SearchWarning::ReaderUnavailable);
+                    (shared.on_event)(SearchEvent::Warning {
+                        warning: SearchWarning::ReaderUnavailable,
+                    });
+                }
+                reader::ReaderBatchResult::default()
+            }
+            Err(reader::ReaderError::BatchTimeout) => {
+                if !warnings.contains(&SearchWarning::ReaderPartialFailure) {
+                    warnings.push(SearchWarning::ReaderPartialFailure);
+                    (shared.on_event)(SearchEvent::Warning {
+                        warning: SearchWarning::ReaderPartialFailure,
+                    });
+                }
+                reader::ReaderBatchResult::default()
+            }
+        };
+
+        let round_processed =
+            round_reader_result.pages.len() + round_reader_result.empty_urls.len();
+        let round_failed = round_reader_result.failed_urls.len();
+        let mut read_step = trace_step(
+            format!("round-{attempt}-read"),
+            SearchTraceKind::Read,
+            SearchTraceStatus::Completed,
+            "Reading the shortlisted pages",
+            if warnings.contains(&SearchWarning::ReaderUnavailable) && round_processed == 0 {
+                "The page reader was unavailable, so this round fell back to snippets.".to_string()
+            } else if round_processed == 0 {
+                "No pages could be read cleanly in this round.".to_string()
+            } else {
+                format!(
+                    "Read {} of {} pages and extracted the text.",
+                    round_processed,
+                    round_reader_urls.len()
+                )
+            },
+        );
+        read_step.round = Some(attempt);
+        read_step.domains = round_reader_domains;
+        read_step.counts = Some(SearchTraceCounts {
+            processed: Some(to_u32_saturating(round_processed)),
+            total: Some(to_u32_saturating(round_reader_urls.len())),
+            empty: if !round_reader_result.empty_urls.is_empty() {
+                Some(to_u32_saturating(round_reader_result.empty_urls.len()))
+            } else {
+                None
+            },
+            failed: if round_failed > 0 {
+                Some(to_u32_saturating(round_failed))
+            } else {
+                None
+            },
+            ..SearchTraceCounts::default()
+        });
+        if round_failed > 0 || !round_reader_result.empty_urls.is_empty() {
+            read_step.detail = Some(format!(
+                "{} page{} failed and {} page{} returned little or no readable text.",
+                round_failed,
+                if round_failed == 1 { "" } else { "s" },
+                round_reader_result.empty_urls.len(),
+                if round_reader_result.empty_urls.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ));
+        }
+        emit_trace(shared.on_event, read_step);
+
+        let round_partial_threshold = (round_reader_urls.len() as f64 * 0.5).ceil() as usize;
+        if !warnings.contains(&SearchWarning::ReaderUnavailable)
+            && !round_reader_urls.is_empty()
+            && round_reader_result.failed_urls.len() > round_partial_threshold
+            && !warnings.contains(&SearchWarning::ReaderPartialFailure)
+        {
+            warnings.push(SearchWarning::ReaderPartialFailure);
+            (shared.on_event)(SearchEvent::Warning {
+                warning: SearchWarning::ReaderPartialFailure,
+            });
+        }
+
+        let round_chunks =
+            chunker::chunk_pages(&round_reader_result.pages, config::CHUNK_TOKEN_SIZE);
+        let mut chunk_step = trace_step(
+            format!("round-{attempt}-chunk"),
+            SearchTraceKind::Chunk,
+            SearchTraceStatus::Completed,
+            "Split the pages into passages",
+            if round_chunks.is_empty() {
+                "No readable full-page text was available to split in this round.".to_string()
+            } else {
+                format!(
+                    "Split {} into {} for closer matching.",
+                    if round_reader_result.pages.len() == 1 {
+                        "1 page".to_string()
+                    } else {
+                        format!("{} pages", round_reader_result.pages.len())
+                    },
+                    if round_chunks.len() == 1 {
+                        "1 passage".to_string()
+                    } else {
+                        format!("{} passages", round_chunks.len())
+                    }
+                )
+            },
+        );
+        chunk_step.round = Some(attempt);
+        chunk_step.counts = Some(SearchTraceCounts {
+            pages: Some(to_u32_saturating(round_reader_result.pages.len())),
+            chunks: Some(to_u32_saturating(round_chunks.len())),
+            ..SearchTraceCounts::default()
+        });
+        emit_trace(shared.on_event, chunk_step);
+        accumulated_chunks.extend(round_chunks);
+        let round_top_chunks: Vec<chunker::Chunk> =
+            rerank::rerank_chunks(&accumulated_chunks, query, config::TOP_K_CHUNKS)
+                .into_iter()
+                .cloned()
+                .collect();
+
+        let round_chunk_sources = unique_domains(
+            round_top_chunks
+                .iter()
+                .map(|chunk| chunk.source_url.as_str()),
+        );
+        let mut chunk_rerank_step = trace_step(
+            format!("round-{attempt}-chunk-rerank"),
+            SearchTraceKind::ChunkRerank,
+            SearchTraceStatus::Completed,
+            "Picked the strongest passages",
+            if round_top_chunks.is_empty() {
+                "No full-page passages were available to rank in this round.".to_string()
+            } else {
+                format!(
+                    "Kept {} across {}.",
+                    if round_top_chunks.len() == 1 {
+                        "1 passage".to_string()
+                    } else {
+                        format!("{} passages", round_top_chunks.len())
+                    },
+                    if round_chunk_sources.len() == 1 {
+                        "1 source".to_string()
+                    } else {
+                        format!("{} sources", round_chunk_sources.len())
+                    }
+                )
+            },
+        );
+        chunk_rerank_step.round = Some(attempt);
+        chunk_rerank_step.domains = round_chunk_sources.clone();
+        chunk_rerank_step.counts = Some(SearchTraceCounts {
+            chunks: Some(to_u32_saturating(accumulated_chunks.len())),
+            kept: Some(to_u32_saturating(round_top_chunks.len())),
+            sources: Some(to_u32_saturating(round_chunk_sources.len())),
+            ..SearchTraceCounts::default()
+        });
+        emit_trace(shared.on_event, chunk_rerank_step);
+
+        let round_judge_sources: Vec<JudgeSource> = if round_top_chunks.is_empty() {
+            snippet_sources.clone()
+        } else {
+            chunks_to_judge_sources(&round_top_chunks)
+        };
+
+        let mut chunk_judge_step = trace_step(
+            format!("round-{attempt}-chunk-judge"),
+            SearchTraceKind::ChunkJudge,
+            SearchTraceStatus::Running,
+            "Checking whether the evidence is enough",
+            "Verifying whether the new passages close the remaining gaps.",
+        );
+        chunk_judge_step.round = Some(attempt);
+        chunk_judge_step.domains =
+            unique_domains(round_judge_sources.iter().map(|source| source.url.as_str()));
+        chunk_judge_step.counts = Some(SearchTraceCounts {
+            sources: Some(to_u32_saturating(round_judge_sources.len())),
+            ..SearchTraceCounts::default()
+        });
+        emit_trace(shared.on_event, chunk_judge_step);
+
+        let round_verdict = judge.call(query, &round_judge_sources).await?;
+
+        let mut chunk_judge_step = trace_step(
+            format!("round-{attempt}-chunk-judge"),
+            SearchTraceKind::ChunkJudge,
+            SearchTraceStatus::Completed,
+            "Checking whether the evidence is enough",
+            judge_summary("passages", round_verdict.sufficiency),
+        );
+        chunk_judge_step.round = Some(attempt);
+        chunk_judge_step.domains =
+            unique_domains(round_judge_sources.iter().map(|source| source.url.as_str()));
+        chunk_judge_step.verdict = Some(round_verdict.sufficiency);
+        chunk_judge_step.detail = Some(round_verdict.reasoning.clone());
+        chunk_judge_step.counts = Some(SearchTraceCounts {
+            sources: Some(to_u32_saturating(round_judge_sources.len())),
+            ..SearchTraceCounts::default()
+        });
+        emit_trace(shared.on_event, chunk_judge_step);
+
+        metadata.iterations.push(IterationTrace {
+            stage: IterationStage::GapRound { round: gap_round },
+            queries: current_queries.clone(),
+            urls_fetched: round_reader_urls.clone(),
+            reader_empty_urls: round_reader_result.empty_urls.clone(),
+            judge_verdict: round_verdict.sufficiency,
+            judge_reasoning: round_verdict.reasoning.clone(),
+            duration_ms: round_start.elapsed().as_millis() as u64,
+        });
+        (shared.on_event)(SearchEvent::IterationComplete {
+            trace: metadata
+                .iterations
+                .last()
+                .expect("iteration was just pushed")
+                .clone(),
+        });
+
+        if matches!(round_verdict.sufficiency, Sufficiency::Sufficient) {
+            metadata.total_duration_ms = started_at.elapsed().as_millis() as u64;
+            stream_synthesis_from_sources(
+                shared,
+                turn,
+                query,
+                &round_judge_sources,
+                std::mem::take(warnings),
+                Some(std::mem::take(metadata)),
+                compose_summary(round_judge_sources.len()),
+            )
+            .await;
+            return Ok(GapLoopDisposition::Streamed);
+        }
+
+        current_queries = round_verdict.gap_queries.clone();
+        hit_iteration_cap = attempt == config::MAX_ITERATIONS as u32 && !current_queries.is_empty();
+    }
+
+    let fallback_chunks: Vec<chunker::Chunk> =
+        rerank::rerank_chunks(&accumulated_chunks, query, config::TOP_K_CHUNKS)
+            .into_iter()
+            .cloned()
+            .collect();
+
+    let fallback_sources = if fallback_chunks.is_empty() {
+        snippet_sources
+    } else {
+        chunks_to_judge_sources(&fallback_chunks)
+    };
+
+    Ok(GapLoopDisposition::Fallback {
+        sources: fallback_sources,
+        hit_iteration_cap,
+    })
+}
+
 // ── Agentic entry point ────────────────────────────────────────────────────
 
 /// Agentic search pipeline entry point. The sole production entry point after
@@ -578,95 +1323,42 @@ pub async fn run_agentic(
         images: None,
     };
 
+    let shared = SearchExecutionContext {
+        ollama_endpoint,
+        searxng_endpoint,
+        model,
+        client,
+        cancel_token: &cancel_token,
+        chat_system_prompt,
+        history,
+        today,
+        on_event,
+    };
+
     match output.action {
         Action::Clarify => {
-            let question = output.clarifying_question.unwrap_or_default();
-            let analyze_step = trace_step(
-                "analyze",
-                SearchTraceKind::Analyze,
-                SearchTraceStatus::Completed,
-                "Understanding the question",
-                "This request could mean a few different things, so Thuki needs one more detail before searching.",
-            );
-            emit_trace(on_event, analyze_step);
-
-            let clarify_step = trace_step(
-                "clarify",
-                SearchTraceKind::Clarify,
-                SearchTraceStatus::Completed,
-                "Waiting for clarification",
-                "Search is paused until you clarify who or what you mean.",
-            );
-            emit_trace(on_event, clarify_step);
-
-            for piece in split_into_stream_pieces(&question) {
-                if is_cancelled_emit(&cancel_token, &on_event) {
-                    return Ok(());
-                }
-                on_event(SearchEvent::Token { content: piece });
-            }
-            // Persist so the next turn can see the clarifying question.
-            persist_turn(
+            run_clarify_branch(
+                &cancel_token,
                 history,
                 epoch_at_start,
                 user_msg,
-                ChatMessage {
-                    role: "assistant".to_string(),
-                    content: question,
-                    images: None,
-                },
-                Vec::new(),
-                None,
-            );
-            on_event(SearchEvent::Done);
-            Ok(())
+                output.clarifying_question.unwrap_or_default(),
+                on_event,
+            )
+            .await
         }
         Action::Proceed => {
             if matches!(output.history_sufficiency, Some(Sufficiency::Sufficient)) {
-                let mut analyze_step = trace_step(
-                    "analyze",
-                    SearchTraceKind::Analyze,
-                    SearchTraceStatus::Completed,
-                    "Understanding the question",
-                    "The current conversation already contains enough context, so no web search is needed.",
-                );
-                analyze_step.counts = Some(SearchTraceCounts {
-                    sources: Some(to_u32_saturating(history_snapshot.len())),
-                    ..SearchTraceCounts::default()
-                });
-                emit_trace(on_event, analyze_step);
-
-                emit_trace(
-                    on_event,
-                    trace_step(
-                        "history-answer",
-                        SearchTraceKind::HistoryAnswer,
-                        SearchTraceStatus::Running,
-                        "Answering from the current conversation",
-                        "Using what is already in this chat instead of opening web sources.",
-                    ),
-                );
-
-                let messages = build_answer_from_context_messages(
-                    chat_system_prompt,
-                    &history_snapshot,
+                run_history_answer_branch(
+                    &shared,
+                    SearchTurnInputs {
+                        history_snapshot: &history_snapshot,
+                        epoch_at_start,
+                        user_msg,
+                    },
                     &user_query,
-                );
-                run_streaming_branch(
-                    ollama_endpoint,
-                    model,
-                    client,
-                    cancel_token,
-                    messages,
-                    history,
-                    epoch_at_start,
-                    user_msg,
-                    Vec::new(),
-                    None,
-                    &on_event,
                 )
-                .await;
-                Ok(())
+                .await
             } else {
                 // Initial search round: SearXNG -> URL rerank -> snippets judge
                 // -> (if partial/insufficient) reader -> chunk rerank -> chunks
@@ -970,7 +1662,7 @@ pub async fn run_agentic(
                 let reader_result = match reader_client
                     .fetch_batch_with_progress(&reader_urls, &cancel_token, &|url| {
                         on_event(SearchEvent::FetchingUrl { url: url.clone() });
-                        let mut urls = progress_urls_for_callback.lock().unwrap();
+                        let mut urls = lock_or_recover(progress_urls_for_callback.as_ref());
                         urls.push(url.clone());
                         let processed = urls.len();
                         let mut progress_step = trace_step(
@@ -1220,612 +1912,57 @@ pub async fn run_agentic(
                         .clone(),
                 });
 
-                // Build synthesis messages from judge sources (convert to SearxResult shape).
-                let synth_results: Vec<SearxResult> = judge_sources
-                    .iter()
-                    .map(|s| SearxResult {
-                        title: s.title.clone(),
-                        url: s.url.clone(),
-                        content: s.text.clone(),
-                    })
-                    .collect();
-                let messages =
-                    build_synthesis_messages(&history_snapshot, &query, &synth_results, today);
-
                 if matches!(chunk_verdict.sufficiency, Sufficiency::Sufficient) {
                     metadata.total_duration_ms = iter_start.elapsed().as_millis() as u64;
-                    emit_final_sources(on_event, &judge_sources);
-                    let mut compose_step = trace_step(
-                        "compose",
-                        SearchTraceKind::Compose,
-                        SearchTraceStatus::Running,
-                        compose_title(),
+                    stream_synthesis_from_sources(
+                        &shared,
+                        &SearchTurnInputs {
+                            history_snapshot: &history_snapshot,
+                            epoch_at_start,
+                            user_msg: user_msg.clone(),
+                        },
+                        &query,
+                        &judge_sources,
+                        std::mem::take(&mut warnings),
+                        Some(std::mem::take(&mut metadata)),
                         compose_summary(judge_sources.len()),
-                    );
-                    compose_step.domains =
-                        unique_domains(judge_sources.iter().map(|source| source.url.as_str()));
-                    compose_step.counts = Some(SearchTraceCounts {
-                        sources: Some(to_u32_saturating(judge_sources.len())),
-                        ..SearchTraceCounts::default()
-                    });
-                    emit_trace(on_event, compose_step);
-                    on_event(SearchEvent::Composing);
-                    run_streaming_branch(
-                        ollama_endpoint,
-                        model,
-                        client,
-                        cancel_token,
-                        messages,
-                        history,
-                        epoch_at_start,
-                        user_msg,
-                        warnings,
-                        Some(metadata),
-                        &on_event,
                     )
                     .await;
                     return Ok(());
                 }
 
-                // Initial round not sufficient. Enter gap-refinement loop.
-                // Seed the URL dedup set from the initial round so gap rounds
-                // never re-fetch pages we already have.
-                let mut accumulated_urls: std::collections::HashSet<String> =
-                    top_urls.iter().map(|r| r.url.clone()).collect();
+                let gap_loop = run_gap_refinement_loop(
+                    &shared,
+                    &SearchTurnInputs {
+                        history_snapshot: &history_snapshot,
+                        epoch_at_start,
+                        user_msg: user_msg.clone(),
+                    },
+                    judge,
+                    &query,
+                    &reader_client,
+                    snippet_sources.clone(),
+                    &mut warnings,
+                    &mut metadata,
+                    accumulated_chunks,
+                    top_urls.iter().map(|result| result.url.clone()).collect(),
+                    chunk_verdict.gap_queries.clone(),
+                    iter_start,
+                )
+                .await?;
 
-                let mut current_queries = chunk_verdict.gap_queries.clone();
+                let GapLoopDisposition::Fallback {
+                    sources: fallback_sources,
+                    hit_iteration_cap,
+                } = gap_loop
+                else {
+                    return Ok(());
+                };
 
-                // Set to true only when the loop body ran to completion at the
-                // final iteration and the judge verdict was not sufficient.
-                // All early-exit paths (empty current_queries guard, empty
-                // SearXNG new_urls, cancellation, Sufficient verdict) leave
-                // this false, suppressing the warning.
-                let mut hit_iteration_cap = false;
-
-                for attempt in 2..=(config::MAX_ITERATIONS as u32) {
-                    if current_queries.is_empty() {
-                        break;
-                    }
-                    if is_cancelled_emit(&cancel_token, &on_event) {
-                        return Ok(());
-                    }
-
-                    let mut refine_step = trace_step(
-                        format!("round-{attempt}-refine"),
-                        SearchTraceKind::Refine,
-                        SearchTraceStatus::Completed,
-                        "Planned another search",
-                        "Thuki prepared a follow-up search to fill the remaining gaps.",
-                    );
-                    refine_step.round = Some(attempt);
-                    refine_step.queries = current_queries.clone();
-                    emit_trace(on_event, refine_step);
-
-                    on_event(SearchEvent::RefiningSearch {
-                        attempt,
-                        total: config::MAX_ITERATIONS as u32,
-                    });
-
-                    let round_start = std::time::Instant::now();
-                    let mut round_search_step = trace_step(
-                        format!("round-{attempt}-search"),
-                        SearchTraceKind::Search,
-                        SearchTraceStatus::Running,
-                        "Searching the web again",
-                        "Looking for the missing details from a different angle.",
-                    );
-                    round_search_step.round = Some(attempt);
-                    round_search_step.queries = current_queries.clone();
-                    emit_trace(on_event, round_search_step);
-                    on_event(SearchEvent::Searching {
-                        queries: current_queries.clone(),
-                    });
-
-                    let gap_search_fut =
-                        searxng::search_all_with_endpoint(searxng_endpoint, &current_queries);
-                    let gap_results = tokio::select! {
-                        biased;
-                        _ = cancel_token.cancelled() => {
-                            on_event(SearchEvent::Cancelled);
-                            return Ok(());
-                        }
-                        res = gap_search_fut => res.unwrap_or_default(),
-                    };
-                    let gap_results_count = gap_results.len();
-
-                    // Dedup against all URLs fetched in prior rounds.
-                    let new_urls: Vec<_> = gap_results
-                        .into_iter()
-                        .filter(|r| accumulated_urls.insert(r.url.clone()))
-                        .collect();
-
-                    if new_urls.is_empty() {
-                        let mut round_search_step = trace_step(
-                            format!("round-{attempt}-search"),
-                            SearchTraceKind::Search,
-                            SearchTraceStatus::Completed,
-                            "Searching the web again",
-                            "This follow-up search did not surface any new pages beyond what Thuki had already seen.",
-                        );
-                        round_search_step.round = Some(attempt);
-                        round_search_step.queries = current_queries.clone();
-                        round_search_step.counts = Some(SearchTraceCounts {
-                            found: Some(0),
-                            ..SearchTraceCounts::default()
-                        });
-                        emit_trace(on_event, round_search_step);
-
-                        // No new content this round: record a trace and advance
-                        // the counter. Clear current_queries so the next
-                        // iteration's guard exits the loop.
-                        metadata.iterations.push(IterationTrace {
-                            stage: IterationStage::GapRound { round: attempt - 1 },
-                            queries: current_queries.clone(),
-                            urls_fetched: vec![],
-                            reader_empty_urls: vec![],
-                            judge_verdict: Sufficiency::Insufficient,
-                            judge_reasoning: "no new search results".into(),
-                            duration_ms: round_start.elapsed().as_millis() as u64,
-                        });
-                        on_event(SearchEvent::IterationComplete {
-                            trace: metadata
-                                .iterations
-                                .last()
-                                .expect("iteration was just pushed")
-                                .clone(),
-                        });
-                        current_queries.clear();
-                        continue;
-                    }
-
-                    let mut round_search_step = trace_step(
-                        format!("round-{attempt}-search"),
-                        SearchTraceKind::Search,
-                        SearchTraceStatus::Completed,
-                        "Searching the web again",
-                        format!(
-                            "Found {} fresh results worth checking.",
-                            if new_urls.len() == 1 {
-                                "1 result".to_string()
-                            } else {
-                                format!("{} results", new_urls.len())
-                            }
-                        ),
-                    );
-                    round_search_step.round = Some(attempt);
-                    round_search_step.queries = current_queries.clone();
-                    round_search_step.urls = unique_urls(
-                        new_urls.iter().map(|result| result.url.as_str()),
-                        new_urls.len(),
-                    );
-                    round_search_step.domains =
-                        unique_domains(new_urls.iter().map(|result| result.url.as_str()));
-                    round_search_step.counts = Some(SearchTraceCounts {
-                        found: Some(to_u32_saturating(gap_results_count)),
-                        kept: Some(to_u32_saturating(new_urls.len())),
-                        ..SearchTraceCounts::default()
-                    });
-                    emit_trace(on_event, round_search_step);
-
-                    // Rerank new URLs and take the top K.
-                    let round_top_urls: Vec<SearxResult> = rerank::rerank(&query, new_urls)
-                        .into_iter()
-                        .take(config::TOP_K_URLS)
-                        .collect();
-
-                    let mut rerank_step = trace_step(
-                        format!("round-{attempt}-url-rerank"),
-                        SearchTraceKind::UrlRerank,
-                        SearchTraceStatus::Completed,
-                        "Rerank pages based on relevance",
-                        format!(
-                            "Kept {} from this follow-up round for deeper reading.",
-                            if round_top_urls.len() == 1 {
-                                "1 page".to_string()
-                            } else {
-                                format!("{} pages", round_top_urls.len())
-                            }
-                        ),
-                    );
-                    rerank_step.round = Some(attempt);
-                    rerank_step.urls = unique_urls(
-                        round_top_urls.iter().map(|result| result.url.as_str()),
-                        round_top_urls.len(),
-                    );
-                    rerank_step.domains =
-                        unique_domains(round_top_urls.iter().map(|result| result.url.as_str()));
-                    rerank_step.counts = Some(SearchTraceCounts {
-                        kept: Some(to_u32_saturating(round_top_urls.len())),
-                        ..SearchTraceCounts::default()
-                    });
-                    emit_trace(on_event, rerank_step);
-
-                    // Emit Sources so the frontend can show updated citations
-                    // (frontend handles dedup by URL).
-                    let preview: Vec<SearchResultPreview> = round_top_urls
-                        .iter()
-                        .map(|r| SearchResultPreview {
-                            title: r.title.clone(),
-                            url: r.url.clone(),
-                        })
-                        .collect();
-                    on_event(SearchEvent::Sources { results: preview });
-
-                    // Fetch full page content for the new URLs.
-                    if is_cancelled_emit(&cancel_token, &on_event) {
-                        return Ok(());
-                    }
-                    let round_reader_urls: Vec<String> =
-                        round_top_urls.iter().map(|r| r.url.clone()).collect();
-                    let round_reader_domains =
-                        unique_domains(round_reader_urls.iter().map(|url| url.as_str()));
-                    let mut read_step = trace_step(
-                        format!("round-{attempt}-read"),
-                        SearchTraceKind::Read,
-                        SearchTraceStatus::Running,
-                        "Reading the shortlisted pages",
-                        format!(
-                            "Reading full text from {} this round.",
-                            if round_reader_urls.len() == 1 {
-                                "1 page".to_string()
-                            } else {
-                                format!("{} pages", round_reader_urls.len())
-                            }
-                        ),
-                    );
-                    read_step.round = Some(attempt);
-                    read_step.domains = round_reader_domains.clone();
-                    read_step.counts = Some(SearchTraceCounts {
-                        processed: Some(0),
-                        total: Some(to_u32_saturating(round_reader_urls.len())),
-                        ..SearchTraceCounts::default()
-                    });
-                    emit_trace(on_event, read_step);
-                    on_event(SearchEvent::ReadingSources);
-                    let round_progress_urls =
-                        std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-                    let round_progress_urls_for_callback = round_progress_urls.clone();
-                    let round_reader_result = match reader_client
-                        .fetch_batch_with_progress(&round_reader_urls, &cancel_token, &|url| {
-                            on_event(SearchEvent::FetchingUrl { url: url.clone() });
-                            let mut urls = round_progress_urls_for_callback.lock().unwrap();
-                            urls.push(url.clone());
-                            let processed = urls.len();
-                            let mut progress_step = trace_step(
-                                format!("round-{attempt}-read"),
-                                SearchTraceKind::Read,
-                                SearchTraceStatus::Running,
-                                "Reading the shortlisted pages",
-                                format!(
-                                    "Read {} of {} pages so far.",
-                                    processed,
-                                    round_reader_urls.len()
-                                ),
-                            );
-                            progress_step.round = Some(attempt);
-                            progress_step.domains =
-                                unique_domains(urls.iter().map(|value| value.as_str()));
-                            progress_step.counts = Some(SearchTraceCounts {
-                                processed: Some(to_u32_saturating(processed)),
-                                total: Some(to_u32_saturating(round_reader_urls.len())),
-                                ..SearchTraceCounts::default()
-                            });
-                            emit_trace(on_event, progress_step);
-                        })
-                        .await
-                    {
-                        Ok(r) => r,
-                        Err(reader::ReaderError::Cancelled) => {
-                            on_event(SearchEvent::Cancelled);
-                            return Ok(());
-                        }
-                        Err(reader::ReaderError::ServiceUnavailable) => {
-                            // Warning dedup: emit at most once across all rounds.
-                            if !warnings.contains(&SearchWarning::ReaderUnavailable) {
-                                warnings.push(SearchWarning::ReaderUnavailable);
-                                on_event(SearchEvent::Warning {
-                                    warning: SearchWarning::ReaderUnavailable,
-                                });
-                            }
-                            reader::ReaderBatchResult::default()
-                        }
-                        Err(reader::ReaderError::BatchTimeout) => {
-                            if !warnings.contains(&SearchWarning::ReaderPartialFailure) {
-                                warnings.push(SearchWarning::ReaderPartialFailure);
-                                on_event(SearchEvent::Warning {
-                                    warning: SearchWarning::ReaderPartialFailure,
-                                });
-                            }
-                            reader::ReaderBatchResult::default()
-                        }
-                    };
-
-                    let round_processed =
-                        round_reader_result.pages.len() + round_reader_result.empty_urls.len();
-                    let round_failed = round_reader_result.failed_urls.len();
-                    let mut read_step = trace_step(
-                        format!("round-{attempt}-read"),
-                        SearchTraceKind::Read,
-                        SearchTraceStatus::Completed,
-                        "Reading the shortlisted pages",
-                        if warnings.contains(&SearchWarning::ReaderUnavailable)
-                            && round_processed == 0
-                        {
-                            "The page reader was unavailable, so this round fell back to snippets."
-                                .to_string()
-                        } else if round_processed == 0 {
-                            "No pages could be read cleanly in this round.".to_string()
-                        } else {
-                            format!(
-                                "Read {} of {} pages and extracted the text.",
-                                round_processed,
-                                round_reader_urls.len()
-                            )
-                        },
-                    );
-                    read_step.round = Some(attempt);
-                    read_step.domains = round_reader_domains;
-                    read_step.counts = Some(SearchTraceCounts {
-                        processed: Some(to_u32_saturating(round_processed)),
-                        total: Some(to_u32_saturating(round_reader_urls.len())),
-                        empty: if !round_reader_result.empty_urls.is_empty() {
-                            Some(to_u32_saturating(round_reader_result.empty_urls.len()))
-                        } else {
-                            None
-                        },
-                        failed: if round_failed > 0 {
-                            Some(to_u32_saturating(round_failed))
-                        } else {
-                            None
-                        },
-                        ..SearchTraceCounts::default()
-                    });
-                    if round_failed > 0 || !round_reader_result.empty_urls.is_empty() {
-                        read_step.detail = Some(format!(
-                            "{} page{} failed and {} page{} returned little or no readable text.",
-                            round_failed,
-                            if round_failed == 1 { "" } else { "s" },
-                            round_reader_result.empty_urls.len(),
-                            if round_reader_result.empty_urls.len() == 1 {
-                                ""
-                            } else {
-                                "s"
-                            }
-                        ));
-                    }
-                    emit_trace(on_event, read_step);
-
-                    // Detect >50% partial failure, deduplicated with prior rounds.
-                    let round_partial_threshold =
-                        (round_reader_urls.len() as f64 * 0.5).ceil() as usize;
-                    if !warnings.contains(&SearchWarning::ReaderUnavailable)
-                        && !round_reader_urls.is_empty()
-                        && round_reader_result.failed_urls.len() > round_partial_threshold
-                        && !warnings.contains(&SearchWarning::ReaderPartialFailure)
-                    {
-                        warnings.push(SearchWarning::ReaderPartialFailure);
-                        on_event(SearchEvent::Warning {
-                            warning: SearchWarning::ReaderPartialFailure,
-                        });
-                    }
-
-                    // Extend the accumulated chunk pool and rerank globally.
-                    let round_chunks =
-                        chunker::chunk_pages(&round_reader_result.pages, config::CHUNK_TOKEN_SIZE);
-                    let mut chunk_step = trace_step(
-                        format!("round-{attempt}-chunk"),
-                        SearchTraceKind::Chunk,
-                        SearchTraceStatus::Completed,
-                        "Split the pages into passages",
-                        if round_chunks.is_empty() {
-                            "No readable full-page text was available to split in this round."
-                                .to_string()
-                        } else {
-                            format!(
-                                "Split {} into {} for closer matching.",
-                                if round_reader_result.pages.len() == 1 {
-                                    "1 page".to_string()
-                                } else {
-                                    format!("{} pages", round_reader_result.pages.len())
-                                },
-                                if round_chunks.len() == 1 {
-                                    "1 passage".to_string()
-                                } else {
-                                    format!("{} passages", round_chunks.len())
-                                }
-                            )
-                        },
-                    );
-                    chunk_step.round = Some(attempt);
-                    chunk_step.counts = Some(SearchTraceCounts {
-                        pages: Some(to_u32_saturating(round_reader_result.pages.len())),
-                        chunks: Some(to_u32_saturating(round_chunks.len())),
-                        ..SearchTraceCounts::default()
-                    });
-                    emit_trace(on_event, chunk_step);
-                    accumulated_chunks.extend(round_chunks);
-                    let round_top_chunks: Vec<chunker::Chunk> =
-                        rerank::rerank_chunks(&accumulated_chunks, &query, config::TOP_K_CHUNKS)
-                            .into_iter()
-                            .cloned()
-                            .collect();
-
-                    let round_chunk_sources = unique_domains(
-                        round_top_chunks
-                            .iter()
-                            .map(|chunk| chunk.source_url.as_str()),
-                    );
-                    let mut chunk_rerank_step = trace_step(
-                        format!("round-{attempt}-chunk-rerank"),
-                        SearchTraceKind::ChunkRerank,
-                        SearchTraceStatus::Completed,
-                        "Picked the strongest passages",
-                        if round_top_chunks.is_empty() {
-                            "No full-page passages were available to rank in this round."
-                                .to_string()
-                        } else {
-                            format!(
-                                "Kept {} across {}.",
-                                if round_top_chunks.len() == 1 {
-                                    "1 passage".to_string()
-                                } else {
-                                    format!("{} passages", round_top_chunks.len())
-                                },
-                                if round_chunk_sources.len() == 1 {
-                                    "1 source".to_string()
-                                } else {
-                                    format!("{} sources", round_chunk_sources.len())
-                                }
-                            )
-                        },
-                    );
-                    chunk_rerank_step.round = Some(attempt);
-                    chunk_rerank_step.domains = round_chunk_sources.clone();
-                    chunk_rerank_step.counts = Some(SearchTraceCounts {
-                        chunks: Some(to_u32_saturating(accumulated_chunks.len())),
-                        kept: Some(to_u32_saturating(round_top_chunks.len())),
-                        sources: Some(to_u32_saturating(round_chunk_sources.len())),
-                        ..SearchTraceCounts::default()
-                    });
-                    emit_trace(on_event, chunk_rerank_step);
-
-                    // Build judge sources; fall back to initial snippets when
-                    // reader degraded and produced no chunks at all.
-                    let round_judge_sources: Vec<JudgeSource> = if round_top_chunks.is_empty() {
-                        snippet_sources.clone()
-                    } else {
-                        chunks_to_judge_sources(&round_top_chunks)
-                    };
-
-                    let mut chunk_judge_step = trace_step(
-                        format!("round-{attempt}-chunk-judge"),
-                        SearchTraceKind::ChunkJudge,
-                        SearchTraceStatus::Running,
-                        "Checking whether the evidence is enough",
-                        "Verifying whether the new passages close the remaining gaps.",
-                    );
-                    chunk_judge_step.round = Some(attempt);
-                    chunk_judge_step.domains = unique_domains(
-                        round_judge_sources.iter().map(|source| source.url.as_str()),
-                    );
-                    chunk_judge_step.counts = Some(SearchTraceCounts {
-                        sources: Some(to_u32_saturating(round_judge_sources.len())),
-                        ..SearchTraceCounts::default()
-                    });
-                    emit_trace(on_event, chunk_judge_step);
-
-                    let round_verdict = judge.call(&query, &round_judge_sources).await?;
-
-                    let mut chunk_judge_step = trace_step(
-                        format!("round-{attempt}-chunk-judge"),
-                        SearchTraceKind::ChunkJudge,
-                        SearchTraceStatus::Completed,
-                        "Checking whether the evidence is enough",
-                        judge_summary("passages", round_verdict.sufficiency),
-                    );
-                    chunk_judge_step.round = Some(attempt);
-                    chunk_judge_step.domains = unique_domains(
-                        round_judge_sources.iter().map(|source| source.url.as_str()),
-                    );
-                    chunk_judge_step.verdict = Some(round_verdict.sufficiency);
-                    chunk_judge_step.detail = Some(round_verdict.reasoning.clone());
-                    chunk_judge_step.counts = Some(SearchTraceCounts {
-                        sources: Some(to_u32_saturating(round_judge_sources.len())),
-                        ..SearchTraceCounts::default()
-                    });
-                    emit_trace(on_event, chunk_judge_step);
-
-                    metadata.iterations.push(IterationTrace {
-                        stage: IterationStage::GapRound { round: attempt - 1 },
-                        queries: current_queries.clone(),
-                        urls_fetched: round_reader_urls.clone(),
-                        reader_empty_urls: round_reader_result.empty_urls.clone(),
-                        judge_verdict: round_verdict.sufficiency,
-                        judge_reasoning: round_verdict.reasoning.clone(),
-                        duration_ms: round_start.elapsed().as_millis() as u64,
-                    });
-                    on_event(SearchEvent::IterationComplete {
-                        trace: metadata
-                            .iterations
-                            .last()
-                            .expect("iteration was just pushed")
-                            .clone(),
-                    });
-
-                    if matches!(round_verdict.sufficiency, Sufficiency::Sufficient) {
-                        metadata.total_duration_ms = iter_start.elapsed().as_millis() as u64;
-                        let synth_results: Vec<SearxResult> = round_judge_sources
-                            .iter()
-                            .map(|s| SearxResult {
-                                title: s.title.clone(),
-                                url: s.url.clone(),
-                                content: s.text.clone(),
-                            })
-                            .collect();
-                        let synth_messages = build_synthesis_messages(
-                            &history_snapshot,
-                            &query,
-                            &synth_results,
-                            today,
-                        );
-                        emit_final_sources(on_event, &round_judge_sources);
-                        let mut compose_step = trace_step(
-                            "compose",
-                            SearchTraceKind::Compose,
-                            SearchTraceStatus::Running,
-                            compose_title(),
-                            compose_summary(round_judge_sources.len()),
-                        );
-                        compose_step.domains = unique_domains(
-                            round_judge_sources.iter().map(|source| source.url.as_str()),
-                        );
-                        compose_step.counts = Some(SearchTraceCounts {
-                            sources: Some(to_u32_saturating(round_judge_sources.len())),
-                            ..SearchTraceCounts::default()
-                        });
-                        emit_trace(on_event, compose_step);
-                        on_event(SearchEvent::Composing);
-                        run_streaming_branch(
-                            ollama_endpoint,
-                            model,
-                            client,
-                            cancel_token,
-                            synth_messages,
-                            history,
-                            epoch_at_start,
-                            user_msg,
-                            warnings,
-                            Some(metadata),
-                            &on_event,
-                        )
-                        .await;
-                        return Ok(());
-                    }
-
-                    current_queries = round_verdict.gap_queries.clone();
-
-                    // Flag the genuine cap-hit: the loop body ran fully at the
-                    // last allowed iteration and the verdict was not sufficient.
-                    // This is the only code path that sets the flag; every
-                    // early-exit (empty queries guard, empty SearXNG new_urls,
-                    // cancellation, Sufficient early-return) bypasses this line.
-                    if attempt == config::MAX_ITERATIONS as u32 {
-                        hit_iteration_cap = true;
-                    }
-                }
-
-                // Gap loop exhausted. Check cancellation before beginning the
-                // fallback synthesis so a dismissed overlay does not start a
-                // new Ollama streaming call.
                 if is_cancelled_emit(&cancel_token, &on_event) {
                     return Ok(());
                 }
 
-                // Synthesize a best-effort answer from all accumulated chunks.
-                // Only emit IterationCapExhausted when the loop genuinely ran
-                // every iteration to completion without reaching a Sufficient
-                // verdict. Early exits (empty queries, empty SearXNG results,
-                // Sufficient at any round) leave hit_iteration_cap false.
                 if hit_iteration_cap {
                     warnings.push(SearchWarning::IterationCapExhausted);
                     on_event(SearchEvent::Warning {
@@ -1833,57 +1970,19 @@ pub async fn run_agentic(
                     });
                 }
 
-                let fallback_chunks: Vec<chunker::Chunk> =
-                    rerank::rerank_chunks(&accumulated_chunks, &query, config::TOP_K_CHUNKS)
-                        .into_iter()
-                        .cloned()
-                        .collect();
-
-                let fallback_sources: Vec<JudgeSource> = if fallback_chunks.is_empty() {
-                    snippet_sources.clone()
-                } else {
-                    chunks_to_judge_sources(&fallback_chunks)
-                };
-
-                let fallback_results: Vec<SearxResult> = fallback_sources
-                    .iter()
-                    .map(|s| SearxResult {
-                        title: s.title.clone(),
-                        url: s.url.clone(),
-                        content: s.text.clone(),
-                    })
-                    .collect();
-                let fallback_messages =
-                    build_synthesis_messages(&history_snapshot, &query, &fallback_results, today);
                 metadata.total_duration_ms = iter_start.elapsed().as_millis() as u64;
-                emit_final_sources(on_event, &fallback_sources);
-                let mut compose_step = trace_step(
-                    "compose",
-                    SearchTraceKind::Compose,
-                    SearchTraceStatus::Running,
-                    compose_title(),
-                    fallback_compose_summary(hit_iteration_cap, fallback_sources.len()),
-                );
-                compose_step.domains =
-                    unique_domains(fallback_sources.iter().map(|source| source.url.as_str()));
-                compose_step.counts = Some(SearchTraceCounts {
-                    sources: Some(to_u32_saturating(fallback_sources.len())),
-                    ..SearchTraceCounts::default()
-                });
-                emit_trace(on_event, compose_step);
-                on_event(SearchEvent::Composing);
-                run_streaming_branch(
-                    ollama_endpoint,
-                    model,
-                    client,
-                    cancel_token,
-                    fallback_messages,
-                    history,
-                    epoch_at_start,
-                    user_msg,
+                stream_synthesis_from_sources(
+                    &shared,
+                    &SearchTurnInputs {
+                        history_snapshot: &history_snapshot,
+                        epoch_at_start,
+                        user_msg,
+                    },
+                    &query,
+                    &fallback_sources,
                     warnings,
                     Some(metadata),
-                    &on_event,
+                    fallback_compose_summary(hit_iteration_cap, fallback_sources.len()),
                 )
                 .await;
                 Ok(())
@@ -1989,7 +2088,10 @@ mod tests {
 
     #[test]
     fn translate_chunk_done_maps_to_done() {
-        assert_eq!(translate_chunk(StreamChunk::Done), SearchEvent::Done);
+        assert_eq!(
+            translate_chunk(StreamChunk::Done),
+            SearchEvent::Done { metadata: None }
+        );
     }
 
     #[test]
@@ -2027,6 +2129,20 @@ mod tests {
         let (epoch, msgs) = snapshot_history(&h);
         assert_eq!(epoch, 0);
         assert_eq!(msgs.len(), 1);
+    }
+
+    #[test]
+    fn lock_or_recover_returns_inner_after_mutex_poison() {
+        let mutex = std::sync::Mutex::new(vec![1u32]);
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut guard = mutex.lock().unwrap();
+            guard.push(2);
+            panic!("poison mutex for recovery test");
+        }));
+
+        let guard = lock_or_recover(&mutex);
+        assert_eq!(*guard, vec![1, 2]);
     }
 
     // ── persist_turn ────────────────────────────────────────────────────────
@@ -2209,6 +2325,40 @@ mod agentic_tests {
                 _ => None,
             })
             .expect("expected completed trace step")
+    }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn done_metadata(events: &[SearchEvent]) -> &SearchMetadata {
+        match events.last().expect("expected final event") {
+            SearchEvent::Done {
+                metadata: Some(metadata),
+            } => metadata,
+            other => panic!("expected final Done event with metadata, got: {other:?}"),
+        }
+    }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn assert_done_iterations(events: &[SearchEvent], expected_iterations: usize) {
+        let metadata = done_metadata(events);
+        assert_eq!(
+            metadata.iterations.len(),
+            expected_iterations,
+            "expected Done metadata with {expected_iterations} iterations, got: {metadata:?}"
+        );
+    }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn assert_refining_search(events: &[SearchEvent], attempt: u32, total: u32) {
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                SearchEvent::RefiningSearch {
+                    attempt: actual_attempt,
+                    total: actual_total,
+                } if *actual_attempt == attempt && *actual_total == total
+            )),
+            "expected RefiningSearch attempt={attempt} total={total} in: {events:?}"
+        );
     }
 
     // ── split_into_stream_pieces ─────────────────────────────────────────────
@@ -2443,7 +2593,7 @@ mod agentic_tests {
         );
 
         // Last event must be Done.
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done { metadata: None });
 
         // No search-phase events.
         assert!(evs
@@ -2514,7 +2664,7 @@ mod agentic_tests {
 
         let evs = events.lock().unwrap();
         assert_eq!(evs[0], SearchEvent::AnalyzingQuery);
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done { metadata: None });
     }
 
     // ── run_agentic: history-sufficient branch ───────────────────────────────
@@ -2576,7 +2726,7 @@ mod agentic_tests {
             .any(|e| matches!(e, SearchEvent::Token { content } if content == "from history")));
 
         // Done last.
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_eq!(*evs.last().unwrap(), SearchEvent::Done { metadata: None });
 
         // No search events.
         assert!(evs
@@ -2661,7 +2811,9 @@ mod agentic_tests {
         .unwrap();
 
         let evs = events.lock().unwrap();
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 1);
+        let metadata = done_metadata(&evs);
+        assert_eq!(metadata.iterations[0].queries, vec!["my query".to_string()]);
     }
 
     #[tokio::test]
@@ -2720,7 +2872,7 @@ mod agentic_tests {
             Some("Using search query: rewritten query")
         );
         assert_eq!(analyze_step.queries, vec!["rewritten query".to_string()]);
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 1);
     }
 
     fn searx_body_one_result(url: &str) -> String {
@@ -2802,7 +2954,7 @@ mod agentic_tests {
                 .any(|e| matches!(e, SearchEvent::Token { content } if content == "answer")),
             "expected token with 'answer'"
         );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 1);
 
         // No ReadingSources on snippet-sufficient path.
         assert!(evs
@@ -2896,7 +3048,7 @@ mod agentic_tests {
         // since this test configures the reader to succeed.
         let has_any_warning = evs.iter().any(|e| matches!(e, SearchEvent::Warning { .. }));
         assert!(!has_any_warning, "expected no warnings in: {evs:?}");
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 1);
     }
 
     // Test: initial round returns insufficient with no gap queries; gap loop
@@ -2970,7 +3122,7 @@ mod agentic_tests {
             }),
             "expected no IterationCapExhausted warning in: {evs:?}"
         );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 1);
     }
 
     // Test: SearXNG returns empty; emits NoResultsInitial warning and errors.
@@ -3089,7 +3241,7 @@ mod agentic_tests {
             )),
             "expected ReaderUnavailable warning in: {evs:?}"
         );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 1);
     }
 
     // ── Additional coverage: rare error and cancellation paths ─────────────────
@@ -3581,7 +3733,7 @@ mod agentic_tests {
             )),
             "expected ReaderPartialFailure from BatchTimeout in: {evs:?}"
         );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 1);
     }
 
     // Reader: >50% of URLs fail (HTTP 502), triggers ReaderPartialFailure.
@@ -3689,7 +3841,7 @@ mod agentic_tests {
             Some("2 pages failed and 0 pages returned little or no readable text."),
             "expected pluralized read-step detail in: {evs:?}"
         );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 1);
     }
 
     #[tokio::test]
@@ -3760,7 +3912,7 @@ mod agentic_tests {
             Some("1 page failed and 0 pages returned little or no readable text."),
             "expected singular failed-page detail in: {evs:?}"
         );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 1);
     }
 
     // ── Gap loop tests ─────────────────────────────────────────────────────────
@@ -3769,7 +3921,8 @@ mod agentic_tests {
     //
     // Judge sequence: Insufficient (snippets) -> Insufficient (chunks, gap_queries=["gap1"])
     //                 -> Sufficient (chunks after gap round 2).
-    // MAX_ITERATIONS = 3, so attempt=2 is the first gap round.
+    // MAX_ITERATIONS = 3, so there are 2 gap rounds. The first is reported as
+    // attempt=1 of 2.
     #[tokio::test]
     async fn gap_round_succeeds_within_cap() {
         use wiremock::matchers::{method, path, query_param};
@@ -3860,21 +4013,11 @@ mod agentic_tests {
 
         let evs = events.lock().unwrap();
 
-        // RefiningSearch with attempt=2, total=3 must appear.
-        assert!(
-            evs.iter().any(|e| matches!(
-                e,
-                SearchEvent::RefiningSearch {
-                    attempt: 2,
-                    total: 3
-                }
-            )),
-            "expected RefiningSearch attempt=2 total=3 in: {evs:?}"
-        );
+        assert_refining_search(&evs, 1, 2);
 
         // Composing and Done must appear (synthesis ran).
         assert!(evs.iter().any(|e| matches!(e, SearchEvent::Composing)));
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 2);
 
         // No IterationCapExhausted (succeeded before cap).
         assert!(
@@ -3895,7 +4038,7 @@ mod agentic_tests {
     // Test 2: judge always insufficient; all MAX_ITERATIONS rounds fire.
     //
     // Each verdict provides a fresh gap query so the loop does not exit early.
-    // The test verifies RefiningSearch for both attempt=2 and attempt=3, and
+    // The test verifies RefiningSearch for both gap rounds, and
     // IterationCapExhausted emitted exactly once.
     #[tokio::test]
     async fn gap_round_exhausts_all_iterations() {
@@ -4017,27 +4160,8 @@ mod agentic_tests {
 
         let evs = events.lock().unwrap();
 
-        // Both gap round events must have fired.
-        assert!(
-            evs.iter().any(|e| matches!(
-                e,
-                SearchEvent::RefiningSearch {
-                    attempt: 2,
-                    total: 3
-                }
-            )),
-            "expected RefiningSearch attempt=2 in: {evs:?}"
-        );
-        assert!(
-            evs.iter().any(|e| matches!(
-                e,
-                SearchEvent::RefiningSearch {
-                    attempt: 3,
-                    total: 3
-                }
-            )),
-            "expected RefiningSearch attempt=3 in: {evs:?}"
-        );
+        assert_refining_search(&evs, 1, 2);
+        assert_refining_search(&evs, 2, 2);
 
         // IterationCapExhausted exactly once.
         let exhaustion_count = evs
@@ -4056,15 +4180,15 @@ mod agentic_tests {
             "expected exactly 1 IterationCapExhausted, got {exhaustion_count} in: {evs:?}"
         );
 
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 3);
     }
 
     // Test 3: gap round where all SearXNG queries return empty (no new URLs).
     //
     // Initial round: Insufficient with gap_queries=["q1","q2","q3"].
-    // Gap round at attempt=2: SearXNG returns only already-seen URLs so
+    // First gap round: SearXNG returns only already-seen URLs so
     // new_urls is empty. current_queries is cleared and the loop continues.
-    // The for-range ends (no attempt=3 would run) before the judge is called,
+    // The for-range ends before a second gap round would run,
     // so hit_iteration_cap stays false. IterationCapExhausted must NOT fire.
     #[tokio::test]
     async fn gap_round_empty_searxng_breaks_loop_silently() {
@@ -4166,35 +4290,26 @@ mod agentic_tests {
             "expected no IterationCapExhausted in: {evs:?}"
         );
 
-        // RefiningSearch must have appeared (gap round 2 started).
-        assert!(
-            evs.iter().any(|e| matches!(
-                e,
-                SearchEvent::RefiningSearch {
-                    attempt: 2,
-                    total: 3
-                }
-            )),
-            "expected RefiningSearch attempt=2 in: {evs:?}"
-        );
+        assert_refining_search(&evs, 1, 2);
 
-        // No RefiningSearch for attempt=3 (loop broke after empty round 2).
+        // No second gap round fired after the empty-search branch broke the loop.
         assert!(
             !evs.iter()
-                .any(|e| matches!(e, SearchEvent::RefiningSearch { attempt: 3, .. })),
-            "unexpected RefiningSearch attempt=3 in: {evs:?}"
+                .any(|e| matches!(e, SearchEvent::RefiningSearch { attempt: 2, .. })),
+            "unexpected second RefiningSearch event in: {evs:?}"
         );
 
         // Pipeline still synthesized an answer.
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 2);
     }
 
-    // Test 3b: boundary case -- attempt=3 runs in full, judge returns
-    // Insufficient with empty gap_queries. This IS a genuine cap-hit because
-    // the judge actually ran at the final iteration and returned non-Sufficient.
-    // IterationCapExhausted MUST fire.
+    // Test 3b: boundary case -- the final gap round runs in full, judge returns
+    // Insufficient with empty gap_queries. The pipeline now only emits
+    // IterationCapExhausted when the final round still suggests follow-up work,
+    // so this path should synthesize without the warning.
     #[tokio::test]
-    async fn gap_round_attempt3_full_run_insufficient_emits_cap_warning() {
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    async fn gap_round_attempt3_full_run_without_new_gaps_skips_cap_warning() {
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -4224,7 +4339,7 @@ mod agentic_tests {
             .mount(&searx_server)
             .await;
 
-        // Gap round at attempt=2 returns a new URL.
+        // First gap round returns a new URL.
         Mock::given(method("GET"))
             .and(path("/search"))
             .and(query_param("q", "q1"))
@@ -4235,7 +4350,7 @@ mod agentic_tests {
             .mount(&searx_server)
             .await;
 
-        // Gap round at attempt=3 returns another new URL.
+        // Final gap round returns another new URL.
         Mock::given(method("GET"))
             .and(path("/search"))
             .and(query_param("q", "q2"))
@@ -4259,9 +4374,9 @@ mod agentic_tests {
         let router = proceed_search_router("test query");
 
         // Sequence: snippets partial, initial chunks insufficient with gap_queries=["q1"],
-        // attempt=2 judge insufficient with gap_queries=["q2"],
-        // attempt=3 judge insufficient with gap_queries=[] (empty: no further work).
-        // The loop completes attempt=3 in full, so hit_iteration_cap is set.
+        // first gap-round judge insufficient with gap_queries=["q2"],
+        // final gap-round judge insufficient with gap_queries=[] (empty: no further work).
+        // The loop completes the final gap round in full, so hit_iteration_cap is set.
         let judge = QueueJudge(std::sync::Mutex::new(
             vec![
                 JudgeVerdict {
@@ -4309,42 +4424,23 @@ mod agentic_tests {
 
         let evs = events.lock().unwrap();
 
-        // Attempt=3 ran to completion with Insufficient: warning must fire.
+        // No cap warning: the final gap round finished with no follow-up gaps.
         assert!(
-            evs.iter().any(|e| matches!(
+            !evs.iter().any(|e| matches!(
                 e,
                 SearchEvent::Warning {
                     warning: SearchWarning::IterationCapExhausted
                 }
             )),
-            "expected IterationCapExhausted when attempt=3 ran in full in: {evs:?}"
+            "did not expect IterationCapExhausted when the final gap round produced no new gaps in: {evs:?}"
         );
 
-        // Both gap rounds ran.
-        assert!(
-            evs.iter().any(|e| matches!(
-                e,
-                SearchEvent::RefiningSearch {
-                    attempt: 2,
-                    total: 3
-                }
-            )),
-            "expected RefiningSearch attempt=2 in: {evs:?}"
-        );
-        assert!(
-            evs.iter().any(|e| matches!(
-                e,
-                SearchEvent::RefiningSearch {
-                    attempt: 3,
-                    total: 3
-                }
-            )),
-            "expected RefiningSearch attempt=3 in: {evs:?}"
-        );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_refining_search(&evs, 1, 2);
+        assert_refining_search(&evs, 2, 2);
+        assert_done_iterations(&evs, 3);
     }
 
-    // Test 3c: Sufficient verdict at attempt=2 causes early return before
+    // Test 3c: Sufficient verdict on the first gap round causes early return before
     // the post-loop block. IterationCapExhausted must NOT fire.
     #[tokio::test]
     async fn gap_round_sufficient_at_attempt2_no_cap_warning() {
@@ -4398,7 +4494,7 @@ mod agentic_tests {
         let (events, cb) = collect_events();
         let router = proceed_search_router("test query");
 
-        // Attempt=2 judge returns Sufficient: pipeline returns early.
+        // The first gap-round judge returns Sufficient: pipeline returns early.
         let judge = QueueJudge(std::sync::Mutex::new(
             vec![
                 JudgeVerdict {
@@ -4447,12 +4543,13 @@ mod agentic_tests {
                     warning: SearchWarning::IterationCapExhausted,
                 })
             }),
-            "expected no IterationCapExhausted when Sufficient at attempt=2 in: {evs:?}"
+            "expected no IterationCapExhausted when the first gap round is sufficient in: {evs:?}"
         );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_refining_search(&evs, 1, 2);
+        assert_done_iterations(&evs, 2);
     }
 
-    // Test 3d: Sufficient verdict at attempt=3 causes early return at the
+    // Test 3d: Sufficient verdict on the final gap round causes early return at the
     // last possible round. IterationCapExhausted must NOT fire even though
     // the final iteration ran.
     #[tokio::test]
@@ -4517,7 +4614,7 @@ mod agentic_tests {
         let (events, cb) = collect_events();
         let router = proceed_search_router("test query");
 
-        // Attempt=3 (final iteration) judge returns Sufficient: pipeline
+        // The final gap-round judge returns Sufficient: pipeline
         // returns early via the Sufficient branch, never setting hit_iteration_cap.
         let judge = QueueJudge(std::sync::Mutex::new(
             vec![
@@ -4572,31 +4669,12 @@ mod agentic_tests {
                     warning: SearchWarning::IterationCapExhausted,
                 })
             }),
-            "expected no IterationCapExhausted when Sufficient at attempt=3 in: {evs:?}"
+            "expected no IterationCapExhausted when the final gap round is sufficient in: {evs:?}"
         );
 
-        // Both gap rounds fired.
-        assert!(
-            evs.iter().any(|e| matches!(
-                e,
-                SearchEvent::RefiningSearch {
-                    attempt: 2,
-                    total: 3
-                }
-            )),
-            "expected RefiningSearch attempt=2 in: {evs:?}"
-        );
-        assert!(
-            evs.iter().any(|e| matches!(
-                e,
-                SearchEvent::RefiningSearch {
-                    attempt: 3,
-                    total: 3
-                }
-            )),
-            "expected RefiningSearch attempt=3 in: {evs:?}"
-        );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_refining_search(&evs, 1, 2);
+        assert_refining_search(&evs, 2, 2);
+        assert_done_iterations(&evs, 3);
     }
 
     // Test 4: ReaderUnavailable across multiple gap rounds does not produce
@@ -4713,7 +4791,7 @@ mod agentic_tests {
             "expected exactly 1 ReaderUnavailable event, got {unavail_count} in: {evs:?}"
         );
 
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 2);
     }
 
     // ── Cancellation during initial SearXNG call (lines 475-476) ─────────────
@@ -5655,7 +5733,7 @@ mod agentic_tests {
             unavail_count, 1,
             "expected exactly one ReaderUnavailable warning in: {evs:?}"
         );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 2);
     }
 
     // ── Gap-round reader: BatchTimeout (lines 771-779) ────────────────────────
@@ -5768,7 +5846,7 @@ mod agentic_tests {
             )),
             "expected ReaderPartialFailure from gap-round BatchTimeout in: {evs:?}"
         );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 2);
     }
 
     // ── Gap-round BatchTimeout with dedup suppressed (line 777) ──────────────
@@ -5908,7 +5986,7 @@ mod agentic_tests {
             pf_count, 1,
             "expected exactly one ReaderPartialFailure (dedup suppresses gap-round one) in: {evs:?}"
         );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 2);
     }
 
     // ── Gap-round reader: >50% partial failure (lines 783-794) ───────────────
@@ -6029,7 +6107,7 @@ mod agentic_tests {
             Some("2 pages failed and 0 pages returned little or no readable text."),
             "expected pluralized gap-round read-step detail in: {evs:?}"
         );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 2);
     }
 
     #[tokio::test]
@@ -6125,7 +6203,7 @@ mod agentic_tests {
             Some("1 page failed and 0 pages returned little or no readable text."),
             "expected singular gap-round failed-page detail in: {evs:?}"
         );
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        assert_done_iterations(&evs, 2);
     }
 
     // ── Cancel before fallback synthesis after gap-loop exhaustion (line 874) ─
@@ -6215,7 +6293,7 @@ mod agentic_tests {
         );
         // No Done event: pipeline returned before synthesis.
         assert!(
-            !evs.iter().any(|e| matches!(e, SearchEvent::Done)),
+            !evs.iter().any(|e| matches!(e, SearchEvent::Done { .. })),
             "unexpected Done event when cancelled before synthesis in: {evs:?}"
         );
     }
@@ -6232,12 +6310,13 @@ mod agentic_tests {
     // ── IterationComplete events emitted per iteration ───────────────────────
     //
     // Verifies that `IterationComplete` events are emitted after each retrieval
-    // iteration (one per metadata.iterations.push), and that no `Metadata`
-    // bulk event is emitted. Uses the snippets-sufficient path (Site A) for
+    // iteration (one per metadata.iterations.push), and that the final Done
+    // metadata mirrors the emitted iteration summary. Uses the
+    // snippets-sufficient path (Site A) for
     // the simplest setup: one SearXNG result, snippet judge returns Sufficient,
     // no reader escalation. Exactly one IterationComplete must fire.
     #[tokio::test]
-    async fn iteration_complete_emitted_per_iteration_no_bulk_metadata() {
+    async fn iteration_complete_events_match_done_metadata_summary() {
         let mut ollama = mockito::Server::new_async().await;
         let mut searx = mockito::Server::new_async().await;
 
@@ -6327,8 +6406,11 @@ mod agentic_tests {
             "expected Sufficient verdict"
         );
 
-        // Pipeline completed successfully.
-        assert_eq!(*evs.last().unwrap(), SearchEvent::Done);
+        let metadata = done_metadata(&evs);
+        assert_eq!(
+            metadata.iterations.as_slice(),
+            std::slice::from_ref(first_trace)
+        );
     }
 
     // ── Trace plural-label coverage ──────────────────────────────────────────
@@ -6429,7 +6511,8 @@ mod agentic_tests {
         .await
         .unwrap();
 
-        assert_eq!(*events.lock().unwrap().last().unwrap(), SearchEvent::Done);
+        let evs = events.lock().unwrap();
+        assert_done_iterations(&evs, 1);
     }
 
     // Line 1056 (initial round read step "N page returned little or no readable
@@ -6498,7 +6581,8 @@ mod agentic_tests {
         .await
         .unwrap();
 
-        assert_eq!(*events.lock().unwrap().last().unwrap(), SearchEvent::Done);
+        let evs = events.lock().unwrap();
+        assert_done_iterations(&evs, 1);
     }
 
     // Lines 1614, 1619, 1662 (gap round chunk step "N pages", "N passages",
@@ -6613,7 +6697,8 @@ mod agentic_tests {
         .await
         .unwrap();
 
-        assert_eq!(*events.lock().unwrap().last().unwrap(), SearchEvent::Done);
+        let evs = events.lock().unwrap();
+        assert_done_iterations(&evs, 2);
     }
 
     // Line 1575 (gap round read step singular "page returned little or no
@@ -6708,6 +6793,7 @@ mod agentic_tests {
         .await
         .unwrap();
 
-        assert_eq!(*events.lock().unwrap().last().unwrap(), SearchEvent::Done);
+        let evs = events.lock().unwrap();
+        assert_done_iterations(&evs, 2);
     }
 }

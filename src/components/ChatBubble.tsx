@@ -83,8 +83,8 @@ const CITATION_RE = /\[(\d+)\]/g;
  * streaming tokens stay in sync. Idempotent: already-wrapped `[N]` elements
  * carry a `data-citation` attribute and are skipped on subsequent passes.
  *
- * Security: only creates `<a>` elements with `textContent` — never inserts
- * arbitrary HTML — and caps the URL via the precomputed sources array. There
+ * Security: only creates `<a>` elements with `textContent` - never inserts
+ * arbitrary HTML - and caps the URL via the precomputed sources array. There
  * is no path for user input to reach this function other than through the
  * same SearXNG-validated URLs that populate the sources footer.
  */
@@ -252,9 +252,9 @@ const bubbleVariants = {
 /**
  * Renders a chat message following industry-standard assistant UI conventions:
  *
- * - **User messages** — right-aligned bubble with warm gradient, quoted-text
+ * - **User messages** - right-aligned bubble with warm gradient, quoted-text
  *   support, and an always-visible copy button below the bubble (right-aligned).
- * - **AI messages** — full-width plain text (no bubble), markdown-rendered, with
+ * - **AI messages** - full-width plain text (no bubble), markdown-rendered, with
  *   an always-visible copy button below the text (left-aligned).
  *
  * Spring entrance animation is staggered by `index` to produce natural
@@ -350,7 +350,7 @@ export function ChatBubble({
       className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}
     >
       {isUser ? (
-        /* User bubble — max-width capped, stacks bubble + action bar */
+        /* User bubble - max-width capped, stacks bubble + action bar */
         <div className="flex flex-col max-w-[80%]">
           <div className="chat-bubble chat-bubble-user relative px-4 py-2.5 text-sm leading-relaxed select-text rounded-2xl rounded-br-md">
             {quotedText && (
@@ -394,7 +394,7 @@ export function ChatBubble({
           )}
         </div>
       ) : (
-        /* AI plain text — full width, no bubble chrome */
+        /* AI plain text - full width, no bubble chrome */
         <div
           ref={containerRef}
           data-testid="chat-bubble"
@@ -504,7 +504,7 @@ export function ChatBubble({
                     {searchSources.slice(0, 3).map((src, i) => {
                       const domain = domainOf(src.url);
                       // SearXNG filters out empty-URL results before they reach
-                      // the frontend, so `domain[0]` is always defined here —
+                      // the frontend, so `domain[0]` is always defined here -
                       // the `?` fallback is a belt-and-braces defensive default.
                       /* v8 ignore start */
                       const letter = (domain[0] ?? '?').toUpperCase();

@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
   SearchEvent,
+  SearchMetadata,
   SearchResultPreview,
   SearchStage,
   SearchTraceStep,
@@ -38,15 +39,46 @@ export interface Message {
   sandboxUnavailable?: boolean;
   /** Ordered, user-facing timeline steps for a `/search` turn. */
   searchTraces?: SearchTraceStep[];
+  /** Structured retrieval metadata emitted by the backend search pipeline. */
+  searchMetadata?: SearchMetadata;
 }
 
-/** The expected structure of streaming chunks emitted from the Rust backend. */
-export type StreamChunk =
+/** Raw streaming chunk payload emitted from the Rust chat backend. */
+type RawStreamChunk =
   | { type: 'Token'; data: string }
   | { type: 'ThinkingToken'; data: string }
   | { type: 'Done' }
   | { type: 'Cancelled' }
   | { type: 'Error'; data: { kind: OllamaErrorKind; message: string } };
+
+/**
+ * Normalized chat-stream chunk used inside the hook.
+ *
+ * The chat IPC payload uses `data` while the search pipeline uses `content`.
+ * Normalizing here keeps the internal token contract consistent and prevents
+ * accidental cross-assignment between the two event streams.
+ */
+type StreamChunk =
+  | { type: 'Token'; content: string }
+  | { type: 'ThinkingToken'; content: string }
+  | { type: 'Done' }
+  | { type: 'Cancelled' }
+  | { type: 'Error'; error: { kind: OllamaErrorKind; message: string } };
+
+function normalizeStreamChunk(chunk: RawStreamChunk): StreamChunk {
+  switch (chunk.type) {
+    case 'Token':
+      return { type: 'Token', content: chunk.data };
+    case 'ThinkingToken':
+      return { type: 'ThinkingToken', content: chunk.data };
+    case 'Done':
+      return chunk;
+    case 'Cancelled':
+      return chunk;
+    case 'Error':
+      return { type: 'Error', error: chunk.data };
+  }
+}
 
 /** Result payload delivered to callers when a `/search` pipeline turn finishes. */
 export interface SearchOutcome {
@@ -195,18 +227,20 @@ export function useOllama(
       setIsGenerating(true);
       const generationId = beginGeneration(assistantId);
 
-      const channel = new Channel<StreamChunk>();
+      const channel = new Channel<RawStreamChunk>();
       let currentContent = '';
       let currentThinkingContent = '';
 
-      channel.onmessage = (chunk) => {
+      channel.onmessage = (rawChunk) => {
         if (!isActiveGeneration(generationId)) {
           return;
         }
 
+        const chunk = normalizeStreamChunk(rawChunk);
+
         if (chunk.type === 'ThinkingToken') {
-          currentThinkingContent += chunk.data;
-          if (chunk.data) {
+          currentThinkingContent += chunk.content;
+          if (chunk.content) {
             markVisibleOutput();
           }
           setMessages((prev) =>
@@ -220,8 +254,8 @@ export function useOllama(
         }
 
         if (chunk.type === 'Token') {
-          currentContent += chunk.data;
-          if (chunk.data) {
+          currentContent += chunk.content;
+          if (chunk.content) {
             markVisibleOutput();
           }
           setMessages((prev) =>
@@ -265,8 +299,8 @@ export function useOllama(
             message.id === assistantId
               ? {
                   ...message,
-                  content: chunk.data.message,
-                  errorKind: chunk.data.kind,
+                  content: chunk.error.message,
+                  errorKind: chunk.error.kind,
                 }
               : message,
           ),
@@ -353,6 +387,7 @@ export function useOllama(
       let pendingSources: SearchResultPreview[] | undefined;
       let warnings: SearchWarning[] = [];
       let pendingTraces: SearchTraceStep[] = [];
+      let pendingMetadata: SearchMetadata | undefined;
       let awaitingClarification = false;
       let errored = false;
       let cancelled = false;
@@ -378,19 +413,22 @@ export function useOllama(
           if (finalizedTraces) {
             pendingTraces = finalizedTraces;
           }
+          const persistedTraces = finalizedTraces;
 
           if (!errored && !cancelled && currentContent) {
             updateAssistant({
               searchSources: pendingSources,
               searchWarnings: warnings.length > 0 ? warnings : undefined,
-              searchTraces: finalizedTraces,
+              searchTraces: persistedTraces,
+              searchMetadata: pendingMetadata,
             });
             onTurnComplete?.(userMsg, {
               ...assistantMsg,
               content: currentContent,
               searchSources: pendingSources,
               searchWarnings: warnings.length > 0 ? warnings : undefined,
-              searchTraces: finalizedTraces,
+              searchTraces: persistedTraces,
+              searchMetadata: pendingMetadata,
             });
           }
 
@@ -486,6 +524,7 @@ export function useOllama(
               break;
             }
             case 'Done': {
+              pendingMetadata = event.metadata ?? pendingMetadata;
               finish(!awaitingClarification && sawToken);
               break;
             }

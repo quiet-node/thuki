@@ -4,7 +4,7 @@
  * Stores conversations and messages in `~/.thuki/thuki.db` using rusqlite
  * with WAL journal mode for concurrent read access during streaming writes.
  *
- * All public functions accept a `&Connection` and are synchronous — callers
+ * All public functions accept a `&Connection` and are synchronous - callers
  * in async Tauri commands should use `spawn_blocking` or hold the connection
  * behind a `Mutex`.
  */
@@ -148,7 +148,7 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, col_type: &str) -
 
 /// Creates the schema tables if they do not already exist.
 fn run_migrations(conn: &Connection) -> SqlResult<()> {
-    // Static schema DDL — compiled into a single &str at build time via concat!.
+    // Static schema DDL - compiled into a single &str at build time via concat!.
     const SCHEMA_DDL: &str = concat!(
         "CREATE TABLE IF NOT EXISTS conversations (",
         "  id TEXT PRIMARY KEY, title TEXT, model TEXT NOT NULL,",
@@ -696,7 +696,7 @@ mod tests {
     #[test]
     fn delete_nonexistent_conversation_is_noop() {
         let conn = open_in_memory().unwrap();
-        // Should not error — DELETE with no matching rows is valid SQL.
+        // Should not error - DELETE with no matching rows is valid SQL.
         delete_conversation(&conn, "nonexistent-id").unwrap();
     }
 

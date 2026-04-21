@@ -47,7 +47,7 @@ describe('useOllama', () => {
       invoke.mockImplementationOnce(
         async (_cmd: string, args?: Record<string, unknown>) => {
           if (args && 'onEvent' in args) {
-            // Stall — never resolves until we manually resolve
+            // Stall - never resolves until we manually resolve
             return new Promise<void>((res) => {
               resolveInvoke = res;
             });
@@ -806,7 +806,7 @@ describe('useOllama', () => {
       });
 
       expect(result.current.isGenerating).toBe(false);
-      // Only the user message should exist — empty assistant placeholder was removed
+      // Only the user message should exist - empty assistant placeholder was removed
       expect(result.current.messages).toHaveLength(1);
       expect(result.current.messages[0].role).toBe('user');
     });
@@ -1191,6 +1191,21 @@ describe('useOllama', () => {
 
     it('resolves with final=true when a token is received followed by Done', async () => {
       const { result } = renderHook(() => useOllama());
+      const metadata = {
+        iterations: [
+          {
+            stage: { kind: 'initial' as const },
+            queries: ['q'],
+            urls_fetched: ['https://example.com/a'],
+            reader_empty_urls: [],
+            judge_verdict: 'sufficient' as const,
+            judge_reasoning: 'enough evidence',
+            duration_ms: 12,
+          },
+        ],
+        total_duration_ms: 12,
+        retries_performed: 0,
+      };
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -1200,7 +1215,7 @@ describe('useOllama', () => {
         channel!.simulateMessage({ type: 'AnalyzingQuery' });
         channel!.simulateMessage({ type: 'Searching', queries: [] });
         channel!.simulateMessage({ type: 'Token', content: 'hello' });
-        channel!.simulateMessage({ type: 'Done' });
+        channel!.simulateMessage({ type: 'Done', metadata });
       });
       let outcome: { final: boolean } | undefined;
       await act(async () => {
@@ -1213,6 +1228,7 @@ describe('useOllama', () => {
       expect(last.role).toBe('assistant');
       expect(last.content).toBe('hello');
       expect(last.fromSearch).toBe(true);
+      expect(last.searchMetadata).toEqual(metadata);
     });
 
     it('resolves with final=false when a clarify trace is followed by question tokens and Done', async () => {
@@ -1645,6 +1661,21 @@ describe('useOllama', () => {
     it('persists searchSources to the assistant message on Sources + Token + Done', async () => {
       const onTurnComplete = vi.fn();
       const { result } = renderHook(() => useOllama(onTurnComplete));
+      const metadata = {
+        iterations: [
+          {
+            stage: { kind: 'initial' as const },
+            queries: ['q'],
+            urls_fetched: ['https://rust-lang.org'],
+            reader_empty_urls: [],
+            judge_verdict: 'sufficient' as const,
+            judge_reasoning: 'enough evidence',
+            duration_ms: 30,
+          },
+        ],
+        total_duration_ms: 30,
+        retries_performed: 0,
+      };
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -1659,7 +1690,7 @@ describe('useOllama', () => {
           ],
         });
         channel!.simulateMessage({ type: 'Token', content: 'answer' });
-        channel!.simulateMessage({ type: 'Done' });
+        channel!.simulateMessage({ type: 'Done', metadata });
       });
       await act(async () => {
         await pending;
@@ -1667,9 +1698,11 @@ describe('useOllama', () => {
       const [, assistantMsg] = onTurnComplete.mock.calls[0];
       expect(assistantMsg.searchSources).toHaveLength(2);
       expect(assistantMsg.searchSources[0].url).toBe('https://rust-lang.org');
+      expect(assistantMsg.searchMetadata).toEqual(metadata);
       const lastMsg =
         result.current.messages[result.current.messages.length - 1];
       expect(lastMsg.searchSources).toHaveLength(2);
+      expect(lastMsg.searchMetadata).toEqual(metadata);
     });
 
     it('Warning event accumulates into message.searchWarnings while streaming continues', async () => {
@@ -1887,6 +1920,48 @@ describe('useOllama', () => {
       expect(assistantMsg.searchTraces![0]).toEqual(
         expect.objectContaining({ id: 'compose', status: 'completed' }),
       );
+    });
+
+    it('preserves completed traces on Done when no running steps need finalization', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(onTurnComplete));
+      let pending!: Promise<{ final: boolean }>;
+
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Trace',
+          step: {
+            id: 'compose',
+            kind: 'compose',
+            status: 'completed' as const,
+            title: 'Synthesizing the answer',
+            summary:
+              'Pulling the strongest points together into a clear answer with citations.',
+            counts: { sources: 2 },
+          },
+        });
+        channel!.simulateMessage({ type: 'Token', content: 'answer' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      await act(async () => {
+        await pending;
+      });
+
+      expect(onTurnComplete).toHaveBeenCalledOnce();
+      const [, assistantMsg] = onTurnComplete.mock.calls[0];
+      expect(assistantMsg.searchTraces).toEqual([
+        expect.objectContaining({ id: 'compose', status: 'completed' }),
+      ]);
+      const last = result.current.messages[result.current.messages.length - 1];
+      expect(last.searchTraces).toEqual([
+        expect.objectContaining({ id: 'compose', status: 'completed' }),
+      ]);
     });
 
     it('searchTraces is undefined when no Trace event is received', async () => {

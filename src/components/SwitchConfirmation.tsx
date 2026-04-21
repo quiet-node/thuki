@@ -11,8 +11,8 @@ interface SwitchConfirmationProps {
   onCancel: () => void;
   /**
    * Controls the title and button labels.
-   * - `"switch"` (default) — "Switch conversations?" / "Save & Switch" / "Just Switch"
-   * - `"new"` — "New conversation?" / "Save & Start New" / "Start New"
+   * - `"switch"` (default) - "Switch conversations?" / "Save & Switch" / "Just Switch"
+   * - `"new"` - "New conversation?" / "Save & Start New" / "Start New"
    */
   variant?: SwitchConfirmationVariant;
 }
@@ -38,8 +38,8 @@ const VARIANT_TEXT: Record<
  * needs to decide what to do with the current conversation before proceeding.
  *
  * Two variants:
- * - **switch** — loading an existing conversation.
- * - **new** — starting a fresh conversation via the "+" button.
+ * - **switch** - loading an existing conversation.
+ * - **new** - starting a fresh conversation via the "+" button.
  *
  * A **Cancel** action returns the user to the previous view.
  */

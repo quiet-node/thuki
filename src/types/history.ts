@@ -40,9 +40,10 @@ export interface PersistedMessage {
   /** JSON-encoded `SearchWarning[]` emitted during a `/search` turn.
    *  Null for non-search messages or turns with no warnings. */
   search_warnings: string | null;
-  /** JSON-encoded search trace timeline data for this search turn.
-   *  Newer turns store `SearchTraceStep[]`; older turns may still contain
-   *  legacy iteration traces. Null for non-search messages. */
+  /** JSON-encoded search metadata for this search turn.
+   *  Newer turns store `SearchMetadata`; older turns may still contain
+   *  `SearchTraceStep[]` or legacy iteration traces. Null for non-search
+   *  messages. */
   search_metadata: string | null;
   /** Unix timestamp (seconds) the message was created. */
   created_at: number;
@@ -68,6 +69,6 @@ export interface SaveMessagePayload {
   search_sources: { title: string; url: string }[] | null;
   /** Pre-serialized JSON string of `SearchWarning[]`, or null. */
   search_warnings: string | null;
-  /** Pre-serialized JSON string of the search trace timeline, or null. */
+  /** Pre-serialized JSON string of SearchMetadata or a legacy trace payload. */
   search_metadata: string | null;
 }

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { Message } from './useOllama';
 import type {
   IterationTrace,
+  SearchMetadata,
   SearchResultPreview,
   SearchTraceStep,
   SearchWarning,
@@ -18,8 +19,9 @@ import type {
  * Maps a frontend `Message` to the `SaveMessagePayload` shape expected by
  * the `save_conversation` and `generate_title` Tauri commands.
  *
- * `search_metadata` stores `SearchTraceStep[]` serialized as JSON. The column
- * name is a legacy artifact that predates the richer live timeline model.
+ * `search_metadata` stores `SearchMetadata` on new rows. Older rows may still
+ * contain `SearchTraceStep[]` or legacy `IterationTrace[]` payloads, so the
+ * loader continues to accept all three shapes.
  */
 function toPayload(msg: Message): SaveMessagePayload {
   return {
@@ -33,12 +35,18 @@ function toPayload(msg: Message): SaveMessagePayload {
       msg.searchWarnings && msg.searchWarnings.length > 0
         ? JSON.stringify(msg.searchWarnings)
         : null,
-    // search_metadata stores SearchTraceStep[] serialized as JSON.
     search_metadata:
-      msg.searchTraces && msg.searchTraces.length > 0
-        ? JSON.stringify(msg.searchTraces)
-        : null,
+      msg.searchMetadata !== undefined
+        ? JSON.stringify(msg.searchMetadata)
+        : msg.searchTraces && msg.searchTraces.length > 0
+          ? JSON.stringify(msg.searchTraces)
+          : null,
   };
+}
+
+interface ParsedSearchMetadata {
+  metadata?: SearchMetadata;
+  traces?: SearchTraceStep[];
 }
 
 function hostnameOrUrl(url: string): string {
@@ -69,6 +77,17 @@ function isIterationTrace(value: unknown): value is IterationTrace {
     'queries' in value &&
     'judge_verdict' in value &&
     'judge_reasoning' in value
+  );
+}
+
+function isSearchMetadata(value: unknown): value is SearchMetadata {
+  if (!value || typeof value !== 'object') return false;
+
+  return (
+    'iterations' in value &&
+    Array.isArray(value.iterations) &&
+    'total_duration_ms' in value &&
+    'retries_performed' in value
   );
 }
 
@@ -138,28 +157,47 @@ function convertLegacyTraces(traces: IterationTrace[]): SearchTraceStep[] {
   });
 }
 
-function parseSearchMetadata(
-  raw: string | null,
-): SearchTraceStep[] | undefined {
-  if (!raw) return undefined;
+function parseSearchMetadata(raw: string | null): ParsedSearchMetadata {
+  if (!raw) return {};
 
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      return undefined;
+    if (Array.isArray(parsed)) {
+      if (parsed.length === 0) {
+        return {};
+      }
+
+      if (parsed.every(isSearchTraceStep)) {
+        return { traces: parsed };
+      }
+
+      if (parsed.every(isIterationTrace)) {
+        return {
+          metadata: {
+            iterations: parsed,
+            total_duration_ms: 0,
+            retries_performed: 0,
+          },
+          traces: convertLegacyTraces(parsed),
+        };
+      }
+
+      return {};
     }
 
-    if (parsed.every(isSearchTraceStep)) {
-      return parsed;
+    if (isSearchMetadata(parsed)) {
+      return {
+        metadata: parsed,
+        traces:
+          parsed.iterations.length > 0
+            ? convertLegacyTraces(parsed.iterations)
+            : undefined,
+      };
     }
 
-    if (parsed.every(isIterationTrace)) {
-      return convertLegacyTraces(parsed);
-    }
-
-    return undefined;
+    return {};
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -167,8 +205,9 @@ function parseSearchMetadata(
  * Maps a `PersistedMessage` returned by `load_conversation` back to a
  * frontend `Message`, preserving optional fields.
  *
- * `search_metadata` is deserialized as `SearchTraceStep[]`. Older saved
- * `IterationTrace[]` payloads are converted into coarse timeline steps.
+ * `search_metadata` is deserialized as `SearchMetadata` on new rows. Older
+ * `SearchTraceStep[]` and legacy `IterationTrace[]` payloads are still
+ * accepted for backward compatibility.
  */
 function fromPersisted(msg: PersistedMessage): Message {
   const imagePaths = msg.image_paths
@@ -180,7 +219,8 @@ function fromPersisted(msg: PersistedMessage): Message {
   const searchWarnings = msg.search_warnings
     ? (JSON.parse(msg.search_warnings) as SearchWarning[])
     : undefined;
-  const searchTraces = parseSearchMetadata(msg.search_metadata);
+  const { metadata: searchMetadata, traces: searchTraces } =
+    parseSearchMetadata(msg.search_metadata);
   return {
     id: msg.id,
     role: msg.role as 'user' | 'assistant',
@@ -192,11 +232,13 @@ function fromPersisted(msg: PersistedMessage): Message {
       searchSources && searchSources.length > 0 ? searchSources : undefined,
     fromSearch:
       (searchSources !== undefined && searchSources.length > 0) ||
-      (searchTraces !== undefined && searchTraces.length > 0)
+      (searchTraces !== undefined && searchTraces.length > 0) ||
+      searchMetadata !== undefined
         ? true
         : undefined,
     searchWarnings:
       searchWarnings && searchWarnings.length > 0 ? searchWarnings : undefined,
+    searchMetadata,
     searchTraces:
       searchTraces && searchTraces.length > 0 ? searchTraces : undefined,
   };
@@ -207,7 +249,7 @@ function fromPersisted(msg: PersistedMessage): Message {
  *
  * Tracks whether the active conversation has been saved to SQLite and provides
  * typed wrappers around all history-related Tauri commands. Intentionally has
- * no knowledge of streaming state or window management — those live in App.tsx
+ * no knowledge of streaming state or window management - those live in App.tsx
  * and `useOllama`.
  *
  * @returns An object containing the current persistence state and all
@@ -221,7 +263,7 @@ export function useConversationHistory() {
 
   /**
    * Persists the current conversation to SQLite for the first time.
-   * Subsequent calls while `isSaved` is true are no-ops — the bookmark
+   * Subsequent calls while `isSaved` is true are no-ops - the bookmark
    * icon on the frontend enforces single-save semantics.
    *
    * Fires `generate_title` as a fire-and-forget background task after saving;
@@ -259,7 +301,7 @@ export function useConversationHistory() {
 
   /**
    * Appends a completed user/assistant turn to the already-saved conversation.
-   * No-op if the conversation has not been saved yet — partial conversations
+   * No-op if the conversation has not been saved yet - partial conversations
    * are only persisted after an explicit save.
    *
    * @param userMsg The user message from the completed turn.
@@ -295,9 +337,12 @@ export function useConversationHistory() {
               ? JSON.stringify(assistantMsg.searchWarnings)
               : null,
           searchMetadata:
-            assistantMsg.searchTraces && assistantMsg.searchTraces.length > 0
-              ? JSON.stringify(assistantMsg.searchTraces)
-              : null,
+            assistantMsg.searchMetadata !== undefined
+              ? JSON.stringify(assistantMsg.searchMetadata)
+              : assistantMsg.searchTraces &&
+                  assistantMsg.searchTraces.length > 0
+                ? JSON.stringify(assistantMsg.searchTraces)
+                : null,
         }),
       ]);
     },
@@ -369,7 +414,7 @@ export function useConversationHistory() {
    * full session (new conversation), call `useOllama.reset()` alongside this
    * so the backend history is also wiped. When only marking a conversation as
    * unsaved while keeping messages visible (e.g. after deletion from history),
-   * calling this alone is correct — `persistTurn` will no-op and the backend
+   * calling this alone is correct - `persistTurn` will no-op and the backend
    * context is rebuilt from the frontend messages on the next request.
    */
   const reset = useCallback(() => {

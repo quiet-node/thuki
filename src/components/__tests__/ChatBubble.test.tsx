@@ -77,7 +77,7 @@ describe('ChatBubble', () => {
       const { container } = render(
         <ChatBubble role="assistant" content="Hello" index={0} />,
       );
-      // AI messages span full width — no max-width cap like user bubbles
+      // AI messages span full width - no max-width cap like user bubbles
       expect(container.querySelector('.group')).toBeNull();
     });
 
@@ -220,7 +220,7 @@ describe('ChatBubble', () => {
       ).toBeInTheDocument();
       // The content span should not be rendered when content is empty
       expect(container.querySelector('.text-white\\/95')).toBeNull();
-      // CopyButton should also be hidden — nothing to copy
+      // CopyButton should also be hidden - nothing to copy
       expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
     });
   });
@@ -968,7 +968,7 @@ describe('ChatBubble', () => {
 
     it('does not wrap citations that point past the source array', () => {
       // Every [N] in the content references a non-existent source. The walker
-      // collects the text node, but no anchors are inserted — lastIndex stays 0.
+      // collects the text node, but no anchors are inserted - lastIndex stays 0.
       const { container } = render(
         <ChatBubble
           role="assistant"

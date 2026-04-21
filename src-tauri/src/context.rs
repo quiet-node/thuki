@@ -275,12 +275,12 @@ mod macos {
     pub fn capture() -> ActivationContext {
         // SAFETY: All AX API calls are wrapped in this function. `element` is released
         // at the end of this function and is not retained by `selected_text` or
-        // `selection_bounds` — both helpers use the pointer only within their call duration.
+        // `selection_bounds` - both helpers use the pointer only within their call duration.
         unsafe {
             let mouse = current_mouse_position();
 
             let Some(element) = focused_element() else {
-                // No focused element — try clipboard fallback before giving up.
+                // No focused element - try clipboard fallback before giving up.
                 let text = clipboard_fallback();
                 return ActivationContext {
                     selected_text: text,
@@ -317,7 +317,7 @@ mod macos {
 /// Captures the current activation context at the moment of the hotkey press.
 ///
 /// When `overlay_is_visible` is `true` the hotkey will hide the overlay, so
-/// no context is needed — skip AX queries and clipboard simulation entirely.
+/// no context is needed - skip AX queries and clipboard simulation entirely.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn capture_activation_context(overlay_is_visible: bool) -> ActivationContext {
     if overlay_is_visible {
@@ -343,7 +343,7 @@ const ANCHOR_OFFSET_X: f64 = 8.0;
 const ANCHOR_OFFSET_Y: f64 = 2.0;
 /// Bottom padding of the overlay window in logical pts (pb-6 = 24 pt + motion py-2
 /// bottom = 8 pt). Added when positioning the bar **above** a selection so the
-/// bar's visible content bottom — not the transparent window edge — aligns with
+/// bar's visible content bottom - not the transparent window edge - aligns with
 /// the selection boundary.
 const WINDOW_BOTTOM_PADDING: f64 = 32.0;
 /// Minimum distance from any screen edge (logical pts).

@@ -82,6 +82,16 @@ export interface IterationTrace {
 }
 
 /**
+ * End-of-pipeline metadata emitted with the final `Done` event for `/search`.
+ * Mirrors the Rust `SearchMetadata` struct.
+ */
+export interface SearchMetadata {
+  iterations: IterationTrace[];
+  total_duration_ms: number;
+  retries_performed: number;
+}
+
+/**
  * Warnings emitted by the agentic search pipeline. String values match the
  * Rust `SearchWarning` enum under `#[serde(rename_all = "snake_case")]`.
  */
@@ -104,7 +114,7 @@ export type SearchEvent =
   | { type: 'Sources'; results: SearchResultPreview[] }
   | { type: 'Token'; content: string }
   | { type: 'Warning'; warning: SearchWarning }
-  | { type: 'Done' }
+  | { type: 'Done'; metadata?: SearchMetadata }
   | { type: 'Cancelled' }
   | { type: 'Error'; message: string }
   /** Pre-flight sandbox probe failed: the SearXNG or reader container is not
@@ -138,8 +148,9 @@ export interface LiveIterationState {
  * Transient UI stage indicator shown while the search pipeline is running.
  * `null` means the pipeline is idle or has finished streaming tokens.
  *
- * `refining_search` carries attempt/total so the UI can render
- * "Refining search (2/3)". Initial round renders `searching` only.
+ * `refining_search` carries the 1-indexed gap-round number and total gap
+ * rounds so the UI can render text like "Refining search (1/2)". Initial
+ * round renders `searching` only.
  */
 export type SearchStage =
   | null

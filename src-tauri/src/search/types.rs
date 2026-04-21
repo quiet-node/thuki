@@ -111,27 +111,20 @@ pub struct SearchTraceStep {
 /// `search_pipeline` invocation. Matches the `SearchEvent` TypeScript union.
 ///
 /// Lifecycle per pipeline run:
-/// - `Classifying` -> `Clarifying` -> `Done`
-/// - `Classifying` -> `Token`* -> `Done`  (answer-from-context branch)
-/// - `Classifying` -> `Searching` -> `Token`* -> `Done`  (search branch)
+/// - `AnalyzingQuery` -> `Token`* -> `Done`  (clarification branch)
+/// - `AnalyzingQuery` -> `Token`* -> `Done`  (answer-from-context branch)
+/// - `AnalyzingQuery` -> `Searching` -> `Token`* -> `Done`  (search branch)
 /// - `Cancelled` may replace `Done` when the user cancels mid-stream.
 /// - `Error` may replace any later event on a fatal backend failure.
 ///
-/// Agentic-loop variants (introduced in search-v3) extend the lifecycle with
-/// sufficiency judging, reader stages, gap-refinement rounds, and warnings.
-/// `Classifying` and `Clarifying` are preserved here until Task 13 removes
-/// their call sites; prefer `AnalyzingQuery` in new code.
+/// Agentic-loop variants extend the lifecycle with sufficiency judging,
+/// reader stages, gap-refinement rounds, and warnings.
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum SearchEvent {
     /// User-facing timeline update for the live `SearchTraceBlock` UI.
     Trace { step: SearchTraceStep },
-    /// Router LLM call is in flight (legacy; prefer `AnalyzingQuery` in new code).
-    Classifying,
-    /// Router decided the query is ambiguous; pipeline terminates after
-    /// emitting the clarifying question.
-    Clarifying { question: String },
     /// SearXNG lookup is in flight. Carries the queries submitted to SearXNG so
     /// the frontend can display them in the live search trace.
     Searching { queries: Vec<String> },
@@ -140,14 +133,17 @@ pub enum SearchEvent {
     Sources { results: Vec<SearchResultPreview> },
     /// Streaming token from the answering LLM call.
     Token { content: String },
-    /// Pipeline finished successfully. Emitted once, last.
-    Done,
+    /// Pipeline finished successfully. Emitted once, last. Search branches may
+    /// attach a structured metadata summary for persistence and later analysis.
+    Done {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<SearchMetadata>,
+    },
     /// User cancelled. Emitted instead of `Done` when cancellation wins.
     Cancelled,
     /// Fatal pipeline error with a user-facing message.
     Error { message: String },
-    /// Agentic router/judge LLM call is in flight. Replaces `Classifying`
-    /// once Task 13 updates the pipeline call sites.
+    /// Agentic router/judge LLM call is in flight.
     AnalyzingQuery,
     /// Reader is fetching and extracting text from the ranked source URLs.
     ReadingSources,
@@ -156,8 +152,9 @@ pub enum SearchEvent {
     /// analysis live during a retrieval round.
     FetchingUrl { url: String },
     /// Sufficiency judge returned `Partial` or `Insufficient`; starting
-    /// another SearXNG round with gap-filling queries. `attempt` is 1-indexed;
-    /// `total` is the configured maximum number of gap rounds.
+    /// another SearXNG round with gap-filling queries. `attempt` is the
+    /// 1-indexed gap-round number; `total` is the configured maximum number
+    /// of gap rounds.
     RefiningSearch { attempt: u32, total: u32 },
     /// Final synthesis LLM call is in flight (answer assembly phase).
     Composing,
@@ -297,9 +294,9 @@ pub struct IterationTrace {
     pub duration_ms: u64,
 }
 
-/// End-of-pipeline summary attached to the `Done` event payload (in a later
-/// task) and used for telemetry. Aggregates all [`IterationTrace`] records and
-/// top-level timing.
+/// End-of-pipeline summary attached to the `Done` event payload and used for
+/// persistence and future telemetry. Aggregates all [`IterationTrace`] records
+/// and top-level timing.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct SearchMetadata {
     /// Ordered list of retrieval iterations, one per search round.
@@ -419,15 +416,24 @@ mod tests {
 
     #[test]
     fn search_event_serialises_with_type_tag() {
-        let classifying = serde_json::to_value(SearchEvent::Classifying).unwrap();
-        assert_eq!(classifying["type"], "Classifying");
-
-        let clarifying = serde_json::to_value(SearchEvent::Clarifying {
-            question: "Which person?".into(),
+        let done = serde_json::to_value(SearchEvent::Done {
+            metadata: Some(SearchMetadata {
+                iterations: vec![IterationTrace {
+                    stage: IterationStage::Initial,
+                    queries: vec!["rust async".into()],
+                    urls_fetched: vec!["https://rust-lang.org".into()],
+                    reader_empty_urls: vec![],
+                    judge_verdict: Sufficiency::Partial,
+                    judge_reasoning: "still missing version details".into(),
+                    duration_ms: 42,
+                }],
+                total_duration_ms: 42,
+                retries_performed: 0,
+            }),
         })
         .unwrap();
-        assert_eq!(clarifying["type"], "Clarifying");
-        assert_eq!(clarifying["question"], "Which person?");
+        assert_eq!(done["type"], "Done");
+        assert_eq!(done["metadata"]["total_duration_ms"], 42);
 
         let token = serde_json::to_value(SearchEvent::Token {
             content: "hi".into(),
@@ -466,8 +472,9 @@ mod tests {
         assert_eq!(searching["type"], "Searching");
         assert_eq!(searching["queries"][0], "rust async");
 
-        let done = serde_json::to_value(SearchEvent::Done).unwrap();
+        let done = serde_json::to_value(SearchEvent::Done { metadata: None }).unwrap();
         assert_eq!(done["type"], "Done");
+        assert!(done.get("metadata").is_none());
 
         let cancelled = serde_json::to_value(SearchEvent::Cancelled).unwrap();
         assert_eq!(cancelled["type"], "Cancelled");

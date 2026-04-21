@@ -3,10 +3,10 @@
 //! The retrieved SearXNG set (≤ [`super::searxng::MAX_RESULTS`]) is reranked
 //! before being exposed to the synthesis prompt. Two signals are combined:
 //!
-//! 1. **BM25F** — field-weighted Okapi BM25 over `title` and `content` fields,
+//! 1. **BM25F** - field-weighted Okapi BM25 over `title` and `content` fields,
 //!    using the retrieved set itself as the corpus. Captures query-document
 //!    lexical relevance.
-//! 2. **SearXNG engine order** — the authority/popularity signal the upstream
+//! 2. **SearXNG engine order** - the authority/popularity signal the upstream
 //!    metasearch engine already provides.
 //!
 //! The two ranked lists are fused with **Reciprocal Rank Fusion** (Cormack,
@@ -38,7 +38,7 @@ const BM25_B: f64 = 0.75;
 
 /// BM25F field weight for titles. Titles are higher-signal than body snippets
 /// on web search results (engines already optimise them for topicality), so we
-/// weight them 2× the body contribution — a standard field-weighting choice
+/// weight them 2× the body contribution - a standard field-weighting choice
 /// used in Lucene BM25FSimilarity defaults.
 const TITLE_WEIGHT: f64 = 2.0;
 
@@ -180,7 +180,7 @@ fn bm25f_ranks(scores: &[f64]) -> Vec<Option<usize>> {
 /// rrf(d) = Σ_i 1 / (k + rank_i(d))     for each list i where d is ranked
 /// ```
 /// with `k = 60`. A `None` entry means the document is not ranked by that
-/// list and contributes nothing from that source — standard RRF treatment of
+/// list and contributes nothing from that source - standard RRF treatment of
 /// sparse/off-list signals. All input lists must have identical length (the
 /// fixed universe of documents being fused).
 fn rrf_fuse(rank_lists: &[Vec<Option<usize>>]) -> Vec<f64> {
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn bm25f_saturates_with_repeated_terms() {
         // Document with term repeated 10× should score higher than once, but
-        // the incremental gain from 10→20 is smaller than from 1→2 — the
+        // the incremental gain from 10→20 is smaller than from 1→2 - the
         // defining saturation property of BM25.
         let one = vec![make_result("rust", &"filler ".repeat(20))];
         let two = vec![make_result("rust rust", &"filler ".repeat(20))];

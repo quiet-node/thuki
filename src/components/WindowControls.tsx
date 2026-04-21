@@ -7,7 +7,7 @@
  * minimize or fullscreen).
  *
  * Window dragging is handled by the application root container via event
- * bubbling — mousedown events from the bar surface propagate up naturally.
+ * bubbling - mousedown events from the bar surface propagate up naturally.
  * A subtle divider at the bottom visually separates the controls from
  * the chat messages area below.
  */
@@ -15,7 +15,7 @@
 import { memo } from 'react';
 import { Tooltip } from './Tooltip';
 
-/** Hoisted bookmark icon — save/saved state toggled via fill class. */
+/** Hoisted bookmark icon - save/saved state toggled via fill class. */
 const BOOKMARK_ICON_EMPTY = (
   <svg
     width="13"
@@ -132,7 +132,7 @@ export const WindowControls = memo(function WindowControls({
   return (
     <div className="shrink-0">
       <div className="group flex items-center px-4 py-2.5">
-        {/* Close button — reveals × icon on group hover.
+        {/* Close button - reveals × icon on group hover.
             Padding enlarges the hit area to ~24×24px without changing the
             12×12px visual dot; negative margin preserves flex spacing. */}
         <button
@@ -159,21 +159,21 @@ export const WindowControls = memo(function WindowControls({
           </div>
         </button>
 
-        {/* Minimize — decorative only */}
+        {/* Minimize - decorative only */}
         <div
           className="w-3 h-3 rounded-full ml-2"
           style={{ backgroundColor: INACTIVE_DOT }}
           aria-hidden="true"
         />
 
-        {/* Zoom — decorative only */}
+        {/* Zoom - decorative only */}
         <div
           className="w-3 h-3 rounded-full ml-2"
           style={{ backgroundColor: INACTIVE_DOT }}
           aria-hidden="true"
         />
 
-        {/* Right-side header controls — save bookmark + history dropdown */}
+        {/* Right-side header controls - save bookmark + history dropdown */}
         <div className="ml-auto flex items-center gap-1">
           {onSave !== undefined && (
             <Tooltip

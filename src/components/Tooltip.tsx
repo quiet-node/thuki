@@ -36,9 +36,9 @@ export function Tooltip({
   /** Defer portal mount until after first hover (lazy load). */
   const [hasActivated, setHasActivated] = useState(false);
   /**
-   * `left` — clamped horizontal center of the tooltip box (px from viewport left).
-   * `top` — vertical position below the trigger (px from viewport top).
-   * `arrowOffset` — how far the arrow shifts from center (px) so it keeps pointing
+   * `left` - clamped horizontal center of the tooltip box (px from viewport left).
+   * `top` - vertical position below the trigger (px from viewport top).
+   * `arrowOffset` - how far the arrow shifts from center (px) so it keeps pointing
    *   at the trigger even when the box is clamped away from the window edge.
    */
   const [coords, setCoords] = useState({ left: 0, top: 0, arrowOffset: 0 });

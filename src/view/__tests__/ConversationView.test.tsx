@@ -103,14 +103,14 @@ describe('ConversationView', () => {
       writable: true,
     });
 
-    // Simulate the user scrolling up (negative deltaY) — this is the only
+    // Simulate the user scrolling up (negative deltaY) - this is the only
     // mechanism that disables auto-scroll, avoiding false negatives from
     // layout-induced scroll events during spring height measurement.
     act(() => {
       scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
     });
 
-    // Rerender with new streaming content — auto-scroll should be skipped
+    // Rerender with new streaming content - auto-scroll should be skipped
     // because the user explicitly scrolled up
     act(() => {
       rerender(
@@ -149,12 +149,12 @@ describe('ConversationView', () => {
       writable: true,
     });
 
-    // User scrolls up — disables auto-scroll
+    // User scrolls up - disables auto-scroll
     act(() => {
       scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
     });
 
-    // Add a new user message — this should re-enable auto-scroll because
+    // Add a new user message - this should re-enable auto-scroll because
     // sending a message is an explicit "I want to see the response" action
     act(() => {
       rerender(
@@ -170,7 +170,7 @@ describe('ConversationView', () => {
     });
 
     // Auto-scroll should have re-engaged (scrollTop set via rAF in test env
-    // may not fire, but the branch is exercised — the key assertion is that
+    // may not fire, but the branch is exercised - the key assertion is that
     // adding a user message doesn't leave auto-scroll disabled)
   });
 
@@ -197,7 +197,7 @@ describe('ConversationView', () => {
       writable: true,
     });
 
-    // User scrolls up during streaming — disables auto-scroll
+    // User scrolls up during streaming - disables auto-scroll
     act(() => {
       scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
     });
@@ -239,7 +239,7 @@ describe('ConversationView', () => {
     ) as HTMLElement;
     expect(scrollEl).not.toBeNull();
 
-    // User scrolls up — disables auto-scroll
+    // User scrolls up - disables auto-scroll
     act(() => {
       scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
     });
@@ -259,7 +259,7 @@ describe('ConversationView', () => {
       writable: true,
     });
 
-    // User scrolls down (positive deltaY) — the rAF callback should check
+    // User scrolls down (positive deltaY) - the rAF callback should check
     // position and re-enable auto-scroll since we're near the bottom
     // (scrollHeight - scrollTop - clientHeight = 500 - 10 - 480 = 10 < 60)
     act(() => {
@@ -271,7 +271,7 @@ describe('ConversationView', () => {
       await new Promise((r) => requestAnimationFrame(r));
     });
 
-    // Rerender with streaming content — should auto-scroll again
+    // Rerender with streaming content - should auto-scroll again
     act(() => {
       rerender(
         <ConversationView
@@ -302,7 +302,7 @@ describe('ConversationView', () => {
     ) as HTMLElement;
     expect(scrollEl).not.toBeNull();
 
-    // User scrolls up — disables auto-scroll
+    // User scrolls up - disables auto-scroll
     act(() => {
       scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
     });
@@ -333,7 +333,7 @@ describe('ConversationView', () => {
       await new Promise((r) => requestAnimationFrame(r));
     });
 
-    // Rerender with streaming — auto-scroll should still be disabled
+    // Rerender with streaming - auto-scroll should still be disabled
     act(() => {
       rerender(
         <ConversationView
@@ -377,7 +377,7 @@ describe('ConversationView', () => {
       );
     });
 
-    // Rerender with streaming — auto-scroll should still be enabled (default)
+    // Rerender with streaming - auto-scroll should still be enabled (default)
     act(() => {
       rerender(
         <ConversationView
@@ -834,7 +834,7 @@ describe('ConversationView', () => {
         />,
       );
       // External LoadingStage shows "Searching the web"; SearchTraceBlock's
-      // internal label shows "Searching..." — assert the external one is gone.
+      // internal label shows "Searching..." - assert the external one is gone.
       const labels = screen.getAllByTestId('loading-label');
       expect(labels.every((el) => el.textContent !== 'Searching the web')).toBe(
         true,

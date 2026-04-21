@@ -225,7 +225,7 @@ function App() {
   );
 
   /**
-   * Session counter — incremented on each overlay open. Used in the motion
+   * Session counter - incremented on each overlay open. Used in the motion
    * key to force AnimatePresence to fully unmount the stale tree before
    * mounting a fresh one, preventing a flash of the previous conversation.
    */
@@ -243,7 +243,7 @@ function App() {
   const [growsUpward, setGrowsUpward] = useState(false);
 
   /**
-   * Determines whether the UI has entered "chat mode" — i.e., the morphing
+   * Determines whether the UI has entered "chat mode" - i.e., the morphing
    * chat window state with message bubbles. Transitions from input-bar mode
    * to chat-window mode are animated via Framer Motion `layout` prop.
    */
@@ -602,7 +602,7 @@ function App() {
         loadMessages(loaded);
         setSearchActive(false);
       } catch {
-        // Load failed — current session is preserved intact.
+        // Load failed - current session is preserved intact.
       } finally {
         setIsHistoryOpen(false);
       }
@@ -613,7 +613,7 @@ function App() {
   /**
    * Saves the current unsaved session then loads the requested conversation.
    *
-   * If save fails the operation is aborted — we do not load the target
+   * If save fails the operation is aborted - we do not load the target
    * conversation because the current session has not been persisted yet.
    * If save succeeds but load fails the panel is still dismissed; the
    * current session has been saved so no data is lost.
@@ -623,7 +623,7 @@ function App() {
       try {
         await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
       } catch {
-        // Save failed — abort to avoid leaving the current session unprotected.
+        // Save failed - abort to avoid leaving the current session unprotected.
         return;
       }
       try {
@@ -631,7 +631,7 @@ function App() {
         loadMessages(loaded);
         setSearchActive(false);
       } catch {
-        // Load failed — save already committed; dismiss panel, keep current view.
+        // Load failed - save already committed; dismiss panel, keep current view.
       } finally {
         setIsHistoryOpen(false);
       }
@@ -643,7 +643,7 @@ function App() {
    * Deletes a conversation from the history panel.
    *
    * When the deleted conversation is the currently active one, only the
-   * persistence state (`resetHistory`) is cleared — messages remain visible
+   * persistence state (`resetHistory`) is cleared - messages remain visible
    * so the user can continue chatting or re-save. The error is intentionally
    * re-thrown so `HistoryPanel` can roll back its optimistic removal.
    */
@@ -722,7 +722,7 @@ function App() {
     setAttachedImages((prev) => [...prev, ...newImages]);
 
     // Defer backend processing to the next frame so React can render the
-    // blob URL thumbnails immediately — keeps the UI responsive while
+    // blob URL thumbnails immediately - keeps the UI responsive while
     // FileReader + IPC serialisation happen in subsequent event-loop ticks.
     requestAnimationFrame(() => {
       for (let i = 0; i < files.length; i++) {
@@ -818,7 +818,7 @@ function App() {
    * lets the user drag-select a screen region, then returns the captured image
    * as a base64 PNG string (or null if the user cancelled).
    * On success, converts the base64 to a File and feeds it into the existing
-   * handleImagesAttached pipeline — identical to a paste or drag-drop.
+   * handleImagesAttached pipeline - identical to a paste or drag-drop.
    */
   const handleScreenshot = useCallback(async () => {
     /* v8 ignore start -- defensive guard: button is always disabled at max images, so this branch is unreachable through normal UI interaction */
@@ -1141,7 +1141,7 @@ function App() {
       return;
     }
 
-    // Images are still processing — store the intent and wait. The effect
+    // Images are still processing - store the intent and wait. The effect
     // below will fire the actual ask() once every image has resolved.
     pendingSubmitRef.current = {
       query: trimmedQuery,
@@ -1187,7 +1187,7 @@ function App() {
   useEffect(() => {
     if (!pendingSubmitRef.current) return;
     if (attachedImages.length === 0) {
-      // All images failed — restore the user's query so their text isn't lost.
+      // All images failed - restore the user's query so their text isn't lost.
       const { query: savedQuery, context: savedContext } =
         pendingSubmitRef.current;
       pendingSubmitRef.current = null;
@@ -1209,7 +1209,7 @@ function App() {
     } = pendingSubmitRef.current;
     pendingSubmitRef.current = null;
     setIsSubmitPending(false);
-    // Clear the preview message — ask() will add the real one with file paths.
+    // Clear the preview message - ask() will add the real one with file paths.
     setPendingUserMessage(null);
 
     const images = attachedImages.map((img) => img.filePath as string);
@@ -1309,7 +1309,7 @@ function App() {
           setOnboardingStage(payload.stage);
         },
       );
-      // Both listeners registered — safe to let Rust decide what to show on launch.
+      // Both listeners registered - safe to let Rust decide what to show on launch.
       await invoke('notify_frontend_ready');
     };
 
@@ -1449,11 +1449,11 @@ function App() {
             transition={{ type: 'spring', stiffness: 260, damping: 24 }}
             className="w-full max-w-2xl px-4 py-2 overflow-visible"
           >
-            {/* Relative wrapper — serves as the positioning context for the
+            {/* Relative wrapper - serves as the positioning context for the
                 chat-mode history dropdown so it can sit outside the morphing
                 container's overflow-hidden boundary without being clipped. */}
             <div className="relative">
-              {/* Morphing Container — flex column ensures the input bar
+              {/* Morphing Container - flex column ensures the input bar
                   always sticks to the bottom without spring animation lag.
                   A CSS `transition: min-height` drives smooth window growth
                   when the chat-mode history dropdown is open; the existing
@@ -1472,7 +1472,7 @@ function App() {
                     : 'rounded-2xl shadow-bar'
                 }`}
               >
-                {/* Chat Messages Area — morphs in when in chat mode */}
+                {/* Chat Messages Area - morphs in when in chat mode */}
                 <AnimatePresence>
                   {isChatMode ? (
                     <ConversationView
@@ -1494,10 +1494,10 @@ function App() {
                   ) : null}
                 </AnimatePresence>
 
-                {/* Ask-bar mode history panel — inline below the input bar.
+                {/* Ask-bar mode history panel - inline below the input bar.
                     The !isChatMode gate lives OUTSIDE AnimatePresence so that when
                     a conversation is loaded (isChatMode → true) the panel unmounts
-                    instantly — no exit animation runs alongside ConversationView
+                    instantly - no exit animation runs alongside ConversationView
                     mounting. Without this, AnimatePresence would hold the panel in
                     the DOM during its exit while ConversationView is also present,
                     causing two rapid ResizeObserver → setSize() calls (jitter).
@@ -1545,7 +1545,7 @@ function App() {
                   </div>
                 )}
 
-                {/* Input Bar — always pinned to the bottom */}
+                {/* Input Bar - always pinned to the bottom */}
                 <AskBarView
                   query={query}
                   setQuery={setQuery}
@@ -1566,7 +1566,7 @@ function App() {
                 />
               </div>
 
-              {/* Chat-mode history dropdown — sibling of the morphing container so
+              {/* Chat-mode history dropdown - sibling of the morphing container so
                   it is never clipped by its overflow-hidden. Positioned absolutely
                   within this relative wrapper (same coordinate space as the
                   container). The container's minHeight animation grows the native

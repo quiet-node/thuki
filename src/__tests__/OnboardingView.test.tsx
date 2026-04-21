@@ -496,7 +496,7 @@ describe('OnboardingView', () => {
     });
 
     // Only one poll call (initial was count=1, first poll was count=2; second
-    // tick was blocked — no count=3).
+    // tick was blocked - no count=3).
     expect(pollCallCount).toBe(2);
 
     await act(async () => {

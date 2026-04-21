@@ -178,7 +178,7 @@ pub fn load_conversation(
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let persisted = database::load_messages(&conn, &conversation_id).map_err(|e| e.to_string())?;
 
-    // Bump the epoch before replacing messages — same invariant as
+    // Bump the epoch before replacing messages - same invariant as
     // `reset_conversation`. This prevents any in-flight `ask_ollama`
     // stream from appending stale tokens into the freshly loaded history.
     history
@@ -220,7 +220,7 @@ pub fn delete_conversation(
 
     database::delete_conversation(&conn, &conversation_id).map_err(|e| e.to_string())?;
 
-    // Best-effort file cleanup — don't fail the command if a file is missing.
+    // Best-effort file cleanup - don't fail the command if a file is missing.
     let base_dir = app_handle
         .path()
         .app_data_dir()
@@ -233,7 +233,7 @@ pub fn delete_conversation(
 }
 
 /// Generates a short AI title for a saved conversation by asking Ollama.
-/// Runs as a fire-and-forget background task — the frontend polls or
+/// Runs as a fire-and-forget background task - the frontend polls or
 /// refreshes the list to see the updated title.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]

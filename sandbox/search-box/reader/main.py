@@ -9,6 +9,10 @@ Security posture (enforced at both container and app layer):
 - SSRF guard: rejects non-http(s) schemes and private / loopback / link-local
   / multicast / reserved addresses so a malicious URL cannot reach internal
   services.
+- DNS rebinding boundary: this service only validates literal hostnames and IP
+    strings. It does not resolve public hostnames before connect, so DNS
+    rebinding must still be contained by the localhost-only network boundary and
+    container isolation.
 - Byte cap: fetch aborts once ``MAX_BYTES`` is exceeded, so a hostile server
   cannot exhaust memory.
 - Timeout: 8s hard ceiling on upstream fetch.
@@ -36,6 +40,9 @@ MAX_BYTES = 2_000_000
 """Hard cap on bytes pulled from upstream. Protects the service from hostile
 servers that stream unbounded content. 2 MB easily covers a long article with
 media-free HTML."""
+
+ULA_V6_NETWORK = ipaddress.ip_network("fc00::/7")
+"""IPv6 unique-local range blocked explicitly by the SSRF guard."""
 
 
 class ExtractRequest(BaseModel):
@@ -70,9 +77,11 @@ def _is_private_host(host: str) -> bool:
     """Return True if ``host`` is an address the reader must refuse to fetch.
 
     Covers loopback, RFC1918 private, link-local, multicast, reserved IPv4
-    and IPv6 ranges, plus the literal string ``"localhost"`` for paranoia.
-    Non-IP hostnames that resolve elsewhere are allowed through; DNS-level
-    defense is out of scope for this service layer.
+    and IPv6 ranges, the IPv6 unique-local block ``fc00::/7``, plus the
+    literal string ``"localhost"`` for paranoia. Non-IP hostnames are allowed
+    through here; this service does not resolve hostnames before connect, so
+    DNS-level rebinding defense remains the responsibility of the sandbox
+    network boundary.
     """
     try:
         ip = ipaddress.ip_address(host)
@@ -84,6 +93,7 @@ def _is_private_host(host: str) -> bool:
         or ip.is_link_local
         or ip.is_multicast
         or ip.is_reserved
+        or (ip.version == 6 and ip in ULA_V6_NETWORK)
     )
 
 

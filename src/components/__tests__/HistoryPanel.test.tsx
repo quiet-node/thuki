@@ -297,10 +297,10 @@ describe('HistoryPanel', () => {
 
     // First keystroke starts a debounce timer
     fireEvent.change(input, { target: { value: 'r' } });
-    // Second keystroke before debounce fires — clears the first timer (line 130)
+    // Second keystroke before debounce fires - clears the first timer (line 130)
     fireEvent.change(input, { target: { value: 're' } });
 
-    // Only after debounce delay should listFn be called — once, with 're'
+    // Only after debounce delay should listFn be called - once, with 're'
     await act(async () => {
       vi.advanceTimersByTime(250);
     });
@@ -323,7 +323,7 @@ describe('HistoryPanel', () => {
   });
 
   it('restores deleted conversation when onDeleteConversation rejects', async () => {
-    // Bug: optimistic removal has no rollback — if the backend delete fails the
+    // Bug: optimistic removal has no rollback - if the backend delete fails the
     // item disappears from the UI but still exists in SQLite, reappearing on next open.
     const props = makeProps({
       onDeleteConversation: vi.fn(async () => {

@@ -72,7 +72,7 @@ describe('ImagePreviewModal', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Close preview' }));
       // The button's onClick fires onClose, and the event bubbles to the
-      // backdrop's onClick which also fires onClose — 2 calls total.
+      // backdrop's onClick which also fires onClose - 2 calls total.
       expect(onClose).toHaveBeenCalledTimes(2);
     });
 

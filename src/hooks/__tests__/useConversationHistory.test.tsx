@@ -208,7 +208,7 @@ describe('useConversationHistory', () => {
 
     invoke.mockClear();
 
-    // userMsg has NO quotedText — should map to null
+    // userMsg has NO quotedText - should map to null
     const userMsg: Message = {
       id: 'u3',
       role: 'user',
@@ -792,19 +792,24 @@ describe('useConversationHistory', () => {
     );
   });
 
-  it('save() serialises searchTraces to JSON in payload', async () => {
+  it('save() serialises searchMetadata to JSON in payload', async () => {
     invoke.mockResolvedValueOnce({ conversation_id: 'conv-meta-save' });
     invoke.mockResolvedValue(undefined);
 
-    const trace = {
-      id: 'round-1-search',
-      kind: 'search' as const,
-      status: 'completed' as const,
-      round: 1,
-      title: 'Searching the web',
-      summary: 'Found 4 results across 2 sites.',
-      queries: ['q'],
-      counts: { found: 4 },
+    const metadata = {
+      iterations: [
+        {
+          stage: { kind: 'initial' as const },
+          queries: ['q'],
+          urls_fetched: ['https://example.com/rust'],
+          reader_empty_urls: [],
+          judge_verdict: 'sufficient' as const,
+          judge_reasoning: 'enough evidence',
+          duration_ms: 42,
+        },
+      ],
+      total_duration_ms: 42,
+      retries_performed: 0,
     };
     const messagesWithMeta: Message[] = [
       { id: 'u1', role: 'user', content: '/search q' },
@@ -812,7 +817,7 @@ describe('useConversationHistory', () => {
         id: 'a1',
         role: 'assistant',
         content: 'Answer',
-        searchTraces: [trace],
+        searchMetadata: metadata,
       },
     ];
 
@@ -828,14 +833,58 @@ describe('useConversationHistory', () => {
         messages: expect.arrayContaining([
           expect.objectContaining({
             role: 'assistant',
-            search_metadata: JSON.stringify([trace]),
+            search_metadata: JSON.stringify(metadata),
           }),
         ]),
       }),
     );
   });
 
-  it('persistTurn() serialises searchTraces to JSON on assistant messages', async () => {
+  it('save() falls back to serialising searchTraces when searchMetadata is absent', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-trace-save' });
+    invoke.mockResolvedValue(undefined);
+
+    const traces = [
+      {
+        id: 'round-1-search',
+        kind: 'search' as const,
+        status: 'completed' as const,
+        round: 1,
+        title: 'Searching the web',
+        summary: 'Found 4 results across 2 sites.',
+        queries: ['q'],
+      },
+    ];
+    const messagesWithTraces: Message[] = [
+      { id: 'u1', role: 'user', content: '/search q' },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Answer',
+        searchTraces: traces,
+      },
+    ];
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(messagesWithTraces, MODEL);
+    });
+
+    expect(invoke).toHaveBeenCalledWith(
+      'save_conversation',
+      expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({
+            role: 'assistant',
+            search_metadata: JSON.stringify(traces),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it('persistTurn() serialises searchMetadata to JSON on assistant messages', async () => {
     invoke.mockResolvedValueOnce({ conversation_id: 'conv-meta' });
     invoke.mockResolvedValue(undefined);
 
@@ -846,21 +895,27 @@ describe('useConversationHistory', () => {
     });
     invoke.mockClear();
 
-    const trace = {
-      id: 'compose',
-      kind: 'compose' as const,
-      status: 'completed' as const,
-      title: 'Synthesizing the answer',
-      summary:
-        'Pulling the strongest points together into a clear answer with citations.',
-      counts: { sources: 2 },
+    const metadata = {
+      iterations: [
+        {
+          stage: { kind: 'gap_round' as const, round: 1 },
+          queries: ['q', 'follow up'],
+          urls_fetched: ['https://example.com/a'],
+          reader_empty_urls: ['https://example.com/b'],
+          judge_verdict: 'partial' as const,
+          judge_reasoning: 'still missing one detail',
+          duration_ms: 88,
+        },
+      ],
+      total_duration_ms: 130,
+      retries_performed: 1,
     };
     const userMsg: Message = { id: 'u-m', role: 'user', content: 'q' };
     const assistantMsg: Message = {
       id: 'a-m',
       role: 'assistant',
       content: 'answer',
-      searchTraces: [trace],
+      searchMetadata: metadata,
     };
 
     await act(async () => {
@@ -876,8 +931,150 @@ describe('useConversationHistory', () => {
       thinkingContent: null,
       searchSources: null,
       searchWarnings: null,
-      searchMetadata: JSON.stringify([trace]),
+      searchMetadata: JSON.stringify(metadata),
     });
+  });
+
+  it('persistTurn() falls back to searchTraces when searchMetadata is absent', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-trace' });
+    invoke.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(MESSAGES, MODEL);
+    });
+    invoke.mockClear();
+
+    const traces = [
+      {
+        id: 'compose',
+        kind: 'compose' as const,
+        status: 'completed' as const,
+        title: 'Synthesizing the answer',
+        summary: 'Pulling the strongest points together into a clear answer.',
+        counts: { sources: 2 },
+      },
+    ];
+    const userMsg: Message = { id: 'u-t', role: 'user', content: 'q' };
+    const assistantMsg: Message = {
+      id: 'a-t',
+      role: 'assistant',
+      content: 'answer',
+      searchTraces: traces,
+    };
+
+    await act(async () => {
+      await result.current.persistTurn(userMsg, assistantMsg);
+    });
+
+    expect(invoke).toHaveBeenCalledWith('persist_message', {
+      conversationId: 'conv-trace',
+      role: 'assistant',
+      content: 'answer',
+      quotedText: null,
+      imagePaths: null,
+      thinkingContent: null,
+      searchSources: null,
+      searchWarnings: null,
+      searchMetadata: JSON.stringify(traces),
+    });
+  });
+
+  it('loadConversation() parses SearchMetadata from search_metadata', async () => {
+    const metadata = {
+      iterations: [
+        {
+          stage: { kind: 'initial' as const },
+          queries: ['q'],
+          urls_fetched: ['https://example.com/a'],
+          reader_empty_urls: [],
+          judge_verdict: 'sufficient' as const,
+          judge_reasoning: 'enough evidence',
+          duration_ms: 10,
+        },
+      ],
+      total_duration_ms: 10,
+      retries_performed: 0,
+    };
+
+    invoke.mockResolvedValueOnce([
+      {
+        id: 'u1',
+        role: 'user',
+        content: 'query',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: null,
+        created_at: 1,
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'answer',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: JSON.stringify(metadata),
+        created_at: 2,
+      },
+    ]);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    let loaded: Message[] = [];
+    await act(async () => {
+      loaded = await result.current.loadConversation('conv-meta-load');
+    });
+
+    expect(loaded[1].searchMetadata).toEqual(metadata);
+    expect(loaded[1].searchTraces).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'search' }),
+        expect.objectContaining({ kind: 'read' }),
+        expect.objectContaining({ kind: 'chunk_judge', verdict: 'sufficient' }),
+      ]),
+    );
+    expect(loaded[1].fromSearch).toBe(true);
+  });
+
+  it('loadConversation() preserves SearchMetadata with empty iterations', async () => {
+    const metadata = {
+      iterations: [],
+      total_duration_ms: 0,
+      retries_performed: 0,
+    };
+
+    invoke.mockResolvedValueOnce([
+      {
+        id: 'a-empty-meta',
+        role: 'assistant',
+        content: 'answer',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: JSON.stringify(metadata),
+        created_at: 1,
+      },
+    ]);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    let loaded: Message[] = [];
+    await act(async () => {
+      loaded = await result.current.loadConversation('conv-empty-meta');
+    });
+
+    expect(loaded[0].searchMetadata).toEqual(metadata);
+    expect(loaded[0].searchTraces).toBeUndefined();
+    expect(loaded[0].fromSearch).toBe(true);
   });
 
   it('loadConversation() parses SearchTraceStep[] from search_metadata', async () => {
@@ -977,6 +1174,18 @@ describe('useConversationHistory', () => {
   it('loadConversation() ignores invalid search_metadata payloads', async () => {
     invoke.mockResolvedValueOnce([
       {
+        id: 'a-primitive',
+        role: 'assistant',
+        content: 'primitive metadata',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: JSON.stringify('not an object'),
+        created_at: 0,
+      },
+      {
         id: 'a-invalid-object',
         role: 'assistant',
         content: 'not array metadata',
@@ -1033,10 +1242,13 @@ describe('useConversationHistory', () => {
       loaded = await result.current.loadConversation('conv-meta-invalid');
     });
 
-    expect(loaded).toHaveLength(4);
+    expect(loaded).toHaveLength(5);
     expect(loaded.every((message) => message.searchTraces === undefined)).toBe(
       true,
     );
+    expect(
+      loaded.every((message) => message.searchMetadata === undefined),
+    ).toBe(true);
   });
 
   it('loadConversation() covers snippet-only and plural legacy trace variants', async () => {

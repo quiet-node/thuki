@@ -105,14 +105,14 @@ export function IntroStep({ onComplete }: Props) {
             desc="Paste, drag, or clip a screenshot straight into the conversation."
           />
           <Fact
-            icon={<ScreenIcon />}
+            icon={<CommandIcon />}
             title={
               <>
-                <span>Type</span> <MonoChip>/screen</MonoChip>{' '}
-                <span>for context</span>
+                <span>Type</span> <MonoChip>/</MonoChip>{' '}
+                <span>for commands</span>
               </>
             }
-            desc="Captures your display so Thuki can see what you see"
+            desc="Open the slash menu for built-in tools and writing shortcuts right from the ask bar."
           />
           <Fact
             icon={<FloatIcon />}
@@ -360,19 +360,31 @@ function ImageIcon() {
   );
 }
 
-function ScreenIcon() {
+function CommandIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
       <rect
         x="2"
-        y="5"
+        y="4"
         width="14"
-        height="9"
+        height="10"
         rx="2"
         stroke="currentColor"
         strokeWidth="1.5"
       />
-      <circle cx="9" cy="9.5" r="2" fill="currentColor" opacity="0.45" />
+      <path
+        d="M5.5 7.25l2 2-2 2"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M10.75 6.25l-2 6"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }

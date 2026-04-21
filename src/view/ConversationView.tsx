@@ -80,7 +80,7 @@ interface ConversationViewProps {
  * Renders the expanded chat history area of the Thuki application.
  *
  * Always fills its parent's available height (flex-1) so the window expands
- * to the morphing container's max-h-[600px] immediately — no dynamic height
+ * to the morphing container's max-h-[600px] immediately - no dynamic height
  * calculation. Content beyond the visible area scrolls inside the flex child.
  *
  * Encapsulates the scrolling logic ("smart auto-scroll") that pins the view
@@ -100,7 +100,7 @@ export function ConversationView({
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  /** Threshold in pixels — if within this distance of the bottom, consider "near bottom". */
+  /** Threshold in pixels - if within this distance of the bottom, consider "near bottom". */
   const NEAR_BOTTOM_THRESHOLD = 60;
 
   /**
@@ -118,7 +118,7 @@ export function ConversationView({
   const prevMessagesLengthRef = useRef(0);
 
   /**
-   * Wheel listener — the only mechanism that can disable auto-scroll.
+   * Wheel listener - the only mechanism that can disable auto-scroll.
    * Wheel events are exclusively user-initiated (never fired by programmatic
    * scrollTop changes or layout reflows), making them a reliable signal for
    * "user scrolled up to read earlier content."

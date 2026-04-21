@@ -87,12 +87,12 @@ describe('TypingIndicator', () => {
     const { container } = render(<TypingIndicator />);
     // Advance through all 8 steps + center hold (FADE_MS) + full pause (500ms).
     // At this exact moment setStep(0) and setDimmed(false) have fired but the
-    // next tick has not yet run — spiral index 0 ([0,2]) is active again.
+    // next tick has not yet run - spiral index 0 ([0,2]) is active again.
     act(() => {
       vi.advanceTimersByTime(STEP_MS * 8 + FADE_MS + 500);
     });
     const dots = container.querySelectorAll('.rounded-full');
-    // Spiral index 0 → grid [0,2] → flat index 2 — back to active
+    // Spiral index 0 → grid [0,2] → flat index 2 - back to active
     expect(dots[gridIdx(0, 2)]?.classList.contains('bg-primary')).toBe(true);
   });
 });

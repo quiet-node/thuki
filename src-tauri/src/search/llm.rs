@@ -163,9 +163,9 @@ async fn request_json(
 /// incrementally. Task 13 swaps the call site; Task 16 retires the legacy path.
 ///
 /// # Errors
-/// - [`SearchError::Cancelled`] — token cancelled before or during the request.
-/// - [`SearchError::LlmUnavailable`] — transport failure.
-/// - [`SearchError::LlmHttp`] — non-2xx status from Ollama.
+/// - [`SearchError::Cancelled`] - token cancelled before or during the request.
+/// - [`SearchError::LlmUnavailable`] - transport failure.
+/// - [`SearchError::LlmHttp`] - non-2xx status from Ollama.
 ///
 /// Note: this function never returns [`SearchError::Router`]. If the first
 /// attempt produces output that does not parse as [`RouterJudgeOutput`], we
@@ -259,9 +259,9 @@ fn try_parse_router_output(raw: &str) -> Option<RouterJudgeOutput> {
 /// `sufficiency` is `Sufficient`) even when the model returns malformed output.
 ///
 /// # Errors
-/// - [`SearchError::Cancelled`] — token cancelled before or during the request.
-/// - [`SearchError::LlmUnavailable`] — transport failure.
-/// - [`SearchError::LlmHttp`] — non-2xx status from Ollama.
+/// - [`SearchError::Cancelled`] - token cancelled before or during the request.
+/// - [`SearchError::LlmUnavailable`] - transport failure.
+/// - [`SearchError::LlmHttp`] - non-2xx status from Ollama.
 ///
 /// Note: this function never returns [`SearchError::Judge`]. If the first
 /// attempt produces output that does not parse as [`JudgeVerdict`], we retry
@@ -414,6 +414,11 @@ fn build_messages_with_system(
 /// the conversation history and the user's query. The sources block is
 /// concatenated to the system prompt so it never appears as a user-authored
 /// turn (which leads small models into "describe the document" mode).
+///
+/// Security note: source text is still untrusted input. This prompt structure
+/// reduces role confusion, but it does not fully neutralize prompt injection
+/// embedded inside fetched pages. Treat the synthesized answer as best-effort
+/// and keep citation-backed provenance visible to the user.
 ///
 /// `today` is a `YYYY-MM-DD` string injected at call time; it replaces the
 /// `{{TODAY}}` placeholder in the prompt template so the model is always

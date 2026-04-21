@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 
@@ -50,10 +50,16 @@ describe('MarkdownRenderer', () => {
       );
     });
 
-    it('renders fenced code blocks', () => {
-      const { container } = render(
-        <MarkdownRenderer content={'```js\nconst x = 1;\n```'} />,
-      );
+    it('renders fenced code blocks', async () => {
+      let container!: HTMLElement;
+
+      await act(async () => {
+        ({ container } = render(
+          <MarkdownRenderer content={'```js\nconst x = 1;\n```'} />,
+        ));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
       expect(container.querySelector('pre')).not.toBeNull();
       expect(container.querySelector('pre code')).not.toBeNull();
       expect(container.querySelector('pre code')!.textContent).toContain(
@@ -61,16 +67,19 @@ describe('MarkdownRenderer', () => {
       );
     });
 
-    it('renders links with correct href', () => {
-      const { container } = render(
-        <MarkdownRenderer content="[Visit site](https://example.com)" />,
-      );
-      const link = container.querySelector('a[data-streamdown="link"]');
-      expect(link).not.toBeNull();
-      expect(link!.getAttribute('href')).toBe('https://example.com/');
-      expect(link!.getAttribute('rel')).toBe('noopener noreferrer');
-      expect(link!.getAttribute('target')).toBe('_blank');
-      expect(link!.textContent).toBe('Visit site');
+    it('renders links with correct href', async () => {
+      await act(async () => {
+        render(
+          <MarkdownRenderer content="[Visit site](https://example.com)" />,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      const link = await screen.findByRole('link', { name: 'Visit site' });
+      expect(link.getAttribute('href')).toBe('https://example.com/');
+      expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+      expect(link.getAttribute('target')).toBe('_blank');
+      expect(link.getAttribute('data-streamdown')).toBe('link');
     });
 
     it('renders bold text', () => {
@@ -158,7 +167,7 @@ describe('MarkdownRenderer', () => {
       const { container } = render(
         <MarkdownRenderer content={'<img src="x" onerror="alert(1)" />'} />,
       );
-      // react-markdown escapes raw HTML to text — no actual <img> element is created
+      // react-markdown escapes raw HTML to text - no actual <img> element is created
       expect(container.querySelector('img')).toBeNull();
     });
 
