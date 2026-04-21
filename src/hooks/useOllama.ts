@@ -448,9 +448,7 @@ export function useOllama(
             case 'Trace': {
               pendingTraces = upsertSearchTraceStep(pendingTraces, event.step);
               awaitingClarification ||= event.step.kind === 'clarify';
-              // flushSync makes the trace feel live instead of waiting for the
-              // next paint batch.
-              // eslint-disable-next-line @eslint-react/dom/no-flush-sync
+              // flushSync makes the trace feel live instead of waiting for the next paint batch.
               flushSync(() => {
                 updateAssistant({ searchTraces: pendingTraces });
               });
@@ -512,7 +510,6 @@ export function useOllama(
               const finalizedTraces = finalizeSearchTraceSteps(pendingTraces);
               if (finalizedTraces) {
                 pendingTraces = finalizedTraces;
-                // eslint-disable-next-line @eslint-react/dom/no-flush-sync
                 flushSync(() => {
                   updateAssistant({ searchTraces: finalizedTraces });
                 });

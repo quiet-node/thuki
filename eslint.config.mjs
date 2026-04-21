@@ -16,5 +16,8 @@ export default tseslint.config(
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      "@eslint-react/dom/no-flush-sync": "off",
+    },
   }
 );
