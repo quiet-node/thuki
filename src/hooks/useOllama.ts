@@ -1,5 +1,4 @@
 import { useCallback, useRef, useState } from 'react';
-import { flushSync } from 'react-dom';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
   SearchEvent,
@@ -448,10 +447,7 @@ export function useOllama(
             case 'Trace': {
               pendingTraces = upsertSearchTraceStep(pendingTraces, event.step);
               awaitingClarification ||= event.step.kind === 'clarify';
-              // flushSync makes the trace feel live instead of waiting for the next paint batch.
-              flushSync(() => {
-                updateAssistant({ searchTraces: pendingTraces });
-              });
+              updateAssistant({ searchTraces: pendingTraces });
               break;
             }
             case 'AnalyzingQuery': {
@@ -510,9 +506,7 @@ export function useOllama(
               const finalizedTraces = finalizeSearchTraceSteps(pendingTraces);
               if (finalizedTraces) {
                 pendingTraces = finalizedTraces;
-                flushSync(() => {
-                  updateAssistant({ searchTraces: finalizedTraces });
-                });
+                updateAssistant({ searchTraces: finalizedTraces });
               }
               break;
             }
