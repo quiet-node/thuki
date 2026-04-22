@@ -16,7 +16,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::ChatMessage;
 
-use super::types::{JudgeVerdict, RouterJudgeOutput, SearchError, SearxResult};
+use super::types::{
+    Action, JudgeVerdict, RouterJudgeOutput, SearchError, SearxResult, Sufficiency,
+};
 
 /// Synthesis system prompt: instructs the answering LLM to cite sources and
 /// avoid meta-commentary over the reference material.
@@ -44,6 +46,46 @@ pub const ROUTER_TIMEOUT_SECS: u64 = 45;
 /// with several suggestions; prevents runaway generation when the model
 /// fails to produce valid JSON quickly.
 pub const ROUTER_MAX_TOKENS: i32 = 512;
+
+fn router_output_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["clarify", "proceed"]
+            },
+            "clarifying_question": {
+                "anyOf": [
+                    { "type": "string" },
+                    { "type": "null" }
+                ]
+            },
+            "history_sufficiency": {
+                "anyOf": [
+                    {
+                        "type": "string",
+                        "enum": ["sufficient", "partial", "insufficient"]
+                    },
+                    { "type": "null" }
+                ]
+            },
+            "optimized_query": {
+                "anyOf": [
+                    { "type": "string" },
+                    { "type": "null" }
+                ]
+            }
+        },
+        "required": [
+            "action",
+            "clarifying_question",
+            "history_sufficiency",
+            "optimized_query"
+        ],
+        "additionalProperties": false
+    })
+}
 
 // ─── Shared input/output types ───────────────────────────────────────────────
 
@@ -80,7 +122,7 @@ struct OllamaJsonRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
-    format: String,
+    format: serde_json::Value,
     options: RouterOptions,
 }
 
@@ -113,6 +155,7 @@ async fn request_json(
     model: &str,
     client: &reqwest::Client,
     messages: Vec<ChatMessage>,
+    format: serde_json::Value,
     cancel_token: &CancellationToken,
     timeout_secs: u64,
 ) -> Result<String, SearchError> {
@@ -120,7 +163,7 @@ async fn request_json(
         model: model.to_string(),
         messages,
         stream: false,
-        format: "json".to_string(),
+        format,
         options: RouterOptions {
             temperature: 0.0,
             top_p: 1.0,
@@ -172,12 +215,10 @@ async fn request_json(
 /// - [`SearchError::LlmUnavailable`] - transport failure.
 /// - [`SearchError::LlmHttp`] - non-2xx status from Ollama.
 ///
-/// Note: this function never returns [`SearchError::Router`]. If the first
-/// attempt produces output that does not parse as [`RouterJudgeOutput`], we
-/// retry once with a stricter user-message suffix. If that also fails, we
-/// fall back to a safe default (PROCEED + insufficient history + the raw
-/// user query) so the pipeline always produces an answer rather than
-/// surfacing a cryptic "invalid response" error.
+/// Note: this function retries once with a stricter user-message suffix when
+/// the first router response cannot be parsed. If the schema still cannot be
+/// recovered, it returns [`SearchError::Router`] instead of silently forcing a
+/// web search, because malformed router output should fail closed.
 pub async fn call_router_merged(
     endpoint: &str,
     model: &str,
@@ -200,6 +241,7 @@ pub async fn call_router_merged(
         model,
         client,
         messages,
+        router_output_schema(),
         cancel_token,
         ROUTER_TIMEOUT_SECS,
     )
@@ -221,6 +263,7 @@ pub async fn call_router_merged(
         model,
         client,
         retry_messages,
+        router_output_schema(),
         cancel_token,
         ROUTER_TIMEOUT_SECS,
     )
@@ -229,16 +272,9 @@ pub async fn call_router_merged(
         return Ok(output);
     }
 
-    // Both attempts produced unparseable output. Fall back to a safe default
-    // so the pipeline still produces a result. PROCEED with Insufficient
-    // history forces a fresh web search on the raw user query, which matches
-    // what a user who typed `/search <query>` almost always wants.
-    Ok(RouterJudgeOutput {
-        action: crate::search::types::Action::Proceed,
-        clarifying_question: None,
-        history_sufficiency: Some(crate::search::types::Sufficiency::Insufficient),
-        optimized_query: Some(query.to_string()),
-    })
+    Err(SearchError::Router(
+        "router response could not be parsed after retry".to_string(),
+    ))
 }
 
 /// Best-effort extraction of [`RouterJudgeOutput`] from raw LLM output.
@@ -246,7 +282,87 @@ pub async fn call_router_merged(
 /// shape does not match the expected schema.
 fn try_parse_router_output(raw: &str) -> Option<RouterJudgeOutput> {
     let slice = crate::search::judge::extract_json_object_public(raw)?;
-    serde_json::from_str::<RouterJudgeOutput>(slice).ok()
+    normalize_router_output(slice).or_else(|| serde_json::from_str::<RouterJudgeOutput>(slice).ok())
+}
+
+fn normalize_router_output(raw_json: &str) -> Option<RouterJudgeOutput> {
+    let value: serde_json::Value = serde_json::from_str(raw_json).ok()?;
+    let object = value.as_object()?;
+
+    let action = parse_router_action(read_json_string(object, &["action", "decision"])?)?;
+
+    let clarifying_question = read_json_string(
+        object,
+        &[
+            "clarifying_question",
+            "clarifyingQuestion",
+            "follow_up_question",
+            "followUpQuestion",
+            "question",
+        ],
+    )
+    .map(str::to_string);
+
+    let history_sufficiency = read_json_string(
+        object,
+        &["history_sufficiency", "historySufficiency", "sufficiency"],
+    )
+    .and_then(parse_router_sufficiency);
+
+    let optimized_query = read_json_string(
+        object,
+        &[
+            "optimized_query",
+            "optimizedQuery",
+            "search_query",
+            "searchQuery",
+            "query",
+        ],
+    )
+    .map(str::to_string);
+
+    Some(RouterJudgeOutput {
+        action,
+        clarifying_question,
+        history_sufficiency,
+        optimized_query,
+    })
+}
+
+fn read_json_string<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<&'a str> {
+    keys.iter().find_map(|key| {
+        object.get(*key).and_then(|value| match value {
+            serde_json::Value::String(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }
+            _ => None,
+        })
+    })
+}
+
+fn parse_router_action(value: &str) -> Option<Action> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "clarify" => Some(Action::Clarify),
+        "proceed" => Some(Action::Proceed),
+        _ => None,
+    }
+}
+
+fn parse_router_sufficiency(value: &str) -> Option<Sufficiency> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "sufficient" => Some(Sufficiency::Sufficient),
+        "partial" => Some(Sufficiency::Partial),
+        "insufficient" => Some(Sufficiency::Insufficient),
+        _ => None,
+    }
 }
 
 // ─── Universal sufficiency judge call ────────────────────────────────────────
@@ -304,6 +420,7 @@ pub async fn call_judge(
         model,
         client,
         messages,
+        serde_json::json!("json"),
         cancel_token,
         super::config::JUDGE_TIMEOUT_S,
     )
@@ -340,6 +457,7 @@ pub async fn call_judge(
         model,
         client,
         retry_messages,
+        serde_json::json!("json"),
         cancel_token,
         super::config::JUDGE_TIMEOUT_S,
     )
@@ -693,6 +811,7 @@ mod prompt_tests {
         assert!(p.contains("proceed"));
         assert!(p.contains("history_sufficiency"));
         assert!(p.contains("optimized_query"));
+        assert!(p.contains("referent can be named"));
     }
 }
 
@@ -787,7 +906,79 @@ mod router_judge_tests {
         assert!(msgs[1].content.contains("[1] assistant: <empty>"));
     }
 
+    #[test]
+    fn try_parse_router_output_normalizes_camel_case_clarify_shape() {
+        let output = try_parse_router_output(
+            r#"{"action":"clarify","clarifyingQuestion":"Who are you asking about?","historySufficiency":null,"optimizedQuery":null}"#,
+        )
+        .expect("expected normalized clarify output");
+
+        assert_eq!(output.action, Action::Clarify);
+        assert_eq!(
+            output.clarifying_question.as_deref(),
+            Some("Who are you asking about?")
+        );
+        assert!(output.history_sufficiency.is_none());
+        assert!(output.optimized_query.is_none());
+    }
+
+    #[test]
+    fn normalize_router_output_treats_blank_clarifying_question_as_none() {
+        let output = normalize_router_output(
+            r#"{"action":"clarify","clarifying_question":"   ","history_sufficiency":null,"optimized_query":null}"#,
+        )
+        .expect("expected normalized clarify output");
+
+        assert_eq!(output.action, Action::Clarify);
+        assert!(output.clarifying_question.is_none());
+    }
+
+    #[test]
+    fn parse_router_action_rejects_unknown_values() {
+        assert_eq!(parse_router_action("search"), None);
+    }
+
+    #[test]
+    fn parse_router_sufficiency_rejects_unknown_values() {
+        assert_eq!(parse_router_sufficiency("maybe"), None);
+    }
+
     // ── call_router_merged ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn merged_router_requests_schema_constrained_format() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(wiremock::matchers::body_string_contains("\"format\":{"))
+            .and(wiremock::matchers::body_string_contains("\"clarifying_question\""))
+            .and(wiremock::matchers::body_string_contains("\"additionalProperties\":false"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"action\":\"clarify\",\"clarifying_question\":\"Who are you asking about?\",\"history_sufficiency\":null,\"optimized_query\":null}"
+                },
+                "done": true
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let output = call_router_merged(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            &[],
+            "who is he?",
+            "2026-04-18",
+            &token,
+        )
+        .await
+        .expect("schema-constrained router call should parse");
+
+        assert_eq!(output.action, Action::Clarify);
+    }
 
     #[tokio::test]
     async fn merged_router_parses_proceed_with_sufficiency() {
@@ -930,7 +1121,7 @@ mod router_judge_tests {
     }
 
     #[tokio::test]
-    async fn merged_router_falls_back_to_default_when_no_json_in_response() {
+    async fn merged_router_returns_router_error_when_no_json_in_response() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
@@ -943,7 +1134,7 @@ mod router_judge_tests {
 
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
-        let output = call_router_merged(
+        let err = call_router_merged(
             &format!("{}/api/chat", server.uri()),
             "m",
             &client,
@@ -953,21 +1144,12 @@ mod router_judge_tests {
             &token,
         )
         .await
-        .expect("router should fall back to safe defaults, not error");
-        assert!(matches!(
-            output.action,
-            crate::search::types::Action::Proceed
-        ));
-        assert_eq!(
-            output.history_sufficiency,
-            Some(crate::search::types::Sufficiency::Insufficient)
-        );
-        assert_eq!(output.optimized_query.as_deref(), Some("q"));
-        assert!(output.clarifying_question.is_none());
+        .expect_err("router should fail closed when no valid JSON is recoverable");
+        assert!(matches!(err, SearchError::Router(_)));
     }
 
     #[tokio::test]
-    async fn merged_router_falls_back_when_json_does_not_match_schema() {
+    async fn merged_router_returns_router_error_when_json_does_not_match_schema() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
@@ -980,7 +1162,7 @@ mod router_judge_tests {
 
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
-        let output = call_router_merged(
+        let err = call_router_merged(
             &format!("{}/api/chat", server.uri()),
             "m",
             &client,
@@ -990,16 +1172,8 @@ mod router_judge_tests {
             &token,
         )
         .await
-        .expect("router should fall back to safe defaults, not error");
-        assert!(matches!(
-            output.action,
-            crate::search::types::Action::Proceed
-        ));
-        assert_eq!(
-            output.history_sufficiency,
-            Some(crate::search::types::Sufficiency::Insufficient)
-        );
-        assert_eq!(output.optimized_query.as_deref(), Some("q"));
+        .expect_err("router should fail closed when the response shape stays invalid");
+        assert!(matches!(err, SearchError::Router(_)));
     }
 
     #[tokio::test]
