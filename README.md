@@ -1,5 +1,3 @@
-
-
 <h1 align="center">
   Thuki - WIP
 </h1>
@@ -15,7 +13,6 @@
 <p align="center">
   A floating AI secretary for macOS. Fully local, completely free, zero data ever leaves your machine.
 </p>
-
 
 <p align="center">
   <img src="https://img.shields.io/badge/status-beta-yellow.svg" alt="Beta" />
@@ -47,7 +44,6 @@ Thuki (thư kí - Vietnamese for secretary) is a lightweight macOS overlay power
 Double-tap Control <kbd>⌃</kbd> to summon Thuki from anywhere. Ask a question, get an answer, and dismiss. Use `/screen` or the screenshot button to capture your screen and attach it as context.
 
 https://github.com/user-attachments/assets/57df0efe-24eb-4875-a83d-e605e0c6f8b4
-
 
 ### Overlay Mode
 
@@ -137,7 +133,30 @@ bun run sandbox:stop
 
 For the full architecture and security philosophy behind the sandbox, see [`sandbox/README.md`](sandbox/README.md).
 
-### Step 2: Install Thuki
+### Step 2: Setup the search sandbox (Optional, required for /search)
+
+The `/search` command uses an agentic search pipeline that depends on two local Docker containers: a **SearXNG** meta-search engine and a **Trafilatura** reader. This setup ensures that your search queries and the content you read remain entirely local.
+
+**Prerequisite:** [Docker Desktop](https://www.docker.com/get-started) must be running.
+
+1. **Start the search services**
+
+   ```bash
+   bun run search-box:start
+   ```
+
+2. **Verify services (Optional)**
+
+   ```bash
+   # Search Engine check:
+   curl "http://127.0.0.1:25017/search?q=thuki&format=json"
+   ```
+
+   Without this service running, the `/search` command will be disabled in the chat, but all other features will remain available.
+
+   For more details on the agentic search pipeline, see [docs/agentic-search.md](docs/agentic-search.md).
+
+### Step 3: Install Thuki
 
 #### Download (Recommended)
 
@@ -196,38 +215,6 @@ The app starts hidden. The hotkey or tray menu shows it. The window close button
 
 </details>
 
-## Setup the search sandbox (optional, required for /search)
-
-The `/search` command depends on two local Docker containers: a SearXNG meta-search engine and a Trafilatura reader. Both run entirely on your machine; no query ever leaves your device.
-
-**Prerequisite:** [Docker Desktop](https://www.docker.com/get-started) must be running.
-
-Start the sandbox:
-
-```bash
-bun run search-box:start
-```
-
-Verify both containers are up:
-
-```bash
-# Reader health check
-curl http://127.0.0.1:25018/healthz
-
-# SearXNG smoke test
-curl "http://127.0.0.1:25017/search?q=test&format=json"
-```
-
-Stop the sandbox when you are done:
-
-```bash
-bun run search-box:stop
-```
-
-Without this sandbox, `/search` will show a friendly setup error rather than fail silently.
-
-For the full technical reference, see [docs/agentic-search.md](docs/agentic-search.md).
-
 ## Configuration
 
 See [docs/configurations.md](docs/configurations.md) for the full configuration reference (quote display limits and system prompt).
@@ -242,8 +229,8 @@ Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get starte
 
 Thuki is macOS-only, but the community has been busy bringing it to other platforms. Huge shoutout to these contributors 🎊🚀!
 
-| Platform | Repo | Author |
-|----------|------|--------|
+| Platform      | Repo                                               | Author                                       |
+| ------------- | -------------------------------------------------- | -------------------------------------------- |
 | Windows 10/11 | [ThukiWin](https://github.com/ayzekhdawy/thukiwin) | [@ayzekhdawy](https://github.com/ayzekhdawy) |
 
 > Each port is independently maintained by its author. For issues or questions about a specific port, head to that repo directly.

@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core';
+
 /**
  * Static setup-guidance card rendered when the `/search` pre-flight probe
  * reports that the sandbox containers are not running. Not a generic error
@@ -5,6 +7,13 @@
  * start command.
  */
 export function SandboxSetupCard() {
+  const SETUP_URL =
+    'https://github.com/quiet-node/thuki#setup-the-search-sandbox-optional-required-for-search';
+
+  const handleOpenGuide = () => {
+    void invoke('open_url', { url: SETUP_URL });
+  };
+
   return (
     <div
       data-testid="sandbox-setup-card"
@@ -17,14 +26,18 @@ export function SandboxSetupCard() {
       />
       <div>
         <p className="text-[12.5px] font-[590] text-white/[0.82] leading-snug tracking-[-0.01em]">
-          Search sandbox not running
+          Search service is offline
         </p>
         <p className="text-[11.5px] text-white/[0.38] leading-snug mt-0.5">
-          Start it with{' '}
-          <code className="font-mono text-[10.5px] bg-white/[0.07] text-white/50 px-[5px] py-px rounded">
-            bun run search-box:start
-          </code>
-          , then try again.
+          Follow the{' '}
+          <button
+            type="button"
+            onClick={handleOpenGuide}
+            className="text-white/50 underline decoration-white/20 underline-offset-2 hover:text-white/70 transition-colors cursor-pointer"
+          >
+            Setup Guide
+          </button>{' '}
+          to enable local agentic search.
         </p>
       </div>
     </div>
