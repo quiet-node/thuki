@@ -3,66 +3,69 @@ import { describe, it, expect, vi } from 'vitest';
 import { CommandSuggestion } from '../CommandSuggestion';
 import type { Command } from '../../config/commands';
 
-const SEARCH_CMD: Command = {
-  trigger: '/search',
-  label: '/search',
-  description: 'Agentic web search: iterative reasoning & cited synthesis',
-};
+function makeCommand(
+  trigger: string,
+  description: string,
+  promptTemplate?: string,
+): Command {
+  return {
+    trigger,
+    label: trigger,
+    description,
+    docs: {
+      summary: description,
+      usage: `${trigger} [text]`,
+      examples: [`\`${trigger} example\``],
+      behavior: description,
+    },
+    promptHelp: {
+      summary: description,
+    },
+    promptTemplate,
+  };
+}
 
-const SCREEN_CMD: Command = {
-  trigger: '/screen',
-  label: '/screen',
-  description: 'Capture your screen and include it as context',
-};
+const SEARCH_CMD = makeCommand(
+  '/search',
+  'Agentic web search: iterative reasoning & cited synthesis',
+);
 
-const FOO_CMD: Command = {
-  trigger: '/foo',
-  label: '/foo',
-  description: 'A test command',
-};
+const SCREEN_CMD = makeCommand(
+  '/screen',
+  'Capture your screen and include it as context',
+);
 
-const THINK_CMD: Command = {
-  trigger: '/think',
-  label: '/think',
-  description: 'Think deeply before answering',
-};
+const FOO_CMD = makeCommand('/foo', 'A test command');
 
-const TRANSLATE_CMD: Command = {
-  trigger: '/translate',
-  label: '/translate',
-  description: 'Translate text to another language',
-};
+const THINK_CMD = makeCommand('/think', 'Think deeply before answering');
 
-const REWRITE_CMD: Command = {
-  trigger: '/rewrite',
-  label: '/rewrite',
-  description: 'Rewrite text for clarity and flow',
-};
+const TRANSLATE_CMD = makeCommand(
+  '/translate',
+  'Translate text to another language',
+);
 
-const TLDR_CMD: Command = {
-  trigger: '/tldr',
-  label: '/tldr',
-  description: 'Summarize text in 1-3 sentences',
-};
+const REWRITE_CMD = makeCommand(
+  '/rewrite',
+  'Rewrite text for clarity and flow',
+);
 
-const REFINE_CMD: Command = {
-  trigger: '/refine',
-  label: '/refine',
-  description: 'Fix grammar, spelling, and punctuation',
-};
+const TLDR_CMD = makeCommand('/tldr', 'Summarize text in 1-3 sentences');
 
-const BULLETS_CMD: Command = {
-  trigger: '/bullets',
-  label: '/bullets',
-  description: 'Extract key points as a bullet list',
-};
+const REFINE_CMD = makeCommand(
+  '/refine',
+  'Fix grammar, spelling, and punctuation',
+);
 
-const ACTION_CMD: Command = {
-  trigger: '/todos',
-  label: '/todos',
-  description: 'Extract to-do items as a checkbox list',
-  promptTemplate: 'dummy $INPUT',
-};
+const BULLETS_CMD = makeCommand(
+  '/bullets',
+  'Extract key points as a bullet list',
+);
+
+const ACTION_CMD = makeCommand(
+  '/todos',
+  'Extract to-do items as a checkbox list',
+  'dummy $INPUT',
+);
 
 describe('CommandSuggestion', () => {
   it('shows "No commands found" when commands list is empty', () => {

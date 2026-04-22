@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "tauri dev",
     "frontend:dev": "vite",
+    "generate:commands": "bun scripts/generate-commands.ts",
     "build:frontend": "tsc && vite build",
     "build:backend": "tauri build --bundles app",
     "build:all": "bun run build:frontend && bun run build:backend",

@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
 pub const DEFAULT_MODEL_NAME: &str = "gemma4:e2b";
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/system_prompt.txt");
+const SLASH_COMMAND_PROMPT_APPENDIX: &str = include_str!("../prompts/generated/slash_commands.txt");
 
 /// Classifies the kind of error returned from the Ollama backend.
 /// Used by the frontend to pick accent bar color and display copy.
@@ -191,11 +192,33 @@ pub struct SystemPrompt(pub String);
 
 /// Reads `THUKI_SYSTEM_PROMPT` from the environment, falling back to the
 /// built-in default when unset or empty.
+pub fn compose_system_prompt_with_appendix(base_prompt: &str, appendix: &str) -> String {
+    let base = base_prompt.trim_end();
+    let appendix = appendix.trim();
+
+    if appendix.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}\n\n{appendix}")
+    }
+}
+
+/// Reads `THUKI_SYSTEM_PROMPT` from the environment, falling back to the
+/// built-in default when unset or empty.
+pub fn compose_system_prompt(base_prompt: &str) -> String {
+    compose_system_prompt_with_appendix(base_prompt, SLASH_COMMAND_PROMPT_APPENDIX)
+}
+
+/// Reads `THUKI_SYSTEM_PROMPT` from the environment as the base prompt, then
+/// appends the generated slash-command appendix so built-in command knowledge
+/// stays in sync even when the persona prompt is overridden.
 pub fn load_system_prompt() -> String {
-    std::env::var("THUKI_SYSTEM_PROMPT")
+    let base_prompt = std::env::var("THUKI_SYSTEM_PROMPT")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string())
+        .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+
+    compose_system_prompt(&base_prompt)
 }
 
 /// Model configuration loaded once at startup from the `THUKI_SUPPORTED_AI_MODELS`
@@ -1253,7 +1276,7 @@ mod tests {
         std::env::remove_var("THUKI_SYSTEM_PROMPT");
 
         let prompt = load_system_prompt();
-        assert_eq!(prompt, DEFAULT_SYSTEM_PROMPT);
+        assert_eq!(prompt, compose_system_prompt(DEFAULT_SYSTEM_PROMPT));
     }
 
     #[test]
@@ -1262,7 +1285,7 @@ mod tests {
         std::env::set_var("THUKI_SYSTEM_PROMPT", "Custom prompt");
 
         let prompt = load_system_prompt();
-        assert_eq!(prompt, "Custom prompt");
+        assert_eq!(prompt, compose_system_prompt("Custom prompt"));
 
         std::env::remove_var("THUKI_SYSTEM_PROMPT");
     }
@@ -1273,9 +1296,24 @@ mod tests {
         std::env::set_var("THUKI_SYSTEM_PROMPT", "   ");
 
         let prompt = load_system_prompt();
-        assert_eq!(prompt, DEFAULT_SYSTEM_PROMPT);
+        assert_eq!(prompt, compose_system_prompt(DEFAULT_SYSTEM_PROMPT));
 
         std::env::remove_var("THUKI_SYSTEM_PROMPT");
+    }
+
+    #[test]
+    fn compose_system_prompt_appends_slash_command_appendix() {
+        let prompt = compose_system_prompt("Base prompt");
+
+        assert!(prompt.starts_with("Base prompt\n\n# Supported slash commands"));
+        assert!(prompt.contains("/search:"));
+    }
+
+    #[test]
+    fn compose_system_prompt_returns_base_when_appendix_is_blank() {
+        let prompt = compose_system_prompt_with_appendix("Base prompt", "   ");
+
+        assert_eq!(prompt, "Base prompt");
     }
 
     #[test]
