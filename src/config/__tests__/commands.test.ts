@@ -17,6 +17,17 @@ describe('COMMANDS registry', () => {
 
       expect(typeof cmd.description).toBe('string');
       expect(cmd.description.length).toBeGreaterThan(0);
+
+      expect(typeof cmd.docs.summary).toBe('string');
+      expect(cmd.docs.summary.length).toBeGreaterThan(0);
+      expect(typeof cmd.docs.usage).toBe('string');
+      expect(cmd.docs.usage.length).toBeGreaterThan(0);
+      expect(cmd.docs.examples.length).toBeGreaterThan(0);
+      expect(typeof cmd.docs.behavior).toBe('string');
+      expect(cmd.docs.behavior.length).toBeGreaterThan(0);
+
+      expect(typeof cmd.promptHelp.summary).toBe('string');
+      expect(cmd.promptHelp.summary.length).toBeGreaterThan(0);
     }
   });
 
@@ -37,6 +48,13 @@ describe('COMMANDS registry', () => {
     expect(screen).toBeDefined();
     expect(screen?.label).toBe('/screen');
     expect(screen?.description.length).toBeGreaterThan(0);
+  });
+
+  it('includes the /search command', () => {
+    const search = COMMANDS.find((c: Command) => c.trigger === '/search');
+    expect(search).toBeDefined();
+    expect(search?.label).toBe('/search');
+    expect(search?.description.length).toBeGreaterThan(0);
   });
 
   it('includes the /think command', () => {
