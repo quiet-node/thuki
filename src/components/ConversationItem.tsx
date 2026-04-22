@@ -2,7 +2,7 @@ import { memo } from 'react';
 import type { ConversationSummary } from '../types/history';
 import { formatRelativeTime } from '../utils/formatRelativeTime';
 
-/** Hoisted static delete icon — avoids re-allocation on every render. */
+/** Hoisted static delete icon - avoids re-allocation on every render. */
 const DELETE_ICON = (
   <svg
     width="10"

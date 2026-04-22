@@ -1,66 +1,17 @@
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { LoadingStage } from './LoadingStage';
 
 export interface ThinkingBlockProps {
-  thinkingContent: string;
+  thinkingContent?: string;
   isThinking: boolean;
+  isPending?: boolean;
+  pendingLabel?: string;
 }
 
-const THINKING_TEXT = 'Thinking...';
-/** Delay between each character's flash start. */
-const CHAR_DELAY_MS = 80;
-/** How long a single character's flash lasts (rise + fall). */
-const FLASH_MS = 200;
-/** Pause after the last character finishes before the next sweep. */
-const PAUSE_MS = 800;
-/**
- * Total animation cycle per character. Must be long enough that the last
- * character's flash (at delay 9*80=720ms) plus FLASH_MS finishes, then
- * PAUSE_MS of idle time passes before the cycle repeats.
- */
-const TOTAL_CYCLE_MS =
-  (THINKING_TEXT.length - 1) * CHAR_DELAY_MS + FLASH_MS + PAUSE_MS;
-/** Flash peak as a percentage of the total cycle. */
-const PEAK_PCT = ((FLASH_MS * 0.4) / TOTAL_CYCLE_MS) * 100;
-/** Flash end as a percentage of the total cycle. */
-const END_PCT = (FLASH_MS / TOTAL_CYCLE_MS) * 100;
-
-/**
- * Animated "Thinking..." label using pure CSS keyframes.
- * Each character has a staggered animation delay. The total cycle duration
- * is long enough that all characters finish flashing before the next round
- * starts, creating a visible pause between sweeps.
- */
-function ThinkingLabel() {
-  return (
-    <span className="text-sm text-text-secondary" data-testid="thinking-label">
-      {THINKING_TEXT.split('').map((char, i) => (
-        <span
-          key={i}
-          className="inline-block thinking-sweep-char"
-          style={{
-            animationDelay: `${i * CHAR_DELAY_MS}ms`,
-          }}
-        >
-          {char}
-        </span>
-      ))}
-      <style>{`
-        @keyframes thinkingSweep {
-          0% { opacity: 0.35; }
-          ${PEAK_PCT.toFixed(1)}% { opacity: 1; }
-          ${END_PCT.toFixed(1)}% { opacity: 0.35; }
-          100% { opacity: 0.35; }
-        }
-        .thinking-sweep-char {
-          opacity: 0.35;
-          animation: thinkingSweep ${TOTAL_CYCLE_MS}ms ease-in-out infinite;
-        }
-      `}</style>
-    </span>
-  );
-}
+const THINKING_LABEL = 'Thinking...';
+const PENDING_LABEL = 'Warming up...';
 
 /**
  * Collapsible thinking/reasoning section rendered above an AI response.
@@ -72,15 +23,40 @@ function ThinkingLabel() {
 export function ThinkingBlock({
   thinkingContent,
   isThinking,
+  isPending = false,
+  pendingLabel = PENDING_LABEL,
 }: ThinkingBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const hasThinkingContent = Boolean(thinkingContent?.trim());
 
-  if (!thinkingContent) return null;
+  if (!hasThinkingContent && !isPending) return null;
+
+  if (isPending) {
+    return (
+      <div data-testid="thinking-block" className="mb-2">
+        <div data-testid="thinking-pending" className="inline-flex min-w-0">
+          <LoadingStage label={pendingLabel} />
+        </div>
+      </div>
+    );
+  }
 
   // Strip "Thinking Process:" label that Gemma4 prepends to thinking tokens
-  const displayContent = thinkingContent
+  const displayContent = thinkingContent!
     .replace(/^\s*Thinking Process[:\s]*\n*/i, '')
     .trimStart();
+  const summaryLabel = isThinking ? THINKING_LABEL : 'Thought process';
+  const chevron = (
+    <span
+      data-testid="thinking-chevron"
+      className="loading-label inline-block shrink-0 text-[9px] transition-transform duration-150"
+      style={{
+        transform: isExpanded ? 'rotate(180deg)' : 'rotate(90deg)',
+      }}
+    >
+      &#9650;
+    </span>
+  );
 
   return (
     <div data-testid="thinking-block" className="mb-2">
@@ -92,20 +68,28 @@ export function ThinkingBlock({
         aria-expanded={isExpanded}
         aria-label="Toggle thinking details"
       >
-        {/* Chevron: ▲ rotated 90deg (collapsed, pointing right) or 180deg (expanded, pointing down) */}
-        <span
-          data-testid="thinking-chevron"
-          className="text-[10px] text-text-secondary inline-block transition-transform duration-150"
-          style={{ transform: isExpanded ? 'rotate(180deg)' : 'rotate(90deg)' }}
-        >
-          &#9650;
-        </span>
         {isThinking ? (
-          <ThinkingLabel />
-        ) : (
-          <span className="text-sm text-text-secondary/60">
-            Thought process
+          <span className="inline-flex min-w-0">
+            <LoadingStage label={summaryLabel} labelPrefix={chevron} />
           </span>
+        ) : (
+          <>
+            <span
+              data-testid="thinking-chevron"
+              className="inline-block text-[9px] text-text-secondary/55 transition-transform duration-150"
+              style={{
+                transform: isExpanded ? 'rotate(180deg)' : 'rotate(90deg)',
+              }}
+            >
+              &#9650;
+            </span>
+            <span
+              data-testid="thinking-summary-label"
+              className="text-[11px] font-medium tracking-[0.01em] text-text-secondary/58"
+            >
+              {summaryLabel}
+            </span>
+          </>
         )}
       </button>
 

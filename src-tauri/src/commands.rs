@@ -128,7 +128,7 @@ struct OllamaChatResponse {
 
 /// Holds the active cancellation token for the current generation request.
 ///
-/// Only one generation runs at a time — starting a new request replaces the
+/// Only one generation runs at a time - starting a new request replaces the
 /// previous token. `cancel_generation` cancels whatever is currently active.
 #[derive(Default)]
 pub struct GenerationState {
@@ -144,7 +144,7 @@ impl GenerationState {
     }
 
     /// Stores a new cancellation token, replacing any previous one.
-    fn set(&self, token: CancellationToken) {
+    pub fn set_token(&self, token: CancellationToken) {
         *self.token.lock().unwrap() = Some(token);
     }
 
@@ -156,7 +156,7 @@ impl GenerationState {
     }
 
     /// Clears the stored token without cancelling it (used on natural completion).
-    fn clear(&self) {
+    pub fn clear_token(&self) {
         *self.token.lock().unwrap() = None;
     }
 }
@@ -240,7 +240,7 @@ pub fn get_model_config(model_config: tauri::State<'_, ModelConfig>) -> serde_js
 /// Core streaming logic for Ollama `/api/chat`, separated from the Tauri
 /// command for testability. Uses `tokio::select!` to race each chunk read
 /// against the cancellation token, ensuring the HTTP connection is dropped
-/// immediately when the user cancels — which signals Ollama to stop inference.
+/// immediately when the user cancels - which signals Ollama to stop inference.
 /// Returns the accumulated assistant response so the caller can persist it.
 pub async fn stream_ollama_chat(
     endpoint: &str,
@@ -282,7 +282,7 @@ pub async fn stream_ollama_chat(
                 tokio::select! {
                     biased;
                     _ = cancel_token.cancelled() => {
-                        // Drop the stream — closes the HTTP connection,
+                        // Drop the stream - closes the HTTP connection,
                         // which signals Ollama to stop inference.
                         drop(stream);
                         on_chunk(StreamChunk::Cancelled);
@@ -367,7 +367,7 @@ pub async fn ask_ollama(
 ) -> Result<(), String> {
     let endpoint = format!("{}/api/chat", DEFAULT_OLLAMA_URL.trim_end_matches('/'));
     let cancel_token = CancellationToken::new();
-    generation.set(cancel_token.clone());
+    generation.set_token(cancel_token.clone());
 
     // Build user message content.  When quoted text is present, label it
     // explicitly so the model knows the highlighted text is the primary
@@ -394,7 +394,7 @@ pub async fn ask_ollama(
     };
 
     // Snapshot the current epoch and build the messages array for Ollama.
-    // The user message is NOT yet committed to history — it is only added
+    // The user message is NOT yet committed to history - it is only added
     // after a response (including partial/cancelled) to prevent orphaned
     // messages on errors.
     let (epoch_at_start, messages) = {
@@ -442,7 +442,24 @@ pub async fn ask_ollama(
         });
     }
 
-    generation.clear();
+    generation.clear_token();
+    Ok(())
+}
+
+/// Opens a URL in the system default browser (macOS `open` command).
+///
+/// Only `http://` and `https://` URLs are accepted; all other schemes are
+/// rejected to prevent command injection and accidental protocol handler abuse.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("Only http/https URLs are supported".to_string());
+    }
+    std::process::Command::new("open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| format!("Failed to open URL: {e}"))?;
     Ok(())
 }
 
@@ -528,7 +545,10 @@ mod tests {
         let chunks = chunks.lock().unwrap();
         assert!(matches!(&chunks[0], StreamChunk::Token(t) if t == "Hello"));
         assert!(matches!(&chunks[1], StreamChunk::Token(t) if t == " world"));
-        assert!(matches!(&chunks[2], StreamChunk::Done));
+        assert_eq!(
+            std::mem::discriminant(&chunks[2]),
+            std::mem::discriminant(&StreamChunk::Done)
+        );
         assert_eq!(accumulated, "Hello world");
     }
 
@@ -560,7 +580,13 @@ mod tests {
         mock.assert_async().await;
         let chunks = chunks.lock().unwrap();
         assert_eq!(chunks.len(), 1);
-        assert!(matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::Other));
+        assert_eq!(
+            std::mem::discriminant(&chunks[0]),
+            std::mem::discriminant(&StreamChunk::Error(OllamaError {
+                kind: OllamaErrorKind::Other,
+                message: String::new(),
+            }))
+        );
         assert!(accumulated.is_empty());
     }
 
@@ -583,7 +609,13 @@ mod tests {
 
         let chunks = chunks.lock().unwrap();
         assert_eq!(chunks.len(), 1);
-        assert!(matches!(&chunks[0], StreamChunk::Error(_)));
+        assert_eq!(
+            std::mem::discriminant(&chunks[0]),
+            std::mem::discriminant(&StreamChunk::Error(OllamaError {
+                kind: OllamaErrorKind::Other,
+                message: String::new(),
+            }))
+        );
         assert!(accumulated.is_empty());
     }
 
@@ -724,7 +756,7 @@ mod tests {
 
     #[tokio::test]
     async fn handles_mid_stream_network_error() {
-        use tokio::io::AsyncWriteExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -732,21 +764,24 @@ mod tests {
 
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let _ = stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\n\
-                      Content-Type: application/x-ndjson\r\n\
-                      Transfer-Encoding: chunked\r\n\r\n\
-                      4\r\ntest",
-                )
-                .await;
+            let mut req_buf = [0u8; 4096];
+            let _ = stream.read(&mut req_buf).await;
+
+            let first_line = chat_line("A", false);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nContent-Length: {}\r\n\r\n{}",
+                first_line.len() + 64,
+                first_line
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.shutdown().await;
         });
 
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
-        stream_ollama_chat(
+        let accumulated = stream_ollama_chat(
             &format!("http://127.0.0.1:{}/api/chat", port),
             "test-model",
             vec![],
@@ -758,8 +793,19 @@ mod tests {
         .await;
 
         let chunks = chunks.lock().unwrap();
-        let has_no_tokens = chunks.iter().all(|c| !matches!(c, StreamChunk::Token(_)));
-        assert!(has_no_tokens);
+        assert!(chunks
+            .iter()
+            .any(|chunk| matches!(chunk, StreamChunk::Token(token) if token == "A")));
+        let error = chunks.iter().find_map(|chunk| match chunk {
+            StreamChunk::Error(error) => Some(error),
+            _ => None,
+        });
+        assert!(error.is_some());
+        assert_eq!(error.unwrap().kind, OllamaErrorKind::Other);
+        assert!(chunks
+            .iter()
+            .all(|chunk| !matches!(chunk, StreamChunk::Done)));
+        assert_eq!(accumulated, "A");
     }
 
     #[tokio::test]
@@ -860,6 +906,7 @@ mod tests {
         use std::sync::Arc;
         use tokio::io::AsyncWriteExt;
         use tokio::net::TcpListener;
+        use tokio::time::{timeout, Duration};
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -868,10 +915,17 @@ mod tests {
         let server_done_clone = server_done.clone();
 
         tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
             let (mut stream, _) = listener.accept().await.unwrap();
+            // Consume the HTTP request so hyper doesn't see an UnexpectedMessage error
+            // when it gets the response before its send is acknowledged.
+            let mut req_buf = [0u8; 4096];
+            let _ = stream.read(&mut req_buf).await;
             let first_line = chat_line("A", false);
+            // Large Content-Length keeps the stream open after the first token so
+            // the cancel fires mid-stream rather than at connection-close time.
             let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nContent-Length: 1048576\r\n\r\n{}",
                 first_line
             );
             let _ = stream.write_all(header.as_bytes()).await;
@@ -881,23 +935,40 @@ mod tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let token_clone = token.clone();
-        let (chunks, callback) = collect_chunks();
+        let chunks: Arc<StdMutex<Vec<StreamChunk>>> = Arc::new(StdMutex::new(Vec::new()));
+        let chunks_clone = chunks.clone();
+        let first_token_seen = Arc::new(tokio::sync::Notify::new());
+        let first_token_seen_clone = first_token_seen.clone();
+        let callback = move |chunk: StreamChunk| {
+            if matches!(&chunk, StreamChunk::Token(token) if token == "A") {
+                first_token_seen_clone.notify_one();
+            }
+            chunks_clone.lock().unwrap().push(chunk);
+        };
 
-        tokio::spawn(async move {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let cancel_task = tokio::spawn(async move {
+            timeout(Duration::from_secs(5), first_token_seen.notified())
+                .await
+                .expect("expected first token before cancellation");
             token_clone.cancel();
         });
 
-        stream_ollama_chat(
-            &format!("http://127.0.0.1:{}/api/chat", port),
-            "test-model",
-            vec![],
-            false,
-            &client,
-            token,
-            callback,
+        timeout(
+            Duration::from_secs(5),
+            stream_ollama_chat(
+                &format!("http://127.0.0.1:{}/api/chat", port),
+                "test-model",
+                vec![],
+                false,
+                &client,
+                token,
+                callback,
+            ),
         )
-        .await;
+        .await
+        .expect("expected stream cancellation path to complete");
+
+        cancel_task.await.unwrap();
 
         let chunks = chunks.lock().unwrap();
         assert!(chunks
@@ -1018,7 +1089,7 @@ mod tests {
         let token = CancellationToken::new();
         let token_clone = token.clone();
 
-        state.set(token);
+        state.set_token(token);
         assert!(!token_clone.is_cancelled());
 
         state.cancel();
@@ -1037,8 +1108,8 @@ mod tests {
         let token = CancellationToken::new();
         let token_clone = token.clone();
 
-        state.set(token);
-        state.clear();
+        state.set_token(token);
+        state.clear_token();
         assert!(!token_clone.is_cancelled());
     }
 
@@ -1050,8 +1121,8 @@ mod tests {
         let second = CancellationToken::new();
         let second_clone = second.clone();
 
-        state.set(first);
-        state.set(second);
+        state.set_token(first);
+        state.set_token(second);
 
         state.cancel();
         assert!(!first_clone.is_cancelled());
@@ -1447,7 +1518,10 @@ mod tests {
         // Token emitted for content field
         assert!(matches!(&chunks[1], StreamChunk::Token(t) if t == "Hello"));
         // Done emitted
-        assert!(matches!(&chunks[2], StreamChunk::Done));
+        assert_eq!(
+            std::mem::discriminant(&chunks[2]),
+            std::mem::discriminant(&StreamChunk::Done)
+        );
 
         // Accumulated return value contains only content, not thinking
         assert_eq!(accumulated, "Hello");

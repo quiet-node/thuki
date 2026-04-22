@@ -3,19 +3,33 @@ import { describe, it, expect } from 'vitest';
 import { ThinkingBlock } from '../ThinkingBlock';
 
 describe('ThinkingBlock', () => {
-  it('returns null when thinkingContent is empty', () => {
+  it('returns null when thinkingContent is empty and no pending state is set', () => {
     const { container } = render(
       <ThinkingBlock thinkingContent="" isThinking={false} />,
     );
     expect(container.innerHTML).toBe('');
   });
 
-  it('shows animated "Thinking..." label while isThinking', () => {
+  it('shows the pending placeholder label before thinking tokens arrive', () => {
+    render(<ThinkingBlock isThinking={false} isPending />);
+    const label = screen.getByTestId('loading-label');
+    expect(label).toBeInTheDocument();
+    expect(label.textContent).toBe('Warming up...');
+  });
+
+  it('does not render a toggle button while pending', () => {
+    render(<ThinkingBlock isThinking={false} isPending />);
+    expect(
+      screen.queryByRole('button', { name: 'Toggle thinking details' }),
+    ).toBeNull();
+  });
+
+  it('shows a clickable "Thinking..." summary while isThinking', () => {
     render(<ThinkingBlock thinkingContent="Working on it" isThinking={true} />);
-    expect(screen.getByTestId('thinking-label')).toBeInTheDocument();
-    expect(screen.getByTestId('thinking-label').textContent).toContain(
-      'Thinking...',
-    );
+    const label = screen.getByTestId('loading-label');
+    expect(label).toBeInTheDocument();
+    expect(label.textContent).toBe('Thinking...');
+    expect(screen.getByTestId('loading-label-prefix')).toBeInTheDocument();
   });
 
   it('is collapsed by default, even while thinking', () => {
@@ -28,7 +42,9 @@ describe('ThinkingBlock', () => {
     render(
       <ThinkingBlock thinkingContent="Some reasoning." isThinking={false} />,
     );
-    expect(screen.getByText('Thought process')).toBeInTheDocument();
+    expect(screen.getByTestId('thinking-summary-label').textContent).toBe(
+      'Thought process',
+    );
   });
 
   it('expands on click to show thinking content', () => {

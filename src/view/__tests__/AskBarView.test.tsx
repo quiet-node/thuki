@@ -707,7 +707,7 @@ describe('AskBarView', () => {
         items: [{ type: 'image/png', getAsFile: () => file }],
       };
       fireEvent.paste(textarea, { clipboardData });
-      // FileReader is async — wait for the next microtask.
+      // FileReader is async - wait for the next microtask.
       await vi.waitFor(() => {
         expect(onImagesAttached).toHaveBeenCalledTimes(1);
       });
@@ -1338,7 +1338,7 @@ describe('AskBarView', () => {
       );
       const options = screen.getAllByRole('option');
       fireEvent.mouseDown(options[0]);
-      expect(setQuery).toHaveBeenCalledWith('/screen ');
+      expect(setQuery).toHaveBeenCalledWith('/search ');
     });
 
     it('Tab does nothing when suggestions are not shown', () => {

@@ -216,7 +216,7 @@ export function HistoryPanel({
       try {
         await onDeleteConversation(id);
       } catch {
-        // Backend rejected — restore the item in its original sort position.
+        // Backend rejected - restore the item in its original sort position.
         /* v8 ignore start */
         if (snapshot !== null) {
           setConversations((prev) =>
@@ -237,7 +237,7 @@ export function HistoryPanel({
 
   return (
     <div className="history-panel flex flex-col w-full">
-      {/* Search input — hidden when showing any confirmation prompt */}
+      {/* Search input - hidden when showing any confirmation prompt */}
       {pendingId === null && !pendingNewConversation && (
         <div className="px-3 pt-3 pb-2 border-b border-surface-border">
           <input
@@ -251,7 +251,7 @@ export function HistoryPanel({
         </div>
       )}
 
-      {/* Switch confirmation — overlays the list when pending */}
+      {/* Switch confirmation - overlays the list when pending */}
       {pendingId !== null ? (
         <SwitchConfirmation
           onSaveAndSwitch={handleSaveAndSwitch}
@@ -269,7 +269,7 @@ export function HistoryPanel({
         <div className="overflow-y-auto py-1 max-h-[280px]">
           {loadError && (
             <p className="px-3 py-4 text-xs text-text-secondary text-center">
-              Couldn&apos;t load history — try again.
+              Couldn&apos;t load history - try again.
             </p>
           )}
 
@@ -298,7 +298,7 @@ export function HistoryPanel({
         </div>
       )}
 
-      {/* Optional footer — only shown in conversation-view mode */}
+      {/* Optional footer - only shown in conversation-view mode */}
       {showNewConversation && pendingId === null && !pendingNewConversation && (
         <div className="border-t border-surface-border pt-1 pb-1">
           <button

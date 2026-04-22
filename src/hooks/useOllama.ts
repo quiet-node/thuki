@@ -1,12 +1,18 @@
-import { useState, useCallback } from 'react';
-import { invoke, Channel } from '@tauri-apps/api/core';
+import { useCallback, useRef, useState } from 'react';
+import { Channel, invoke } from '@tauri-apps/api/core';
+import type {
+  SearchEvent,
+  SearchMetadata,
+  SearchResultPreview,
+  SearchStage,
+  SearchTraceStep,
+  SearchWarning,
+} from '../types/search';
 
 /** Mirrors the Rust OllamaErrorKind enum sent over IPC. */
 export type OllamaErrorKind = 'NotRunning' | 'ModelNotFound' | 'Other';
 
-/**
- * Represents a single message in the chat thread.
- */
+/** Represents a single message in the chat thread. */
 export interface Message {
   /** Unique identifier for stable React list keys. */
   id: string;
@@ -18,14 +24,26 @@ export interface Message {
   imagePaths?: string[];
   /** Present on assistant messages that represent an Ollama error callout. */
   errorKind?: OllamaErrorKind;
-  /** Accumulated thinking/reasoning content from the model, if thinking mode was used. */
+  /** Accumulated thinking content from the model, if thinking mode was used. */
   thinkingContent?: string;
+  /** Marks an assistant message produced through the `/search` pipeline. */
+  fromSearch?: boolean;
+  /** Marks an assistant message produced through a `/think` turn. */
+  fromThink?: boolean;
+  /** Source links forwarded by the search pipeline. */
+  searchSources?: SearchResultPreview[];
+  /** Warnings emitted by the `/search` pipeline during this turn. */
+  searchWarnings?: SearchWarning[];
+  /** When true, renders sandbox setup guidance instead of normal content. */
+  sandboxUnavailable?: boolean;
+  /** Ordered, user-facing timeline steps for a `/search` turn. */
+  searchTraces?: SearchTraceStep[];
+  /** Structured retrieval metadata emitted by the backend search pipeline. */
+  searchMetadata?: SearchMetadata;
 }
 
-/**
- * The expected structure of streaming chunks emitted from the Rust backend.
- */
-export type StreamChunk =
+/** Raw streaming chunk payload emitted from the Rust chat backend. */
+type RawStreamChunk =
   | { type: 'Token'; data: string }
   | { type: 'ThinkingToken'; data: string }
   | { type: 'Done' }
@@ -33,36 +51,140 @@ export type StreamChunk =
   | { type: 'Error'; data: { kind: OllamaErrorKind; message: string } };
 
 /**
- * A custom hook that simplifies interactions with the local Ollama LLM.
- * It manages message history, streaming state, and sets up Rust IPC channels.
+ * Normalized chat-stream chunk used inside the hook.
  *
- * @param onTurnComplete Optional callback invoked after a complete user/assistant
- *   turn (i.e., when the `Done` chunk is received). Receives the user message
- *   and the finalized assistant message. Not called on `Cancelled` or `Error`.
- *   Used by the caller to persist completed turns to SQLite.
- * @returns An object containing the message history, a submit callback function, and operational states.
+ * The chat IPC payload uses `data` while the search pipeline uses `content`.
+ * Normalizing here keeps the internal token contract consistent and prevents
+ * accidental cross-assignment between the two event streams.
+ */
+type StreamChunk =
+  | { type: 'Token'; content: string }
+  | { type: 'ThinkingToken'; content: string }
+  | { type: 'Done' }
+  | { type: 'Cancelled' }
+  | { type: 'Error'; error: { kind: OllamaErrorKind; message: string } };
+
+function normalizeStreamChunk(chunk: RawStreamChunk): StreamChunk {
+  switch (chunk.type) {
+    case 'Token':
+      return { type: 'Token', content: chunk.data };
+    case 'ThinkingToken':
+      return { type: 'ThinkingToken', content: chunk.data };
+    case 'Done':
+      return chunk;
+    case 'Cancelled':
+      return chunk;
+    case 'Error':
+      return { type: 'Error', error: chunk.data };
+  }
+}
+
+/** Result payload delivered to callers when a `/search` pipeline turn finishes. */
+export interface SearchOutcome {
+  final: boolean;
+}
+
+interface ActiveGeneration {
+  id: number;
+  assistantId: string;
+  hasVisibleOutput: boolean;
+  resolveSearch?: (outcome: SearchOutcome) => void;
+}
+
+function upsertSearchTraceStep(
+  steps: SearchTraceStep[],
+  nextStep: SearchTraceStep,
+): SearchTraceStep[] {
+  const index = steps.findIndex((step) => step.id === nextStep.id);
+  if (index === -1) {
+    return [...steps, nextStep];
+  }
+
+  const next = [...steps];
+  next[index] = nextStep;
+  return next;
+}
+
+function finalizeSearchTraceSteps(
+  steps: SearchTraceStep[],
+): SearchTraceStep[] | undefined {
+  if (steps.length === 0) return undefined;
+
+  return steps.map((step) =>
+    step.status === 'running' ? { ...step, status: 'completed' } : step,
+  );
+}
+
+/**
+ * Simplifies interactions with the local Ollama backend.
+ *
+ * Manages message history, streaming state, and the Tauri IPC channels used by
+ * both the normal chat path and the `/search` pipeline.
  */
 export function useOllama(
   onTurnComplete?: (userMsg: Message, assistantMsg: Message) => void,
 ) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  /** Transient stage indicator for the active `/search` pipeline, if any. */
+  const [searchStage, setSearchStage] = useState<SearchStage>(null);
+  const activeGenerationRef = useRef<ActiveGeneration | null>(null);
+  const nextGenerationIdRef = useRef(0);
+  const pendingCancelRef = useRef<Promise<void> | null>(null);
+
+  const beginGeneration = (
+    assistantId: string,
+    resolveSearch?: (outcome: SearchOutcome) => void,
+  ) => {
+    const generation: ActiveGeneration = {
+      id: nextGenerationIdRef.current + 1,
+      assistantId,
+      hasVisibleOutput: false,
+      resolveSearch,
+    };
+    nextGenerationIdRef.current = generation.id;
+    activeGenerationRef.current = generation;
+    return generation.id;
+  };
+
+  const isActiveGeneration = (generationId: number) =>
+    activeGenerationRef.current?.id === generationId;
+
+  const markVisibleOutput = () => {
+    activeGenerationRef.current!.hasVisibleOutput = true;
+  };
+
+  const completeGeneration = () => {
+    const active = activeGenerationRef.current!;
+    activeGenerationRef.current = null;
+    return active;
+  };
+
+  const abortActiveGeneration = useCallback(() => {
+    const active = activeGenerationRef.current;
+    activeGenerationRef.current = null;
+    setIsGenerating(false);
+    setSearchStage(null);
+
+    if (!active) {
+      return false;
+    }
+
+    active.resolveSearch?.({ final: true });
+
+    if (!active.hasVisibleOutput) {
+      setMessages((prev) =>
+        prev.filter((message) => message.id !== active.assistantId),
+      );
+    }
+
+    return true;
+  }, []);
 
   /**
-   * Submits a message to the Ollama backend and initiates the streaming response.
-   * The backend manages conversation history — only the new user message is sent.
+   * Submits a message to the Ollama backend and starts the streaming response.
    *
-   * Streams tokens directly into the messages array. An empty assistant placeholder
-   * is added immediately, then updated in-place on each token until generation finishes.
-   *
-   * @param displayContent The user's query as it should appear in the chat bubble.
-   * @param quotedText Optional selected text quoted alongside this message.
-   * @param imagePaths Optional array of absolute file paths for attached images.
-   * @param think When true, enables Ollama's thinking/reasoning mode.
-   * @param promptOverride When provided, sent to the backend as the actual message
-   *   instead of displayContent. The chat bubble still shows displayContent.
-   *   Used by utility slash commands to send a composed prompt template while
-   *   displaying the user's original input.
+   * The backend manages conversation history. Only the new user message is sent.
    */
   const ask = useCallback(
     async (
@@ -72,11 +194,16 @@ export function useOllama(
       think?: boolean,
       promptOverride?: string,
     ) => {
-      if (
-        (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) ||
-        isGenerating
-      )
+      if (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) {
         return;
+      }
+
+      if (activeGenerationRef.current) return;
+      const pendingCancel = pendingCancelRef.current;
+      if (pendingCancel) {
+        await pendingCancel;
+      }
+      if (activeGenerationRef.current) return;
 
       const userMsg: Message = {
         id: crypto.randomUUID(),
@@ -92,62 +219,93 @@ export function useOllama(
         id: assistantId,
         role: 'assistant',
         content: '',
+        fromThink: think ? true : undefined,
       };
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setIsGenerating(true);
+      const generationId = beginGeneration(assistantId);
 
-      const channel = new Channel<StreamChunk>();
+      const channel = new Channel<RawStreamChunk>();
       let currentContent = '';
       let currentThinkingContent = '';
 
-      channel.onmessage = (chunk) => {
+      channel.onmessage = (rawChunk) => {
+        if (!isActiveGeneration(generationId)) {
+          return;
+        }
+
+        const chunk = normalizeStreamChunk(rawChunk);
+
         if (chunk.type === 'ThinkingToken') {
-          currentThinkingContent += chunk.data;
+          currentThinkingContent += chunk.content;
+          if (chunk.content) {
+            markVisibleOutput();
+          }
           setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? { ...m, thinkingContent: currentThinkingContent }
-                : m,
+            prev.map((message) =>
+              message.id === assistantId
+                ? { ...message, thinkingContent: currentThinkingContent }
+                : message,
             ),
           );
-        } else if (chunk.type === 'Token') {
-          currentContent += chunk.data;
+          return;
+        }
+
+        if (chunk.type === 'Token') {
+          currentContent += chunk.content;
+          if (chunk.content) {
+            markVisibleOutput();
+          }
           setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId ? { ...m, content: currentContent } : m,
+            prev.map((message) =>
+              message.id === assistantId
+                ? { ...message, content: currentContent }
+                : message,
             ),
           );
-        } else if (chunk.type === 'Done') {
+          return;
+        }
+
+        if (chunk.type === 'Done') {
+          completeGeneration();
           setIsGenerating(false);
-          // Notify the caller that a complete turn has finished so it can
-          // persist both messages to SQLite if the conversation is saved.
+          setSearchStage(null);
           onTurnComplete?.(userMsg, {
             ...assistantMsg,
             content: currentContent,
             thinkingContent: currentThinkingContent || undefined,
           });
-        } else if (chunk.type === 'Cancelled') {
-          // Remove the empty assistant placeholder if nothing was generated.
+          return;
+        }
+
+        if (chunk.type === 'Cancelled') {
+          completeGeneration();
           if (!currentContent && !currentThinkingContent) {
-            setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+            setMessages((prev) =>
+              prev.filter((message) => message.id !== assistantId),
+            );
           }
           setIsGenerating(false);
-        } else {
-          // Replace the streaming placeholder with an error message.
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? {
-                    ...m,
-                    content: chunk.data.message,
-                    errorKind: chunk.data.kind,
-                  }
-                : m,
-            ),
-          );
-          setIsGenerating(false);
+          setSearchStage(null);
+          return;
         }
+
+        completeGeneration();
+
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  content: chunk.error.message,
+                  errorKind: chunk.error.kind,
+                }
+              : message,
+          ),
+        );
+        setIsGenerating(false);
+        setSearchStage(null);
       };
 
       try {
@@ -159,53 +317,307 @@ export function useOllama(
           onEvent: channel,
         });
       } catch {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: 'Something went wrong\nCould not reach Ollama.',
-            errorKind: 'Other' as const,
-          },
-        ]);
+        if (!isActiveGeneration(generationId)) {
+          return;
+        }
+        completeGeneration();
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  content: 'Something went wrong\nCould not reach Ollama.',
+                  errorKind: 'Other',
+                }
+              : message,
+          ),
+        );
         setIsGenerating(false);
+        setSearchStage(null);
       }
     },
-    [isGenerating, onTurnComplete],
+    [onTurnComplete],
   );
 
-  /** Cancels the currently active generation by signalling the Rust backend. */
-  const cancel = useCallback(async () => {
-    if (!isGenerating) return;
-    await invoke('cancel_generation');
-  }, [isGenerating]);
-
-  /** Resets all conversation state to prepare for a fresh session. */
-  const reset = useCallback(() => {
-    setMessages([]);
-    setIsGenerating(false);
-    void invoke('reset_conversation');
-  }, []);
-
   /**
-   * Replaces the current message list with a previously loaded set of messages.
+   * Submits a `/search` pipeline turn.
    *
-   * Called after `load_conversation` returns from the backend (which already
-   * synced the Rust `ConversationHistory`). Does NOT call `reset_conversation`
-   * to avoid conflicting with the epoch bump performed by `load_conversation`.
-   *
-   * @param msgs The complete message array to load into React state.
+   * @param query Text sent to the backend pipeline, without the `/search` trigger.
+   * @param displayContent Text shown in the user bubble. Defaults to `query`.
+   * @param quotedText Selected host-app text shown above the user bubble, if any.
    */
-  const loadMessages = useCallback((msgs: Message[]) => {
-    setMessages(msgs);
-    setIsGenerating(false);
-  }, []);
+  const askSearch = useCallback(
+    async (
+      query: string,
+      displayContent?: string,
+      quotedText?: string,
+    ): Promise<SearchOutcome> => {
+      const trimmed = query.trim();
+      if (!trimmed) return { final: true };
+
+      if (activeGenerationRef.current) return { final: true };
+      const pendingCancel = pendingCancelRef.current;
+      if (pendingCancel) {
+        await pendingCancel;
+      }
+      if (activeGenerationRef.current) return { final: true };
+
+      const userMsg: Message = {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: displayContent ?? trimmed,
+        quotedText,
+      };
+      const assistantId = crypto.randomUUID();
+      const assistantMsg: Message = {
+        id: assistantId,
+        role: 'assistant',
+        content: '',
+        fromSearch: true,
+      };
+
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      setIsGenerating(true);
+      setSearchStage(null);
+
+      const channel = new Channel<SearchEvent>();
+      let currentContent = '';
+      let sawToken = false;
+      let pendingSources: SearchResultPreview[] | undefined;
+      let warnings: SearchWarning[] = [];
+      let pendingTraces: SearchTraceStep[] = [];
+      let pendingMetadata: SearchMetadata | undefined;
+      let awaitingClarification = false;
+      let errored = false;
+      let cancelled = false;
+
+      const updateAssistant = (patch: Partial<Message>) => {
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantId ? { ...message, ...patch } : message,
+          ),
+        );
+      };
+
+      return new Promise<SearchOutcome>((resolve) => {
+        const generationId = beginGeneration(assistantId, resolve);
+
+        const finish = (final: boolean) => {
+          const active = completeGeneration();
+
+          setIsGenerating(false);
+          setSearchStage(null);
+
+          const finalizedTraces = finalizeSearchTraceSteps(pendingTraces);
+          if (finalizedTraces) {
+            pendingTraces = finalizedTraces;
+          }
+          const persistedTraces = finalizedTraces;
+
+          if (!errored && !cancelled && currentContent) {
+            updateAssistant({
+              searchSources: pendingSources,
+              searchWarnings: warnings.length > 0 ? warnings : undefined,
+              searchTraces: persistedTraces,
+              searchMetadata: pendingMetadata,
+            });
+            onTurnComplete?.(userMsg, {
+              ...assistantMsg,
+              content: currentContent,
+              searchSources: pendingSources,
+              searchWarnings: warnings.length > 0 ? warnings : undefined,
+              searchTraces: persistedTraces,
+              searchMetadata: pendingMetadata,
+            });
+          }
+
+          active.resolveSearch?.({ final });
+        };
+
+        // Once the backend emits RefiningSearch, every later searching or
+        // reading stage belongs to a follow-up round rather than the initial one.
+        let inGapRound = false;
+
+        channel.onmessage = (event) => {
+          if (!isActiveGeneration(generationId)) {
+            return;
+          }
+
+          switch (event.type) {
+            case 'Trace': {
+              pendingTraces = upsertSearchTraceStep(pendingTraces, event.step);
+              awaitingClarification ||= event.step.kind === 'clarify';
+              updateAssistant({ searchTraces: pendingTraces });
+              break;
+            }
+            case 'AnalyzingQuery': {
+              setSearchStage({ kind: 'analyzing_query' });
+              break;
+            }
+            case 'Searching': {
+              setSearchStage(
+                inGapRound
+                  ? { kind: 'searching', gap: true }
+                  : { kind: 'searching' },
+              );
+              break;
+            }
+            case 'FetchingUrl':
+            case 'ReadingSources': {
+              setSearchStage(
+                inGapRound
+                  ? { kind: 'reading_sources', gap: true }
+                  : { kind: 'reading_sources' },
+              );
+              break;
+            }
+            case 'RefiningSearch': {
+              inGapRound = true;
+              setSearchStage({
+                kind: 'refining_search',
+                attempt: event.attempt,
+                total: event.total,
+              });
+              break;
+            }
+            case 'Composing': {
+              setSearchStage(
+                inGapRound
+                  ? { kind: 'composing', gap: true }
+                  : { kind: 'composing' },
+              );
+              break;
+            }
+            case 'Sources': {
+              pendingSources = event.results;
+              break;
+            }
+            case 'Token': {
+              sawToken ||= event.content.length > 0;
+              currentContent += event.content;
+              if (event.content) {
+                markVisibleOutput();
+              }
+              setSearchStage(null);
+              updateAssistant({ content: currentContent });
+              break;
+            }
+            case 'IterationComplete': {
+              const finalizedTraces = finalizeSearchTraceSteps(pendingTraces);
+              if (finalizedTraces) {
+                pendingTraces = finalizedTraces;
+                updateAssistant({ searchTraces: finalizedTraces });
+              }
+              break;
+            }
+            case 'Warning': {
+              warnings = [...warnings, event.warning];
+              break;
+            }
+            case 'Done': {
+              pendingMetadata = event.metadata ?? pendingMetadata;
+              finish(!awaitingClarification && sawToken);
+              break;
+            }
+            case 'Cancelled': {
+              const active = completeGeneration();
+              cancelled = true;
+              if (!currentContent) {
+                setMessages((prev) =>
+                  prev.filter((message) => message.id !== assistantId),
+                );
+              }
+              setIsGenerating(false);
+              setSearchStage(null);
+              active.resolveSearch?.({ final: true });
+              break;
+            }
+            case 'Error': {
+              errored = true;
+              updateAssistant({
+                content: event.message,
+                errorKind: 'Other',
+              });
+              finish(true);
+              break;
+            }
+            case 'SandboxUnavailable': {
+              errored = true;
+              updateAssistant({ sandboxUnavailable: true });
+              finish(true);
+              break;
+            }
+          }
+        };
+
+        invoke('search_pipeline', {
+          message: trimmed,
+          onEvent: channel,
+        }).catch(() => {
+          if (!isActiveGeneration(generationId) || errored || cancelled) return;
+          errored = true;
+          updateAssistant({
+            content: 'Something went wrong\nCould not start search.',
+            errorKind: 'Other',
+          });
+          finish(true);
+        });
+      });
+    },
+    [onTurnComplete],
+  );
+
+  /** Cancels the currently active generation. */
+  const cancel = useCallback(async () => {
+    if (
+      !activeGenerationRef.current &&
+      !isGenerating &&
+      !pendingCancelRef.current
+    ) {
+      return;
+    }
+
+    abortActiveGeneration();
+
+    if (!pendingCancelRef.current) {
+      const cancelPromise = (async () => {
+        try {
+          await invoke('cancel_generation');
+        } catch {
+          // Local hard-abort already reset the UI; backend best-effort only.
+        } finally {
+          pendingCancelRef.current = null;
+        }
+      })();
+      pendingCancelRef.current = cancelPromise;
+    }
+
+    await pendingCancelRef.current;
+  }, [abortActiveGeneration, isGenerating]);
+
+  /** Resets all conversation state for a fresh session. */
+  const reset = useCallback(() => {
+    abortActiveGeneration();
+    setMessages([]);
+    void invoke('reset_conversation');
+  }, [abortActiveGeneration]);
+
+  /** Replaces the current message list with a previously loaded set of messages. */
+  const loadMessages = useCallback(
+    (msgs: Message[]) => {
+      abortActiveGeneration();
+      setMessages(msgs);
+    },
+    [abortActiveGeneration],
+  );
 
   return {
     messages,
     ask,
+    askSearch,
     cancel,
     isGenerating,
+    searchStage,
     reset,
     loadMessages,
   };

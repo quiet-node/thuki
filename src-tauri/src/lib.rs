@@ -7,7 +7,7 @@
  *
  * On macOS the main window is converted to an NSPanel via `tauri-nspanel`.
  * This allows the overlay to appear on top of native fullscreen applications
- * — something a standard NSWindow cannot do regardless of window level.
+ * - something a standard NSWindow cannot do regardless of window level.
  *
  * The overlay is toggled via a system-level activation trigger (macOS only),
  * managed by the `activator` module.
@@ -21,6 +21,7 @@ pub mod history;
 pub mod images;
 pub mod onboarding;
 pub mod screenshot;
+pub mod search;
 
 #[cfg(target_os = "macos")]
 mod activator;
@@ -45,7 +46,7 @@ use tauri_nspanel::{
 
 // ─── NSPanel definition (macOS only) ────────────────────────────────────────
 
-// ThukiPanel — custom NSPanel subclass for the overlay.
+// ThukiPanel - custom NSPanel subclass for the overlay.
 // `can_become_key_window: true` allows keyboard input for the chat.
 // `is_floating_panel: true` keeps the panel above normal windows.
 #[cfg(target_os = "macos")]
@@ -129,7 +130,7 @@ fn emit_overlay_visibility(
     );
 }
 
-/// CoreGraphics display lookup — uses macOS-native `CGGetDisplaysWithPoint`
+/// CoreGraphics display lookup - uses macOS-native `CGGetDisplaysWithPoint`
 /// for hit-testing instead of manual iteration + containment checks.
 /// All coordinates are in the Quartz display coordinate space (top-left of
 /// primary display, Y-down), matching the AX API and `CGEventGetLocation`.
@@ -299,7 +300,7 @@ fn request_overlay_hide(app_handle: &tauri::AppHandle) {
 
 /// Shows the overlay and requests the frontend to replay its entrance animation.
 ///
-/// Window positioning is intentionally deferred on non-macOS platforms — the
+/// Window positioning is intentionally deferred on non-macOS platforms - the
 /// activation context is forwarded to the frontend for selected-text display,
 /// but no positioning logic is applied until platform-specific activators
 /// (e.g. Windows global hotkey) are implemented.
@@ -368,7 +369,9 @@ fn set_window_frame(app_handle: tauri::AppHandle, x: f64, y: f64, width: f64, he
 /// Synchronizes the Rust-side visibility tracking when the frontend
 /// completes its exit animation and hides the native window.
 #[tauri::command]
-fn notify_overlay_hidden() {
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn notify_overlay_hidden(generation: tauri::State<crate::commands::GenerationState>) {
+    generation.cancel();
     OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
 }
 
@@ -432,7 +435,7 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
 
 /// Called when the user clicks "Get Started" on the intro screen.
 /// Marks onboarding complete in the DB, restores the window to overlay mode,
-/// and immediately shows the Ask Bar — no relaunch required.
+/// and immediately shows the Ask Bar - no relaunch required.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn finish_onboarding(
@@ -471,12 +474,12 @@ fn finish_onboarding(
 /// configuration required to appear over fullscreen macOS applications.
 ///
 /// The four critical settings are:
-/// - `PanelLevel::Floating` — floats above normal windows
-/// - `CollectionBehavior::full_screen_auxiliary()` — allows coexistence with
+/// - `PanelLevel::Floating` - floats above normal windows
+/// - `CollectionBehavior::full_screen_auxiliary()` - allows coexistence with
 ///   fullscreen Spaces (this is what standard `alwaysOnTop` cannot do)
-/// - `StyleMask::nonactivating_panel()` — prevents the panel from stealing
+/// - `StyleMask::nonactivating_panel()` - prevents the panel from stealing
 ///   focus/activation from the fullscreen application
-/// - `set_has_shadow(false)` — disables the native compositor shadow, which
+/// - `set_has_shadow(false)` - disables the native compositor shadow, which
 ///   renders differently for key vs. non-key windows, causing a visible change
 ///   when the user clicks elsewhere. CSS `shadow-bar` provides a consistent
 ///   elevation effect independent of key-window state.
@@ -539,7 +542,7 @@ fn show_onboarding_window(app_handle: &tauri::AppHandle, stage: onboarding::Onbo
                 // Re-enable native shadow for onboarding. init_panel disables
                 // it for the overlay to avoid the key/non-key shadow flicker,
                 // but for onboarding the native shadow looks professional and
-                // renders outside the window boundary — no transparent padding
+                // renders outside the window boundary - no transparent padding
                 // needed.
                 panel.set_has_shadow(true);
                 panel.show_and_make_key();
@@ -586,7 +589,7 @@ fn run_image_cleanup(app_handle: &tauri::AppHandle) {
 }
 
 /// Spawns a background Tokio task that runs the cleanup sweep on a fixed
-/// interval. Thin async wrapper — delegates to `run_image_cleanup`.
+/// interval. Thin async wrapper - delegates to `run_image_cleanup`.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn spawn_periodic_image_cleanup(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -685,7 +688,7 @@ pub fn run() {
                 let activator = activator::OverlayActivator::new();
                 if permissions::is_accessibility_granted() {
                     activator.start(move || {
-                        // Skip AX + clipboard when hiding — no context needed and
+                        // Skip AX + clipboard when hiding - no context needed and
                         // simulating Cmd+C against Thuki's own WebView would produce
                         // a macOS alert sound.
                         let is_visible = OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst);
@@ -737,6 +740,10 @@ pub fn run() {
             commands::ask_ollama,
             #[cfg(not(coverage))]
             commands::cancel_generation,
+            #[cfg(not(coverage))]
+            commands::open_url,
+            #[cfg(not(coverage))]
+            search::search_pipeline,
             #[cfg(not(coverage))]
             commands::reset_conversation,
             #[cfg(not(coverage))]

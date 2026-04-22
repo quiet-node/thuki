@@ -3,7 +3,7 @@
  *
  * Images are stored in a flat directory at `<app_data_dir>/images/` with
  * UUID-based filenames. This follows the industry-standard pattern used by
- * Signal, iMessage, and Slack — media files are independent entities linked
+ * Signal, iMessage, and Slack - media files are independent entities linked
  * to messages through path references, not organized by conversation.
  *
  * Each image is compressed to JPEG (quality 85, max 1920px) on save to keep
@@ -171,7 +171,7 @@ pub fn encode_images_as_base64(paths: &[String]) -> Result<Vec<String>, String> 
 // Thin wrappers that delegate to the pure functions above. Excluded from
 // coverage builds entirely (`#[cfg(not(coverage))]`) because `coverage(off)`
 // suppresses instrumentation but llvm-cov still counts excluded function
-// signatures as "missed lines" in the summary — breaking the 100% gate.
+// signatures as "missed lines" in the summary - breaking the 100% gate.
 
 /// Compresses and saves an image to the flat images directory.
 ///
@@ -364,7 +364,7 @@ mod tests {
         let result = remove_image(&base, outside.to_str().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("outside the images directory"));
-        // File must still exist — not deleted.
+        // File must still exist - not deleted.
         assert!(outside.exists());
 
         fs::remove_dir_all(&base).unwrap();

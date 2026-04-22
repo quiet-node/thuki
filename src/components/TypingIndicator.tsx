@@ -62,7 +62,7 @@ function getIntensity(
  * On reaching the center the active dot holds for `FADE_MS`, then all dots
  * dim for `PAUSE_MS` before the next cycle begins.
  *
- * No shadows or glows — pure color transitions only.
+ * No shadows or glows - pure color transitions only.
  */
 export function TypingIndicator() {
   const [step, setStep] = useState(0);
@@ -87,7 +87,7 @@ export function TypingIndicator() {
       setStep(currentStep);
 
       if (currentStep === SPIRAL_PATH.length - 1) {
-        // Reached center — hold, then dim, then pause before restart.
+        // Reached center - hold, then dim, then pause before restart.
         schedule(() => {
           setDimmed(true);
           schedule(() => {

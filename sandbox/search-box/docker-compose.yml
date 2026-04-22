@@ -1,0 +1,65 @@
+# ==============================================================================
+# Search Sandbox: SearXNG Local Search Engine
+#
+# Provides a privacy-respecting, locally-hosted meta-search engine for Thuki's
+# /search command. Aggregates results from Google, Bing, DuckDuckGo, Brave,
+# and many specialized engines without rate limiting (local use only).
+#
+# SECURITY CHECKLIST:
+# [x] NETWORK INGRESS: 127.0.0.1 binding - no external access
+# [x] PRIVILEGE ESCALATION: no-new-privileges enforced
+# [x] CAPABILITY RESTRICTION: only CHOWN/SETGID/SETUID retained (required by uwsgi)
+# [ ] RATE LIMITING: intentionally disabled for local performance
+# ==============================================================================
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: thuki-searxng
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:25017:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://127.0.0.1:25017/
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - search_net
+
+  reader:
+    build:
+      context: ./reader
+    image: thuki-reader:local
+    container_name: thuki-reader
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:25018:8000"
+    networks:
+      - search_net
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  search_net:
+    driver: bridge

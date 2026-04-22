@@ -28,8 +28,18 @@ describe('IntroStep', () => {
       screen.getByText('Select text, then double-tap'),
     ).toBeInTheDocument();
     expect(screen.getByText('Drop in any image')).toBeInTheDocument();
-    expect(screen.getByText('for context')).toBeInTheDocument();
+    expect(screen.getByText('for commands')).toBeInTheDocument();
     expect(screen.getByText('Floats above everything')).toBeInTheDocument();
+  });
+
+  it('renders generic slash command guidance', () => {
+    render(<IntroStep onComplete={vi.fn()} />);
+    expect(screen.getByText('/')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Open the slash menu for built-in tools and writing shortcuts right from the ask bar.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('renders the Get Started button', () => {

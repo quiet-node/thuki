@@ -19,6 +19,11 @@ export interface Command {
 
 export const COMMANDS: readonly Command[] = [
   {
+    trigger: '/search',
+    label: '/search',
+    description: 'Agentic web search: iterative reasoning & cited synthesis',
+  },
+  {
     trigger: '/screen',
     label: '/screen',
     description: 'Capture your screen and include it as context',

@@ -7,7 +7,32 @@
  */
 
 import type React from 'react';
+import { useEffect, useRef } from 'react';
 import type { Command } from '../config/commands';
+import { Tooltip } from './Tooltip';
+
+/** Globe icon for /search command (web search). */
+const SEARCH_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5" />
+    <ellipse
+      cx="8"
+      cy="8"
+      rx="3"
+      ry="6.5"
+      stroke="currentColor"
+      strokeWidth="1.2"
+    />
+    <path d="M1.5 8h13" stroke="currentColor" strokeWidth="1.2" />
+  </svg>
+);
 
 /** Hoisted static screen-capture SVG icon. */
 const SCREEN_ICON = (
@@ -98,26 +123,35 @@ const THINK_ICON = (
   </svg>
 );
 
-/** Globe icon for /translate command. */
+/** 文A icon for /translate command, matching Google Translate icon style. */
 const TRANSLATE_ICON = (
   <svg
     width="14"
     height="14"
     viewBox="0 0 16 16"
-    fill="none"
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
   >
-    <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5" />
-    <ellipse
-      cx="8"
-      cy="8"
-      rx="3"
-      ry="6.5"
-      stroke="currentColor"
-      strokeWidth="1.2"
-    />
-    <path d="M1.5 8h13" stroke="currentColor" strokeWidth="1.2" />
+    <text
+      x="0.5"
+      y="10"
+      fontSize="9.5"
+      fontWeight="600"
+      fill="currentColor"
+      fontFamily="system-ui, -apple-system, 'PingFang SC', sans-serif"
+    >
+      文
+    </text>
+    <text
+      x="8.5"
+      y="15.5"
+      fontSize="7.5"
+      fontWeight="700"
+      fill="currentColor"
+      fontFamily="system-ui, -apple-system, sans-serif"
+    >
+      A
+    </text>
   </svg>
 );
 
@@ -248,6 +282,8 @@ const ACTION_ICON = (
 /** Returns the icon for a given command trigger. */
 function iconForTrigger(trigger: string): React.ReactNode {
   switch (trigger) {
+    case '/search':
+      return SEARCH_ICON;
     case '/screen':
       return SCREEN_ICON;
     case '/think':
@@ -290,6 +326,15 @@ export function CommandSuggestion({
   highlightedIndex,
   onSelect,
 }: CommandSuggestionProps) {
+  const optionElementsRef = useRef<Array<HTMLLIElement | null>>([]);
+
+  useEffect(() => {
+    if (highlightedIndex < 0 || highlightedIndex >= commands.length) return;
+    optionElementsRef.current[highlightedIndex]?.scrollIntoView?.({
+      block: 'nearest',
+    });
+  }, [commands, highlightedIndex]);
+
   return (
     <div
       className="mb-1 rounded-xl border border-surface-border bg-surface-base backdrop-blur-2xl shadow-bar overflow-hidden"
@@ -308,15 +353,18 @@ export function CommandSuggestion({
           No commands found
         </div>
       ) : (
-        <ul className="pb-1 max-h-[112px] overflow-y-auto" role="presentation">
+        <ul className="pb-1 max-h-28 overflow-y-auto" role="presentation">
           {commands.map((cmd, index) => {
             const isHighlighted = index === highlightedIndex;
             return (
               <li
                 key={cmd.trigger}
+                ref={(node) => {
+                  optionElementsRef.current[index] = node;
+                }}
                 role="option"
                 aria-selected={isHighlighted}
-                className={`flex items-center gap-2.5 px-3 py-1.5 cursor-pointer select-none transition-colors duration-100 ${
+                className={`flex items-center gap-2.5 px-3 py-1.5 cursor-pointer select-none ${
                   isHighlighted
                     ? 'bg-white/8 text-text-primary'
                     : 'text-text-secondary hover:bg-white/5 hover:text-text-primary'
@@ -341,9 +389,11 @@ export function CommandSuggestion({
                 </span>
 
                 {/* Description */}
-                <span className="text-xs text-text-secondary min-w-0 truncate flex-1">
-                  {cmd.description}
-                </span>
+                <Tooltip label={cmd.description} className="flex-1 min-w-0">
+                  <span className="text-xs text-text-secondary truncate w-full">
+                    {cmd.description}
+                  </span>
+                </Tooltip>
 
                 {/* Tab badge on highlighted row only */}
                 {isHighlighted && (

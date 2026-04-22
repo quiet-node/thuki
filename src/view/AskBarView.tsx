@@ -11,8 +11,8 @@ import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
 import { COMMANDS } from '../config/commands';
 
 /**
- * Hoisted static SVG — prevents re-allocation on every render cycle.
- * @see Vercel React Best Practices §6.3 — Hoist Static JSX Elements
+ * Hoisted static SVG - prevents re-allocation on every render cycle.
+ * @see Vercel React Best Practices §6.3 - Hoist Static JSX Elements
  */
 const ARROW_UP_ICON = (
   <svg
@@ -34,7 +34,7 @@ const ARROW_UP_ICON = (
 );
 
 /**
- * Hoisted static SVG — square stop icon displayed during active generation.
+ * Hoisted static SVG - square stop icon displayed during active generation.
  */
 const STOP_ICON = (
   <svg
@@ -92,7 +92,7 @@ const BORDER_TRACE_RING = (
   </svg>
 );
 
-/** Hoisted static history (clock) icon — prevents re-allocation on every render. */
+/** Hoisted static history (clock) icon - prevents re-allocation on every render. */
 const HISTORY_ICON = (
   <svg
     width="14"
@@ -120,7 +120,7 @@ const HISTORY_ICON = (
   </svg>
 );
 
-/** Hoisted static camera icon — triggers screenshot capture. */
+/** Hoisted static camera icon - triggers screenshot capture. */
 const CAMERA_ICON = (
   <svg
     width="14"
@@ -242,7 +242,7 @@ interface AskBarViewProps {
  * Renders the persistent bottom input bar of the application.
  *
  * Window dragging is handled by the application root container via event
- * bubbling — mousedown events from this component propagate up naturally.
+ * bubbling - mousedown events from this component propagate up naturally.
  */
 export function AskBarView({
   query,
@@ -265,7 +265,7 @@ export function AskBarView({
   /** Ref to the mirror div behind the textarea for command highlighting. */
   const mirrorRef = useRef<HTMLDivElement>(null);
 
-  /** True when the UI should be locked — either generating or waiting for images. */
+  /** True when the UI should be locked - either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
   const canSubmit =
     (query.trim().length > 0 || attachedImages.length > 0) && !isBusy;
@@ -478,7 +478,7 @@ export function AskBarView({
     mirrorRef.current.scrollTop = inputRef.current.scrollTop;
   }, [inputRef]);
 
-  /** Handles clipboard paste — extracts image items from clipboardData. */
+  /** Handles clipboard paste - extracts image items from clipboardData. */
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
       const items = e.clipboardData?.items;

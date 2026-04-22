@@ -182,7 +182,7 @@ enum TapExitReason {
     CreationFailed,
     /// The tap was created and the run loop ran, but macOS disabled the tap
     /// (timeout or user-input disable) or the run loop exited for an unexpected
-    /// reason. Retry immediately — no permission change is needed.
+    /// reason. Retry immediately - no permission change is needed.
     TapDied,
 }
 
@@ -213,7 +213,7 @@ where
 
             TapExitReason::TapDied => {
                 // Tap was running then killed by macOS. Reinstall immediately.
-                eprintln!("thuki: [activator] tap died — reinstalling");
+                eprintln!("thuki: [activator] tap died - reinstalling");
                 permission_failures = 0;
             }
 
@@ -257,7 +257,7 @@ where
     let cb_on_activation = on_activation.clone();
     let cb_state = state.clone();
 
-    // Create the event tap at HID level — the lowest level before events reach
+    // Create the event tap at HID level - the lowest level before events reach
     // any application. This is what Karabiner-Elements, BetterTouchTool, and
     // every other reliable system-wide key interceptor uses.
     //
@@ -277,7 +277,7 @@ where
         CGEventTapOptions::Default,
         // Only register for FlagsChanged. TapDisabledByTimeout and
         // TapDisabledByUserInput have sentinel values (0xFFFFFFFE/0xFFFFFFFF)
-        // that overflow the bitmask and cannot be included here — macOS delivers
+        // that overflow the bitmask and cannot be included here - macOS delivers
         // them to the callback automatically without registration.
         vec![CGEventType::FlagsChanged],
         move |_proxy, event_type, event: &CGEvent| -> CallbackResult {
@@ -289,7 +289,7 @@ where
             ) {
                 eprintln!(
                     "thuki: [activator] event tap disabled by macOS \
-                     ({event_type:?}) — stopping run loop for reinstall"
+                     ({event_type:?}) - stopping run loop for reinstall"
                 );
                 CFRunLoop::get_current().stop();
                 return CallbackResult::Keep;
@@ -322,7 +322,6 @@ where
 
     match tap_result {
         Ok(tap) => {
-            eprintln!("thuki: [activator] event tap created (HID level) — listening for double-tap Control");
             unsafe {
                 let loop_source = tap
                     .mach_port()
@@ -411,7 +410,7 @@ mod tests {
         assert!(evaluate_activation(&mut state, true));
         evaluate_activation(&mut state, false);
 
-        // Try to activate again immediately — within 600ms cooldown
+        // Try to activate again immediately - within 600ms cooldown
         evaluate_activation(&mut state, true);
         evaluate_activation(&mut state, false);
         // This should be rejected by cooldown

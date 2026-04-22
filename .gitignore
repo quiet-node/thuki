@@ -30,10 +30,19 @@ coverage
 # Rust build output
 target/
 
+# Python dev environments (reader sandbox pytest venv, etc.)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # Git worktrees
 .worktrees
 .claude/worktrees
 .gstack/
 
-# Superpowers generated docs (design specs, implementation plans) — never commit
+# Superpowers generated docs (design specs, implementation plans): never commit
 docs/superpowers/
+# Superpowers brainstorming visual-companion working files
+.superpowers/
+*.profraw

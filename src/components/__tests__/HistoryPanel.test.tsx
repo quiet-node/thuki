@@ -85,6 +85,35 @@ describe('HistoryPanel', () => {
     expect(screen.getByText('Yesterday')).toBeInTheDocument();
   });
 
+  it('keeps multiple conversations from the same day in a single bucket', async () => {
+    const props = makeProps({
+      listConversations: vi.fn(async () => [
+        {
+          id: 'c1',
+          title: 'React basics',
+          model: 'gemma4:e2b',
+          updated_at: NOW,
+          message_count: 4,
+        },
+        {
+          id: 'c4',
+          title: 'Another React thread',
+          model: 'gemma4:e2b',
+          updated_at: NOW - 5_000,
+          message_count: 3,
+        },
+      ]),
+    });
+
+    render(<HistoryPanel {...props} />);
+
+    await act(async () => {});
+
+    expect(screen.getAllByText('Today')).toHaveLength(1);
+    expect(screen.getByText('React basics')).toBeInTheDocument();
+    expect(screen.getByText('Another React thread')).toBeInTheDocument();
+  });
+
   it('shows "No conversations yet" when list is empty', async () => {
     const props = makeProps({ listConversations: vi.fn(async () => []) });
     render(<HistoryPanel {...props} />);
@@ -268,10 +297,10 @@ describe('HistoryPanel', () => {
 
     // First keystroke starts a debounce timer
     fireEvent.change(input, { target: { value: 'r' } });
-    // Second keystroke before debounce fires — clears the first timer (line 130)
+    // Second keystroke before debounce fires - clears the first timer (line 130)
     fireEvent.change(input, { target: { value: 're' } });
 
-    // Only after debounce delay should listFn be called — once, with 're'
+    // Only after debounce delay should listFn be called - once, with 're'
     await act(async () => {
       vi.advanceTimersByTime(250);
     });
@@ -294,7 +323,7 @@ describe('HistoryPanel', () => {
   });
 
   it('restores deleted conversation when onDeleteConversation rejects', async () => {
-    // Bug: optimistic removal has no rollback — if the backend delete fails the
+    // Bug: optimistic removal has no rollback - if the backend delete fails the
     // item disappears from the UI but still exists in SQLite, reappearing on next open.
     const props = makeProps({
       onDeleteConversation: vi.fn(async () => {
