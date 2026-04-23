@@ -5,6 +5,7 @@ import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
+import { ModelPicker } from '../components/ModelPicker';
 import { Tooltip } from '../components/Tooltip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
@@ -236,6 +237,12 @@ interface AskBarViewProps {
    * "normal" = violet ring; "max" = red ring + label; undefined = no ring.
    */
   isDragOver?: 'normal' | 'max';
+  /** Currently active Ollama model slug. Enables the model picker when set. */
+  activeModel?: string;
+  /** Full list of model slugs available for selection in the picker. */
+  availableModels?: string[];
+  /** Called when the user picks a new active model from the picker. */
+  onModelSelect?: (model: string) => void;
 }
 
 /**
@@ -261,6 +268,9 @@ export function AskBarView({
   onImagePreview,
   onScreenshot,
   isDragOver,
+  activeModel,
+  availableModels,
+  onModelSelect,
 }: AskBarViewProps) {
   /** Ref to the mirror div behind the textarea for command highlighting. */
   const mirrorRef = useRef<HTMLDivElement>(null);
@@ -656,6 +666,15 @@ export function AskBarView({
                 {CAMERA_ICON}
               </button>
             </Tooltip>
+          )}
+
+          {activeModel && availableModels && onModelSelect && (
+            <ModelPicker
+              activeModel={activeModel}
+              models={availableModels}
+              disabled={isBusy}
+              onSelect={onModelSelect}
+            />
           )}
 
           <motion.button

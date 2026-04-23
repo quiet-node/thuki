@@ -234,6 +234,28 @@ describe('AskBarView', () => {
     ).toBeInTheDocument();
   });
 
+  it('calls onModelSelect when a model row is chosen', () => {
+    const onModelSelect = vi.fn();
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={true}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        activeModel="gemma4:e2b"
+        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
+        onModelSelect={onModelSelect}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'qwen2.5:7b' }));
+    expect(onModelSelect).toHaveBeenCalledWith('qwen2.5:7b');
+  });
+
   it('displays selectedText when provided', () => {
     render(
       <AskBarView
