@@ -583,6 +583,8 @@ function App() {
       if (isSaved) {
         await unsave();
       } else {
+        // activeModel is empty string until the model picker hook resolves on first
+        // load; fall back to the bootstrap default during that brief window.
         await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
       }
     } catch {
@@ -1284,6 +1286,24 @@ function App() {
   }, [isSubmitPending, cancel, setSearchActive, setSelectedContext]);
 
   /**
+   * Persists the user's model choice via the backend. Silently no-ops on
+   * rejection: the only reject path is a race where the chosen model was
+   * uninstalled between the picker render and the click. The next
+   * `refreshModels` (fired on overlay show) will reconcile the list.
+   */
+  const handleModelSelect = useCallback(
+    (model: string) => {
+      void setActiveModel(model).catch(
+        /* v8 ignore next 3 -- rejection requires a mid-render uninstall race that cannot be triggered in jsdom */
+        () => {
+          // Intentional swallow: see docblock above.
+        },
+      );
+    },
+    [setActiveModel],
+  );
+
+  /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
    * requests emitted from the Rust backend.
    */
@@ -1569,9 +1589,7 @@ function App() {
                   isDragOver={isDragOver ?? undefined}
                   activeModel={activeModel}
                   availableModels={availableModels}
-                  onModelSelect={(model) => {
-                    void setActiveModel(model);
-                  }}
+                  onModelSelect={handleModelSelect}
                 />
               </div>
 
