@@ -125,4 +125,44 @@ describe('ModelPicker', () => {
       screen.getByRole('button', { name: 'qwen2.5:7b' }),
     ).toBeInTheDocument();
   });
+
+  it('closes an open popup when disabled flips true', () => {
+    const { rerender } = render(
+      <ModelPicker
+        activeModel="gemma4:e2b"
+        models={['gemma4:e2b', 'qwen2.5:7b']}
+        disabled={false}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    expect(screen.getByRole('button', { name: 'qwen2.5:7b' })).toBeInTheDocument();
+
+    rerender(
+      <ModelPicker
+        activeModel="gemma4:e2b"
+        models={['gemma4:e2b', 'qwen2.5:7b']}
+        disabled={true}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'qwen2.5:7b' })).toBeNull();
+  });
+
+  it('marks the active row with aria-current', () => {
+    render(
+      <ModelPicker
+        activeModel="gemma4:e2b"
+        models={['gemma4:e2b', 'qwen2.5:7b']}
+        disabled={false}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    expect(screen.getByRole('button', { name: 'gemma4:e2b' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('button', { name: 'qwen2.5:7b' })).not.toHaveAttribute('aria-current');
+  });
 });

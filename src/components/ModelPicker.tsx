@@ -60,8 +60,12 @@ export function ModelPicker({
   const [isOpen, setIsOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
+  // Derived so a `disabled` flip (e.g. generation starts while popup is open)
+  // hides the popup immediately without needing a state-syncing effect.
+  const showPopup = isOpen && !disabled;
+
   useEffect(() => {
-    if (!isOpen) return;
+    if (!showPopup) return;
     const handleMouseDown = (event: MouseEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) {
         setIsOpen(false);
@@ -69,7 +73,7 @@ export function ModelPicker({
     };
     document.addEventListener('mousedown', handleMouseDown);
     return () => document.removeEventListener('mousedown', handleMouseDown);
-  }, [isOpen]);
+  }, [showPopup]);
 
   if (models.length === 0) return null;
 
@@ -86,7 +90,7 @@ export function ModelPicker({
       </button>
 
       <AnimatePresence>
-        {isOpen && (
+        {showPopup && (
           <motion.div
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
@@ -99,6 +103,7 @@ export function ModelPicker({
                 key={model}
                 type="button"
                 aria-label={model}
+                aria-current={model === activeModel ? 'true' : undefined}
                 onClick={() => {
                   onSelect(model);
                   setIsOpen(false);
