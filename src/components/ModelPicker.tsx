@@ -96,7 +96,7 @@ export function ModelPicker({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 6 }}
             transition={{ duration: 0.16 }}
-            className="absolute right-0 bottom-10 w-56 overflow-hidden rounded-[18px] border border-white/10 bg-surface/95 shadow-2xl backdrop-blur-xl"
+            className="absolute right-0 bottom-10 w-56 overflow-hidden rounded-xl border border-surface-border bg-surface-base shadow-chat backdrop-blur-2xl"
           >
             {models.map((model) => (
               <button
