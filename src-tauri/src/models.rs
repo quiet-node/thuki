@@ -78,6 +78,13 @@ pub fn validate_model_installed(model: &str, installed: &[String]) -> Result<(),
     }
 }
 
+/// Per-request timeout for the Ollama `/api/tags` GET. Guards the IPC
+/// boundary: if the daemon accepts the TCP connection but never responds
+/// (hung socket, stuck process, network partition), `get_model_picker_state`
+/// and `set_active_model` would otherwise block indefinitely and wedge the
+/// UI. 5 seconds is generous for a localhost call.
+const TAGS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// GETs `{base_url}/api/tags` and returns the list of installed model slugs.
 ///
 /// Every failure mode (transport error, non-2xx status, JSON decode error)
@@ -87,9 +94,21 @@ pub async fn fetch_installed_model_names(
     client: &reqwest::Client,
     base_url: &str,
 ) -> Result<Vec<String>, String> {
+    fetch_installed_model_names_with_timeout(client, base_url, TAGS_REQUEST_TIMEOUT).await
+}
+
+/// Internal variant of [`fetch_installed_model_names`] with a configurable
+/// per-request timeout. Exists so tests can exercise the timeout branch
+/// deterministically without waiting the production 5s.
+async fn fetch_installed_model_names_with_timeout(
+    client: &reqwest::Client,
+    base_url: &str,
+    timeout: std::time::Duration,
+) -> Result<Vec<String>, String> {
     let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
     let response = client
         .get(&url)
+        .timeout(timeout)
         .send()
         .await
         .map_err(|e| format!("failed to reach Ollama: {e}"))?;
@@ -337,6 +356,39 @@ mod tests {
         assert!(
             err.contains("failed to reach Ollama"),
             "expected transport error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_installed_model_names_times_out_when_ollama_hangs() {
+        // Bind a TCP listener that accepts connections but never writes a
+        // response. reqwest will complete the TCP handshake, send the GET,
+        // then block waiting for bytes that never arrive. The per-request
+        // timeout is the only thing that lets us recover. Use a 100ms
+        // override so the test stays fast and deterministic.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Accept in a background thread but never read/write, so the socket
+        // stays open and idle until the test drops it.
+        std::thread::spawn(move || {
+            // Hold the accepted stream to keep the connection half-open.
+            let _held = listener.accept().ok();
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        });
+
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let result = fetch_installed_model_names_with_timeout(
+            &client,
+            &base,
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("failed to reach Ollama"),
+            "expected timeout to surface as transport error, got: {err}"
         );
     }
 

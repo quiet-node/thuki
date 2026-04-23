@@ -746,6 +746,11 @@ pub fn run() {
             // `/api/tags` list on first open and may replace this seed.
             let persisted_active = database::get_config(&db_conn, models::ACTIVE_MODEL_KEY)
                 .expect("failed to read active_model from app_config");
+            // The live installed-model list isn't available at startup (no async
+            // reqwest here). Passing `&[]` forces `resolve_active_model` to fall
+            // through to the bootstrap default; the first call to
+            // `get_model_picker_state` from the frontend reconciles against the
+            // real list and may replace this seed.
             let initial_active_model = models::resolve_active_model(
                 persisted_active.as_deref(),
                 &[],
