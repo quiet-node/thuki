@@ -137,7 +137,9 @@ describe('ModelPicker', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
-    expect(screen.getByRole('button', { name: 'qwen2.5:7b' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'qwen2.5:7b' }),
+    ).toBeInTheDocument();
 
     rerender(
       <ModelPicker
@@ -162,7 +164,12 @@ describe('ModelPicker', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
-    expect(screen.getByRole('button', { name: 'gemma4:e2b' })).toHaveAttribute('aria-current', 'true');
-    expect(screen.getByRole('button', { name: 'qwen2.5:7b' })).not.toHaveAttribute('aria-current');
+    expect(screen.getByRole('button', { name: 'gemma4:e2b' })).toHaveAttribute(
+      'aria-current',
+      'true',
+    );
+    expect(
+      screen.getByRole('button', { name: 'qwen2.5:7b' }),
+    ).not.toHaveAttribute('aria-current');
   });
 });

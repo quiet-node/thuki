@@ -224,7 +224,7 @@ describe('AskBarView', () => {
         onCancel={vi.fn()}
         inputRef={makeRef()}
         activeModel="gemma4:e2b"
-        availableModels={["gemma4:e2b", "qwen2.5:7b"]}
+        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
         onModelSelect={vi.fn()}
       />,
     );
