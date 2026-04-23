@@ -109,6 +109,7 @@ describe('useConversationHistory', () => {
           search_metadata: null,
         },
       ],
+      model: MODEL,
     });
   });
 

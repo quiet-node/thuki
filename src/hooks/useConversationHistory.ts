@@ -296,6 +296,7 @@ export function useConversationHistory() {
       void invoke('generate_title', {
         conversationId: response.conversation_id,
         messages: payloads,
+        model,
       });
     },
     [isSaved],
