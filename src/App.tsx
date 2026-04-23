@@ -14,6 +14,7 @@ import { LogicalSize } from '@tauri-apps/api/dpi';
 import { useOllama } from './hooks/useOllama';
 import type { Message } from './hooks/useOllama';
 import { useConversationHistory } from './hooks/useConversationHistory';
+import { useModelSelection } from './hooks/useModelSelection';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView, MAX_IMAGES } from './view/AskBarView';
 import { OnboardingView } from './view/onboarding/index';
@@ -29,6 +30,10 @@ import {
   buildPrompt,
 } from './config/commands';
 import './App.css';
+
+/** Fallback model name used before get_model_picker_state resolves at startup. */
+const DEFAULT_MODEL_FALLBACK = 'gemma4:e2b';
+
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 const ONBOARDING_EVENT = 'thuki://onboarding';
@@ -230,6 +235,8 @@ function App() {
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
   const config = useConfig();
   const quote = config.quote;
+  const { activeModel, availableModels, refreshModels, setActiveModel } =
+    useModelSelection();
 
   /**
    * True when the window is near the screen bottom and should grow upward.
@@ -402,11 +409,12 @@ function App() {
       setCaptureError(null);
       setSearchActive(false);
 
+      void refreshModels();
       reset();
       resetHistory();
       setOverlayState('visible');
     },
-    [reset, resetHistory],
+    [reset, resetHistory, refreshModels],
   );
 
   /**
@@ -575,12 +583,12 @@ function App() {
       if (isSaved) {
         await unsave();
       } else {
-        await save(messages);
+        await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
       }
     } catch {
       // State stays unchanged on failure; feedback is implicit in the icon.
     }
-  }, [isSaved, unsave, save, messages]);
+  }, [isSaved, unsave, save, messages, activeModel]);
 
   /**
    * Loads a conversation from history, replacing the current session.
@@ -616,7 +624,7 @@ function App() {
   const handleSaveAndLoad = useCallback(
     async (id: string) => {
       try {
-        await save(messages);
+        await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
       } catch {
         // Save failed - abort to avoid leaving the current session unprotected.
         return;
@@ -631,7 +639,7 @@ function App() {
         setIsHistoryOpen(false);
       }
     },
-    [save, messages, loadConversation, loadMessages],
+    [save, messages, loadConversation, loadMessages, activeModel],
   );
 
   /**
@@ -690,12 +698,12 @@ function App() {
   /** Saves the current conversation then starts a fresh one. */
   const handleSaveAndNew = useCallback(async () => {
     try {
-      await save(messages);
+      await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
     } catch {
       return;
     }
     resetForNewConversation();
-  }, [save, messages, resetForNewConversation]);
+  }, [save, messages, resetForNewConversation, activeModel]);
 
   /** Discards the current conversation and starts a fresh one. */
   const handleJustNew = useCallback(() => {
@@ -1559,6 +1567,11 @@ function App() {
                   onImagePreview={handleAskBarImagePreview}
                   onScreenshot={handleScreenshot}
                   isDragOver={isDragOver ?? undefined}
+                  activeModel={activeModel}
+                  availableModels={availableModels}
+                  onModelSelect={(model) => {
+                    void setActiveModel(model);
+                  }}
                 />
               </div>
 

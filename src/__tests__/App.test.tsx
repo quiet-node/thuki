@@ -28,13 +28,6 @@ describe('App', () => {
     enableChannelCapture();
   });
 
-  it('calls get_model_config on mount', async () => {
-    render(<App />);
-    await act(async () => {});
-
-    expect(invoke).toHaveBeenCalledWith('get_model_config');
-  });
-
   it('fetches model picker state on mount and refreshes it when the overlay shows', async () => {
     invoke.mockReset();
     enableChannelCaptureWithResponses({
@@ -56,6 +49,60 @@ describe('App', () => {
     expect(invoke).toHaveBeenCalledWith('get_model_picker_state');
   });
 
+  it('renders the model picker when the overlay is visible and models load', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toBeInTheDocument();
+  });
+
+  it('saves the conversation with the currently selected model', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+      save_conversation: { conversation_id: 'conv-1' },
+      generate_title: undefined,
+      set_active_model: undefined,
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'qwen2.5:7b' }));
+    });
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    fireEvent.change(textarea, { target: { value: 'hello there' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await act(async () => {});
+
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hi there!' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+
+    fireEvent.click(screen.getByLabelText('Save conversation'));
+
+    expect(invoke).toHaveBeenCalledWith(
+      'save_conversation',
+      expect.objectContaining({ model: 'qwen2.5:7b' }),
+    );
+  });
 
   it('grows upward when near bottom screen edge', async () => {
     const { container } = render(<App />);
@@ -687,6 +734,10 @@ describe('App', () => {
 
     it('closes history panel when a conversation is loaded', async () => {
       enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b'],
+        },
         list_conversations: [],
       });
 
