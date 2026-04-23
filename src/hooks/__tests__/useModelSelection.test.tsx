@@ -114,5 +114,48 @@ describe('useModelSelection', () => {
     await act(async () => {});
 
     expect(result.current.availableModels).toEqual([]);
+    expect(result.current.activeModel).toBe('');
+  });
+
+  it('surfaces backend errors and leaves active model unchanged on rejection', async () => {
+    invoke
+      .mockResolvedValueOnce({
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      })
+      .mockRejectedValueOnce(
+        new Error('Model is not installed in Ollama: mystery'),
+      );
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+
+    await expect(
+      act(async () => {
+        await result.current.setActiveModel('mystery');
+      }),
+    ).rejects.toThrow('Model is not installed in Ollama: mystery');
+
+    expect(result.current.activeModel).toBe('gemma4:e2b');
+  });
+
+  it('clears active model when a later refresh returns a malformed payload', async () => {
+    invoke
+      .mockResolvedValueOnce({
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      })
+      .mockResolvedValueOnce({ active: 42, all: 'not-an-array' });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+    expect(result.current.activeModel).toBe('gemma4:e2b');
+
+    await act(async () => {
+      await result.current.refreshModels();
+    });
+
+    expect(result.current.activeModel).toBe('');
+    expect(result.current.availableModels).toEqual([]);
   });
 });

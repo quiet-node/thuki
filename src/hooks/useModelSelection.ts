@@ -26,8 +26,10 @@ export interface UseModelSelectionResult {
   /** All locally installed Ollama model names available for selection. */
   availableModels: string[];
   /**
-   * Re-fetch the model picker state from the backend. On failure the
-   * available models list is cleared to avoid showing stale entries.
+   * Re-fetch the model picker state from the backend. Clears both
+   * `activeModel` and `availableModels` when the backend returns a malformed
+   * payload or the call rejects. Callers are the single trigger: this hook
+   * does not auto-retry.
    */
   refreshModels: () => Promise<void>;
   /**
@@ -55,14 +57,16 @@ export function useModelSelection(): UseModelSelectionResult {
 
   const refreshModels = useCallback(async (): Promise<void> => {
     try {
-      const state = await invoke<ModelPickerState>('get_model_picker_state');
+      const state = await invoke<unknown>('get_model_picker_state');
       if (!isModelPickerState(state)) {
+        setActiveModelState('');
         setAvailableModels([]);
         return;
       }
       setActiveModelState(state.active);
       setAvailableModels(state.all);
     } catch {
+      setActiveModelState('');
       setAvailableModels([]);
     }
   }, []);
