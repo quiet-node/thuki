@@ -212,6 +212,28 @@ describe('AskBarView', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders a model picker trigger near send when models are available', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={true}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        activeModel="gemma4:e2b"
+        availableModels={["gemma4:e2b", "qwen2.5:7b"]}
+        onModelSelect={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toBeInTheDocument();
+  });
+
   it('displays selectedText when provided', () => {
     render(
       <AskBarView

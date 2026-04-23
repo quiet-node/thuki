@@ -28,6 +28,35 @@ describe('App', () => {
     enableChannelCapture();
   });
 
+  it('calls get_model_config on mount', async () => {
+    render(<App />);
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith('get_model_config');
+  });
+
+  it('fetches model picker state on mount and refreshes it when the overlay shows', async () => {
+    invoke.mockReset();
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+
+    render(<App />);
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith('get_model_picker_state');
+
+    invoke.mockClear();
+
+    await showOverlay();
+
+    expect(invoke).toHaveBeenCalledWith('get_model_picker_state');
+  });
+
+
   it('grows upward when near bottom screen edge', async () => {
     const { container } = render(<App />);
     await act(async () => {});
