@@ -20,6 +20,7 @@ pub mod config;
 pub mod database;
 pub mod history;
 pub mod images;
+pub mod models;
 pub mod onboarding;
 pub mod screenshot;
 pub mod search;
@@ -720,6 +721,11 @@ pub fn run() {
                 Ok(c) => c,
                 Err(e) => crate::config::show_fatal_dialog_and_exit(&e),
             };
+            // Snapshot the bootstrap active-model slug from TOML before
+            // moving `app_config` into managed state. The picker overlay
+            // refreshes the live installed list on first open and may
+            // replace this seed.
+            let bootstrap_active = app_config.model.active().to_string();
             app.manage(app_config);
 
             // ── Generation + conversation state ─────────────────────
@@ -733,6 +739,21 @@ pub fn run() {
                 .expect("failed to resolve app data directory");
             let db_conn = database::open_database(&app_data_dir)
                 .expect("failed to initialise SQLite database");
+
+            // ── Active-model state: seed from SQLite app_config table ──
+            // The installed list isn't queried here (no async runtime yet);
+            // get_model_picker_state reconciles against the live
+            // `/api/tags` list on first open and may replace this seed.
+            let persisted_active = database::get_config(&db_conn, models::ACTIVE_MODEL_KEY)
+                .expect("failed to read active_model from app_config");
+            let initial_active_model = models::resolve_active_model(
+                persisted_active.as_deref(),
+                &[],
+                &bootstrap_active,
+            );
+            app.manage(models::ActiveModelState(std::sync::Mutex::new(
+                initial_active_model,
+            )));
             app.manage(history::Database(std::sync::Mutex::new(db_conn)));
 
             // ── Orphaned image cleanup (startup + periodic) ─────────
@@ -754,6 +775,10 @@ pub fn run() {
             commands::reset_conversation,
             #[cfg(not(coverage))]
             commands::get_config,
+            #[cfg(not(coverage))]
+            models::get_model_picker_state,
+            #[cfg(not(coverage))]
+            models::set_active_model,
             #[cfg(not(coverage))]
             history::save_conversation,
             #[cfg(not(coverage))]

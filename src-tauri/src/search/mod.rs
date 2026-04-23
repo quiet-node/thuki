@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::{ConversationHistory, GenerationState};
 use crate::config::AppConfig;
+use crate::models::ActiveModelState;
 
 pub mod chunker;
 pub mod config;
@@ -59,12 +60,21 @@ pub async fn search_pipeline(
     generation: State<'_, GenerationState>,
     history: State<'_, ConversationHistory>,
     app_config: State<'_, AppConfig>,
+    active_model_state: State<'_, ActiveModelState>,
 ) -> Result<(), String> {
     // Resolve the runtime search view from the loaded TOML. The single
     // source of truth lives in `config::defaults`; the loader has already
     // clamped and resolved every field by the time we read it here.
     let runtime_config = config::SearchRuntimeConfig::from_app_config(&app_config);
     let searxng_endpoint = runtime_config.searxng_endpoint();
+
+    // Snapshot the active model slug once from the picker-backed
+    // ActiveModelState; drop the guard before any `.await` so we never
+    // hold a `MutexGuard` across an await point.
+    let model_name = {
+        let guard = active_model_state.0.lock().map_err(|e| e.to_string())?;
+        guard.clone()
+    };
 
     // Pre-flight: verify both sandbox services are reachable before touching
     // the LLM or SearXNG. A 2-second probe prevents a long wait when the
@@ -84,7 +94,6 @@ pub async fn search_pipeline(
         "{}/api/chat",
         app_config.model.ollama_url.trim_end_matches('/')
     );
-    let active_model = app_config.model.active().to_string();
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());
 
@@ -92,7 +101,7 @@ pub async fn search_pipeline(
 
     let router = pipeline::DefaultRouterJudge::new(
         ollama_endpoint.clone(),
-        active_model.clone(),
+        model_name.clone(),
         (*client).clone(),
         cancel_token.clone(),
         today.clone(),
@@ -100,7 +109,7 @@ pub async fn search_pipeline(
     );
     let judge = pipeline::DefaultJudge::new(
         ollama_endpoint.clone(),
-        active_model.clone(),
+        model_name.clone(),
         (*client).clone(),
         cancel_token.clone(),
         runtime_config.judge_timeout_s,
@@ -110,7 +119,7 @@ pub async fn search_pipeline(
         &ollama_endpoint,
         &searxng_endpoint,
         &runtime_config.reader_url,
-        &active_model,
+        &model_name,
         &client,
         cancel_token.clone(),
         &app_config.prompt.resolved_system,

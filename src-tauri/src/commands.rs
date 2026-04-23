@@ -318,8 +318,14 @@ pub async fn ask_ollama(
     generation: State<'_, GenerationState>,
     history: State<'_, ConversationHistory>,
     config: State<'_, AppConfig>,
+    active_model: State<'_, crate::models::ActiveModelState>,
 ) -> Result<(), String> {
     let endpoint = format!("{}/api/chat", config.model.ollama_url.trim_end_matches('/'));
+    // Snapshot the active model slug; drop the guard before any `.await`.
+    let model_name = {
+        let guard = active_model.0.lock().map_err(|e| e.to_string())?;
+        guard.clone()
+    };
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());
 
@@ -366,7 +372,7 @@ pub async fn ask_ollama(
 
     let accumulated = stream_ollama_chat(
         &endpoint,
-        config.model.active(),
+        &model_name,
         messages,
         think,
         &client,

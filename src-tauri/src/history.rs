@@ -244,6 +244,7 @@ pub fn delete_conversation(
 pub async fn generate_title(
     conversation_id: String,
     messages: Vec<SaveMessagePayload>,
+    model: String,
     db: State<'_, Database>,
     client: State<'_, reqwest::Client>,
     app_config: State<'_, AppConfig>,
@@ -289,7 +290,7 @@ pub async fn generate_title(
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let accumulated = crate::commands::stream_ollama_chat(
         &endpoint,
-        app_config.model.active(),
+        &model,
         title_messages,
         false,
         &client,
