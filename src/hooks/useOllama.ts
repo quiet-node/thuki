@@ -18,7 +18,9 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  /** Ollama model slug that produced this message. Present on assistant messages once the stream completes. */
+  /** Ollama model slug attributed to this assistant message at creation time.
+   *  Remains stable even if the user switches models mid-stream. Undefined for
+   *  user messages and for legacy conversations loaded from pre-migration rows. */
   modelName?: string;
   /** Selected text from the host app that was quoted with this message, if any. */
   quotedText?: string;
