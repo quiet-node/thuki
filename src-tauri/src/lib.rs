@@ -715,6 +715,17 @@ pub fn run() {
             // ── Persistent HTTP client ────────────────────────────────
             app.manage(reqwest::Client::new());
 
+            // ── Configuration (TOML file at app_config_dir) ─────────
+            // Loaded once at startup. Missing file -> seed defaults.
+            // Corrupt file -> rename-with-timestamp + reseed. Only a hard
+            // write failure (disk full, permissions) is fatal; in that case
+            // we show a native alert and exit. See src/config/mod.rs.
+            let app_config = match crate::config::load(app.handle()) {
+                Ok(c) => c,
+                Err(e) => crate::config::show_fatal_dialog_and_exit(&e),
+            };
+            app.manage(app_config);
+
             // ── Generation + conversation state ─────────────────────
             app.manage(commands::GenerationState::new());
             app.manage(commands::ConversationHistory::new());
@@ -749,6 +760,8 @@ pub fn run() {
             commands::reset_conversation,
             #[cfg(not(coverage))]
             commands::get_model_config,
+            #[cfg(not(coverage))]
+            commands::get_config,
             #[cfg(not(coverage))]
             history::save_conversation,
             #[cfg(not(coverage))]

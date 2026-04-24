@@ -260,6 +260,17 @@ pub fn get_model_config(model_config: tauri::State<'_, ModelConfig>) -> serde_js
     serde_json::json!({ "active": model_config.active, "all": model_config.all })
 }
 
+/// Returns the full resolved `AppConfig` to the frontend.
+///
+/// Thin wrapper around a state clone; the config lives behind `app.manage(...)`
+/// and is loaded once at startup by `config::load`. The frontend hydrates its
+/// `ConfigContext` from this command on mount.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn get_config(config: tauri::State<'_, crate::config::AppConfig>) -> crate::config::AppConfig {
+    config.inner().clone()
+}
+
 /// Core streaming logic for Ollama `/api/chat`, separated from the Tauri
 /// command for testability. Uses `tokio::select!` to race each chunk read
 /// against the cancellation token, ensuring the HTTP connection is dropped

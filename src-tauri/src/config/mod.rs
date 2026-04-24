@@ -55,5 +55,32 @@ pub fn load(app: &tauri::AppHandle) -> Result<AppConfig, ConfigError> {
     load_from_path(&path)
 }
 
+/// Shows a native macOS alert describing the fatal config error and exits
+/// the process with a non-zero code. Called from `lib.rs` setup when
+/// [`load`] returns `Err`. On a non-sandboxed macOS app the only realistic
+/// cause is a broken `~/Library/Application Support/` (permission, disk full,
+/// read-only filesystem), which the user cannot repair from the UI.
+///
+/// Uses `osascript` to avoid pulling in `tauri-plugin-dialog` for a code path
+/// that runs at most once per user in the app's lifetime.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn show_fatal_dialog_and_exit(err: &ConfigError) -> ! {
+    let raw = format!(
+        "Thuki could not start because of a configuration error.\n\n{err}\n\nCheck write permissions on ~/Library/Application Support/"
+    );
+    // Escape quotes and backslashes for AppleScript string literal.
+    let escaped = raw.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "display alert \"Thuki\" message \"{escaped}\" as critical buttons {{\"Quit\"}} default button \"Quit\""
+    );
+    let _ = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output();
+    // Also print to stderr so `bun run dev` surfaces the error in-terminal.
+    eprintln!("thuki: [config] fatal: {err}");
+    std::process::exit(1);
+}
+
 #[cfg(test)]
 mod tests;
