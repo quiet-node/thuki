@@ -15,9 +15,8 @@
 use tauri::{ipc::Channel, State};
 use tokio_util::sync::CancellationToken;
 
-use crate::commands::{
-    ConversationHistory, GenerationState, ModelConfig, SystemPrompt, DEFAULT_OLLAMA_URL,
-};
+use crate::commands::{ConversationHistory, GenerationState};
+use crate::config::AppConfig;
 
 pub mod chunker;
 pub mod config;
@@ -59,8 +58,7 @@ pub async fn search_pipeline(
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
     history: State<'_, ConversationHistory>,
-    system_prompt: State<'_, SystemPrompt>,
-    model_config: State<'_, ModelConfig>,
+    app_config: State<'_, AppConfig>,
 ) -> Result<(), String> {
     // Pre-flight: verify both sandbox services are reachable before touching
     // the LLM or SearXNG. A 2-second probe prevents a long wait when the
@@ -70,7 +68,11 @@ pub async fn search_pipeline(
         return Ok(());
     }
 
-    let ollama_endpoint = format!("{}/api/chat", DEFAULT_OLLAMA_URL.trim_end_matches('/'));
+    let ollama_endpoint = format!(
+        "{}/api/chat",
+        app_config.model.ollama_url.trim_end_matches('/')
+    );
+    let active_model = app_config.model.active().to_string();
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());
 
@@ -78,14 +80,14 @@ pub async fn search_pipeline(
 
     let router = pipeline::DefaultRouterJudge::new(
         ollama_endpoint.clone(),
-        model_config.active.clone(),
+        active_model.clone(),
         (*client).clone(),
         cancel_token.clone(),
         today.clone(),
     );
     let judge = pipeline::DefaultJudge::new(
         ollama_endpoint.clone(),
-        model_config.active.clone(),
+        active_model.clone(),
         (*client).clone(),
         cancel_token.clone(),
     );
@@ -94,10 +96,10 @@ pub async fn search_pipeline(
         &ollama_endpoint,
         searxng::SEARXNG_ENDPOINT,
         config::READER_BASE_URL,
-        &model_config.active,
+        &active_model,
         &client,
         cancel_token.clone(),
-        &system_prompt.0,
+        &app_config.prompt.resolved_system,
         &history,
         message,
         &today,
