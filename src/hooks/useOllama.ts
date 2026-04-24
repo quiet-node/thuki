@@ -18,6 +18,8 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** Ollama model slug that produced this message. Present on assistant messages once the stream completes. */
+  modelName?: string;
   /** Selected text from the host app that was quoted with this message, if any. */
   quotedText?: string;
   /** Absolute file paths of images attached to this message, if any. */
