@@ -16,6 +16,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod commands;
+pub mod config;
 pub mod database;
 pub mod history;
 pub mod images;

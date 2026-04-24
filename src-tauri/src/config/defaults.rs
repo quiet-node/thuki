@@ -1,0 +1,57 @@
+//! Compiled default values for the application configuration.
+//!
+//! This is the ONE place where Thuki's default configuration lives. Every
+//! other subsystem reads the resolved values from `AppConfig` via Tauri state.
+//! Changing a default here propagates to a fresh first-run config file and to
+//! any field a user has left unset or left empty in their existing file.
+
+/// Default active model name, used when no config file exists yet and when a
+/// user's `[model] available` list is empty after whitespace resolution.
+pub const DEFAULT_MODEL_NAME: &str = "gemma4:e2b";
+
+/// Default Ollama HTTP endpoint (loopback, standard port).
+pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
+
+/// Built-in secretary persona prompt. User overrides via `[prompt] system` in
+/// the config file. The slash-command appendix is composed on top at load time
+/// and is never written back to the file.
+pub const DEFAULT_SYSTEM_PROMPT_BASE: &str = include_str!("../../prompts/system_prompt.txt");
+
+/// Generated appendix listing supported slash commands. Composed on top of
+/// the user-editable base prompt at load time so built-in command knowledge
+/// stays in sync with the registry even when the persona prompt is overridden.
+pub const SLASH_COMMAND_PROMPT_APPENDIX: &str =
+    include_str!("../../prompts/generated/slash_commands.txt");
+
+/// Latest config schema version understood by this build. Present in every
+/// written file so future migrations have a fixed point to branch from.
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+/// Window defaults (logical pixels / milliseconds).
+pub const DEFAULT_OVERLAY_WIDTH: f64 = 600.0;
+pub const DEFAULT_COLLAPSED_HEIGHT: f64 = 80.0;
+pub const DEFAULT_MAX_CHAT_HEIGHT: f64 = 648.0;
+pub const DEFAULT_HIDE_COMMIT_DELAY_MS: u64 = 350;
+
+/// Activation defaults.
+pub const DEFAULT_DOUBLE_TAP_WINDOW_MS: u64 = 400;
+pub const DEFAULT_COOLDOWN_MS: u64 = 600;
+
+/// Quote display defaults.
+pub const DEFAULT_QUOTE_MAX_DISPLAY_LINES: u32 = 4;
+pub const DEFAULT_QUOTE_MAX_DISPLAY_CHARS: u32 = 300;
+pub const DEFAULT_QUOTE_MAX_CONTEXT_LENGTH: u32 = 4096;
+
+/// Numeric sanity bounds used by the loader to reject values that would brick
+/// the UI. Out-of-bounds values fall back to compiled defaults. The bounds
+/// themselves are intentionally generous: the intent is to catch typos
+/// (zeros, missing digits), not to second-guess tasteful customization.
+pub const BOUNDS_OVERLAY_WIDTH: (f64, f64) = (200.0, 2000.0);
+pub const BOUNDS_COLLAPSED_HEIGHT: (f64, f64) = (40.0, 400.0);
+pub const BOUNDS_MAX_CHAT_HEIGHT: (f64, f64) = (200.0, 2000.0);
+pub const BOUNDS_HIDE_COMMIT_DELAY_MS: (u64, u64) = (0, 5000);
+pub const BOUNDS_DOUBLE_TAP_WINDOW_MS: (u64, u64) = (100, 2000);
+pub const BOUNDS_COOLDOWN_MS: (u64, u64) = (100, 5000);
+pub const BOUNDS_QUOTE_MAX_DISPLAY_LINES: (u32, u32) = (1, 100);
+pub const BOUNDS_QUOTE_MAX_DISPLAY_CHARS: (u32, u32) = (1, 10_000);
+pub const BOUNDS_QUOTE_MAX_CONTEXT_LENGTH: (u32, u32) = (1, 65_536);
