@@ -66,6 +66,24 @@ const NEW_CONVERSATION_ICON = (
   </svg>
 );
 
+/** Hoisted chip icon for the active-model pill trigger. */
+const CHIP_ICON = (
+  <svg
+    width="13"
+    height="13"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <rect x="3" y="3" width="10" height="10" rx="1.5" />
+    <path d="M5 1V3M8 1V3M11 1V3M5 13V15M8 13V15M11 13V15M1 5H3M1 8H3M1 11H3M13 5H15M13 8H15M13 11H15" />
+  </svg>
+);
+
 /** Hoisted history (clock) icon. */
 const HISTORY_ICON = (
   <svg
@@ -112,6 +130,18 @@ interface WindowControlsProps {
    * Omit to hide the button entirely.
    */
   onNewConversation?: () => void;
+  /**
+   * Currently active model slug displayed in the pill trigger.
+   * Requires `onModelPickerToggle` to be present; omit either to hide the pill.
+   */
+  activeModel?: string;
+  /**
+   * Called when the user clicks the active-model pill to open/close the picker.
+   * Requires `activeModel` to be present; omit either to hide the pill.
+   */
+  onModelPickerToggle?: () => void;
+  /** Drives `aria-expanded` on the pill button. */
+  isModelPickerOpen?: boolean;
 }
 
 /** Decorative dot color for inactive buttons. */
@@ -124,6 +154,9 @@ export const WindowControls = memo(function WindowControls({
   canSave = false,
   onHistoryOpen,
   onNewConversation,
+  activeModel,
+  onModelPickerToggle,
+  isModelPickerOpen = false,
 }: WindowControlsProps) {
   // Disabled only when there is nothing to save yet and the conversation hasn't
   // been saved. Once saved the button stays active so the user can unsave.
@@ -173,8 +206,44 @@ export const WindowControls = memo(function WindowControls({
           aria-hidden="true"
         />
 
-        {/* Right-side header controls - save bookmark + history dropdown */}
+        {/* Right-side header controls */}
         <div className="ml-auto flex items-center gap-1">
+          {/* Active model pill trigger — leftmost, before save */}
+          {activeModel !== undefined && onModelPickerToggle !== undefined && (
+            <Tooltip label="Choose model">
+              <button
+                type="button"
+                aria-label="Choose model"
+                aria-expanded={isModelPickerOpen}
+                aria-haspopup="listbox"
+                data-model-picker-toggle
+                onClick={onModelPickerToggle}
+                className={`group/pill flex items-center gap-1.5 px-2 h-7 rounded-lg text-xs transition-colors duration-150 cursor-pointer ${
+                  isModelPickerOpen ? 'bg-primary/10' : 'hover:bg-primary/8'
+                }`}
+              >
+                <span
+                  className={`shrink-0 transition-colors duration-150 ${
+                    isModelPickerOpen
+                      ? 'text-primary'
+                      : 'text-text-secondary group-hover/pill:text-primary'
+                  }`}
+                >
+                  {CHIP_ICON}
+                </span>
+                <span
+                  className={`max-w-[120px] truncate transition-colors duration-150 ${
+                    isModelPickerOpen
+                      ? 'text-text-primary'
+                      : 'text-text-secondary group-hover/pill:text-text-primary'
+                  }`}
+                >
+                  {activeModel}
+                </span>
+              </button>
+            </Tooltip>
+          )}
+
           {onSave !== undefined && (
             <Tooltip
               label={isSaved ? 'Remove from history' : 'Save conversation'}
@@ -206,7 +275,7 @@ export const WindowControls = memo(function WindowControls({
                 onClick={onNewConversation}
                 aria-label="New conversation"
                 data-history-toggle
-                className="w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-primary hover:bg-primary/8 transition-colors duration-150 cursor-pointer"
               >
                 {NEW_CONVERSATION_ICON}
               </button>
@@ -220,7 +289,7 @@ export const WindowControls = memo(function WindowControls({
                 onClick={onHistoryOpen}
                 aria-label="Open history"
                 data-history-toggle
-                className="w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-primary hover:bg-primary/8 transition-colors duration-150 cursor-pointer"
               >
                 {HISTORY_ICON}
               </button>

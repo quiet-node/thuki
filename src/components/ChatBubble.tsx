@@ -574,12 +574,12 @@ export function ChatBubble({
               {modelName && (
                 <span
                   data-testid="model-attribution"
-                  className="inline-flex items-center gap-[5px] px-[6px] py-[2px] pr-[8px] rounded-full border border-primary/15 bg-primary/5 text-[10.5px] tracking-[0.01em] text-text-secondary w-fit transition-[background-color,border-color,color] duration-150 hover:text-text-primary hover:bg-primary/10 hover:border-primary/25"
+                  className="inline-flex items-center gap-[5px] px-[6px] py-[2px] pr-[8px] rounded-md border border-primary/15 bg-primary/5 text-[10.5px] tracking-[0.01em] text-text-secondary w-fit transition-[background-color,border-color,color] duration-150 hover:text-text-primary hover:bg-primary/10 hover:border-primary/25"
                 >
                   <span className="text-primary/85 shrink-0 flex items-center">
                     {ATTRIB_CHIP_ICON}
                   </span>
-                  {modelName}
+                  <span className="max-w-[100px] truncate">{modelName}</span>
                 </span>
               )}
             </div>
