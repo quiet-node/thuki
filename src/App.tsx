@@ -128,6 +128,9 @@ function App() {
    */
   const morphingContainerNodeRef = useRef<HTMLDivElement | null>(null);
 
+  const { activeModel, availableModels, refreshModels, setActiveModel } =
+    useModelSelection();
+
   const {
     conversationId,
     isSaved,
@@ -163,7 +166,7 @@ function App() {
     searchStage,
     reset,
     loadMessages,
-  } = useOllama(handleTurnComplete);
+  } = useOllama(activeModel, handleTurnComplete);
 
   /**
    * Sticky flag: once the user invokes `/search`, subsequent submits in the

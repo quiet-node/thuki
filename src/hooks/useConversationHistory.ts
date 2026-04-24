@@ -41,6 +41,7 @@ function toPayload(msg: Message): SaveMessagePayload {
         : msg.searchTraces && msg.searchTraces.length > 0
           ? JSON.stringify(msg.searchTraces)
           : null,
+    model_name: msg.modelName ?? null,
   };
 }
 
@@ -241,6 +242,7 @@ function fromPersisted(msg: PersistedMessage): Message {
     searchMetadata,
     searchTraces:
       searchTraces && searchTraces.length > 0 ? searchTraces : undefined,
+    modelName: msg.model_name ?? undefined,
   };
 }
 
@@ -325,6 +327,7 @@ export function useConversationHistory() {
           searchSources: null,
           searchWarnings: null,
           searchMetadata: null,
+          modelName: null,
         }),
         invoke('persist_message', {
           conversationId,
@@ -346,6 +349,7 @@ export function useConversationHistory() {
                   assistantMsg.searchTraces.length > 0
                 ? JSON.stringify(assistantMsg.searchTraces)
                 : null,
+          modelName: assistantMsg.modelName ?? null,
         }),
       ]);
     },

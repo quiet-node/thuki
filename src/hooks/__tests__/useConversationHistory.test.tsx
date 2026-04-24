@@ -46,6 +46,7 @@ describe('useConversationHistory', () => {
           search_sources: null,
           search_warnings: null,
           search_metadata: null,
+          model_name: null,
         },
         {
           role: 'assistant',
@@ -56,6 +57,7 @@ describe('useConversationHistory', () => {
           search_sources: null,
           search_warnings: null,
           search_metadata: null,
+          model_name: null,
         },
       ],
     });
@@ -97,6 +99,7 @@ describe('useConversationHistory', () => {
           search_sources: null,
           search_warnings: null,
           search_metadata: null,
+          model_name: null,
         },
         {
           role: 'assistant',
@@ -107,6 +110,7 @@ describe('useConversationHistory', () => {
           search_sources: null,
           search_warnings: null,
           search_metadata: null,
+          model_name: null,
         },
       ],
       model: MODEL,
@@ -180,6 +184,7 @@ describe('useConversationHistory', () => {
       searchSources: null,
       searchWarnings: null,
       searchMetadata: null,
+      modelName: null,
     });
     expect(invoke).toHaveBeenCalledWith('persist_message', {
       conversationId: 'conv-123',
@@ -191,6 +196,7 @@ describe('useConversationHistory', () => {
       searchSources: null,
       searchWarnings: null,
       searchMetadata: null,
+      modelName: null,
     });
   });
 
@@ -281,12 +287,14 @@ describe('useConversationHistory', () => {
         role: 'user',
         content: 'Saved question',
         quotedText: undefined,
+        modelName: undefined,
       },
       {
         id: 'm2',
         role: 'assistant',
         content: 'Saved answer',
         quotedText: 'ctx',
+        modelName: undefined,
       },
     ]);
   });
@@ -417,6 +425,7 @@ describe('useConversationHistory', () => {
       searchSources: null,
       searchWarnings: null,
       searchMetadata: null,
+      modelName: null,
     });
   });
 
@@ -451,6 +460,7 @@ describe('useConversationHistory', () => {
           search_sources: null,
           search_warnings: null,
           search_metadata: null,
+          model_name: null,
         },
         {
           role: 'assistant',
@@ -461,6 +471,7 @@ describe('useConversationHistory', () => {
           search_sources: null,
           search_warnings: JSON.stringify(['reader_unavailable']),
           search_metadata: null,
+          model_name: null,
         },
       ],
     });
@@ -497,6 +508,7 @@ describe('useConversationHistory', () => {
           search_sources: null,
           search_warnings: null,
           search_metadata: null,
+          model_name: null,
         },
         {
           role: 'assistant',
@@ -507,6 +519,7 @@ describe('useConversationHistory', () => {
           search_sources: null,
           search_warnings: null,
           search_metadata: null,
+          model_name: null,
         },
       ],
     });
@@ -717,6 +730,7 @@ describe('useConversationHistory', () => {
       searchSources: null,
       searchWarnings: JSON.stringify(['reader_unavailable']),
       searchMetadata: null,
+      modelName: null,
     });
   });
 
@@ -928,6 +942,7 @@ describe('useConversationHistory', () => {
       searchSources: null,
       searchWarnings: null,
       searchMetadata: JSON.stringify(metadata),
+      modelName: null,
     });
   });
 
@@ -974,6 +989,7 @@ describe('useConversationHistory', () => {
       searchSources: null,
       searchWarnings: null,
       searchMetadata: JSON.stringify(traces),
+      modelName: null,
     });
   });
 
@@ -1320,5 +1336,121 @@ describe('useConversationHistory', () => {
         }),
       ]),
     );
+  });
+
+  // ─── model_name round trip ───────────────────────────────────────────────────
+
+  it('save() stamps model_name on payloads when Message has modelName', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-model-save' });
+    invoke.mockResolvedValue(undefined);
+
+    const messagesWithModel: Message[] = [
+      { id: 'u1', role: 'user', content: 'Hi' },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Hello',
+        modelName: 'gemma4:e2b',
+      },
+    ];
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(messagesWithModel, MODEL);
+    });
+
+    expect(invoke).toHaveBeenCalledWith(
+      'save_conversation',
+      expect.objectContaining({
+        messages: [
+          expect.objectContaining({ role: 'user', model_name: null }),
+          expect.objectContaining({
+            role: 'assistant',
+            model_name: 'gemma4:e2b',
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('persistTurn() sends modelName for assistant, null for user', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-model-persist' });
+    invoke.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(MESSAGES, MODEL);
+    });
+    invoke.mockClear();
+
+    const userMsg: Message = { id: 'u-m', role: 'user', content: 'q' };
+    const assistantMsg: Message = {
+      id: 'a-m',
+      role: 'assistant',
+      content: 'answer',
+      modelName: 'qwen2.5:7b',
+    };
+
+    await act(async () => {
+      await result.current.persistTurn(userMsg, assistantMsg);
+    });
+
+    expect(invoke).toHaveBeenCalledWith(
+      'persist_message',
+      expect.objectContaining({
+        role: 'user',
+        modelName: null,
+      }),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      'persist_message',
+      expect.objectContaining({
+        role: 'assistant',
+        modelName: 'qwen2.5:7b',
+      }),
+    );
+  });
+
+  it('loadConversation() maps model_name back to modelName on restore', async () => {
+    invoke.mockResolvedValueOnce([
+      {
+        id: 'u1',
+        role: 'user',
+        content: 'Hi',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: null,
+        model_name: null,
+        created_at: 1,
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Hello',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: null,
+        search_metadata: null,
+        model_name: 'gemma4:e2b',
+        created_at: 2,
+      },
+    ]);
+
+    const { result } = renderHook(() => useConversationHistory());
+    let loaded: Message[] = [];
+
+    await act(async () => {
+      loaded = await result.current.loadConversation('conv-model-load');
+    });
+
+    expect(loaded[0].modelName).toBeUndefined();
+    expect(loaded[1].modelName).toBe('gemma4:e2b');
   });
 });

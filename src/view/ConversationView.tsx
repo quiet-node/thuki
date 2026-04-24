@@ -252,6 +252,7 @@ export function ConversationView({
               searchWarnings={msg.searchWarnings}
               sandboxUnavailable={msg.sandboxUnavailable}
               searchTraces={msg.searchTraces}
+              modelName={msg.modelName}
               isSearching={
                 isGenerating &&
                 msg.fromSearch === true &&

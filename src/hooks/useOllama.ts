@@ -122,8 +122,17 @@ function finalizeSearchTraceSteps(
  *
  * Manages message history, streaming state, and the Tauri IPC channels used by
  * both the normal chat path and the `/search` pipeline.
+ *
+ * @param activeModel Ollama model slug that should be attributed to each
+ *   assistant message produced by this hook. Passed as a hook parameter (not
+ *   a per-call argument) so the latest App-level selection is captured via
+ *   closure on every render. An empty string (briefly possible on startup,
+ *   before the model list resolves) is coerced to `undefined` on the emitted
+ *   `Message`, so no attribution chip is rendered rather than a blank one.
+ * @param onTurnComplete Optional callback invoked after each completed turn.
  */
 export function useOllama(
+  activeModel: string,
   onTurnComplete?: (userMsg: Message, assistantMsg: Message) => void,
 ) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -222,6 +231,7 @@ export function useOllama(
         role: 'assistant',
         content: '',
         fromThink: think ? true : undefined,
+        modelName: activeModel || undefined,
       };
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -338,7 +348,7 @@ export function useOllama(
         setSearchStage(null);
       }
     },
-    [onTurnComplete],
+    [onTurnComplete, activeModel],
   );
 
   /**
@@ -376,6 +386,7 @@ export function useOllama(
         role: 'assistant',
         content: '',
         fromSearch: true,
+        modelName: activeModel || undefined,
       };
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -566,7 +577,7 @@ export function useOllama(
         });
       });
     },
-    [onTurnComplete],
+    [onTurnComplete, activeModel],
   );
 
   /** Cancels the currently active generation. */
