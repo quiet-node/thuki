@@ -17,7 +17,6 @@ import { invoke } from '@tauri-apps/api/core';
 
 /** Shape returned by the Rust `get_config` command (snake_case). */
 interface RawAppConfig {
-  schema_version: number;
   model: {
     available: string[];
     ollama_url: string;
@@ -40,7 +39,6 @@ interface RawAppConfig {
 
 /** Camel-cased, frontend-friendly view of the configuration. */
 export interface AppConfig {
-  schemaVersion: number;
   model: {
     /** First entry of `available` (the list-order invariant). */
     active: string;
@@ -67,7 +65,6 @@ export interface AppConfig {
 
 function transform(raw: RawAppConfig): AppConfig {
   return {
-    schemaVersion: raw.schema_version,
     model: {
       active: raw.model.available[0] ?? '',
       available: raw.model.available,
@@ -168,7 +165,6 @@ export function ConfigProviderForTest({
  * `src-tauri/src/config/defaults.rs`).
  */
 export const DEFAULT_CONFIG: AppConfig = {
-  schemaVersion: 1,
   model: {
     active: 'gemma4:e2b',
     available: ['gemma4:e2b'],

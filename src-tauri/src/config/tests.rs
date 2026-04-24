@@ -13,13 +13,13 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    CURRENT_SCHEMA_VERSION, DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS,
-    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL_NAME,
-    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
-    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
-    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
-    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_URL,
-    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS, SLASH_COMMAND_PROMPT_APPENDIX,
+    DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
+    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
+    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
+    SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path};
@@ -47,7 +47,6 @@ fn defaults_const_values_match_schema_defaults() {
     // Guard rail: a change to a default in defaults.rs must flow through to
     // AppConfig::default(). If this test fails, someone changed one but not both.
     let c = AppConfig::default();
-    assert_eq!(c.schema_version, CURRENT_SCHEMA_VERSION);
     assert_eq!(c.model.available, vec![DEFAULT_MODEL_NAME.to_string()]);
     assert_eq!(c.model.ollama_url, DEFAULT_OLLAMA_URL);
     assert_eq!(c.prompt.system, "");
@@ -127,7 +126,6 @@ fn app_config_serde_round_trip_matches_defaults() {
     let parsed: AppConfig = toml::from_str(&toml_str).expect("deserialize");
     // prompt.resolved_system is marked #[serde(skip)] so it does not round-trip
     // through the file. Compare everything else.
-    assert_eq!(parsed.schema_version, original.schema_version);
     assert_eq!(parsed.model, original.model);
     assert_eq!(parsed.prompt.system, original.prompt.system);
     assert_eq!(parsed.window, original.window);
@@ -138,7 +136,6 @@ fn app_config_serde_round_trip_matches_defaults() {
 fn app_config_partial_file_fills_missing_fields_with_defaults() {
     // Only declare one field; serde(default) fills the rest.
     let partial = r#"
-        schema_version = 1
         [model]
         available = ["custom:only"]
     "#;
@@ -189,7 +186,6 @@ fn load_missing_file_seeds_defaults_and_returns_them() {
     let config = load_from_path(&path).expect("seed on first run");
 
     assert!(path.exists(), "file should be seeded");
-    assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     assert_eq!(config.model.active(), DEFAULT_MODEL_NAME);
     // Resolved system prompt composed from default base plus appendix.
     assert!(config
@@ -209,7 +205,7 @@ fn load_missing_file_in_missing_parent_dir_creates_dir() {
     let path = config_path_in(&nested);
     let config = load_from_path(&path).expect("creates parent dir and seeds");
     assert!(path.exists());
-    assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(config.model.active(), DEFAULT_MODEL_NAME);
 }
 
 #[test]
@@ -235,7 +231,6 @@ fn load_existing_valid_file_returns_resolved_config() {
     std::fs::write(
         &path,
         r#"
-            schema_version = 1
             [model]
             available = ["custom:a", "custom:b"]
             ollama_url = "http://localhost:99999"
@@ -281,7 +276,7 @@ fn load_corrupt_file_is_renamed_and_reseeded() {
     std::fs::write(&path, "this is = definitely not [ valid toml").unwrap();
 
     let config = load_from_path(&path).expect("recover from corrupt file");
-    assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(config.model.active(), DEFAULT_MODEL_NAME);
 
     // Original file renamed with .corrupt- prefix.
     let renamed_exists = std::fs::read_dir(&dir)
@@ -298,34 +293,6 @@ fn load_corrupt_file_is_renamed_and_reseeded() {
     assert!(path.exists());
 }
 
-// ── loader: schema version ───────────────────────────────────────────────────
-
-#[test]
-fn load_newer_schema_version_reseeds() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(&path, "schema_version = 99\n").unwrap();
-    let config = load_from_path(&path).unwrap();
-    assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
-    // Renamed file should exist.
-    let has_corrupt = std::fs::read_dir(&dir).unwrap().any(|e| {
-        e.unwrap()
-            .file_name()
-            .to_string_lossy()
-            .contains(".corrupt-")
-    });
-    assert!(has_corrupt);
-}
-
-#[test]
-fn load_older_unsupported_schema_reseeds() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(&path, "schema_version = 0\n").unwrap();
-    let config = load_from_path(&path).unwrap();
-    assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
-}
-
 // ── loader: read error (not NotFound) ───────────────────────────────────────
 
 #[cfg(unix)]
@@ -335,7 +302,7 @@ fn load_unreadable_file_returns_in_memory_defaults() {
 
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
-    std::fs::write(&path, "schema_version = 1\n").unwrap();
+    std::fs::write(&path, "[model]\nollama_url = \"http://127.0.0.1:11434\"\n").unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
     // If the current user is root, the permission bits are ignored and this
@@ -347,7 +314,7 @@ fn load_unreadable_file_returns_in_memory_defaults() {
     }
 
     let config = load_from_path(&path).expect("fallback to in-memory defaults");
-    assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(config.model.active(), DEFAULT_MODEL_NAME);
     // Restore so cleanup works.
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
 }
@@ -361,7 +328,6 @@ fn resolve_empty_available_list_falls_back_to_default_model() {
     std::fs::write(
         &path,
         r#"
-            schema_version = 1
             [model]
             available = []
         "#,
@@ -379,7 +345,6 @@ fn resolve_whitespace_only_entries_are_filtered() {
     std::fs::write(
         &path,
         r#"
-            schema_version = 1
             [model]
             available = ["  ", "custom:x", " ", "custom:y"]
         "#,
@@ -399,7 +364,6 @@ fn resolve_entry_whitespace_is_trimmed() {
     std::fs::write(
         &path,
         r#"
-            schema_version = 1
             [model]
             available = ["  spaced:model  "]
         "#,
@@ -416,7 +380,6 @@ fn resolve_empty_ollama_url_falls_back() {
     std::fs::write(
         &path,
         r#"
-            schema_version = 1
             [model]
             ollama_url = "   "
         "#,
@@ -433,7 +396,6 @@ fn resolve_empty_system_prompt_uses_built_in_base_plus_appendix() {
     std::fs::write(
         &path,
         r#"
-            schema_version = 1
             [prompt]
             system = "   "
         "#,
@@ -457,7 +419,6 @@ fn resolve_custom_system_prompt_flows_through_with_appendix() {
     std::fs::write(
         &path,
         r#"
-            schema_version = 1
             [prompt]
             system = "You are a custom assistant."
         "#,
@@ -481,7 +442,6 @@ fn resolve_out_of_bounds_floats_reset_to_defaults() {
     std::fs::write(
         &path,
         r#"
-            schema_version = 1
             [window]
             overlay_width = 0.0
             collapsed_height = 99999.0
@@ -502,7 +462,6 @@ fn resolve_non_finite_float_resets() {
     std::fs::write(
         &path,
         r#"
-            schema_version = 1
             [window]
             overlay_width = nan
         "#,
@@ -519,7 +478,6 @@ fn resolve_out_of_bounds_u64_resets() {
     std::fs::write(
         &path,
         r#"
-            schema_version = 1
             [window]
             hide_commit_delay_ms = 99999
         "#,
@@ -539,7 +497,6 @@ fn resolve_out_of_bounds_u32_resets() {
     std::fs::write(
         &path,
         r#"
-            schema_version = 1
             [quote]
             max_display_lines = 0
             max_display_chars = 99999
@@ -569,7 +526,6 @@ fn resolve_values_within_bounds_are_preserved() {
     std::fs::write(
         &path,
         r#"
-            schema_version = 1
             [window]
             overlay_width = 800.0
             collapsed_height = 100.0
@@ -642,7 +598,7 @@ fn atomic_write_creates_file_with_defaults() {
     let contents = std::fs::read_to_string(&path).unwrap();
     // resolved_system is not serialized (marked #[serde(skip)]).
     assert!(!contents.contains("resolved_system"));
-    assert!(contents.contains("schema_version = 1"));
+    assert!(contents.contains("ollama_url"));
 }
 
 #[cfg(unix)]
@@ -673,7 +629,7 @@ fn atomic_write_overwrites_existing_file_atomically() {
     std::fs::write(&path, "old contents").unwrap();
     atomic_write(&path, &AppConfig::default()).unwrap();
     let contents = std::fs::read_to_string(&path).unwrap();
-    assert!(contents.contains("schema_version = 1"));
+    assert!(contents.contains("ollama_url"));
     assert!(!contents.contains("old contents"));
 }
 
@@ -776,17 +732,6 @@ fn config_error_messages_include_context() {
         source: std::io::Error::other("nope"),
     };
     assert!(e.to_string().contains("/tmp/z"));
-
-    let e = ConfigError::TooNew {
-        found: 99,
-        supported: 1,
-    };
-    let m = e.to_string();
-    assert!(m.contains("99"));
-    assert!(m.contains('1'));
-
-    let e = ConfigError::NoMigrationYet { found: 0 };
-    assert!(e.to_string().contains('0'));
 }
 
 // ── search section ────────────────────────────────────────────────────────────
@@ -838,11 +783,7 @@ fn search_section_roundtrips_through_toml() {
 fn search_empty_url_resets_to_default() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
-    let toml = format!(
-        "schema_version = {}\n[search]\nsearxng_url = \"\"\nreader_url = \"  \"\n",
-        CURRENT_SCHEMA_VERSION
-    );
-    std::fs::write(&path, toml).unwrap();
+    std::fs::write(&path, "[search]\nsearxng_url = \"\"\nreader_url = \"  \"\n").unwrap();
     let loaded = load_from_path(&path).unwrap();
     assert_eq!(loaded.search.searxng_url, DEFAULT_SEARXNG_URL);
     assert_eq!(loaded.search.reader_url, DEFAULT_READER_URL);
@@ -852,11 +793,7 @@ fn search_empty_url_resets_to_default() {
 fn search_max_iterations_clamped_to_bounds() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
-    let toml = format!(
-        "schema_version = {}\n[search]\nmax_iterations = 0\ntop_k_urls = 999\n",
-        CURRENT_SCHEMA_VERSION
-    );
-    std::fs::write(&path, toml).unwrap();
+    std::fs::write(&path, "[search]\nmax_iterations = 0\ntop_k_urls = 999\n").unwrap();
     let loaded = load_from_path(&path).unwrap();
     assert_eq!(loaded.search.max_iterations, DEFAULT_MAX_ITERATIONS);
     assert_eq!(loaded.search.top_k_urls, DEFAULT_TOP_K_URLS);
@@ -866,11 +803,11 @@ fn search_max_iterations_clamped_to_bounds() {
 fn search_timeouts_clamped_to_bounds() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
-    let toml = format!(
-        "schema_version = {}\n[search]\nsearch_timeout_s = 0\nrouter_timeout_s = 9999\n",
-        CURRENT_SCHEMA_VERSION
-    );
-    std::fs::write(&path, toml).unwrap();
+    std::fs::write(
+        &path,
+        "[search]\nsearch_timeout_s = 0\nrouter_timeout_s = 9999\n",
+    )
+    .unwrap();
     let loaded = load_from_path(&path).unwrap();
     assert_eq!(loaded.search.search_timeout_s, DEFAULT_SEARCH_TIMEOUT_S);
     assert_eq!(loaded.search.router_timeout_s, DEFAULT_ROUTER_TIMEOUT_S);
@@ -881,11 +818,11 @@ fn search_batch_timeout_invariant_corrected() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
     // Set batch <= per_url — loader must correct.
-    let toml = format!(
-        "schema_version = {}\n[search]\nreader_per_url_timeout_s = 20\nreader_batch_timeout_s = 5\n",
-        CURRENT_SCHEMA_VERSION
-    );
-    std::fs::write(&path, toml).unwrap();
+    std::fs::write(
+        &path,
+        "[search]\nreader_per_url_timeout_s = 20\nreader_batch_timeout_s = 5\n",
+    )
+    .unwrap();
     let loaded = load_from_path(&path).unwrap();
     assert!(
         loaded.search.reader_batch_timeout_s > loaded.search.reader_per_url_timeout_s,
@@ -897,11 +834,7 @@ fn search_batch_timeout_invariant_corrected() {
 fn toml_without_search_section_deserializes_to_defaults() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
-    let toml = format!(
-        "schema_version = {}\n[model]\nollama_url = \"http://127.0.0.1:11434\"\n",
-        CURRENT_SCHEMA_VERSION
-    );
-    std::fs::write(&path, toml).unwrap();
+    std::fs::write(&path, "[model]\nollama_url = \"http://127.0.0.1:11434\"\n").unwrap();
     let loaded = load_from_path(&path).unwrap();
     assert_eq!(
         loaded.search.searxng_url, DEFAULT_SEARXNG_URL,
@@ -913,11 +846,11 @@ fn toml_without_search_section_deserializes_to_defaults() {
 fn toml_partial_search_section_fills_missing_fields_from_defaults() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
-    let toml = format!(
-        "schema_version = {}\n[search]\nsearxng_url = \"http://192.168.1.50:8080\"\n",
-        CURRENT_SCHEMA_VERSION
-    );
-    std::fs::write(&path, toml).unwrap();
+    std::fs::write(
+        &path,
+        "[search]\nsearxng_url = \"http://192.168.1.50:8080\"\n",
+    )
+    .unwrap();
     let loaded = load_from_path(&path).unwrap();
     assert_eq!(loaded.search.searxng_url, "http://192.168.1.50:8080");
     assert_eq!(

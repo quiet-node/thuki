@@ -7,10 +7,12 @@
 //!        - Ok(contents)           -> fall through to parse.
 //!   2. Parse TOML.
 //!        - Parse error -> rename file to `<name>.corrupt-<ts>`, seed defaults.
-//!   3. Check schema_version.
-//!        - Newer than supported -> rename, seed defaults.
-//!        - Unknown older version -> rename, seed defaults.
-//!   4. Resolve (empties -> defaults, out-of-bounds -> defaults, compose appendix).
+//!   3. Resolve (empties -> defaults, out-of-bounds -> defaults, compose appendix).
+//!
+//! Additive schema evolution (new fields, new sections) is handled for free by
+//! serde's `#[serde(default)]`: missing fields in an older file deserialize to
+//! their compiled defaults and user customizations are preserved. No version
+//! field is needed.
 //!
 //! All "rename and reseed" paths are non-fatal. Only first-run seed failure is
 //! fatal (the app cannot boot in a writable-hostile environment and the user
@@ -23,14 +25,13 @@ use super::defaults::{
     BOUNDS_COLLAPSED_HEIGHT, BOUNDS_HIDE_COMMIT_DELAY_MS, BOUNDS_MAX_CHAT_HEIGHT,
     BOUNDS_MAX_ITERATIONS, BOUNDS_OVERLAY_WIDTH, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
     BOUNDS_QUOTE_MAX_DISPLAY_CHARS, BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_TIMEOUT_S,
-    BOUNDS_TOP_K_URLS, CURRENT_SCHEMA_VERSION, DEFAULT_COLLAPSED_HEIGHT,
-    DEFAULT_HIDE_COMMIT_DELAY_MS, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT,
-    DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
-    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
-    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
-    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
-    SLASH_COMMAND_PROMPT_APPENDIX,
+    BOUNDS_TOP_K_URLS, DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS,
+    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL_NAME,
+    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
+    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
+    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_URL,
+    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS, SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::schema::AppConfig;
@@ -58,20 +59,10 @@ pub fn load_from_path(path: &Path) -> Result<AppConfig, ConfigError> {
 
 fn load_from_contents(path: &Path, contents: &str) -> Result<AppConfig, ConfigError> {
     match toml::from_str::<AppConfig>(contents) {
-        Ok(mut config) => match validate_schema_version(config.schema_version) {
-            Ok(()) => {
-                resolve(&mut config);
-                Ok(config)
-            }
-            Err(e) => {
-                eprintln!(
-                    "thuki: [config] {e}: renaming and reseeding defaults at {}",
-                    path.display()
-                );
-                rename_corrupt(path);
-                seed_defaults(path)
-            }
-        },
+        Ok(mut config) => {
+            resolve(&mut config);
+            Ok(config)
+        }
         Err(parse_err) => {
             eprintln!(
                 "thuki: [config] parse error at {}: {parse_err}. renaming and reseeding defaults",
@@ -111,19 +102,6 @@ fn rename_corrupt(path: &Path) {
             "thuki: [config] could not rename corrupt file {}: {e}",
             path.display()
         );
-    }
-}
-
-fn validate_schema_version(found: u32) -> Result<(), ConfigError> {
-    if found == CURRENT_SCHEMA_VERSION {
-        Ok(())
-    } else if found > CURRENT_SCHEMA_VERSION {
-        Err(ConfigError::TooNew {
-            found,
-            supported: CURRENT_SCHEMA_VERSION,
-        })
-    } else {
-        Err(ConfigError::NoMigrationYet { found })
     }
 }
 

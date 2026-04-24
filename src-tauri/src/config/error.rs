@@ -5,8 +5,7 @@ use thiserror::Error;
 ///
 /// `SeedFailed` is fatal on startup (the app cannot write its default file,
 /// which on macOS signals a genuinely broken environment the user cannot fix
-/// from the UI). All other variants are recoverable at load time: the loader
-/// renames the offending file and reseeds defaults.
+/// from the UI). `IoError` is used by the writer for all other I/O failures.
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// First-run default-file seed failed.
@@ -25,16 +24,4 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
-
-    /// The file declares a `schema_version` newer than this build understands.
-    /// Recoverable: loader renames the file and reseeds defaults. The next
-    /// time the user downgrades, they will get defaults instead of a panic.
-    #[error("config schema version {found} is newer than supported version {supported}")]
-    TooNew { found: u32, supported: u32 },
-
-    /// The file declares a `schema_version` older than this build supports and
-    /// no migration path exists yet. v1 has no ancestors, so any value other
-    /// than 1 takes this branch.
-    #[error("config schema version {found} is not supported (no migration available)")]
-    NoMigrationYet { found: u32 },
 }

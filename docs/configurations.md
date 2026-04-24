@@ -10,7 +10,7 @@ The file is created automatically the first time the app launches. You can edit 
 
 ## First launch
 
-You do not need to do anything. Thuki writes a default `config.toml` on first run with every field set to a sensible value and a `schema_version = 1` marker.
+You do not need to do anything. Thuki writes a default `config.toml` on first run with every field set to a sensible value.
 
 If the directory cannot be written (disk full, permission denied, read-only filesystem), Thuki shows a native alert with the specific error and exits. This is a macOS-level setup problem; Thuki cannot repair it on your behalf.
 
@@ -26,8 +26,6 @@ open ~/Library/Application\ Support/com.quietnode.thuki/config.toml
 ### Example
 
 ```toml
-schema_version = 1
-
 [model]
 # First entry is the ACTIVE model used for all inference.
 # Reorder the list to switch models (requires app restart in this release).
@@ -134,7 +132,7 @@ Thuki prefers to keep the app running with a usable configuration rather than fa
 - **Missing fields**: filled in from compiled defaults; your other customizations stay.
 - **Empty or whitespace-only strings**: replaced with compiled defaults at load time.
 - **Out-of-bounds numeric values**: reset to compiled defaults; a warning is logged to stderr (visible via `Console.app`).
-- **Unparseable TOML or unknown `schema_version`**: the file is renamed to `config.toml.corrupt-<unix_timestamp>` and a fresh defaults file is written. The old file is preserved so you can inspect or restore it by hand.
+- **Unparseable TOML**: the file is renamed to `config.toml.corrupt-<unix_timestamp>` and a fresh defaults file is written. The old file is preserved so you can inspect or restore it by hand.
 
 ## What is NOT configurable (and why)
 

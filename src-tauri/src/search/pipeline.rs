@@ -1098,8 +1098,10 @@ async fn run_gap_refinement_loop(
             });
         }
 
-        let round_chunks =
-            chunker::chunk_pages(&round_reader_result.pages, crate::config::defaults::DEFAULT_CHUNK_TOKEN_SIZE);
+        let round_chunks = chunker::chunk_pages(
+            &round_reader_result.pages,
+            crate::config::defaults::DEFAULT_CHUNK_TOKEN_SIZE,
+        );
         let mut chunk_step = trace_step(
             format!("round-{attempt}-chunk"),
             SearchTraceKind::Chunk,
@@ -1131,11 +1133,14 @@ async fn run_gap_refinement_loop(
         });
         emit_trace(shared.on_event, chunk_step);
         accumulated_chunks.extend(round_chunks);
-        let round_top_chunks: Vec<chunker::Chunk> =
-            rerank::rerank_chunks(&accumulated_chunks, query, crate::config::defaults::DEFAULT_TOP_K_CHUNKS)
-                .into_iter()
-                .cloned()
-                .collect();
+        let round_top_chunks: Vec<chunker::Chunk> = rerank::rerank_chunks(
+            &accumulated_chunks,
+            query,
+            crate::config::defaults::DEFAULT_TOP_K_CHUNKS,
+        )
+        .into_iter()
+        .cloned()
+        .collect();
 
         let round_chunk_sources = unique_domains(
             round_top_chunks
@@ -1254,11 +1259,14 @@ async fn run_gap_refinement_loop(
             attempt == shared.runtime_config.max_iterations as u32 && !current_queries.is_empty();
     }
 
-    let fallback_chunks: Vec<chunker::Chunk> =
-        rerank::rerank_chunks(&accumulated_chunks, query, crate::config::defaults::DEFAULT_TOP_K_CHUNKS)
-            .into_iter()
-            .cloned()
-            .collect();
+    let fallback_chunks: Vec<chunker::Chunk> = rerank::rerank_chunks(
+        &accumulated_chunks,
+        query,
+        crate::config::defaults::DEFAULT_TOP_K_CHUNKS,
+    )
+    .into_iter()
+    .cloned()
+    .collect();
 
     let fallback_sources = if fallback_chunks.is_empty() {
         snippet_sources
@@ -1821,8 +1829,10 @@ pub async fn run_agentic(
                 }
 
                 // Stage 6: Chunk and rerank.
-                let new_chunks =
-                    chunker::chunk_pages(&reader_result.pages, crate::config::defaults::DEFAULT_CHUNK_TOKEN_SIZE);
+                let new_chunks = chunker::chunk_pages(
+                    &reader_result.pages,
+                    crate::config::defaults::DEFAULT_CHUNK_TOKEN_SIZE,
+                );
                 let mut chunk_step = trace_step(
                     format!("round-{initial_round}-chunk"),
                     SearchTraceKind::Chunk,
@@ -1855,11 +1865,14 @@ pub async fn run_agentic(
                 });
                 emit_trace(on_event, chunk_step);
                 accumulated_chunks.extend(new_chunks);
-                let top_chunks: Vec<chunker::Chunk> =
-                    rerank::rerank_chunks(&accumulated_chunks, &query, crate::config::defaults::DEFAULT_TOP_K_CHUNKS)
-                        .into_iter()
-                        .cloned()
-                        .collect();
+                let top_chunks: Vec<chunker::Chunk> = rerank::rerank_chunks(
+                    &accumulated_chunks,
+                    &query,
+                    crate::config::defaults::DEFAULT_TOP_K_CHUNKS,
+                )
+                .into_iter()
+                .cloned()
+                .collect();
 
                 let chunk_sources =
                     unique_domains(top_chunks.iter().map(|chunk| chunk.source_url.as_str()));

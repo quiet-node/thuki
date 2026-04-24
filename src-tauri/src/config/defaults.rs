@@ -23,10 +23,6 @@ pub const DEFAULT_SYSTEM_PROMPT_BASE: &str = include_str!("../../prompts/system_
 pub const SLASH_COMMAND_PROMPT_APPENDIX: &str =
     include_str!("../../prompts/generated/slash_commands.txt");
 
-/// Latest config schema version understood by this build. Present in every
-/// written file so future migrations have a fixed point to branch from.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
-
 /// Window defaults (logical pixels / milliseconds).
 pub const DEFAULT_OVERLAY_WIDTH: f64 = 600.0;
 pub const DEFAULT_COLLAPSED_HEIGHT: f64 = 80.0;

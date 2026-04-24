@@ -28,8 +28,8 @@ use serde::Deserialize;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use crate::search::chunker::Page;
 use crate::config::defaults::DEFAULT_READER_RETRY_DELAY_MS;
+use crate::search::chunker::Page;
 use crate::search::errors::{is_transient_connect_error, retry_once};
 
 /// Errors callers must handle.
@@ -271,7 +271,11 @@ async fn fetch_one(client: &Client, base: &str, url: &str) -> FetchOutcome {
             .send()
             .await
     };
-    let res = retry_once(Duration::from_millis(DEFAULT_READER_RETRY_DELAY_MS), do_call).await;
+    let res = retry_once(
+        Duration::from_millis(DEFAULT_READER_RETRY_DELAY_MS),
+        do_call,
+    )
+    .await;
 
     match res {
         Err(e) => {

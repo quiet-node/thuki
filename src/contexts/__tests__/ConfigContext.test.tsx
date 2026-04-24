@@ -18,7 +18,6 @@ function Probe() {
       <div data-testid="max-display-lines">{config.quote.maxDisplayLines}</div>
       <div data-testid="system-prompt">{config.prompt.system}</div>
       <div data-testid="hide-delay">{config.window.hideCommitDelayMs}</div>
-      <div data-testid="schema-version">{config.schemaVersion}</div>
     </>
   );
 }
@@ -67,7 +66,6 @@ describe('ConfigContext', () => {
   describe('ConfigProvider', () => {
     it('hydrates from the backend and transforms snake_case to camelCase', async () => {
       invoke.mockResolvedValueOnce({
-        schema_version: 1,
         model: {
           available: ['gemma4:e4b', 'gemma4:e2b'],
           ollama_url: 'http://127.0.0.1:11434',
@@ -101,7 +99,6 @@ describe('ConfigContext', () => {
         'custom base prompt',
       );
       expect(screen.getByTestId('hide-delay').textContent).toBe('400');
-      expect(screen.getByTestId('schema-version').textContent).toBe('1');
     });
 
     it('falls back to DEFAULT_CONFIG when invoke returns nullish', async () => {
@@ -126,7 +123,6 @@ describe('ConfigContext', () => {
       // Edge case: Rust loader always prevents this, but the frontend transform
       // should still produce a usable `active` (empty string) from an empty list.
       invoke.mockResolvedValueOnce({
-        schema_version: 1,
         model: { available: [], ollama_url: 'http://127.0.0.1:11434' },
         prompt: { system: '' },
         window: {

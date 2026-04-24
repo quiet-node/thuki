@@ -5,20 +5,21 @@
 //! deserializes cleanly: missing fields inherit the compiled defaults via the
 //! manual `Default` impls below.
 //!
-//! Manual `Default` impls (NOT `#[derive(Default)]`) are used everywhere
+//! Section structs use manual `Default` impls (NOT `#[derive(Default)]`)
 //! because deriving Default would fill fields with zero/empty values
 //! (`String::default() == ""`, `u64::default() == 0`), which is the opposite
-//! of what the user expects.
+//! of what the user expects. `AppConfig` itself uses `#[derive(Default)]`
+//! because it delegates entirely to each section's own `Default` impl.
 
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{
-    CURRENT_SCHEMA_VERSION, DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS,
-    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL_NAME,
-    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
-    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
-    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
-    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
+    DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
+    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
+    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
 };
 
 /// Model configuration. The first entry of `available` is the active model
@@ -175,26 +176,12 @@ impl Default for SearchSection {
 /// reads from `State<AppConfig>` and nowhere else. The loader resolves all
 /// empty strings and out-of-bounds numerics to compiled defaults before the
 /// `AppConfig` is installed, so every field here holds a usable value.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct AppConfig {
-    pub schema_version: u32,
     pub model: ModelSection,
     pub prompt: PromptSection,
     pub window: WindowSection,
     pub quote: QuoteSection,
     pub search: SearchSection,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            schema_version: CURRENT_SCHEMA_VERSION,
-            model: ModelSection::default(),
-            prompt: PromptSection::default(),
-            window: WindowSection::default(),
-            quote: QuoteSection::default(),
-            search: SearchSection::default(),
-        }
-    }
 }
