@@ -296,7 +296,7 @@ pub fn rerank(query: &str, results: Vec<SearxResult>) -> Vec<SearxResult> {
 ///
 /// Complexity: O(N * (T + Q)) where N = number of chunks, T = average tokens
 /// per chunk, Q = number of query tokens. Bounded in practice because the
-/// pipeline caps chunks at roughly `TOP_K_URLS * pages_per_url * chunks_per_page`
+/// pipeline caps chunks at roughly `top_k_urls * pages_per_url * chunks_per_page`
 /// and queries are short.
 #[allow(dead_code)]
 pub fn rerank_chunks<'a>(chunks: &'a [Chunk], query: &str, top_k: usize) -> Vec<&'a Chunk> {

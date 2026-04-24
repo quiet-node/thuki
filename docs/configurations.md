@@ -51,6 +51,23 @@ hide_commit_delay_ms = 350
 max_display_lines = 4
 max_display_chars = 300
 max_context_length = 4096
+
+[search]
+# URLs of the local sandbox services. Match the bindings in
+# `sandbox/docker-compose.yml`. Override only if you run SearXNG or the
+# reader sidecar on a different host or port.
+searxng_url = "http://127.0.0.1:25017"
+reader_url = "http://127.0.0.1:25018"
+# Pipeline tuning: trade quality against latency.
+max_iterations = 3
+top_k_urls = 10
+# Per-stage timeouts in seconds. Increase on slow networks or slow local
+# hardware; decrease only if you know your sandbox is faster than these.
+search_timeout_s = 20
+reader_per_url_timeout_s = 10
+reader_batch_timeout_s = 30
+judge_timeout_s = 30
+router_timeout_s = 45
 ```
 
 ## Reference
@@ -89,6 +106,26 @@ Controls how selected-text quotes are shown in the AskBar preview and chat bubbl
 | `max_display_chars` | Maximum total characters shown in the quote preview. | `300` | `[1, 10000]` |
 | `max_context_length` | Maximum characters of selected text included in the prompt sent to Ollama. | `4096` | `[1, 65536]` |
 
+### `[search]`
+
+Controls the agentic `/search` pipeline: where to reach the local sandbox services, how many refinement rounds to attempt, and how long each network stage may run before being abandoned.
+
+The defaults match the localhost-only ports bound by `sandbox/docker-compose.yml`. URLs must include the scheme, host, and port, with no path; Thuki appends the `/search` and `/extract` paths automatically. Empty strings are replaced with the compiled defaults at load time, and out-of-bounds numerics are clamped (a warning is logged to stderr).
+
+| Field | Description | Default | Bounds |
+| :--- | :--- | :--- | :--- |
+| `searxng_url` | Base URL of the SearXNG instance. | `"http://127.0.0.1:25017"` | non-empty |
+| `reader_url` | Base URL of the reader/extractor sidecar. | `"http://127.0.0.1:25018"` | non-empty |
+| `max_iterations` | Maximum number of search-refine iterations before the pipeline gives up. | `3` | `[1, 10]` |
+| `top_k_urls` | Number of top-ranked URLs forwarded to the reader after reranking. | `10` | `[1, 20]` |
+| `search_timeout_s` | Seconds before a SearXNG query is abandoned. | `20` | `[1, 300]` |
+| `reader_per_url_timeout_s` | Seconds allowed for a single URL fetch inside the reader. | `10` | `[1, 300]` |
+| `reader_batch_timeout_s` | Seconds allowed for the full parallel reader batch. Must exceed `reader_per_url_timeout_s`; the loader corrects violations to `reader_per_url_timeout_s + 5`. | `30` | `[1, 300]` |
+| `judge_timeout_s` | Seconds before the judge LLM call is abandoned. | `30` | `[1, 300]` |
+| `router_timeout_s` | Seconds before the router LLM call is abandoned. | `45` | `[1, 300]` |
+
+For security, both URLs default to loopback (`127.0.0.1`) and are intended to stay there. Pointing them at a remote host disables the sandbox's network isolation guarantees: the reader will fetch arbitrary pages on behalf of the LLM router output, which is an SSRF amplifier if the host has access to non-public networks.
+
 ## What happens on bad input
 
 Thuki prefers to keep the app running with a usable configuration rather than fail noisily.
@@ -103,7 +140,7 @@ Thuki prefers to keep the app running with a usable configuration rather than fa
 
 A few knobs that look configurable on the surface are intentionally kept out of `config.toml`:
 
-- **Search pipeline tuning** (`MAX_ITERATIONS`, `TOP_K_URLS`, retry delays, timeouts). Downstream prompt design and persisted metadata interpretation depend on these exact values; tuning them wrong produces subtle drift rather than a clear error. See `src-tauri/src/search/config.rs`.
+- **Search-pipeline shape constants** (`GAP_QUERIES_PER_ROUND`, `CHUNK_TOKEN_SIZE`, `TOP_K_CHUNKS`, retry delays). Downstream prompt design and persisted metadata interpretation depend on these exact values; tuning them wrong produces subtle drift rather than a clear error. See `src-tauri/src/search/config.rs`. The user-tunable knobs (iterations, top-K URLs, timeouts, service URLs) are exposed in `[search]` above.
 - **macOS key codes** (`0x3b`, `0x3e` for left and right Control). Not user-meaningful; wrong values would brick activation.
 - **Activation timing** (400 ms double-tap window, 600 ms cooldown). These are compiled constants in `src-tauri/src/activator.rs`. Not yet exposed because the CGEventTap callback lives in a thread that cannot trivially read Tauri managed state, and no user has reported needing a different cadence. A future PR can promote these if the need appears.
 - **Image limits** (4 images per message, 30 MiB per image). Protocol caps imposed by Ollama's vision input; a larger value just makes requests fail further downstream.

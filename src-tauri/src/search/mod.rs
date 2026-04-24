@@ -60,20 +60,10 @@ pub async fn search_pipeline(
     history: State<'_, ConversationHistory>,
     app_config: State<'_, AppConfig>,
 ) -> Result<(), String> {
-    // Build the runtime search config from TOML values. Defaults match the
-    // compiled constants in search/config.rs so a missing [search] section
-    // in config.toml produces identical behavior to previous builds.
-    let runtime_config = config::SearchRuntimeConfig {
-        searxng_url: app_config.search.searxng_url.clone(),
-        reader_url: app_config.search.reader_url.clone(),
-        max_iterations: app_config.search.max_iterations as usize,
-        top_k_urls: app_config.search.top_k_urls as usize,
-        search_timeout_s: app_config.search.search_timeout_s,
-        reader_per_url_timeout_s: app_config.search.reader_per_url_timeout_s,
-        reader_batch_timeout_s: app_config.search.reader_batch_timeout_s,
-        judge_timeout_s: app_config.search.judge_timeout_s,
-        router_timeout_s: app_config.search.router_timeout_s,
-    };
+    // Resolve the runtime search view from the loaded TOML. The single
+    // source of truth lives in `config::defaults`; the loader has already
+    // clamped and resolved every field by the time we read it here.
+    let runtime_config = config::SearchRuntimeConfig::from_app_config(&app_config);
     let searxng_endpoint = runtime_config.searxng_endpoint();
 
     // Pre-flight: verify both sandbox services are reachable before touching

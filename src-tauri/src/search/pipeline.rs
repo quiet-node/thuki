@@ -2279,7 +2279,7 @@ mod tests {
             reqwest::Client::new(),
             cancel,
             "2026-04-18".into(),
-            config::ROUTER_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_ROUTER_TIMEOUT_S,
         );
     }
 
@@ -2291,7 +2291,7 @@ mod tests {
             "mistral".into(),
             reqwest::Client::new(),
             cancel,
-            config::JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
         );
     }
 
@@ -3346,7 +3346,7 @@ mod agentic_tests {
         let router = proceed_search_router("test query");
 
         // First judge (snippets) = partial; triggers reader.
-        // Reader will fail (READER_BASE_URL is not running in test).
+        // Reader will fail (DEFAULT_READER_URL is not running in test).
         // Second judge (falls back to snippets because no chunks) = sufficient.
         let judge = QueueJudge(std::sync::Mutex::new(
             vec![partial_verdict(), sufficient_verdict()]
@@ -3799,7 +3799,7 @@ mod agentic_tests {
         );
     }
 
-    // Reader batch times out (READER_BATCH_TIMEOUT_S=1s in tests);
+    // Reader batch times out (reader_batch_timeout_s=1s in tests);
     // pipeline emits ReaderPartialFailure warning and continues.
     #[tokio::test]
     async fn reader_batch_timeout_emits_partial_failure_warning_and_continues() {
@@ -3808,7 +3808,7 @@ mod agentic_tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let reader_server = MockServer::start().await;
-        // Respond after 2s -- longer than READER_BATCH_TIMEOUT_S=1s in tests.
+        // Respond after 2s -- longer than reader_batch_timeout_s=1s in tests.
         Mock::given(method("POST"))
             .and(path("/extract"))
             .respond_with(
@@ -4074,7 +4074,7 @@ mod agentic_tests {
     //
     // Judge sequence: Insufficient (snippets) -> Insufficient (chunks, gap_queries=["gap1"])
     //                 -> Sufficient (chunks after gap round 2).
-    // MAX_ITERATIONS = 3, so there are 2 gap rounds. The first is reported as
+    // max_iterations = 3, so there are 2 gap rounds. The first is reported as
     // attempt=1 of 2.
     #[tokio::test]
     async fn gap_round_succeeds_within_cap() {
@@ -4189,7 +4189,7 @@ mod agentic_tests {
         // the event stream shape which is the observable contract)
     }
 
-    // Test 2: judge always insufficient; all MAX_ITERATIONS rounds fire.
+    // Test 2: judge always insufficient; all max_iterations rounds fire.
     //
     // Each verdict provides a fresh gap query so the loop does not exit early.
     // The test verifies RefiningSearch for both gap rounds, and
@@ -4260,7 +4260,7 @@ mod agentic_tests {
         let (events, cb) = collect_events();
         let router = proceed_search_router("test query");
 
-        // MAX_ITERATIONS=3: snippets judge + chunks judge (initial) + gap round 2
+        // max_iterations=3: snippets judge + chunks judge (initial) + gap round 2
         // judge + gap round 3 judge = 4 calls total, all insufficient with
         // unique gap queries to keep the loop alive.
         let judge = QueueJudge(std::sync::Mutex::new(
@@ -4436,7 +4436,7 @@ mod agentic_tests {
 
         // IterationCapExhausted must NOT fire: the loop exited via the
         // no-new-URLs branch (current_queries cleared), never reaching the
-        // judge at attempt == MAX_ITERATIONS. hit_iteration_cap stays false.
+        // judge at attempt == max_iterations. hit_iteration_cap stays false.
         assert!(
             !evs.iter().any(|e| {
                 *e == (SearchEvent::Warning {
@@ -5928,7 +5928,7 @@ mod agentic_tests {
             })))
             .mount(&reader_server)
             .await;
-        // Gap reader responds after 2s (> READER_BATCH_TIMEOUT_S=1s in tests).
+        // Gap reader responds after 2s (> reader_batch_timeout_s=1s in tests).
         Mock::given(method("POST"))
             .and(path("/extract"))
             .respond_with(
@@ -6052,7 +6052,7 @@ mod agentic_tests {
             .respond_with(ResponseTemplate::new(502))
             .mount(&reader_server)
             .await;
-        // Gap round reader: very slow (times out after READER_BATCH_TIMEOUT_S=1s).
+        // Gap round reader: very slow (times out after reader_batch_timeout_s=1s).
         Mock::given(method("POST"))
             .and(path("/extract"))
             .respond_with(

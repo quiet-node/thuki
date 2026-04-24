@@ -148,9 +148,10 @@ struct OllamaResponseBody {
 /// caller is responsible for deserializing the returned string into its own
 /// output type.
 ///
-/// `timeout_secs` is the per-call wall-clock limit; pass
-/// [`ROUTER_TIMEOUT_SECS`] for router calls and
-/// [`super::config::JUDGE_TIMEOUT_S`] for judge calls.
+/// `timeout_secs` is the per-call wall-clock limit. Production code passes
+/// the router/judge timeout fields from
+/// [`SearchRuntimeConfig`](super::config::SearchRuntimeConfig); tests pass
+/// the corresponding `DEFAULT_*` constants from [`crate::config::defaults`].
 async fn request_json(
     endpoint: &str,
     model: &str,
@@ -1309,7 +1310,7 @@ mod router_judge_tests {
             "q",
             &sources,
             &token,
-            crate::search::config::JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
         )
         .await
         .unwrap();
@@ -1345,7 +1346,7 @@ mod router_judge_tests {
             "q",
             &[],
             &token,
-            crate::search::config::JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
         )
         .await
         .unwrap();
@@ -1372,7 +1373,7 @@ mod router_judge_tests {
             "q",
             &[],
             &token,
-            crate::search::config::JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
         )
         .await
         .unwrap_err();
@@ -1400,7 +1401,7 @@ mod router_judge_tests {
             "q",
             &[],
             &token,
-            crate::search::config::JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
         )
         .await
         .expect("judge should fall back to safe defaults, not error");
@@ -1433,7 +1434,7 @@ mod router_judge_tests {
             "q",
             &[],
             &token,
-            crate::search::config::JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
         )
         .await
         .expect("judge should fall back to safe defaults, not error");
@@ -1481,7 +1482,7 @@ mod router_judge_tests {
             "q",
             &[],
             &token,
-            crate::search::config::JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
         )
         .await
         .unwrap();
@@ -1520,7 +1521,7 @@ mod router_judge_tests {
             "q",
             &[],
             &token,
-            crate::search::config::JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
         )
         .await
         .unwrap_err();

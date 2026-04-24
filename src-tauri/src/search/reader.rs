@@ -1,7 +1,11 @@
-//! HTTP client for the Trafilatura-based reader sidecar running at
-//! `config::READER_BASE_URL`.
+//! HTTP client for the Trafilatura-based reader sidecar.
 //!
-//! The agentic /search pipeline calls [`ReaderClient::fetch_batch_cancellable`]
+//! The reader URL and timeouts come from [`crate::config::AppConfig`] via
+//! [`crate::search::config::SearchRuntimeConfig`]; the client itself owns no
+//! defaults, so there is exactly one source of truth for the sandbox base
+//! URL (`config::defaults::DEFAULT_READER_URL`).
+//!
+//! The agentic `/search` pipeline calls [`ReaderClient::fetch_batch_cancellable`]
 //! to fan out full-page fetches over the top-K SearXNG results when snippets
 //! are not sufficient to answer. The client is conservative by design:
 //!
@@ -25,9 +29,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::search::chunker::Page;
-use crate::search::config::{
-    READER_BASE_URL, READER_BATCH_TIMEOUT_S, READER_PER_URL_TIMEOUT_S, READER_RETRY_DELAY_MS,
-};
+use crate::search::config::READER_RETRY_DELAY_MS;
 use crate::search::errors::{is_transient_connect_error, retry_once};
 
 /// Errors callers must handle.
@@ -37,7 +39,8 @@ pub enum ReaderError {
     /// `ReaderUnavailable` and fall back to snippets.
     #[error("reader service unavailable")]
     ServiceUnavailable,
-    /// The whole batch did not finish within `READER_BATCH_TIMEOUT_S`.
+    /// The whole batch did not finish within `batch_timeout_s` (the value
+    /// supplied via [`SearchRuntimeConfig`](crate::search::config::SearchRuntimeConfig)).
     #[error("reader batch timed out")]
     BatchTimeout,
     /// The cancellation token fired before the batch completed.
@@ -73,22 +76,13 @@ pub struct ReaderClient {
 }
 
 impl ReaderClient {
-    /// Build a client pointed at `config::READER_BASE_URL` with compiled defaults.
-    #[cfg_attr(coverage_nightly, coverage(off))]
-    pub fn new() -> Self {
-        Self::new_with_base(
-            READER_BASE_URL.to_string(),
-            READER_PER_URL_TIMEOUT_S,
-            READER_BATCH_TIMEOUT_S,
-        )
-    }
-
     /// Build a client pointed at `base` with explicit timeouts.
     ///
     /// `per_url_timeout_s` caps each individual HTTP round-trip.
     /// `batch_timeout_s` caps the entire parallel fetch batch.
-    /// Tests pass `READER_BATCH_TIMEOUT_S` (= 1 s in test builds) to trigger
-    /// [`ReaderError::BatchTimeout`] quickly without sleeping 30 seconds.
+    /// Production code passes the values resolved from
+    /// [`SearchRuntimeConfig`](crate::search::config::SearchRuntimeConfig);
+    /// tests pass shorter values to exercise the timeout paths quickly.
     pub fn new_with_base(
         base: impl Into<String>,
         per_url_timeout_s: u64,
@@ -260,13 +254,6 @@ impl ReaderClient {
     }
 }
 
-impl Default for ReaderClient {
-    #[cfg_attr(coverage_nightly, coverage(off))]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 enum FetchOutcome {
     Page(Page),
     Empty(String),
@@ -319,14 +306,16 @@ async fn fetch_one(client: &Client, base: &str, url: &str) -> FetchOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::defaults::DEFAULT_READER_PER_URL_TIMEOUT_S;
+    use crate::search::config::TEST_READER_BATCH_TIMEOUT_S;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn client_for(server: &MockServer) -> ReaderClient {
         ReaderClient::new_with_base(
             server.uri(),
-            READER_PER_URL_TIMEOUT_S,
-            READER_BATCH_TIMEOUT_S,
+            DEFAULT_READER_PER_URL_TIMEOUT_S,
+            TEST_READER_BATCH_TIMEOUT_S,
         )
     }
 
@@ -401,8 +390,8 @@ mod tests {
         // server not started; port 1 is unprivileged nothingness.
         let client = ReaderClient::new_with_base(
             "http://127.0.0.1:1".to_string(),
-            READER_PER_URL_TIMEOUT_S,
-            READER_BATCH_TIMEOUT_S,
+            DEFAULT_READER_PER_URL_TIMEOUT_S,
+            TEST_READER_BATCH_TIMEOUT_S,
         );
         let res = client.fetch_batch(&["https://a.com/1".to_string()]).await;
         assert_eq!(res, Err(ReaderError::ServiceUnavailable));
@@ -441,8 +430,8 @@ mod tests {
     async fn empty_url_list_returns_empty_result() {
         let client = ReaderClient::new_with_base(
             "http://127.0.0.1:1".to_string(),
-            READER_PER_URL_TIMEOUT_S,
-            READER_BATCH_TIMEOUT_S,
+            DEFAULT_READER_PER_URL_TIMEOUT_S,
+            TEST_READER_BATCH_TIMEOUT_S,
         );
         let pages = client.fetch_batch(&[]).await.unwrap();
         assert!(pages.pages.is_empty());
@@ -479,7 +468,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_batch_batch_timeout_returns_error() {
         let server = MockServer::start().await;
-        // Response delays longer than READER_BATCH_TIMEOUT_S (1 s in test mode).
+        // Response delays longer than TEST_READER_BATCH_TIMEOUT_S (1 s).
         Mock::given(method("POST"))
             .and(path("/extract"))
             .respond_with(
@@ -508,8 +497,8 @@ mod tests {
         // both conditions.
         let client = ReaderClient::new_with_base(
             "http://:1".to_string(),
-            READER_PER_URL_TIMEOUT_S,
-            READER_BATCH_TIMEOUT_S,
+            DEFAULT_READER_PER_URL_TIMEOUT_S,
+            TEST_READER_BATCH_TIMEOUT_S,
         );
         let result = client
             .fetch_batch(&["https://a.com/any".to_string()])
@@ -525,8 +514,8 @@ mod tests {
     async fn progress_empty_url_list_returns_empty_no_callbacks() {
         let client = ReaderClient::new_with_base(
             "http://127.0.0.1:1".to_string(),
-            READER_PER_URL_TIMEOUT_S,
-            READER_BATCH_TIMEOUT_S,
+            DEFAULT_READER_PER_URL_TIMEOUT_S,
+            TEST_READER_BATCH_TIMEOUT_S,
         );
         let result = client
             .fetch_batch_with_progress(&[], &CancellationToken::new(), &never_called)
@@ -621,8 +610,8 @@ mod tests {
     async fn progress_reports_service_unavailable_when_all_fail_with_connect_error() {
         let client = ReaderClient::new_with_base(
             "http://127.0.0.1:1".to_string(),
-            READER_PER_URL_TIMEOUT_S,
-            READER_BATCH_TIMEOUT_S,
+            DEFAULT_READER_PER_URL_TIMEOUT_S,
+            TEST_READER_BATCH_TIMEOUT_S,
         );
         let res = client
             .fetch_batch_with_progress(
