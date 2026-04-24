@@ -17,7 +17,7 @@ function Probe() {
       <div data-testid="overlay-width">{config.window.overlayWidth}</div>
       <div data-testid="max-display-lines">{config.quote.maxDisplayLines}</div>
       <div data-testid="system-prompt">{config.prompt.system}</div>
-      <div data-testid="cooldown">{config.activation.cooldownMs}</div>
+      <div data-testid="hide-delay">{config.window.hideCommitDelayMs}</div>
       <div data-testid="schema-version">{config.schemaVersion}</div>
     </>
   );
@@ -79,10 +79,6 @@ describe('ConfigContext', () => {
           max_chat_height: 700,
           hide_commit_delay_ms: 400,
         },
-        activation: {
-          double_tap_window_ms: 500,
-          cooldown_ms: 700,
-        },
         quote: {
           max_display_lines: 6,
           max_display_chars: 500,
@@ -104,7 +100,7 @@ describe('ConfigContext', () => {
       expect(screen.getByTestId('system-prompt').textContent).toBe(
         'custom base prompt',
       );
-      expect(screen.getByTestId('cooldown').textContent).toBe('700');
+      expect(screen.getByTestId('hide-delay').textContent).toBe('400');
       expect(screen.getByTestId('schema-version').textContent).toBe('1');
     });
 
@@ -139,7 +135,6 @@ describe('ConfigContext', () => {
           max_chat_height: 648,
           hide_commit_delay_ms: 350,
         },
-        activation: { double_tap_window_ms: 400, cooldown_ms: 600 },
         quote: {
           max_display_lines: 4,
           max_display_chars: 300,

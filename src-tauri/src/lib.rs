@@ -619,10 +619,6 @@ fn spawn_periodic_image_cleanup(app_handle: tauri::AppHandle) {
 /// Panics if the Tauri runtime fails to initialise.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Load .env file so THUKI_SYSTEM_PROMPT and future backend env vars
-    // work the same way as Vite's VITE_* vars for the frontend.
-    dotenvy::dotenv().ok();
-
     let mut builder = tauri::Builder::default();
 
     #[cfg(target_os = "macos")]

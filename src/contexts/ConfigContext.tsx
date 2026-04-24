@@ -31,10 +31,6 @@ interface RawAppConfig {
     max_chat_height: number;
     hide_commit_delay_ms: number;
   };
-  activation: {
-    double_tap_window_ms: number;
-    cooldown_ms: number;
-  };
   quote: {
     max_display_lines: number;
     max_display_chars: number;
@@ -62,10 +58,6 @@ export interface AppConfig {
     maxChatHeight: number;
     hideCommitDelayMs: number;
   };
-  activation: {
-    doubleTapWindowMs: number;
-    cooldownMs: number;
-  };
   quote: {
     maxDisplayLines: number;
     maxDisplayChars: number;
@@ -89,10 +81,6 @@ function transform(raw: RawAppConfig): AppConfig {
       collapsedHeight: raw.window.collapsed_height,
       maxChatHeight: raw.window.max_chat_height,
       hideCommitDelayMs: raw.window.hide_commit_delay_ms,
-    },
-    activation: {
-      doubleTapWindowMs: raw.activation.double_tap_window_ms,
-      cooldownMs: raw.activation.cooldown_ms,
     },
     quote: {
       maxDisplayLines: raw.quote.max_display_lines,
@@ -183,10 +171,6 @@ export const DEFAULT_CONFIG: AppConfig = {
     collapsedHeight: 80,
     maxChatHeight: 648,
     hideCommitDelayMs: 350,
-  },
-  activation: {
-    doubleTapWindowMs: 400,
-    cooldownMs: 600,
   },
   quote: {
     maxDisplayLines: 4,

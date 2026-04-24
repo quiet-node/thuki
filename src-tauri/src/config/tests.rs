@@ -13,17 +13,14 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    CURRENT_SCHEMA_VERSION, DEFAULT_COLLAPSED_HEIGHT, DEFAULT_COOLDOWN_MS,
-    DEFAULT_DOUBLE_TAP_WINDOW_MS, DEFAULT_HIDE_COMMIT_DELAY_MS, DEFAULT_MAX_CHAT_HEIGHT,
-    DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    CURRENT_SCHEMA_VERSION, DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
     DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SYSTEM_PROMPT_BASE, SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path};
-use super::schema::{
-    ActivationSection, AppConfig, ModelSection, PromptSection, QuoteSection, WindowSection,
-};
+use super::schema::{AppConfig, ModelSection, PromptSection, QuoteSection, WindowSection};
 use super::writer::atomic_write;
 
 /// Creates a fresh temp directory that is unique per test run. Returned paths
@@ -54,11 +51,6 @@ fn defaults_const_values_match_schema_defaults() {
     assert_eq!(c.window.collapsed_height, DEFAULT_COLLAPSED_HEIGHT);
     assert_eq!(c.window.max_chat_height, DEFAULT_MAX_CHAT_HEIGHT);
     assert_eq!(c.window.hide_commit_delay_ms, DEFAULT_HIDE_COMMIT_DELAY_MS);
-    assert_eq!(
-        c.activation.double_tap_window_ms,
-        DEFAULT_DOUBLE_TAP_WINDOW_MS
-    );
-    assert_eq!(c.activation.cooldown_ms, DEFAULT_COOLDOWN_MS);
     assert_eq!(c.quote.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
     assert_eq!(c.quote.max_display_chars, DEFAULT_QUOTE_MAX_DISPLAY_CHARS);
     assert_eq!(c.quote.max_context_length, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH);
@@ -83,9 +75,6 @@ fn section_defaults_are_sensible() {
 
     let w = WindowSection::default();
     assert_eq!(w.overlay_width, DEFAULT_OVERLAY_WIDTH);
-
-    let a = ActivationSection::default();
-    assert_eq!(a.double_tap_window_ms, DEFAULT_DOUBLE_TAP_WINDOW_MS);
 
     let q = QuoteSection::default();
     assert_eq!(q.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
@@ -122,7 +111,6 @@ fn app_config_serde_round_trip_matches_defaults() {
     assert_eq!(parsed.model, original.model);
     assert_eq!(parsed.prompt.system, original.prompt.system);
     assert_eq!(parsed.window, original.window);
-    assert_eq!(parsed.activation, original.activation);
     assert_eq!(parsed.quote, original.quote);
 }
 
@@ -138,7 +126,6 @@ fn app_config_partial_file_fills_missing_fields_with_defaults() {
     assert_eq!(parsed.model.available, vec!["custom:only".to_string()]);
     assert_eq!(parsed.model.ollama_url, DEFAULT_OLLAMA_URL);
     assert_eq!(parsed.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
-    assert_eq!(parsed.activation.cooldown_ms, DEFAULT_COOLDOWN_MS);
     assert_eq!(
         parsed.quote.max_display_lines,
         DEFAULT_QUOTE_MAX_DISPLAY_LINES
@@ -515,9 +502,6 @@ fn resolve_out_of_bounds_u64_resets() {
             schema_version = 1
             [window]
             hide_commit_delay_ms = 99999
-            [activation]
-            double_tap_window_ms = 50
-            cooldown_ms = 99999
         "#,
     )
     .unwrap();
@@ -526,11 +510,6 @@ fn resolve_out_of_bounds_u64_resets() {
         config.window.hide_commit_delay_ms,
         DEFAULT_HIDE_COMMIT_DELAY_MS
     );
-    assert_eq!(
-        config.activation.double_tap_window_ms,
-        DEFAULT_DOUBLE_TAP_WINDOW_MS
-    );
-    assert_eq!(config.activation.cooldown_ms, DEFAULT_COOLDOWN_MS);
 }
 
 #[test]
@@ -576,9 +555,6 @@ fn resolve_values_within_bounds_are_preserved() {
             collapsed_height = 100.0
             max_chat_height = 1000.0
             hide_commit_delay_ms = 250
-            [activation]
-            double_tap_window_ms = 500
-            cooldown_ms = 700
             [quote]
             max_display_lines = 6
             max_display_chars = 500
@@ -591,8 +567,6 @@ fn resolve_values_within_bounds_are_preserved() {
     assert_eq!(config.window.collapsed_height, 100.0);
     assert_eq!(config.window.max_chat_height, 1000.0);
     assert_eq!(config.window.hide_commit_delay_ms, 250);
-    assert_eq!(config.activation.double_tap_window_ms, 500);
-    assert_eq!(config.activation.cooldown_ms, 700);
     assert_eq!(config.quote.max_display_lines, 6);
     assert_eq!(config.quote.max_display_chars, 500);
     assert_eq!(config.quote.max_context_length, 8192);

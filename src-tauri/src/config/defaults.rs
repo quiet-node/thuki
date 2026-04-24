@@ -33,10 +33,6 @@ pub const DEFAULT_COLLAPSED_HEIGHT: f64 = 80.0;
 pub const DEFAULT_MAX_CHAT_HEIGHT: f64 = 648.0;
 pub const DEFAULT_HIDE_COMMIT_DELAY_MS: u64 = 350;
 
-/// Activation defaults.
-pub const DEFAULT_DOUBLE_TAP_WINDOW_MS: u64 = 400;
-pub const DEFAULT_COOLDOWN_MS: u64 = 600;
-
 /// Quote display defaults.
 pub const DEFAULT_QUOTE_MAX_DISPLAY_LINES: u32 = 4;
 pub const DEFAULT_QUOTE_MAX_DISPLAY_CHARS: u32 = 300;
@@ -50,8 +46,6 @@ pub const BOUNDS_OVERLAY_WIDTH: (f64, f64) = (200.0, 2000.0);
 pub const BOUNDS_COLLAPSED_HEIGHT: (f64, f64) = (40.0, 400.0);
 pub const BOUNDS_MAX_CHAT_HEIGHT: (f64, f64) = (200.0, 2000.0);
 pub const BOUNDS_HIDE_COMMIT_DELAY_MS: (u64, u64) = (0, 5000);
-pub const BOUNDS_DOUBLE_TAP_WINDOW_MS: (u64, u64) = (100, 2000);
-pub const BOUNDS_COOLDOWN_MS: (u64, u64) = (100, 5000);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_LINES: (u32, u32) = (1, 100);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_CHARS: (u32, u32) = (1, 10_000);
 pub const BOUNDS_QUOTE_MAX_CONTEXT_LENGTH: (u32, u32) = (1, 65_536);

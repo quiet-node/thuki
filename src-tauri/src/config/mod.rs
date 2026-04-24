@@ -25,9 +25,7 @@ pub mod writer;
 
 pub use error::ConfigError;
 pub use loader::load_from_path;
-pub use schema::{
-    ActivationSection, AppConfig, ModelSection, PromptSection, QuoteSection, WindowSection,
-};
+pub use schema::{AppConfig, ModelSection, PromptSection, QuoteSection, WindowSection};
 pub use writer::atomic_write;
 
 /// File name of the user config file inside the OS config dir.

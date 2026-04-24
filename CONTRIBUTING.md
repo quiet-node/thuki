@@ -88,13 +88,9 @@ rustup toolchain install nightly-2026-03-30 --component llvm-tools
 
    Thuki connects to `http://127.0.0.1:11434` by default.
 
-4. **Configure environment** (optional)
+4. **Configuration** (optional)
 
-   ```bash
-   cp .env.example .env
-   ```
-
-   Edit `.env` to customize quote display behavior or the system prompt. See [docs/configurations.md](docs/configurations.md) for all available options.
+   Thuki writes a default config file to `~/Library/Application Support/com.quietnode.thuki/config.toml` on first launch. To customize anything (model, system prompt, window dimensions, activation timing, quote display), edit that file and relaunch. See [docs/configurations.md](docs/configurations.md) for the full schema.
 
 5. **Launch the app**
 

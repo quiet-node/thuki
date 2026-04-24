@@ -62,10 +62,11 @@ The UI morphs between two states: a compact spotlight-style input bar → an exp
 
 ### Backend (`src-tauri/src/`)
 
-- **`lib.rs`** — app setup: converts window to NSPanel (fullscreen overlay), registers tray, spawns hotkey listener, intercepts close events (hides instead of quits)
-- **`commands.rs`** — `ask_ollama` Tauri command: streams newline-delimited JSON from Ollama, sends chunks via Tauri Channel
+- **`lib.rs`** — app setup: loads `AppConfig` via `config::load`, converts window to NSPanel (fullscreen overlay), registers tray, spawns hotkey listener, intercepts close events (hides instead of quits)
+- **`config/`** — typed TOML-backed application configuration. Loaded once at startup from `~/Library/Application Support/com.quietnode.thuki/config.toml` (seeded with defaults on first run), installed as Tauri managed state, exposed to the frontend via the `get_config` command. Every subsystem that needs model, prompt, window, activation, or quote values reads from `State<AppConfig>`. See `docs/configurations.md` for the user-facing schema.
+- **`commands.rs`** — `ask_ollama` Tauri command: streams newline-delimited JSON from Ollama, sends chunks via Tauri Channel. Reads the active model, resolved system prompt, and Ollama URL from `State<AppConfig>`.
 - **`screenshot.rs`** — `capture_full_screen_command` Tauri command: uses CoreGraphics FFI (`CGWindowListCreateImage`) to capture all displays excluding Thuki's own windows, writes a JPEG to a temp dir, and returns the path
-- **`activator.rs`** — Core Graphics event tap watching for double-tap Control key (400ms window, 600ms cooldown). The tap MUST use `CGEventTapLocation::HID` and `CGEventTapOptions::Default` — see the critical constraint note in "Key Design Constraints" below.
+- **`activator.rs`** — Core Graphics event tap watching for double-tap Control key (400 ms window, 600 ms cooldown; timing is a compiled constant, not yet exposed through `AppConfig` because the event-tap callback runs in a thread that cannot trivially read Tauri managed state). The tap MUST use `CGEventTapLocation::HID` and `CGEventTapOptions::Default` — see the critical constraint note in "Key Design Constraints" below.
 
 ### Sandbox (`sandbox/`)
 

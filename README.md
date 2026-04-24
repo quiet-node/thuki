@@ -79,7 +79,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 
 ### Step 1: Set Up Your AI Engine
 
-> **Default model:** Thuki ships with [`gemma4:e2b`](https://ollama.com/library/gemma4) by default, an effective 2B parameter edge model from Google. It runs comfortably on most modern Macs with 8 GB of RAM and delivers strong performance on reasoning, coding, and vision tasks. The model can be changed at runtime via the `THUKI_SUPPORTED_AI_MODELS` environment variable; see [Configurations](docs/configurations.md).
+> **Default model:** Thuki ships with [`gemma4:e2b`](https://ollama.com/library/gemma4) by default, an effective 2B parameter edge model from Google. It runs comfortably on most modern Macs with 8 GB of RAM and delivers strong performance on reasoning, coding, and vision tasks. To use a different model, edit `~/Library/Application Support/com.quietnode.thuki/config.toml` and reorder the `[model] available` list so your preferred model is first. See [Configurations](docs/configurations.md) for the full schema.
 
 Choose one of the two options below to set up your AI engine before installing Thuki.
 
@@ -256,7 +256,7 @@ The big leap: from answering questions to taking action.
 More flexibility over the model powering Thuki.
 
 - **Native settings panel (⌘,):** a proper macOS preferences window to configure your model, Ollama endpoint, activation shortcut, slash commands, and system prompt. No config files needed.
-- **In-app model switching:** swap between any Ollama model from the UI without rebuilding (the backend already supports multiple models via `THUKI_SUPPORTED_AI_MODELS`; the picker UI is next)
+- **In-app model switching:** swap between any Ollama model from the UI without restarting (the backend already supports multiple models via the `[model] available` list in `config.toml`; the picker UI is next)
 - **Multiple provider support:** opt in to OpenAI, Anthropic, or any OpenAI-compatible endpoint as an alternative to local Ollama
 - **Custom activation shortcut:** change the double-tap trigger to any key or combo you prefer
 

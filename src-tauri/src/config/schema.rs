@@ -13,9 +13,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{
-    CURRENT_SCHEMA_VERSION, DEFAULT_COLLAPSED_HEIGHT, DEFAULT_COOLDOWN_MS,
-    DEFAULT_DOUBLE_TAP_WINDOW_MS, DEFAULT_HIDE_COMMIT_DELAY_MS, DEFAULT_MAX_CHAT_HEIGHT,
-    DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    CURRENT_SCHEMA_VERSION, DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
     DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES,
 };
@@ -98,25 +97,6 @@ impl Default for WindowSection {
     }
 }
 
-/// Hotkey activation timing.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct ActivationSection {
-    /// Maximum gap between the two Control taps for them to count as a double tap.
-    pub double_tap_window_ms: u64,
-    /// Minimum wait between successful activations to avoid bounce.
-    pub cooldown_ms: u64,
-}
-
-impl Default for ActivationSection {
-    fn default() -> Self {
-        Self {
-            double_tap_window_ms: DEFAULT_DOUBLE_TAP_WINDOW_MS,
-            cooldown_ms: DEFAULT_COOLDOWN_MS,
-        }
-    }
-}
-
 /// Selected-text quote display configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -147,7 +127,6 @@ pub struct AppConfig {
     pub model: ModelSection,
     pub prompt: PromptSection,
     pub window: WindowSection,
-    pub activation: ActivationSection,
     pub quote: QuoteSection,
 }
 
@@ -158,7 +137,6 @@ impl Default for AppConfig {
             model: ModelSection::default(),
             prompt: PromptSection::default(),
             window: WindowSection::default(),
-            activation: ActivationSection::default(),
             quote: QuoteSection::default(),
         }
     }

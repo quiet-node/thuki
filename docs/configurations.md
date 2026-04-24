@@ -1,75 +1,116 @@
 # Configurations
 
-Thuki uses environment variables for runtime configuration. Vite loads these from `.env` files at build/dev time and exposes variables prefixed with `VITE_` to the frontend via `import.meta.env`.
+Thuki reads its runtime configuration from a single TOML file located at:
 
-## Setup
-
-```bash
-cp .env.example .env
+```
+~/Library/Application Support/com.quietnode.thuki/config.toml
 ```
 
-Edit `.env` to override any defaults. Changes take effect on the next `bun run dev` or `bun run build:all`.
+The file is created automatically the first time the app launches. You can edit it with any text editor; changes take effect on the next launch. A future Settings panel will let you make the same changes from inside the app, writing to the same file.
 
-> `.env` is gitignored. `.env.example` is committed as the reference template.
+## First launch
 
-## Configuration Reference
+You do not need to do anything. Thuki writes a default `config.toml` on first run with every field set to a sensible value and a `schema_version = 1` marker.
 
-### Quote Display
+If the directory cannot be written (disk full, permission denied, read-only filesystem), Thuki shows a native alert with the specific error and exits. This is a macOS-level setup problem; Thuki cannot repair it on your behalf.
 
-Controls how selected-text quotes are displayed in the AskBar preview and chat bubbles, and how much context is forwarded to the LLM.
+## Editing
 
-| Variable | Description | Default | Type |
+Open the file, change a value, save, relaunch Thuki.
+
+```bash
+# Opens the file in your default TextEdit-like editor
+open ~/Library/Application\ Support/com.quietnode.thuki/config.toml
+```
+
+### Example
+
+```toml
+schema_version = 1
+
+[model]
+# First entry is the ACTIVE model used for all inference.
+# Reorder the list to switch models (requires app restart in this release).
+# Run `ollama pull <model>` before adding a model you haven't used.
+available = ["gemma4:e2b", "gemma4:e4b"]
+ollama_url = "http://127.0.0.1:11434"
+
+[prompt]
+# Leave empty to use the built-in secretary persona.
+# Thuki always appends the generated slash-command appendix at runtime,
+# whether or not this field is set, so slash commands keep working.
+system = ""
+
+[window]
+overlay_width = 600
+collapsed_height = 80
+max_chat_height = 648
+hide_commit_delay_ms = 350
+
+[quote]
+max_display_lines = 4
+max_display_chars = 300
+max_context_length = 4096
+```
+
+## Reference
+
+### `[model]`
+
+| Field | Description | Default |
+| :--- | :--- | :--- |
+| `available` | Ordered list of Ollama model names Thuki may use. **The first entry is the active model for all inference.** Reorder the list to switch. | `["gemma4:e2b"]` |
+| `ollama_url` | HTTP base URL of the local Ollama instance. | `"http://127.0.0.1:11434"` |
+
+If you change `active` to a model that has not been pulled, the next request surfaces a "Model not found" error with the exact `ollama pull <name>` command to run.
+
+### `[prompt]`
+
+| Field | Description | Default |
+| :--- | :--- | :--- |
+| `system` | User-editable persona prompt prepended to every conversation. Leave empty (`""`) to use the built-in secretary persona. Thuki always appends its generated slash-command appendix separately, so slash command knowledge is never lost. | `""` |
+
+### `[window]`
+
+| Field | Description | Default | Bounds |
 | :--- | :--- | :--- | :--- |
-| `VITE_QUOTE_MAX_DISPLAY_LINES` | Maximum number of lines shown in the quote preview. Lines beyond this limit are truncated with `...`. Empty lines in the selection are skipped and do not count toward this limit. | `4` | Positive integer |
-| `VITE_QUOTE_MAX_DISPLAY_CHARS` | Maximum total characters shown in the quote preview. If a line would push the total past this limit, it is truncated mid-line with `...`. | `300` | Positive integer |
-| `VITE_QUOTE_MAX_CONTEXT_LENGTH` | Maximum length (in characters) of selected context text included in the prompt sent to Ollama. This is a security and performance cap; selections longer than this are silently truncated before reaching the LLM. | `4096` | Positive integer |
+| `overlay_width` | Logical width of the overlay panel. | `600.0` | `[200.0, 2000.0]` |
+| `collapsed_height` | Height of the AskBar (collapsed) state. | `80.0` | `[40.0, 400.0]` |
+| `max_chat_height` | Upper bound on the expanded chat window. | `648.0` | `[200.0, 2000.0]` |
+| `hide_commit_delay_ms` | Delay before the native window is hidden after the exit animation starts. | `350` | `[0, 5000]` |
 
-### System Prompt
+### `[quote]`
 
-Controls the system prompt prepended to every conversation sent to Ollama.
+Controls how selected-text quotes are shown in the AskBar preview and chat bubbles, and how much selected context is forwarded to Ollama.
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `THUKI_SYSTEM_PROMPT` | Custom base system prompt for all conversations. If unset or empty, the built-in default is used. Thuki still appends its generated slash-command appendix so built-in command knowledge stays available. | Built-in secretary persona prompt plus generated slash-command appendix (see `src-tauri/src/commands.rs`) |
+| Field | Description | Default | Bounds |
+| :--- | :--- | :--- | :--- |
+| `max_display_lines` | Maximum number of lines shown in the quote preview. | `4` | `[1, 100]` |
+| `max_display_chars` | Maximum total characters shown in the quote preview. | `300` | `[1, 10000]` |
+| `max_context_length` | Maximum characters of selected text included in the prompt sent to Ollama. | `4096` | `[1, 65536]` |
 
-### Model Configuration
+## What happens on bad input
 
-Controls which Ollama model(s) Thuki uses for inference.
+Thuki prefers to keep the app running with a usable configuration rather than fail noisily.
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `THUKI_SUPPORTED_AI_MODELS` | Comma-separated list of Ollama model names. The first entry is the active model used for all inference. Additional entries are available for future in-app model switching. | `gemma4:e2b` |
+- **Missing file**: defaults written, app launches normally.
+- **Missing fields**: filled in from compiled defaults; your other customizations stay.
+- **Empty or whitespace-only strings**: replaced with compiled defaults at load time.
+- **Out-of-bounds numeric values**: reset to compiled defaults; a warning is logged to stderr (visible via `Console.app`).
+- **Unparseable TOML or unknown `schema_version`**: the file is renamed to `config.toml.corrupt-<unix_timestamp>` and a fresh defaults file is written. The old file is preserved so you can inspect or restore it by hand.
 
-**Example:**
+## What is NOT configurable (and why)
 
-```bash
-# Single model (default behavior)
-THUKI_SUPPORTED_AI_MODELS=gemma4:e2b
+A few knobs that look configurable on the surface are intentionally kept out of `config.toml`:
 
-# Multiple models (first is active; others available for future UI picker)
-THUKI_SUPPORTED_AI_MODELS=gemma4:e2b,gemma4:e4b
-```
+- **Search pipeline tuning** (`MAX_ITERATIONS`, `TOP_K_URLS`, retry delays, timeouts). Downstream prompt design and persisted metadata interpretation depend on these exact values; tuning them wrong produces subtle drift rather than a clear error. See `src-tauri/src/search/config.rs`.
+- **macOS key codes** (`0x3b`, `0x3e` for left and right Control). Not user-meaningful; wrong values would brick activation.
+- **Activation timing** (400 ms double-tap window, 600 ms cooldown). These are compiled constants in `src-tauri/src/activator.rs`. Not yet exposed because the CGEventTap callback lives in a thread that cannot trivially read Tauri managed state, and no user has reported needing a different cadence. A future PR can promote these if the need appears.
+- **Image limits** (4 images per message, 30 MiB per image). Protocol caps imposed by Ollama's vision input; a larger value just makes requests fail further downstream.
+- **History search debounce** (200 ms). UX tuning; no meaningful user signal for changing this.
 
-Whitespace around each entry is trimmed. Empty entries are ignored. If the variable is unset or empty, Thuki falls back to `gemma4:e2b`.
+All of the above live as Rust or TypeScript constants. If a genuine need appears (a user reports the current value is wrong for their hardware or workflow), that value gets promoted into `config.toml` with a migration.
 
-### Validation Rules
+## Dev-time `.env` files
 
-All configuration values are validated at startup via `src/config/index.ts`:
-
-- **Missing or empty** values fall back to the default.
-- **Non-numeric** values (e.g., `abc`) fall back to the default.
-- **Zero or negative** values fall back to the default.
-- **Decimal** values are floored to the nearest integer (e.g., `5.7` becomes `5`).
-- **Infinity** falls back to the default.
-
-### File Precedence
-
-Vite loads `.env` files in the following order (later files override earlier ones):
-
-| File | Purpose | Committed |
-| :--- | :--- | :--- |
-| `.env.example` | Reference template with documented defaults | Yes |
-| `.env` | Local configuration | No (gitignored) |
-| `.env.local` | Local overrides (highest priority) | No (gitignored via `*.local`) |
-| `.env.development` | Dev-only overrides (loaded when `bun run dev`) | Optional |
-| `.env.production` | Prod-only overrides (loaded when `bun run build:all`) | Optional |
+Thuki no longer reads `.env` files. Both `.env` and `.env.example` have been removed and the `dotenvy` dependency has been dropped. If you still have a local `.env` from an older checkout, it is ignored; you can delete it.
