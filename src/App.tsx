@@ -22,16 +22,13 @@ import { HistoryPanel } from './components/HistoryPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import type { AttachedImage } from './types/image';
 import { MAX_IMAGE_SIZE_BYTES } from './types/image';
-import { quote } from './config';
+import { useConfig } from './contexts/ConfigContext';
 import {
   COMMANDS,
   SCREEN_CAPTURE_PLACEHOLDER,
   buildPrompt,
 } from './config/commands';
 import './App.css';
-
-/** Fallback model name used before get_model_config resolves at startup. */
-const DEFAULT_MODEL_FALLBACK = 'gemma4:e2b';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 const ONBOARDING_EVENT = 'thuki://onboarding';
@@ -231,10 +228,8 @@ function App() {
    */
   const [sessionId, setSessionId] = useState(0);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
-  const [modelConfig, setModelConfig] = useState<{
-    active: string;
-    all: string[];
-  } | null>(null);
+  const config = useConfig();
+  const quote = config.quote;
 
   /**
    * True when the window is near the screen bottom and should grow upward.
@@ -580,12 +575,12 @@ function App() {
       if (isSaved) {
         await unsave();
       } else {
-        await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
+        await save(messages);
       }
     } catch {
       // State stays unchanged on failure; feedback is implicit in the icon.
     }
-  }, [isSaved, unsave, save, messages, modelConfig]);
+  }, [isSaved, unsave, save, messages]);
 
   /**
    * Loads a conversation from history, replacing the current session.
@@ -621,7 +616,7 @@ function App() {
   const handleSaveAndLoad = useCallback(
     async (id: string) => {
       try {
-        await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
+        await save(messages);
       } catch {
         // Save failed - abort to avoid leaving the current session unprotected.
         return;
@@ -636,7 +631,7 @@ function App() {
         setIsHistoryOpen(false);
       }
     },
-    [save, messages, loadConversation, loadMessages, modelConfig],
+    [save, messages, loadConversation, loadMessages],
   );
 
   /**
@@ -695,12 +690,12 @@ function App() {
   /** Saves the current conversation then starts a fresh one. */
   const handleSaveAndNew = useCallback(async () => {
     try {
-      await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
+      await save(messages);
     } catch {
       return;
     }
     resetForNewConversation();
-  }, [save, messages, resetForNewConversation, modelConfig]);
+  }, [save, messages, resetForNewConversation]);
 
   /** Discards the current conversation and starts a fresh one. */
   const handleJustNew = useCallback(() => {
@@ -1271,13 +1266,6 @@ function App() {
     setSearchActive(false);
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [isSubmitPending, cancel, setSearchActive, setSelectedContext]);
-
-  /** Fetches model configuration from the backend once at mount. */
-  useEffect(() => {
-    void invoke<{ active: string; all: string[] }>('get_model_config').then(
-      setModelConfig,
-    );
-  }, []);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility

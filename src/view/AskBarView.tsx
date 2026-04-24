@@ -2,7 +2,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
-import { quote } from '../config';
+import { useConfig } from '../contexts/ConfigContext';
 import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
 import { Tooltip } from '../components/Tooltip';
@@ -194,7 +194,7 @@ export function renderHighlightedText(text: string): React.ReactNode {
  * one additional image from /screen capture, for a total of 4 per message
  * (MAX_IMAGES_PER_MESSAGE in images.rs).
  */
-export const MAX_IMAGES = 3;
+export const MAX_IMAGES = 4;
 
 /** Props for the AskBarView component. */
 interface AskBarViewProps {
@@ -264,6 +264,9 @@ export function AskBarView({
 }: AskBarViewProps) {
   /** Ref to the mirror div behind the textarea for command highlighting. */
   const mirrorRef = useRef<HTMLDivElement>(null);
+
+  /** Quote display limits resolved from the managed AppConfig. */
+  const quote = useConfig().quote;
 
   /** True when the UI should be locked - either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
@@ -537,7 +540,7 @@ export function AskBarView({
         </div>
       )}
       {showMaxLabel && (
-        <p className="px-4 pt-2 pb-0 text-xs text-red-400">Max 3 images</p>
+        <p className="px-4 pt-2 pb-0 text-xs text-red-400">Max 4 images</p>
       )}
       {attachedImages.length > 0 && (
         <div className="px-4 pt-2 pb-0">
@@ -630,7 +633,7 @@ export function AskBarView({
           </div>
 
           {isAtMaxImages ? (
-            <Tooltip label="Maximum 3 images attached">
+            <Tooltip label="Maximum 4 images attached">
               <button
                 type="button"
                 onClick={onScreenshot}

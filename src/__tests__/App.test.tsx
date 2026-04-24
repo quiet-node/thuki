@@ -28,13 +28,6 @@ describe('App', () => {
     enableChannelCapture();
   });
 
-  it('calls get_model_config on mount', async () => {
-    render(<App />);
-    await act(async () => {});
-
-    expect(invoke).toHaveBeenCalledWith('get_model_config');
-  });
-
   it('grows upward when near bottom screen edge', async () => {
     const { container } = render(<App />);
     await act(async () => {});
@@ -665,10 +658,6 @@ describe('App', () => {
 
     it('closes history panel when a conversation is loaded', async () => {
       enableChannelCaptureWithResponses({
-        get_model_config: {
-          active: 'gemma4:e2b',
-          all: ['gemma4:e2b'],
-        },
         list_conversations: [],
       });
 
@@ -748,7 +737,6 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith(
         'save_conversation',
         expect.objectContaining({
-          model: expect.any(String),
           messages: expect.any(Array),
         }),
       );
@@ -1201,7 +1189,7 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith(
         'save_conversation',
         expect.objectContaining({
-          model: expect.any(String),
+          messages: expect.any(Array),
         }),
       );
     });
@@ -2022,9 +2010,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      // Paste 3 images to reach max
+      // Paste 4 images to reach max
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 4; i++) {
         const file = new File([`data${i}`], `img${i}.png`, {
           type: 'image/png',
         });
@@ -2037,9 +2025,9 @@ describe('App', () => {
         });
       }
 
-      // Wait for 3 thumbnails
+      // Wait for 4 thumbnails
       await vi.waitFor(() => {
-        expect(screen.getAllByRole('listitem')).toHaveLength(3);
+        expect(screen.getAllByRole('listitem')).toHaveLength(4);
       });
 
       // Now drag over; should show red ring and max label
@@ -2050,7 +2038,7 @@ describe('App', () => {
         '[class*="flex flex-col w-full shrink-0"]',
       )!;
       expect(askBarWrapper.classList.contains('ring-red-500/60')).toBe(true);
-      expect(screen.getByText('Max 3 images')).toBeInTheDocument();
+      expect(screen.getByText('Max 4 images')).toBeInTheDocument();
     });
 
     it('dragLeave when cursor exits window clears drag-over ring', async () => {
@@ -2143,7 +2131,7 @@ describe('App', () => {
       await showOverlay();
 
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 4; i++) {
         const img = new File([`d${i}`], `i${i}.png`, { type: 'image/png' });
         await act(async () => {
           fireEvent.paste(textarea, {
@@ -2154,7 +2142,7 @@ describe('App', () => {
         });
       }
       await vi.waitFor(() => {
-        expect(screen.getAllByRole('listitem')).toHaveLength(3);
+        expect(screen.getAllByRole('listitem')).toHaveLength(4);
       });
 
       const rootDiv = document.querySelector('.h-screen')!;
@@ -2164,8 +2152,8 @@ describe('App', () => {
         dataTransfer: { files: [extra] },
       });
 
-      // Still exactly 3 - the drop was rejected
-      expect(screen.getAllByRole('listitem')).toHaveLength(3);
+      // Still exactly 4 - the drop was rejected
+      expect(screen.getAllByRole('listitem')).toHaveLength(4);
     });
 
     it('handleRootDrop ignores non-image files', async () => {
@@ -2861,7 +2849,7 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      // Attach 3 images via paste to reach the limit.
+      // Attach 4 images via paste to reach the limit.
       const pasteOneImage = async () => {
         const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
         const file = new File(['data'], 'photo.png', { type: 'image/png' });
@@ -2873,6 +2861,7 @@ describe('App', () => {
           });
         });
       };
+      await pasteOneImage();
       await pasteOneImage();
       await pasteOneImage();
       await pasteOneImage();

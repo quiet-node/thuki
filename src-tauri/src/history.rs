@@ -62,8 +62,8 @@ pub struct SaveConversationResponse {
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn save_conversation(
     messages: Vec<SaveMessagePayload>,
-    model: String,
     db: State<'_, Database>,
+    app_config: State<'_, AppConfig>,
 ) -> Result<SaveConversationResponse, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
 
@@ -85,9 +85,12 @@ pub fn save_conversation(
         }
     });
 
-    let conversation_id =
-        database::create_conversation(&conn, placeholder_title.as_deref(), &model)
-            .map_err(|e| e.to_string())?;
+    let conversation_id = database::create_conversation(
+        &conn,
+        placeholder_title.as_deref(),
+        app_config.model.active(),
+    )
+    .map_err(|e| e.to_string())?;
 
     let batch: Vec<database::MessageBatchRow> = messages
         .into_iter()

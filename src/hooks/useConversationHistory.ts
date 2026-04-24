@@ -266,15 +266,18 @@ export function useConversationHistory() {
    * Subsequent calls while `isSaved` is true are no-ops - the bookmark
    * icon on the frontend enforces single-save semantics.
    *
+   * The active model name is sourced by the Rust `save_conversation` command
+   * from the managed `AppConfig` state; the frontend no longer tracks or
+   * forwards it.
+   *
    * Fires `generate_title` as a fire-and-forget background task after saving;
    * the frontend should schedule a `listConversations` refresh to pick up the
    * AI-generated title once it arrives (~2-5 seconds).
    *
    * @param messages The complete message history to persist.
-   * @param model The Ollama model name used in this session.
    */
   const save = useCallback(
-    async (messages: Message[], model: string): Promise<void> => {
+    async (messages: Message[]): Promise<void> => {
       if (isSaved) return;
 
       const payloads = messages.map(toPayload);
@@ -283,7 +286,6 @@ export function useConversationHistory() {
         'save_conversation',
         {
           messages: payloads,
-          model,
         },
       );
 
