@@ -5,7 +5,7 @@ import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
-import { ModelPickerList, ModelPickerTrigger } from '../components/ModelPicker';
+import { ModelPicker } from '../components/ModelPicker';
 import { Tooltip } from '../components/Tooltip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
@@ -293,59 +293,14 @@ export function AskBarView({
     return () => clearTimeout(timer);
   }, [pasteMaxError]);
 
-  // ─── Model picker state ───────────────────────────────────────────────────
+  // ─── Model picker availability gate ───────────────────────────────────────
 
-  /** True while the model picker popup is visible above the input row. */
-  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
-  const modelPickerTriggerRef = useRef<HTMLButtonElement>(null);
-  const modelPickerListRef = useRef<HTMLDivElement>(null);
-
-  /** Gate combining open intent with prerequisites (not busy, models loaded). */
+  /** Prerequisites for rendering the model picker chip. */
   const modelPickerAvailable = Boolean(
     activeModel &&
     availableModels &&
     availableModels.length > 0 &&
     onModelSelect,
-  );
-  const showModelPicker = isModelPickerOpen && !isBusy && modelPickerAvailable;
-
-  /* eslint-disable @eslint-react/set-state-in-effect -- intentional: when
-     generation starts while the picker is open we must reset the user's
-     open intent so it does not reappear when generation ends. No secondary
-     effects are triggered by this reset. */
-  useEffect(() => {
-    if (isBusy && isModelPickerOpen) setIsModelPickerOpen(false);
-  }, [isBusy, isModelPickerOpen]);
-  /* eslint-enable @eslint-react/set-state-in-effect */
-
-  /** Outside-click closes the popup. Skips when closed to avoid listener leaks. */
-  useEffect(() => {
-    if (!showModelPicker) return;
-    const handleMouseDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (modelPickerTriggerRef.current?.contains(target)) return;
-      if (modelPickerListRef.current?.contains(target)) return;
-      setIsModelPickerOpen(false);
-    };
-    document.addEventListener('mousedown', handleMouseDown);
-    return () => document.removeEventListener('mousedown', handleMouseDown);
-  }, [showModelPicker]);
-
-  const toggleModelPicker = useCallback(() => {
-    setIsModelPickerOpen((open) => !open);
-  }, []);
-
-  /**
-   * Forwards the picked slug to the parent and collapses the popup. The
-   * parent's `onModelSelect` already handles backend persistence; this
-   * closure just handles the UI state transition.
-   */
-  const handleModelRowSelect = useCallback(
-    (model: string) => {
-      onModelSelect?.(model);
-      setIsModelPickerOpen(false);
-    },
-    [onModelSelect],
   );
 
   // ─── Command suggestion state ─────────────────────────────────────────────
@@ -647,19 +602,6 @@ export function AskBarView({
           </motion.div>
         )}
       </AnimatePresence>
-      {/* Model picker list renders above the input row in the normal DOM
-          flow so the morphing container's ResizeObserver can grow the
-          native window upward as the list mounts, avoiding the clipping
-          that an absolute popup would suffer inside `overflow-hidden`. */}
-      {modelPickerAvailable && activeModel && availableModels && (
-        <ModelPickerList
-          listRef={modelPickerListRef}
-          activeModel={activeModel}
-          models={availableModels}
-          isOpen={showModelPicker}
-          onSelect={handleModelRowSelect}
-        />
-      )}
       <div className="relative">
         <div className="flex items-center w-full px-3 py-2.5 gap-2">
           <img
@@ -736,14 +678,17 @@ export function AskBarView({
             </Tooltip>
           )}
 
-          {modelPickerAvailable && (
-            <ModelPickerTrigger
-              triggerRef={modelPickerTriggerRef}
-              isOpen={showModelPicker}
-              disabled={isBusy}
-              onToggle={toggleModelPicker}
-            />
-          )}
+          {modelPickerAvailable &&
+            activeModel &&
+            availableModels &&
+            onModelSelect && (
+              <ModelPicker
+                activeModel={activeModel}
+                models={availableModels}
+                disabled={isBusy}
+                onSelect={onModelSelect}
+              />
+            )}
 
           <motion.button
             type="button"

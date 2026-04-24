@@ -83,7 +83,7 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'qwen2.5:7b' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'qwen2.5:7b' }));
     });
 
     const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
