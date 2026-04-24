@@ -71,6 +71,12 @@ export function Tooltip({
     setIsVisible(true);
   };
 
+  /**
+   * Hides the tooltip. Fired on both `mouseleave` and `mousedown` so a click
+   * on a tooltipped trigger that opens a popup (e.g. the model picker)
+   * dismisses the tooltip instead of letting it overlap the popup. The
+   * tooltip reappears normally on the next fresh hover.
+   */
   const handleMouseLeave = () => {
     setIsVisible(false);
   };
@@ -86,6 +92,7 @@ export function Tooltip({
       ref={triggerRef}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
+      onMouseDown={handleMouseLeave}
       className={`inline-flex${className ? ` ${className}` : ''}`}
     >
       {children}

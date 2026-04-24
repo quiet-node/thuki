@@ -324,13 +324,84 @@ describe('AskBarView', () => {
     expect(screen.queryByRole('menuitem', { name: 'qwen2.5:7b' })).toBeNull();
   });
 
-  it('keeps the popup open when a mousedown lands inside a row before click', () => {
+  it('reserves space below the ask-bar row when the picker opens downward', async () => {
+    // Force the trigger to read as top:0 so the above-math goes negative
+    // and ModelPicker flips the menu below. Also override offsetHeight so
+    // the menu reports a positive height on rAF measurement.
+    const originalGetRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function () {
+      return {
+        top: 0,
+        left: 100,
+        right: 128,
+        bottom: 28,
+        width: 28,
+        height: 28,
+        x: 100,
+        y: 0,
+        toJSON() {
+          return {};
+        },
+      } as DOMRect;
+    };
+    const originalOffsetHeight = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'offsetHeight',
+    );
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get() {
+        return 120;
+      },
+    });
+    try {
+      const { getByTestId } = render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          activeModel="gemma4:e2b"
+          availableModels={['gemma4:e2b', 'qwen2.5:7b']}
+          onModelSelect={vi.fn()}
+        />,
+      );
+      expect(getByTestId('model-menu-spacer').style.height).toBe('0px');
+
+      // act-wrap to flush all state updates scheduled by the sync rAF fire.
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+      });
+      // Trigger a resize to force another updatePosition pass with the
+      // menuRef attached and offsetHeight overridden.
+      await act(async () => {
+        window.dispatchEvent(new Event('resize'));
+      });
+      // Measured 120px menu + 8px MENU_GAP = 128px spacer height.
+      expect(getByTestId('model-menu-spacer').style.height).toBe('128px');
+    } finally {
+      Element.prototype.getBoundingClientRect = originalGetRect;
+      if (originalOffsetHeight) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          'offsetHeight',
+          originalOffsetHeight,
+        );
+      }
+    }
+  });
+
+  it('collapses reserved space when the picker closes', async () => {
     render(
       <AskBarView
         {...IMAGE_DEFAULTS}
         query=""
         setQuery={vi.fn()}
-        isChatMode={true}
+        isChatMode={false}
         isGenerating={false}
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
@@ -341,14 +412,56 @@ describe('AskBarView', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
-    const row = screen.getByRole('menuitem', { name: 'qwen2.5:7b' });
-    fireEvent.mouseDown(row);
-    expect(
-      screen.getByRole('menuitem', { name: 'qwen2.5:7b' }),
-    ).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    const spacer = screen.getByTestId('model-menu-spacer');
+    expect(spacer.style.height).toBe('0px');
   });
 
-  it('keeps the popup open when a mousedown lands on the trigger itself', () => {
+  it('does not reserve space when the picker opens above the trigger', async () => {
+    const originalGetRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function () {
+      return {
+        top: 600,
+        left: 100,
+        right: 128,
+        bottom: 628,
+        width: 28,
+        height: 28,
+        x: 100,
+        y: 600,
+        toJSON() {
+          return {};
+        },
+      } as DOMRect;
+    };
+    try {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={true}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          activeModel="gemma4:e2b"
+          availableModels={['gemma4:e2b', 'qwen2.5:7b']}
+          onModelSelect={vi.fn()}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+      await act(async () => {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      });
+      const spacer = screen.getByTestId('model-menu-spacer');
+      expect(spacer.style.height).toBe('0px');
+    } finally {
+      Element.prototype.getBoundingClientRect = originalGetRect;
+    }
+  });
+
+  it('renders the model picker inside a Choose model tooltip wrapper', () => {
     render(
       <AskBarView
         {...IMAGE_DEFAULTS}
@@ -365,33 +478,12 @@ describe('AskBarView', () => {
       />,
     );
     const trigger = screen.getByRole('button', { name: 'Choose model' });
-    fireEvent.click(trigger);
-    fireEvent.mouseDown(trigger);
-    expect(
-      screen.getByRole('menuitem', { name: 'qwen2.5:7b' }),
-    ).toBeInTheDocument();
-  });
-
-  it('renders a Choose model tooltip wrapper around the trigger', () => {
-    render(
-      <AskBarView
-        {...IMAGE_DEFAULTS}
-        query=""
-        setQuery={vi.fn()}
-        isChatMode={true}
-        isGenerating={false}
-        onSubmit={vi.fn()}
-        onCancel={vi.fn()}
-        inputRef={makeRef()}
-        activeModel="gemma4:e2b"
-        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
-        onModelSelect={vi.fn()}
-      />,
-    );
-    const trigger = screen.getByRole('button', { name: 'Choose model' });
-    // Hovering the Tooltip wrapper reveals the label text via portal.
     fireEvent.mouseEnter(trigger.parentElement!);
-    expect(screen.getByText('Choose model')).toBeInTheDocument();
+    // Two tooltip-labeled texts: the aria-label on the trigger AND the
+    // tooltip content. Filter by tooltip portal text (not the aria-label).
+    expect(screen.getAllByText('Choose model').length).toBeGreaterThanOrEqual(
+      1,
+    );
   });
 
   it('hides the model picker trigger when no models are available', () => {

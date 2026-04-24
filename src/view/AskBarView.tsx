@@ -5,7 +5,10 @@ import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
-import { ModelPickerList, ModelPickerTrigger } from '../components/ModelPicker';
+import {
+  ModelPicker,
+  type ModelPickerMenuState,
+} from '../components/ModelPicker';
 import { Tooltip } from '../components/Tooltip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
@@ -287,6 +290,29 @@ export function AskBarView({
   /** True briefly after a paste attempt is rejected because max images reached. */
   const [pasteMaxError, setPasteMaxError] = useState(false);
 
+  /**
+   * Height reserved below the ask-bar row so the portal model-picker menu is
+   * not clipped by the Thuki NSPanel frame. Non-zero only when the menu is
+   * open and flips downward (ask-bar-only mode). The App-level
+   * ResizeObserver watches the morphing container and grows the native
+   * window to match, which makes room for the downward-opening popup.
+   */
+  const [modelMenuPadBottom, setModelMenuPadBottom] = useState(0);
+
+  /**
+   * Syncs reserved space with the picker's flip decision. Only an
+   * "opened below" state actually needs space: above-flips overlay the
+   * chat area which is already inside the window.
+   */
+  const handleModelMenuChange = useCallback((state: ModelPickerMenuState) => {
+    if (state.isOpen && state.openDirection === 'below' && state.height > 0) {
+      // 8px matches the MENU_GAP used by ModelPicker when placing the popup.
+      setModelMenuPadBottom(state.height + 8);
+    } else {
+      setModelMenuPadBottom(0);
+    }
+  }, []);
+
   useEffect(() => {
     if (!pasteMaxError) return;
     const timer = setTimeout(() => setPasteMaxError(false), 2000);
@@ -301,48 +327,6 @@ export function AskBarView({
     availableModels &&
     availableModels.length > 0 &&
     onModelSelect,
-  );
-
-  /** Whether the inline model picker list is currently expanded. */
-  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
-  const modelPickerTriggerRef = useRef<HTMLButtonElement>(null);
-  const modelPickerListRef = useRef<HTMLDivElement>(null);
-
-  /** Combined gate: don't show the list while busy or without data. */
-  const showModelPicker = isModelPickerOpen && !isBusy && modelPickerAvailable;
-
-  /* Auto-close the picker when generation starts. */
-  /* eslint-disable @eslint-react/set-state-in-effect -- intentional: mirror the
-     busy prop into the local open state so a mid-open busy flip cleanly closes
-     the list. No secondary effects are triggered by this reset. */
-  useEffect(() => {
-    if (isBusy && isModelPickerOpen) setIsModelPickerOpen(false);
-  }, [isBusy, isModelPickerOpen]);
-  /* eslint-enable @eslint-react/set-state-in-effect */
-
-  /* Outside-click closes the picker. Listener attached only while open. */
-  useEffect(() => {
-    if (!showModelPicker) return;
-    const handleMouseDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (modelPickerTriggerRef.current?.contains(target)) return;
-      if (modelPickerListRef.current?.contains(target)) return;
-      setIsModelPickerOpen(false);
-    };
-    document.addEventListener('mousedown', handleMouseDown);
-    return () => document.removeEventListener('mousedown', handleMouseDown);
-  }, [showModelPicker]);
-
-  const toggleModelPicker = useCallback(() => {
-    setIsModelPickerOpen((open) => !open);
-  }, []);
-
-  const handleModelRowSelect = useCallback(
-    (model: string) => {
-      onModelSelect?.(model);
-      setIsModelPickerOpen(false);
-    },
-    [onModelSelect],
   );
 
   // ─── Command suggestion state ─────────────────────────────────────────────
@@ -644,19 +628,6 @@ export function AskBarView({
           </motion.div>
         )}
       </AnimatePresence>
-      {/* Model picker list renders inline above the input row in the same
-          DOM-flow pattern as CommandSuggestion. The morphing-container
-          ResizeObserver picks up the added height and grows the Tauri
-          window upward to reveal the menu without clipping. */}
-      {modelPickerAvailable && activeModel && availableModels && (
-        <ModelPickerList
-          listRef={modelPickerListRef}
-          activeModel={activeModel}
-          models={availableModels}
-          isOpen={showModelPicker}
-          onSelect={handleModelRowSelect}
-        />
-      )}
       <div className="relative">
         <div className="flex items-center w-full px-3 py-2.5 gap-2">
           <img
@@ -733,16 +704,20 @@ export function AskBarView({
             </Tooltip>
           )}
 
-          {modelPickerAvailable && (
-            <Tooltip label="Choose model">
-              <ModelPickerTrigger
-                triggerRef={modelPickerTriggerRef}
-                isOpen={showModelPicker}
-                disabled={isBusy}
-                onToggle={toggleModelPicker}
-              />
-            </Tooltip>
-          )}
+          {modelPickerAvailable &&
+            activeModel &&
+            availableModels &&
+            onModelSelect && (
+              <Tooltip label="Choose model">
+                <ModelPicker
+                  activeModel={activeModel}
+                  models={availableModels}
+                  disabled={isBusy}
+                  onSelect={onModelSelect}
+                  onMenuChange={handleModelMenuChange}
+                />
+              </Tooltip>
+            )}
 
           <motion.button
             type="button"
@@ -770,6 +745,18 @@ export function AskBarView({
           </motion.button>
         </div>
       </div>
+      {/* Invisible in-flow spacer that reserves space below the ask-bar row
+          for the model picker's portal menu when it flips downward. The
+          App-level ResizeObserver watches the morphing container and resizes
+          the native NSPanel to match, preventing the popup from being
+          clipped at the window bottom. Height animates to match the 160ms
+          menu fade-in for visual coherence. */}
+      <div
+        aria-hidden="true"
+        data-testid="model-menu-spacer"
+        style={{ height: modelMenuPadBottom }}
+        className="shrink-0 transition-[height] duration-[160ms] ease-out"
+      />
     </div>
   );
 }

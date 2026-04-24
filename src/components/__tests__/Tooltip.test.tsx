@@ -110,6 +110,21 @@ describe('Tooltip', () => {
     expect(wrapper?.classList.contains('inline-flex')).toBe(true);
   });
 
+  it('hides on mouseDown so the tooltip does not overlap a popup the click opens', () => {
+    render(
+      <Tooltip label="Choose model">
+        <button type="button">Trigger</button>
+      </Tooltip>,
+    );
+    const wrapper = screen.getByRole('button', {
+      name: 'Trigger',
+    }).parentElement!;
+    fireEvent.mouseEnter(wrapper);
+    expect(screen.getByText('Choose model')).toBeInTheDocument();
+    fireEvent.mouseDown(wrapper);
+    expect(screen.queryByText('Choose model')).not.toBeInTheDocument();
+  });
+
   it('applies extra className to the wrapper div', () => {
     const { container } = render(
       <Tooltip label="Test" className="flex-1 min-w-0">
