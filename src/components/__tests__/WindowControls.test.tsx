@@ -72,4 +72,90 @@ describe('WindowControls', () => {
     );
     expect(onSave).toHaveBeenCalledTimes(1);
   });
+
+  it('renders active model pill when activeModel and onModelPickerToggle provided', () => {
+    render(
+      <WindowControls
+        onClose={vi.fn()}
+        activeModel="gemma4:e2b"
+        onModelPickerToggle={vi.fn()}
+        isModelPickerOpen={false}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('gemma4:e2b')).toBeInTheDocument();
+  });
+
+  it('hides model pill when activeModel is not provided', () => {
+    render(<WindowControls onClose={vi.fn()} onModelPickerToggle={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Choose model' })).toBeNull();
+  });
+
+  it('hides model pill when onModelPickerToggle is not provided', () => {
+    render(<WindowControls onClose={vi.fn()} activeModel="gemma4:e2b" />);
+    expect(screen.queryByRole('button', { name: 'Choose model' })).toBeNull();
+  });
+
+  it('calls onModelPickerToggle when pill is clicked', () => {
+    const onModelPickerToggle = vi.fn();
+    render(
+      <WindowControls
+        onClose={vi.fn()}
+        activeModel="gemma4:e2b"
+        onModelPickerToggle={onModelPickerToggle}
+        isModelPickerOpen={false}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    expect(onModelPickerToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('sets aria-expanded false on pill when isModelPickerOpen is false', () => {
+    render(
+      <WindowControls
+        onClose={vi.fn()}
+        activeModel="gemma4:e2b"
+        onModelPickerToggle={vi.fn()}
+        isModelPickerOpen={false}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('sets aria-expanded true on pill when isModelPickerOpen is true', () => {
+    render(
+      <WindowControls
+        onClose={vi.fn()}
+        activeModel="gemma4:e2b"
+        onModelPickerToggle={vi.fn()}
+        isModelPickerOpen={true}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('pill renders before save button in DOM order', () => {
+    render(
+      <WindowControls
+        onClose={vi.fn()}
+        activeModel="gemma4:e2b"
+        onModelPickerToggle={vi.fn()}
+        isModelPickerOpen={false}
+        onSave={vi.fn()}
+        canSave
+      />,
+    );
+    const pill = screen.getByRole('button', { name: 'Choose model' });
+    const save = screen.getByRole('button', { name: 'Save conversation' });
+    const relation = pill.compareDocumentPosition(save);
+    expect(relation & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
 });

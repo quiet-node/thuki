@@ -5,10 +5,7 @@ import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
-import {
-  ModelPicker,
-  type ModelPickerMenuState,
-} from '../components/ModelPicker';
+import { ModelPicker } from '../components/ModelPicker';
 import { Tooltip } from '../components/Tooltip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
@@ -99,8 +96,8 @@ const BORDER_TRACE_RING = (
 /** Hoisted static history (clock) icon - prevents re-allocation on every render. */
 const HISTORY_ICON = (
   <svg
-    width="14"
-    height="14"
+    width="16"
+    height="16"
     viewBox="0 0 24 24"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
@@ -244,8 +241,13 @@ interface AskBarViewProps {
   activeModel?: string;
   /** Full list of model slugs available for selection in the picker. */
   availableModels?: string[];
-  /** Called when the user picks a new active model from the picker. */
-  onModelSelect?: (model: string) => void;
+  /**
+   * Called when the user clicks the model picker trigger. App.tsx owns the
+   * open/close state and renders the ModelPickerPanel as an inline drawer.
+   */
+  onModelPickerToggle?: () => void;
+  /** Whether the model picker panel is currently open (drives aria-expanded). */
+  isModelPickerOpen?: boolean;
 }
 
 /**
@@ -273,7 +275,8 @@ export function AskBarView({
   isDragOver,
   activeModel,
   availableModels,
-  onModelSelect,
+  onModelPickerToggle,
+  isModelPickerOpen,
 }: AskBarViewProps) {
   /** Ref to the mirror div behind the textarea for command highlighting. */
   const mirrorRef = useRef<HTMLDivElement>(null);
@@ -290,29 +293,6 @@ export function AskBarView({
   /** True briefly after a paste attempt is rejected because max images reached. */
   const [pasteMaxError, setPasteMaxError] = useState(false);
 
-  /**
-   * Height reserved below the ask-bar row so the portal model-picker menu is
-   * not clipped by the Thuki NSPanel frame. Non-zero only when the menu is
-   * open and flips downward (ask-bar-only mode). The App-level
-   * ResizeObserver watches the morphing container and grows the native
-   * window to match, which makes room for the downward-opening popup.
-   */
-  const [modelMenuPadBottom, setModelMenuPadBottom] = useState(0);
-
-  /**
-   * Syncs reserved space with the picker's flip decision. Only an
-   * "opened below" state actually needs space: above-flips overlay the
-   * chat area which is already inside the window.
-   */
-  const handleModelMenuChange = useCallback((state: ModelPickerMenuState) => {
-    if (state.isOpen && state.openDirection === 'below' && state.height > 0) {
-      // 8px matches the MENU_GAP used by ModelPicker when placing the popup.
-      setModelMenuPadBottom(state.height + 8);
-    } else {
-      setModelMenuPadBottom(0);
-    }
-  }, []);
-
   useEffect(() => {
     if (!pasteMaxError) return;
     const timer = setTimeout(() => setPasteMaxError(false), 2000);
@@ -321,12 +301,16 @@ export function AskBarView({
 
   // ─── Model picker availability gate ───────────────────────────────────────
 
-  /** Prerequisites for rendering the model picker chip. */
+  /**
+   * Prerequisites for rendering the chip trigger in the input bar.
+   * Hidden in chat mode — the pill trigger moves to the WindowControls header.
+   */
   const modelPickerAvailable = Boolean(
+    !isChatMode &&
     activeModel &&
     availableModels &&
     availableModels.length > 0 &&
-    onModelSelect,
+    onModelPickerToggle,
   );
 
   // ─── Command suggestion state ─────────────────────────────────────────────
@@ -646,7 +630,7 @@ export function AskBarView({
               type="button"
               onClick={onHistoryOpen}
               aria-label="Open history"
-              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 cursor-pointer outline-none"
+              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-primary hover:bg-primary/10 transition-colors duration-150 cursor-pointer outline-none"
             >
               {HISTORY_ICON}
             </button>
@@ -658,7 +642,7 @@ export function AskBarView({
             <div
               ref={mirrorRef}
               aria-hidden="true"
-              className="absolute inset-0 pointer-events-none bg-transparent text-text-primary text-sm py-2 px-1 leading-relaxed whitespace-pre-wrap break-words overflow-hidden"
+              className="absolute inset-0 pointer-events-none bg-transparent text-text-primary text-sm py-2 px-1 leading-5 whitespace-pre-wrap break-words overflow-hidden"
             >
               {renderHighlightedText(query)}
             </div>
@@ -673,7 +657,7 @@ export function AskBarView({
               autoFocus
               rows={1}
               placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
-              className="relative w-full bg-transparent border-none outline-none text-transparent text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
+              className="relative w-full bg-transparent border-none outline-none text-transparent text-sm placeholder:text-text-secondary mt-1 py-2 disabled:opacity-50 resize-none leading-5"
               style={{ caretColor: 'var(--color-text-primary)' }}
             />
           </div>
@@ -697,27 +681,22 @@ export function AskBarView({
                 onClick={onScreenshot}
                 disabled={isBusy}
                 aria-label="Take screenshot"
-                className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
+                className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-primary hover:bg-primary/10 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
               >
                 {CAMERA_ICON}
               </button>
             </Tooltip>
           )}
 
-          {modelPickerAvailable &&
-            activeModel &&
-            availableModels &&
-            onModelSelect && (
-              <Tooltip label="Choose model">
-                <ModelPicker
-                  activeModel={activeModel}
-                  models={availableModels}
-                  disabled={isBusy}
-                  onSelect={onModelSelect}
-                  onMenuChange={handleModelMenuChange}
-                />
-              </Tooltip>
-            )}
+          {modelPickerAvailable && onModelPickerToggle && (
+            <Tooltip label="Choose model">
+              <ModelPicker
+                onClick={onModelPickerToggle}
+                disabled={isBusy}
+                isOpen={isModelPickerOpen ?? false}
+              />
+            </Tooltip>
+          )}
 
           <motion.button
             type="button"
@@ -745,18 +724,6 @@ export function AskBarView({
           </motion.button>
         </div>
       </div>
-      {/* Invisible in-flow spacer that reserves space below the ask-bar row
-          for the model picker's portal menu when it flips downward. The
-          App-level ResizeObserver watches the morphing container and resizes
-          the native NSPanel to match, preventing the popup from being
-          clipped at the window bottom. Height animates to match the 160ms
-          menu fade-in for visual coherence. */}
-      <div
-        aria-hidden="true"
-        data-testid="model-menu-spacer"
-        style={{ height: modelMenuPadBottom }}
-        className="shrink-0 transition-[height] duration-[160ms] ease-out"
-      />
     </div>
   );
 }

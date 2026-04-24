@@ -158,4 +158,115 @@ describe('useModelSelection', () => {
     expect(result.current.activeModel).toBe('');
     expect(result.current.availableModels).toEqual([]);
   });
+
+  it('drops a stale setActiveModel resolution when a newer call supersedes it', async () => {
+    invoke.mockResolvedValueOnce({
+      active: 'A',
+      all: ['A', 'B', 'C'],
+    });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+
+    let resolveSlow!: () => void;
+    invoke
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((r) => {
+            resolveSlow = () => r();
+          }),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    let slowPromise: Promise<void>;
+    await act(async () => {
+      slowPromise = result.current.setActiveModel('B');
+      await result.current.setActiveModel('C');
+    });
+
+    // "C" wins because it was the latest call; "B"'s pending promise must be
+    // a silent no-op when it finally resolves.
+    expect(result.current.activeModel).toBe('C');
+
+    await act(async () => {
+      resolveSlow();
+      await slowPromise;
+    });
+
+    expect(result.current.activeModel).toBe('C');
+  });
+
+  it('drops a stale setActiveModel rejection when a newer call supersedes it', async () => {
+    invoke.mockResolvedValueOnce({
+      active: 'A',
+      all: ['A', 'B', 'C'],
+    });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+
+    let rejectSlow!: (err: unknown) => void;
+    invoke
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectSlow = reject;
+          }),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    let slowPromise: Promise<void>;
+    await act(async () => {
+      slowPromise = result.current.setActiveModel('B');
+      await result.current.setActiveModel('C');
+    });
+
+    expect(result.current.activeModel).toBe('C');
+
+    // The stale rejection must not bubble up to callers or revert state.
+    await act(async () => {
+      rejectSlow(new Error('stale'));
+      await slowPromise;
+    });
+
+    expect(result.current.activeModel).toBe('C');
+  });
+
+  it('drops a late refresh resolution after unmount', async () => {
+    let resolveLate!: (value: unknown) => void;
+    invoke.mockImplementationOnce(
+      () =>
+        new Promise<unknown>((resolve) => {
+          resolveLate = resolve;
+        }),
+    );
+
+    const { unmount } = renderHook(() => useModelSelection());
+    unmount();
+
+    // Resolving after unmount would setState on an unmounted component without
+    // the mounted guard, producing a React warning / test failure.
+    await act(async () => {
+      resolveLate({ active: 'A', all: ['A'] });
+    });
+  });
+
+  it('drops a late refresh rejection after unmount', async () => {
+    let rejectLate!: (err: unknown) => void;
+    invoke.mockImplementationOnce(
+      () =>
+        new Promise<unknown>((_resolve, reject) => {
+          rejectLate = reject;
+        }),
+    );
+
+    const { unmount } = renderHook(() => useModelSelection());
+    unmount();
+
+    // Same shape as the late-resolve test but exercises the catch branch of
+    // refreshModels so the post-unmount guard is covered in both arms.
+    await act(async () => {
+      rejectLate(new Error('late'));
+    });
+  });
 });

@@ -20,6 +20,7 @@ import { AskBarView, MAX_IMAGES } from './view/AskBarView';
 import { OnboardingView } from './view/onboarding/index';
 import type { OnboardingStage } from './view/onboarding/index';
 import { HistoryPanel } from './components/HistoryPanel';
+import { ModelPickerPanel } from './components/ModelPickerPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import type { AttachedImage } from './types/image';
 import { MAX_IMAGE_SIZE_BYTES } from './types/image';
@@ -114,6 +115,9 @@ function App() {
    * but rendered differently based on `isChatMode`).
    */
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+
+  /** Whether the model picker panel is currently open. Mutually exclusive with `isHistoryOpen`. */
+  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   /**
    * True when the user clicked + while an unsaved conversation is active.
    * Causes the history dropdown to show a SwitchConfirmation prompt instead
@@ -372,6 +376,16 @@ function App() {
     }
   }, [isGenerating]);
 
+  /* eslint-disable @eslint-react/set-state-in-effect -- intentional: close
+     the picker when the user triggers generation so it can't stay open over
+     a streaming response. No secondary effects are triggered by this reset. */
+  useEffect(() => {
+    if (isGenerating || isSubmitPending) {
+      setIsModelPickerOpen(false);
+    }
+  }, [isGenerating, isSubmitPending]);
+  /* eslint-enable @eslint-react/set-state-in-effect */
+
   /**
    * Replays the entrance sequence by transitioning the overlay to the visible state.
    * Clears conversation state for a fresh session each time the overlay appears.
@@ -400,6 +414,7 @@ function App() {
       setQuery('');
       setSelectedContext(context);
       setIsHistoryOpen(false);
+      setIsModelPickerOpen(false);
       setAttachedImages((prev) => {
         for (const img of prev) URL.revokeObjectURL(img.blobUrl);
         return [];
@@ -448,9 +463,39 @@ function App() {
   /** Ref attached to the chat-mode history dropdown for click-outside detection. */
   const historyDropdownRef = useRef<HTMLDivElement>(null);
 
-  /** Toggles the history panel open/closed. */
+  /** Ref attached to the chat-mode model picker dropdown for click-outside detection. */
+  const modelPickerDropdownRef = useRef<HTMLDivElement>(null);
+  /** Ref attached to the ask-bar mode model picker drawer for click-outside detection. */
+  const modelPickerAskBarRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Close the model picker when the user clicks outside it, in either mode.
+   * Clicks on any pill trigger (data-model-picker-toggle) are excluded so the
+   * trigger's own onClick can manage the toggle without a double-close race.
+   */
+  useEffect(() => {
+    if (!isModelPickerOpen) return;
+
+    const handleMouseDown = (e: MouseEvent) => {
+      const target = e.target as Element;
+      if (
+        modelPickerDropdownRef.current?.contains(target) ||
+        modelPickerAskBarRef.current?.contains(target) ||
+        target.closest?.('[data-model-picker-toggle]')
+      ) {
+        return;
+      }
+      setIsModelPickerOpen(false);
+    };
+
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [isModelPickerOpen]);
+
+  /** Toggles the history panel open/closed. Closes model picker (mutually exclusive). */
   const handleHistoryToggle = useCallback(() => {
     setIsHistoryOpen((prev) => !prev);
+    setIsModelPickerOpen(false);
   }, []);
 
   /**
@@ -1289,22 +1334,31 @@ function App() {
   }, [isSubmitPending, cancel, setSearchActive, setSelectedContext]);
 
   /**
-   * Persists the user's model choice via the backend. Silently no-ops on
-   * rejection: the only reject path is a race where the chosen model was
-   * uninstalled between the picker render and the click. The next
-   * `refreshModels` (fired on overlay show) will reconcile the list.
+   * Persists the user's model choice via the backend and closes the picker panel.
+   * On rejection (e.g. the chosen model was uninstalled between render and click),
+   * triggers a refresh so the picker list and the active chip resync with the
+   * actual backend state instead of silently drifting.
    */
   const handleModelSelect = useCallback(
     (model: string) => {
-      void setActiveModel(model).catch(
-        /* v8 ignore next 3 -- rejection requires a mid-render uninstall race that cannot be triggered in jsdom */
-        () => {
-          // Intentional swallow: see docblock above.
-        },
-      );
+      setIsModelPickerOpen(false);
+      void setActiveModel(model).catch(() => {
+        void refreshModels();
+      });
     },
-    [setActiveModel],
+    [setActiveModel, refreshModels],
   );
+
+  /** Closes the model picker panel. Wired to Escape key inside the panel. */
+  const handleModelPickerClose = useCallback(() => {
+    setIsModelPickerOpen(false);
+  }, []);
+
+  /** Toggles the model picker panel. Closes history panel (mutually exclusive). */
+  const handleModelPickerToggle = useCallback(() => {
+    setIsModelPickerOpen((prev) => !prev);
+    setIsHistoryOpen(false);
+  }, []);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
@@ -1499,7 +1553,7 @@ function App() {
                     : 'rounded-2xl shadow-bar'
                 }`}
               >
-                {/* Chat Messages Area - morphs in when in chat mode */}
+                {/* Chat Messages Area - morphs in when in chat mode. */}
                 <AnimatePresence>
                   {isChatMode ? (
                     <ConversationView
@@ -1517,9 +1571,47 @@ function App() {
                       onHistoryOpen={handleHistoryToggle}
                       onImagePreview={handleChatImagePreview}
                       searchStage={searchStage}
+                      activeModel={activeModel}
+                      onModelPickerToggle={handleModelPickerToggle}
+                      isModelPickerOpen={isModelPickerOpen}
                     />
                   ) : null}
                 </AnimatePresence>
+
+                {/* Ask-bar mode model picker drawer - above the input bar.
+                    In chat mode the trigger and drawer move to the header area above. */}
+                {!isChatMode && (
+                  <AnimatePresence>
+                    {isModelPickerOpen &&
+                    activeModel &&
+                    availableModels &&
+                    availableModels.length > 0 ? (
+                      <motion.div
+                        ref={modelPickerAskBarRef}
+                        key="model-picker-askbar"
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{
+                          height: {
+                            duration: 0.3,
+                            ease: [0.33, 1, 0.68, 1],
+                          },
+                          opacity: { duration: 0.2, delay: 0.08 },
+                        }}
+                        style={{ overflow: 'hidden' }}
+                        className="border-t border-surface-border"
+                      >
+                        <ModelPickerPanel
+                          models={availableModels}
+                          activeModel={activeModel}
+                          onSelect={handleModelSelect}
+                          onClose={handleModelPickerClose}
+                        />
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
+                )}
 
                 {/* Ask-bar mode history panel - inline below the input bar.
                     The !isChatMode gate lives OUTSIDE AnimatePresence so that when
@@ -1592,9 +1684,39 @@ function App() {
                   isDragOver={isDragOver ?? undefined}
                   activeModel={activeModel}
                   availableModels={availableModels}
-                  onModelSelect={handleModelSelect}
+                  onModelPickerToggle={handleModelPickerToggle}
+                  isModelPickerOpen={isModelPickerOpen}
                 />
               </div>
+
+              {/* Chat-mode model picker dropdown - floating card identical in style
+                  to the chat-history dropdown. Anchored absolute right-3 top-10
+                  so it appears just below the header pill trigger without pushing
+                  the conversation content. Click-outside closes it. */}
+              <AnimatePresence>
+                {isChatMode &&
+                isModelPickerOpen &&
+                activeModel &&
+                availableModels &&
+                availableModels.length > 0 ? (
+                  <motion.div
+                    ref={modelPickerDropdownRef}
+                    key="model-picker-dropdown"
+                    initial={{ opacity: 0, y: -8, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                    transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                    className="absolute right-3 top-10 z-50 w-56 rounded-xl border border-surface-border bg-surface-base shadow-chat overflow-hidden flex flex-col"
+                  >
+                    <ModelPickerPanel
+                      models={availableModels}
+                      activeModel={activeModel}
+                      onSelect={handleModelSelect}
+                      onClose={handleModelPickerClose}
+                    />
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
 
               {/* Chat-mode history dropdown - sibling of the morphing container so
                   it is never clipped by its overflow-hidden. Positioned absolutely

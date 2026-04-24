@@ -23,9 +23,25 @@ use crate::history::Database;
 /// `app_config` key used to persist the user's selected model slug.
 pub const ACTIVE_MODEL_KEY: &str = "active_model";
 
+/// Maximum accepted byte length for a model slug passed to `set_active_model`.
+/// Real Ollama slugs are a handful of characters; 256 is generous while still
+/// capping adversarial inputs long before any network or database work.
+pub const MAX_MODEL_SLUG_LEN: usize = 256;
+
+/// Shared error-message prefix used when a requested slug is not present in
+/// the live Ollama inventory. Exported so the frontend and tests can match
+/// against a stable constant instead of a prose string.
+pub const MODEL_NOT_INSTALLED_ERR_PREFIX: &str = "Model is not installed in Ollama: ";
+
+/// Maximum accepted body size for the `/api/tags` response. Guards against
+/// a misbehaving or compromised localhost Ollama streaming an unbounded
+/// response that would exhaust memory. 4 MiB comfortably fits thousands of
+/// model entries.
+const MAX_TAGS_BODY_BYTES: usize = 4 * 1024 * 1024;
+
 /// In-memory cache of the currently active model slug. Written once at
-/// startup (after `resolve_active_model`) and updated every time the user
-/// picks a new model via `set_active_model`.
+/// startup (after `resolve_seed_active_model`) and updated every time the
+/// user picks a new model via `set_active_model`.
 #[derive(Default)]
 pub struct ActiveModelState(pub Mutex<String>);
 
@@ -51,6 +67,12 @@ struct TagsModel {
 /// 1. If `persisted` is `Some` and still appears in `installed`, use it.
 /// 2. Otherwise use the first entry in `installed`.
 /// 3. Otherwise fall back to `bootstrap` (the compiled-in / env default).
+///
+/// This helper assumes `installed` reflects real Ollama ground truth. At
+/// startup when no ground truth is available, use
+/// [`resolve_seed_active_model`] instead so a valid persisted choice is
+/// never overridden by the bootstrap default just because Ollama has not
+/// been queried yet.
 pub fn resolve_active_model(
     persisted: Option<&str>,
     installed: &[String],
@@ -67,15 +89,64 @@ pub fn resolve_active_model(
     bootstrap.to_string()
 }
 
+/// Startup-time resolver that never cross-checks against an installed list.
+///
+/// At process start we cannot call Ollama (no async runtime yet), so the
+/// safe behavior is to trust the persisted value when present and only fall
+/// back to the bootstrap default when nothing was ever persisted. The first
+/// `get_model_picker_state` call from the frontend reconciles against the
+/// real installed list and may replace this seed.
+pub fn resolve_seed_active_model(persisted: Option<&str>, bootstrap: &str) -> String {
+    match persisted {
+        Some(slug) if !slug.is_empty() => slug.to_string(),
+        _ => bootstrap.to_string(),
+    }
+}
+
+/// Returns true when the resolved slug should be written back to persistent
+/// storage. Only writes when Ollama actually reported some inventory AND the
+/// resolved slug differs from the currently-persisted value. This prevents a
+/// partially-up Ollama returning `models:[]` from clobbering a valid
+/// persisted user preference with the bootstrap fallback.
+pub fn should_persist_resolved(
+    installed: &[String],
+    persisted: Option<&str>,
+    resolved: &str,
+) -> bool {
+    !installed.is_empty() && persisted != Some(resolved)
+}
+
 /// Verifies that `model` is present in `installed`. Returns an `Err` with
-/// the exact error copy the frontend surfaces when a user somehow requests
-/// a slug that is not pulled locally.
+/// a stable prefix (see [`MODEL_NOT_INSTALLED_ERR_PREFIX`]) so the frontend
+/// can match against a constant rather than a verbatim prose string.
 pub fn validate_model_installed(model: &str, installed: &[String]) -> Result<(), String> {
     if installed.iter().any(|m| m == model) {
         Ok(())
     } else {
-        Err(format!("Model is not installed in Ollama: {model}"))
+        Err(format!("{MODEL_NOT_INSTALLED_ERR_PREFIX}{model}"))
     }
+}
+
+/// Validates shape of a model slug coming across the IPC boundary before any
+/// network work. Rejects empty, over-length, and out-of-charset inputs.
+/// Accepted charset covers everything real Ollama slugs use:
+/// `A-Z a-z 0-9 : . _ / -`.
+pub fn validate_model_slug(model: &str) -> Result<(), String> {
+    if model.is_empty() {
+        return Err("Model name cannot be empty".to_string());
+    }
+    if model.len() > MAX_MODEL_SLUG_LEN {
+        return Err(format!(
+            "Model name exceeds maximum length of {MAX_MODEL_SLUG_LEN} bytes"
+        ));
+    }
+    if !model
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '_' | '/' | '-'))
+    {
+        return Err("Model name contains invalid characters".to_string());
+    }
+    Ok(())
 }
 
 /// Per-request timeout for the Ollama `/api/tags` GET. Guards the IPC
@@ -87,9 +158,9 @@ const TAGS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 
 /// GETs `{base_url}/api/tags` and returns the list of installed model slugs.
 ///
-/// Every failure mode (transport error, non-2xx status, JSON decode error)
-/// is translated to `Err(String)` so the Tauri command layer can propagate
-/// it verbatim to the frontend without panicking.
+/// Every failure mode (transport error, non-2xx status, oversized body,
+/// JSON decode error) is translated to `Err(String)` so the Tauri command
+/// layer can propagate it verbatim to the frontend without panicking.
 pub async fn fetch_installed_model_names(
     client: &reqwest::Client,
     base_url: &str,
@@ -104,6 +175,18 @@ async fn fetch_installed_model_names_with_timeout(
     client: &reqwest::Client,
     base_url: &str,
     timeout: std::time::Duration,
+) -> Result<Vec<String>, String> {
+    fetch_installed_model_names_inner(client, base_url, timeout, MAX_TAGS_BODY_BYTES).await
+}
+
+/// Innermost implementation of the tags fetcher with both timeout and body
+/// size cap configurable. Exists so the size-cap branches can be exercised
+/// deterministically in tests without allocating production-scale buffers.
+async fn fetch_installed_model_names_inner(
+    client: &reqwest::Client,
+    base_url: &str,
+    timeout: std::time::Duration,
+    max_body_bytes: usize,
 ) -> Result<Vec<String>, String> {
     let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
     let response = client
@@ -120,9 +203,26 @@ async fn fetch_installed_model_names_with_timeout(
         ));
     }
 
-    let body: TagsResponse = response
-        .json()
+    if let Some(declared_len) = response.content_length() {
+        if declared_len as usize > max_body_bytes {
+            return Err(format!(
+                "/api/tags response exceeded {max_body_bytes} bytes"
+            ));
+        }
+    }
+
+    let bytes = response
+        .bytes()
         .await
+        .map_err(|e| format!("failed to read /api/tags body: {e}"))?;
+
+    if bytes.len() > max_body_bytes {
+        return Err(format!(
+            "/api/tags response exceeded {max_body_bytes} bytes"
+        ));
+    }
+
+    let body: TagsResponse = serde_json::from_slice(&bytes)
         .map_err(|e| format!("failed to decode /api/tags response: {e}"))?;
 
     Ok(body.models.into_iter().map(|m| m.name).collect())
@@ -132,6 +232,11 @@ async fn fetch_installed_model_names_with_timeout(
 /// persisting the resolved active model so future launches see it.
 ///
 /// Shape: `{ "active": "<slug>", "all": ["<slug>", ...] }`.
+///
+/// Coalesces the read + conditional write into a single database critical
+/// section to avoid a TOCTOU window where a concurrent `set_active_model`
+/// could be clobbered, and refuses to persist when Ollama reports an empty
+/// inventory so a partially-up daemon cannot corrupt the persisted choice.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn get_model_picker_state(
@@ -142,17 +247,16 @@ pub async fn get_model_picker_state(
 ) -> Result<serde_json::Value, String> {
     let installed = fetch_installed_model_names(&client, DEFAULT_OLLAMA_URL).await?;
 
-    let persisted = {
+    let resolved = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        get_config(&conn, ACTIVE_MODEL_KEY).map_err(|e| e.to_string())?
+        let persisted = get_config(&conn, ACTIVE_MODEL_KEY).map_err(|e| e.to_string())?;
+        let resolved =
+            resolve_active_model(persisted.as_deref(), &installed, app_config.model.active());
+        if should_persist_resolved(&installed, persisted.as_deref(), &resolved) {
+            set_config(&conn, ACTIVE_MODEL_KEY, &resolved).map_err(|e| e.to_string())?;
+        }
+        resolved
     };
-
-    let resolved = resolve_active_model(persisted.as_deref(), &installed, app_config.model.active());
-
-    {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        set_config(&conn, ACTIVE_MODEL_KEY, &resolved).map_err(|e| e.to_string())?;
-    }
 
     {
         let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
@@ -162,9 +266,9 @@ pub async fn get_model_picker_state(
     Ok(serde_json::json!({ "active": resolved, "all": installed }))
 }
 
-/// Persists `model` as the active model after validating that Ollama still
-/// reports it as installed. Rejects uninstalled slugs with the exact error
-/// copy `"Model is not installed in Ollama: {model}"`.
+/// Persists `model` as the active model after validating its shape and
+/// confirming Ollama still reports it as installed. Rejects uninstalled
+/// slugs with an error that starts with [`MODEL_NOT_INSTALLED_ERR_PREFIX`].
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn set_active_model(
@@ -173,6 +277,8 @@ pub async fn set_active_model(
     db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
 ) -> Result<(), String> {
+    validate_model_slug(&model)?;
+
     let installed = fetch_installed_model_names(&client, DEFAULT_OLLAMA_URL).await?;
     validate_model_installed(&model, &installed)?;
 
@@ -228,10 +334,62 @@ mod tests {
     #[test]
     fn resolve_with_empty_persisted_bootstrap_used_when_installed_empty() {
         let installed: Vec<String> = vec![];
-        // Persisted is present but installed list is empty: bootstrap wins
-        // because there's nothing to cross-check against.
         let result = resolve_active_model(Some("gemma4:e2b"), &installed, "fallback");
         assert_eq!(result, "fallback");
+    }
+
+    // ── resolve_seed_active_model ────────────────────────────────────────────
+
+    #[test]
+    fn seed_resolve_prefers_persisted() {
+        let result = resolve_seed_active_model(Some("llama3:8b"), "bootstrap-model");
+        assert_eq!(result, "llama3:8b");
+    }
+
+    #[test]
+    fn seed_resolve_falls_back_to_bootstrap_when_none() {
+        let result = resolve_seed_active_model(None, "bootstrap-model");
+        assert_eq!(result, "bootstrap-model");
+    }
+
+    #[test]
+    fn seed_resolve_falls_back_to_bootstrap_when_empty_persisted() {
+        let result = resolve_seed_active_model(Some(""), "bootstrap-model");
+        assert_eq!(result, "bootstrap-model");
+    }
+
+    // ── should_persist_resolved ─────────────────────────────────────────────
+
+    #[test]
+    fn should_persist_true_when_resolved_differs_and_inventory_present() {
+        let installed = vec!["gemma4:e2b".to_string()];
+        assert!(should_persist_resolved(
+            &installed,
+            Some("llama3:8b"),
+            "gemma4:e2b"
+        ));
+    }
+
+    #[test]
+    fn should_persist_false_when_resolved_matches_persisted() {
+        let installed = vec!["gemma4:e2b".to_string()];
+        assert!(!should_persist_resolved(
+            &installed,
+            Some("gemma4:e2b"),
+            "gemma4:e2b"
+        ));
+    }
+
+    #[test]
+    fn should_persist_false_when_inventory_empty() {
+        let installed: Vec<String> = vec![];
+        assert!(!should_persist_resolved(&installed, None, "bootstrap"));
+    }
+
+    #[test]
+    fn should_persist_true_when_nothing_previously_persisted_but_resolved_available() {
+        let installed = vec!["gemma4:e2b".to_string()];
+        assert!(should_persist_resolved(&installed, None, "gemma4:e2b"));
     }
 
     // ── validate_model_installed ─────────────────────────────────────────────
@@ -243,17 +401,65 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_uninstalled_model_with_exact_message() {
+    fn validate_rejects_uninstalled_model_with_stable_prefix() {
         let installed = vec!["gemma4:e2b".to_string()];
         let err = validate_model_installed("llama3:8b", &installed).unwrap_err();
-        assert_eq!(err, "Model is not installed in Ollama: llama3:8b");
+        assert!(
+            err.starts_with(MODEL_NOT_INSTALLED_ERR_PREFIX),
+            "expected stable prefix, got: {err}"
+        );
+        assert!(err.ends_with("llama3:8b"));
     }
 
     #[test]
     fn validate_rejects_when_installed_list_empty() {
         let installed: Vec<String> = vec![];
         let err = validate_model_installed("gemma4:e2b", &installed).unwrap_err();
-        assert_eq!(err, "Model is not installed in Ollama: gemma4:e2b");
+        assert_eq!(err, format!("{MODEL_NOT_INSTALLED_ERR_PREFIX}gemma4:e2b"));
+    }
+
+    // ── validate_model_slug ──────────────────────────────────────────────────
+
+    #[test]
+    fn validate_slug_accepts_valid_forms() {
+        assert!(validate_model_slug("gemma4:e2b").is_ok());
+        assert!(validate_model_slug("llama3.1:8b").is_ok());
+        assert!(validate_model_slug("registry.example.com/user/model:tag").is_ok());
+        assert!(validate_model_slug("my_model-v2").is_ok());
+    }
+
+    #[test]
+    fn validate_slug_rejects_empty() {
+        let err = validate_model_slug("").unwrap_err();
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn validate_slug_rejects_oversized() {
+        let oversized = "a".repeat(MAX_MODEL_SLUG_LEN + 1);
+        let err = validate_model_slug(&oversized).unwrap_err();
+        assert!(err.contains("maximum length"));
+    }
+
+    #[test]
+    fn validate_slug_accepts_max_length() {
+        let at_limit = "a".repeat(MAX_MODEL_SLUG_LEN);
+        assert!(validate_model_slug(&at_limit).is_ok());
+    }
+
+    #[test]
+    fn validate_slug_rejects_shell_metacharacters() {
+        assert!(validate_model_slug("bad; rm -rf /").is_err());
+        assert!(validate_model_slug("../etc/passwd").is_ok()); // `.` `/` `-` allowed individually
+        assert!(validate_model_slug("bad name").is_err()); // whitespace rejected
+        assert!(validate_model_slug("bad\nname").is_err());
+        assert!(validate_model_slug("bad$(whoami)").is_err());
+        assert!(validate_model_slug("bad`whoami`").is_err());
+    }
+
+    #[test]
+    fn validate_slug_rejects_non_ascii() {
+        assert!(validate_model_slug("gëmma").is_err());
     }
 
     // ── fetch_installed_model_names ──────────────────────────────────────────
@@ -361,17 +567,9 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_installed_model_names_times_out_when_ollama_hangs() {
-        // Bind a TCP listener that accepts connections but never writes a
-        // response. reqwest will complete the TCP handshake, send the GET,
-        // then block waiting for bytes that never arrive. The per-request
-        // timeout is the only thing that lets us recover. Use a 100ms
-        // override so the test stays fast and deterministic.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        // Accept in a background thread but never read/write, so the socket
-        // stays open and idle until the test drops it.
         std::thread::spawn(move || {
-            // Hold the accepted stream to keep the connection half-open.
             let _held = listener.accept().ok();
             std::thread::sleep(std::time::Duration::from_secs(10));
         });
@@ -404,12 +602,108 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        // Pass the URL with a trailing slash; the helper must strip it.
         let url_with_slash = format!("{}/", server.url());
         let result = fetch_installed_model_names(&client, &url_with_slash).await;
 
         mock.assert_async().await;
         assert_eq!(result.unwrap(), vec!["x".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_body_exceeding_size_cap_via_content_length() {
+        let mut server = mockito::Server::new_async().await;
+        // Tight cap (32 bytes) + a declared Content-Length that matches a
+        // 100-byte payload; the pre-read guard on `content_length` must
+        // reject before the bytes() call is issued.
+        let body = "x".repeat(100);
+        server
+            .mock("GET", "/api/tags")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let result = fetch_installed_model_names_inner(
+            &client,
+            &server.url(),
+            std::time::Duration::from_secs(5),
+            32,
+        )
+        .await;
+
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("exceeded"),
+            "expected size-cap error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_maps_body_read_error_to_err_string() {
+        // Headers advertise Content-Length but the server closes the socket
+        // before sending any body bytes. reqwest's bytes() surfaces this as
+        // a transport error; the helper must map it to the documented prose.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            // Promise 100 body bytes, then immediately hang up.
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
+            );
+        });
+
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let result = fetch_installed_model_names(&client, &base).await;
+
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("failed to read /api/tags body"),
+            "expected body-read error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_body_exceeding_size_cap_when_no_content_length() {
+        // Chunked-encoding response (no Content-Length); the post-read guard
+        // on `bytes.len()` must still reject.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let body = "x".repeat(200);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let result = fetch_installed_model_names_inner(
+            &client,
+            &base,
+            std::time::Duration::from_secs(5),
+            32,
+        )
+        .await;
+
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("exceeded"),
+            "expected post-read size-cap error, got: {err}"
+        );
     }
 
     // ── ActiveModelState ─────────────────────────────────────────────────────
@@ -443,5 +737,13 @@ mod tests {
     #[test]
     fn active_model_key_constant_matches_expected_value() {
         assert_eq!(ACTIVE_MODEL_KEY, "active_model");
+    }
+
+    #[test]
+    fn model_not_installed_err_prefix_is_stable() {
+        assert_eq!(
+            MODEL_NOT_INSTALLED_ERR_PREFIX,
+            "Model is not installed in Ollama: "
+        );
     }
 }

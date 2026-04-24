@@ -83,7 +83,7 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
     await act(async () => {
-      fireEvent.click(screen.getByRole('menuitem', { name: 'qwen2.5:7b' }));
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
     });
 
     const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
@@ -102,6 +102,333 @@ describe('App', () => {
       'save_conversation',
       expect.objectContaining({ model: 'qwen2.5:7b' }),
     );
+  });
+
+  it('opens model picker panel when trigger is clicked', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', { name: 'qwen2.5:7b' }),
+    ).toBeInTheDocument();
+  });
+
+  it('closes model picker and opens history when history toggle clicked', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+      list_conversations: [],
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open history' }));
+    await act(async () => {});
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
+    expect(
+      screen.getByPlaceholderText(/search past chats/i),
+    ).toBeInTheDocument();
+  });
+
+  it('closes history and opens model picker when model picker trigger clicked', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+      list_conversations: [],
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open history' }));
+    await act(async () => {});
+    expect(
+      screen.getByPlaceholderText(/search past chats/i),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(screen.queryByPlaceholderText(/search past chats/i)).toBeNull();
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+  });
+
+  it('closes model picker when a model is selected', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+      set_active_model: undefined,
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'qwen2.5:7b' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+    await act(async () => {});
+    expect(screen.queryByRole('option', { name: 'qwen2.5:7b' })).toBeNull();
+  });
+
+  it('closes model picker when generation starts', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    fireEvent.change(textarea, { target: { value: 'hi' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await act(async () => {});
+
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
+  });
+
+  it('shows active model pill in chat mode header and opens picker from there', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    // Transition to chat mode by submitting a message
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    fireEvent.change(textarea, { target: { value: 'hi' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await act(async () => {});
+
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hello!' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // Pill button should now be in the header (WindowControls), showing the model name
+    const pill = screen.getByRole('button', { name: 'Choose model' });
+    expect(pill).toBeInTheDocument();
+    expect(pill.textContent).toContain('gemma4:e2b');
+
+    // Click pill → model picker panel opens ABOVE the conversation
+    fireEvent.click(pill);
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', { name: 'qwen2.5:7b' }),
+    ).toBeInTheDocument();
+  });
+
+  it('closes chat-mode model picker when clicking outside the dropdown', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    fireEvent.change(textarea, { target: { value: 'hi' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hello!' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    fireEvent.mouseDown(document.body);
+    await act(async () => {});
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
+  });
+
+  it('chat-mode click-outside does NOT close when clicking inside the dropdown or on the pill', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    fireEvent.change(textarea, { target: { value: 'hi' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hello!' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    const pill = screen.getByRole('button', { name: 'Choose model' });
+    fireEvent.click(pill);
+    await act(async () => {});
+    const option = screen.getByRole('option', { name: 'gemma4:e2b' });
+    expect(option).toBeInTheDocument();
+
+    // mousedown inside the dropdown must not close the picker
+    fireEvent.mouseDown(option);
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    // mousedown on the pill trigger must not close the picker either
+    fireEvent.mouseDown(pill);
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+  });
+
+  it('ask-bar mode click-outside closes the model picker drawer', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    // Clicking inside the drawer must NOT close it
+    fireEvent.mouseDown(screen.getByRole('option', { name: 'gemma4:e2b' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    // Clicking outside closes the drawer
+    fireEvent.mouseDown(document.body);
+    await act(async () => {});
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
+  });
+
+  it('refreshes model list when set_active_model rejects', async () => {
+    let rejectionSeen = false;
+    let refreshesAfterRejection = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_model_picker_state') {
+        if (rejectionSeen) {
+          refreshesAfterRejection += 1;
+          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+        }
+        return { active: 'gemma4:e2b', all: ['gemma4:e2b', 'qwen2.5:7b'] };
+      }
+      if (cmd === 'set_active_model') {
+        rejectionSeen = true;
+        throw new Error('Model is not installed in Ollama: qwen2.5:7b');
+      }
+      return undefined;
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+    await act(async () => {});
+
+    // The rejection handler must have triggered at least one refresh fetch.
+    expect(refreshesAfterRejection).toBeGreaterThanOrEqual(1);
+
+    // Reopen to confirm the list is the post-refresh one (qwen was removed).
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'qwen2.5:7b' })).toBeNull();
+  });
+
+  it('closes the model picker drawer when Escape is pressed in the filter input', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByPlaceholderText(/filter models/i), {
+      key: 'Escape',
+    });
+    await act(async () => {});
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
   });
 
   it('grows upward when near bottom screen edge', async () => {

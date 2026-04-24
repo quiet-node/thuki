@@ -208,7 +208,7 @@ export const WindowControls = memo(function WindowControls({
 
         {/* Right-side header controls */}
         <div className="ml-auto flex items-center gap-1">
-          {/* Active model pill trigger — leftmost, before save */}
+          {/* Active model pill trigger: leftmost, before save */}
           {activeModel !== undefined && onModelPickerToggle !== undefined && (
             <Tooltip label="Choose model">
               <button
