@@ -974,7 +974,14 @@ function App() {
       }
       setAttachedImages([]);
     },
-    [selectedContext, attachedImages, ask, setSelectedContext, setCaptureError],
+    [
+      selectedContext,
+      attachedImages,
+      ask,
+      setSelectedContext,
+      setCaptureError,
+      quote.maxContextLength,
+    ],
   );
 
   const handleSubmit = useCallback(() => {
@@ -1171,6 +1178,7 @@ function App() {
     ask,
     askSearch,
     searchActive,
+    quote.maxContextLength,
   ]);
 
   // When a pending submit exists and all images finish processing, fire it.

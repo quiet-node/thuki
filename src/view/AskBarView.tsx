@@ -194,7 +194,7 @@ export function renderHighlightedText(text: string): React.ReactNode {
  * one additional image from /screen capture, for a total of 4 per message
  * (MAX_IMAGES_PER_MESSAGE in images.rs).
  */
-export const MAX_IMAGES = 4;
+export const MAX_IMAGES = 3;
 
 /** Props for the AskBarView component. */
 interface AskBarViewProps {
@@ -540,7 +540,7 @@ export function AskBarView({
         </div>
       )}
       {showMaxLabel && (
-        <p className="px-4 pt-2 pb-0 text-xs text-red-400">Max 4 images</p>
+        <p className="px-4 pt-2 pb-0 text-xs text-red-400">Max 3 images</p>
       )}
       {attachedImages.length > 0 && (
         <div className="px-4 pt-2 pb-0">
@@ -633,7 +633,7 @@ export function AskBarView({
           </div>
 
           {isAtMaxImages ? (
-            <Tooltip label="Maximum 4 images attached">
+            <Tooltip label="Maximum 3 images attached">
               <button
                 type="button"
                 onClick={onScreenshot}

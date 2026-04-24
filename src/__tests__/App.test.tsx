@@ -2010,9 +2010,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      // Paste 4 images to reach max
+      // Paste 3 images to reach max
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 3; i++) {
         const file = new File([`data${i}`], `img${i}.png`, {
           type: 'image/png',
         });
@@ -2025,9 +2025,9 @@ describe('App', () => {
         });
       }
 
-      // Wait for 4 thumbnails
+      // Wait for 3 thumbnails
       await vi.waitFor(() => {
-        expect(screen.getAllByRole('listitem')).toHaveLength(4);
+        expect(screen.getAllByRole('listitem')).toHaveLength(3);
       });
 
       // Now drag over; should show red ring and max label
@@ -2038,7 +2038,7 @@ describe('App', () => {
         '[class*="flex flex-col w-full shrink-0"]',
       )!;
       expect(askBarWrapper.classList.contains('ring-red-500/60')).toBe(true);
-      expect(screen.getByText('Max 4 images')).toBeInTheDocument();
+      expect(screen.getByText('Max 3 images')).toBeInTheDocument();
     });
 
     it('dragLeave when cursor exits window clears drag-over ring', async () => {
@@ -2131,7 +2131,7 @@ describe('App', () => {
       await showOverlay();
 
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 3; i++) {
         const img = new File([`d${i}`], `i${i}.png`, { type: 'image/png' });
         await act(async () => {
           fireEvent.paste(textarea, {
@@ -2142,7 +2142,7 @@ describe('App', () => {
         });
       }
       await vi.waitFor(() => {
-        expect(screen.getAllByRole('listitem')).toHaveLength(4);
+        expect(screen.getAllByRole('listitem')).toHaveLength(3);
       });
 
       const rootDiv = document.querySelector('.h-screen')!;
@@ -2152,8 +2152,8 @@ describe('App', () => {
         dataTransfer: { files: [extra] },
       });
 
-      // Still exactly 4 - the drop was rejected
-      expect(screen.getAllByRole('listitem')).toHaveLength(4);
+      // Still exactly 3 - the drop was rejected
+      expect(screen.getAllByRole('listitem')).toHaveLength(3);
     });
 
     it('handleRootDrop ignores non-image files', async () => {
@@ -2849,7 +2849,7 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      // Attach 4 images via paste to reach the limit.
+      // Attach 3 images via paste to reach the limit.
       const pasteOneImage = async () => {
         const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
         const file = new File(['data'], 'photo.png', { type: 'image/png' });
@@ -2861,7 +2861,6 @@ describe('App', () => {
           });
         });
       };
-      await pasteOneImage();
       await pasteOneImage();
       await pasteOneImage();
       await pasteOneImage();

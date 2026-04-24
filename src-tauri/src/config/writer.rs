@@ -43,7 +43,14 @@ pub fn atomic_write(path: &Path, config: &AppConfig) -> std::io::Result<()> {
 
     let tmp_path = tmp_path_for(path);
     write_and_sync(&tmp_path, serialized.as_bytes())?;
-    std::fs::rename(&tmp_path, path)?;
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        // Rename failed (e.g. destination is a non-empty directory, cross-
+        // device rename, permission drift mid-write). Remove the tmpfile so
+        // failed writes do not accumulate `.tmp-<pid>-<nanos>` orphans in
+        // the app-support directory across retries.
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
 
     // Best-effort parent fsync so the rename is durable across power loss.
     // Any failure here is dropped: the data itself has already been fsynced

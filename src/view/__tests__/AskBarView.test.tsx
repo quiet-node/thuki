@@ -550,7 +550,7 @@ describe('AskBarView', () => {
       expect(wrapper.classList.contains('ring-red-500/60')).toBe(true);
     });
 
-    it('shows "Max 4 images" label when isDragOver is "max"', () => {
+    it('shows "Max 3 images" label when isDragOver is "max"', () => {
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
@@ -564,7 +564,7 @@ describe('AskBarView', () => {
           isDragOver="max"
         />,
       );
-      expect(screen.getByText('Max 4 images')).toBeInTheDocument();
+      expect(screen.getByText('Max 3 images')).toBeInTheDocument();
     });
 
     it('does not show max label when isDragOver is "normal"', () => {
@@ -581,7 +581,7 @@ describe('AskBarView', () => {
           isDragOver="normal"
         />,
       );
-      expect(screen.queryByText('Max 4 images')).toBeNull();
+      expect(screen.queryByText('Max 3 images')).toBeNull();
     });
 
     describe('paste at max images', () => {
@@ -621,7 +621,7 @@ describe('AskBarView', () => {
           },
         });
         expect(onImagesAttached).not.toHaveBeenCalled();
-        expect(screen.getByText('Max 4 images')).toBeInTheDocument();
+        expect(screen.getByText('Max 3 images')).toBeInTheDocument();
       });
 
       it('paste error message auto-dismisses after 2 seconds', () => {
@@ -651,12 +651,12 @@ describe('AskBarView', () => {
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
-        expect(screen.getByText('Max 4 images')).toBeInTheDocument();
+        expect(screen.getByText('Max 3 images')).toBeInTheDocument();
 
         act(() => {
           vi.advanceTimersByTime(2000);
         });
-        expect(screen.queryByText('Max 4 images')).toBeNull();
+        expect(screen.queryByText('Max 3 images')).toBeNull();
       });
 
       it('does not show paste error when pasting non-image content at max images', () => {
@@ -685,7 +685,7 @@ describe('AskBarView', () => {
             items: [{ type: 'text/plain', getAsFile: () => null }],
           },
         });
-        expect(screen.queryByText('Max 4 images')).toBeNull();
+        expect(screen.queryByText('Max 3 images')).toBeNull();
       });
     });
 
@@ -1041,7 +1041,7 @@ describe('AskBarView', () => {
       );
       const btn = screen.getByRole('button', { name: 'Take screenshot' });
       fireEvent.mouseEnter(btn.parentElement!);
-      expect(screen.getByText('Maximum 4 images attached')).toBeInTheDocument();
+      expect(screen.getByText('Maximum 3 images attached')).toBeInTheDocument();
     });
 
     it('does not show max-images tooltip when below max images', () => {
@@ -1059,7 +1059,7 @@ describe('AskBarView', () => {
         />,
       );
       expect(
-        screen.queryByText('Maximum 4 images attached'),
+        screen.queryByText('Maximum 3 images attached'),
       ).not.toBeInTheDocument();
     });
 

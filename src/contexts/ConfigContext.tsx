@@ -101,17 +101,26 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<AppConfig | null>(null);
 
   useEffect(() => {
-    void invoke<RawAppConfig>('get_config').then((raw) => {
-      // In production Rust always returns a fully-populated RawAppConfig.
-      // A nullish response here only happens in tests where `invoke` is mocked
-      // without a handler for `get_config`; we fall back to DEFAULT_CONFIG so
-      // the tree still mounts instead of spinning on a null state.
-      if (raw == null) {
+    void invoke<RawAppConfig>('get_config')
+      .then((raw) => {
+        // In production Rust always returns a fully-populated RawAppConfig.
+        // A nullish response here only happens in tests where `invoke` is
+        // mocked without a handler for `get_config`; we fall back to
+        // DEFAULT_CONFIG so the tree still mounts instead of spinning on a
+        // null state.
+        if (raw == null) {
+          setConfig(DEFAULT_CONFIG);
+          return;
+        }
+        setConfig(transform(raw));
+      })
+      .catch(() => {
+        // IPC rejection (Tauri bridge error, Rust-side panic before the
+        // command handler resolves, mis-registered command in tests). Prefer
+        // a degraded-but-running app over a blank screen; every subsystem
+        // that reads config already tolerates DEFAULT_CONFIG values.
         setConfig(DEFAULT_CONFIG);
-        return;
-      }
-      setConfig(transform(raw));
-    });
+      });
   }, []);
 
   if (!config) return null;

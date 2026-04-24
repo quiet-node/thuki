@@ -152,6 +152,24 @@ describe('ConfigContext', () => {
       expect(screen.getByTestId('active-model').textContent).toBe('');
     });
 
+    it('falls back to DEFAULT_CONFIG when invoke rejects', async () => {
+      invoke.mockRejectedValueOnce(new Error('IPC bridge unavailable'));
+
+      render(
+        <ConfigProvider>
+          <Probe />
+        </ConfigProvider>,
+      );
+      await act(async () => {});
+
+      expect(screen.getByTestId('active-model').textContent).toBe(
+        DEFAULT_CONFIG.model.active,
+      );
+      expect(screen.getByTestId('overlay-width').textContent).toBe(
+        String(DEFAULT_CONFIG.window.overlayWidth),
+      );
+    });
+
     it('renders nothing before the initial invoke resolves', () => {
       invoke.mockImplementation(
         () => new Promise<never>(() => {}), // pending forever

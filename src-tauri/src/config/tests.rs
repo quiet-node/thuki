@@ -719,6 +719,25 @@ fn atomic_write_fails_when_destination_is_non_empty_directory() {
     let _ = err.kind();
 }
 
+/// Failed rename removes the staged tmpfile so orphans do not accumulate in
+/// the app-support directory across repeated write retries.
+#[test]
+fn atomic_write_cleans_up_tmpfile_on_rename_failure() {
+    let dir = fresh_temp_dir();
+    let target = config_path_in(&dir);
+    std::fs::create_dir(&target).unwrap();
+    std::fs::write(target.join("filler"), "x").unwrap();
+    atomic_write(&target, &AppConfig::default()).expect_err("rename over non-empty dir must fail");
+    let leftover_tmp = std::fs::read_dir(target.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .any(|entry| entry.file_name().to_string_lossy().contains(".tmp-"));
+    assert!(
+        !leftover_tmp,
+        "atomic_write must remove its tmpfile on rename failure"
+    );
+}
+
 // ── error display ────────────────────────────────────────────────────────────
 
 #[test]
