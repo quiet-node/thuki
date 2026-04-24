@@ -1,8 +1,10 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { useEffect, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 
 /**
  * Hoisted static SVG - chip-style trigger icon for the model picker.
+ * Redrawn to occupy ~88% of the 16x16 canvas so visual weight matches
+ * the adjacent camera and send icons in the ask bar.
  * @see Vercel React Best Practices - Hoist Static JSX Elements
  */
 const CHIP_ICON = (
@@ -15,16 +17,16 @@ const CHIP_ICON = (
     aria-hidden="true"
   >
     <rect
-      x="4.5"
-      y="4.5"
-      width="7"
-      height="7"
+      x="3"
+      y="3"
+      width="10"
+      height="10"
       rx="1.5"
       stroke="currentColor"
       strokeWidth="1.5"
     />
     <path
-      d="M6 2.5V4M8 2.5V4M10 2.5V4M6 12V13.5M8 12V13.5M10 12V13.5M2.5 6H4M2.5 8H4M2.5 10H4M12 6H13.5M12 8H13.5M12 10H13.5"
+      d="M5 1V3M8 1V3M11 1V3M5 13V15M8 13V15M11 13V15M1 5H3M1 8H3M1 11H3M13 5H15M13 8H15M13 11H15"
       stroke="currentColor"
       strokeWidth="1.5"
       strokeLinecap="round"
@@ -32,94 +34,112 @@ const CHIP_ICON = (
   </svg>
 );
 
-/** Props for the ModelPicker component. */
-export interface ModelPickerProps {
+/** Props for the {@link ModelPickerTrigger} component. */
+export interface ModelPickerTriggerProps {
+  /** Ref forwarded to the underlying button so callers can manage focus / outside-click. */
+  triggerRef?: RefObject<HTMLButtonElement | null>;
+  /** True while the associated popup is visible - drives `aria-expanded`. */
+  isOpen: boolean;
+  /** When true the trigger is inert (e.g. during generation). */
+  disabled: boolean;
+  /** Fires on click to toggle the popup open/closed. */
+  onToggle: () => void;
+}
+
+/**
+ * Right-side chip button that opens the model picker popup.
+ *
+ * The popup itself lives in {@link ModelPickerList} and is rendered in the
+ * ask bar's upper DOM-flow slot so the morphing container can grow the
+ * native window to reveal it without being clipped by `overflow-hidden`.
+ */
+export function ModelPickerTrigger({
+  triggerRef,
+  isOpen,
+  disabled,
+  onToggle,
+}: ModelPickerTriggerProps) {
+  return (
+    <button
+      ref={triggerRef}
+      type="button"
+      aria-label="Choose model"
+      aria-expanded={isOpen}
+      disabled={disabled}
+      onClick={onToggle}
+      className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
+    >
+      {CHIP_ICON}
+    </button>
+  );
+}
+
+/** Props for the {@link ModelPickerList} component. */
+export interface ModelPickerListProps {
+  /** Ref forwarded to the outer list container for outside-click detection. */
+  listRef?: RefObject<HTMLDivElement | null>;
   /** Currently active model slug; highlighted in the popup. */
   activeModel: string;
   /** Full list of available model slugs from Ollama's tags endpoint. */
   models: string[];
-  /** When true the trigger is inert (e.g. during generation). */
-  disabled: boolean;
+  /** True when the list should be visible. */
+  isOpen: boolean;
   /** Called with the chosen slug when the user picks a row. */
   onSelect: (model: string) => void;
 }
 
 /**
- * Right-side chip trigger that opens a slug-only popup anchored above
- * the ask bar's send button. The popup closes on outside click.
+ * Animated popup rendered inline above the ask bar input row.
  *
- * Rendered inline inside AskBarView's bottom row: `absolute right-0 bottom-10`
- * keeps it within the ask bar's relative container so no portal is needed.
+ * Uses a height animation inside `AnimatePresence` so the morphing
+ * container's `ResizeObserver` can smoothly grow the native window as
+ * the list mounts. Renders nothing when `isOpen` is false or the
+ * `models` list is empty.
  */
-export function ModelPicker({
+export function ModelPickerList({
+  listRef,
   activeModel,
   models,
-  disabled,
+  isOpen,
   onSelect,
-}: ModelPickerProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  // Derived so a `disabled` flip (e.g. generation starts while popup is open)
-  // hides the popup immediately without needing a state-syncing effect.
-  const showPopup = isOpen && !disabled;
-
-  useEffect(() => {
-    if (!showPopup) return;
-    const handleMouseDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleMouseDown);
-    return () => document.removeEventListener('mousedown', handleMouseDown);
-  }, [showPopup]);
-
-  if (models.length === 0) return null;
-
+}: ModelPickerListProps) {
   return (
-    <div ref={rootRef} className="relative shrink-0">
-      <button
-        type="button"
-        aria-label="Choose model"
-        disabled={disabled}
-        onClick={() => setIsOpen((open) => !open)}
-        className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 disabled:opacity-40"
-      >
-        {CHIP_ICON}
-      </button>
-
-      <AnimatePresence>
-        {showPopup && (
-          <motion.div
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 6 }}
-            transition={{ duration: 0.16 }}
-            className="absolute right-0 bottom-10 w-56 overflow-hidden rounded-xl border border-surface-border bg-surface-base shadow-chat backdrop-blur-2xl"
-          >
-            {models.map((model) => (
-              <button
-                key={model}
-                type="button"
-                aria-label={model}
-                aria-current={model === activeModel ? 'true' : undefined}
-                onClick={() => {
-                  onSelect(model);
-                  setIsOpen(false);
-                }}
-                className={`block w-full truncate px-4 py-3 text-left text-sm ${
-                  model === activeModel
-                    ? 'bg-primary/10 text-text-primary'
-                    : 'text-text-primary hover:bg-white/6'
-                }`}
-              >
-                {model}
-              </button>
-            ))}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
+    <AnimatePresence>
+      {isOpen && models.length > 0 && (
+        <motion.div
+          ref={listRef}
+          key="model-picker-list"
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: 'auto', opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={{
+            height: { duration: 0.2, ease: [0.16, 1, 0.3, 1] },
+            opacity: { duration: 0.15 },
+          }}
+          style={{ overflow: 'hidden' }}
+        >
+          <div className="flex justify-end px-3 pt-2 pb-1">
+            <div className="w-56 overflow-hidden rounded-xl border border-surface-border bg-surface-base shadow-chat backdrop-blur-2xl">
+              {models.map((model) => (
+                <button
+                  key={model}
+                  type="button"
+                  aria-label={model}
+                  aria-current={model === activeModel ? 'true' : undefined}
+                  onClick={() => onSelect(model)}
+                  className={`block w-full truncate px-4 py-3 text-left text-sm cursor-pointer ${
+                    model === activeModel
+                      ? 'bg-primary/10 text-text-primary'
+                      : 'text-text-primary hover:bg-white/6'
+                  }`}
+                >
+                  {model}
+                </button>
+              ))}
+            </div>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

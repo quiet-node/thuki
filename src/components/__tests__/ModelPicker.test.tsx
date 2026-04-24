@@ -1,19 +1,83 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
-import { ModelPicker } from '../ModelPicker';
+import { ModelPickerList, ModelPickerTrigger } from '../ModelPicker';
 
-describe('ModelPicker', () => {
-  it('opens a slug-only popup and highlights the active row', () => {
+describe('ModelPickerTrigger', () => {
+  it('exposes a Choose model button with aria-expanded reflecting open state', () => {
+    const { rerender } = render(
+      <ModelPickerTrigger isOpen={false} disabled={false} onToggle={vi.fn()} />,
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Choose model' });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    rerender(
+      <ModelPickerTrigger isOpen={true} disabled={false} onToggle={vi.fn()} />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('fires onToggle when clicked', () => {
+    const onToggle = vi.fn();
     render(
-      <ModelPicker
-        activeModel="gemma4:e2b"
-        models={['gemma4:e2b', 'qwen2.5:7b']}
+      <ModelPickerTrigger
+        isOpen={false}
         disabled={false}
-        onSelect={vi.fn()}
+        onToggle={onToggle}
       />,
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fire onToggle when disabled', () => {
+    const onToggle = vi.fn();
+    render(
+      <ModelPickerTrigger isOpen={false} disabled={true} onToggle={onToggle} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    expect(onToggle).not.toHaveBeenCalled();
+  });
+});
+
+describe('ModelPickerList', () => {
+  it('renders nothing when closed', () => {
+    const { container } = render(
+      <ModelPickerList
+        activeModel="gemma4:e2b"
+        models={['gemma4:e2b', 'qwen2.5:7b']}
+        isOpen={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('renders nothing when models list is empty', () => {
+    const { container } = render(
+      <ModelPickerList
+        activeModel=""
+        models={[]}
+        isOpen={true}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('renders a slug-only row per model when open and highlights the active row', () => {
+    render(
+      <ModelPickerList
+        activeModel="gemma4:e2b"
+        models={['gemma4:e2b', 'qwen2.5:7b']}
+        isOpen={true}
+        onSelect={vi.fn()}
+      />,
+    );
 
     expect(screen.getByRole('button', { name: 'gemma4:e2b' })).toHaveClass(
       'bg-primary/10',
@@ -24,146 +88,16 @@ describe('ModelPicker', () => {
     expect(screen.queryByText(/fast|vision|recent/i)).toBeNull();
   });
 
-  it('calls onSelect and closes after choosing a new model', () => {
-    const onSelect = vi.fn();
-    render(
-      <ModelPicker
-        activeModel="gemma4:e2b"
-        models={['gemma4:e2b', 'qwen2.5:7b']}
-        disabled={false}
-        onSelect={onSelect}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
-    fireEvent.click(screen.getByRole('button', { name: 'qwen2.5:7b' }));
-
-    expect(onSelect).toHaveBeenCalledWith('qwen2.5:7b');
-    expect(screen.queryByRole('button', { name: 'gemma4:e2b' })).toBeNull();
-  });
-
-  it('returns null when models list is empty', () => {
-    const { container } = render(
-      <ModelPicker
-        activeModel=""
-        models={[]}
-        disabled={false}
-        onSelect={vi.fn()}
-      />,
-    );
-    expect(container.firstChild).toBeNull();
-  });
-
-  it('closes when clicking outside', () => {
-    render(
-      <ModelPicker
-        activeModel="gemma4:e2b"
-        models={['gemma4:e2b', 'qwen2.5:7b']}
-        disabled={false}
-        onSelect={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
-    expect(
-      screen.getByRole('button', { name: 'qwen2.5:7b' }),
-    ).toBeInTheDocument();
-
-    fireEvent.mouseDown(document.body);
-
-    expect(screen.queryByRole('button', { name: 'qwen2.5:7b' })).toBeNull();
-  });
-
-  it('toggles closed when the trigger is clicked twice', () => {
-    render(
-      <ModelPicker
-        activeModel="gemma4:e2b"
-        models={['gemma4:e2b', 'qwen2.5:7b']}
-        disabled={false}
-        onSelect={vi.fn()}
-      />,
-    );
-
-    const trigger = screen.getByRole('button', { name: 'Choose model' });
-    fireEvent.click(trigger);
-    expect(
-      screen.getByRole('button', { name: 'qwen2.5:7b' }),
-    ).toBeInTheDocument();
-
-    fireEvent.click(trigger);
-    expect(screen.queryByRole('button', { name: 'qwen2.5:7b' })).toBeNull();
-  });
-
-  it('ignores clicks when disabled', () => {
-    render(
-      <ModelPicker
-        activeModel="gemma4:e2b"
-        models={['gemma4:e2b', 'qwen2.5:7b']}
-        disabled={true}
-        onSelect={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
-    expect(screen.queryByRole('button', { name: 'qwen2.5:7b' })).toBeNull();
-  });
-
-  it('keeps mousedown inside the picker from closing the popup', () => {
-    render(
-      <ModelPicker
-        activeModel="gemma4:e2b"
-        models={['gemma4:e2b', 'qwen2.5:7b']}
-        disabled={false}
-        onSelect={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
-    const row = screen.getByRole('button', { name: 'qwen2.5:7b' });
-    fireEvent.mouseDown(row);
-    expect(
-      screen.getByRole('button', { name: 'qwen2.5:7b' }),
-    ).toBeInTheDocument();
-  });
-
-  it('closes an open popup when disabled flips true', () => {
-    const { rerender } = render(
-      <ModelPicker
-        activeModel="gemma4:e2b"
-        models={['gemma4:e2b', 'qwen2.5:7b']}
-        disabled={false}
-        onSelect={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
-    expect(
-      screen.getByRole('button', { name: 'qwen2.5:7b' }),
-    ).toBeInTheDocument();
-
-    rerender(
-      <ModelPicker
-        activeModel="gemma4:e2b"
-        models={['gemma4:e2b', 'qwen2.5:7b']}
-        disabled={true}
-        onSelect={vi.fn()}
-      />,
-    );
-
-    expect(screen.queryByRole('button', { name: 'qwen2.5:7b' })).toBeNull();
-  });
-
   it('marks the active row with aria-current', () => {
     render(
-      <ModelPicker
+      <ModelPickerList
         activeModel="gemma4:e2b"
         models={['gemma4:e2b', 'qwen2.5:7b']}
-        disabled={false}
+        isOpen={true}
         onSelect={vi.fn()}
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
     expect(screen.getByRole('button', { name: 'gemma4:e2b' })).toHaveAttribute(
       'aria-current',
       'true',
@@ -171,5 +105,20 @@ describe('ModelPicker', () => {
     expect(
       screen.getByRole('button', { name: 'qwen2.5:7b' }),
     ).not.toHaveAttribute('aria-current');
+  });
+
+  it('calls onSelect with the chosen slug when a row is clicked', () => {
+    const onSelect = vi.fn();
+    render(
+      <ModelPickerList
+        activeModel="gemma4:e2b"
+        models={['gemma4:e2b', 'qwen2.5:7b']}
+        isOpen={true}
+        onSelect={onSelect}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'qwen2.5:7b' }));
+    expect(onSelect).toHaveBeenCalledWith('qwen2.5:7b');
   });
 });
