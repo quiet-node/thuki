@@ -47,6 +47,10 @@ pub struct SaveMessagePayload {
     /// Already-serialised `SearchMetadata` JSON string for search turns.
     /// Passed through verbatim to `messages.search_metadata`.
     pub search_metadata: Option<String>,
+    /// Slug of the Ollama model that produced this response. Frontend stamps
+    /// assistant payloads with the active model at generation time; `None`
+    /// for user payloads. Accepted as missing via serde Option default.
+    pub model_name: Option<String>,
 }
 
 /// Response returned when saving a conversation.
@@ -111,6 +115,7 @@ pub fn save_conversation(
                 sources_json,
                 m.search_warnings,
                 m.search_metadata,
+                m.model_name,
             )
         })
         .collect();
@@ -134,6 +139,7 @@ pub fn persist_message(
     search_sources: Option<Vec<SaveSearchSource>>,
     search_warnings: Option<String>,
     search_metadata: Option<String>,
+    model_name: Option<String>,
     db: State<'_, Database>,
 ) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -154,6 +160,7 @@ pub fn persist_message(
         sources_json.as_deref(),
         search_warnings.as_deref(),
         search_metadata.as_deref(),
+        model_name.as_deref(),
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -343,6 +350,7 @@ mod tests {
                 search_sources: None,
                 search_warnings: None,
                 search_metadata: None,
+                model_name: None,
             },
             SaveMessagePayload {
                 role: "assistant".to_string(),
@@ -364,6 +372,7 @@ mod tests {
                 search_metadata: Some(
                     r#"{"iterations":[],"total_duration_ms":10,"retries_performed":0}"#.to_string(),
                 ),
+                model_name: Some("gemma4:e2b".to_string()),
             },
         ];
 
@@ -399,6 +408,7 @@ mod tests {
                     sources_json,
                     m.search_warnings,
                     m.search_metadata,
+                    m.model_name,
                 )
             })
             .collect();
@@ -436,6 +446,8 @@ mod tests {
             .contains("total_duration_ms"));
         assert!(loaded[0].search_warnings.is_none());
         assert!(loaded[0].search_metadata.is_none());
+        assert!(loaded[0].model_name.is_none());
+        assert_eq!(loaded[1].model_name.as_deref(), Some("gemma4:e2b"));
     }
 
     #[test]

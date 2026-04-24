@@ -14,10 +14,11 @@ use serde::Serialize;
 
 /// Tuple representing a message for batch insertion:
 /// (role, content, quoted_text, image_paths, thinking_content, search_sources,
-///  search_warnings, search_metadata).
+///  search_warnings, search_metadata, model_name).
 pub type MessageBatchRow = (
     String,
     String,
+    Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -54,6 +55,9 @@ pub struct PersistedMessage {
     /// JSON-serialized `SearchMetadata` (iteration traces, timing) for this
     /// search turn. `None` for non-search messages and pre-Task-17 rows.
     pub search_metadata: Option<String>,
+    /// Slug of the Ollama model that produced this assistant message. `None`
+    /// for user messages and rows written before the model_name migration.
+    pub model_name: Option<String>,
     pub created_at: i64,
 }
 
@@ -176,6 +180,10 @@ fn run_migrations(conn: &Connection) -> SqlResult<()> {
     // JSON-encoded Vec<SearchWarning> and SearchMetadata (Task 17).
     ensure_column(conn, "messages", "search_warnings", "TEXT")?;
     ensure_column(conn, "messages", "search_metadata", "TEXT")?;
+    // Per-message model attribution (slug of the Ollama model that produced
+    // the assistant response). NULL for user messages and rows written before
+    // this migration.
+    ensure_column(conn, "messages", "model_name", "TEXT")?;
 
     Ok(())
 }
@@ -297,6 +305,7 @@ pub fn insert_message(
     search_sources: Option<&str>,
     search_warnings: Option<&str>,
     search_metadata: Option<&str>,
+    model_name: Option<&str>,
 ) -> SqlResult<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_millis();
@@ -304,8 +313,8 @@ pub fn insert_message(
         "INSERT INTO messages \
          (id, conversation_id, role, content, quoted_text, image_paths, \
           thinking_content, search_sources, search_warnings, search_metadata, \
-          created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+          model_name, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             id,
             conversation_id,
@@ -317,6 +326,7 @@ pub fn insert_message(
             search_sources,
             search_warnings,
             search_metadata,
+            model_name,
             now
         ],
     )?;
@@ -341,8 +351,8 @@ pub fn insert_messages_batch(
             "INSERT INTO messages \
              (id, conversation_id, role, content, quoted_text, image_paths, \
               thinking_content, search_sources, search_warnings, search_metadata, \
-              created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+              model_name, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )?;
         for (
             role,
@@ -353,6 +363,7 @@ pub fn insert_messages_batch(
             search_sources,
             search_warnings,
             search_metadata,
+            model_name,
         ) in messages
         {
             let id = uuid::Uuid::new_v4().to_string();
@@ -367,6 +378,7 @@ pub fn insert_messages_batch(
                 search_sources.as_deref(),
                 search_warnings.as_deref(),
                 search_metadata.as_deref(),
+                model_name.as_deref(),
                 now
             ])?;
         }
@@ -383,7 +395,7 @@ pub fn insert_messages_batch(
 pub fn load_messages(conn: &Connection, conversation_id: &str) -> SqlResult<Vec<PersistedMessage>> {
     let mut stmt = conn.prepare(
         "SELECT id, role, content, quoted_text, image_paths, thinking_content, \
-                search_sources, search_warnings, search_metadata, created_at
+                search_sources, search_warnings, search_metadata, model_name, created_at
          FROM messages
          WHERE conversation_id = ?1
          ORDER BY created_at ASC",
@@ -399,7 +411,8 @@ pub fn load_messages(conn: &Connection, conversation_id: &str) -> SqlResult<Vec<
             search_sources: row.get(6)?,
             search_warnings: row.get(7)?,
             search_metadata: row.get(8)?,
-            created_at: row.get(9)?,
+            model_name: row.get(9)?,
+            created_at: row.get(10)?,
         })
     })?;
     rows.collect()
@@ -527,7 +540,7 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let id = create_conversation(&conn, Some("To Delete"), "gemma4:e2b").unwrap();
         insert_message(
-            &conn, &id, "user", "hello", None, None, None, None, None, None,
+            &conn, &id, "user", "hello", None, None, None, None, None, None, None,
         )
         .unwrap();
         insert_message(
@@ -535,6 +548,7 @@ mod tests {
             &id,
             "assistant",
             "hi there",
+            None,
             None,
             None,
             None,
@@ -569,6 +583,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         insert_message(
@@ -576,6 +591,7 @@ mod tests {
             &id,
             "assistant",
             "Rust is a systems language.",
+            None,
             None,
             None,
             None,
@@ -610,10 +626,12 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             ),
             (
                 "assistant".to_string(),
                 "hi".to_string(),
+                None,
                 None,
                 None,
                 None,
@@ -625,6 +643,7 @@ mod tests {
                 "user".to_string(),
                 "how are you?".to_string(),
                 Some("context".to_string()),
+                None,
                 None,
                 None,
                 None,
@@ -653,7 +672,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
 
         insert_message(
-            &conn, &id, "user", "test", None, None, None, None, None, None,
+            &conn, &id, "user", "test", None, None, None, None, None, None, None,
         )
         .unwrap();
         let after = list_conversations(&conn, None).unwrap()[0].updated_at;
@@ -675,7 +694,7 @@ mod tests {
         // Updating a message in the first conversation bumps it to the top.
         std::thread::sleep(std::time::Duration::from_millis(5));
         insert_message(
-            &conn, &id1, "user", "bump", None, None, None, None, None, None,
+            &conn, &id1, "user", "bump", None, None, None, None, None, None, None,
         )
         .unwrap();
 
@@ -732,6 +751,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -746,7 +766,7 @@ mod tests {
         let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
 
         insert_message(
-            &conn, &id, "user", "hello", None, None, None, None, None, None,
+            &conn, &id, "user", "hello", None, None, None, None, None, None, None,
         )
         .unwrap();
 
@@ -770,10 +790,12 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             ),
             (
                 "assistant".to_string(),
                 "I see".to_string(),
+                None,
                 None,
                 None,
                 None,
@@ -807,6 +829,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         insert_message(
@@ -820,6 +843,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         // Message without images.
@@ -828,6 +852,7 @@ mod tests {
             &c1,
             "assistant",
             "reply",
+            None,
             None,
             None,
             None,
@@ -849,7 +874,7 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
         insert_message(
-            &conn, &id, "user", "hello", None, None, None, None, None, None,
+            &conn, &id, "user", "hello", None, None, None, None, None, None, None,
         )
         .unwrap();
 
@@ -978,6 +1003,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -995,7 +1021,7 @@ mod tests {
         let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
 
         insert_message(
-            &conn, &id, "user", "hello", None, None, None, None, None, None,
+            &conn, &id, "user", "hello", None, None, None, None, None, None, None,
         )
         .unwrap();
 
@@ -1019,6 +1045,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             ),
             (
                 "assistant".to_string(),
@@ -1029,10 +1056,12 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             ),
             (
                 "user".to_string(),
                 "Follow-up question".to_string(),
+                None,
                 None,
                 None,
                 None,
@@ -1095,6 +1124,7 @@ mod tests {
             None,
             Some(warnings_json),
             Some(metadata_json),
+            None,
         )
         .unwrap();
 
@@ -1111,7 +1141,7 @@ mod tests {
 
         // No warnings or metadata (ordinary non-search message).
         insert_message(
-            &conn, &conv_id, "user", "hello", None, None, None, None, None, None,
+            &conn, &conv_id, "user", "hello", None, None, None, None, None, None, None,
         )
         .unwrap();
 
@@ -1119,5 +1149,122 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].search_warnings.is_none());
         assert!(msgs[0].search_metadata.is_none());
+    }
+
+    // ── model_name column + round-trip ───────────────────────────────────────
+
+    #[test]
+    fn model_name_column_exists_after_migration() {
+        let conn = open_in_memory().unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(messages)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(cols.contains(&"model_name".to_string()));
+    }
+
+    #[test]
+    fn insert_message_with_model_name_round_trips() {
+        let conn = open_in_memory().unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
+
+        insert_message(
+            &conn,
+            &id,
+            "assistant",
+            "Hello from gemma.",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("gemma4:e2b"),
+        )
+        .unwrap();
+
+        let msgs = load_messages(&conn, &id).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].model_name.as_deref(), Some("gemma4:e2b"));
+    }
+
+    #[test]
+    fn insert_message_with_null_model_name() {
+        let conn = open_in_memory().unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
+
+        insert_message(
+            &conn, &id, "user", "hi there", None, None, None, None, None, None, None,
+        )
+        .unwrap();
+
+        let msgs = load_messages(&conn, &id).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].model_name.is_none());
+    }
+
+    #[test]
+    fn insert_messages_batch_includes_model_name() {
+        let conn = open_in_memory().unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
+
+        let batch = vec![
+            (
+                "assistant".to_string(),
+                "answer from gemma".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("gemma4:e2b".to_string()),
+            ),
+            (
+                "assistant".to_string(),
+                "answer from qwen".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("qwen2.5:7b".to_string()),
+            ),
+        ];
+        insert_messages_batch(&conn, &id, &batch).unwrap();
+
+        let msgs = load_messages(&conn, &id).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].model_name.as_deref(), Some("gemma4:e2b"));
+        assert_eq!(msgs[1].model_name.as_deref(), Some("qwen2.5:7b"));
+    }
+
+    #[test]
+    fn load_messages_handles_null_model_name_for_legacy_rows() {
+        let conn = open_in_memory().unwrap();
+        let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
+
+        // Simulate a row written before the model_name migration by inserting
+        // with an explicit column list that omits model_name entirely.
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                &id,
+                "assistant",
+                "legacy row",
+                now_millis(),
+            ],
+        )
+        .unwrap();
+
+        let msgs = load_messages(&conn, &id).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].model_name.is_none());
     }
 }
