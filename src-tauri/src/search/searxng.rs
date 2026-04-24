@@ -1,9 +1,10 @@
 //! SearXNG client for the `/search` pipeline.
 //!
 //! Talks to the locally hosted SearXNG sandbox (see `sandbox/search-box/`).
-//! The endpoint is compiled in and never derived from user input: there is no
-//! user-controlled URL, host, or port anywhere in this module, which
-//! structurally eliminates SSRF as an attack vector.
+//! The service URL comes from `AppConfig.search.searxng_url` (runtime-configurable
+//! via config.toml) rather than a fixed compile-time constant. The URL is always
+//! set from trusted local configuration, never from user search input, so the
+//! SSRF-elimination guarantee is preserved.
 //!
 //! Snippets returned from SearXNG are HTML-entity-decoded and length-capped
 //! before being exposed to the caller; the caller composes plain-text prompts,
@@ -21,11 +22,11 @@ pub const SEARXNG_BASE_URL: &str = "http://127.0.0.1:25017";
 
 /// Fully-qualified SearXNG search endpoint. Hardcoded to the localhost-only
 /// sandbox binding; the caller cannot override the host.
+#[allow(dead_code)]
 pub const SEARXNG_ENDPOINT: &str = "http://127.0.0.1:25017/search";
 
-/// Hard timeout for the SearXNG HTTP request. Picked to accommodate the
-/// engine's longest outgoing request timeout (15 s in sandbox config) plus a
-/// small margin for local overhead.
+/// Hard timeout for the SearXNG HTTP request. Default passed by test-only helpers.
+#[allow(dead_code)]
 pub const SEARXNG_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Maximum number of results forwarded to the synthesis stage. Trimming here
@@ -46,9 +47,9 @@ pub const MAX_QUERY_CHARS: usize = 500;
 /// entities on titles/snippets and truncates long fields to a fixed character
 /// budget. Returns at most [`MAX_RESULTS`] entries.
 ///
-/// Production callers pass [`SEARXNG_ENDPOINT`]; the endpoint is surfaced as
-/// a parameter strictly for testability (mockito-backed unit tests) and must
-/// never be wired to a user-controlled value.
+/// The endpoint and `timeout_s` are surfaced as parameters strictly for
+/// testability (mockito-backed unit tests use a mock server URL and pass the
+/// constant timeout) and must never be wired to user search input.
 ///
 /// Errors:
 /// - [`SearchError::EmptyQuery`] when the query is whitespace-only.
@@ -61,6 +62,7 @@ pub async fn search(
     client: &reqwest::Client,
     endpoint: &str,
     query: &str,
+    timeout_s: u64,
 ) -> Result<Vec<SearxResult>, SearchError> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -71,7 +73,7 @@ pub async fn search(
     let url = format!("{}?q={}&format=json", endpoint, url_encode(&bounded));
     let response = client
         .get(&url)
-        .timeout(SEARXNG_TIMEOUT)
+        .timeout(Duration::from_secs(timeout_s))
         .send()
         .await
         // Any transport failure on the send (connection refused, DNS, timeout)
@@ -111,18 +113,23 @@ pub async fn search(
 /// (e.g. `http://127.0.0.1:25017/search`) rather than just the base. Used by
 /// the agentic gap loop, which already holds the endpoint URL.
 ///
+/// `timeout_s` is passed from the runtime config (`AppConfig.search.search_timeout_s`).
+///
 /// Complexity: O(N) HTTP round-trips (parallelized). Dedup is O(R) over the
 /// total result count, bounded by the SearXNG per-query result cap.
 pub async fn search_all_with_endpoint(
     endpoint: &str,
     queries: &[String],
+    timeout_s: u64,
 ) -> Result<Vec<SearxResult>, SearchError> {
     if queries.is_empty() {
         return Ok(Vec::new());
     }
 
     let client = reqwest::Client::new();
-    let futures = queries.iter().map(|q| search(&client, endpoint, q));
+    let futures = queries
+        .iter()
+        .map(|q| search(&client, endpoint, q, timeout_s));
     let results = futures_util::future::join_all(futures).await;
 
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -159,28 +166,8 @@ pub async fn search_all_with_base(
         return Ok(Vec::new());
     }
 
-    let client = reqwest::Client::new();
     let endpoint = format!("{}/search", base.trim_end_matches('/'));
-
-    let futures = queries.iter().map(|q| search(&client, &endpoint, q));
-    let results = futures_util::future::join_all(futures).await;
-
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut merged: Vec<SearxResult> = Vec::new();
-    for r in results {
-        match r {
-            Ok(items) => {
-                for item in items {
-                    if seen.insert(item.url.clone()) {
-                        merged.push(item);
-                    }
-                }
-            }
-            // Flaky or empty query in the batch does not poison the rest.
-            Err(_) => continue,
-        }
-    }
-    Ok(merged)
+    search_all_with_endpoint(&endpoint, queries, SEARXNG_TIMEOUT.as_secs()).await
 }
 
 /// Decodes HTML entities (`&amp;`, `&lt;`, `&nbsp;`, numeric entities, etc.)
@@ -266,7 +253,9 @@ mod tests {
     #[tokio::test]
     async fn search_rejects_empty_query() {
         let client = reqwest::Client::new();
-        let err = search(&client, "http://ignored", "   ").await.unwrap_err();
+        let err = search(&client, "http://ignored", "   ", SEARXNG_TIMEOUT.as_secs())
+            .await
+            .unwrap_err();
         assert_eq!(err, SearchError::EmptyQuery);
     }
 
@@ -292,7 +281,9 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let results = search(&client, &endpoint, "rust async").await.unwrap();
+        let results = search(&client, &endpoint, "rust async", SEARXNG_TIMEOUT.as_secs())
+            .await
+            .unwrap();
 
         mock.assert_async().await;
         assert_eq!(results.len(), 2);
@@ -314,7 +305,9 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let err = search(&client, &endpoint, "hi").await.unwrap_err();
+        let err = search(&client, &endpoint, "hi", SEARXNG_TIMEOUT.as_secs())
+            .await
+            .unwrap_err();
 
         mock.assert_async().await;
         assert_eq!(err, SearchError::SearxHttp(503));
@@ -323,9 +316,14 @@ mod tests {
     #[tokio::test]
     async fn search_maps_connect_refused_to_sandbox_unavailable() {
         let client = reqwest::Client::new();
-        let err = search(&client, "http://127.0.0.1:1/search", "hi")
-            .await
-            .unwrap_err();
+        let err = search(
+            &client,
+            "http://127.0.0.1:1/search",
+            "hi",
+            SEARXNG_TIMEOUT.as_secs(),
+        )
+        .await
+        .unwrap_err();
         // Connection refused on localhost maps to SandboxUnavailable so the
         // frontend can surface the setup-error bubble rather than a generic error.
         assert_eq!(err, SearchError::SandboxUnavailable);
@@ -343,7 +341,9 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let err = search(&client, &endpoint, "hi").await.unwrap_err();
+        let err = search(&client, &endpoint, "hi", SEARXNG_TIMEOUT.as_secs())
+            .await
+            .unwrap_err();
 
         mock.assert_async().await;
         assert_eq!(err, SearchError::SearxUnavailable);
@@ -361,7 +361,9 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let err = search(&client, &endpoint, "hi").await.unwrap_err();
+        let err = search(&client, &endpoint, "hi", SEARXNG_TIMEOUT.as_secs())
+            .await
+            .unwrap_err();
 
         mock.assert_async().await;
         assert_eq!(err, SearchError::NoResults);
@@ -386,7 +388,9 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let results = search(&client, &endpoint, "hi").await.unwrap();
+        let results = search(&client, &endpoint, "hi", SEARXNG_TIMEOUT.as_secs())
+            .await
+            .unwrap();
 
         mock.assert_async().await;
         assert_eq!(results.len(), 1);
@@ -409,7 +413,9 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let results = search(&client, &endpoint, "hi").await.unwrap();
+        let results = search(&client, &endpoint, "hi", SEARXNG_TIMEOUT.as_secs())
+            .await
+            .unwrap();
 
         mock.assert_async().await;
         assert_eq!(results.len(), MAX_RESULTS);
@@ -434,7 +440,9 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let results = search(&client, &endpoint, "hi").await.unwrap();
+        let results = search(&client, &endpoint, "hi", SEARXNG_TIMEOUT.as_secs())
+            .await
+            .unwrap();
 
         mock.assert_async().await;
         assert_eq!(results[0].title.chars().count(), MAX_SNIPPET_CHARS);
@@ -455,7 +463,9 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let _ = search(&client, &endpoint, &long_query).await.unwrap();
+        let _ = search(&client, &endpoint, &long_query, SEARXNG_TIMEOUT.as_secs())
+            .await
+            .unwrap();
         mock.assert_async().await;
     }
 
@@ -585,9 +595,10 @@ mod parallel_tests {
     async fn search_all_with_endpoint_empty_slice_returns_empty_without_network() {
         // Covers the early empty-slice guard in search_all_with_endpoint,
         // query slice before touching the network.
-        let out = search_all_with_endpoint("http://127.0.0.1:1/search", &[])
-            .await
-            .unwrap();
+        let out =
+            search_all_with_endpoint("http://127.0.0.1:1/search", &[], SEARXNG_TIMEOUT.as_secs())
+                .await
+                .unwrap();
         assert!(out.is_empty());
     }
 }

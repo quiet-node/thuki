@@ -14,13 +14,18 @@ use std::path::PathBuf;
 
 use super::defaults::{
     CURRENT_SCHEMA_VERSION, DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
-    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SYSTEM_PROMPT_BASE, SLASH_COMMAND_PROMPT_APPENDIX,
+    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL_NAME,
+    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
+    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
+    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_URL,
+    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS, SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path};
-use super::schema::{AppConfig, ModelSection, PromptSection, QuoteSection, WindowSection};
+use super::schema::{
+    AppConfig, ModelSection, PromptSection, QuoteSection, SearchSection, WindowSection,
+};
 use super::writer::atomic_write;
 
 /// Creates a fresh temp directory that is unique per test run. Returned paths
@@ -54,6 +59,21 @@ fn defaults_const_values_match_schema_defaults() {
     assert_eq!(c.quote.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
     assert_eq!(c.quote.max_display_chars, DEFAULT_QUOTE_MAX_DISPLAY_CHARS);
     assert_eq!(c.quote.max_context_length, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH);
+    assert_eq!(c.search.searxng_url, DEFAULT_SEARXNG_URL);
+    assert_eq!(c.search.reader_url, DEFAULT_READER_URL);
+    assert_eq!(c.search.max_iterations, DEFAULT_MAX_ITERATIONS);
+    assert_eq!(c.search.top_k_urls, DEFAULT_TOP_K_URLS);
+    assert_eq!(c.search.search_timeout_s, DEFAULT_SEARCH_TIMEOUT_S);
+    assert_eq!(
+        c.search.reader_per_url_timeout_s,
+        DEFAULT_READER_PER_URL_TIMEOUT_S
+    );
+    assert_eq!(
+        c.search.reader_batch_timeout_s,
+        DEFAULT_READER_BATCH_TIMEOUT_S
+    );
+    assert_eq!(c.search.judge_timeout_s, DEFAULT_JUDGE_TIMEOUT_S);
+    assert_eq!(c.search.router_timeout_s, DEFAULT_ROUTER_TIMEOUT_S);
 }
 
 #[test]
@@ -767,4 +787,142 @@ fn config_error_messages_include_context() {
 
     let e = ConfigError::NoMigrationYet { found: 0 };
     assert!(e.to_string().contains('0'));
+}
+
+// ── search section ────────────────────────────────────────────────────────────
+
+#[test]
+fn search_section_defaults_are_sane() {
+    let s = SearchSection::default();
+    assert!(s.searxng_url.starts_with("http://127.0.0.1:"));
+    assert!(s.reader_url.starts_with("http://127.0.0.1:"));
+    assert!(s.max_iterations >= 1 && s.max_iterations <= 10);
+    assert!(s.top_k_urls >= 1 && s.top_k_urls <= 20);
+    assert!(s.reader_batch_timeout_s > s.reader_per_url_timeout_s);
+}
+
+#[test]
+fn search_section_roundtrips_through_toml() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    let original = AppConfig::default();
+    atomic_write(&path, &original).unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(loaded.search.searxng_url, original.search.searxng_url);
+    assert_eq!(loaded.search.reader_url, original.search.reader_url);
+    assert_eq!(loaded.search.max_iterations, original.search.max_iterations);
+    assert_eq!(loaded.search.top_k_urls, original.search.top_k_urls);
+    assert_eq!(
+        loaded.search.search_timeout_s,
+        original.search.search_timeout_s
+    );
+    assert_eq!(
+        loaded.search.reader_per_url_timeout_s,
+        original.search.reader_per_url_timeout_s
+    );
+    assert_eq!(
+        loaded.search.reader_batch_timeout_s,
+        original.search.reader_batch_timeout_s
+    );
+    assert_eq!(
+        loaded.search.judge_timeout_s,
+        original.search.judge_timeout_s
+    );
+    assert_eq!(
+        loaded.search.router_timeout_s,
+        original.search.router_timeout_s
+    );
+}
+
+#[test]
+fn search_empty_url_resets_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    let toml = format!(
+        "schema_version = {}\n[search]\nsearxng_url = \"\"\nreader_url = \"  \"\n",
+        CURRENT_SCHEMA_VERSION
+    );
+    std::fs::write(&path, toml).unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(loaded.search.searxng_url, DEFAULT_SEARXNG_URL);
+    assert_eq!(loaded.search.reader_url, DEFAULT_READER_URL);
+}
+
+#[test]
+fn search_max_iterations_clamped_to_bounds() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    let toml = format!(
+        "schema_version = {}\n[search]\nmax_iterations = 0\ntop_k_urls = 999\n",
+        CURRENT_SCHEMA_VERSION
+    );
+    std::fs::write(&path, toml).unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(loaded.search.max_iterations, DEFAULT_MAX_ITERATIONS);
+    assert_eq!(loaded.search.top_k_urls, DEFAULT_TOP_K_URLS);
+}
+
+#[test]
+fn search_timeouts_clamped_to_bounds() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    let toml = format!(
+        "schema_version = {}\n[search]\nsearch_timeout_s = 0\nrouter_timeout_s = 9999\n",
+        CURRENT_SCHEMA_VERSION
+    );
+    std::fs::write(&path, toml).unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(loaded.search.search_timeout_s, DEFAULT_SEARCH_TIMEOUT_S);
+    assert_eq!(loaded.search.router_timeout_s, DEFAULT_ROUTER_TIMEOUT_S);
+}
+
+#[test]
+fn search_batch_timeout_invariant_corrected() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    // Set batch <= per_url — loader must correct.
+    let toml = format!(
+        "schema_version = {}\n[search]\nreader_per_url_timeout_s = 20\nreader_batch_timeout_s = 5\n",
+        CURRENT_SCHEMA_VERSION
+    );
+    std::fs::write(&path, toml).unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert!(
+        loaded.search.reader_batch_timeout_s > loaded.search.reader_per_url_timeout_s,
+        "loader must correct batch_timeout > per_url_timeout invariant"
+    );
+}
+
+#[test]
+fn toml_without_search_section_deserializes_to_defaults() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    let toml = format!(
+        "schema_version = {}\n[model]\nollama_url = \"http://127.0.0.1:11434\"\n",
+        CURRENT_SCHEMA_VERSION
+    );
+    std::fs::write(&path, toml).unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.search.searxng_url, DEFAULT_SEARXNG_URL,
+        "missing [search] section must deserialize to defaults via #[serde(default)]"
+    );
+}
+
+#[test]
+fn toml_partial_search_section_fills_missing_fields_from_defaults() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    let toml = format!(
+        "schema_version = {}\n[search]\nsearxng_url = \"http://192.168.1.50:8080\"\n",
+        CURRENT_SCHEMA_VERSION
+    );
+    std::fs::write(&path, toml).unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(loaded.search.searxng_url, "http://192.168.1.50:8080");
+    assert_eq!(
+        loaded.search.reader_url, DEFAULT_READER_URL,
+        "unset field in partial [search] must fall back to default"
+    );
+    assert_eq!(loaded.search.max_iterations, DEFAULT_MAX_ITERATIONS);
 }

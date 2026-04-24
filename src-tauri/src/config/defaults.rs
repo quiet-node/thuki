@@ -49,3 +49,30 @@ pub const BOUNDS_HIDE_COMMIT_DELAY_MS: (u64, u64) = (0, 5000);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_LINES: (u32, u32) = (1, 100);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_CHARS: (u32, u32) = (1, 10_000);
 pub const BOUNDS_QUOTE_MAX_CONTEXT_LENGTH: (u32, u32) = (1, 65_536);
+
+/// Search service default URLs. Match the Docker sandbox bindings in
+/// `sandbox/docker-compose.yml`. Users running SearXNG or the reader
+/// service on a different port override these in `[search]` in config.toml.
+pub const DEFAULT_SEARXNG_URL: &str = "http://127.0.0.1:25017";
+pub const DEFAULT_READER_URL: &str = "http://127.0.0.1:25018";
+
+/// Search pipeline tuning defaults. These mirror the compiled constants in
+/// `search/config.rs`; the TOML value takes effect at runtime.
+pub const DEFAULT_MAX_ITERATIONS: u32 = 3;
+pub const DEFAULT_TOP_K_URLS: u32 = 10;
+
+/// Search timeout defaults (seconds).
+pub const DEFAULT_SEARCH_TIMEOUT_S: u64 = 20;
+pub const DEFAULT_READER_PER_URL_TIMEOUT_S: u64 = 10;
+pub const DEFAULT_READER_BATCH_TIMEOUT_S: u64 = 30;
+pub const DEFAULT_JUDGE_TIMEOUT_S: u64 = 30;
+pub const DEFAULT_ROUTER_TIMEOUT_S: u64 = 45;
+
+/// Bounds for search pipeline counts.
+pub const BOUNDS_MAX_ITERATIONS: (u32, u32) = (1, 10);
+pub const BOUNDS_TOP_K_URLS: (u32, u32) = (1, 20);
+
+/// Bounds for all search timeout fields (seconds). 300 s (5 min) is the
+/// ceiling: a timeout longer than that indicates a misconfiguration, not a
+/// slow service.
+pub const BOUNDS_TIMEOUT_S: (u64, u64) = (1, 300);

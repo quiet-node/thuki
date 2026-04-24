@@ -69,24 +69,39 @@ struct ExtractResponse {
 pub struct ReaderClient {
     client: Client,
     base: String,
+    batch_timeout_s: u64,
 }
 
 impl ReaderClient {
-    /// Build a client pointed at `config::READER_BASE_URL`.
+    /// Build a client pointed at `config::READER_BASE_URL` with compiled defaults.
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new() -> Self {
-        Self::new_with_base(READER_BASE_URL.to_string())
+        Self::new_with_base(
+            READER_BASE_URL.to_string(),
+            READER_PER_URL_TIMEOUT_S,
+            READER_BATCH_TIMEOUT_S,
+        )
     }
 
-    /// Build a client pointed at `base`. Used by tests with a mock server.
-    pub fn new_with_base(base: impl Into<String>) -> Self {
+    /// Build a client pointed at `base` with explicit timeouts.
+    ///
+    /// `per_url_timeout_s` caps each individual HTTP round-trip.
+    /// `batch_timeout_s` caps the entire parallel fetch batch.
+    /// Tests pass `READER_BATCH_TIMEOUT_S` (= 1 s in test builds) to trigger
+    /// [`ReaderError::BatchTimeout`] quickly without sleeping 30 seconds.
+    pub fn new_with_base(
+        base: impl Into<String>,
+        per_url_timeout_s: u64,
+        batch_timeout_s: u64,
+    ) -> Self {
         let client = Client::builder()
-            .timeout(Duration::from_secs(READER_PER_URL_TIMEOUT_S))
+            .timeout(Duration::from_secs(per_url_timeout_s))
             .build()
             .expect("reader http client");
         Self {
             client,
             base: base.into(),
+            batch_timeout_s,
         }
     }
 
@@ -130,7 +145,7 @@ impl ReaderClient {
 
         let batch = async { join_all(fetches).await };
         let outcomes =
-            match tokio::time::timeout(Duration::from_secs(READER_BATCH_TIMEOUT_S), batch).await {
+            match tokio::time::timeout(Duration::from_secs(self.batch_timeout_s), batch).await {
                 Ok(v) => v,
                 Err(_) => return Err(ReaderError::BatchTimeout),
             };
@@ -209,7 +224,7 @@ impl ReaderClient {
         let mut any_succeeded = false;
         let mut service_unavailable_count = 0usize;
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(READER_BATCH_TIMEOUT_S);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(self.batch_timeout_s);
         loop {
             match tokio::time::timeout_at(deadline, futures.next()).await {
                 Err(_elapsed) => return Err(ReaderError::BatchTimeout),
@@ -308,7 +323,11 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn client_for(server: &MockServer) -> ReaderClient {
-        ReaderClient::new_with_base(server.uri())
+        ReaderClient::new_with_base(
+            server.uri(),
+            READER_PER_URL_TIMEOUT_S,
+            READER_BATCH_TIMEOUT_S,
+        )
     }
 
     /// Callback used in tests that must never fire. The body is excluded from
@@ -380,7 +399,11 @@ mod tests {
     #[tokio::test]
     async fn fetch_batch_reports_unreachable_service() {
         // server not started; port 1 is unprivileged nothingness.
-        let client = ReaderClient::new_with_base("http://127.0.0.1:1".to_string());
+        let client = ReaderClient::new_with_base(
+            "http://127.0.0.1:1".to_string(),
+            READER_PER_URL_TIMEOUT_S,
+            READER_BATCH_TIMEOUT_S,
+        );
         let res = client.fetch_batch(&["https://a.com/1".to_string()]).await;
         assert_eq!(res, Err(ReaderError::ServiceUnavailable));
     }
@@ -416,7 +439,11 @@ mod tests {
 
     #[tokio::test]
     async fn empty_url_list_returns_empty_result() {
-        let client = ReaderClient::new_with_base("http://127.0.0.1:1".to_string());
+        let client = ReaderClient::new_with_base(
+            "http://127.0.0.1:1".to_string(),
+            READER_PER_URL_TIMEOUT_S,
+            READER_BATCH_TIMEOUT_S,
+        );
         let pages = client.fetch_batch(&[]).await.unwrap();
         assert!(pages.pages.is_empty());
         assert!(pages.empty_urls.is_empty());
@@ -479,7 +506,11 @@ mod tests {
         // transient-string classifier land in FetchOutcome::Failed.
         // "http://:1" produces "builder error: empty host" which satisfies
         // both conditions.
-        let client = ReaderClient::new_with_base("http://:1".to_string());
+        let client = ReaderClient::new_with_base(
+            "http://:1".to_string(),
+            READER_PER_URL_TIMEOUT_S,
+            READER_BATCH_TIMEOUT_S,
+        );
         let result = client
             .fetch_batch(&["https://a.com/any".to_string()])
             .await
@@ -492,7 +523,11 @@ mod tests {
 
     #[tokio::test]
     async fn progress_empty_url_list_returns_empty_no_callbacks() {
-        let client = ReaderClient::new_with_base("http://127.0.0.1:1".to_string());
+        let client = ReaderClient::new_with_base(
+            "http://127.0.0.1:1".to_string(),
+            READER_PER_URL_TIMEOUT_S,
+            READER_BATCH_TIMEOUT_S,
+        );
         let result = client
             .fetch_batch_with_progress(&[], &CancellationToken::new(), &never_called)
             .await
@@ -584,7 +619,11 @@ mod tests {
 
     #[tokio::test]
     async fn progress_reports_service_unavailable_when_all_fail_with_connect_error() {
-        let client = ReaderClient::new_with_base("http://127.0.0.1:1".to_string());
+        let client = ReaderClient::new_with_base(
+            "http://127.0.0.1:1".to_string(),
+            READER_PER_URL_TIMEOUT_S,
+            READER_BATCH_TIMEOUT_S,
+        );
         let res = client
             .fetch_batch_with_progress(
                 &["https://a.com/1".to_string()],

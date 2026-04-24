@@ -38,8 +38,9 @@ pub const SEARCH_PLAN_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_p
 /// priors when the router makes a bad sufficiency call.
 const HISTORY_ONLY_SYSTEM_APPENDIX: &str = "\n\nYou are answering from the prior conversation only. Use only facts that already appear in earlier turns of this chat. Do not use your training knowledge, general world knowledge, the current date, or any external information. The latest user message is the question to answer, not evidence. If the prior conversation does not already contain the answer, reply exactly with: I can't answer that from this conversation alone.";
 
-/// Hard timeout for the non-streaming router call. Picked to accommodate cold
-/// model starts on first pipeline invocation.
+/// Hard timeout for the non-streaming router call. Passed by tests that call
+/// call_router_merged directly.
+#[allow(dead_code)]
 pub const ROUTER_TIMEOUT_SECS: u64 = 45;
 
 /// Cap on the router response length. Enough for a clarification question
@@ -219,6 +220,7 @@ async fn request_json(
 /// the first router response cannot be parsed. If the schema still cannot be
 /// recovered, it returns [`SearchError::Router`] instead of silently forcing a
 /// web search, because malformed router output should fail closed.
+#[allow(clippy::too_many_arguments)]
 pub async fn call_router_merged(
     endpoint: &str,
     model: &str,
@@ -227,6 +229,7 @@ pub async fn call_router_merged(
     query: &str,
     today: &str,
     cancel_token: &CancellationToken,
+    timeout_secs: u64,
 ) -> Result<RouterJudgeOutput, SearchError> {
     if cancel_token.is_cancelled() {
         return Err(SearchError::Cancelled);
@@ -243,7 +246,7 @@ pub async fn call_router_merged(
         messages,
         router_output_schema(),
         cancel_token,
-        ROUTER_TIMEOUT_SECS,
+        timeout_secs,
     )
     .await?;
     if let Some(output) = try_parse_router_output(&raw) {
@@ -265,7 +268,7 @@ pub async fn call_router_merged(
         retry_messages,
         router_output_schema(),
         cancel_token,
-        ROUTER_TIMEOUT_SECS,
+        timeout_secs,
     )
     .await?;
     if let Some(output) = try_parse_router_output(&retry_raw) {
@@ -397,6 +400,7 @@ pub async fn call_judge(
     query: &str,
     sources: &[JudgeSource],
     cancel_token: &CancellationToken,
+    timeout_secs: u64,
 ) -> Result<JudgeVerdict, SearchError> {
     if cancel_token.is_cancelled() {
         return Err(SearchError::Cancelled);
@@ -422,7 +426,7 @@ pub async fn call_judge(
         messages,
         serde_json::json!("json"),
         cancel_token,
-        super::config::JUDGE_TIMEOUT_S,
+        timeout_secs,
     )
     .await?;
     if let Ok(mut verdict) = crate::search::judge::parse_verdict(&raw) {
@@ -459,7 +463,7 @@ pub async fn call_judge(
         retry_messages,
         serde_json::json!("json"),
         cancel_token,
-        super::config::JUDGE_TIMEOUT_S,
+        timeout_secs,
     )
     .await?;
     if let Ok(mut verdict) = crate::search::judge::parse_verdict(&retry_raw) {
@@ -973,6 +977,7 @@ mod router_judge_tests {
             "who is he?",
             "2026-04-18",
             &token,
+            ROUTER_TIMEOUT_SECS,
         )
         .await
         .expect("schema-constrained router call should parse");
@@ -1005,6 +1010,7 @@ mod router_judge_tests {
             "tell me about curl CVE",
             "2026-04-18",
             &token,
+            ROUTER_TIMEOUT_SECS,
         )
         .await
         .unwrap();
@@ -1049,6 +1055,7 @@ mod router_judge_tests {
             "what is the status",
             "2026-04-18",
             &token,
+            ROUTER_TIMEOUT_SECS,
         )
         .await
         .unwrap();
@@ -1092,6 +1099,7 @@ mod router_judge_tests {
             "q",
             "2026-04-18",
             &token,
+            ROUTER_TIMEOUT_SECS,
         )
         .await
         .unwrap();
@@ -1114,6 +1122,7 @@ mod router_judge_tests {
             "q",
             "2026-04-18",
             &token,
+            ROUTER_TIMEOUT_SECS,
         )
         .await
         .unwrap_err();
@@ -1142,6 +1151,7 @@ mod router_judge_tests {
             "q",
             "2026-04-18",
             &token,
+            ROUTER_TIMEOUT_SECS,
         )
         .await
         .expect_err("router should fail closed when no valid JSON is recoverable");
@@ -1170,6 +1180,7 @@ mod router_judge_tests {
             "q",
             "2026-04-18",
             &token,
+            ROUTER_TIMEOUT_SECS,
         )
         .await
         .expect_err("router should fail closed when the response shape stays invalid");
@@ -1207,6 +1218,7 @@ mod router_judge_tests {
             "q",
             "2026-04-18",
             &token,
+            ROUTER_TIMEOUT_SECS,
         )
         .await
         .unwrap_err();
@@ -1251,6 +1263,7 @@ mod router_judge_tests {
             "q",
             "2026-04-18",
             &token,
+            ROUTER_TIMEOUT_SECS,
         )
         .await
         .unwrap();
@@ -1296,6 +1309,7 @@ mod router_judge_tests {
             "q",
             &sources,
             &token,
+            crate::search::config::JUDGE_TIMEOUT_S,
         )
         .await
         .unwrap();
@@ -1331,6 +1345,7 @@ mod router_judge_tests {
             "q",
             &[],
             &token,
+            crate::search::config::JUDGE_TIMEOUT_S,
         )
         .await
         .unwrap();
@@ -1357,6 +1372,7 @@ mod router_judge_tests {
             "q",
             &[],
             &token,
+            crate::search::config::JUDGE_TIMEOUT_S,
         )
         .await
         .unwrap_err();
@@ -1384,6 +1400,7 @@ mod router_judge_tests {
             "q",
             &[],
             &token,
+            crate::search::config::JUDGE_TIMEOUT_S,
         )
         .await
         .expect("judge should fall back to safe defaults, not error");
@@ -1416,6 +1433,7 @@ mod router_judge_tests {
             "q",
             &[],
             &token,
+            crate::search::config::JUDGE_TIMEOUT_S,
         )
         .await
         .expect("judge should fall back to safe defaults, not error");
@@ -1463,6 +1481,7 @@ mod router_judge_tests {
             "q",
             &[],
             &token,
+            crate::search::config::JUDGE_TIMEOUT_S,
         )
         .await
         .unwrap();
@@ -1501,6 +1520,7 @@ mod router_judge_tests {
             "q",
             &[],
             &token,
+            crate::search::config::JUDGE_TIMEOUT_S,
         )
         .await
         .unwrap_err();
@@ -1528,6 +1548,7 @@ mod router_judge_tests {
             "q",
             "2026-04-18",
             &token,
+            ROUTER_TIMEOUT_SECS,
         )
         .await
         .unwrap_err();

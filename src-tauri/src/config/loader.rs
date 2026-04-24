@@ -21,11 +21,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::defaults::{
     BOUNDS_COLLAPSED_HEIGHT, BOUNDS_HIDE_COMMIT_DELAY_MS, BOUNDS_MAX_CHAT_HEIGHT,
-    BOUNDS_OVERLAY_WIDTH, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH, BOUNDS_QUOTE_MAX_DISPLAY_CHARS,
-    BOUNDS_QUOTE_MAX_DISPLAY_LINES, CURRENT_SCHEMA_VERSION, DEFAULT_COLLAPSED_HEIGHT,
-    DEFAULT_HIDE_COMMIT_DELAY_MS, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
-    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SYSTEM_PROMPT_BASE, SLASH_COMMAND_PROMPT_APPENDIX,
+    BOUNDS_MAX_ITERATIONS, BOUNDS_OVERLAY_WIDTH, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
+    BOUNDS_QUOTE_MAX_DISPLAY_CHARS, BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_TIMEOUT_S,
+    BOUNDS_TOP_K_URLS, CURRENT_SCHEMA_VERSION, DEFAULT_COLLAPSED_HEIGHT,
+    DEFAULT_HIDE_COMMIT_DELAY_MS, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
+    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
+    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
+    SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::schema::AppConfig;
@@ -196,6 +201,71 @@ pub(crate) fn resolve(config: &mut AppConfig) {
         DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
         "quote.max_context_length",
     );
+
+    // Search section: service URLs.
+    if config.search.searxng_url.trim().is_empty() {
+        config.search.searxng_url = DEFAULT_SEARXNG_URL.to_string();
+    }
+    if config.search.reader_url.trim().is_empty() {
+        config.search.reader_url = DEFAULT_READER_URL.to_string();
+    }
+
+    // Search section: pipeline knobs.
+    clamp_u32(
+        &mut config.search.max_iterations,
+        BOUNDS_MAX_ITERATIONS,
+        DEFAULT_MAX_ITERATIONS,
+        "search.max_iterations",
+    );
+    clamp_u32(
+        &mut config.search.top_k_urls,
+        BOUNDS_TOP_K_URLS,
+        DEFAULT_TOP_K_URLS,
+        "search.top_k_urls",
+    );
+
+    // Search section: timeouts.
+    clamp_u64(
+        &mut config.search.search_timeout_s,
+        BOUNDS_TIMEOUT_S,
+        DEFAULT_SEARCH_TIMEOUT_S,
+        "search.search_timeout_s",
+    );
+    clamp_u64(
+        &mut config.search.reader_per_url_timeout_s,
+        BOUNDS_TIMEOUT_S,
+        DEFAULT_READER_PER_URL_TIMEOUT_S,
+        "search.reader_per_url_timeout_s",
+    );
+    clamp_u64(
+        &mut config.search.reader_batch_timeout_s,
+        BOUNDS_TIMEOUT_S,
+        DEFAULT_READER_BATCH_TIMEOUT_S,
+        "search.reader_batch_timeout_s",
+    );
+    clamp_u64(
+        &mut config.search.judge_timeout_s,
+        BOUNDS_TIMEOUT_S,
+        DEFAULT_JUDGE_TIMEOUT_S,
+        "search.judge_timeout_s",
+    );
+    clamp_u64(
+        &mut config.search.router_timeout_s,
+        BOUNDS_TIMEOUT_S,
+        DEFAULT_ROUTER_TIMEOUT_S,
+        "search.router_timeout_s",
+    );
+
+    // Invariant: batch timeout must exceed per-URL timeout.
+    if config.search.reader_batch_timeout_s <= config.search.reader_per_url_timeout_s {
+        let corrected = config.search.reader_per_url_timeout_s + 5;
+        eprintln!(
+            "thuki: [config] search.reader_batch_timeout_s ({}) must exceed \
+             reader_per_url_timeout_s ({}); correcting to {corrected}",
+            config.search.reader_batch_timeout_s, config.search.reader_per_url_timeout_s,
+        );
+        config.search.reader_batch_timeout_s = corrected;
+    }
 }
 
 /// Composes the user-editable base prompt with the generated slash-command

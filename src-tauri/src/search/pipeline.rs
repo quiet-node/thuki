@@ -388,6 +388,7 @@ pub struct DefaultRouterJudge {
     client: reqwest::Client,
     cancel: CancellationToken,
     today: String,
+    router_timeout_secs: u64,
 }
 
 impl DefaultRouterJudge {
@@ -403,6 +404,7 @@ impl DefaultRouterJudge {
     ///   call inside `call_router_merged`.
     /// - `today`: `YYYY-MM-DD` string injected into the merged prompt so the
     ///   model is anchored to the real calendar date.
+    /// - `router_timeout_secs`: per-call wall-clock limit from `AppConfig.search`.
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new(
         endpoint: String,
@@ -410,6 +412,7 @@ impl DefaultRouterJudge {
         client: reqwest::Client,
         cancel: CancellationToken,
         today: String,
+        router_timeout_secs: u64,
     ) -> Self {
         Self {
             endpoint,
@@ -417,6 +420,7 @@ impl DefaultRouterJudge {
             client,
             cancel,
             today,
+            router_timeout_secs,
         }
     }
 }
@@ -437,6 +441,7 @@ impl RouterJudgeCaller for DefaultRouterJudge {
             query,
             &self.today,
             &self.cancel,
+            self.router_timeout_secs,
         )
         .await
     }
@@ -454,6 +459,7 @@ pub struct DefaultJudge {
     model: String,
     client: reqwest::Client,
     cancel: CancellationToken,
+    judge_timeout_secs: u64,
 }
 
 impl DefaultJudge {
@@ -464,18 +470,21 @@ impl DefaultJudge {
     /// - `client`: shared `reqwest::Client`.
     /// - `cancel`: the pipeline's cancellation token; races against the HTTP
     ///   call inside `call_judge`.
+    /// - `judge_timeout_secs`: per-call wall-clock limit from `AppConfig.search`.
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new(
         endpoint: String,
         model: String,
         client: reqwest::Client,
         cancel: CancellationToken,
+        judge_timeout_secs: u64,
     ) -> Self {
         Self {
             endpoint,
             model,
             client,
             cancel,
+            judge_timeout_secs,
         }
     }
 }
@@ -495,6 +504,7 @@ impl JudgeCaller for DefaultJudge {
             query,
             sources,
             &self.cancel,
+            self.judge_timeout_secs,
         )
         .await
     }
@@ -541,6 +551,7 @@ struct SearchExecutionContext<'a> {
     history: &'a ConversationHistory,
     today: &'a str,
     on_event: &'a (dyn Fn(SearchEvent) + Sync),
+    runtime_config: &'a config::SearchRuntimeConfig,
 }
 
 /// Per-turn values reused across extracted search stages.
@@ -753,10 +764,10 @@ async fn run_gap_refinement_loop(
     mut current_queries: Vec<String>,
     started_at: std::time::Instant,
 ) -> Result<GapLoopDisposition, SearchError> {
-    let gap_round_total = (config::MAX_ITERATIONS as u32).saturating_sub(1);
+    let gap_round_total = (shared.runtime_config.max_iterations as u32).saturating_sub(1);
     let mut hit_iteration_cap = false;
 
-    for attempt in 2..=(config::MAX_ITERATIONS as u32) {
+    for attempt in 2..=(shared.runtime_config.max_iterations as u32) {
         if current_queries.is_empty() {
             break;
         }
@@ -800,8 +811,11 @@ async fn run_gap_refinement_loop(
             queries: current_queries.clone(),
         });
 
-        let gap_search_fut =
-            searxng::search_all_with_endpoint(shared.searxng_endpoint, &current_queries);
+        let gap_search_fut = searxng::search_all_with_endpoint(
+            shared.searxng_endpoint,
+            &current_queries,
+            shared.runtime_config.search_timeout_s,
+        );
         let gap_results = tokio::select! {
             biased;
             _ = shared.cancel_token.cancelled() => {
@@ -887,7 +901,7 @@ async fn run_gap_refinement_loop(
 
         let round_top_urls: Vec<SearxResult> = rerank::rerank(query, new_urls)
             .into_iter()
-            .take(config::TOP_K_URLS)
+            .take(shared.runtime_config.top_k_urls)
             .collect();
 
         let mut rerank_step = trace_step(
@@ -1236,7 +1250,8 @@ async fn run_gap_refinement_loop(
         }
 
         current_queries = round_verdict.gap_queries.clone();
-        hit_iteration_cap = attempt == config::MAX_ITERATIONS as u32 && !current_queries.is_empty();
+        hit_iteration_cap =
+            attempt == shared.runtime_config.max_iterations as u32 && !current_queries.is_empty();
     }
 
     let fallback_chunks: Vec<chunker::Chunk> =
@@ -1293,6 +1308,7 @@ pub async fn run_agentic(
     on_event: &(dyn Fn(SearchEvent) + Sync),
     router: &dyn RouterJudgeCaller,
     judge: &dyn JudgeCaller,
+    runtime_config: &config::SearchRuntimeConfig,
 ) -> Result<(), SearchError> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -1337,6 +1353,7 @@ pub async fn run_agentic(
         history,
         today,
         on_event,
+        runtime_config,
     };
 
     match output.action {
@@ -1396,7 +1413,11 @@ pub async fn run_agentic(
                 }
                 emit_trace(on_event, analyze_step);
 
-                let reader_client = reader::ReaderClient::new_with_base(reader_base_url);
+                let reader_client = reader::ReaderClient::new_with_base(
+                    reader_base_url,
+                    runtime_config.reader_per_url_timeout_s,
+                    runtime_config.reader_batch_timeout_s,
+                );
                 let mut warnings: Vec<SearchWarning> = Vec::new();
                 let mut metadata = SearchMetadata::default();
                 let mut accumulated_chunks: Vec<chunker::Chunk> = Vec::new();
@@ -1422,7 +1443,12 @@ pub async fn run_agentic(
                     queries: vec![query.clone()],
                 });
 
-                let searxng_fut = searxng::search(client, searxng_endpoint, &query);
+                let searxng_fut = searxng::search(
+                    client,
+                    searxng_endpoint,
+                    &query,
+                    runtime_config.search_timeout_s,
+                );
                 let raw_urls = match tokio::select! {
                     biased;
                     _ = cancel_token.cancelled() => Err(SearchError::Cancelled),
@@ -1494,7 +1520,10 @@ pub async fn run_agentic(
 
                 // Stage 2: Rerank URLs, take top K.
                 let reranked = rerank::rerank(&query, raw_urls);
-                let top_urls: Vec<_> = reranked.into_iter().take(config::TOP_K_URLS).collect();
+                let top_urls: Vec<_> = reranked
+                    .into_iter()
+                    .take(runtime_config.top_k_urls)
+                    .collect();
 
                 let mut rerank_step = trace_step(
                     format!("round-{initial_round}-url-rerank"),
@@ -2250,6 +2279,7 @@ mod tests {
             reqwest::Client::new(),
             cancel,
             "2026-04-18".into(),
+            config::ROUTER_TIMEOUT_S,
         );
     }
 
@@ -2261,6 +2291,7 @@ mod tests {
             "mistral".into(),
             reqwest::Client::new(),
             cancel,
+            config::JUDGE_TIMEOUT_S,
         );
     }
 
@@ -2506,6 +2537,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -2545,6 +2577,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -2585,6 +2618,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -2674,6 +2708,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -2740,6 +2775,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -2818,6 +2854,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -2904,6 +2941,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -2959,6 +2997,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3035,6 +3074,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3132,6 +3172,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3207,6 +3248,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3256,6 +3298,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -3325,6 +3368,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3397,6 +3441,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3440,6 +3485,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3484,6 +3530,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -3514,6 +3561,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -3552,6 +3600,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -3607,6 +3656,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -3664,6 +3714,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3736,6 +3787,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3817,6 +3869,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3919,6 +3972,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3999,6 +4053,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4105,6 +4160,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4252,6 +4308,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4370,6 +4427,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4516,6 +4574,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4629,6 +4688,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4755,6 +4815,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4866,6 +4927,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4941,6 +5003,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5051,6 +5114,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5140,6 +5204,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -5225,6 +5290,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5337,6 +5403,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5469,6 +5536,7 @@ mod agentic_tests {
             &cb,
             &router,
             &gap_judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5573,6 +5641,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5690,6 +5759,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5810,6 +5880,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5930,6 +6001,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6063,6 +6135,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6185,6 +6258,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6290,6 +6364,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6380,6 +6455,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6459,6 +6535,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6605,6 +6682,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6675,6 +6753,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6791,6 +6870,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6887,6 +6967,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();

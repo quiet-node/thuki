@@ -14,9 +14,11 @@ use serde::{Deserialize, Serialize};
 
 use super::defaults::{
     CURRENT_SCHEMA_VERSION, DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
-    DEFAULT_QUOTE_MAX_DISPLAY_LINES,
+    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL_NAME,
+    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
+    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
+    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
 };
 
 /// Model configuration. The first entry of `available` is the active model
@@ -116,6 +118,59 @@ impl Default for QuoteSection {
     }
 }
 
+/// Search pipeline and service configuration.
+///
+/// Service URLs control where the SearXNG and reader sidecar processes live.
+/// The defaults match the Docker sandbox bindings in `sandbox/docker-compose.yml`.
+/// Users who remap ports or run the services on a different host set these in
+/// `[search]` in config.toml; no rebuild required.
+///
+/// Pipeline tuning knobs (`max_iterations`, `top_k_urls`) let users trade
+/// search quality against latency. Timeout fields cover slow networks and slow
+/// local hardware. Values that would create an inconsistency (e.g.
+/// `reader_batch_timeout_s <= reader_per_url_timeout_s`) are silently corrected
+/// by the loader.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SearchSection {
+    /// Base URL of the SearXNG instance (scheme + host + port, no path).
+    /// The `/search` endpoint is appended automatically.
+    pub searxng_url: String,
+    /// Base URL of the reader/extractor sidecar (scheme + host + port, no path).
+    pub reader_url: String,
+    /// Maximum number of search-refine iterations before the pipeline gives up.
+    pub max_iterations: u32,
+    /// Number of top-ranked URLs forwarded to the reader after reranking.
+    pub top_k_urls: u32,
+    /// Seconds before a SearXNG query is abandoned.
+    pub search_timeout_s: u64,
+    /// Seconds allowed for a single URL fetch inside the reader.
+    pub reader_per_url_timeout_s: u64,
+    /// Seconds allowed for the full parallel reader batch to complete.
+    /// Must exceed `reader_per_url_timeout_s`; the loader corrects violations.
+    pub reader_batch_timeout_s: u64,
+    /// Seconds before the judge LLM call is abandoned.
+    pub judge_timeout_s: u64,
+    /// Seconds before the router LLM call is abandoned.
+    pub router_timeout_s: u64,
+}
+
+impl Default for SearchSection {
+    fn default() -> Self {
+        Self {
+            searxng_url: DEFAULT_SEARXNG_URL.to_string(),
+            reader_url: DEFAULT_READER_URL.to_string(),
+            max_iterations: DEFAULT_MAX_ITERATIONS,
+            top_k_urls: DEFAULT_TOP_K_URLS,
+            search_timeout_s: DEFAULT_SEARCH_TIMEOUT_S,
+            reader_per_url_timeout_s: DEFAULT_READER_PER_URL_TIMEOUT_S,
+            reader_batch_timeout_s: DEFAULT_READER_BATCH_TIMEOUT_S,
+            judge_timeout_s: DEFAULT_JUDGE_TIMEOUT_S,
+            router_timeout_s: DEFAULT_ROUTER_TIMEOUT_S,
+        }
+    }
+}
+
 /// Top-level application configuration. Managed Tauri state; every subsystem
 /// reads from `State<AppConfig>` and nowhere else. The loader resolves all
 /// empty strings and out-of-bounds numerics to compiled defaults before the
@@ -128,6 +183,7 @@ pub struct AppConfig {
     pub prompt: PromptSection,
     pub window: WindowSection,
     pub quote: QuoteSection,
+    pub search: SearchSection,
 }
 
 impl Default for AppConfig {
@@ -138,6 +194,7 @@ impl Default for AppConfig {
             prompt: PromptSection::default(),
             window: WindowSection::default(),
             quote: QuoteSection::default(),
+            search: SearchSection::default(),
         }
     }
 }
