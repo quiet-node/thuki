@@ -6,7 +6,7 @@
 //! whatever the model actually returned, validates it into a
 //! [`JudgeVerdict`], and enforces shape invariants:
 //!
-//! - `gap_queries` is capped at `GAP_QUERIES_PER_ROUND` and trimmed of blanks.
+//! - `gap_queries` is capped at [`crate::config::defaults::DEFAULT_GAP_QUERIES_PER_ROUND`] and trimmed of blanks.
 //! - When `sufficiency == Sufficient`, `gap_queries` must be empty (it would
 //!   be incoherent otherwise; the pipeline never uses them and carrying stale
 //!   ones pollutes persisted metadata).

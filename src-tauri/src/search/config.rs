@@ -1,56 +1,35 @@
-//! Pipeline-wide constants and runtime configuration for the agentic
-//! `/search` loop.
+//! Runtime configuration adapter for the agentic `/search` pipeline.
 //!
 //! ## Single source of truth
 //!
-//! All user-configurable values live in [`crate::config::defaults`] and are
-//! surfaced to the user through the `[search]` section of
-//! `~/Library/Application Support/com.quietnode.thuki/config.toml`. This
-//! module only owns constants that are **not** user-configurable, because
-//! they are part of the prompt/retry contract: changing them at runtime
-//! would silently break synthesized output rather than tune behavior.
+//! All default values — both user-configurable TOML knobs and pipeline-
+//! internal structural constants — live in [`crate::config::defaults`].
+//! This module owns only the adapter that projects [`AppConfig`] into the
+//! flat [`SearchRuntimeConfig`] view consumed by the pipeline, and the
+//! test-only batch-timeout override that keeps integration tests fast.
 //!
-//! Production code reads runtime values from [`SearchRuntimeConfig`], which
-//! is constructed from the loaded [`AppConfig`] at pipeline entry via
-//! [`SearchRuntimeConfig::from_app_config`]. Tests use
-//! [`SearchRuntimeConfig::default()`], which delegates to the same
-//! `defaults` module so a missing `[search]` section produces identical
-//! behavior to test builds.
+//! Production code constructs [`SearchRuntimeConfig`] once at pipeline entry
+//! via [`SearchRuntimeConfig::from_app_config`]. Tests use
+//! [`SearchRuntimeConfig::default()`], which reads the same `defaults`
+//! constants so a missing `[search]` section behaves identically to tests.
 
 use crate::config::defaults;
 use crate::config::AppConfig;
 
-/// Number of gap-filling queries generated per iteration round.
-pub const GAP_QUERIES_PER_ROUND: usize = 3;
-
-/// Approximate token budget for each retrieved page chunk. Drives the
-/// chunker's split heuristic; downstream prompts assume this exact size.
-pub const CHUNK_TOKEN_SIZE: usize = 500;
-
-/// Number of highest-scoring chunks passed to the synthesis prompt.
-pub const TOP_K_CHUNKS: usize = 8;
-
-/// Milliseconds to wait before retrying a failed LLM call.
-pub const LLM_RETRY_DELAY_MS: u64 = 500;
-
-/// Milliseconds to wait before retrying a failed SearXNG call.
-pub const SEARCH_RETRY_DELAY_MS: u64 = 1000;
-
-/// Milliseconds to wait before retrying a failed reader fetch.
-pub const READER_RETRY_DELAY_MS: u64 = 500;
-
-/// Reader-batch timeout used by the test-only `SearchRuntimeConfig::default()`
-/// override. Reduced to 1 second so `BatchTimeout` paths can be exercised
-/// without sleeping for the production 30-second budget on every test run.
+/// Reader-batch timeout used by the test-only [`SearchRuntimeConfig::default`]
+/// override. Reduced to 1 s so the `BatchTimeout` error path in the reader
+/// can be exercised without sleeping for the production 30-second budget.
 #[cfg(test)]
 pub(crate) const TEST_READER_BATCH_TIMEOUT_S: u64 = 1;
 
 /// Runtime search configuration resolved from [`AppConfig`] at pipeline entry.
 ///
 /// Owning the runtime view as a flat struct (rather than threading
-/// `&AppConfig` through the pipeline) keeps the search code free of any
-/// dependency on the global config layout: only the loader and this struct
-/// know about the `[search]` TOML schema.
+/// `&AppConfig` through the pipeline) keeps search code free of any
+/// dependency on the global config layout: only this module knows about the
+/// `[search]` TOML schema. The `u32 -> usize` width conversions for
+/// `max_iterations` and `top_k_urls` are performed once here so the pipeline
+/// can index and count without scattered casts.
 #[derive(Debug, Clone)]
 pub struct SearchRuntimeConfig {
     /// Base URL of the SearXNG instance (scheme + host + port, no path).
@@ -76,11 +55,9 @@ pub struct SearchRuntimeConfig {
 impl SearchRuntimeConfig {
     /// Constructs the runtime config from the loaded [`AppConfig`].
     ///
-    /// Performs the `u32 -> usize` width conversion at the boundary so the
-    /// pipeline can index and count without further casts. The loader has
-    /// already clamped every numeric field to its sanity bounds and replaced
-    /// any empty URL with the compiled default, so all fields are guaranteed
-    /// to hold usable values when this runs.
+    /// The loader has already clamped every numeric field to its sanity bounds
+    /// and replaced any empty URL with the compiled default, so all fields are
+    /// guaranteed to hold usable values when this runs.
     pub fn from_app_config(cfg: &AppConfig) -> Self {
         Self {
             searxng_url: cfg.search.searxng_url.clone(),
@@ -133,17 +110,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pipeline_only_constants_have_sane_bounds() {
-        assert!((1..=5).contains(&GAP_QUERIES_PER_ROUND));
-        assert!((128..=2048).contains(&CHUNK_TOKEN_SIZE));
-        assert!((1..=32).contains(&TOP_K_CHUNKS));
-    }
-
-    #[test]
-    fn retry_delays_are_bounded() {
-        assert!(LLM_RETRY_DELAY_MS <= 2_000);
-        assert!(SEARCH_RETRY_DELAY_MS <= 2_000);
-        assert!(READER_RETRY_DELAY_MS <= 2_000);
+    fn pipeline_internal_defaults_have_sane_bounds() {
+        assert!((1..=5).contains(&defaults::DEFAULT_GAP_QUERIES_PER_ROUND));
+        assert!((128..=2048).contains(&defaults::DEFAULT_CHUNK_TOKEN_SIZE));
+        assert!((1..=32).contains(&defaults::DEFAULT_TOP_K_CHUNKS));
+        assert!(defaults::DEFAULT_READER_RETRY_DELAY_MS <= 2_000);
     }
 
     #[test]

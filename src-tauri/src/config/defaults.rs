@@ -56,10 +56,28 @@ pub const BOUNDS_QUOTE_MAX_CONTEXT_LENGTH: (u32, u32) = (1, 65_536);
 pub const DEFAULT_SEARXNG_URL: &str = "http://127.0.0.1:25017";
 pub const DEFAULT_READER_URL: &str = "http://127.0.0.1:25018";
 
-/// Search pipeline tuning defaults. These mirror the compiled constants in
-/// `search/config.rs`; the TOML value takes effect at runtime.
+/// Default values for user-configurable search pipeline tuning knobs.
+/// `max_iterations` caps the search-refine loop count; `top_k_urls` limits
+/// how many reranked URLs are forwarded to the reader. Both are overridable
+/// under `[search]` in config.toml.
 pub const DEFAULT_MAX_ITERATIONS: u32 = 3;
 pub const DEFAULT_TOP_K_URLS: u32 = 10;
+
+// Pipeline-internal defaults: not exposed in config.toml because they are
+// part of the prompt and retry contract. Changing these values alters output
+// shape and quality, not only latency, so they are intentionally not
+// user-tunable at runtime.
+
+/// Gap-filling queries generated per iteration round. Drives the judge
+/// normalization cap in `search::judge::normalize_verdict`.
+pub const DEFAULT_GAP_QUERIES_PER_ROUND: usize = 3;
+/// Approximate token budget for each retrieved page chunk. Drives the
+/// chunker split heuristic; downstream prompts assume this exact size.
+pub const DEFAULT_CHUNK_TOKEN_SIZE: usize = 500;
+/// Number of highest-scoring chunks forwarded to the synthesis prompt.
+pub const DEFAULT_TOP_K_CHUNKS: usize = 8;
+/// Milliseconds before retrying a failed reader fetch.
+pub const DEFAULT_READER_RETRY_DELAY_MS: u64 = 500;
 
 /// Search timeout defaults (seconds).
 pub const DEFAULT_SEARCH_TIMEOUT_S: u64 = 20;

@@ -433,7 +433,7 @@ pub async fn call_judge(
     if let Ok(mut verdict) = crate::search::judge::parse_verdict(&raw) {
         crate::search::judge::normalize_verdict(
             &mut verdict,
-            crate::search::config::GAP_QUERIES_PER_ROUND,
+            crate::config::defaults::DEFAULT_GAP_QUERIES_PER_ROUND,
         );
         return Ok(verdict);
     }
@@ -470,7 +470,7 @@ pub async fn call_judge(
     if let Ok(mut verdict) = crate::search::judge::parse_verdict(&retry_raw) {
         crate::search::judge::normalize_verdict(
             &mut verdict,
-            crate::search::config::GAP_QUERIES_PER_ROUND,
+            crate::config::defaults::DEFAULT_GAP_QUERIES_PER_ROUND,
         );
         return Ok(verdict);
     }
@@ -486,7 +486,7 @@ pub async fn call_judge(
     };
     crate::search::judge::normalize_verdict(
         &mut verdict,
-        crate::search::config::GAP_QUERIES_PER_ROUND,
+        crate::config::defaults::DEFAULT_GAP_QUERIES_PER_ROUND,
     );
     Ok(verdict)
 }
