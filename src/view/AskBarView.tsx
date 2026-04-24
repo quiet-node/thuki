@@ -5,7 +5,7 @@ import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
-import { ModelPicker } from '../components/ModelPicker';
+import { ModelPickerList, ModelPickerTrigger } from '../components/ModelPicker';
 import { Tooltip } from '../components/Tooltip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
@@ -301,6 +301,48 @@ export function AskBarView({
     availableModels &&
     availableModels.length > 0 &&
     onModelSelect,
+  );
+
+  /** Whether the inline model picker list is currently expanded. */
+  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
+  const modelPickerTriggerRef = useRef<HTMLButtonElement>(null);
+  const modelPickerListRef = useRef<HTMLDivElement>(null);
+
+  /** Combined gate: don't show the list while busy or without data. */
+  const showModelPicker = isModelPickerOpen && !isBusy && modelPickerAvailable;
+
+  /* Auto-close the picker when generation starts. */
+  /* eslint-disable @eslint-react/set-state-in-effect -- intentional: mirror the
+     busy prop into the local open state so a mid-open busy flip cleanly closes
+     the list. No secondary effects are triggered by this reset. */
+  useEffect(() => {
+    if (isBusy && isModelPickerOpen) setIsModelPickerOpen(false);
+  }, [isBusy, isModelPickerOpen]);
+  /* eslint-enable @eslint-react/set-state-in-effect */
+
+  /* Outside-click closes the picker. Listener attached only while open. */
+  useEffect(() => {
+    if (!showModelPicker) return;
+    const handleMouseDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (modelPickerTriggerRef.current?.contains(target)) return;
+      if (modelPickerListRef.current?.contains(target)) return;
+      setIsModelPickerOpen(false);
+    };
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [showModelPicker]);
+
+  const toggleModelPicker = useCallback(() => {
+    setIsModelPickerOpen((open) => !open);
+  }, []);
+
+  const handleModelRowSelect = useCallback(
+    (model: string) => {
+      onModelSelect?.(model);
+      setIsModelPickerOpen(false);
+    },
+    [onModelSelect],
   );
 
   // ─── Command suggestion state ─────────────────────────────────────────────
@@ -602,6 +644,19 @@ export function AskBarView({
           </motion.div>
         )}
       </AnimatePresence>
+      {/* Model picker list renders inline above the input row in the same
+          DOM-flow pattern as CommandSuggestion. The morphing-container
+          ResizeObserver picks up the added height and grows the Tauri
+          window upward to reveal the menu without clipping. */}
+      {modelPickerAvailable && activeModel && availableModels && (
+        <ModelPickerList
+          listRef={modelPickerListRef}
+          activeModel={activeModel}
+          models={availableModels}
+          isOpen={showModelPicker}
+          onSelect={handleModelRowSelect}
+        />
+      )}
       <div className="relative">
         <div className="flex items-center w-full px-3 py-2.5 gap-2">
           <img
@@ -678,17 +733,16 @@ export function AskBarView({
             </Tooltip>
           )}
 
-          {modelPickerAvailable &&
-            activeModel &&
-            availableModels &&
-            onModelSelect && (
-              <ModelPicker
-                activeModel={activeModel}
-                models={availableModels}
+          {modelPickerAvailable && (
+            <Tooltip label="Choose model">
+              <ModelPickerTrigger
+                triggerRef={modelPickerTriggerRef}
+                isOpen={showModelPicker}
                 disabled={isBusy}
-                onSelect={onModelSelect}
+                onToggle={toggleModelPicker}
               />
-            )}
+            </Tooltip>
+          )}
 
           <motion.button
             type="button"

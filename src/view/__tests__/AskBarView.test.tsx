@@ -324,6 +324,76 @@ describe('AskBarView', () => {
     expect(screen.queryByRole('menuitem', { name: 'qwen2.5:7b' })).toBeNull();
   });
 
+  it('keeps the popup open when a mousedown lands inside a row before click', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={true}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        activeModel="gemma4:e2b"
+        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
+        onModelSelect={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    const row = screen.getByRole('menuitem', { name: 'qwen2.5:7b' });
+    fireEvent.mouseDown(row);
+    expect(
+      screen.getByRole('menuitem', { name: 'qwen2.5:7b' }),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the popup open when a mousedown lands on the trigger itself', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={true}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        activeModel="gemma4:e2b"
+        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
+        onModelSelect={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: 'Choose model' });
+    fireEvent.click(trigger);
+    fireEvent.mouseDown(trigger);
+    expect(
+      screen.getByRole('menuitem', { name: 'qwen2.5:7b' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders a Choose model tooltip wrapper around the trigger', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={true}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        activeModel="gemma4:e2b"
+        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
+        onModelSelect={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: 'Choose model' });
+    // Hovering the Tooltip wrapper reveals the label text via portal.
+    fireEvent.mouseEnter(trigger.parentElement!);
+    expect(screen.getByText('Choose model')).toBeInTheDocument();
+  });
+
   it('hides the model picker trigger when no models are available', () => {
     render(
       <AskBarView
