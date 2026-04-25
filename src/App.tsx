@@ -35,7 +35,6 @@ import './App.css';
 /** Fallback model name used before get_model_picker_state resolves at startup. */
 const DEFAULT_MODEL_FALLBACK = 'gemma4:e2b';
 
-
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 const ONBOARDING_EVENT = 'thuki://onboarding';
 
@@ -242,8 +241,6 @@ function App() {
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
   const config = useConfig();
   const quote = config.quote;
-  const { activeModel, availableModels, refreshModels, setActiveModel } =
-    useModelSelection();
 
   /**
    * True when the window is near the screen bottom and should grow upward.

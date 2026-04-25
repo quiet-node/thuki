@@ -749,10 +749,8 @@ pub fn run() {
             // even before the first picker open reconciles.
             let persisted_active = database::get_config(&db_conn, models::ACTIVE_MODEL_KEY)
                 .expect("failed to read active_model from app_config");
-            let initial_active_model = models::resolve_seed_active_model(
-                persisted_active.as_deref(),
-                &bootstrap_active,
-            );
+            let initial_active_model =
+                models::resolve_seed_active_model(persisted_active.as_deref(), &bootstrap_active);
             app.manage(models::ActiveModelState(std::sync::Mutex::new(
                 initial_active_model,
             )));

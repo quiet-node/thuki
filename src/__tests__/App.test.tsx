@@ -96,10 +96,17 @@ describe('App', () => {
       getLastChannel()?.simulateMessage({ type: 'Done' });
     });
 
-    fireEvent.click(screen.getByLabelText('Save conversation'));
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Save conversation'));
+    });
 
+    // The picker selection is threaded into `generate_title` (which uses the
+    // active slug as the title-generation model) and stamped onto the
+    // assistant message via `model_name`. `save_conversation` itself does
+    // not take a top-level `model` arg; the active model is sourced
+    // backend-side from the loaded TOML AppConfig.
     expect(invoke).toHaveBeenCalledWith(
-      'save_conversation',
+      'generate_title',
       expect.objectContaining({ model: 'qwen2.5:7b' }),
     );
   });
