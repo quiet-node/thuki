@@ -297,6 +297,121 @@ pub async fn set_active_model(
     Ok(())
 }
 
+// ─── Model setup gate (Phase 3 onboarding) ──────────────────────────────────
+
+/// Result of probing the local Ollama daemon for setup readiness.
+///
+/// Drives the Phase 3 onboarding gate that fires after the user grants
+/// macOS permissions but before the chat overlay is allowed to open.
+/// Variants are emitted to the frontend in `snake_case` with an
+/// internally-tagged `state` discriminator so the React side can route
+/// on a single string field without inspecting payload shape.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ModelSetupState {
+    /// `/api/tags` could not be reached. Treat as "Ollama is not installed
+    /// or not running"; the UI must guide the user to install or start it.
+    OllamaUnreachable,
+    /// `/api/tags` responded successfully but the installed list is empty.
+    /// The UI must guide the user to `ollama pull <slug>`.
+    NoModelsInstalled,
+    /// Ollama is running with at least one installed model. `active_slug`
+    /// is the slug we resolved (persisted preference if still installed,
+    /// else first installed) and `installed` is the live list for the
+    /// frontend to render in the picker.
+    Ready {
+        active_slug: String,
+        installed: Vec<String>,
+    },
+}
+
+/// Pure state-machine derivation: maps the result of probing `/api/tags`
+/// plus the persisted active-slug preference into a [`ModelSetupState`].
+///
+/// Exists as a free function so the three branches can be unit-tested
+/// without spinning up an HTTP server or a Tauri runtime. The fetch
+/// result and persisted preference are the only inputs; no I/O happens
+/// here. The Tauri command is a thin wrapper that calls the fetcher,
+/// reads the persisted slug from SQLite, then delegates here.
+///
+/// Resolution rules for the Ready arm match
+/// [`resolve_active_model`]: prefer the persisted slug when it is still
+/// installed; otherwise fall back to the first installed slug. The
+/// `bootstrap` argument is the compile-time fallback used only when
+/// both inputs are absent, which by definition cannot happen on the
+/// Ready arm (it would have routed to NoModelsInstalled).
+pub fn derive_model_setup_state(
+    installed_result: Result<Vec<String>, String>,
+    persisted: Option<&str>,
+    bootstrap: &str,
+) -> ModelSetupState {
+    match installed_result {
+        Err(_) => ModelSetupState::OllamaUnreachable,
+        Ok(installed) if installed.is_empty() => ModelSetupState::NoModelsInstalled,
+        Ok(installed) => {
+            let active_slug = resolve_active_model(persisted, &installed, bootstrap);
+            ModelSetupState::Ready {
+                active_slug,
+                installed,
+            }
+        }
+    }
+}
+
+/// Probes Ollama for setup readiness and returns the typed
+/// [`ModelSetupState`] for the frontend onboarding gate.
+///
+/// Idempotent: safe to call on every overlay open. The Ready arm also
+/// commits two side effects, both intentionally bounded:
+///
+/// 1. If the resolved slug differs from the persisted slug AND the live
+///    installed list is non-empty, persist the resolved slug. This heals
+///    the case where a user removed their previously-selected model with
+///    `ollama rm` between launches.
+/// 2. Mirror the resolved slug into the in-memory [`ActiveModelState`] so
+///    `ask_ollama` and `search_pipeline` see it on the next request
+///    without an extra DB read.
+///
+/// Both writes are gated through [`should_persist_resolved`] which
+/// refuses to persist when Ollama reports an empty inventory (i.e.
+/// daemon is up but mid-restart), so a transient empty response cannot
+/// clobber a valid persisted choice.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn check_model_setup(
+    client: tauri::State<'_, reqwest::Client>,
+    db: tauri::State<'_, Database>,
+    active_model: tauri::State<'_, ActiveModelState>,
+) -> Result<ModelSetupState, String> {
+    let installed_result = fetch_installed_model_names(&client, DEFAULT_OLLAMA_URL).await;
+
+    let persisted = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        get_config(&conn, ACTIVE_MODEL_KEY).map_err(|e| e.to_string())?
+    };
+
+    let state = derive_model_setup_state(
+        installed_result,
+        persisted.as_deref(),
+        crate::config::defaults::DEFAULT_MODEL_NAME,
+    );
+
+    if let ModelSetupState::Ready {
+        ref active_slug,
+        ref installed,
+    } = state
+    {
+        if should_persist_resolved(installed, persisted.as_deref(), active_slug) {
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            set_config(&conn, ACTIVE_MODEL_KEY, active_slug).map_err(|e| e.to_string())?;
+        }
+        let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
+        *guard = active_slug.clone();
+    }
+
+    Ok(state)
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -746,6 +861,114 @@ mod tests {
         assert_eq!(
             MODEL_NOT_INSTALLED_ERR_PREFIX,
             "Model is not installed in Ollama: "
+        );
+    }
+
+    // ── derive_model_setup_state (Phase 3 onboarding gate) ──────────────────
+
+    #[test]
+    fn derive_setup_state_returns_unreachable_on_fetch_error() {
+        let state =
+            derive_model_setup_state(Err("connection refused".to_string()), None, "gemma4:e2b");
+        assert_eq!(state, ModelSetupState::OllamaUnreachable);
+    }
+
+    #[test]
+    fn derive_setup_state_returns_unreachable_even_when_persisted_choice_exists() {
+        // Past selection must NOT mask a current outage. The user needs to
+        // see the "Ollama not detected" screen even if SQLite remembers a slug.
+        let state =
+            derive_model_setup_state(Err("timeout".to_string()), Some("gemma4:e4b"), "gemma4:e2b");
+        assert_eq!(state, ModelSetupState::OllamaUnreachable);
+    }
+
+    #[test]
+    fn derive_setup_state_returns_no_models_when_inventory_empty() {
+        let state = derive_model_setup_state(Ok(vec![]), None, "gemma4:e2b");
+        assert_eq!(state, ModelSetupState::NoModelsInstalled);
+    }
+
+    #[test]
+    fn derive_setup_state_returns_no_models_even_with_stale_persisted_slug() {
+        // Daemon up but the user removed every model with `ollama rm`. The
+        // persisted slug is no longer valid; the gate must re-engage.
+        let state = derive_model_setup_state(Ok(vec![]), Some("removed-model:7b"), "gemma4:e2b");
+        assert_eq!(state, ModelSetupState::NoModelsInstalled);
+    }
+
+    #[test]
+    fn derive_setup_state_ready_keeps_persisted_when_still_installed() {
+        let state = derive_model_setup_state(
+            Ok(vec!["gemma4:e2b".to_string(), "llama3:8b".to_string()]),
+            Some("llama3:8b"),
+            "gemma4:e2b",
+        );
+        assert_eq!(
+            state,
+            ModelSetupState::Ready {
+                active_slug: "llama3:8b".to_string(),
+                installed: vec!["gemma4:e2b".to_string(), "llama3:8b".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn derive_setup_state_ready_falls_back_to_first_when_persisted_gone() {
+        let state = derive_model_setup_state(
+            Ok(vec!["gemma4:e4b".to_string(), "llama3:8b".to_string()]),
+            Some("removed-model:7b"),
+            "gemma4:e2b",
+        );
+        assert_eq!(
+            state,
+            ModelSetupState::Ready {
+                active_slug: "gemma4:e4b".to_string(),
+                installed: vec!["gemma4:e4b".to_string(), "llama3:8b".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn derive_setup_state_ready_uses_first_when_no_persisted_choice() {
+        // First-time user who somehow has models installed already (rare:
+        // they used Ollama for something else first). Pick the first.
+        let state =
+            derive_model_setup_state(Ok(vec!["qwen2.5:7b".to_string()]), None, "gemma4:e2b");
+        assert_eq!(
+            state,
+            ModelSetupState::Ready {
+                active_slug: "qwen2.5:7b".to_string(),
+                installed: vec!["qwen2.5:7b".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn model_setup_state_serializes_with_state_tag_for_frontend() {
+        // Wire format must be discriminated on a `state` field so the
+        // React side can route on a single string before pattern-matching
+        // payload shape. Drift here breaks the frontend dispatch.
+        let unreachable = serde_json::to_value(ModelSetupState::OllamaUnreachable).unwrap();
+        assert_eq!(
+            unreachable,
+            serde_json::json!({"state": "ollama_unreachable"})
+        );
+
+        let none = serde_json::to_value(ModelSetupState::NoModelsInstalled).unwrap();
+        assert_eq!(none, serde_json::json!({"state": "no_models_installed"}));
+
+        let ready = serde_json::to_value(ModelSetupState::Ready {
+            active_slug: "gemma4:e2b".to_string(),
+            installed: vec!["gemma4:e2b".to_string()],
+        })
+        .unwrap();
+        assert_eq!(
+            ready,
+            serde_json::json!({
+                "state": "ready",
+                "active_slug": "gemma4:e2b",
+                "installed": ["gemma4:e2b"],
+            })
         );
     }
 }
