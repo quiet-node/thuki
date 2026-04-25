@@ -59,8 +59,7 @@ reader_url = "http://127.0.0.1:25018"
 # Pipeline tuning: trade quality against latency.
 max_iterations = 3
 top_k_urls = 10
-# Per-stage timeouts in seconds. Increase on slow networks or slow local
-# hardware; decrease only if you know your sandbox is faster than these.
+# Per-stage timeouts in seconds.
 search_timeout_s = 20
 reader_per_url_timeout_s = 10
 reader_batch_timeout_s = 30
@@ -68,61 +67,116 @@ judge_timeout_s = 30
 router_timeout_s = 45
 ```
 
+## Reading the reference tables
+
+Every domain below is shown as a single table that lists **all** constants Thuki uses in that area: both the ones you can tune in `config.toml` and the ones baked in at compile time. The columns are:
+
+- **Constant**: the TOML key (tunable) or Rust/TypeScript identifier (baked-in).
+- **Default**: the value Thuki ships with.
+- **Tunable?**: `Yes` if editable via `config.toml`, `No` if compiled in.
+- **Why not tunable**: only filled for baked-in constants; explains why it is locked.
+- **Bounds**: only filled for tunable numerics; values outside are clamped to defaults with a stderr warning.
+- **Description**: what the constant controls.
+
 ## Reference
 
 ### `[model]`
 
-| Field | Description | Default |
-| :--- | :--- | :--- |
-| `available` | Ordered list of Ollama model names Thuki may use. **The first entry is the active model for all inference.** Reorder the list to switch. | `["gemma4:e2b"]` |
-| `ollama_url` | HTTP base URL of the local Ollama instance. | `"http://127.0.0.1:11434"` |
+Active model and the Ollama endpoint Thuki talks to.
 
-If you change `active` to a model that has not been pulled, the next request surfaces a "Model not found" error with the exact `ollama pull <name>` command to run.
+| Constant     | Default                    | Tunable? | Why not tunable | Bounds         | Description                                                                                 |
+| :----------- | :------------------------- | :------- | :-------------- | :------------- | :------------------------------------------------------------------------------------------ |
+| `available`  | `["gemma4:e2b"]`           | Yes      | —               | non-empty list | Ordered list of Ollama model names. **First entry is the active model.** Reorder to switch. |
+| `ollama_url` | `"http://127.0.0.1:11434"` | Yes      | —               | non-empty URL  | HTTP base URL of the local Ollama instance.                                                 |
+
+If the active model has not been pulled, the next request surfaces a "Model not found" error with the exact `ollama pull <name>` command to run.
 
 ### `[prompt]`
 
-| Field | Description | Default |
-| :--- | :--- | :--- |
-| `system` | User-editable persona prompt prepended to every conversation. Leave empty (`""`) to use the built-in secretary persona. Thuki always appends its generated slash-command appendix separately, so slash command knowledge is never lost. | `""` |
+The system prompt Thuki sends with every conversation.
+
+| Constant                        | Default                                | Tunable? | Why not tunable                                                                                                                                   | Bounds     | Description                                                        |
+| :------------------------------ | :------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------------ | :--------- | :----------------------------------------------------------------- |
+| `system`                        | `""`                                   | Yes      | —                                                                                                                                                 | any string | User persona prompt. Empty = use built-in Thuki secretary persona. |
+| `DEFAULT_SYSTEM_PROMPT_BASE`    | `prompts/system_prompt.txt`            | No       | Built-in fallback; the user-editable override is `system` above.                                                                                  | —          | Secretary persona used when `system` is empty.                     |
+| `SLASH_COMMAND_PROMPT_APPENDIX` | `prompts/generated/slash_commands.txt` | No       | Auto-generated from the slash-command registry at build time; editing it by hand would desynchronize model instructions from the actual commands. | —          | Appended to every prompt so slash-command knowledge is never lost. |
 
 ### `[window]`
 
-| Field | Description | Default | Bounds |
-| :--- | :--- | :--- | :--- |
-| `overlay_width` | Logical width of the overlay panel. | `600.0` | `[200.0, 2000.0]` |
-| `collapsed_height` | Height of the AskBar (collapsed) state. | `80.0` | `[40.0, 400.0]` |
-| `max_chat_height` | Upper bound on the expanded chat window. | `648.0` | `[200.0, 2000.0]` |
-| `hide_commit_delay_ms` | Delay before the native window is hidden after the exit animation starts. | `350` | `[0, 5000]` |
+Overlay panel geometry.
+
+| Constant               | Default | Tunable? | Why not tunable | Bounds            | Description                                                                |
+| :--------------------- | :------ | :------- | :-------------- | :---------------- | :------------------------------------------------------------------------- |
+| `overlay_width`        | `600.0` | Yes      | —               | `[200.0, 2000.0]` | Logical width of the overlay panel.                                        |
+| `collapsed_height`     | `80.0`  | Yes      | —               | `[40.0, 400.0]`   | Height of the AskBar (collapsed) state.                                    |
+| `max_chat_height`      | `648.0` | Yes      | —               | `[200.0, 2000.0]` | Upper bound on the expanded chat window.                                   |
+| `hide_commit_delay_ms` | `350`   | Yes      | —               | `[0, 5000]`       | Delay (ms) before the native window hides after the exit animation starts. |
 
 ### `[quote]`
 
-Controls how selected-text quotes are shown in the AskBar preview and chat bubbles, and how much selected context is forwarded to Ollama.
+Selected-text quote preview and context forwarding.
 
-| Field | Description | Default | Bounds |
-| :--- | :--- | :--- | :--- |
-| `max_display_lines` | Maximum number of lines shown in the quote preview. | `4` | `[1, 100]` |
-| `max_display_chars` | Maximum total characters shown in the quote preview. | `300` | `[1, 10000]` |
-| `max_context_length` | Maximum characters of selected text included in the prompt sent to Ollama. | `4096` | `[1, 65536]` |
+| Constant             | Default | Tunable? | Why not tunable | Bounds       | Description                                              |
+| :------------------- | :------ | :------- | :-------------- | :----------- | :------------------------------------------------------- |
+| `max_display_lines`  | `4`     | Yes      | —               | `[1, 100]`   | Maximum lines shown in the quote preview.                |
+| `max_display_chars`  | `300`   | Yes      | —               | `[1, 10000]` | Maximum characters shown in the quote preview.           |
+| `max_context_length` | `4096`  | Yes      | —               | `[1, 65536]` | Maximum characters of selected text forwarded to Ollama. |
 
 ### `[search]`
 
-Controls the agentic `/search` pipeline: where to reach the local sandbox services, how many refinement rounds to attempt, and how long each network stage may run before being abandoned.
+Agentic `/search` pipeline: sandbox endpoints, iteration/top-K budgets, per-stage timeouts, and the pipeline-internal shape constants the prompts depend on.
 
-The defaults match the localhost-only ports bound by `sandbox/docker-compose.yml`. URLs must include the scheme, host, and port, with no path; Thuki appends the `/search` and `/extract` paths automatically. Empty strings are replaced with the compiled defaults at load time, and out-of-bounds numerics are clamped (a warning is logged to stderr).
+URLs must include scheme, host, and port, with no path; Thuki appends `/search` and `/extract` automatically. Empty strings are replaced with the compiled defaults at load time, and out-of-bounds numerics are clamped (a warning is logged to stderr).
 
-| Field | Description | Default | Bounds |
-| :--- | :--- | :--- | :--- |
-| `searxng_url` | Base URL of the SearXNG instance. | `"http://127.0.0.1:25017"` | non-empty |
-| `reader_url` | Base URL of the reader/extractor sidecar. | `"http://127.0.0.1:25018"` | non-empty |
-| `max_iterations` | Maximum number of search-refine iterations before the pipeline gives up. | `3` | `[1, 10]` |
-| `top_k_urls` | Number of top-ranked URLs forwarded to the reader after reranking. | `10` | `[1, 20]` |
-| `search_timeout_s` | Seconds before a SearXNG query is abandoned. | `20` | `[1, 300]` |
-| `reader_per_url_timeout_s` | Seconds allowed for a single URL fetch inside the reader. | `10` | `[1, 300]` |
-| `reader_batch_timeout_s` | Seconds allowed for the full parallel reader batch. Must exceed `reader_per_url_timeout_s`; the loader corrects violations to `reader_per_url_timeout_s + 5`. | `30` | `[1, 300]` |
-| `judge_timeout_s` | Seconds before the judge LLM call is abandoned. | `30` | `[1, 300]` |
-| `router_timeout_s` | Seconds before the router LLM call is abandoned. | `45` | `[1, 300]` |
+For security, both URLs default to loopback (`127.0.0.1`) and are intended to stay there. Pointing them at a remote host disables the sandbox's network isolation guarantees.
 
-For security, both URLs default to loopback (`127.0.0.1`) and are intended to stay there. Pointing them at a remote host disables the sandbox's network isolation guarantees: the reader will fetch arbitrary pages on behalf of the LLM router output, which is an SSRF amplifier if the host has access to non-public networks.
+| Constant                        | Default                    | Tunable? | Why not tunable                                                                                                                              | Bounds        | Description                                                                                                                                                   |
+| :------------------------------ | :------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------- | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `searxng_url`                   | `"http://127.0.0.1:25017"` | Yes      | —                                                                                                                                            | non-empty URL | Base URL of the SearXNG instance.                                                                                                                             |
+| `reader_url`                    | `"http://127.0.0.1:25018"` | Yes      | —                                                                                                                                            | non-empty URL | Base URL of the reader/extractor sidecar.                                                                                                                     |
+| `max_iterations`                | `3`                        | Yes      | —                                                                                                                                            | `[1, 10]`     | Max search-refine rounds before the pipeline gives up.                                                                                                        |
+| `top_k_urls`                    | `10`                       | Yes      | —                                                                                                                                            | `[1, 20]`     | URLs forwarded to the reader after reranking.                                                                                                                 |
+| `search_timeout_s`              | `20`                       | Yes      | —                                                                                                                                            | `[1, 300]`    | Seconds before a SearXNG query is abandoned.                                                                                                                  |
+| `reader_per_url_timeout_s`      | `10`                       | Yes      | —                                                                                                                                            | `[1, 300]`    | Seconds allowed for a single URL fetch in the reader.                                                                                                         |
+| `reader_batch_timeout_s`        | `30`                       | Yes      | —                                                                                                                                            | `[1, 300]`    | Seconds allowed for the full parallel reader batch. Must exceed `reader_per_url_timeout_s`; the loader corrects violations to `reader_per_url_timeout_s + 5`. |
+| `judge_timeout_s`               | `30`                       | Yes      | —                                                                                                                                            | `[1, 300]`    | Seconds before the judge LLM call is abandoned.                                                                                                               |
+| `router_timeout_s`              | `45`                       | Yes      | —                                                                                                                                            | `[1, 300]`    | Seconds before the router LLM call is abandoned.                                                                                                              |
+| `GAP_QUERIES_PER_ROUND`         | `3`                        | No       | Drives the judge-normalization cap and the prompt structure; changing it silently alters output quality rather than producing a clear error. | —             | Gap-filling queries generated per iteration round.                                                                                                            |
+| `CHUNK_TOKEN_SIZE`              | `500`                      | No       | Downstream synthesis prompts assume this exact chunk size; rerank scoring is calibrated to it.                                               | —             | Approximate token budget per retrieved chunk.                                                                                                                 |
+| `TOP_K_CHUNKS`                  | `8`                        | No       | Coupled to the synthesis prompt's context budget; larger values overflow the model window.                                                   | —             | Highest-scoring chunks forwarded to synthesis.                                                                                                                |
+| `DEFAULT_READER_RETRY_DELAY_MS` | `500`                      | No       | Balances pressure on the sandbox reader against perceived responsiveness; no user signal that it needs to vary.                              | —             | Milliseconds before retrying a failed reader fetch.                                                                                                           |
+
+### `[activation]` (not in TOML)
+
+Double-tap Control hotkey and the Accessibility permission poller. The entire domain is compiled in: the CGEventTap callback runs on a thread that cannot read Tauri managed state, so exposing these through `config.toml` would require a redesign of the event-tap plumbing.
+
+| Constant                   | Default  | Tunable? | Why not tunable                                                                                                                           | Bounds | Description                                                                          |
+| :------------------------- | :------- | :------- | :---------------------------------------------------------------------------------------------------------------------------------------- | :----- | :----------------------------------------------------------------------------------- |
+| `ACTIVATION_WINDOW`        | `400 ms` | No       | Event-tap callback cannot read Tauri managed state; would require a redesign to expose. No user has reported needing a different cadence. | —      | Max time between the two Control taps that counts as an activation.                  |
+| `ACTIVATION_COOLDOWN`      | `600 ms` | No       | Same as above.                                                                                                                            | —      | Minimum interval between successive activations; prevents accidental double-toggles. |
+| `KC_PRIMARY_L`             | `0x3b`   | No       | macOS hardware key code for left Control. Not user-meaningful; wrong value would brick activation.                                        | —      | Left Control keycode.                                                                |
+| `KC_PRIMARY_R`             | `0x3e`   | No       | macOS hardware key code for right Control. Not user-meaningful; wrong value would brick activation.                                       | —      | Right Control keycode.                                                               |
+| `MAX_PERMISSION_ATTEMPTS`  | `6`      | No       | Internal retry budget for the Accessibility prompt; no user-facing reason to tune.                                                        | —      | How many times the permission poller retries.                                        |
+| `PERMISSION_POLL_INTERVAL` | `5 s`    | No       | Same as above.                                                                                                                            | —      | Delay between permission-check cycles.                                               |
+
+### `[vision]` (not in TOML)
+
+Image attachments for multimodal requests. Limits are dictated by the Ollama vision input protocol and JPEG quality tradeoffs, so none are exposed for tuning.
+
+| Constant                 | Default   | Tunable? | Why not tunable                                                                                                          | Bounds | Description                                                 |
+| :----------------------- | :-------- | :------- | :----------------------------------------------------------------------------------------------------------------------- | :----- | :---------------------------------------------------------- |
+| `MAX_IMAGES_PER_MESSAGE` | `4`       | No       | Protocol cap: 3 manual attachments + 1 `/screen` capture. Larger values make requests fail further downstream in Ollama. | —      | Maximum images per outgoing message.                        |
+| `MAX_IMAGE_SIZE_BYTES`   | `30 MiB`  | No       | Frontend rejection threshold aligned with Ollama's practical decode ceiling.                                             | —      | Per-image upload size limit.                                |
+| `MAX_DIMENSION`          | `1920 px` | No       | Downscale target that balances vision-model accuracy against payload size.                                               | —      | Maximum width/height for stored images (aspect-preserving). |
+| `JPEG_QUALITY`           | `85`      | No       | Balances file size against visual fidelity for vision models; changes would invalidate historical saved images.          | —      | JPEG encoder quality (1–100).                               |
+
+### `[history]` (not in TOML)
+
+Conversation history panel UX.
+
+| Constant             | Default | Tunable? | Why not tunable                                                                                                                              | Bounds | Description                                                                   |
+| :------------------- | :------ | :------- | :------------------------------------------------------------------------------------------------------------------------------------------- | :----- | :---------------------------------------------------------------------------- |
+| `SEARCH_DEBOUNCE_MS` | `200`   | No       | UX tuning; no meaningful user signal for changing this. Raising it makes search feel sluggish; lowering it wastes cycles on every keystroke. | —      | Milliseconds to wait after the last keystroke before firing a history search. |
 
 ## What happens on bad input
 
@@ -133,18 +187,6 @@ Thuki prefers to keep the app running with a usable configuration rather than fa
 - **Empty or whitespace-only strings**: replaced with compiled defaults at load time.
 - **Out-of-bounds numeric values**: reset to compiled defaults; a warning is logged to stderr (visible via `Console.app`).
 - **Unparseable TOML**: the file is renamed to `config.toml.corrupt-<unix_timestamp>` and a fresh defaults file is written. The old file is preserved so you can inspect or restore it by hand.
-
-## What is NOT configurable (and why)
-
-A few knobs that look configurable on the surface are intentionally kept out of `config.toml`:
-
-- **Search-pipeline shape constants** (`GAP_QUERIES_PER_ROUND`, `CHUNK_TOKEN_SIZE`, `TOP_K_CHUNKS`, retry delays). Downstream prompt design and persisted metadata interpretation depend on these exact values; tuning them wrong produces subtle drift rather than a clear error. See `src-tauri/src/search/config.rs`. The user-tunable knobs (iterations, top-K URLs, timeouts, service URLs) are exposed in `[search]` above.
-- **macOS key codes** (`0x3b`, `0x3e` for left and right Control). Not user-meaningful; wrong values would brick activation.
-- **Activation timing** (400 ms double-tap window, 600 ms cooldown). These are compiled constants in `src-tauri/src/activator.rs`. Not yet exposed because the CGEventTap callback lives in a thread that cannot trivially read Tauri managed state, and no user has reported needing a different cadence. A future PR can promote these if the need appears.
-- **Image limits** (4 images per message, 30 MiB per image). Protocol caps imposed by Ollama's vision input; a larger value just makes requests fail further downstream.
-- **History search debounce** (200 ms). UX tuning; no meaningful user signal for changing this.
-
-All of the above live as Rust or TypeScript constants. If a genuine need appears (a user reports the current value is wrong for their hardware or workflow), that value gets promoted into `config.toml` with a migration.
 
 ## Dev-time `.env` files
 
