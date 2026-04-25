@@ -332,13 +332,17 @@ export function ChatBubble({
     if (target) activateCitation(null);
   };
   const onAnswerClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    // Scope to inline citation anchors only. Source-row buttons in the
+    // footer also carry `data-citation` (for hover-link highlighting) and
+    // own their own click handler; matching them here would double-fire
+    // `open_url`, opening the URL twice in the browser.
     const target = (e.target as HTMLElement).closest(
-      '[data-citation]',
+      'a[data-citation]',
     ) as HTMLElement | null;
     if (!target) return;
     e.preventDefault();
-    // `data-url` is always set when we build citation anchors in wrapCitations
-    // and on source pills at render time, so the non-null assertion is safe.
+    // `data-url` is always set when we build citation anchors in wrapCitations,
+    // so the non-null assertion is safe.
     void invoke('open_url', { url: target.getAttribute('data-url')! });
   };
 
