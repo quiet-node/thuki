@@ -83,6 +83,51 @@ Frontend calls Tauri commands via `@tauri-apps/api/core`. Streaming uses Tauri's
 - `ActivationPolicy::Accessory` hides Dock icon
 - `macOSPrivateApi: true` enables NSPanel for fullscreen-app overlay
 
+## Configuration System
+
+Thuki has a single, typed configuration system rooted in `src-tauri/src/config/`. Read `docs/configurations.md` for the user-facing schema. The rules below tell you how the pieces fit so you can extend it without drift.
+
+### Single source of truth
+
+Every default value and every numeric bound lives in **`config/defaults.rs`** as `DEFAULT_*` and `BOUNDS_*` consts. No subsystem owns its own copy of a default. If you find one (e.g. a hardcoded number in a search/image/UI module), move it here and reference it via `use crate::config::defaults::*`. This applies to BOTH user-tunable defaults AND baked-in pipeline constants.
+
+### Layered structure
+
+- **`config/defaults.rs`** — every constant Thuki uses. Tunable defaults, hard bounds, and baked-in pipeline constants all live here.
+- **`config/schema.rs`** — typed TOML shape (`AppConfig` + per-section structs like `SearchSection`). Each section has a manual `Default` impl that pulls from `defaults.rs`. Use `#[serde(default)]` on every section so partial files load cleanly.
+- **`config/loader.rs`** — read → parse → resolve. `resolve` empties strings to defaults, clamps numerics via `clamp_u32`/`clamp_u64`/`clamp_f64`, composes the prompt appendix, and enforces cross-field invariants (e.g. `reader_batch_timeout_s > reader_per_url_timeout_s`).
+- **`config/writer.rs`** — atomic write used to seed the file on first run.
+- **`AppConfig` is installed as Tauri managed state** once at startup in `lib.rs`. Subsystems that need config read from `State<AppConfig>` and nowhere else.
+
+### Subsystem projections
+
+Some subsystems do not want a transitive dependency on the whole TOML schema. They take a flat projection instead. The pattern: a `Subsystem RuntimeConfig` struct with a `from_app_config(&AppConfig) -> Self` constructor and a `Default` impl that reads `defaults::*`. See `src-tauri/src/search/config.rs` (`SearchRuntimeConfig`) for the canonical example. This isolates schema changes to one adapter file and keeps the subsystem's tests free of `AppConfig` setup.
+
+### Adding a new user-tunable field (checklist)
+
+1. Add `DEFAULT_<NAME>` in `config/defaults.rs`. For numerics, also add `BOUNDS_<NAME>: (T, T)`.
+2. Add the field to the matching section struct in `config/schema.rs` and to its `Default` impl. Use `pub` and a doc comment that explains the tunable's user-facing meaning, not its implementation.
+3. Add a `clamp_*` (or string-empty fallback) call in `loader::resolve`.
+4. If a subsystem uses a `RuntimeConfig` projection, add the field there and to `from_app_config` + `Default` + the field-by-field assertion test.
+5. Cover it in `config/tests.rs`: schema default matches `DEFAULT_*`, out-of-bounds → default, in-bounds preserved, TOML round-trip carries the field.
+6. Update `docs/configurations.md`: add a row to the matching domain table, update the example TOML at the top of the file. For numeric fields, include a "Raise for X; lower for Y" trade-off in the description (see `[search]` rows for the tone).
+
+### Adding a new baked-in constant
+
+Same first step (`config/defaults.rs`), but no schema/loader changes. Reference it from the consuming module via `use crate::config::defaults::*`. Add a baked-in row to `docs/configurations.md` under the matching domain table with a clear "Why not tunable" rationale. Valid rationales: defense-in-depth bound on external/attacker-controlled data, prompt contract (constant referenced in a hardcoded LLM prompt), protocol cap imposed by an external service, hardware constant (key code), thread-safety blocker for plumbing user state.
+
+### Bad-input behavior
+
+The loader is forgiving and never crashes the app on user config:
+
+- Missing file → defaults seeded and written. (Only fatal failure path is the seed write itself.)
+- Missing fields/sections → `#[serde(default)]` fills from compiled defaults.
+- Empty/whitespace strings → replaced with compiled defaults.
+- Out-of-bounds numerics → reset to default with a stderr warning.
+- Unparseable TOML → file renamed `config.toml.corrupt-<unix_ts>` and a fresh defaults file written.
+
+When extending the system, preserve this contract: **never panic on user input**.
+
 ## Workflow
 
 **Always use git worktrees for development work.** Before starting any feature, bugfix, or non-trivial change, create an isolated git worktree. This keeps the main working directory clean and allows parallel work without branch-switching conflicts.
