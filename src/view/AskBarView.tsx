@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { ImageThumbnails } from '../components/ImageThumbnails';
@@ -142,55 +142,6 @@ const CAMERA_ICON = (
 );
 
 /**
- * Renders text with command triggers highlighted in violet for the mirror div.
- * Only the first occurrence of each command is highlighted; duplicates render plain.
- */
-export function renderHighlightedText(text: string): React.ReactNode {
-  const parts: React.ReactNode[] = [];
-  let remaining = text;
-  const highlighted = new Set<string>();
-
-  while (remaining.length > 0) {
-    let earliest = -1;
-    let matchedTrigger = '';
-    for (const cmd of COMMANDS) {
-      if (highlighted.has(cmd.trigger)) continue;
-      const idx = remaining.indexOf(cmd.trigger);
-      if (idx !== -1 && (earliest === -1 || idx < earliest)) {
-        const before = idx === 0 || remaining[idx - 1] === ' ';
-        const after =
-          idx + cmd.trigger.length >= remaining.length ||
-          remaining[idx + cmd.trigger.length] === ' ';
-        if (before && after) {
-          earliest = idx;
-          matchedTrigger = cmd.trigger;
-        }
-      }
-    }
-
-    if (earliest === -1) {
-      parts.push(<span key={parts.length}>{remaining}</span>);
-      break;
-    }
-
-    if (earliest > 0) {
-      parts.push(
-        <span key={parts.length}>{remaining.slice(0, earliest)}</span>,
-      );
-    }
-    parts.push(
-      <span key={parts.length} className="text-violet-400">
-        {matchedTrigger}
-      </span>,
-    );
-    highlighted.add(matchedTrigger);
-    remaining = remaining.slice(earliest + matchedTrigger.length);
-  }
-
-  return <>{parts}</>;
-}
-
-/**
  * Maximum number of manually attached images per message. The backend allows
  * one additional image from /screen capture, for a total of 4 per message
  * (MAX_IMAGES_PER_MESSAGE in images.rs).
@@ -278,9 +229,6 @@ export function AskBarView({
   onModelPickerToggle,
   isModelPickerOpen,
 }: AskBarViewProps) {
-  /** Ref to the mirror div behind the textarea for command highlighting. */
-  const mirrorRef = useRef<HTMLDivElement>(null);
-
   /** Quote display limits resolved from the managed AppConfig. */
   const quote = useConfig().quote;
 
@@ -503,14 +451,6 @@ export function AskBarView({
     ],
   );
 
-  /** Syncs the mirror div scroll position with the textarea. */
-  const handleTextareaScroll = useCallback(() => {
-    /* v8 ignore start -- both refs are always set by React when this fires */
-    if (!mirrorRef.current || !inputRef.current) return;
-    /* v8 ignore stop */
-    mirrorRef.current.scrollTop = inputRef.current.scrollTop;
-  }, [inputRef]);
-
   /** Handles clipboard paste - extracts image items from clipboardData. */
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
@@ -637,28 +577,17 @@ export function AskBarView({
           )}
 
           <div className="relative flex-1 min-w-0">
-            {/* Mirror div: renders the same text with highlighted commands.
-                Sits behind the transparent textarea so colored spans show through. */}
-            <div
-              ref={mirrorRef}
-              aria-hidden="true"
-              className="absolute inset-0 pointer-events-none bg-transparent text-text-primary text-sm py-2 px-1 leading-5 whitespace-pre-wrap break-words overflow-hidden"
-            >
-              {renderHighlightedText(query)}
-            </div>
             <textarea
               ref={inputRef}
               value={query}
               onChange={handleTextareaChange}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              onScroll={handleTextareaScroll}
               disabled={isBusy}
               autoFocus
               rows={1}
               placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
-              className="relative w-full bg-transparent border-none outline-none text-transparent text-sm placeholder:text-text-secondary mt-1 py-2 disabled:opacity-50 resize-none leading-5"
-              style={{ caretColor: 'var(--color-text-primary)' }}
+              className="askbar-textarea relative w-full bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-5"
             />
           </div>
 

@@ -170,6 +170,21 @@ body {
   scrollbar-gutter: stable;
 }
 
+/* ─── AskBar Textarea ───
+ * Hide the native scrollbar so the textarea's wrapping width matches the
+ * highlight mirror div behind it. Without this, once content exceeds the
+ * 144px cap and the textarea begins scrolling, the system scrollbar
+ * consumes a few pixels of content width, causing wrapped lines in the
+ * textarea and the mirror to diverge — the caret then floats above the
+ * visible text. The hook syncs scrollTop so caret-follow still works.
+ */
+.askbar-textarea {
+  scrollbar-width: none;
+}
+.askbar-textarea::-webkit-scrollbar {
+  display: none;
+}
+
 /* ─── Markdown Body: Prose Defaults ───
  * Tailwind's preflight resets list-style to none globally. Streamdown adds no
  * list CSS of its own, so <ul>/<ol> inside .markdown-body lose their markers.
