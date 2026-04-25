@@ -388,6 +388,7 @@ pub struct DefaultRouterJudge {
     client: reqwest::Client,
     cancel: CancellationToken,
     today: String,
+    router_timeout_secs: u64,
 }
 
 impl DefaultRouterJudge {
@@ -403,6 +404,7 @@ impl DefaultRouterJudge {
     ///   call inside `call_router_merged`.
     /// - `today`: `YYYY-MM-DD` string injected into the merged prompt so the
     ///   model is anchored to the real calendar date.
+    /// - `router_timeout_secs`: per-call wall-clock limit from `AppConfig.search`.
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new(
         endpoint: String,
@@ -410,6 +412,7 @@ impl DefaultRouterJudge {
         client: reqwest::Client,
         cancel: CancellationToken,
         today: String,
+        router_timeout_secs: u64,
     ) -> Self {
         Self {
             endpoint,
@@ -417,6 +420,7 @@ impl DefaultRouterJudge {
             client,
             cancel,
             today,
+            router_timeout_secs,
         }
     }
 }
@@ -437,6 +441,7 @@ impl RouterJudgeCaller for DefaultRouterJudge {
             query,
             &self.today,
             &self.cancel,
+            self.router_timeout_secs,
         )
         .await
     }
@@ -454,6 +459,7 @@ pub struct DefaultJudge {
     model: String,
     client: reqwest::Client,
     cancel: CancellationToken,
+    judge_timeout_secs: u64,
 }
 
 impl DefaultJudge {
@@ -464,18 +470,21 @@ impl DefaultJudge {
     /// - `client`: shared `reqwest::Client`.
     /// - `cancel`: the pipeline's cancellation token; races against the HTTP
     ///   call inside `call_judge`.
+    /// - `judge_timeout_secs`: per-call wall-clock limit from `AppConfig.search`.
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new(
         endpoint: String,
         model: String,
         client: reqwest::Client,
         cancel: CancellationToken,
+        judge_timeout_secs: u64,
     ) -> Self {
         Self {
             endpoint,
             model,
             client,
             cancel,
+            judge_timeout_secs,
         }
     }
 }
@@ -495,6 +504,7 @@ impl JudgeCaller for DefaultJudge {
             query,
             sources,
             &self.cancel,
+            self.judge_timeout_secs,
         )
         .await
     }
@@ -541,6 +551,7 @@ struct SearchExecutionContext<'a> {
     history: &'a ConversationHistory,
     today: &'a str,
     on_event: &'a (dyn Fn(SearchEvent) + Sync),
+    runtime_config: &'a config::SearchRuntimeConfig,
 }
 
 /// Per-turn values reused across extracted search stages.
@@ -753,10 +764,10 @@ async fn run_gap_refinement_loop(
     mut current_queries: Vec<String>,
     started_at: std::time::Instant,
 ) -> Result<GapLoopDisposition, SearchError> {
-    let gap_round_total = (config::MAX_ITERATIONS as u32).saturating_sub(1);
+    let gap_round_total = (shared.runtime_config.max_iterations as u32).saturating_sub(1);
     let mut hit_iteration_cap = false;
 
-    for attempt in 2..=(config::MAX_ITERATIONS as u32) {
+    for attempt in 2..=(shared.runtime_config.max_iterations as u32) {
         if current_queries.is_empty() {
             break;
         }
@@ -800,8 +811,12 @@ async fn run_gap_refinement_loop(
             queries: current_queries.clone(),
         });
 
-        let gap_search_fut =
-            searxng::search_all_with_endpoint(shared.searxng_endpoint, &current_queries);
+        let gap_search_fut = searxng::search_all_with_endpoint(
+            shared.searxng_endpoint,
+            &current_queries,
+            shared.runtime_config.search_timeout_s,
+            shared.runtime_config.searxng_max_results,
+        );
         let gap_results = tokio::select! {
             biased;
             _ = shared.cancel_token.cancelled() => {
@@ -887,7 +902,7 @@ async fn run_gap_refinement_loop(
 
         let round_top_urls: Vec<SearxResult> = rerank::rerank(query, new_urls)
             .into_iter()
-            .take(config::TOP_K_URLS)
+            .take(shared.runtime_config.top_k_urls)
             .collect();
 
         let mut rerank_step = trace_step(
@@ -1084,8 +1099,10 @@ async fn run_gap_refinement_loop(
             });
         }
 
-        let round_chunks =
-            chunker::chunk_pages(&round_reader_result.pages, config::CHUNK_TOKEN_SIZE);
+        let round_chunks = chunker::chunk_pages(
+            &round_reader_result.pages,
+            crate::config::defaults::DEFAULT_CHUNK_TOKEN_SIZE,
+        );
         let mut chunk_step = trace_step(
             format!("round-{attempt}-chunk"),
             SearchTraceKind::Chunk,
@@ -1117,11 +1134,14 @@ async fn run_gap_refinement_loop(
         });
         emit_trace(shared.on_event, chunk_step);
         accumulated_chunks.extend(round_chunks);
-        let round_top_chunks: Vec<chunker::Chunk> =
-            rerank::rerank_chunks(&accumulated_chunks, query, config::TOP_K_CHUNKS)
-                .into_iter()
-                .cloned()
-                .collect();
+        let round_top_chunks: Vec<chunker::Chunk> = rerank::rerank_chunks(
+            &accumulated_chunks,
+            query,
+            crate::config::defaults::DEFAULT_TOP_K_CHUNKS,
+        )
+        .into_iter()
+        .cloned()
+        .collect();
 
         let round_chunk_sources = unique_domains(
             round_top_chunks
@@ -1236,14 +1256,18 @@ async fn run_gap_refinement_loop(
         }
 
         current_queries = round_verdict.gap_queries.clone();
-        hit_iteration_cap = attempt == config::MAX_ITERATIONS as u32 && !current_queries.is_empty();
+        hit_iteration_cap =
+            attempt == shared.runtime_config.max_iterations as u32 && !current_queries.is_empty();
     }
 
-    let fallback_chunks: Vec<chunker::Chunk> =
-        rerank::rerank_chunks(&accumulated_chunks, query, config::TOP_K_CHUNKS)
-            .into_iter()
-            .cloned()
-            .collect();
+    let fallback_chunks: Vec<chunker::Chunk> = rerank::rerank_chunks(
+        &accumulated_chunks,
+        query,
+        crate::config::defaults::DEFAULT_TOP_K_CHUNKS,
+    )
+    .into_iter()
+    .cloned()
+    .collect();
 
     let fallback_sources = if fallback_chunks.is_empty() {
         snippet_sources
@@ -1293,6 +1317,7 @@ pub async fn run_agentic(
     on_event: &(dyn Fn(SearchEvent) + Sync),
     router: &dyn RouterJudgeCaller,
     judge: &dyn JudgeCaller,
+    runtime_config: &config::SearchRuntimeConfig,
 ) -> Result<(), SearchError> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -1337,6 +1362,7 @@ pub async fn run_agentic(
         history,
         today,
         on_event,
+        runtime_config,
     };
 
     match output.action {
@@ -1396,7 +1422,11 @@ pub async fn run_agentic(
                 }
                 emit_trace(on_event, analyze_step);
 
-                let reader_client = reader::ReaderClient::new_with_base(reader_base_url);
+                let reader_client = reader::ReaderClient::new_with_base(
+                    reader_base_url,
+                    runtime_config.reader_per_url_timeout_s,
+                    runtime_config.reader_batch_timeout_s,
+                );
                 let mut warnings: Vec<SearchWarning> = Vec::new();
                 let mut metadata = SearchMetadata::default();
                 let mut accumulated_chunks: Vec<chunker::Chunk> = Vec::new();
@@ -1422,7 +1452,13 @@ pub async fn run_agentic(
                     queries: vec![query.clone()],
                 });
 
-                let searxng_fut = searxng::search(client, searxng_endpoint, &query);
+                let searxng_fut = searxng::search(
+                    client,
+                    searxng_endpoint,
+                    &query,
+                    runtime_config.search_timeout_s,
+                    runtime_config.searxng_max_results,
+                );
                 let raw_urls = match tokio::select! {
                     biased;
                     _ = cancel_token.cancelled() => Err(SearchError::Cancelled),
@@ -1494,7 +1530,10 @@ pub async fn run_agentic(
 
                 // Stage 2: Rerank URLs, take top K.
                 let reranked = rerank::rerank(&query, raw_urls);
-                let top_urls: Vec<_> = reranked.into_iter().take(config::TOP_K_URLS).collect();
+                let top_urls: Vec<_> = reranked
+                    .into_iter()
+                    .take(runtime_config.top_k_urls)
+                    .collect();
 
                 let mut rerank_step = trace_step(
                     format!("round-{initial_round}-url-rerank"),
@@ -1792,8 +1831,10 @@ pub async fn run_agentic(
                 }
 
                 // Stage 6: Chunk and rerank.
-                let new_chunks =
-                    chunker::chunk_pages(&reader_result.pages, config::CHUNK_TOKEN_SIZE);
+                let new_chunks = chunker::chunk_pages(
+                    &reader_result.pages,
+                    crate::config::defaults::DEFAULT_CHUNK_TOKEN_SIZE,
+                );
                 let mut chunk_step = trace_step(
                     format!("round-{initial_round}-chunk"),
                     SearchTraceKind::Chunk,
@@ -1826,11 +1867,14 @@ pub async fn run_agentic(
                 });
                 emit_trace(on_event, chunk_step);
                 accumulated_chunks.extend(new_chunks);
-                let top_chunks: Vec<chunker::Chunk> =
-                    rerank::rerank_chunks(&accumulated_chunks, &query, config::TOP_K_CHUNKS)
-                        .into_iter()
-                        .cloned()
-                        .collect();
+                let top_chunks: Vec<chunker::Chunk> = rerank::rerank_chunks(
+                    &accumulated_chunks,
+                    &query,
+                    crate::config::defaults::DEFAULT_TOP_K_CHUNKS,
+                )
+                .into_iter()
+                .cloned()
+                .collect();
 
                 let chunk_sources =
                     unique_domains(top_chunks.iter().map(|chunk| chunk.source_url.as_str()));
@@ -2250,6 +2294,7 @@ mod tests {
             reqwest::Client::new(),
             cancel,
             "2026-04-18".into(),
+            crate::config::defaults::DEFAULT_ROUTER_TIMEOUT_S,
         );
     }
 
@@ -2261,6 +2306,7 @@ mod tests {
             "mistral".into(),
             reqwest::Client::new(),
             cancel,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
         );
     }
 
@@ -2506,6 +2552,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -2545,6 +2592,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -2585,6 +2633,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -2674,6 +2723,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -2740,6 +2790,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -2818,6 +2869,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -2904,6 +2956,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -2959,6 +3012,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3035,6 +3089,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3132,6 +3187,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3207,6 +3263,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3256,6 +3313,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -3303,7 +3361,7 @@ mod agentic_tests {
         let router = proceed_search_router("test query");
 
         // First judge (snippets) = partial; triggers reader.
-        // Reader will fail (READER_BASE_URL is not running in test).
+        // Reader will fail (DEFAULT_READER_URL is not running in test).
         // Second judge (falls back to snippets because no chunks) = sufficient.
         let judge = QueueJudge(std::sync::Mutex::new(
             vec![partial_verdict(), sufficient_verdict()]
@@ -3325,6 +3383,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3397,6 +3456,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3440,6 +3500,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3484,6 +3545,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -3514,6 +3576,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -3552,6 +3615,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -3607,6 +3671,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -3664,6 +3729,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3736,6 +3802,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3747,7 +3814,7 @@ mod agentic_tests {
         );
     }
 
-    // Reader batch times out (READER_BATCH_TIMEOUT_S=1s in tests);
+    // Reader batch times out (reader_batch_timeout_s=1s in tests);
     // pipeline emits ReaderPartialFailure warning and continues.
     #[tokio::test]
     async fn reader_batch_timeout_emits_partial_failure_warning_and_continues() {
@@ -3756,7 +3823,7 @@ mod agentic_tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let reader_server = MockServer::start().await;
-        // Respond after 2s -- longer than READER_BATCH_TIMEOUT_S=1s in tests.
+        // Respond after 2s -- longer than reader_batch_timeout_s=1s in tests.
         Mock::given(method("POST"))
             .and(path("/extract"))
             .respond_with(
@@ -3817,6 +3884,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3919,6 +3987,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -3999,6 +4068,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4019,7 +4089,7 @@ mod agentic_tests {
     //
     // Judge sequence: Insufficient (snippets) -> Insufficient (chunks, gap_queries=["gap1"])
     //                 -> Sufficient (chunks after gap round 2).
-    // MAX_ITERATIONS = 3, so there are 2 gap rounds. The first is reported as
+    // max_iterations = 3, so there are 2 gap rounds. The first is reported as
     // attempt=1 of 2.
     #[tokio::test]
     async fn gap_round_succeeds_within_cap() {
@@ -4105,6 +4175,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4133,7 +4204,7 @@ mod agentic_tests {
         // the event stream shape which is the observable contract)
     }
 
-    // Test 2: judge always insufficient; all MAX_ITERATIONS rounds fire.
+    // Test 2: judge always insufficient; all max_iterations rounds fire.
     //
     // Each verdict provides a fresh gap query so the loop does not exit early.
     // The test verifies RefiningSearch for both gap rounds, and
@@ -4204,7 +4275,7 @@ mod agentic_tests {
         let (events, cb) = collect_events();
         let router = proceed_search_router("test query");
 
-        // MAX_ITERATIONS=3: snippets judge + chunks judge (initial) + gap round 2
+        // max_iterations=3: snippets judge + chunks judge (initial) + gap round 2
         // judge + gap round 3 judge = 4 calls total, all insufficient with
         // unique gap queries to keep the loop alive.
         let judge = QueueJudge(std::sync::Mutex::new(
@@ -4252,6 +4323,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4370,6 +4442,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4378,7 +4451,7 @@ mod agentic_tests {
 
         // IterationCapExhausted must NOT fire: the loop exited via the
         // no-new-URLs branch (current_queries cleared), never reaching the
-        // judge at attempt == MAX_ITERATIONS. hit_iteration_cap stays false.
+        // judge at attempt == max_iterations. hit_iteration_cap stays false.
         assert!(
             !evs.iter().any(|e| {
                 *e == (SearchEvent::Warning {
@@ -4516,6 +4589,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4629,6 +4703,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4755,6 +4830,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4866,6 +4942,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -4941,6 +5018,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5051,6 +5129,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5140,6 +5219,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap_err();
@@ -5225,6 +5305,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5337,6 +5418,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5469,6 +5551,7 @@ mod agentic_tests {
             &cb,
             &router,
             &gap_judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5573,6 +5656,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5690,6 +5774,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5810,6 +5895,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5857,7 +5943,7 @@ mod agentic_tests {
             })))
             .mount(&reader_server)
             .await;
-        // Gap reader responds after 2s (> READER_BATCH_TIMEOUT_S=1s in tests).
+        // Gap reader responds after 2s (> reader_batch_timeout_s=1s in tests).
         Mock::given(method("POST"))
             .and(path("/extract"))
             .respond_with(
@@ -5930,6 +6016,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -5980,7 +6067,7 @@ mod agentic_tests {
             .respond_with(ResponseTemplate::new(502))
             .mount(&reader_server)
             .await;
-        // Gap round reader: very slow (times out after READER_BATCH_TIMEOUT_S=1s).
+        // Gap round reader: very slow (times out after reader_batch_timeout_s=1s).
         Mock::given(method("POST"))
             .and(path("/extract"))
             .respond_with(
@@ -6063,6 +6150,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6185,6 +6273,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6290,6 +6379,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6380,6 +6470,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6459,6 +6550,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6605,6 +6697,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6675,6 +6768,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6791,6 +6885,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();
@@ -6887,6 +6982,7 @@ mod agentic_tests {
             &cb,
             &router,
             &judge,
+            &config::SearchRuntimeConfig::default(),
         )
         .await
         .unwrap();

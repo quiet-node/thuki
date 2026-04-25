@@ -227,6 +227,7 @@ async fn happy_path_snippets_sufficient_streams_answer() {
         &cb,
         &router,
         &judge,
+        &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
     )
     .await
     .unwrap();
@@ -361,6 +362,7 @@ async fn reader_escalation_with_chunks_sufficient() {
         &cb,
         &router,
         &judge,
+        &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
     )
     .await
     .unwrap();
@@ -443,6 +445,7 @@ async fn reader_unavailable_degrades_to_snippets_and_warns() {
         &cb,
         &router,
         &judge,
+        &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
     )
     .await
     .unwrap();
@@ -543,6 +546,7 @@ async fn exhausted_gap_loop_warns_iteration_cap_and_streams_fallback() {
         &cb,
         &router,
         &judge,
+        &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
     )
     .await
     .unwrap();
@@ -636,6 +640,7 @@ async fn cancel_midloop_does_not_persist_and_emits_cancelled() {
         &cb,
         &router,
         &judge,
+        &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
     )
     .await
     .unwrap();

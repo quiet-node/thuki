@@ -1,7 +1,8 @@
 //! BM25F + Reciprocal Rank Fusion reranker for SearXNG results.
 //!
-//! The retrieved SearXNG set (≤ [`super::searxng::MAX_RESULTS`]) is reranked
-//! before being exposed to the synthesis prompt. Two signals are combined:
+//! The retrieved SearXNG set (≤ `searxng_max_results` from
+//! [`crate::config::AppConfig`]) is reranked before being exposed to the
+//! synthesis prompt. Two signals are combined:
 //!
 //! 1. **BM25F** - field-weighted Okapi BM25 over `title` and `content` fields,
 //!    using the retrieved set itself as the corpus. Captures query-document
@@ -17,7 +18,7 @@
 //! and per-query scratch buffers, no `unsafe`, and no external crates. All
 //! inputs are bounded by [`MAX_QUERY_TOKENS`] and the retrieved-set size so
 //! the scorer has fixed O(N · T) time and O(N + T) space per call, where
-//! `N ≤ MAX_RESULTS` and `T ≤ MAX_QUERY_TOKENS`.
+//! `N ≤ searxng_max_results` and `T ≤ MAX_QUERY_TOKENS`.
 
 use super::chunker::Chunk;
 use super::types::SearxResult;
@@ -60,7 +61,7 @@ const RRF_K: f64 = 60.0;
 /// 0.5) / (df + 0.5))` smoothing which is always non-negative.
 ///
 /// Time complexity: `O(N · T)` where `N = results.len()` and `T =
-/// query_tokens.len()`; both are bounded (`N ≤ MAX_RESULTS`, `T ≤
+/// query_tokens.len()`; both are bounded (`N ≤ searxng_max_results`, `T ≤
 /// MAX_QUERY_TOKENS`).
 fn bm25f_scores(query_tokens: &[String], results: &[SearxResult]) -> Vec<f64> {
     if results.is_empty() {
@@ -296,7 +297,7 @@ pub fn rerank(query: &str, results: Vec<SearxResult>) -> Vec<SearxResult> {
 ///
 /// Complexity: O(N * (T + Q)) where N = number of chunks, T = average tokens
 /// per chunk, Q = number of query tokens. Bounded in practice because the
-/// pipeline caps chunks at roughly `TOP_K_URLS * pages_per_url * chunks_per_page`
+/// pipeline caps chunks at roughly `top_k_urls * pages_per_url * chunks_per_page`
 /// and queries are short.
 #[allow(dead_code)]
 pub fn rerank_chunks<'a>(chunks: &'a [Chunk], query: &str, top_k: usize) -> Vec<&'a Chunk> {

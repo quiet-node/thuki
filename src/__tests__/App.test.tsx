@@ -28,13 +28,6 @@ describe('App', () => {
     enableChannelCapture();
   });
 
-  it('calls get_model_config on mount', async () => {
-    render(<App />);
-    await act(async () => {});
-
-    expect(invoke).toHaveBeenCalledWith('get_model_config');
-  });
-
   it('grows upward when near bottom screen edge', async () => {
     const { container } = render(<App />);
     await act(async () => {});
@@ -665,10 +658,6 @@ describe('App', () => {
 
     it('closes history panel when a conversation is loaded', async () => {
       enableChannelCaptureWithResponses({
-        get_model_config: {
-          active: 'gemma4:e2b',
-          all: ['gemma4:e2b'],
-        },
         list_conversations: [],
       });
 
@@ -748,7 +737,6 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith(
         'save_conversation',
         expect.objectContaining({
-          model: expect.any(String),
           messages: expect.any(Array),
         }),
       );
@@ -1201,7 +1189,7 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith(
         'save_conversation',
         expect.objectContaining({
-          model: expect.any(String),
+          messages: expect.any(Array),
         }),
       );
     });

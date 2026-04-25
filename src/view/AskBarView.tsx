@@ -2,7 +2,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
-import { quote } from '../config';
+import { useConfig } from '../contexts/ConfigContext';
 import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
 import { Tooltip } from '../components/Tooltip';
@@ -264,6 +264,9 @@ export function AskBarView({
 }: AskBarViewProps) {
   /** Ref to the mirror div behind the textarea for command highlighting. */
   const mirrorRef = useRef<HTMLDivElement>(null);
+
+  /** Quote display limits resolved from the managed AppConfig. */
+  const quote = useConfig().quote;
 
   /** True when the UI should be locked - either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;

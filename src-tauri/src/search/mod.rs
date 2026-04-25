@@ -15,9 +15,8 @@
 use tauri::{ipc::Channel, State};
 use tokio_util::sync::CancellationToken;
 
-use crate::commands::{
-    ConversationHistory, GenerationState, ModelConfig, SystemPrompt, DEFAULT_OLLAMA_URL,
-};
+use crate::commands::{ConversationHistory, GenerationState};
+use crate::config::AppConfig;
 
 pub mod chunker;
 pub mod config;
@@ -59,18 +58,33 @@ pub async fn search_pipeline(
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
     history: State<'_, ConversationHistory>,
-    system_prompt: State<'_, SystemPrompt>,
-    model_config: State<'_, ModelConfig>,
+    app_config: State<'_, AppConfig>,
 ) -> Result<(), String> {
+    // Resolve the runtime search view from the loaded TOML. The single
+    // source of truth lives in `config::defaults`; the loader has already
+    // clamped and resolved every field by the time we read it here.
+    let runtime_config = config::SearchRuntimeConfig::from_app_config(&app_config);
+    let searxng_endpoint = runtime_config.searxng_endpoint();
+
     // Pre-flight: verify both sandbox services are reachable before touching
     // the LLM or SearXNG. A 2-second probe prevents a long wait when the
     // containers are simply not running.
-    if let Err(_e) = probe(&client, searxng::SEARXNG_BASE_URL, config::READER_BASE_URL).await {
+    if let Err(_e) = probe(
+        &client,
+        &runtime_config.searxng_url,
+        &runtime_config.reader_url,
+    )
+    .await
+    {
         let _ = on_event.send(SearchEvent::SandboxUnavailable);
         return Ok(());
     }
 
-    let ollama_endpoint = format!("{}/api/chat", DEFAULT_OLLAMA_URL.trim_end_matches('/'));
+    let ollama_endpoint = format!(
+        "{}/api/chat",
+        app_config.model.ollama_url.trim_end_matches('/')
+    );
+    let active_model = app_config.model.active().to_string();
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());
 
@@ -78,26 +92,28 @@ pub async fn search_pipeline(
 
     let router = pipeline::DefaultRouterJudge::new(
         ollama_endpoint.clone(),
-        model_config.active.clone(),
+        active_model.clone(),
         (*client).clone(),
         cancel_token.clone(),
         today.clone(),
+        runtime_config.router_timeout_s,
     );
     let judge = pipeline::DefaultJudge::new(
         ollama_endpoint.clone(),
-        model_config.active.clone(),
+        active_model.clone(),
         (*client).clone(),
         cancel_token.clone(),
+        runtime_config.judge_timeout_s,
     );
 
     let result = pipeline::run_agentic(
         &ollama_endpoint,
-        searxng::SEARXNG_ENDPOINT,
-        config::READER_BASE_URL,
-        &model_config.active,
+        &searxng_endpoint,
+        &runtime_config.reader_url,
+        &active_model,
         &client,
         cancel_token.clone(),
-        &system_prompt.0,
+        &app_config.prompt.resolved_system,
         &history,
         message,
         &today,
@@ -106,6 +122,7 @@ pub async fn search_pipeline(
         },
         &router,
         &judge,
+        &runtime_config,
     )
     .await;
 

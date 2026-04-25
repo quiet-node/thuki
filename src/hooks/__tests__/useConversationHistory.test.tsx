@@ -9,8 +9,6 @@ const MESSAGES: Message[] = [
   { id: 'a1', role: 'assistant', content: 'Hi there' },
 ];
 
-const MODEL = 'gemma4:e2b';
-
 describe('useConversationHistory', () => {
   beforeEach(() => {
     invoke.mockReset();
@@ -34,7 +32,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
 
     expect(invoke).toHaveBeenCalledWith('save_conversation', {
@@ -60,7 +58,6 @@ describe('useConversationHistory', () => {
           search_metadata: null,
         },
       ],
-      model: MODEL,
     });
   });
 
@@ -71,7 +68,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
 
     expect(result.current.isSaved).toBe(true);
@@ -85,7 +82,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
 
     expect(invoke).toHaveBeenCalledWith('generate_title', {
@@ -122,13 +119,13 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
 
     invoke.mockClear();
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
 
     expect(invoke).not.toHaveBeenCalled();
@@ -151,7 +148,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
 
     invoke.mockClear();
@@ -203,7 +200,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
 
     invoke.mockClear();
@@ -388,7 +385,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
 
     invoke.mockClear();
@@ -439,7 +436,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(messagesWithWarnings, MODEL);
+      await result.current.save(messagesWithWarnings);
     });
 
     expect(invoke).toHaveBeenCalledWith('save_conversation', {
@@ -465,7 +462,6 @@ describe('useConversationHistory', () => {
           search_metadata: null,
         },
       ],
-      model: MODEL,
     });
   });
 
@@ -486,7 +482,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(messagesWithThinking, MODEL);
+      await result.current.save(messagesWithThinking);
     });
 
     expect(invoke).toHaveBeenCalledWith('save_conversation', {
@@ -512,7 +508,6 @@ describe('useConversationHistory', () => {
           search_metadata: null,
         },
       ],
-      model: MODEL,
     });
   });
 
@@ -612,7 +607,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
     invoke.mockClear();
 
@@ -648,7 +643,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
     expect(result.current.isSaved).toBe(true);
 
@@ -667,7 +662,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
     expect(result.current.isSaved).toBe(true);
 
@@ -691,7 +686,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
     invoke.mockClear();
 
@@ -777,7 +772,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
 
     invoke.mockClear();
@@ -824,7 +819,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(messagesWithMeta, MODEL);
+      await result.current.save(messagesWithMeta);
     });
 
     expect(invoke).toHaveBeenCalledWith(
@@ -868,7 +863,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(messagesWithTraces, MODEL);
+      await result.current.save(messagesWithTraces);
     });
 
     expect(invoke).toHaveBeenCalledWith(
@@ -891,7 +886,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
     invoke.mockClear();
 
@@ -942,7 +937,7 @@ describe('useConversationHistory', () => {
     const { result } = renderHook(() => useConversationHistory());
 
     await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
+      await result.current.save(MESSAGES);
     });
     invoke.mockClear();
 

@@ -6,11 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, State};
 use tokio_util::sync::CancellationToken;
 
-/// Default configuration constants as the application currently lacks a Settings UI.
-pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
-pub const DEFAULT_MODEL_NAME: &str = "gemma4:e2b";
-const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/system_prompt.txt");
-const SLASH_COMMAND_PROMPT_APPENDIX: &str = include_str!("../prompts/generated/slash_commands.txt");
+use crate::config::AppConfig;
 
 /// Classifies the kind of error returned from the Ollama backend.
 /// Used by the frontend to pick accent bar color and display copy.
@@ -34,15 +30,14 @@ pub struct OllamaError {
     pub message: String,
 }
 
-/// Maps an HTTP status code to a user-friendly `OllamaError`.
-pub fn classify_http_error(status: u16) -> OllamaError {
+/// Maps an HTTP status code to a user-friendly `OllamaError`. The `model_name`
+/// is woven into the `ModelNotFound` hint so the user sees the exact command
+/// to run, whatever their active model happens to be.
+pub fn classify_http_error(status: u16, model_name: &str) -> OllamaError {
     match status {
         404 => OllamaError {
             kind: OllamaErrorKind::ModelNotFound,
-            message: format!(
-                "Model not found\nRun: ollama pull {} in a terminal.",
-                DEFAULT_MODEL_NAME
-            ),
+            message: format!("Model not found\nRun: ollama pull {model_name} in a terminal."),
         },
         _ => OllamaError {
             kind: OllamaErrorKind::Other,
@@ -186,78 +181,15 @@ impl ConversationHistory {
     }
 }
 
-/// System prompt loaded once at startup from the `THUKI_SYSTEM_PROMPT`
-/// environment variable, falling back to a built-in default.
-pub struct SystemPrompt(pub String);
-
-/// Reads `THUKI_SYSTEM_PROMPT` from the environment, falling back to the
-/// built-in default when unset or empty.
-pub fn compose_system_prompt_with_appendix(base_prompt: &str, appendix: &str) -> String {
-    let base = base_prompt.trim_end();
-    let appendix = appendix.trim();
-
-    if appendix.is_empty() {
-        base.to_string()
-    } else {
-        format!("{base}\n\n{appendix}")
-    }
-}
-
-/// Reads `THUKI_SYSTEM_PROMPT` from the environment, falling back to the
-/// built-in default when unset or empty.
-pub fn compose_system_prompt(base_prompt: &str) -> String {
-    compose_system_prompt_with_appendix(base_prompt, SLASH_COMMAND_PROMPT_APPENDIX)
-}
-
-/// Reads `THUKI_SYSTEM_PROMPT` from the environment as the base prompt, then
-/// appends the generated slash-command appendix so built-in command knowledge
-/// stays in sync even when the persona prompt is overridden.
-pub fn load_system_prompt() -> String {
-    let base_prompt = std::env::var("THUKI_SYSTEM_PROMPT")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
-
-    compose_system_prompt(&base_prompt)
-}
-
-/// Model configuration loaded once at startup from the `THUKI_SUPPORTED_AI_MODELS`
-/// environment variable (comma-separated list). The first entry is the active model
-/// used for inference. Falls back to `DEFAULT_MODEL_NAME` when unset or empty.
-pub struct ModelConfig {
-    pub active: String,
-    pub all: Vec<String>,
-}
-
-/// Reads `THUKI_SUPPORTED_AI_MODELS` from the environment and returns a
-/// `ModelConfig`. Trims whitespace around each entry and filters empty entries.
-/// Defaults to `[DEFAULT_MODEL_NAME]` when the variable is unset or empty.
-pub fn load_model_config() -> ModelConfig {
-    let models: Vec<String> = std::env::var("THUKI_SUPPORTED_AI_MODELS")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| {
-            s.split(',')
-                .map(|m| m.trim().to_string())
-                .filter(|m| !m.is_empty())
-                .collect()
-        })
-        .unwrap_or_else(|| vec![DEFAULT_MODEL_NAME.to_string()]);
-    let active = models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string());
-    ModelConfig {
-        active,
-        all: models,
-    }
-}
-
-/// Returns the active model and full supported list to the frontend.
+/// Returns the full resolved `AppConfig` to the frontend.
+///
+/// Thin wrapper around a state clone; the config lives behind `app.manage(...)`
+/// and is loaded once at startup by `config::load`. The frontend hydrates its
+/// `ConfigContext` from this command on mount.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub fn get_model_config(model_config: tauri::State<'_, ModelConfig>) -> serde_json::Value {
-    serde_json::json!({ "active": model_config.active, "all": model_config.all })
+pub fn get_config(config: tauri::State<'_, crate::config::AppConfig>) -> crate::config::AppConfig {
+    config.inner().clone()
 }
 
 /// Core streaming logic for Ollama `/api/chat`, separated from the Tauri
@@ -294,7 +226,7 @@ pub async fn stream_ollama_chat(
         Ok(response) => {
             if !response.status().is_success() {
                 let status = response.status().as_u16();
-                on_chunk(StreamChunk::Error(classify_http_error(status)));
+                on_chunk(StreamChunk::Error(classify_http_error(status, model)));
                 return accumulated;
             }
 
@@ -385,10 +317,9 @@ pub async fn ask_ollama(
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
     history: State<'_, ConversationHistory>,
-    system_prompt: State<'_, SystemPrompt>,
-    model_config: State<'_, ModelConfig>,
+    config: State<'_, AppConfig>,
 ) -> Result<(), String> {
-    let endpoint = format!("{}/api/chat", DEFAULT_OLLAMA_URL.trim_end_matches('/'));
+    let endpoint = format!("{}/api/chat", config.model.ollama_url.trim_end_matches('/'));
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());
 
@@ -425,7 +356,7 @@ pub async fn ask_ollama(
         let epoch = history.epoch.load(Ordering::SeqCst);
         let mut msgs = vec![ChatMessage {
             role: "system".to_string(),
-            content: system_prompt.0.clone(),
+            content: config.prompt.resolved_system.clone(),
             images: None,
         }];
         msgs.extend(conv.clone());
@@ -435,7 +366,7 @@ pub async fn ask_ollama(
 
     let accumulated = stream_ollama_chat(
         &endpoint,
-        &model_config.active,
+        config.model.active(),
         messages,
         think,
         &client,
@@ -1152,91 +1083,10 @@ mod tests {
         assert!(second_clone.is_cancelled());
     }
 
-    /// Guard to serialize tests that mutate environment variables.
-    /// Rust runs tests in parallel by default; without serialization these
-    /// tests race on shared environment variables.
-    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
-
-    // ── load_model_config tests ──────────────────────────────────────────────
-
-    #[test]
-    fn load_model_config_returns_default_when_unset() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
-        let config = load_model_config();
-        assert_eq!(config.active, DEFAULT_MODEL_NAME);
-        assert_eq!(config.all, vec![DEFAULT_MODEL_NAME.to_string()]);
-    }
-
-    #[test]
-    fn load_model_config_reads_single_model() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "gemma4:e4b");
-        let config = load_model_config();
-        assert_eq!(config.active, "gemma4:e4b");
-        assert_eq!(config.all, vec!["gemma4:e4b".to_string()]);
-        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
-    }
-
-    #[test]
-    fn load_model_config_reads_multiple_models_first_is_active() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "gemma4:e2b,gemma4:e4b");
-        let config = load_model_config();
-        assert_eq!(config.active, "gemma4:e2b");
-        assert_eq!(
-            config.all,
-            vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()]
-        );
-        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
-    }
-
-    #[test]
-    fn load_model_config_trims_whitespace_around_entries() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", " gemma4:e2b , gemma4:e4b ");
-        let config = load_model_config();
-        assert_eq!(config.active, "gemma4:e2b");
-        assert_eq!(
-            config.all,
-            vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()]
-        );
-        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
-    }
-
-    #[test]
-    fn load_model_config_falls_back_to_default_when_whitespace_only() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "   ");
-        let config = load_model_config();
-        assert_eq!(config.active, DEFAULT_MODEL_NAME);
-        assert_eq!(config.all, vec![DEFAULT_MODEL_NAME.to_string()]);
-        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
-    }
-
-    #[test]
-    fn load_model_config_filters_empty_entries_from_list() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "gemma4:e2b,,gemma4:e4b");
-        let config = load_model_config();
-        assert_eq!(
-            config.all,
-            vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()]
-        );
-        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
-    }
-
-    #[test]
-    fn load_model_config_falls_back_when_all_entries_are_empty_commas() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        // All entries filter to empty strings, leaving an empty list.
-        // The active model must still fall back to DEFAULT_MODEL_NAME.
-        std::env::set_var("THUKI_SUPPORTED_AI_MODELS", ",");
-        let config = load_model_config();
-        assert_eq!(config.active, DEFAULT_MODEL_NAME);
-        assert_eq!(config.all, Vec::<String>::new());
-        std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
-    }
+    // Note: CSV/whitespace/empty parsing of the previous THUKI_SUPPORTED_AI_MODELS
+    // env var was covered by 7 env-mutating tests here. Those assertions now live
+    // in src/config/tests.rs expressed as TOML input fixtures (resolve_empty_*,
+    // resolve_whitespace_only_entries_are_filtered, resolve_entry_whitespace_is_trimmed).
 
     // ── sampling options test ────────────────────────────────────────────────
 
@@ -1270,51 +1120,11 @@ mod tests {
         mock.assert_async().await;
     }
 
-    #[test]
-    fn load_system_prompt_returns_default_when_unset() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("THUKI_SYSTEM_PROMPT");
-
-        let prompt = load_system_prompt();
-        assert_eq!(prompt, compose_system_prompt(DEFAULT_SYSTEM_PROMPT));
-    }
-
-    #[test]
-    fn load_system_prompt_reads_env_var() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("THUKI_SYSTEM_PROMPT", "Custom prompt");
-
-        let prompt = load_system_prompt();
-        assert_eq!(prompt, compose_system_prompt("Custom prompt"));
-
-        std::env::remove_var("THUKI_SYSTEM_PROMPT");
-    }
-
-    #[test]
-    fn load_system_prompt_ignores_empty_env_var() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("THUKI_SYSTEM_PROMPT", "   ");
-
-        let prompt = load_system_prompt();
-        assert_eq!(prompt, compose_system_prompt(DEFAULT_SYSTEM_PROMPT));
-
-        std::env::remove_var("THUKI_SYSTEM_PROMPT");
-    }
-
-    #[test]
-    fn compose_system_prompt_appends_slash_command_appendix() {
-        let prompt = compose_system_prompt("Base prompt");
-
-        assert!(prompt.starts_with("Base prompt\n\n# Supported slash commands"));
-        assert!(prompt.contains("/search:"));
-    }
-
-    #[test]
-    fn compose_system_prompt_returns_base_when_appendix_is_blank() {
-        let prompt = compose_system_prompt_with_appendix("Base prompt", "   ");
-
-        assert_eq!(prompt, "Base prompt");
-    }
+    // Note: THUKI_SYSTEM_PROMPT env-var handling was covered by 3 tests here
+    // and compose_system_prompt by 2. Those assertions now live in
+    // src/config/tests.rs (resolve_empty_system_prompt_uses_built_in_base_plus_appendix,
+    // resolve_custom_system_prompt_flows_through_with_appendix,
+    // compose_system_prompt_*).
 
     #[test]
     fn conversation_history_new_starts_at_epoch_zero() {
@@ -1343,21 +1153,28 @@ mod tests {
 
     #[test]
     fn classify_http_404_returns_model_not_found() {
-        let err = classify_http_error(404);
+        let err = classify_http_error(404, "gemma4:e2b");
         assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
         assert!(err.message.contains("gemma4:e2b"));
     }
 
     #[test]
+    fn classify_http_404_includes_requested_model_name_in_hint() {
+        let err = classify_http_error(404, "custom:model");
+        assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
+        assert!(err.message.contains("custom:model"));
+    }
+
+    #[test]
     fn classify_http_500_returns_other_with_status() {
-        let err = classify_http_error(500);
+        let err = classify_http_error(500, "gemma4:e2b");
         assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("500"));
     }
 
     #[test]
     fn classify_http_401_returns_other_with_status() {
-        let err = classify_http_error(401);
+        let err = classify_http_error(401, "gemma4:e2b");
         assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("401"));
     }

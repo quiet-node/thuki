@@ -16,6 +16,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod commands;
+pub mod config;
 pub mod database;
 pub mod history;
 pub mod images;
@@ -618,10 +619,6 @@ fn spawn_periodic_image_cleanup(app_handle: tauri::AppHandle) {
 /// Panics if the Tauri runtime fails to initialise.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Load .env file so THUKI_SYSTEM_PROMPT and future backend env vars
-    // work the same way as Vite's VITE_* vars for the frontend.
-    dotenvy::dotenv().ok();
-
     let mut builder = tauri::Builder::default();
 
     #[cfg(target_os = "macos")]
@@ -714,11 +711,20 @@ pub fn run() {
             // ── Persistent HTTP client ────────────────────────────────
             app.manage(reqwest::Client::new());
 
+            // ── Configuration (TOML file at app_config_dir) ─────────
+            // Loaded once at startup. Missing file -> seed defaults.
+            // Corrupt file -> rename-with-timestamp + reseed. Only a hard
+            // write failure (disk full, permissions) is fatal; in that case
+            // we show a native alert and exit. See src/config/mod.rs.
+            let app_config = match crate::config::load(app.handle()) {
+                Ok(c) => c,
+                Err(e) => crate::config::show_fatal_dialog_and_exit(&e),
+            };
+            app.manage(app_config);
+
             // ── Generation + conversation state ─────────────────────
             app.manage(commands::GenerationState::new());
             app.manage(commands::ConversationHistory::new());
-            app.manage(commands::SystemPrompt(commands::load_system_prompt()));
-            app.manage(commands::load_model_config());
 
             // ── SQLite database for conversation history ──────────
             let app_data_dir = app
@@ -747,7 +753,7 @@ pub fn run() {
             #[cfg(not(coverage))]
             commands::reset_conversation,
             #[cfg(not(coverage))]
-            commands::get_model_config,
+            commands::get_config,
             #[cfg(not(coverage))]
             history::save_conversation,
             #[cfg(not(coverage))]

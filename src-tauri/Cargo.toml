@@ -28,7 +28,7 @@ reqwest = { version = "0.13.2", features = ["json", "stream"] }
 tokio = { version = "1.52.1", features = ["macros"] }
 futures-util = "0.3.32"
 tokio-util = "0.7"
-dotenvy = "0.15.7"
+toml = "0.8"
 rusqlite = { version = "0.39", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"

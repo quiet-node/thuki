@@ -7,7 +7,7 @@ import { ImageThumbnails } from './ImageThumbnails';
 import { ThinkingBlock } from './ThinkingBlock';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
-import { quote } from '../config';
+import { useConfig } from '../contexts/ConfigContext';
 import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
 import { SearchWarningIcon } from './SearchWarningIcon';
 import type { OllamaErrorKind } from '../hooks/useOllama';
@@ -280,6 +280,7 @@ export function ChatBubble({
 }: ChatBubbleProps) {
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const quote = useConfig().quote;
 
   const activeWarnings = searchWarnings ?? [];
   const warningSeverity: 'error' | 'warn' | null = activeWarnings.some(

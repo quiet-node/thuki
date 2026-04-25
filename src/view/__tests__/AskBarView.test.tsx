@@ -601,6 +601,7 @@ describe('AskBarView', () => {
               makeImage({ id: 'a' }),
               makeImage({ id: 'b' }),
               makeImage({ id: 'c' }),
+              makeImage({ id: 'd' }),
             ]}
             onImagesAttached={onImagesAttached}
             query=""
@@ -631,6 +632,7 @@ describe('AskBarView', () => {
               makeImage({ id: 'a' }),
               makeImage({ id: 'b' }),
               makeImage({ id: 'c' }),
+              makeImage({ id: 'd' }),
             ]}
             onImagesAttached={vi.fn()}
             query=""
@@ -665,6 +667,7 @@ describe('AskBarView', () => {
               makeImage({ id: 'a' }),
               makeImage({ id: 'b' }),
               makeImage({ id: 'c' }),
+              makeImage({ id: 'd' }),
             ]}
             onImagesAttached={vi.fn()}
             query=""
@@ -812,6 +815,7 @@ describe('AskBarView', () => {
             makeImage({ id: 'a' }),
             makeImage({ id: 'b' }),
             makeImage({ id: 'c' }),
+            makeImage({ id: 'd' }),
           ]}
           onImagesAttached={onImagesAttached}
           query=""
@@ -914,6 +918,7 @@ describe('AskBarView', () => {
         makeImage({ id: '1' }),
         makeImage({ id: '2' }),
         makeImage({ id: '3' }),
+        makeImage({ id: '4' }),
       ];
       render(
         <AskBarView
@@ -975,6 +980,7 @@ describe('AskBarView', () => {
         makeImage({ id: '1' }),
         makeImage({ id: '2' }),
         makeImage({ id: '3' }),
+        makeImage({ id: '4' }),
       ];
       render(
         <AskBarView
@@ -1018,6 +1024,7 @@ describe('AskBarView', () => {
         makeImage({ id: '1' }),
         makeImage({ id: '2' }),
         makeImage({ id: '3' }),
+        makeImage({ id: '4' }),
       ];
       render(
         <AskBarView
