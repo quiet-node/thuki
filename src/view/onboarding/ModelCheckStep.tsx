@@ -2,125 +2,120 @@
  * Onboarding step that gates the chat overlay on a working local Ollama
  * setup with at least one installed model.
  *
- * Mounts after PermissionsStep clears all macOS grants and before
- * IntroStep runs. Probes the daemon via the `check_model_setup` Tauri
- * command, then renders one of three states:
+ * Layout:
+ *   - Vertical timeline rail with numbered nodes connected by a thin line.
+ *   - Step 1 active shows a single title row, then a two-tab install hero
+ *     (Install Ollama / Already Installed?) above a single code box that
+ *     swaps its command per tab. A short sub-line below the box invites
+ *     the user to paste the command or visit the Ollama docs.
+ *   - Step 2 active hosts a compact list of starter models, all rendered
+ *     equal — no badge, no hierarchy. The user picks whichever fits.
  *
- *   - Ollama unreachable: Step 1 is the active card with install /
- *     start affordances; Step 2 is the waiting card.
- *   - No models installed: Step 1 collapses to a green Connected
- *     badge; Step 2 is the active card with the recommended-model list.
- *   - Ready: never visible. The component fires `advance_past_model_check`
- *     and the parent OnboardingView replaces it with IntroStep before
- *     the next paint.
- *
- * Every state share the same screen, the same StepCard pattern, and the
- * same Re-check CTA, so the user is never surprised by a "wait, ANOTHER
- * last thing" tagline.
+ * Probes Ollama via the `check_model_setup` Tauri command on mount and on
+ * every Re-check click. Background polling is intentionally absent so
+ * idle CPU and IPC stay at zero between explicit user actions.
  */
 
-import { motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
 import type React from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
-import { StepCard, Badge } from './_shared';
+import { Badge } from './_shared';
 
-/**
- * Wire-format payload returned by the `check_model_setup` Tauri command.
- *
- * Discriminated on `state` to match the Rust `ModelSetupState` enum
- * exactly. Frontend routes solely on the `state` string; the optional
- * `active_slug` and `installed` fields are present only on `ready`.
- */
+const OLLAMA_DOCS_URL = 'https://ollama.com/download';
+const OLLAMA_SEARCH_URL = 'https://ollama.com/search';
+const OLLAMA_LISTEN_ADDR = '127.0.0.1:11434';
+
 type ModelSetupState =
   | { state: 'ollama_unreachable' }
   | { state: 'no_models_installed' }
   | { state: 'ready'; active_slug: string; installed: string[] };
 
+interface InstallTab {
+  id: string;
+  label: string;
+  command: string;
+}
+
 /**
- * Recommended starter models surfaced in the Step 2 card.
- *
- * The list is intentionally short and curated: three options is enough
- * for new users to feel they have a real choice without forcing them
- * to research model trade-offs. Sourced from the design approved
- * 2026-04-25 in `~/.gstack/projects/.../approved.json`.
+ * Install routes shown above the Step 1 code box. The first entry is the
+ * default selection. `command` is the exact string copied to the
+ * clipboard when the copy pill is clicked.
  */
-const RECOMMENDED_MODELS: Array<{
-  slug: string;
-  description: string;
-  recommended?: boolean;
-}> = [
+const INSTALL_TABS: InstallTab[] = [
   {
-    slug: 'gemma4:e2b',
-    description: 'Lightweight all-rounder · 1.6 GB',
-    recommended: true,
+    id: 'install',
+    label: 'Install Ollama',
+    command: 'curl -fsSL https://ollama.com/install.sh | sh',
   },
-  { slug: 'llama3:8b', description: 'Stronger reasoning · 4.7 GB' },
-  { slug: 'qwen2.5:7b', description: 'Code-focused · 4.4 GB' },
+  {
+    id: 'already-installed',
+    label: 'Already Installed?',
+    command: 'open -a Ollama',
+  },
 ];
 
 /**
- * Builds the `ollama pull <slug>` command for a given model. Centralised
- * so the copy-button affordance and the (future) settings panel share
- * the same string and cannot drift.
+ * Starter models offered in Step 2. All entries support text and image
+ * input (vision / multimodal). Sizes are pulled from the official Ollama
+ * library (ollama.com/library) and reflect the default tag at time of
+ * authoring. All entries are intentionally peers — no recommended
+ * badge — so the user picks whichever fits their hardware.
  */
+const STARTER_MODELS: Array<{
+  slug: string;
+  description: string;
+  size: string;
+}> = [
+  { slug: 'gemma4:e4b', description: 'Google · vision', size: '9.6 GB' },
+  {
+    slug: 'llama3.2-vision:11b',
+    description: 'Meta · vision',
+    size: '7.8 GB',
+  },
+  { slug: 'phi4:14b', description: 'Microsoft · text', size: '9.1 GB' },
+];
+
+/**
+ * Builds the public Ollama library URL for a model slug. Drops the `:tag`
+ * suffix so the destination shows every available variant rather than
+ * pinning the user to one quantisation. Both `gemma4` and `gemma4:e4b`
+ * resolve, but the bare-name URL is the more useful landing.
+ */
+function buildOllamaLibraryUrl(slug: string): string {
+  const base = slug.split(':')[0];
+  return `https://ollama.com/library/${base}`;
+}
+
 function buildPullCommand(slug: string): string {
   return `ollama pull ${slug}`;
 }
 
-/** Copies a string to the macOS clipboard, ignoring failures silently. */
-async function copyToClipboard(text: string): Promise<void> {
+async function copyToClipboard(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
+    return true;
   } catch {
-    // Clipboard write can fail on locked sessions or denied permissions;
-    // there is no recovery and showing an error here would be more
-    // confusing than silent. The terminal command remains visible for
-    // the user to copy manually.
+    return false;
   }
 }
 
-/**
- * Renders the model-check onboarding gate.
- *
- * Probes Ollama once on mount and again on every Re-check click. No
- * background polling: the user is the trigger, which keeps idle CPU
- * and IPC traffic at zero between explicit interactions.
- *
- * Takes no props. Parent OnboardingView routes here when the persisted
- * stage is `model_check`. Stage advance to `intro` is owned by the
- * backend `advance_past_model_check` command, fired from inside this
- * component when the probe reports `Ready`. The backend re-emits the
- * onboarding event with the new stage so the parent re-routes without
- * a window flicker.
- */
 export function ModelCheckStep() {
   const [setupState, setSetupState] = useState<ModelSetupState | null>(null);
   const [isRechecking, setIsRechecking] = useState(false);
   const mountedRef = useRef(true);
 
-  /**
-   * Probes Ollama via the backend command and either advances the
-   * onboarding stage (Ready) or stores the gate state for rendering.
-   *
-   * Idempotent: safe to call repeatedly. The backend handles persisting
-   * the resolved active slug; this hook only routes UI state.
-   */
   const probe = useCallback(async () => {
     try {
       const next = await invoke<ModelSetupState>('check_model_setup');
       if (!mountedRef.current) return;
       if (next.state === 'ready') {
-        // Fire-and-forget: the backend emits the onboarding event with
-        // the new stage, which OnboardingView routes to IntroStep.
         await invoke('advance_past_model_check');
         return;
       }
       setSetupState(next);
     } catch {
-      // Treat any IPC failure as Ollama unreachable so the user sees a
-      // recovery path. The next Re-check click will retry.
       if (!mountedRef.current) return;
       setSetupState({ state: 'ollama_unreachable' });
     }
@@ -135,7 +130,6 @@ export function ModelCheckStep() {
   }, [probe]);
 
   const handleRecheck = useCallback(async () => {
-    if (isRechecking) return;
     setIsRechecking(true);
     try {
       await probe();
@@ -144,14 +138,17 @@ export function ModelCheckStep() {
         setIsRechecking(false);
       }
     }
-  }, [isRechecking, probe]);
+  }, [probe]);
 
   const ollamaConnected = setupState?.state === 'no_models_installed';
   const isWaitingForOllama = setupState?.state === 'ollama_unreachable';
   const isProbing = setupState === null;
-  const stepOneActive = isWaitingForOllama;
-  const stepOneDone = ollamaConnected;
-  const stepTwoActive = ollamaConnected;
+
+  const titleSub = isProbing
+    ? 'Checking your local Ollama setup…'
+    : ollamaConnected
+      ? "Almost there. Let's pick a brain for Thuki."
+      : 'Runs Ollama locally. Your chats stay on this machine.';
 
   return (
     <div
@@ -174,7 +171,7 @@ export function ModelCheckStep() {
             'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
           border: '1px solid rgba(255, 141, 92, 0.2)',
           borderRadius: 24,
-          padding: '32px 26px 26px',
+          padding: '26px 22px 22px',
           boxShadow: '0 0 40px rgba(255,100,40,0.07)',
           position: 'relative',
           overflow: 'hidden',
@@ -195,12 +192,12 @@ export function ModelCheckStep() {
 
         <div
           data-tauri-drag-region
-          style={{ textAlign: 'center', marginBottom: 18, cursor: 'grab' }}
+          style={{ textAlign: 'center', marginBottom: 12, cursor: 'grab' }}
         >
           <img
             src={thukiLogo}
-            width={64}
-            height={64}
+            width={40}
+            height={40}
             alt="Thuki"
             style={{
               objectFit: 'contain',
@@ -214,12 +211,12 @@ export function ModelCheckStep() {
         <h1
           style={{
             textAlign: 'center',
-            fontSize: 22,
+            fontSize: 18,
             fontWeight: 700,
             color: '#f0f0f2',
-            letterSpacing: '-0.4px',
-            lineHeight: 1.2,
-            margin: '0 0 6px',
+            letterSpacing: '-0.3px',
+            lineHeight: 1.25,
+            margin: '0 0 4px',
           }}
         >
           Set up your local AI
@@ -227,122 +224,32 @@ export function ModelCheckStep() {
         <p
           style={{
             textAlign: 'center',
-            fontSize: 13,
+            fontSize: 12.5,
             color: 'rgba(255,255,255,0.55)',
-            lineHeight: 1.55,
-            margin: '0 auto 20px',
+            lineHeight: 1.5,
+            margin: '0 auto 18px',
             maxWidth: 320,
           }}
         >
-          {isProbing
-            ? 'Checking your local Ollama setup…'
-            : ollamaConnected
-              ? 'Almost there. Pick a model so Thuki has something to think with. You can always switch to a different model later.'
-              : 'Two quick things and you are in. Thuki runs Ollama locally so your conversations never leave this machine.'}
+          {titleSub}
         </p>
 
-        <div
-          style={{
-            display: isProbing ? 'none' : 'flex',
-            flexDirection: 'column',
-            gap: 10,
-            marginBottom: 18,
-          }}
-        >
-          <StepCard active={stepOneActive} done={stepOneDone}>
-            <StepIcon
-              variant={
-                stepOneDone ? 'done' : stepOneActive ? 'active' : 'waiting'
-              }
-            >
-              <ShieldCheckGlyph />
-            </StepIcon>
-            <StepText
-              eyebrow={
-                stepOneDone
-                  ? 'STEP 1 · DONE'
-                  : stepOneActive
-                    ? 'STEP 1 · ACTION NEEDED'
-                    : 'STEP 1'
-              }
-              eyebrowVariant={
-                stepOneDone ? 'done' : stepOneActive ? 'active' : 'waiting'
-              }
-              title={
-                stepOneDone ? 'Ollama is running' : 'Install & start Ollama'
-              }
-              titleMuted={!stepOneDone && !stepOneActive}
-            />
-            {stepOneDone ? <Badge color="green">Connected</Badge> : null}
-          </StepCard>
-
-          {stepOneActive ? (
-            <ActionRow>
-              <ActionCard
-                title="Install Ollama"
-                desc="brew install ollama"
-                primary
-                onClick={() => void copyToClipboard('brew install ollama')}
-                buttonLabel="Copy"
-                buttonGlyph={<CopyGlyph />}
-              />
-              <ActionCard
-                title="Already installed?"
-                desc="open -a Ollama"
-                onClick={() => void copyToClipboard('open -a Ollama')}
-                buttonLabel="Copy"
-                buttonGlyph={<CopyGlyph />}
-              />
-            </ActionRow>
-          ) : null}
-
-          <StepCard active={stepTwoActive} done={false}>
-            <StepIcon
-              variant={
-                stepTwoActive ? 'active' : stepOneDone ? 'active' : 'waiting'
-              }
-            >
-              <CubeGlyph />
-            </StepIcon>
-            <StepText
-              eyebrow={
-                stepTwoActive ? 'STEP 2 · ACTION NEEDED' : 'STEP 2 · WAITING'
-              }
-              eyebrowVariant={stepTwoActive ? 'active' : 'waiting'}
-              title="Pull a starter model"
-              titleMuted={!stepTwoActive}
-            />
-          </StepCard>
-
-          {stepTwoActive ? (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 8,
-              }}
-            >
-              {RECOMMENDED_MODELS.map((m) => (
-                <ModelCard
-                  key={m.slug}
-                  slug={m.slug}
-                  description={m.description}
-                  recommended={m.recommended === true}
-                  onCopy={() => void copyToClipboard(buildPullCommand(m.slug))}
-                />
-              ))}
-            </div>
-          ) : null}
-        </div>
+        {!isProbing ? (
+          <Rail
+            stepOneActive={isWaitingForOllama}
+            stepOneDone={ollamaConnected}
+            stepTwoActive={ollamaConnected}
+          />
+        ) : null}
 
         <button
           onClick={() => void handleRecheck()}
-          aria-label="Re-check setup"
+          aria-label="Verify setup"
           disabled={isRechecking}
           style={{
             display: 'block',
             width: '100%',
-            padding: '12px',
+            padding: '11px',
             background: 'linear-gradient(135deg, #ff8d5c 0%, #d45a1e 100%)',
             color: 'white',
             fontSize: 14,
@@ -354,9 +261,10 @@ export function ModelCheckStep() {
             boxShadow: '0 4px 20px rgba(255,100,40,0.28)',
             textAlign: 'center',
             opacity: isRechecking ? 0.85 : 1,
+            marginTop: 4,
           }}
         >
-          {isRechecking ? 'Re-checking…' : 'Re-check setup'}
+          {isRechecking ? 'Verifying…' : 'Verify setup'}
         </button>
 
         <p
@@ -364,7 +272,7 @@ export function ModelCheckStep() {
             textAlign: 'center',
             fontSize: 11,
             color: 'rgba(255,255,255,0.18)',
-            marginTop: 14,
+            marginTop: 12,
             lineHeight: 1.5,
           }}
         >
@@ -375,33 +283,82 @@ export function ModelCheckStep() {
   );
 }
 
-// ─── Sub-components ──────────────────────────────────────────────────────────
+// ─── Rail ────────────────────────────────────────────────────────────────────
 
-type Variant = 'active' | 'done' | 'waiting';
-
-interface StepIconProps {
-  variant: Variant;
-  children: React.ReactNode;
+interface RailProps {
+  stepOneActive: boolean;
+  stepOneDone: boolean;
+  stepTwoActive: boolean;
 }
 
-function StepIcon({ variant, children }: StepIconProps) {
+/**
+ * Two-step vertical timeline. The connecting line is rendered once as an
+ * absolute element behind the node column so it spans the full rail
+ * regardless of how tall each row's content grows.
+ */
+function Rail({ stepOneActive, stepOneDone, stepTwoActive }: RailProps) {
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '24px 1fr',
+        columnGap: 12,
+        position: 'relative',
+        marginBottom: 16,
+      }}
+    >
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          top: 14,
+          bottom: 14,
+          left: 11,
+          width: 1,
+          background:
+            'linear-gradient(180deg, rgba(255,141,92,0.25), rgba(255,255,255,0.04))',
+        }}
+      />
+
+      <RailNode number={1} variant={stepOneDone ? 'done' : 'active'} />
+      <RowOne active={stepOneActive} done={stepOneDone} />
+
+      <RailNode
+        number={2}
+        variant={stepTwoActive ? 'active' : 'wait'}
+        topGap={20}
+      />
+      <RowTwo active={stepTwoActive} />
+    </div>
+  );
+}
+
+type NodeVariant = 'active' | 'done' | 'wait';
+
+interface RailNodeProps {
+  number: number;
+  variant: NodeVariant;
+  topGap?: number;
+}
+
+function RailNode({ number, variant, topGap = 0 }: RailNodeProps) {
   const palette: Record<
-    Variant,
+    NodeVariant,
     { bg: string; border: string; color: string }
   > = {
     active: {
-      bg: 'rgba(255,141,92,0.12)',
-      border: 'rgba(255,141,92,0.25)',
+      bg: 'rgba(255,141,92,0.1)',
+      border: 'rgba(255,141,92,0.4)',
       color: '#ff8d5c',
     },
     done: {
       bg: 'rgba(34,197,94,0.12)',
-      border: 'rgba(34,197,94,0.2)',
+      border: 'rgba(34,197,94,0.4)',
       color: '#22c55e',
     },
-    waiting: {
-      bg: 'rgba(255,255,255,0.04)',
-      border: 'rgba(255,255,255,0.08)',
+    wait: {
+      bg: 'rgba(255,255,255,0.03)',
+      border: 'rgba(255,255,255,0.1)',
       color: 'rgba(255,255,255,0.4)',
     },
   };
@@ -409,284 +366,538 @@ function StepIcon({ variant, children }: StepIconProps) {
   return (
     <div
       style={{
-        width: 36,
-        height: 36,
-        borderRadius: 10,
-        flexShrink: 0,
+        gridColumn: 1,
         display: 'flex',
-        alignItems: 'center',
         justifyContent: 'center',
-        background: p.bg,
-        border: `1px solid ${p.border}`,
-        color: p.color,
+        alignItems: 'flex-start',
+        marginTop: topGap,
+        zIndex: 1,
       }}
     >
-      {children}
+      <div
+        style={{
+          width: 24,
+          height: 24,
+          borderRadius: 999,
+          background: p.bg,
+          border: `1px solid ${p.border}`,
+          color: p.color,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 10.5,
+          fontWeight: 700,
+          letterSpacing: '-0.2px',
+        }}
+      >
+        {variant === 'done' ? '✓' : number}
+      </div>
     </div>
   );
 }
 
-interface StepTextProps {
-  eyebrow: string;
-  eyebrowVariant: Variant;
-  title: string;
-  titleMuted: boolean;
+// ─── Row 1: install Ollama ───────────────────────────────────────────────────
+
+interface RowOneProps {
+  active: boolean;
+  done: boolean;
 }
 
-function StepText({
-  eyebrow,
-  eyebrowVariant,
-  title,
-  titleMuted,
-}: StepTextProps) {
-  const eyebrowColor: Record<Variant, string> = {
-    active: 'rgba(255,141,92,0.8)',
-    done: 'rgba(34,197,94,0.8)',
-    waiting: 'rgba(255,255,255,0.4)',
-  };
+function RowOne({ active, done }: RowOneProps) {
+  const [selectedTabIdx, setSelectedTabIdx] = useState(0);
+  const tab = INSTALL_TABS[selectedTabIdx];
+
   return (
-    <div style={{ flex: 1, minWidth: 0 }}>
+    <div style={{ gridColumn: 2, marginBottom: 4 }}>
       <div
         style={{
-          fontSize: 10,
-          fontWeight: 700,
-          letterSpacing: 1.4,
-          color: eyebrowColor[eyebrowVariant],
-          margin: '0 0 2px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 10,
         }}
       >
-        {eyebrow}
+        <div style={{ minWidth: 0 }}>
+          <p
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: '#f0f0f2',
+              margin: 0,
+              letterSpacing: '-0.1px',
+              lineHeight: 1.3,
+            }}
+          >
+            {done ? 'Ollama is running' : 'Install & start Ollama'}
+          </p>
+          {done ? (
+            <p
+              style={{
+                fontFamily: '"SF Mono", Menlo, monospace',
+                fontSize: 10.5,
+                color: 'rgba(255,255,255,0.4)',
+                margin: '3px 0 0',
+                letterSpacing: '-0.1px',
+              }}
+            >
+              Listening on {OLLAMA_LISTEN_ADDR}
+            </p>
+          ) : null}
+        </div>
+        {done ? <Badge color="green">live</Badge> : null}
       </div>
+
+      {active ? (
+        <>
+          <div
+            style={{
+              marginTop: 10,
+              padding: 10,
+              background: 'rgba(0, 0, 0, 0.3)',
+              border: '1px solid rgba(255, 255, 255, 0.05)',
+              borderRadius: 12,
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                gap: 4,
+                marginBottom: 8,
+              }}
+            >
+              {INSTALL_TABS.map((t, i) => (
+                <TabButton
+                  key={t.id}
+                  label={t.label}
+                  selected={i === selectedTabIdx}
+                  onClick={() => setSelectedTabIdx(i)}
+                />
+              ))}
+            </div>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '8px 10px',
+                background: 'rgba(0, 0, 0, 0.32)',
+                border: '1px solid rgba(255, 255, 255, 0.05)',
+                borderRadius: 10,
+                height: 52,
+                boxSizing: 'border-box',
+                overflow: 'hidden',
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: '"SF Mono", Menlo, monospace',
+                  fontSize: 11.5,
+                  color: '#f0f0f2',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-all',
+                  flex: 1,
+                  minWidth: 0,
+                  lineHeight: 1.4,
+                }}
+              >
+                <span
+                  style={{
+                    color: 'rgba(255,141,92,0.75)',
+                    marginRight: 6,
+                  }}
+                >
+                  $
+                </span>
+                {tab.command}
+              </span>
+              <CopyButton
+                command={tab.command}
+                ariaLabel={`Copy ${tab.label.toLowerCase()} command`}
+                iconOnly
+              />
+            </div>
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexWrap: 'wrap',
+              gap: 5,
+              marginTop: 8,
+              fontSize: 11,
+              lineHeight: 1.5,
+            }}
+          >
+            <span style={{ color: 'rgba(255,255,255,0.42)' }}>
+              Paste this in Terminal or visit
+            </span>
+            <DocsLink
+              ariaLabel="Open Ollama documentation"
+              url={OLLAMA_DOCS_URL}
+            >
+              Ollama docs ↗
+            </DocsLink>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+// ─── Row 2: pull a starter model ─────────────────────────────────────────────
+
+function RowTwo({ active }: { active: boolean }) {
+  return (
+    <div style={{ gridColumn: 2, marginTop: 20 }}>
       <p
         style={{
           fontSize: 14,
           fontWeight: 600,
-          color: titleMuted ? 'rgba(255,255,255,0.55)' : '#f0f0f2',
+          color: active ? '#f0f0f2' : 'rgba(255,255,255,0.55)',
           margin: 0,
           letterSpacing: '-0.1px',
           lineHeight: 1.3,
         }}
       >
-        {title}
+        Pull a starter model
       </p>
-    </div>
-  );
-}
 
-function ActionRow({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {children}
-    </div>
-  );
-}
-
-interface ActionCardProps {
-  title: string;
-  desc: string;
-  primary?: boolean;
-  onClick: () => void;
-  buttonLabel: string;
-  buttonGlyph: React.ReactNode;
-}
-
-function ActionCard({
-  title,
-  desc,
-  primary,
-  onClick,
-  buttonLabel,
-  buttonGlyph,
-}: ActionCardProps) {
-  return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 10,
-        padding: '10px 12px',
-        background: 'rgba(0,0,0,0.18)',
-        border: '1px solid rgba(255,255,255,0.06)',
-        borderRadius: 10,
-      }}
-    >
-      <div style={{ minWidth: 0 }}>
-        <p
-          style={{
-            fontSize: 12.5,
-            fontWeight: 600,
-            color: '#f0f0f2',
-            margin: 0,
-          }}
-        >
-          {title}
-        </p>
-        <p
-          style={{
-            fontSize: 11,
-            color: 'rgba(255,255,255,0.45)',
-            margin: '2px 0 0',
-            fontFamily: '"SF Mono", Menlo, monospace',
-          }}
-        >
-          {desc}
-        </p>
-      </div>
-      <button
-        onClick={onClick}
-        aria-label={`${buttonLabel} ${title.toLowerCase()} command`}
-        style={{
-          flexShrink: 0,
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 5,
-          padding: '5px 9px',
-          borderRadius: 7,
-          background: primary
-            ? 'rgba(255,141,92,0.12)'
-            : 'rgba(255,255,255,0.06)',
-          border: `1px solid ${primary ? 'rgba(255,141,92,0.28)' : 'rgba(255,255,255,0.12)'}`,
-          color: primary ? '#ff8d5c' : 'rgba(255,255,255,0.7)',
-          fontSize: 10.5,
-          fontWeight: 600,
-          fontFamily: 'inherit',
-          cursor: 'pointer',
-        }}
-      >
-        {buttonGlyph}
-        {buttonLabel}
-      </button>
-    </div>
-  );
-}
-
-interface ModelCardProps {
-  slug: string;
-  description: string;
-  recommended: boolean;
-  onCopy: () => void;
-}
-
-function ModelCard({ slug, description, recommended, onCopy }: ModelCardProps) {
-  return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 10,
-        padding: '10px 12px',
-        background: recommended
-          ? 'radial-gradient(ellipse 100% 100% at 0% 0%, rgba(255,141,92,0.08) 0%, transparent 70%), rgba(0,0,0,0.18)'
-          : 'rgba(0,0,0,0.18)',
-        border: `1px solid ${recommended ? 'rgba(255,141,92,0.25)' : 'rgba(255,255,255,0.06)'}`,
-        borderRadius: 10,
-      }}
-    >
-      <div style={{ minWidth: 0 }}>
-        {recommended ? (
-          <div
+      {active ? (
+        <>
+          <p
             style={{
-              fontSize: 8.5,
-              fontWeight: 700,
-              letterSpacing: 1.3,
-              color: '#ff8d5c',
-              margin: '0 0 3px',
+              fontSize: 11.5,
+              color: 'rgba(255,255,255,0.45)',
+              margin: '3px 0 0',
+              lineHeight: 1.5,
             }}
           >
-            RECOMMENDED
+            You can swap or add more later.
+          </p>
+          <div
+            style={{
+              marginTop: 10,
+              border: '1px solid rgba(255, 255, 255, 0.05)',
+              borderRadius: 12,
+              overflow: 'hidden',
+              background: 'rgba(0, 0, 0, 0.18)',
+            }}
+          >
+            {STARTER_MODELS.map((m, i) => (
+              <ModelRow
+                key={m.slug}
+                slug={m.slug}
+                description={m.description}
+                size={m.size}
+                isLast={i === STARTER_MODELS.length - 1}
+              />
+            ))}
           </div>
-        ) : null}
+
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 2,
+              marginTop: 10,
+              fontSize: 11,
+              lineHeight: 1.5,
+            }}
+          >
+            <span style={{ color: 'rgba(255,255,255,0.42)' }}>
+              Paste the command in Terminal
+            </span>
+            <span style={{ color: 'rgba(255,255,255,0.28)' }}>or</span>
+            <DocsLink
+              ariaLabel="Browse all models on Ollama"
+              url={OLLAMA_SEARCH_URL}
+            >
+              Browse all models on ollama.com ↗
+            </DocsLink>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+interface ModelRowProps {
+  slug: string;
+  description: string;
+  size: string;
+  isLast: boolean;
+}
+
+function ModelRow({ slug, description, size, isLast }: ModelRowProps) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 10,
+        padding: '9px 12px',
+        borderBottom: isLast ? 'none' : '1px solid rgba(255, 255, 255, 0.04)',
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <SlugLink slug={slug} />
         <p
           style={{
-            fontFamily: '"SF Mono", Menlo, monospace',
-            fontSize: 13,
-            fontWeight: 500,
-            color: '#f0f0f2',
-            margin: 0,
-          }}
-        >
-          {slug}
-        </p>
-        <p
-          style={{
-            fontSize: 11,
+            fontSize: 10.5,
             color: 'rgba(255,255,255,0.45)',
             margin: '2px 0 0',
           }}
         >
-          {description}
+          {description} · {size}
         </p>
       </div>
-      <button
-        onClick={onCopy}
-        aria-label={`Copy install command for ${slug}`}
-        style={{
-          flexShrink: 0,
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 5,
-          padding: '5px 9px',
-          borderRadius: 7,
-          background: recommended
-            ? 'rgba(255,141,92,0.12)'
-            : 'rgba(255,255,255,0.06)',
-          border: `1px solid ${recommended ? 'rgba(255,141,92,0.28)' : 'rgba(255,255,255,0.12)'}`,
-          color: recommended ? '#ff8d5c' : 'rgba(255,255,255,0.7)',
-          fontSize: 10.5,
-          fontWeight: 600,
-          fontFamily: 'inherit',
-          cursor: 'pointer',
-        }}
-      >
-        <CopyGlyph />
-        Copy
-      </button>
+      <CopyButton
+        command={buildPullCommand(slug)}
+        ariaLabel={`Copy install command for ${slug}`}
+      />
     </div>
+  );
+}
+
+/**
+ * Renders the model slug as an inline button styled like text. Click
+ * opens the model's Ollama library page in the user's default browser
+ * via the `open_url` Tauri command. Hover lifts the slug to brand
+ * orange with a subtle underline so it reads as discoverable without
+ * shouting.
+ */
+function SlugLink({ slug }: { slug: string }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={() =>
+        void invoke('open_url', { url: buildOllamaLibraryUrl(slug) })
+      }
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      aria-label={`Open ${slug} on Ollama`}
+      style={{
+        display: 'block',
+        background: 'transparent',
+        border: 'none',
+        padding: 0,
+        margin: 0,
+        fontFamily: '"SF Mono", Menlo, monospace',
+        fontSize: 12.5,
+        fontWeight: 500,
+        color: hover ? '#ff8d5c' : '#f0f0f2',
+        textDecoration: hover ? 'underline' : 'none',
+        textDecorationColor: 'rgba(255,141,92,0.5)',
+        textUnderlineOffset: 3,
+        cursor: 'pointer',
+        userSelect: 'text',
+        textAlign: 'left',
+        transition: 'color 160ms ease',
+      }}
+    >
+      {slug}
+    </button>
+  );
+}
+
+// ─── Tab + copy + docs link ──────────────────────────────────────────────────
+
+interface DocsLinkProps {
+  ariaLabel: string;
+  url: string;
+  children: React.ReactNode;
+}
+
+function DocsLink({ ariaLabel, url, children }: DocsLinkProps) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={() => void invoke('open_url', { url })}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      aria-label={ariaLabel}
+      style={{
+        background: 'transparent',
+        border: 'none',
+        padding: 0,
+        fontFamily: 'inherit',
+        fontSize: 11,
+        fontWeight: 500,
+        color: hover ? '#ff8d5c' : 'rgba(255,141,92,0.7)',
+        cursor: 'pointer',
+        transition: 'color 160ms ease',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+interface TabButtonProps {
+  label: string;
+  selected: boolean;
+  onClick: () => void;
+}
+
+function TabButton({ label, selected, onClick }: TabButtonProps) {
+  const [hover, setHover] = useState(false);
+  const borderColor = selected
+    ? 'rgba(255, 141, 92, 0.28)'
+    : hover
+      ? 'rgba(255, 255, 255, 0.1)'
+      : 'transparent';
+  const bg = selected
+    ? 'rgba(255, 141, 92, 0.1)'
+    : hover
+      ? 'rgba(255, 255, 255, 0.04)'
+      : 'rgba(255, 255, 255, 0.025)';
+  const color = selected
+    ? '#ff8d5c'
+    : hover
+      ? 'rgba(255,255,255,0.85)'
+      : 'rgba(255,255,255,0.55)';
+
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      aria-pressed={selected}
+      style={{
+        flex: 1,
+        padding: '6px 8px',
+        borderRadius: 8,
+        fontSize: 11.5,
+        fontWeight: 600,
+        color,
+        background: bg,
+        border: `1px solid ${borderColor}`,
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+        transition: 'all 160ms ease',
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+const COPIED_RESET_MS = 1500;
+
+interface CopyButtonProps {
+  command: string;
+  ariaLabel: string;
+  label?: string;
+  iconOnly?: boolean;
+}
+
+function CopyButton({
+  command,
+  ariaLabel,
+  label = 'Copy',
+  iconOnly = false,
+}: CopyButtonProps) {
+  const [hover, setHover] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
+
+  const handleClick = useCallback(async () => {
+    const ok = await copyToClipboard(command);
+    if (!ok) return;
+    setCopied(true);
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current);
+    }
+    timeoutRef.current = window.setTimeout(() => {
+      setCopied(false);
+      timeoutRef.current = null;
+    }, COPIED_RESET_MS);
+  }, [command]);
+
+  const borderColor = copied
+    ? 'rgba(34,197,94,0.55)'
+    : hover
+      ? 'rgba(255,141,92,0.55)'
+      : 'rgba(255,255,255,0.12)';
+  const labelColor =
+    hover || copied ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.7)';
+  const glyphColor = copied
+    ? '#22c55e'
+    : hover
+      ? '#ff8d5c'
+      : 'rgba(255,255,255,0.7)';
+
+  return (
+    <button
+      onClick={() => void handleClick()}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      aria-label={ariaLabel}
+      style={{
+        flexShrink: 0,
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        padding: iconOnly ? '5px 6px' : '5px 9px',
+        borderRadius: 7,
+        background: 'rgba(255,255,255,0.06)',
+        border: `1px solid ${borderColor}`,
+        color: labelColor,
+        fontSize: 10.5,
+        fontWeight: 600,
+        fontFamily: 'inherit',
+        cursor: 'pointer',
+        transition:
+          'border-color 160ms ease, color 160ms ease, background-color 160ms ease',
+      }}
+    >
+      <AnimatePresence mode="wait" initial={false}>
+        {copied ? (
+          <motion.span
+            key="copied"
+            initial={{ opacity: 0, y: 2 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -2 }}
+            transition={{ duration: 0.14 }}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+          >
+            <span style={{ display: 'inline-flex', color: glyphColor }}>
+              <CheckGlyph />
+            </span>
+            {iconOnly ? null : 'Copied'}
+          </motion.span>
+        ) : (
+          <motion.span
+            key="copy"
+            initial={{ opacity: 0, y: 2 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -2 }}
+            transition={{ duration: 0.14 }}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+          >
+            <span style={{ display: 'inline-flex', color: glyphColor }}>
+              <CopyGlyph />
+            </span>
+            {iconOnly ? null : label}
+          </motion.span>
+        )}
+      </AnimatePresence>
+    </button>
   );
 }
 
 // ─── Glyphs ──────────────────────────────────────────────────────────────────
-
-function ShieldCheckGlyph() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-      <path
-        d="M9 1.5l6 3v4.5c0 3.5-2.5 6.5-6 7.5-3.5-1-6-4-6-7.5V4.5l6-3z"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M6.5 9l2 2 3.5-4"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function CubeGlyph() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-      <path
-        d="M9 1.5L2.5 5v8L9 16.5 15.5 13V5L9 1.5z"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M2.5 5L9 8.5 15.5 5M9 16.5V8.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
 
 function CopyGlyph() {
   return (
@@ -705,6 +916,20 @@ function CopyGlyph() {
         stroke="currentColor"
         strokeWidth="1.4"
         strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function CheckGlyph() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M3 8.5l3.2 3.2L13 5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
