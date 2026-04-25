@@ -243,15 +243,17 @@ pub async fn get_model_picker_state(
     client: tauri::State<'_, reqwest::Client>,
     db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
-    app_config: tauri::State<'_, crate::config::AppConfig>,
 ) -> Result<serde_json::Value, String> {
     let installed = fetch_installed_model_names(&client, DEFAULT_OLLAMA_URL).await?;
 
     let resolved = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let persisted = get_config(&conn, ACTIVE_MODEL_KEY).map_err(|e| e.to_string())?;
-        let resolved =
-            resolve_active_model(persisted.as_deref(), &installed, app_config.model.active());
+        let resolved = resolve_active_model(
+            persisted.as_deref(),
+            &installed,
+            crate::config::defaults::DEFAULT_MODEL_NAME,
+        );
         if should_persist_resolved(&installed, persisted.as_deref(), &resolved) {
             set_config(&conn, ACTIVE_MODEL_KEY, &resolved).map_err(|e| e.to_string())?;
         }

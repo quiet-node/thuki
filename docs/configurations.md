@@ -27,10 +27,9 @@ open ~/Library/Application\ Support/com.quietnode.thuki/config.toml
 
 ```toml
 [model]
-# First entry is the ACTIVE model used for all inference.
-# Reorder the list to switch models (requires app restart in this release).
-# Run `ollama pull <model>` before adding a model you haven't used.
-available = ["gemma4:e2b", "gemma4:e4b"]
+# Where Thuki finds your local Ollama server. The active model itself is
+# selected from the in-app picker (which lists whatever is installed in
+# Ollama via /api/tags) and is stored in Thuki's local database, not here.
 ollama_url = "http://127.0.0.1:11434"
 
 [prompt]
@@ -81,16 +80,15 @@ Every domain below is shown as a single table that lists **all** constants Thuki
 
 ## Reference
 
-### `[LLM models]`
+### `[model]`
 
-Which AI model Thuki uses and where to find your local Ollama server.
+Where to find your local Ollama server. The active model itself is **not** a TOML setting: Thuki discovers installed models live from Ollama's `/api/tags` endpoint, lets you pick one from the in-app model picker, and stores that selection in its local SQLite database (`app_config` table). Storing the active slug in TOML would duplicate ground truth from Ollama and break the moment you remove a model with `ollama rm`, so it lives next to the conversation history instead.
 
-| Constant     | Default                    | Tunable? | Why not tunable | Bounds         | Description                                                                                                                                                                                                             |
-| :----------- | :------------------------- | :------- | :-------------- | :------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `available`  | `["gemma4:e2b"]`           | Yes      | —               | non-empty list | The list of Ollama models Thuki knows about. **The first model in the list is the one Thuki actually uses.** To switch models, reorder the list. Make sure to run `ollama pull <model>` before adding a new entry here. |
-| `ollama_url` | `"http://127.0.0.1:11434"` | Yes      | —               | non-empty URL  | The web address where Thuki finds your local Ollama server. The default works if you run Ollama on this machine with its standard port. Change this only if you moved Ollama to a different port or another machine.    |
+| Constant     | Default                    | Tunable? | Why not tunable | Bounds        | Description                                                                                                                                                                                                          |
+| :----------- | :------------------------- | :------- | :-------------- | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ollama_url` | `"http://127.0.0.1:11434"` | Yes      | —               | non-empty URL | The web address where Thuki finds your local Ollama server. The default works if you run Ollama on this machine with its standard port. Change this only if you moved Ollama to a different port or another machine. |
 
-If the active model has not been pulled, the next request surfaces a "Model not found" error with the exact `ollama pull <name>` command to run.
+If the active model has been removed from Ollama between launches, Thuki silently falls back to the first installed model the next time you open the picker. If no models are installed at all, the next request surfaces a "Model not found" error with the exact `ollama pull <name>` command to run.
 
 ### `[prompt]`
 

@@ -15,22 +15,26 @@ use serde::{Deserialize, Serialize};
 
 use super::defaults::{
     DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS, DEFAULT_JUDGE_TIMEOUT_S,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
 };
 
-/// Model configuration. The first entry of `available` is the active model
-/// used for all inference. Reorder the list (or use the future settings panel)
-/// to switch models. Keeping a single list instead of separate `active` and
-/// `available` fields eliminates the mismatch failure mode entirely.
+/// Static, user-tunable model configuration.
+///
+/// The active model selection is NOT stored here. Active-model state is
+/// runtime UI state owned by [`crate::models::ActiveModelState`] and
+/// persisted in the SQLite `app_config` table under
+/// [`crate::models::ACTIVE_MODEL_KEY`]. Storing a model slug in TOML would
+/// duplicate ground truth from Ollama's `/api/tags` and create a staleness
+/// trap: the file would happily reference a model the user has since
+/// removed. This section keeps only the truly static knob, the Ollama
+/// endpoint URL.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ModelSection {
-    /// Ollama models Thuki knows about. First entry is active.
-    pub available: Vec<String>,
     /// HTTP base URL of the local Ollama instance.
     pub ollama_url: String,
 }
@@ -38,21 +42,8 @@ pub struct ModelSection {
 impl Default for ModelSection {
     fn default() -> Self {
         Self {
-            available: vec![DEFAULT_MODEL_NAME.to_string()],
             ollama_url: DEFAULT_OLLAMA_URL.to_string(),
         }
-    }
-}
-
-impl ModelSection {
-    /// Returns the active model (first entry). Falls back to the compiled
-    /// default if the list is somehow empty at call time; the loader also
-    /// guarantees this never happens by calling `resolve` during load.
-    pub fn active(&self) -> &str {
-        self.available
-            .first()
-            .map(String::as_str)
-            .unwrap_or(DEFAULT_MODEL_NAME)
     }
 }
 

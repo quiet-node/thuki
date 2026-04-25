@@ -721,11 +721,6 @@ pub fn run() {
                 Ok(c) => c,
                 Err(e) => crate::config::show_fatal_dialog_and_exit(&e),
             };
-            // Snapshot the bootstrap active-model slug from TOML before
-            // moving `app_config` into managed state. The picker overlay
-            // refreshes the live installed list on first open and may
-            // replace this seed.
-            let bootstrap_active = app_config.model.active().to_string();
             app.manage(app_config);
 
             // ── Generation + conversation state ─────────────────────
@@ -741,16 +736,21 @@ pub fn run() {
                 .expect("failed to initialise SQLite database");
 
             // ── Active-model state: seed from SQLite app_config table ──
-            // The installed list isn't queried here (no async runtime yet);
+            // The installed list isn't queried here (no async runtime yet).
             // get_model_picker_state reconciles against the live /api/tags
-            // inventory on first open and may replace this seed.
-            // resolve_seed_active_model trusts the persisted choice
-            // unconditionally, so a valid user selection survives restarts
-            // even before the first picker open reconciles.
+            // inventory on first picker open and may replace this seed.
+            // The placeholder DEFAULT_MODEL_NAME bootstrap is a transient
+            // value used only until that first reconciliation, and is the
+            // last-resort fallback when both the persisted slug and the
+            // live installed list are absent. Phase 3 will gate the
+            // overlay on a real installed model so that placeholder is
+            // never streamed to Ollama.
             let persisted_active = database::get_config(&db_conn, models::ACTIVE_MODEL_KEY)
                 .expect("failed to read active_model from app_config");
-            let initial_active_model =
-                models::resolve_seed_active_model(persisted_active.as_deref(), &bootstrap_active);
+            let initial_active_model = models::resolve_seed_active_model(
+                persisted_active.as_deref(),
+                crate::config::defaults::DEFAULT_MODEL_NAME,
+            );
             app.manage(models::ActiveModelState(std::sync::Mutex::new(
                 initial_active_model,
             )));

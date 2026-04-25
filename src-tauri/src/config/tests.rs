@@ -14,8 +14,8 @@ use std::path::PathBuf;
 
 use super::defaults::{
     DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS, DEFAULT_JUDGE_TIMEOUT_S,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL_NAME, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
@@ -47,7 +47,6 @@ fn defaults_const_values_match_schema_defaults() {
     // Guard rail: a change to a default in defaults.rs must flow through to
     // AppConfig::default(). If this test fails, someone changed one but not both.
     let c = AppConfig::default();
-    assert_eq!(c.model.available, vec![DEFAULT_MODEL_NAME.to_string()]);
     assert_eq!(c.model.ollama_url, DEFAULT_OLLAMA_URL);
     assert_eq!(c.prompt.system, "");
     assert_eq!(c.prompt.resolved_system, "");
@@ -87,8 +86,7 @@ fn defaults_prompt_base_is_nonempty() {
 #[test]
 fn section_defaults_are_sensible() {
     let m = ModelSection::default();
-    assert_eq!(m.available, vec![DEFAULT_MODEL_NAME.to_string()]);
-    assert_eq!(m.active(), DEFAULT_MODEL_NAME);
+    assert_eq!(m.ollama_url, DEFAULT_OLLAMA_URL);
 
     let p = PromptSection::default();
     assert!(p.system.is_empty());
@@ -98,26 +96,6 @@ fn section_defaults_are_sensible() {
 
     let q = QuoteSection::default();
     assert_eq!(q.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
-}
-
-#[test]
-fn model_section_active_falls_back_when_list_empty() {
-    // Guard: loader should prevent this, but active() has a defensive fallback
-    // so the struct can't explode if a caller bypasses the loader.
-    let m = ModelSection {
-        available: vec![],
-        ollama_url: DEFAULT_OLLAMA_URL.to_string(),
-    };
-    assert_eq!(m.active(), DEFAULT_MODEL_NAME);
-}
-
-#[test]
-fn model_section_active_returns_first() {
-    let m = ModelSection {
-        available: vec!["custom:model".to_string(), "other:model".to_string()],
-        ollama_url: DEFAULT_OLLAMA_URL.to_string(),
-    };
-    assert_eq!(m.active(), "custom:model");
 }
 
 #[test]
@@ -138,11 +116,10 @@ fn app_config_partial_file_fills_missing_fields_with_defaults() {
     // Only declare one field; serde(default) fills the rest.
     let partial = r#"
         [model]
-        available = ["custom:only"]
+        ollama_url = "http://localhost:9999"
     "#;
     let parsed: AppConfig = toml::from_str(partial).expect("partial file parses");
-    assert_eq!(parsed.model.available, vec!["custom:only".to_string()]);
-    assert_eq!(parsed.model.ollama_url, DEFAULT_OLLAMA_URL);
+    assert_eq!(parsed.model.ollama_url, "http://localhost:9999");
     assert_eq!(parsed.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
     assert_eq!(
         parsed.quote.max_display_lines,
@@ -187,7 +164,7 @@ fn load_missing_file_seeds_defaults_and_returns_them() {
     let config = load_from_path(&path).expect("seed on first run");
 
     assert!(path.exists(), "file should be seeded");
-    assert_eq!(config.model.active(), DEFAULT_MODEL_NAME);
+    assert_eq!(config.model.ollama_url, DEFAULT_OLLAMA_URL);
     // Resolved system prompt composed from default base plus appendix.
     assert!(config
         .prompt
@@ -206,7 +183,7 @@ fn load_missing_file_in_missing_parent_dir_creates_dir() {
     let path = config_path_in(&nested);
     let config = load_from_path(&path).expect("creates parent dir and seeds");
     assert!(path.exists());
-    assert_eq!(config.model.active(), DEFAULT_MODEL_NAME);
+    assert_eq!(config.model.ollama_url, DEFAULT_OLLAMA_URL);
 }
 
 #[test]
@@ -233,18 +210,12 @@ fn load_existing_valid_file_returns_resolved_config() {
         &path,
         r#"
             [model]
-            available = ["custom:a", "custom:b"]
             ollama_url = "http://localhost:99999"
         "#,
     )
     .unwrap();
 
     let config = load_from_path(&path).unwrap();
-    assert_eq!(
-        config.model.available,
-        vec!["custom:a".to_string(), "custom:b".to_string()]
-    );
-    assert_eq!(config.model.active(), "custom:a");
     assert_eq!(config.model.ollama_url, "http://localhost:99999");
 }
 
@@ -277,7 +248,7 @@ fn load_corrupt_file_is_renamed_and_reseeded() {
     std::fs::write(&path, "this is = definitely not [ valid toml").unwrap();
 
     let config = load_from_path(&path).expect("recover from corrupt file");
-    assert_eq!(config.model.active(), DEFAULT_MODEL_NAME);
+    assert_eq!(config.model.ollama_url, DEFAULT_OLLAMA_URL);
 
     // Original file renamed with .corrupt- prefix.
     let renamed_exists = std::fs::read_dir(&dir)
@@ -315,7 +286,7 @@ fn load_unreadable_file_returns_in_memory_defaults() {
     }
 
     let config = load_from_path(&path).expect("fallback to in-memory defaults");
-    assert_eq!(config.model.active(), DEFAULT_MODEL_NAME);
+    assert_eq!(config.model.ollama_url, DEFAULT_OLLAMA_URL);
     // Restore so cleanup works.
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
 }
@@ -323,55 +294,23 @@ fn load_unreadable_file_returns_in_memory_defaults() {
 // ── loader: resolve (empties and bounds) ────────────────────────────────────
 
 #[test]
-fn resolve_empty_available_list_falls_back_to_default_model() {
+fn resolve_unknown_model_field_is_ignored() {
+    // Older config files seeded a `[model] available = [...]` list. After
+    // removing that field from the schema, serde must silently drop it
+    // rather than refusing to parse the file.
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
     std::fs::write(
         &path,
         r#"
             [model]
-            available = []
+            available = ["legacy:model", "another:model"]
+            ollama_url = "http://localhost:11434"
         "#,
     )
     .unwrap();
     let config = load_from_path(&path).unwrap();
-    assert_eq!(config.model.available, vec![DEFAULT_MODEL_NAME.to_string()]);
-    assert_eq!(config.model.active(), DEFAULT_MODEL_NAME);
-}
-
-#[test]
-fn resolve_whitespace_only_entries_are_filtered() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        r#"
-            [model]
-            available = ["  ", "custom:x", " ", "custom:y"]
-        "#,
-    )
-    .unwrap();
-    let config = load_from_path(&path).unwrap();
-    assert_eq!(
-        config.model.available,
-        vec!["custom:x".to_string(), "custom:y".to_string()]
-    );
-}
-
-#[test]
-fn resolve_entry_whitespace_is_trimmed() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        r#"
-            [model]
-            available = ["  spaced:model  "]
-        "#,
-    )
-    .unwrap();
-    let config = load_from_path(&path).unwrap();
-    assert_eq!(config.model.available, vec!["spaced:model".to_string()]);
+    assert_eq!(config.model.ollama_url, "http://localhost:11434");
 }
 
 #[test]
