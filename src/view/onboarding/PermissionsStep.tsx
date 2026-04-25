@@ -3,6 +3,7 @@ import type React from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
+import { StepCard, Badge } from './_shared';
 
 /** How often to poll for permission grants after the user requests them. */
 const POLL_INTERVAL_MS = 500;
@@ -539,74 +540,5 @@ function CTAButton({
       {loading && <Spinner />}
       {children}
     </button>
-  );
-}
-
-interface StepCardProps {
-  active: boolean;
-  done: boolean;
-  children: React.ReactNode;
-}
-
-function StepCard({ active, done, children }: StepCardProps) {
-  const borderColor = done
-    ? 'rgba(34,197,94,0.2)'
-    : active
-      ? 'rgba(255,141,92,0.4)'
-      : 'rgba(255,255,255,0.06)';
-
-  const background = done
-    ? 'rgba(34,197,94,0.05)'
-    : active
-      ? 'rgba(255,141,92,0.07)'
-      : 'rgba(255,255,255,0.03)';
-
-  return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 14,
-        padding: '14px 16px',
-        borderRadius: 16,
-        border: `1px solid ${borderColor}`,
-        background,
-        boxShadow:
-          active && !done
-            ? '0 0 20px rgba(255,141,92,0.08), inset 0 1px 0 rgba(255,141,92,0.1)'
-            : 'none',
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-interface BadgeProps {
-  color: 'green';
-  children: React.ReactNode;
-}
-
-function Badge({ color, children }: BadgeProps) {
-  const styles: Record<string, React.CSSProperties> = {
-    green: {
-      color: '#22c55e',
-      background: 'rgba(34,197,94,0.1)',
-      border: '1px solid rgba(34,197,94,0.2)',
-    },
-  };
-
-  return (
-    <span
-      style={{
-        fontSize: 11,
-        fontWeight: 600,
-        padding: '3px 9px',
-        borderRadius: 20,
-        ...styles[color],
-      }}
-    >
-      {children}
-    </span>
   );
 }

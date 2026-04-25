@@ -19,4 +19,10 @@ describe('OnboardingView (orchestrator)', () => {
     render(<OnboardingView stage="intro" onComplete={vi.fn()} />);
     expect(screen.getByText('Before you dive in')).toBeInTheDocument();
   });
+
+  it('renders ModelCheckStep when stage is model_check', async () => {
+    render(<OnboardingView stage="model_check" onComplete={vi.fn()} />);
+    await act(async () => {});
+    expect(screen.getByText('Set up your local AI')).toBeInTheDocument();
+  });
 });
