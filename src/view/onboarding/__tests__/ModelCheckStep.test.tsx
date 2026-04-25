@@ -9,6 +9,10 @@ import {
 import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import { ModelCheckStep } from '../ModelCheckStep';
 import {
+  ConfigProviderForTest,
+  DEFAULT_CONFIG,
+} from '../../../contexts/ConfigContext';
+import {
   invoke,
   enableChannelCaptureWithResponses,
 } from '../../../testUtils/mocks/tauri';
@@ -91,6 +95,46 @@ describe('ModelCheckStep', () => {
     expect(screen.getByText('llama3.2-vision:11b')).toBeInTheDocument();
     expect(screen.getByText('phi4:14b')).toBeInTheDocument();
     expect(screen.queryByText('RECOMMENDED')).not.toBeInTheDocument();
+  });
+
+  it('renders the configured Ollama URL host:port in the listening line', async () => {
+    enableChannelCaptureWithResponses({
+      check_model_setup: { state: 'no_models_installed' },
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          model: { ...DEFAULT_CONFIG.model, ollamaUrl: 'http://10.0.0.5:9000' },
+        }}
+      >
+        <ModelCheckStep />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+
+    expect(screen.getByText('Listening on 10.0.0.5:9000')).toBeInTheDocument();
+  });
+
+  it('falls back to the raw Ollama URL string when it is not parseable', async () => {
+    enableChannelCaptureWithResponses({
+      check_model_setup: { state: 'no_models_installed' },
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          model: { ...DEFAULT_CONFIG.model, ollamaUrl: 'not-a-url' },
+        }}
+      >
+        <ModelCheckStep />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+
+    expect(screen.getByText('Listening on not-a-url')).toBeInTheDocument();
   });
 
   it('fires advance_past_model_check when Ready', async () => {

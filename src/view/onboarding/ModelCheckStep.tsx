@@ -21,11 +21,25 @@ import type React from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
+import { useConfig } from '../../contexts/ConfigContext';
 import { Badge } from './_shared';
 
 const OLLAMA_DOCS_URL = 'https://ollama.com/download';
 const OLLAMA_SEARCH_URL = 'https://ollama.com/search';
-const OLLAMA_LISTEN_ADDR = '127.0.0.1:11434';
+
+/**
+ * Extracts the `host:port` segment from an Ollama daemon URL for display.
+ * Falls back to the raw input when the URL cannot be parsed (e.g. user
+ * config holds a non-URL string), so the UI never shows a confusing
+ * empty value.
+ */
+function formatListenAddr(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
 
 type ModelSetupState =
   | { state: 'ollama_unreachable' }
@@ -404,6 +418,7 @@ interface RowOneProps {
 }
 
 function RowOne({ active, done }: RowOneProps) {
+  const config = useConfig();
   const [selectedTabIdx, setSelectedTabIdx] = useState(0);
   const tab = INSTALL_TABS[selectedTabIdx];
 
@@ -440,7 +455,7 @@ function RowOne({ active, done }: RowOneProps) {
                 letterSpacing: '-0.1px',
               }}
             >
-              Listening on {OLLAMA_LISTEN_ADDR}
+              Listening on {formatListenAddr(config.model.ollamaUrl)}
             </p>
           ) : null}
         </div>
