@@ -27,6 +27,7 @@ import { GeneralTab } from './tabs/GeneralTab';
 import { SearchTab } from './tabs/SearchTab';
 import { AboutTab } from './tabs/AboutTab';
 import { SavedPill } from './components';
+import { WindowControls } from '../components/WindowControls';
 import styles from '../styles/settings.module.css';
 import type { CorruptMarker, RawAppConfig, SettingsTabId } from './types';
 
@@ -151,10 +152,79 @@ export function SettingsWindow() {
     return () => document.removeEventListener('keydown', handler);
   }, []);
 
+  const handleHide = useCallback(() => {
+    void getCurrentWindow().hide();
+  }, []);
+
+  /**
+   * Native window drag from any non-interactive surface — mirrors the
+   * chat overlay's `handleDragStart` in App.tsx. Walks up the DOM from
+   * the click target and bails if it hits a form control or button so
+   * those keep working; otherwise calls `startDragging()`. We do this
+   * via JS instead of `data-tauri-drag-region` because the attribute
+   * only initiates drag from the element it's set on (and form
+   * children inside the body block the attribute from working there).
+   */
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    const el = e.target as HTMLElement | null;
+    const INTERACTIVE_TAGS = new Set([
+      'TEXTAREA',
+      'INPUT',
+      'BUTTON',
+      'A',
+      'SELECT',
+      'PATH',
+      'SVG',
+      'LABEL',
+    ]);
+    let current = el;
+    while (current) {
+      if (INTERACTIVE_TAGS.has(current.tagName.toUpperCase())) return;
+      current = current.parentElement;
+    }
+    e.preventDefault();
+    void getCurrentWindow().startDragging();
+  }, []);
+
   if (!config) return null;
 
   return (
-    <div className={styles.window}>
+    <div className={styles.window} onMouseDown={handleDragStart}>
+      <WindowControls onClose={handleHide} />
+
+      {marker && !markerDismissed ? (
+        <div className={styles.banner} role="alert">
+          <span className={styles.bannerIcon} aria-hidden>
+            ⚠
+          </span>
+          <span className={styles.bannerText}>
+            Your previous <code>config.toml</code> had a syntax error and was
+            saved as <code>{baseName(marker.path)}</code>. Defaults are now
+            active.
+          </span>
+          <span className={styles.bannerActions}>
+            <button
+              type="button"
+              className={`${styles.button} ${styles.buttonGhost}`}
+              onClick={() =>
+                void invoke('open_url', {
+                  url: `file://${encodeURI(marker.path).replace(/'/g, '%27')}`,
+                })
+              }
+            >
+              Reveal
+            </button>
+            <button
+              type="button"
+              className={`${styles.button} ${styles.buttonGhost}`}
+              onClick={() => setMarkerDismissed(true)}
+            >
+              Dismiss
+            </button>
+          </span>
+        </div>
+      ) : null}
+
       <div
         role="tablist"
         aria-label="Settings sections"
@@ -184,7 +254,9 @@ export function SettingsWindow() {
                 }
               }}
             >
-              {tab.icon}
+              <span className={styles.tabIcon} aria-hidden>
+                {tab.icon}
+              </span>
               <span className={styles.tabLabel}>{tab.label}</span>
             </button>
           );
@@ -192,39 +264,6 @@ export function SettingsWindow() {
       </div>
 
       <div className={styles.body} id={`panel-${activeTab}`} role="tabpanel">
-        {marker && !markerDismissed ? (
-          <div className={styles.banner} role="alert">
-            <span className={styles.bannerIcon} aria-hidden>
-              ⚠
-            </span>
-            <span className={styles.bannerText}>
-              Your previous <code>config.toml</code> had a syntax error and was
-              saved as <code>{baseName(marker.path)}</code>. Defaults are now
-              active.
-            </span>
-            <span className={styles.bannerActions}>
-              <button
-                type="button"
-                className={`${styles.button} ${styles.buttonGhost}`}
-                onClick={() =>
-                  void invoke('open_url', {
-                    url: `file://${encodeURI(marker.path).replace(/'/g, '%27')}`,
-                  })
-                }
-              >
-                Reveal
-              </button>
-              <button
-                type="button"
-                className={`${styles.button} ${styles.buttonGhost}`}
-                onClick={() => setMarkerDismissed(true)}
-              >
-                Dismiss
-              </button>
-            </span>
-          </div>
-        ) : null}
-
         {activeTab === 'general' ? (
           <GeneralTab
             config={config}
