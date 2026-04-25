@@ -10,13 +10,13 @@ describe('IntroStep', () => {
 
   it('renders the title', () => {
     render(<IntroStep onComplete={vi.fn()} />);
-    expect(screen.getByText('Before you dive in')).toBeInTheDocument();
+    expect(screen.getByText("You're all set")).toBeInTheDocument();
   });
 
   it('renders the subtitle', () => {
     render(<IntroStep onComplete={vi.fn()} />);
     expect(
-      screen.getByText("You'll get the hang of it quickly."),
+      screen.getByText("Five quick tips and you're chatting in seconds."),
     ).toBeInTheDocument();
   });
 

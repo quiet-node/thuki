@@ -4893,13 +4893,13 @@ describe('App', () => {
         emitTauriEvent('thuki://onboarding', { stage: 'intro' });
       });
 
-      expect(screen.getByText('Before you dive in')).toBeInTheDocument();
+      expect(screen.getByText("You're all set")).toBeInTheDocument();
 
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /get started/i }));
       });
 
-      expect(screen.queryByText('Before you dive in')).toBeNull();
+      expect(screen.queryByText("You're all set")).toBeNull();
     });
   });
 });

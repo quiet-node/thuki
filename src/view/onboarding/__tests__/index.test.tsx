@@ -17,7 +17,7 @@ describe('OnboardingView (orchestrator)', () => {
 
   it('renders IntroStep when stage is intro', () => {
     render(<OnboardingView stage="intro" onComplete={vi.fn()} />);
-    expect(screen.getByText('Before you dive in')).toBeInTheDocument();
+    expect(screen.getByText("You're all set")).toBeInTheDocument();
   });
 
   it('renders ModelCheckStep when stage is model_check', async () => {
