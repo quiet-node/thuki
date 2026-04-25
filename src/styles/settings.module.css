@@ -1,0 +1,578 @@
+/* ─────────────────────────────────────────────────────────────────────────
+ * Thuki Settings panel — design tokens, layout, and component classes.
+ *
+ * Visual language: "Polished Portal" (variant A from /design-shotgun on
+ * 2026-04-25). Filled orange pill tabs in Thuki's warm-orange palette,
+ * compact rows, uppercase section sub-headings, helper text below each
+ * control. Tokens reused from src/App.css so the Settings window does
+ * not introduce a parallel design system.
+ *
+ * Authoritative source for spacing / typography / dimension scales is
+ * the design doc Eng Review Addendum -> Design system tokens.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+.window {
+  /* The Settings window is a real NSWindow (720x560 fixed) so the body
+   * never scrolls; only the active tab body scrolls. We size the layout to
+   * fill the OS viewport precisely. */
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(
+      ellipse at top,
+      rgba(255, 141, 92, 0.04) 0%,
+      transparent 60%
+    ),
+    var(--color-surface-base);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  /* macOS Settings windows canonically use 13–14px body type. */
+  font-size: 14px;
+  user-select: none;
+}
+
+.tabBar {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px 24px 12px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 18px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  border-radius: 12px;
+  cursor: pointer;
+  min-width: 76px;
+  font-family: inherit;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+.tab:hover:not(.tabActive) {
+  background: rgba(232, 131, 90, 0.14);
+}
+.tab:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.tab svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+.tabLabel {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.tabActive {
+  background: var(--color-primary);
+  color: #1a0e07;
+}
+.tabActive svg {
+  color: #1a0e07;
+}
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+  position: relative;
+  padding: 20px 28px 24px;
+}
+.body::-webkit-scrollbar {
+  width: 8px;
+}
+.body::-webkit-scrollbar-thumb {
+  background: rgba(255, 141, 92, 0.18);
+  border-radius: 4px;
+}
+
+/* ─── Banner (corrupt-config recovery) ──────────────────────────────────── */
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin: 0 0 16px;
+  background: rgba(230, 156, 5, 0.12);
+  border: 1px solid rgba(230, 156, 5, 0.35);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--color-text-primary);
+}
+.bannerIcon {
+  flex-shrink: 0;
+  color: var(--color-tertiary);
+}
+.bannerText {
+  flex: 1;
+  line-height: 1.4;
+}
+.bannerActions {
+  display: flex;
+  gap: 6px;
+}
+
+/* ─── Section + Row primitives ─────────────────────────────────────────── */
+
+.section {
+  margin-bottom: 28px;
+}
+.section:last-of-type {
+  margin-bottom: 8px;
+}
+.sectionHeading {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  margin-bottom: 14px;
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  padding: 12px 0;
+  gap: 16px;
+  min-height: 56px;
+}
+.row + .row {
+  border-top: 1px solid rgba(255, 141, 92, 0.06);
+}
+.rowVertical {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.rowLabel {
+  flex: 0 0 200px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  padding-top: 6px;
+}
+.rowVertical .rowLabel {
+  flex: none;
+  padding-top: 0;
+}
+.rowControl {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.rowHelper {
+  font-size: 11px;
+  color: rgba(240, 240, 242, 0.45);
+  line-height: 1.4;
+}
+.rowError {
+  font-size: 11px;
+  color: #ff8a80;
+  line-height: 1.4;
+}
+
+/* ─── Inputs ─────────────────────────────────────────────────────────── */
+
+.input,
+.textarea {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 0 10px;
+  transition: border-color 150ms ease;
+}
+.input {
+  height: 28px;
+}
+.textarea {
+  min-height: 76px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+.input:hover,
+.textarea:hover {
+  border-color: rgba(255, 141, 92, 0.2);
+}
+.input:focus-visible,
+.textarea:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.18);
+}
+.inputError {
+  border-color: rgba(255, 138, 128, 0.55);
+}
+
+.dropdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0 10px 0 12px;
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.dropdown:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.button {
+  background: rgba(255, 141, 92, 0.16);
+  color: var(--color-primary);
+  border: 1px solid rgba(255, 141, 92, 0.3);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 150ms ease;
+}
+.button:hover {
+  background: rgba(255, 141, 92, 0.24);
+}
+.button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.buttonGhost {
+  background: transparent;
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
+}
+.buttonDestructive {
+  background: rgba(255, 138, 128, 0.18);
+  border-color: rgba(255, 138, 128, 0.45);
+  color: #ff8a80;
+}
+
+/* ─── Slider ─────────────────────────────────────────────────────────── */
+
+.sliderRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+.sliderInput {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+.sliderInput::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+}
+.sliderInput:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+.valChip {
+  background: rgba(255, 141, 92, 0.12);
+  color: var(--color-primary);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 64px;
+  text-align: center;
+}
+
+/* ─── Stepper ────────────────────────────────────────────────────────── */
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+.stepperBtn {
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: none;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.stepperBtn:hover:not(:disabled) {
+  background: rgba(232, 131, 90, 0.14);
+}
+.stepperBtn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+.stepperBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.stepperValue {
+  min-width: 64px;
+  padding: 0 8px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+/* ─── OrderedListEditor (model.available) ────────────────────────────── */
+
+.modelList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.modelItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.modelItemActive {
+  border-color: rgba(255, 141, 92, 0.4);
+  background: rgba(255, 141, 92, 0.08);
+}
+.modelItemBadge {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-primary);
+}
+.modelItemName {
+  flex: 1;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 12.5px;
+}
+.modelItemActions {
+  display: flex;
+  gap: 4px;
+}
+.iconBtn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.iconBtn:hover:not(:disabled) {
+  background: rgba(232, 131, 90, 0.14);
+  color: var(--color-text-primary);
+}
+.iconBtn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -1px;
+}
+.iconBtn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.modelAddRow {
+  display: flex;
+  gap: 6px;
+}
+
+/* ─── Saved pill ─────────────────────────────────────────────────────── */
+
+.savedPill {
+  position: fixed;
+  bottom: 16px;
+  right: 24px;
+  background: rgba(255, 141, 92, 0.16);
+  color: var(--color-primary);
+  border: 1px solid rgba(255, 141, 92, 0.3);
+  border-radius: 16px;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+.savedPillVisible {
+  opacity: 1;
+}
+
+/* ─── Reset link ─────────────────────────────────────────────────────── */
+
+.resetLink {
+  background: none;
+  border: none;
+  color: var(--color-primary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-align: right;
+  display: block;
+  margin-left: auto;
+  margin-top: 8px;
+  font-family: inherit;
+}
+.resetLink:hover {
+  text-decoration: underline;
+}
+.resetLink:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ─── Confirm dialog ─────────────────────────────────────────────────── */
+
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.dialog {
+  background: var(--color-surface-elevated);
+  border: 1px solid rgba(255, 141, 92, 0.2);
+  border-radius: 12px;
+  padding: 24px;
+  min-width: 360px;
+  max-width: 480px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+.dialogTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0 0 8px;
+}
+.dialogMessage {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin: 0 0 20px;
+}
+.dialogActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* ─── About tab ───────────────────────────────────────────────────────── */
+
+.aboutInfoLine {
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+.aboutInfoLine strong {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+.aboutLinkRow {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.permissionPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.permissionGranted {
+  background: rgba(40, 200, 65, 0.18);
+  color: #4ade80;
+}
+.permissionRequired {
+  background: rgba(255, 138, 128, 0.18);
+  color: #ff8a80;
+}
+
+/* ─── Reduced motion ──────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .tab,
+  .input,
+  .textarea,
+  .button,
+  .savedPill {
+    transition: none !important;
+  }
+}
+
+/* ─── Search-tab security warning ─────────────────────────────────────── */
+
+.warning {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  margin: 0 0 14px;
+  background: rgba(230, 156, 5, 0.1);
+  border-left: 3px solid var(--color-tertiary);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--color-text-primary);
+  line-height: 1.5;
+}
