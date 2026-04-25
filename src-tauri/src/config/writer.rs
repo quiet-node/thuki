@@ -26,6 +26,21 @@ use super::schema::AppConfig;
 /// Parent-directory fsync after rename is best-effort; failures are silently
 /// ignored because the data itself is already on disk via the prior file fsync.
 pub fn atomic_write(path: &Path, config: &AppConfig) -> std::io::Result<()> {
+    // AppConfig only contains simple scalars, strings, and vectors of strings,
+    // all of which serialize cleanly. toml::to_string_pretty on this shape
+    // cannot fail; if it ever does, that is a genuine bug and we want to know.
+    let serialized =
+        toml::to_string_pretty(config).expect("AppConfig is always serializable to TOML");
+    atomic_write_bytes(path, serialized.as_bytes())
+}
+
+/// Atomically writes raw bytes to `path` using the same fsync + rename
+/// guarantees as [`atomic_write`].
+///
+/// Used by `set_config_field` (which serializes a `toml_edit::DocumentMut`
+/// instead of an `AppConfig`, in order to preserve user comments and key
+/// ordering across GUI patches).
+pub fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -35,14 +50,8 @@ pub fn atomic_write(path: &Path, config: &AppConfig) -> std::io::Result<()> {
 
     std::fs::create_dir_all(parent)?;
 
-    // AppConfig only contains simple scalars, strings, and vectors of strings,
-    // all of which serialize cleanly. toml::to_string_pretty on this shape
-    // cannot fail; if it ever does, that is a genuine bug and we want to know.
-    let serialized =
-        toml::to_string_pretty(config).expect("AppConfig is always serializable to TOML");
-
     let tmp_path = tmp_path_for(path);
-    write_and_sync(&tmp_path, serialized.as_bytes())?;
+    write_and_sync(&tmp_path, bytes)?;
     if let Err(e) = std::fs::rename(&tmp_path, path) {
         // Rename failed (e.g. destination is a non-empty directory, cross-
         // device rename, permission drift mid-write). Remove the tmpfile so

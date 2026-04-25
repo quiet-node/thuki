@@ -23,6 +23,25 @@
         "alwaysOnTop": false,
         "visible": false,
         "dragDropEnabled": false
+      },
+      {
+        "label": "settings",
+        "title": "Thuki Settings",
+        "url": "index.html#/settings",
+        "width": 720,
+        "height": 560,
+        "minWidth": 720,
+        "minHeight": 560,
+        "maxWidth": 720,
+        "maxHeight": 560,
+        "resizable": false,
+        "fullscreen": false,
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "visible": false,
+        "skipTaskbar": false,
+        "dragDropEnabled": false
       }
     ],
     "security": {

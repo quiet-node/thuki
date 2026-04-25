@@ -119,7 +119,7 @@ mod tests {
         assert!((1..=5).contains(&defaults::DEFAULT_GAP_QUERIES_PER_ROUND));
         assert!((128..=2048).contains(&defaults::DEFAULT_CHUNK_TOKEN_SIZE));
         assert!((1..=32).contains(&defaults::DEFAULT_TOP_K_CHUNKS));
-        assert!(defaults::DEFAULT_READER_RETRY_DELAY_MS <= 2_000);
+        const _: () = assert!(defaults::DEFAULT_READER_RETRY_DELAY_MS <= 2_000);
         assert!((1..=2_000).contains(&defaults::DEFAULT_MAX_SNIPPET_CHARS));
         assert!((1..=2_000).contains(&defaults::DEFAULT_MAX_QUERY_CHARS));
     }

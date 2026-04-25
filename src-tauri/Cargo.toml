@@ -29,6 +29,8 @@ tokio = { version = "1.52.1", features = ["macros"] }
 futures-util = "0.3.32"
 tokio-util = "0.7"
 toml = "0.8"
+toml_edit = "0.22"
+parking_lot = "0.12"
 rusqlite = { version = "0.39", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"

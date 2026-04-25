@@ -26,10 +26,48 @@ pub mod writer;
 pub use error::ConfigError;
 pub use loader::load_from_path;
 pub use schema::{AppConfig, InferenceSection, PromptSection, QuoteSection, WindowSection};
-pub use writer::atomic_write;
+pub use writer::{atomic_write, atomic_write_bytes};
 
 /// File name of the user config file inside the OS config dir.
 pub const CONFIG_FILE_NAME: &str = "config.toml";
+
+/// Marker file written by the loader's corrupt-rename path so the Settings
+/// window can render a recovery banner on first open after the rename. Format:
+/// two lines — absolute path of the `<config>.corrupt-<ts>` file, then the
+/// numeric unix timestamp. The marker is consumed (read + deleted) by the
+/// `get_corrupt_marker` Tauri command.
+pub const CORRUPT_MARKER_FILE_NAME: &str = ".corrupt-recovery-pending";
+
+/// Information about the most recent corrupt-rename event, surfaced to the
+/// Settings UI so users know their hand-edited file was rejected and where
+/// to find it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CorruptMarker {
+    /// Absolute path to the `<config>.corrupt-<ts>` file the loader produced.
+    pub path: String,
+    /// Unix timestamp (seconds) when the rename happened.
+    pub ts: u64,
+}
+
+/// Reads (and deletes) the corrupt-recovery marker from `dir` if one exists.
+/// Returns `None` if no marker is present, or the marker payload could not be
+/// parsed (malformed marker is treated as no marker; the corrupt file itself
+/// is still on disk for the user to recover).
+///
+/// Pure I/O; tested via the `consume_corrupt_marker_*` cases in `tests.rs`.
+pub fn consume_corrupt_marker(dir: &std::path::Path) -> Option<CorruptMarker> {
+    let marker_path = dir.join(CORRUPT_MARKER_FILE_NAME);
+    let contents = std::fs::read_to_string(&marker_path).ok()?;
+    // Best-effort cleanup. The marker has done its job once we have read it.
+    let _ = std::fs::remove_file(&marker_path);
+    let mut lines = contents.lines();
+    let path = lines.next()?.trim().to_string();
+    let ts: u64 = lines.next()?.trim().parse().ok()?;
+    if path.is_empty() {
+        return None;
+    }
+    Some(CorruptMarker { path, ts })
+}
 
 /// Tauri-aware entry point. Resolves the per-user config path via
 /// `AppHandle.path().app_config_dir()` (which on macOS yields

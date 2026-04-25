@@ -87,8 +87,14 @@ fn seed_defaults(path: &Path) -> Result<AppConfig, ConfigError> {
     Ok(config)
 }
 
-/// Renames a corrupt or incompatible file to `<path>.corrupt-<unix_ts>`.
-/// Best-effort; failures are logged but do not block the reseed.
+/// Renames a corrupt or incompatible file to `<path>.corrupt-<unix_ts>` and
+/// writes a one-line marker file at `<dir>/.corrupt-recovery-pending` containing
+/// the absolute path of the renamed file.
+///
+/// The Settings window reads (and deletes) the marker via the
+/// `get_corrupt_marker` Tauri command on mount so it can render a recovery
+/// banner. Both rename and marker-write are best-effort: failures are logged
+/// but do not block the default reseed.
 fn rename_corrupt(path: &Path) {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -102,6 +108,17 @@ fn rename_corrupt(path: &Path) {
             "thuki: [config] could not rename corrupt file {}: {e}",
             path.display()
         );
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let marker_path = parent.join(super::CORRUPT_MARKER_FILE_NAME);
+        let payload = format!("{}\n{ts}\n", target.display());
+        if let Err(e) = std::fs::write(&marker_path, payload) {
+            eprintln!(
+                "thuki: [config] could not write corrupt marker at {}: {e}",
+                marker_path.display()
+            );
+        }
     }
 }
 

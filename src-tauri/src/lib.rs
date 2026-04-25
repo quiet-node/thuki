@@ -24,6 +24,7 @@ pub mod models;
 pub mod onboarding;
 pub mod screenshot;
 pub mod search;
+pub mod settings_commands;
 
 #[cfg(target_os = "macos")]
 mod activator;
@@ -283,6 +284,39 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
             OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
         }
     }
+}
+
+/// Shows (or focuses, if already visible) the Settings window.
+///
+/// Setup contract:
+/// 1. Switch the app's `ActivationPolicy` to `Regular` while Settings is
+///    visible. Without this, an Accessory app cannot reliably take focus on
+///    its own non-overlay windows. Restored to `Accessory` on close.
+/// 2. `show()` + `set_focus()` so the user lands in the window even if Thuki
+///    was not frontmost when Settings was invoked from the tray.
+///
+/// Idempotent: invoking while Settings is already visible re-focuses without
+/// double-mounting the React tree (close handler hides instead of destroying).
+fn show_settings_window(app_handle: &tauri::AppHandle) {
+    let Some(window) = app_handle.get_webview_window("settings") else {
+        eprintln!("thuki: [settings] window 'settings' not found in app config");
+        return;
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app_handle.set_activation_policy(ActivationPolicy::Regular);
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+    let _ = window.unminimize();
+}
+
+/// Restores the Accessory activation policy after the Settings window closes
+/// or is destroyed. Called from the WindowEvent::CloseRequested handler in
+/// the run loop. Idempotent.
+#[cfg(target_os = "macos")]
+fn restore_accessory_policy(app_handle: &tauri::AppHandle) {
+    let _ = app_handle.set_activation_policy(ActivationPolicy::Accessory);
 }
 
 /// Requests an animated hide sequence from the frontend. The actual native
@@ -679,9 +713,35 @@ pub fn run() {
             init_panel(app.app_handle());
 
             // ── System tray icon + menu ───────────────────────────────────
+            // Order chosen for muscle-memory parity with mac tray apps
+            // (Bartender, CleanShot X, Rectangle): primary action at top,
+            // settings near it with the macOS-canonical ⌘, accelerator, an
+            // explicit "open the file" escape hatch for power users who
+            // hand-edit, then Quit at the bottom.
             let show_item = MenuItem::with_id(app, "show", "Open Thuki", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let settings_item =
+                MenuItem::with_id(app, "settings", "Settings…", true, Some("Cmd+,"))?;
+            let reveal_item = MenuItem::with_id(
+                app,
+                "reveal_config",
+                "Reveal config.toml",
+                true,
+                None::<&str>,
+            )?;
+            let separator_top = tauri::menu::PredefinedMenuItem::separator(app)?;
+            let separator_bottom = tauri::menu::PredefinedMenuItem::separator(app)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit Thuki", true, Some("Cmd+Q"))?;
+            let tray_menu = Menu::with_items(
+                app,
+                &[
+                    &show_item,
+                    &settings_item,
+                    &separator_top,
+                    &reveal_item,
+                    &separator_bottom,
+                    &quit_item,
+                ],
+            )?;
 
             let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))
                 .expect("Failed to load tray icon");
@@ -695,6 +755,12 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         show_overlay(app, crate::context::ActivationContext::empty());
+                    }
+                    "settings" => {
+                        show_settings_window(app);
+                    }
+                    "reveal_config" => {
+                        let _ = settings_commands::reveal_config_in_finder(app.clone());
                     }
                     "quit" => {
                         app.state::<crate::commands::GenerationState>().cancel();
@@ -763,7 +829,12 @@ pub fn run() {
                 Ok(c) => c,
                 Err(e) => crate::config::show_fatal_dialog_and_exit(&e),
             };
-            app.manage(app_config);
+            // Wrap in `parking_lot::RwLock` so the Settings panel can mutate
+            // the in-memory config via `set_config_field` while readers
+            // (every Ollama call, every search call) take cheap clones via
+            // `state.read().clone()`. Parking_lot avoids std::sync poisoning
+            // on writer panic. See design doc P10.
+            app.manage(parking_lot::RwLock::new(app_config));
 
             // ── Generation + conversation state ─────────────────────
             app.manage(commands::GenerationState::new());
@@ -812,8 +883,13 @@ pub fn run() {
             search::search_pipeline,
             #[cfg(not(coverage))]
             commands::reset_conversation,
+            settings_commands::get_config,
+            settings_commands::set_config_field,
+            settings_commands::reset_config,
+            settings_commands::reload_config_from_disk,
+            settings_commands::get_corrupt_marker,
             #[cfg(not(coverage))]
-            commands::get_config,
+            settings_commands::reveal_config_in_finder,
             #[cfg(not(coverage))]
             models::get_model_picker_state,
             #[cfg(not(coverage))]
@@ -877,6 +953,17 @@ pub fn run() {
                     api.prevent_close();
 
                     request_overlay_hide(app_handle);
+                } else if label == "settings" {
+                    // Hide instead of destroy so React state (active tab,
+                    // form values) survives close/reopen. Restore the
+                    // accessory activation policy so Thuki returns to its
+                    // dockless steady state.
+                    api.prevent_close();
+                    if let Some(window) = app_handle.get_webview_window("settings") {
+                        let _ = window.hide();
+                    }
+                    #[cfg(target_os = "macos")]
+                    restore_accessory_policy(app_handle);
                 }
             }
         });

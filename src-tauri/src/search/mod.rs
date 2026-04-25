@@ -59,9 +59,12 @@ pub async fn search_pipeline(
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
     history: State<'_, ConversationHistory>,
-    app_config: State<'_, AppConfig>,
+    app_config: State<'_, parking_lot::RwLock<AppConfig>>,
     active_model_state: State<'_, ActiveModelState>,
 ) -> Result<(), String> {
+    // Snapshot the config once so the entire pipeline sees a consistent view
+    // even if the user edits Settings while a search is in flight.
+    let app_config = app_config.read().clone();
     // Resolve the runtime search view from the loaded TOML. The single
     // source of truth lives in `config::defaults`; the loader has already
     // clamped and resolved every field by the time we read it here.

@@ -440,7 +440,7 @@ mod tests {
         let base = temp_dir();
         let path = save_image(&base, &tiny_png()).unwrap();
 
-        let encoded = encode_images_as_base64(&[path.clone()]).unwrap();
+        let encoded = encode_images_as_base64(std::slice::from_ref(&path)).unwrap();
         assert_eq!(encoded.len(), 1);
 
         let decoded = BASE64.decode(&encoded[0]).unwrap();
