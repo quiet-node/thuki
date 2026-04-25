@@ -12,29 +12,32 @@
 
 use std::time::Duration;
 
+use crate::config::defaults::{DEFAULT_MAX_QUERY_CHARS, DEFAULT_MAX_SNIPPET_CHARS};
+
 use super::types::{SearchError, SearxResponse, SearxResult};
 
-/// Maximum number of results forwarded to the synthesis stage. Trimming here
-/// bounds prompt size and keeps the synthesis window well within the model's
-/// effective attention length.
-pub const MAX_RESULTS: usize = 10;
-
 /// Maximum character length retained per snippet/title. Uses character count
-/// (not bytes) so multi-byte text is not mid-codepoint-truncated.
-pub const MAX_SNIPPET_CHARS: usize = 500;
+/// (not bytes) so multi-byte text is not mid-codepoint-truncated. Re-exported
+/// from [`crate::config::defaults`] so this module owns no copies of the
+/// number; the value is a defense-in-depth bound on incoming external data
+/// and is intentionally not user-tunable.
+const MAX_SNIPPET_CHARS: usize = DEFAULT_MAX_SNIPPET_CHARS;
 
 /// Maximum query length forwarded to SearXNG. Caps the input surface that
 /// reaches the external engine; the LLM optimiser already produces short
-/// keyword-dense queries, so this is a defence-in-depth bound.
-pub const MAX_QUERY_CHARS: usize = 500;
+/// keyword-dense queries, so this is a defence-in-depth bound. Mirrors
+/// [`crate::config::defaults::DEFAULT_MAX_QUERY_CHARS`].
+const MAX_QUERY_CHARS: usize = DEFAULT_MAX_QUERY_CHARS;
 
 /// Executes a SearXNG search against the provided `endpoint`. Decodes HTML
 /// entities on titles/snippets and truncates long fields to a fixed character
-/// budget. Returns at most [`MAX_RESULTS`] entries.
+/// budget. Returns at most `max_results` entries (the user-tunable cap from
+/// `[search] searxng_max_results`).
 ///
-/// The endpoint and `timeout_s` are surfaced as parameters strictly for
-/// testability (mockito-backed unit tests use a mock server URL and pass the
-/// constant timeout) and must never be wired to user search input.
+/// The endpoint, `timeout_s`, and `max_results` are surfaced as parameters
+/// strictly for testability (mockito-backed unit tests use a mock server URL
+/// and pass the constant timeout) and must never be wired to user search
+/// input.
 ///
 /// Errors:
 /// - [`SearchError::EmptyQuery`] when the query is whitespace-only.
@@ -48,6 +51,7 @@ pub async fn search(
     endpoint: &str,
     query: &str,
     timeout_s: u64,
+    max_results: usize,
 ) -> Result<Vec<SearxResult>, SearchError> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -79,7 +83,7 @@ pub async fn search(
         .results
         .into_iter()
         .filter(|r| !r.url.trim().is_empty())
-        .take(MAX_RESULTS)
+        .take(max_results)
         .map(|r| SearxResult {
             title: truncate_chars(&decode_entities(&r.title), MAX_SNIPPET_CHARS),
             url: r.url,
@@ -98,7 +102,9 @@ pub async fn search(
 /// which already holds the endpoint URL resolved from
 /// [`SearchRuntimeConfig::searxng_endpoint`](super::config::SearchRuntimeConfig::searxng_endpoint).
 ///
-/// `timeout_s` is passed from the runtime config (`AppConfig.search.search_timeout_s`).
+/// `timeout_s` and `max_results` are passed from the runtime config
+/// (`AppConfig.search.search_timeout_s`,
+/// `AppConfig.search.searxng_max_results`).
 ///
 /// Complexity: O(N) HTTP round-trips (parallelized). Dedup is O(R) over the
 /// total result count, bounded by the SearXNG per-query result cap.
@@ -106,6 +112,7 @@ pub async fn search_all_with_endpoint(
     endpoint: &str,
     queries: &[String],
     timeout_s: u64,
+    max_results: usize,
 ) -> Result<Vec<SearxResult>, SearchError> {
     if queries.is_empty() {
         return Ok(Vec::new());
@@ -114,7 +121,7 @@ pub async fn search_all_with_endpoint(
     let client = reqwest::Client::new();
     let futures = queries
         .iter()
-        .map(|q| search(&client, endpoint, q, timeout_s));
+        .map(|q| search(&client, endpoint, q, timeout_s, max_results));
     let results = futures_util::future::join_all(futures).await;
 
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -152,6 +159,7 @@ pub async fn search_all_with_base(
         &endpoint,
         queries,
         crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
+        crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
     )
     .await
 }
@@ -244,6 +252,7 @@ mod tests {
             "http://ignored",
             "   ",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
         )
         .await
         .unwrap_err();
@@ -277,6 +286,7 @@ mod tests {
             &endpoint,
             "rust async",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
         )
         .await
         .unwrap();
@@ -306,6 +316,7 @@ mod tests {
             &endpoint,
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
         )
         .await
         .unwrap_err();
@@ -322,6 +333,7 @@ mod tests {
             "http://127.0.0.1:1/search",
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
         )
         .await
         .unwrap_err();
@@ -347,6 +359,7 @@ mod tests {
             &endpoint,
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
         )
         .await
         .unwrap_err();
@@ -372,6 +385,7 @@ mod tests {
             &endpoint,
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
         )
         .await
         .unwrap_err();
@@ -404,6 +418,7 @@ mod tests {
             &endpoint,
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
         )
         .await
         .unwrap();
@@ -417,7 +432,10 @@ mod tests {
     async fn search_caps_results_to_max() {
         let mut server = mockito::Server::new_async().await;
         let endpoint = format!("{}/search", server.url());
-        let many: Vec<serde_json::Value> = (0..MAX_RESULTS + 5)
+        // Exercise the parameter directly: ask for fewer results than the
+        // server returns and verify the client trims to exactly that count.
+        let cap: usize = 4;
+        let many: Vec<serde_json::Value> = (0..cap + 5)
             .map(|i| serde_json::json!({ "title": format!("t{i}"), "url": format!("https://{i}"), "content": "c" }))
             .collect();
         let body = serde_json::json!({ "results": many }).to_string();
@@ -434,12 +452,13 @@ mod tests {
             &endpoint,
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
+            cap,
         )
         .await
         .unwrap();
 
         mock.assert_async().await;
-        assert_eq!(results.len(), MAX_RESULTS);
+        assert_eq!(results.len(), cap);
     }
 
     #[tokio::test]
@@ -466,6 +485,7 @@ mod tests {
             &endpoint,
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
         )
         .await
         .unwrap();
@@ -494,6 +514,7 @@ mod tests {
             &endpoint,
             &long_query,
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
         )
         .await
         .unwrap();
@@ -626,6 +647,7 @@ mod parallel_tests {
             "http://127.0.0.1:1/search",
             &[],
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
         )
         .await
         .unwrap();

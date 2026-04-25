@@ -40,6 +40,9 @@ pub struct SearchRuntimeConfig {
     pub max_iterations: usize,
     /// Number of top-ranked URLs forwarded to the reader after reranking.
     pub top_k_urls: usize,
+    /// Maximum number of results each SearXNG query contributes to the
+    /// reranker.
+    pub searxng_max_results: usize,
     /// Seconds before a SearXNG query is abandoned.
     pub search_timeout_s: u64,
     /// Seconds allowed for a single URL fetch inside the reader.
@@ -64,6 +67,7 @@ impl SearchRuntimeConfig {
             reader_url: cfg.search.reader_url.clone(),
             max_iterations: cfg.search.max_iterations as usize,
             top_k_urls: cfg.search.top_k_urls as usize,
+            searxng_max_results: cfg.search.searxng_max_results as usize,
             search_timeout_s: cfg.search.search_timeout_s,
             reader_per_url_timeout_s: cfg.search.reader_per_url_timeout_s,
             reader_batch_timeout_s: cfg.search.reader_batch_timeout_s,
@@ -93,6 +97,7 @@ impl Default for SearchRuntimeConfig {
             reader_url: defaults::DEFAULT_READER_URL.to_string(),
             max_iterations: defaults::DEFAULT_MAX_ITERATIONS as usize,
             top_k_urls: defaults::DEFAULT_TOP_K_URLS as usize,
+            searxng_max_results: defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
             search_timeout_s: defaults::DEFAULT_SEARCH_TIMEOUT_S,
             reader_per_url_timeout_s: defaults::DEFAULT_READER_PER_URL_TIMEOUT_S,
             #[cfg(not(test))]
@@ -115,6 +120,8 @@ mod tests {
         assert!((128..=2048).contains(&defaults::DEFAULT_CHUNK_TOKEN_SIZE));
         assert!((1..=32).contains(&defaults::DEFAULT_TOP_K_CHUNKS));
         assert!(defaults::DEFAULT_READER_RETRY_DELAY_MS <= 2_000);
+        assert!((1..=2_000).contains(&defaults::DEFAULT_MAX_SNIPPET_CHARS));
+        assert!((1..=2_000).contains(&defaults::DEFAULT_MAX_QUERY_CHARS));
     }
 
     #[test]
@@ -127,6 +134,10 @@ mod tests {
             defaults::DEFAULT_MAX_ITERATIONS as usize
         );
         assert_eq!(cfg.top_k_urls, defaults::DEFAULT_TOP_K_URLS as usize);
+        assert_eq!(
+            cfg.searxng_max_results,
+            defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize
+        );
         assert_eq!(cfg.search_timeout_s, defaults::DEFAULT_SEARCH_TIMEOUT_S);
         assert_eq!(
             cfg.reader_per_url_timeout_s,
@@ -145,6 +156,7 @@ mod tests {
         app.search.reader_url = "http://10.0.0.1:9001".to_string();
         app.search.max_iterations = 7;
         app.search.top_k_urls = 4;
+        app.search.searxng_max_results = 6;
         app.search.search_timeout_s = 11;
         app.search.reader_per_url_timeout_s = 12;
         app.search.reader_batch_timeout_s = 60;
@@ -156,6 +168,7 @@ mod tests {
         assert_eq!(cfg.reader_url, "http://10.0.0.1:9001");
         assert_eq!(cfg.max_iterations, 7);
         assert_eq!(cfg.top_k_urls, 4);
+        assert_eq!(cfg.searxng_max_results, 6);
         assert_eq!(cfg.search_timeout_s, 11);
         assert_eq!(cfg.reader_per_url_timeout_s, 12);
         assert_eq!(cfg.reader_batch_timeout_s, 60);

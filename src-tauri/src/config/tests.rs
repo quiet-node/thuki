@@ -18,8 +18,8 @@ use super::defaults::{
     DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
-    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
-    SLASH_COMMAND_PROMPT_APPENDIX,
+    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
+    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS, SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path};
@@ -62,6 +62,7 @@ fn defaults_const_values_match_schema_defaults() {
     assert_eq!(c.search.reader_url, DEFAULT_READER_URL);
     assert_eq!(c.search.max_iterations, DEFAULT_MAX_ITERATIONS);
     assert_eq!(c.search.top_k_urls, DEFAULT_TOP_K_URLS);
+    assert_eq!(c.search.searxng_max_results, DEFAULT_SEARXNG_MAX_RESULTS);
     assert_eq!(c.search.search_timeout_s, DEFAULT_SEARCH_TIMEOUT_S);
     assert_eq!(
         c.search.reader_per_url_timeout_s,
@@ -743,6 +744,7 @@ fn search_section_defaults_are_sane() {
     assert!(s.reader_url.starts_with("http://127.0.0.1:"));
     assert!(s.max_iterations >= 1 && s.max_iterations <= 10);
     assert!(s.top_k_urls >= 1 && s.top_k_urls <= 20);
+    assert!(s.searxng_max_results >= 1 && s.searxng_max_results <= 20);
     assert!(s.reader_batch_timeout_s > s.reader_per_url_timeout_s);
 }
 
@@ -757,6 +759,10 @@ fn search_section_roundtrips_through_toml() {
     assert_eq!(loaded.search.reader_url, original.search.reader_url);
     assert_eq!(loaded.search.max_iterations, original.search.max_iterations);
     assert_eq!(loaded.search.top_k_urls, original.search.top_k_urls);
+    assert_eq!(
+        loaded.search.searxng_max_results,
+        original.search.searxng_max_results
+    );
     assert_eq!(
         loaded.search.search_timeout_s,
         original.search.search_timeout_s
@@ -797,6 +803,34 @@ fn search_max_iterations_clamped_to_bounds() {
     let loaded = load_from_path(&path).unwrap();
     assert_eq!(loaded.search.max_iterations, DEFAULT_MAX_ITERATIONS);
     assert_eq!(loaded.search.top_k_urls, DEFAULT_TOP_K_URLS);
+}
+
+#[test]
+fn search_searxng_max_results_clamped_to_bounds() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    // Below lower bound (0) and above upper bound (999) both reset to default.
+    std::fs::write(&path, "[search]\nsearxng_max_results = 0\n").unwrap();
+    let loaded_low = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded_low.search.searxng_max_results,
+        DEFAULT_SEARXNG_MAX_RESULTS
+    );
+    std::fs::write(&path, "[search]\nsearxng_max_results = 999\n").unwrap();
+    let loaded_high = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded_high.search.searxng_max_results,
+        DEFAULT_SEARXNG_MAX_RESULTS
+    );
+}
+
+#[test]
+fn search_searxng_max_results_in_bounds_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[search]\nsearxng_max_results = 5\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(loaded.search.searxng_max_results, 5);
 }
 
 #[test]

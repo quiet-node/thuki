@@ -54,10 +54,22 @@ pub const DEFAULT_READER_URL: &str = "http://127.0.0.1:25018";
 
 /// Default values for user-configurable search pipeline tuning knobs.
 /// `max_iterations` caps the search-refine loop count; `top_k_urls` limits
-/// how many reranked URLs are forwarded to the reader. Both are overridable
-/// under `[search]` in config.toml.
+/// how many reranked URLs are forwarded to the reader;
+/// `searxng_max_results` caps how many results each SearXNG query
+/// contributes before reranking. All are overridable under `[search]` in
+/// config.toml.
 pub const DEFAULT_MAX_ITERATIONS: u32 = 3;
 pub const DEFAULT_TOP_K_URLS: u32 = 10;
+pub const DEFAULT_SEARXNG_MAX_RESULTS: u32 = 10;
+
+/// Defense-in-depth caps on data flowing in/out of SearXNG. These are NOT
+/// exposed in config.toml: `MAX_QUERY_CHARS` bounds outgoing queries to the
+/// external engines (so a malformed prompt cannot DOS them), and
+/// `MAX_SNIPPET_CHARS` bounds the per-result text Thuki accepts back (so a
+/// malicious search result cannot flood the rerank prompt). Both apply
+/// before any user-controllable knob, in unicode scalar values.
+pub const DEFAULT_MAX_SNIPPET_CHARS: usize = 500;
+pub const DEFAULT_MAX_QUERY_CHARS: usize = 500;
 
 // Pipeline-internal defaults: not exposed in config.toml because they are
 // part of the prompt and retry contract. Changing these values alters output
@@ -85,6 +97,7 @@ pub const DEFAULT_ROUTER_TIMEOUT_S: u64 = 45;
 /// Bounds for search pipeline counts.
 pub const BOUNDS_MAX_ITERATIONS: (u32, u32) = (1, 10);
 pub const BOUNDS_TOP_K_URLS: (u32, u32) = (1, 20);
+pub const BOUNDS_SEARXNG_MAX_RESULTS: (u32, u32) = (1, 20);
 
 /// Bounds for all search timeout fields (seconds). 300 s (5 min) is the
 /// ceiling: a timeout longer than that indicates a misconfiguration, not a

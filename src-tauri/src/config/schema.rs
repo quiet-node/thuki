@@ -19,7 +19,7 @@ use super::defaults::{
     DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
-    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
+    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
 };
 
 /// Model configuration. The first entry of `available` is the active model
@@ -143,6 +143,11 @@ pub struct SearchSection {
     pub max_iterations: u32,
     /// Number of top-ranked URLs forwarded to the reader after reranking.
     pub top_k_urls: u32,
+    /// Maximum number of results each SearXNG query contributes to the
+    /// reranker. Acts before rerank to bound prompt size and latency: lower
+    /// values trade recall for speed; higher values give the reranker more
+    /// candidates per query.
+    pub searxng_max_results: u32,
     /// Seconds before a SearXNG query is abandoned.
     pub search_timeout_s: u64,
     /// Seconds allowed for a single URL fetch inside the reader.
@@ -163,6 +168,7 @@ impl Default for SearchSection {
             reader_url: DEFAULT_READER_URL.to_string(),
             max_iterations: DEFAULT_MAX_ITERATIONS,
             top_k_urls: DEFAULT_TOP_K_URLS,
+            searxng_max_results: DEFAULT_SEARXNG_MAX_RESULTS,
             search_timeout_s: DEFAULT_SEARCH_TIMEOUT_S,
             reader_per_url_timeout_s: DEFAULT_READER_PER_URL_TIMEOUT_S,
             reader_batch_timeout_s: DEFAULT_READER_BATCH_TIMEOUT_S,

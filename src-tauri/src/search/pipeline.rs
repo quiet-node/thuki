@@ -815,6 +815,7 @@ async fn run_gap_refinement_loop(
             shared.searxng_endpoint,
             &current_queries,
             shared.runtime_config.search_timeout_s,
+            shared.runtime_config.searxng_max_results,
         );
         let gap_results = tokio::select! {
             biased;
@@ -1456,6 +1457,7 @@ pub async fn run_agentic(
                     searxng_endpoint,
                     &query,
                     runtime_config.search_timeout_s,
+                    runtime_config.searxng_max_results,
                 );
                 let raw_urls = match tokio::select! {
                     biased;
