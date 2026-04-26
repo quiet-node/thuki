@@ -66,9 +66,9 @@ afterEach(() => {
 });
 
 describe('ModelTab', () => {
-  it('renders Model and Prompt sections with the expected labels', () => {
+  it('renders Ollama and Prompt sections with the expected labels', () => {
     render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
-    expect(screen.getByText('Model')).toBeInTheDocument();
+    expect(screen.getByText('Ollama')).toBeInTheDocument();
     expect(screen.getByText('Prompt')).toBeInTheDocument();
     expect(screen.getByText('Ollama URL')).toBeInTheDocument();
     expect(screen.getByText('System prompt')).toBeInTheDocument();

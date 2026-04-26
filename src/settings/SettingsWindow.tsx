@@ -39,7 +39,7 @@ const TABS: ReadonlyArray<{
 }> = [
   {
     id: 'general',
-    label: 'Model',
+    label: 'AI',
     // Brain — visual cue that this tab is for the AI itself.
     icon: (
       <svg

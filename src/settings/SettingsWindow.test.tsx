@@ -77,17 +77,17 @@ describe('SettingsWindow', () => {
   it('renders the four tab labels after config loads', async () => {
     render(<SettingsWindow />);
     await waitFor(() =>
-      expect(screen.getByRole('tab', { name: /Model/ })).toBeInTheDocument(),
+      expect(screen.getByRole('tab', { name: /AI/ })).toBeInTheDocument(),
     );
     expect(screen.getByRole('tab', { name: /Web/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Display/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /About/ })).toBeInTheDocument();
   });
 
-  it('starts on the Model tab', async () => {
+  it('starts on the AI tab', async () => {
     render(<SettingsWindow />);
     await waitFor(() =>
-      expect(screen.getByRole('tab', { name: /Model/ })).toHaveAttribute(
+      expect(screen.getByRole('tab', { name: /AI/ })).toHaveAttribute(
         'aria-selected',
         'true',
       ),
@@ -107,9 +107,9 @@ describe('SettingsWindow', () => {
 
   it('ArrowRight rotates focus to the next tab', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /Model/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
 
-    const modelTab = screen.getByRole('tab', { name: /Model/ });
+    const modelTab = screen.getByRole('tab', { name: /AI/ });
     fireEvent.keyDown(modelTab, { key: 'ArrowRight' });
     expect(screen.getByRole('tab', { name: /Web/ })).toHaveAttribute(
       'aria-selected',
@@ -119,9 +119,9 @@ describe('SettingsWindow', () => {
 
   it('ArrowLeft wraps to the last tab when starting on the first', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /Model/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
 
-    const modelTab = screen.getByRole('tab', { name: /Model/ });
+    const modelTab = screen.getByRole('tab', { name: /AI/ });
     fireEvent.keyDown(modelTab, { key: 'ArrowLeft' });
     expect(screen.getByRole('tab', { name: /About/ })).toHaveAttribute(
       'aria-selected',
@@ -131,9 +131,9 @@ describe('SettingsWindow', () => {
 
   it('non-arrow keys are ignored by the tab key handler', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /Model/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
 
-    const modelTab = screen.getByRole('tab', { name: /Model/ });
+    const modelTab = screen.getByRole('tab', { name: /AI/ });
     fireEvent.keyDown(modelTab, { key: 'Enter' });
     expect(modelTab).toHaveAttribute('aria-selected', 'true');
   });
@@ -188,7 +188,7 @@ describe('SettingsWindow', () => {
 
   it('Cmd+, on the document re-focuses the settings window', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /Model/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
 
     __mockWindow.setFocus.mockClear();
     fireEvent.keyDown(document, { key: ',', metaKey: true });
@@ -197,7 +197,7 @@ describe('SettingsWindow', () => {
 
   it('Other keystrokes do not trigger setFocus', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /Model/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
 
     __mockWindow.setFocus.mockClear();
     fireEvent.keyDown(document, { key: ',' }); // no Meta
@@ -207,7 +207,7 @@ describe('SettingsWindow', () => {
 
   it('the close button hides the window instead of quitting', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /Model/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
     __mockWindow.hide.mockClear();
     fireEvent.click(screen.getByRole('button', { name: /Close/ }));
     expect(__mockWindow.hide).toHaveBeenCalled();
@@ -215,11 +215,11 @@ describe('SettingsWindow', () => {
 
   it('mousedown on the chrome triggers startDragging when not on an interactive element', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /Model/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
     __mockWindow.startDragging.mockClear();
     // Click on the body container itself (not on a button/input).
     const root = screen
-      .getByRole('tab', { name: /Model/ })
+      .getByRole('tab', { name: /AI/ })
       .closest('[role="tablist"]')!.parentElement!;
     fireEvent.mouseDown(root, { target: root });
     // The root is a div; not in INTERACTIVE_TAGS, so dragging fires.
@@ -228,9 +228,9 @@ describe('SettingsWindow', () => {
 
   it('mousedown that originates from an interactive element does NOT trigger drag', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /Model/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
     __mockWindow.startDragging.mockClear();
-    fireEvent.mouseDown(screen.getByRole('tab', { name: /Model/ }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /AI/ }));
     expect(__mockWindow.startDragging).not.toHaveBeenCalled();
   });
 

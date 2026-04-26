@@ -1,10 +1,11 @@
 /**
- * Model tab.
+ * AI tab.
  *
- * Holds the local Ollama URL and the custom system prompt. The active model
- * picker lives in the main app overlay (see ModelPickerPanel) since model
- * selection is runtime UI state owned by ActiveModelState in the backend, not
- * a TOML-persisted field. The Window/Quote knobs live in the Display tab.
+ * Holds the local Ollama endpoint and the custom system prompt — the two
+ * AI-shaped knobs that persist to TOML. The active model picker lives in
+ * the main app overlay (see ModelPickerPanel) since model selection is
+ * runtime UI state owned by ActiveModelState in the backend, not a
+ * TOML-persisted field. The Window/Quote knobs live in the Display tab.
  */
 
 import { Section, TextField, Textarea } from '../components';
@@ -24,7 +25,7 @@ const PROMPT_MAX_CHARS = 8000;
 export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
   return (
     <>
-      <Section heading="Model">
+      <Section heading="Ollama">
         <SaveField
           section="inference"
           fieldKey="ollama_url"

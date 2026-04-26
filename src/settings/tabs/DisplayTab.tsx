@@ -3,7 +3,7 @@
  *
  * Holds the floating-window dimensions, the close-animation timing,
  * and the quoted-text preview limits. These were split out of the old
- * "General" tab so the Model tab can focus on the AI brain.
+ * "General" tab so the AI tab can focus on the AI brain.
  */
 
 import { Section, NumberSlider, NumberStepper } from '../components';
