@@ -1,24 +1,15 @@
 /**
- * Search tab — sandbox service URLs, pipeline tuning, and timeouts.
+ * Web tab — sandbox service URLs, pipeline tuning, and timeouts for the
+ * `/search` slash command.
  *
- * Sub-grouped: SERVICES (URLs + security warning), PIPELINE (knobs),
- * TIMEOUTS (per-stage seconds).
+ * Sub-grouped: SERVICES (URLs), PIPELINE (knobs), TIMEOUTS (per-stage
+ * seconds). The cross-section "reset to defaults" affordance lives only
+ * in the About tab to keep this surface focused on tuning.
  */
 
-import { useState } from 'react';
-
-import { invoke } from '@tauri-apps/api/core';
-
-import {
-  Section,
-  ResetSectionLink,
-  NumberSlider,
-  NumberStepper,
-  TextField,
-  ConfirmDialog,
-} from '../components';
+import { Section, NumberSlider, NumberStepper, TextField } from '../components';
 import { SaveField } from '../components/SaveField';
-import styles from '../../styles/settings.module.css';
+import { configHelp } from '../configHelpers';
 import type { RawAppConfig } from '../types';
 
 interface SearchTabProps {
@@ -28,25 +19,14 @@ interface SearchTabProps {
 }
 
 export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
-  const [confirmReset, setConfirmReset] = useState(false);
-
   return (
     <>
       <Section heading="Services">
-        <div className={styles.warning}>
-          <span aria-hidden>⚠</span>
-          <span>
-            Both URLs default to <code>localhost</code>. Pointing them at remote
-            servers breaks Thuki’s sandbox isolation: the page reader would
-            fetch arbitrary URLs from a host that may have access to private
-            networks.
-          </span>
-        </div>
         <SaveField
           section="search"
           fieldKey="searxng_url"
           label="SearXNG URL"
-          helper="Local search engine endpoint. Match the binding in sandbox/docker-compose.yml."
+          helper={configHelp('search', 'searxng_url')}
           initialValue={config.search.searxng_url}
           resyncToken={resyncToken}
           onSaved={onSaved}
@@ -64,7 +44,7 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
           section="search"
           fieldKey="reader_url"
           label="Reader URL"
-          helper="Local web-page reader endpoint. Match the binding in sandbox/docker-compose.yml."
+          helper={configHelp('search', 'reader_url')}
           initialValue={config.search.reader_url}
           resyncToken={resyncToken}
           onSaved={onSaved}
@@ -85,7 +65,7 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
           section="search"
           fieldKey="max_iterations"
           label="Max iterations"
-          helper="Search-refine rounds before the AI gives up. Raise for hard, multi-step questions."
+          helper={configHelp('search', 'max_iterations')}
           initialValue={config.search.max_iterations}
           resyncToken={resyncToken}
           onSaved={onSaved}
@@ -103,7 +83,7 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
           section="search"
           fieldKey="top_k_urls"
           label="Top-K URLs"
-          helper="Pages opened and read after reranking. Raise for more sources, lower for faster searches."
+          helper={configHelp('search', 'top_k_urls')}
           initialValue={config.search.top_k_urls}
           resyncToken={resyncToken}
           onSaved={onSaved}
@@ -121,7 +101,7 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
           section="search"
           fieldKey="searxng_max_results"
           label="Max SearXNG results"
-          helper="Results SearXNG returns per query before reranking."
+          helper={configHelp('search', 'searxng_max_results')}
           initialValue={config.search.searxng_max_results}
           resyncToken={resyncToken}
           onSaved={onSaved}
@@ -142,7 +122,7 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
           section="search"
           fieldKey="search_timeout_s"
           label="Search timeout"
-          helper="Seconds before a SearXNG query is abandoned."
+          helper={configHelp('search', 'search_timeout_s')}
           initialValue={config.search.search_timeout_s}
           resyncToken={resyncToken}
           onSaved={onSaved}
@@ -161,7 +141,7 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
           section="search"
           fieldKey="reader_per_url_timeout_s"
           label="Reader per-URL timeout"
-          helper="Seconds per single page fetch."
+          helper={configHelp('search', 'reader_per_url_timeout_s')}
           initialValue={config.search.reader_per_url_timeout_s}
           resyncToken={resyncToken}
           onSaved={onSaved}
@@ -180,7 +160,7 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
           section="search"
           fieldKey="reader_batch_timeout_s"
           label="Reader batch timeout"
-          helper="Seconds for the full parallel reader batch. Loader auto-corrects to per-URL + 5 if too low."
+          helper={configHelp('search', 'reader_batch_timeout_s')}
           initialValue={config.search.reader_batch_timeout_s}
           resyncToken={resyncToken}
           onSaved={onSaved}
@@ -199,7 +179,7 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
           section="search"
           fieldKey="judge_timeout_s"
           label="Judge timeout"
-          helper="Seconds for the AI to decide whether results are sufficient."
+          helper={configHelp('search', 'judge_timeout_s')}
           initialValue={config.search.judge_timeout_s}
           resyncToken={resyncToken}
           onSaved={onSaved}
@@ -218,7 +198,7 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
           section="search"
           fieldKey="router_timeout_s"
           label="Router timeout"
-          helper="Seconds for the AI to plan initial queries."
+          helper={configHelp('search', 'router_timeout_s')}
           initialValue={config.search.router_timeout_s}
           resyncToken={resyncToken}
           onSaved={onSaved}
@@ -234,25 +214,6 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
           )}
         />
       </Section>
-
-      <ResetSectionLink
-        label="Reset Search to defaults"
-        onClick={() => setConfirmReset(true)}
-      />
-      <ConfirmDialog
-        open={confirmReset}
-        title="Reset Search to defaults?"
-        message="Your current Search settings will be replaced with the defaults. This cannot be undone."
-        confirmLabel="Reset"
-        destructive
-        onConfirm={() => {
-          setConfirmReset(false);
-          void invoke<RawAppConfig>('reset_config', { section: 'search' }).then(
-            onSaved,
-          );
-        }}
-        onCancel={() => setConfirmReset(false)}
-      />
     </>
   );
 }

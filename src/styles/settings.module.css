@@ -180,6 +180,12 @@
    * scrollbar fades in. Matches .chat-messages-scroll in App.css. */
   scrollbar-gutter: stable;
 }
+/* About tab is sized to fit; suppress the gutter + auto-scroll so the
+ * faint always-on scrollbar track does not show on the right edge. */
+.bodyNoScroll {
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
 /* No `::-webkit-scrollbar` overrides — letting macOS render its native
  * overlay scrollbar that auto-shows on scroll, matching the chat view. */
 
@@ -190,6 +196,14 @@
 }
 .section:last-of-type {
   margin-bottom: 8px;
+}
+/* Hairline divider between adjacent sections so the visual hierarchy
+ * matches the dividers between rows. Mirrors `.row + .row` so the
+ * Permissions/File split (and similar splits in other tabs) reads at
+ * the same weight as the row separators inside each section. */
+.section + .section {
+  border-top: 1px solid rgba(255, 255, 255, 0.045);
+  padding-top: 24px;
 }
 .sectionHeading {
   font-size: 11px;
@@ -215,16 +229,51 @@
   align-items: stretch;
   gap: 8px;
 }
-.rowLabel {
+.rowLabelGroup {
   flex: 0 0 168px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 6px;
+}
+.rowVertical .rowLabelGroup {
+  flex: none;
+  padding-top: 0;
+}
+.rowLabel {
   font-size: 13px;
   font-weight: 500;
   color: var(--color-text-primary);
-  padding-top: 6px;
 }
-.rowVertical .rowLabel {
-  flex: none;
-  padding-top: 0;
+.infoBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  font-family: inherit;
+  line-height: 1;
+  cursor: help;
+  padding: 0;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease;
+}
+.infoBtn:hover {
+  background: rgba(255, 141, 92, 0.12);
+  color: var(--color-primary);
+  border-color: rgba(255, 141, 92, 0.4);
+}
+.infoBtn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 .rowControl {
   flex: 1;
@@ -232,6 +281,12 @@
   flex-direction: column;
   gap: 6px;
   min-width: 0;
+}
+.charCounter {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  text-align: right;
+  letter-spacing: 0.02em;
 }
 .rowHelper {
   font-size: 11.5px;
@@ -446,6 +501,12 @@
 .stepper {
   display: inline-flex;
   align-items: center;
+  /* Right-aligned compact pill so the +/- controls stay close to the
+   * value instead of stretching across the row. The parent rowControl
+   * is a column flex; align-self overrides the default `stretch`. */
+  align-self: flex-end;
+  width: auto;
+  min-width: 132px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-top-color: rgba(255, 141, 92, 0.1);
   border-radius: 8px;
@@ -587,23 +648,26 @@
   position: fixed;
   bottom: 16px;
   right: 22px;
-  background: linear-gradient(
+  /* Solid base so the pill never blends into rows that scroll behind it. */
+  background-color: #2a221d;
+  background-image: linear-gradient(
     135deg,
-    rgba(255, 141, 92, 0.18) 0%,
+    rgba(255, 141, 92, 0.22) 0%,
     rgba(224, 107, 48, 0.18) 100%
   );
   color: var(--color-primary);
-  border: 1px solid rgba(255, 141, 92, 0.3);
+  border: 1px solid rgba(255, 141, 92, 0.45);
   border-radius: 999px;
-  padding: 4px 12px;
+  padding: 5px 13px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
   pointer-events: none;
   opacity: 0;
   box-shadow:
-    0 2px 8px -2px rgba(0, 0, 0, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    0 6px 18px -6px rgba(0, 0, 0, 0.65),
+    0 2px 6px -2px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
   transition: opacity 220ms ease;
 }
 .savedPillVisible {
@@ -682,6 +746,129 @@
 
 /* ─── About tab ─────────────────────────────────────────────────────────── */
 
+.aboutBody {
+  /* Wrapper for About-tab overrides. Lets the tab tighten spacing and
+   * suppress dividers that other tabs still want, without forking the
+   * shared row/section primitives. */
+}
+/* Drop the row hairline between Permissions rows — Permissions reads as
+ * one cluster, not two stacked items. The same divider stays useful in
+ * tabs with many tunable rows under one heading. */
+.aboutBody .row + .row {
+  border-top: none;
+}
+.aboutBody .row {
+  padding: 8px 0;
+  min-height: 40px;
+}
+.aboutBody .section {
+  margin-bottom: 14px;
+}
+.aboutBody .section + .section {
+  padding-top: 14px;
+}
+.aboutBody .section:last-of-type {
+  margin-bottom: 0;
+}
+.aboutBody .sectionHeading {
+  margin-bottom: 10px;
+}
+.aboutHero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  /* Tight top padding because the tab-bar already sets the visual
+   * starting line; bigger bottom padding keeps the hero from bleeding
+   * into the Permissions section. */
+  padding: 0 24px 18px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+}
+.aboutHeroLogo {
+  width: 72px;
+  height: 72px;
+  margin-bottom: 10px;
+  filter: drop-shadow(0 8px 24px rgba(255, 141, 92, 0.22));
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.aboutHeroTitle {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--color-text-primary);
+  margin-bottom: 2px;
+}
+.aboutHeroVersion {
+  display: inline-block;
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin-bottom: 8px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  text-decoration: underline transparent;
+  text-underline-offset: 3px;
+  transition:
+    color 150ms ease,
+    text-decoration-color 150ms ease;
+}
+.aboutHeroVersion:hover {
+  color: var(--color-primary);
+  text-decoration-color: var(--color-primary);
+}
+.aboutHeroVersion:focus-visible {
+  outline: none;
+  color: var(--color-primary);
+  text-decoration-color: var(--color-primary);
+}
+.aboutHeroTagline {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin-bottom: 14px;
+  max-width: 340px;
+}
+.aboutHeroMantra {
+  display: inline-block;
+}
+.aboutHeroActions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.iconLinkBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    color 150ms ease,
+    transform 150ms ease;
+}
+.iconLinkBtn:hover {
+  color: var(--color-primary);
+  transform: translateY(-1px);
+}
+.iconLinkBtn:focus-visible {
+  outline: none;
+  color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.35);
+  border-radius: 6px;
+}
 .aboutInfoLine {
   font-size: 13px;
   color: var(--color-text-secondary);
@@ -732,21 +919,4 @@
   .iconBtn {
     transition: none !important;
   }
-}
-
-/* ─── Search-tab security warning ───────────────────────────────────────── */
-
-.warning {
-  display: flex;
-  gap: 10px;
-  padding: 10px 14px;
-  margin: 0 0 16px;
-  background: rgba(36, 30, 26, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-left: 3px solid var(--color-tertiary);
-  border-radius: 8px;
-  font-size: 12.5px;
-  color: var(--color-text-primary);
-  line-height: 1.5;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }

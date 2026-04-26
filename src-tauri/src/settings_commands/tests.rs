@@ -13,7 +13,7 @@ use toml_edit::DocumentMut;
 
 use super::{
     coerce_json_to_toml, is_allowed_field, is_allowed_section, json_type_name, patch_document,
-    read_document,
+    read_document, reset_section_on_disk, write_field_to_disk,
 };
 use crate::config::defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS};
 use crate::config::ConfigError;
@@ -231,6 +231,38 @@ fn coerce_array_rejects_non_array_value() {
 }
 
 #[test]
+fn coerce_boolean_accepts_json_bool() {
+    let doc: DocumentMut = "flag = true\n".parse().unwrap();
+    let item = doc.get("flag").unwrap();
+    let coerced = coerce_json_to_toml(item, json!(false), "section", "flag").unwrap();
+    assert_eq!(coerced.as_bool(), Some(false));
+}
+
+#[test]
+fn coerce_boolean_rejects_string() {
+    let doc: DocumentMut = "flag = true\n".parse().unwrap();
+    let item = doc.get("flag").unwrap();
+    let err = coerce_json_to_toml(item, json!("true"), "section", "flag").unwrap_err();
+    matches_type_mismatch(&err, "section", "flag");
+}
+
+#[test]
+fn coerce_rejects_datetime_field() {
+    let doc: DocumentMut = "stamp = 1979-05-27T07:32:00Z\n".parse().unwrap();
+    let item = doc.get("stamp").unwrap();
+    let err = coerce_json_to_toml(item, json!("nope"), "section", "stamp").unwrap_err();
+    matches_type_mismatch(&err, "section", "stamp");
+}
+
+#[test]
+fn coerce_rejects_inline_table_field() {
+    let doc: DocumentMut = "obj = { a = 1 }\n".parse().unwrap();
+    let item = doc.get("obj").unwrap();
+    let err = coerce_json_to_toml(item, json!("nope"), "section", "obj").unwrap_err();
+    matches_type_mismatch(&err, "section", "obj");
+}
+
+#[test]
 fn coerce_rejects_when_existing_is_not_primitive() {
     // Construct an Item that is not a primitive value (e.g. a sub-table) to
     // exercise the early-return error branch.
@@ -397,6 +429,195 @@ fn json_type_name_covers_every_variant() {
     assert_eq!(json_type_name(&json!("s")), "string");
     assert_eq!(json_type_name(&json!([1, 2])), "array");
     assert_eq!(json_type_name(&json!({"a": 1})), "object");
+}
+
+// ─── write_field_to_disk ────────────────────────────────────────────────────
+
+#[test]
+fn write_field_to_disk_persists_and_returns_resolved_config() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    let resolved =
+        write_field_to_disk(&path, "model", "ollama_url", json!("http://10.0.0.1:11434")).unwrap();
+    assert_eq!(resolved.model.ollama_url, "http://10.0.0.1:11434");
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("http://10.0.0.1:11434"));
+}
+
+#[test]
+fn write_field_to_disk_rejects_unknown_section() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+    let err = write_field_to_disk(&path, "activation", "hotkey", json!("ctrl+ctrl")).unwrap_err();
+    match err {
+        ConfigError::UnknownSection { section } => assert_eq!(section, "activation"),
+        other => panic!("expected UnknownSection, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_field_to_disk_rejects_unknown_field() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+    let err = write_field_to_disk(&path, "model", "secret_api_key", json!("hunter2")).unwrap_err();
+    match err {
+        ConfigError::UnknownField { section, key } => {
+            assert_eq!(section, "model");
+            assert_eq!(key, "secret_api_key");
+        }
+        other => panic!("expected UnknownField, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_field_to_disk_propagates_read_error_for_missing_file() {
+    let dir = tempdir();
+    let path = dir.join("missing.toml");
+    let err = write_field_to_disk(&path, "model", "ollama_url", json!("http://x")).unwrap_err();
+    matches!(err, ConfigError::IoError { .. });
+}
+
+#[test]
+fn write_field_to_disk_propagates_patch_error_for_type_mismatch() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+    let err = write_field_to_disk(&path, "model", "ollama_url", json!(42)).unwrap_err();
+    matches_type_mismatch(&err, "model", "ollama_url");
+}
+
+#[cfg(unix)]
+#[test]
+fn write_field_to_disk_propagates_io_error_when_parent_dir_is_readonly() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    // Read-only directory: atomic_write_bytes can read the existing file but
+    // cannot create the temp file alongside it for the rename swap.
+    let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+    perms.set_mode(0o500);
+    std::fs::set_permissions(&dir, perms.clone()).unwrap();
+
+    let err = write_field_to_disk(&path, "model", "ollama_url", json!("http://10.0.0.1:11434"))
+        .unwrap_err();
+
+    // Restore writability so the OS can clean up the tempdir later.
+    let mut restore = perms;
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&dir, restore).unwrap();
+
+    matches!(err, ConfigError::IoError { .. });
+}
+
+// ─── reset_section_on_disk ──────────────────────────────────────────────────
+
+#[test]
+fn reset_section_on_disk_replaces_named_section_with_defaults() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    // Mutate the field first so reset has something to revert.
+    write_field_to_disk(&path, "model", "ollama_url", json!("http://10.0.0.1:11434")).unwrap();
+
+    let resolved = reset_section_on_disk(&path, Some("model")).unwrap();
+    assert_eq!(resolved.model.ollama_url, "http://127.0.0.1:11434");
+}
+
+#[test]
+fn reset_section_on_disk_preserves_other_sections() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    // Change two sections.
+    write_field_to_disk(&path, "model", "ollama_url", json!("http://10.0.0.1:11434")).unwrap();
+    write_field_to_disk(&path, "search", "max_iterations", json!(7)).unwrap();
+
+    // Reset only model — search.max_iterations should still be 7.
+    let resolved = reset_section_on_disk(&path, Some("model")).unwrap();
+    assert_eq!(resolved.search.max_iterations, 7);
+}
+
+#[test]
+fn reset_section_on_disk_whole_file_resets_everything() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    write_field_to_disk(&path, "search", "max_iterations", json!(7)).unwrap();
+    let resolved = reset_section_on_disk(&path, None).unwrap();
+    // Default is 3 per defaults.rs.
+    assert_eq!(resolved.search.max_iterations, 3);
+}
+
+#[test]
+fn reset_section_on_disk_rejects_unknown_section() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+    let err = reset_section_on_disk(&path, Some("activation")).unwrap_err();
+    match err {
+        ConfigError::UnknownSection { section } => assert_eq!(section, "activation"),
+        other => panic!("expected UnknownSection, got {other:?}"),
+    }
+}
+
+#[test]
+fn reset_section_on_disk_propagates_read_error_for_missing_file_named_section() {
+    let dir = tempdir();
+    let path = dir.join("missing.toml");
+    let err = reset_section_on_disk(&path, Some("model")).unwrap_err();
+    matches!(err, ConfigError::IoError { .. });
+}
+
+#[cfg(unix)]
+#[test]
+fn reset_section_on_disk_propagates_io_error_when_parent_dir_is_readonly() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+    perms.set_mode(0o500);
+    std::fs::set_permissions(&dir, perms.clone()).unwrap();
+
+    let err = reset_section_on_disk(&path, Some("model")).unwrap_err();
+
+    let mut restore = perms;
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&dir, restore).unwrap();
+
+    matches!(err, ConfigError::IoError { .. });
+}
+
+#[cfg(unix)]
+#[test]
+fn reset_section_on_disk_whole_file_propagates_io_error_when_parent_dir_is_readonly() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+    perms.set_mode(0o500);
+    std::fs::set_permissions(&dir, perms.clone()).unwrap();
+
+    let err = reset_section_on_disk(&path, None).unwrap_err();
+
+    let mut restore = perms;
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&dir, restore).unwrap();
+
+    matches!(err, ConfigError::IoError { .. });
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

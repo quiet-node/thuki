@@ -22,6 +22,13 @@ interface TooltipProps {
    * off for the tight one-line presentation.
    */
   multiline?: boolean;
+  /**
+   * Where to render the tooltip relative to the trigger. Defaults to
+   * `'bottom'` (matches the original header-bar behavior). Use `'top'` for
+   * triggers near the bottom of the window where the bottom-anchored
+   * tooltip would clip past the viewport edge.
+   */
+  placement?: 'top' | 'bottom';
   /** Extra classes appended to the wrapper div (e.g. flex layout helpers). */
   className?: string;
 }
@@ -30,6 +37,7 @@ export function Tooltip({
   label,
   children,
   multiline = false,
+  placement = 'bottom',
   className,
 }: TooltipProps) {
   const [isVisible, setIsVisible] = useState(false);
@@ -64,7 +72,10 @@ export function Tooltip({
     );
     setCoords({
       left,
-      top: rect.bottom + 8,
+      // For top placement we anchor at the trigger's top edge with an 8px
+      // gap; the outer wrapper translates the box up by its own height
+      // (-100% on Y) so we never need to measure the box ahead of time.
+      top: placement === 'top' ? rect.top - 8 : rect.bottom + 8,
       arrowOffset: rawLeft - left,
     });
   };
@@ -97,6 +108,11 @@ export function Tooltip({
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onMouseDown={handleMouseLeave}
+      // React's synthetic focus events bubble, so a focused descendant
+      // (e.g. an icon button wrapped by Tooltip) reveals the tooltip for
+      // keyboard-only users without needing the mouse.
+      onFocus={handleMouseEnter}
+      onBlur={handleMouseLeave}
       className={`inline-flex${className ? ` ${className}` : ''}`}
     >
       {children}
@@ -115,26 +131,46 @@ export function Tooltip({
                   position: 'fixed',
                   left: coords.left,
                   top: coords.top,
-                  transform: 'translateX(-50%)',
+                  // For top placement, also shift the box up by its own
+                  // height so the bottom edge sits 8px above the trigger.
+                  transform:
+                    placement === 'top'
+                      ? 'translate(-50%, -100%)'
+                      : 'translateX(-50%)',
                   pointerEvents: 'none',
                   zIndex: 9999,
                 }}
               >
                 <motion.div
-                  initial={{ opacity: 0, scale: 0.92, y: -4 }}
+                  initial={{
+                    opacity: 0,
+                    scale: 0.92,
+                    y: placement === 'top' ? 4 : -4,
+                  }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.92, y: -4 }}
+                  exit={{
+                    opacity: 0,
+                    scale: 0.92,
+                    y: placement === 'top' ? 4 : -4,
+                  }}
                   transition={{ duration: 0.18, ease: [0.23, 1, 0.32, 1] }}
                 >
-                  {/* Arrow pointing up toward the trigger.
-                      left is adjusted by arrowOffset so it tracks the button
-                      center even when the tooltip box is clamped sideways. */}
+                  {/* Arrow pointing toward the trigger.
+                      For bottom placement the arrow sits on the top edge;
+                      for top placement it sits on the bottom edge. The
+                      `left` is adjusted by `arrowOffset` so it tracks the
+                      button center even when the tooltip box is clamped
+                      sideways. */}
                   <div
                     aria-hidden="true"
                     style={{
                       left: `calc(50% + ${coords.arrowOffset}px)`,
                     }}
-                    className="absolute -top-1.5 h-3 w-3 -translate-x-1/2 rotate-45 border-l border-t border-surface-border bg-surface-base"
+                    className={`absolute h-3 w-3 -translate-x-1/2 rotate-45 bg-surface-base ${
+                      placement === 'top'
+                        ? '-bottom-1.5 border-b border-r border-surface-border'
+                        : '-top-1.5 border-l border-t border-surface-border'
+                    }`}
                   />
                   <div
                     style={multiline ? { width: 225 } : undefined}

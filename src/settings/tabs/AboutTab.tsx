@@ -1,17 +1,21 @@
 /**
- * About tab — version, activation info, permission pills, system limits,
- * and the file-level escape hatches (Reveal config.toml, Reset all,
- * Refresh from disk).
+ * About tab — app identity, social links, permission pills, and the
+ * file-level escape hatches (Reveal config.toml, Refresh from disk,
+ * Reset all to defaults).
  *
  * Info-only: no `set_config_field` calls. Reset-all and Refresh-from-disk
- * are the two write actions; both are gated by explicit confirms.
+ * are the two write actions; both are gated by explicit confirms or
+ * targeted at the on-disk snapshot rather than a live editor field.
  */
 
 import { useEffect, useState } from 'react';
 
 import { invoke } from '@tauri-apps/api/core';
 
+import thukiLogo from '../../../src-tauri/icons/128x128.png';
+import pkg from '../../../package.json';
 import { Section, ConfirmDialog } from '../components';
+import { Tooltip } from '../../components/Tooltip';
 import styles from '../../styles/settings.module.css';
 import type { RawAppConfig } from '../types';
 
@@ -24,6 +28,8 @@ interface PermissionsState {
   accessibility: boolean;
   screenRecording: boolean;
 }
+
+const APP_VERSION: string = pkg.version;
 
 export function AboutTab({ onSaved, onReload }: AboutTabProps) {
   const [confirmResetAll, setConfirmResetAll] = useState(false);
@@ -57,47 +63,87 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
   }, []);
 
   return (
-    <>
-      <Section heading="App">
-        <div className={styles.aboutInfoLine}>
-          <strong>Thuki</strong> — local-first AI secretary for macOS.
-        </div>
-        <div className={styles.aboutLinkRow}>
+    <div className={styles.aboutBody}>
+      <div className={styles.aboutHero}>
+        <img
+          src={thukiLogo}
+          alt="Thuki"
+          className={styles.aboutHeroLogo}
+          draggable={false}
+        />
+        <div className={styles.aboutHeroTitle}>Thuki</div>
+        <Tooltip label={`View v${APP_VERSION} release notes on GitHub`}>
           <button
             type="button"
-            className={`${styles.button} ${styles.buttonGhost}`}
+            className={styles.aboutHeroVersion}
+            aria-label={`View v${APP_VERSION} release notes on GitHub`}
             onClick={() =>
               void invoke('open_url', {
-                url: 'https://github.com/quiet-node/thuki',
+                url: `https://github.com/quiet-node/thuki/releases/tag/v${APP_VERSION}`,
               })
             }
           >
-            GitHub
+            v{APP_VERSION}
           </button>
-          <button
-            type="button"
-            className={`${styles.button} ${styles.buttonGhost}`}
-            onClick={() =>
-              void invoke('open_url', { url: 'https://ollama.com/' })
-            }
-          >
-            Ollama
-          </button>
+        </Tooltip>
+        <div className={styles.aboutHeroTagline}>
+          A floating, local-first AI secretary for macOS.
+          <br />
+          <span className={styles.aboutHeroMantra}>
+            No cloud. No clutter. Just answers.
+          </span>
         </div>
-      </Section>
-
-      <Section heading="Activation">
-        <div className={styles.aboutInfoLine}>
-          Double-tap <strong>Control</strong> to summon Thuki. Double-tap
-          window:
-          <strong> 400 ms</strong>, cooldown <strong>600 ms</strong> (baked-in
-          for thread-safety).
+        <div className={styles.aboutHeroActions}>
+          <Tooltip label="View Thuki on GitHub">
+            <button
+              type="button"
+              className={styles.iconLinkBtn}
+              aria-label="View Thuki on GitHub"
+              onClick={() =>
+                void invoke('open_url', {
+                  url: 'https://github.com/quiet-node/thuki',
+                })
+              }
+            >
+              <GitHubIcon />
+            </button>
+          </Tooltip>
+          <Tooltip label="Reach out to Logan on X for questions or ideas.">
+            <button
+              type="button"
+              className={styles.iconLinkBtn}
+              aria-label="Reach out to Logan on X for questions or ideas."
+              onClick={() =>
+                void invoke('open_url', {
+                  url: 'https://x.com/quiet_node',
+                })
+              }
+            >
+              <XIcon />
+            </button>
+          </Tooltip>
+          <Tooltip label="Report a bug or share feedback on GitHub Issues.">
+            <button
+              type="button"
+              className={styles.iconLinkBtn}
+              aria-label="Open an issue or share feedback on GitHub"
+              onClick={() =>
+                void invoke('open_url', {
+                  url: 'https://github.com/quiet-node/thuki/issues',
+                })
+              }
+            >
+              <FeedbackIcon />
+            </button>
+          </Tooltip>
         </div>
-      </Section>
+      </div>
 
       <Section heading="Permissions">
         <div className={styles.row}>
-          <span className={styles.rowLabel}>Accessibility</span>
+          <div className={styles.rowLabelGroup}>
+            <span className={styles.rowLabel}>Accessibility</span>
+          </div>
           <div className={styles.rowControl}>
             <div>
               <span
@@ -126,7 +172,9 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
           </div>
         </div>
         <div className={styles.row}>
-          <span className={styles.rowLabel}>Screen Recording</span>
+          <div className={styles.rowLabelGroup}>
+            <span className={styles.rowLabel}>Screen Recording</span>
+          </div>
           <div className={styles.rowControl}>
             <div>
               <span
@@ -156,39 +204,34 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
         </div>
       </Section>
 
-      <Section heading="Limits">
-        <div className={styles.aboutInfoLine}>
-          <strong>Max images per message:</strong> 4 (3 attached + 1 /screen
-          capture).
-        </div>
-        <div className={styles.aboutInfoLine}>
-          <strong>Max image size:</strong> 30 MB, downscaled to 1920 px @ JPEG
-          Q85.
-        </div>
-      </Section>
-
       <Section heading="File">
         <div className={styles.aboutLinkRow}>
           <button
             type="button"
-            className={styles.button}
+            className={`${styles.button} ${styles.buttonGhost}`}
             onClick={() => void invoke('reveal_config_in_finder')}
           >
-            📂 Reveal config.toml in Finder
+            Reveal Thuki app data
           </button>
-          <button
-            type="button"
-            className={`${styles.button} ${styles.buttonGhost}`}
-            onClick={() => void onReload()}
+          <Tooltip
+            label="Re-read config.toml from disk and refresh this window. Use after editing the file by hand outside Thuki."
+            multiline
+            placement="top"
           >
-            ↻ Refresh from disk
-          </button>
+            <button
+              type="button"
+              className={`${styles.button} ${styles.buttonGhost}`}
+              onClick={() => void onReload()}
+            >
+              Refresh config.toml
+            </button>
+          </Tooltip>
           <button
             type="button"
             className={`${styles.button} ${styles.buttonDestructive}`}
             onClick={() => setConfirmResetAll(true)}
           >
-            ⚠ Reset all to defaults…
+            Reset all to defaults…
           </button>
         </div>
       </Section>
@@ -207,6 +250,61 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
         }}
         onCancel={() => setConfirmResetAll(false)}
       />
-    </>
+    </div>
+  );
+}
+
+// ─── Inline brand icons ───────────────────────────────────────────────────
+//
+// Vendored as small inline SVG components so we do not pull a fresh icon
+// dependency for two glyphs. Both paths are the official simple-icons
+// monochrome marks (CC0). currentColor lets the button tint them.
+
+function GitHubIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="currentColor"
+      aria-hidden
+    >
+      <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.27-.01-1-.02-1.96-3.2.7-3.87-1.54-3.87-1.54-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.24 3.34.95.1-.74.4-1.24.72-1.53-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.05 0 0 .96-.31 3.15 1.18a10.96 10.96 0 0 1 5.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.59.23 2.76.11 3.05.74.81 1.18 1.84 1.18 3.1 0 4.42-2.7 5.4-5.27 5.68.41.36.78 1.06.78 2.13 0 1.54-.01 2.78-.01 3.16 0 .31.21.68.8.56C20.21 21.39 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="currentColor"
+      aria-hidden
+    >
+      <path d="M18.244 2H21l-6.56 7.5L22 22h-6.83l-4.74-6.2L4.8 22H2l7.04-8.06L2 2h6.92l4.28 5.66L18.244 2zm-2.4 18.5h1.74L7.27 3.4H5.4l10.444 17.1z" />
+    </svg>
+  );
+}
+
+// Speech-bubble glyph for the "open an issue / give feedback" action.
+// Outlined to match the conversational tone of the destination
+// (GitHub Issues), distinct from the solid github/x marks.
+function FeedbackIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+    </svg>
   );
 }

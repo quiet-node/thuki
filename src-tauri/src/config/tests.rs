@@ -529,6 +529,30 @@ fn rename_corrupt_failure_is_logged_but_does_not_block() {
     }
 }
 
+/// Triggers ONLY the marker-write failure branch in `rename_corrupt`: the
+/// rename itself must succeed (so the parent must be writable), but writing
+/// the marker file must fail. We force the latter by pre-creating a
+/// DIRECTORY at the marker path, which makes `std::fs::write` to that name
+/// fail with `IsADirectory`. The corrupt file is still renamed and the
+/// loader still seeds defaults; only the warning eprintln fires.
+#[cfg(unix)]
+#[test]
+fn marker_write_failure_is_logged_but_does_not_block_recovery() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "garbage [oops").unwrap();
+
+    // Squat the marker filename with a directory so std::fs::write fails.
+    let blocker = dir.join(crate::config::CORRUPT_MARKER_FILE_NAME);
+    std::fs::create_dir(&blocker).unwrap();
+
+    let config = load_from_path(&path).expect("recover even when marker write fails");
+    assert_eq!(config.model.active(), DEFAULT_MODEL_NAME);
+
+    // Marker squatter is still a directory: the failed write did not replace it.
+    assert!(blocker.is_dir());
+}
+
 // ── writer: atomic_write ────────────────────────────────────────────────────
 
 #[test]
@@ -839,4 +863,22 @@ fn toml_partial_search_section_fills_missing_fields_from_defaults() {
         "unset field in partial [search] must fall back to default"
     );
     assert_eq!(loaded.search.max_iterations, DEFAULT_MAX_ITERATIONS);
+}
+
+// ── error: serde_json round-trip ────────────────────────────────────────────
+
+/// `ConfigError::IoError` carries a non-Serialize `std::io::Error`; the
+/// `serialize_io_error` helper is wired in via `#[serde(serialize_with)]`.
+/// This round-trip test exists solely to exercise that helper so it shows
+/// up as covered.
+#[test]
+fn config_error_io_error_serializes_io_source_as_display_string() {
+    let err = ConfigError::IoError {
+        path: PathBuf::from("/tmp/nope.toml"),
+        source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied here"),
+    };
+    let json = serde_json::to_value(&err).expect("ConfigError serializes");
+    assert_eq!(json["kind"], "io_error");
+    assert_eq!(json["path"], "/tmp/nope.toml");
+    assert_eq!(json["source"], "denied here");
 }

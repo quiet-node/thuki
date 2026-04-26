@@ -23,8 +23,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { useConfigSync } from './hooks/useConfigSync';
-import { GeneralTab } from './tabs/GeneralTab';
+import { ModelTab } from './tabs/ModelTab';
 import { SearchTab } from './tabs/SearchTab';
+import { DisplayTab } from './tabs/DisplayTab';
 import { AboutTab } from './tabs/AboutTab';
 import { SavedPill } from './components';
 import { WindowControls } from '../components/WindowControls';
@@ -38,25 +39,26 @@ const TABS: ReadonlyArray<{
 }> = [
   {
     id: 'general',
-    label: 'General',
+    label: 'Model',
+    // Brain — visual cue that this tab is for the AI itself.
     icon: (
       <svg
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.6"
         strokeLinecap="round"
         strokeLinejoin="round"
         aria-hidden
       >
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        <path d="M9.5 2a3 3 0 0 0-3 3v.5a2.5 2.5 0 0 0-2 4 3 3 0 0 0 .5 5 2.5 2.5 0 0 0 1.5 4.5 3 3 0 0 0 5.5-1.5V5a3 3 0 0 0-2.5-3z" />
+        <path d="M14.5 2a3 3 0 0 1 3 3v.5a2.5 2.5 0 0 1 2 4 3 3 0 0 1-.5 5 2.5 2.5 0 0 1-1.5 4.5 3 3 0 0 1-5.5-1.5V5a3 3 0 0 1 2.5-3z" />
       </svg>
     ),
   },
   {
     id: 'search',
-    label: 'Search',
+    label: 'Web',
     icon: (
       <svg
         viewBox="0 0 24 24"
@@ -67,8 +69,29 @@ const TABS: ReadonlyArray<{
         strokeLinejoin="round"
         aria-hidden
       >
-        <circle cx="11" cy="11" r="8" />
-        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        <circle cx="12" cy="12" r="10" />
+        <line x1="2" y1="12" x2="22" y2="12" />
+        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'display',
+    label: 'Display',
+    // Monitor with stand — appearance + presentation knobs.
+    icon: (
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <rect x="2" y="3" width="20" height="14" rx="2" />
+        <line x1="8" y1="21" x2="16" y2="21" />
+        <line x1="12" y1="17" x2="12" y2="21" />
       </svg>
     ),
   },
@@ -263,9 +286,13 @@ export function SettingsWindow() {
         })}
       </div>
 
-      <div className={styles.body} id={`panel-${activeTab}`} role="tabpanel">
+      <div
+        className={`${styles.body} ${activeTab === 'about' ? styles.bodyNoScroll : ''}`}
+        id={`panel-${activeTab}`}
+        role="tabpanel"
+      >
         {activeTab === 'general' ? (
-          <GeneralTab
+          <ModelTab
             config={config}
             resyncToken={resyncToken}
             onSaved={handleSaved}
@@ -273,6 +300,13 @@ export function SettingsWindow() {
         ) : null}
         {activeTab === 'search' ? (
           <SearchTab
+            config={config}
+            resyncToken={resyncToken}
+            onSaved={handleSaved}
+          />
+        ) : null}
+        {activeTab === 'display' ? (
+          <DisplayTab
             config={config}
             resyncToken={resyncToken}
             onSaved={handleSaved}

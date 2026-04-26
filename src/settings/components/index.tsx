@@ -17,6 +17,7 @@ import {
 } from 'react';
 
 import styles from '../../styles/settings.module.css';
+import { Tooltip } from '../../components/Tooltip';
 import { describeConfigError } from '../types';
 import type { ConfigError } from '../types';
 
@@ -45,7 +46,8 @@ export function SettingRow({
   children,
 }: {
   label: string;
-  helper?: ReactNode;
+  /** Long-form description rendered in a `?` tooltip next to the label. */
+  helper?: string;
   error?: ConfigError | null;
   vertical?: boolean;
   children: ReactNode;
@@ -57,12 +59,24 @@ export function SettingRow({
       role="group"
       aria-labelledby={labelId}
     >
-      <label id={labelId} className={styles.rowLabel}>
-        {label}
-      </label>
+      <div className={styles.rowLabelGroup}>
+        <label id={labelId} className={styles.rowLabel}>
+          {label}
+        </label>
+        {helper ? (
+          <Tooltip label={helper} multiline>
+            <button
+              type="button"
+              className={styles.infoBtn}
+              aria-label={`About ${label}`}
+            >
+              ?
+            </button>
+          </Tooltip>
+        ) : null}
+      </div>
       <div className={styles.rowControl}>
         {children}
-        {helper ? <div className={styles.rowHelper}>{helper}</div> : null}
         {error ? (
           <div className={styles.rowError} role="alert">
             {describeConfigError(error)}
@@ -159,6 +173,10 @@ export function NumberSlider({
   const [local, setLocal] = useState(value);
   const draggingRef = useRef(false);
   useEffect(() => {
+    // Sync external value into local state only when the user is not
+    // actively dragging; otherwise the prop update would clobber the
+    // in-progress drag position.
+    // eslint-disable-next-line @eslint-react/set-state-in-effect
     if (!draggingRef.current) setLocal(value);
   }, [value]);
 
@@ -220,12 +238,11 @@ export function NumberStepper({
   onChange: (next: number) => void;
   ariaLabel?: string;
 }) {
-  const decrement = () => {
-    if (value - step >= min) onChange(value - step);
-  };
-  const increment = () => {
-    if (value + step <= max) onChange(value + step);
-  };
+  // The buttons are disabled at the bounds (see `disabled` props below) so
+  // these handlers cannot be invoked when the next value would breach them;
+  // no runtime guard is needed.
+  const decrement = () => onChange(value - step);
+  const increment = () => onChange(value + step);
   return (
     <div
       className={styles.stepper}
@@ -305,9 +322,10 @@ export function OrderedListEditor({
   const [draft, setDraft] = useState('');
   const trimmed = useMemo(() => draft.trim(), [draft]);
 
+  // The up/down buttons are disabled at the list edges so `move()` is
+  // never called with a target outside the array; no runtime guard needed.
   const move = (idx: number, dir: -1 | 1) => {
     const target = idx + dir;
-    if (target < 0 || target >= items.length) return;
     const next = items.slice();
     [next[idx], next[target]] = [next[target], next[idx]];
     onChange(next);

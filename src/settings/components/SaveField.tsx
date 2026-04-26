@@ -2,8 +2,9 @@
  * Single-field auto-save wrapper.
  *
  * Co-locates `useDebouncedSave` with one form row: the wrapper owns the
- * local field state, fires a debounced `set_config_field` invoke on every
- * change after the seed render, and surfaces validation errors inline.
+ * local field state, fires a debounced `set_config_field` invoke when
+ * the value drifts away from the last persisted value, and surfaces
+ * validation errors inline.
  *
  * On a successful save it lifts the loader-corrected value back via
  * `onSaved` so the parent's `RawAppConfig` snapshot stays in lock-step
@@ -24,7 +25,8 @@ interface SaveFieldProps<TValue extends Primitive> {
   section: string;
   fieldKey: string;
   label: string;
-  helper?: ReactNode;
+  /** Long-form description shown in the `?` tooltip next to the label. */
+  helper?: string;
   vertical?: boolean;
   /** Value snapshot from the parent's resolved config. */
   initialValue: TValue;
@@ -58,14 +60,12 @@ export function SaveField<TValue extends Primitive>({
   });
 
   // External reload (focus event, reset, save returning corrected value):
-  // re-seed local state without scheduling a save. The token-based effect
+  // re-seed local state without scheduling a save. The token-based check
   // detects parent-driven resyncs without triggering on the local
   // `setValue` round-trip.
   const lastTokenRef = useRef(resyncToken);
   if (lastTokenRef.current !== resyncToken) {
     lastTokenRef.current = resyncToken;
-    // useState initializer + a render-phase setter is the React-recommended
-    // way to react to a derived prop without an effect.
     setValue(initialValue);
     resetTo(initialValue);
   }

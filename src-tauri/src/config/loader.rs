@@ -110,15 +110,18 @@ fn rename_corrupt(path: &Path) {
         );
         return;
     }
-    if let Some(parent) = path.parent() {
-        let marker_path = parent.join(super::CORRUPT_MARKER_FILE_NAME);
-        let payload = format!("{}\n{ts}\n", target.display());
-        if let Err(e) = std::fs::write(&marker_path, payload) {
-            eprintln!(
-                "thuki: [config] could not write corrupt marker at {}: {e}",
-                marker_path.display()
-            );
-        }
+    // `path.parent()` is `None` only for filesystem roots like `/`, which we
+    // can never receive here (callers always pass `<dir>/config.toml`). Use a
+    // `unwrap_or` value so the fallback path stays in the binary without an
+    // unreachable closure region that coverage cannot exercise.
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let marker_path = parent.join(super::CORRUPT_MARKER_FILE_NAME);
+    let payload = format!("{}\n{ts}\n", target.display());
+    if let Err(e) = std::fs::write(&marker_path, payload) {
+        eprintln!(
+            "thuki: [config] could not write corrupt marker at {}: {e}",
+            marker_path.display()
+        );
     }
 }
 

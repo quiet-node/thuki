@@ -125,6 +125,19 @@ describe('Tooltip', () => {
     expect(screen.queryByText('Choose model')).not.toBeInTheDocument();
   });
 
+  it('renders the popup above the trigger when placement="top"', () => {
+    render(
+      <Tooltip label="Refresh now" multiline placement="top">
+        <button type="button">Refresh</button>
+      </Tooltip>,
+    );
+    const wrapper = screen.getByRole('button', {
+      name: 'Refresh',
+    }).parentElement!;
+    fireEvent.mouseEnter(wrapper);
+    expect(screen.getByText('Refresh now')).toBeInTheDocument();
+  });
+
   it('applies extra className to the wrapper div', () => {
     const { container } = render(
       <Tooltip label="Test" className="flex-1 min-w-0">

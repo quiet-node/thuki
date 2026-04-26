@@ -54,6 +54,7 @@ use crate::config::{
 /// Centralizes the `app.path().app_config_dir() + CONFIG_FILE_NAME` join used
 /// across the settings commands. On a successful lookup the returned path
 /// matches the path the loader uses, so writes round-trip cleanly.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn config_path(app: &AppHandle) -> Result<PathBuf, ConfigError> {
     let dir = app
         .path()
@@ -86,6 +87,7 @@ fn is_allowed_section(section: &str) -> bool {
 /// windows; mount-time fetch + focus-event reload guarantees the open
 /// window always reflects the on-disk truth).
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn get_config(state: State<'_, RwLock<AppConfig>>) -> AppConfig {
     state.read().clone()
 }
@@ -95,6 +97,7 @@ pub fn get_config(state: State<'_, RwLock<AppConfig>>) -> AppConfig {
 ///
 /// See module docs for the full security and concurrency contract.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn set_config_field(
     section: String,
     key: String,
@@ -102,27 +105,45 @@ pub fn set_config_field(
     app: AppHandle,
     state: State<'_, RwLock<AppConfig>>,
 ) -> Result<AppConfig, ConfigError> {
-    if !is_allowed_section(&section) {
-        return Err(ConfigError::UnknownSection { section });
-    }
-    if !is_allowed_field(&section, &key) {
-        return Err(ConfigError::UnknownField { section, key });
-    }
-
     let path = config_path(&app)?;
-    let mut doc = read_document(&path)?;
-    patch_document(&mut doc, &section, &key, value)?;
+    let resolved = write_field_to_disk(&path, &section, &key, value)?;
+    *state.write() = resolved.clone();
+    Ok(resolved)
+}
 
-    config::atomic_write_bytes(&path, doc.to_string().as_bytes()).map_err(|source| {
+/// Patches one `(section, key)` to disk and returns the resolved `AppConfig`
+/// the loader produces from the new file. Pulled out of the Tauri wrapper so
+/// the allowlist guard, document patch, atomic write, and post-write reload
+/// are all exercised by the test suite without needing an `AppHandle`.
+pub(crate) fn write_field_to_disk(
+    path: &Path,
+    section: &str,
+    key: &str,
+    value: JsonValue,
+) -> Result<AppConfig, ConfigError> {
+    if !is_allowed_section(section) {
+        return Err(ConfigError::UnknownSection {
+            section: section.to_string(),
+        });
+    }
+    if !is_allowed_field(section, key) {
+        return Err(ConfigError::UnknownField {
+            section: section.to_string(),
+            key: key.to_string(),
+        });
+    }
+
+    let mut doc = read_document(path)?;
+    patch_document(&mut doc, section, key, value)?;
+
+    config::atomic_write_bytes(path, doc.to_string().as_bytes()).map_err(|source| {
         ConfigError::IoError {
-            path: path.clone(),
+            path: path.to_path_buf(),
             source,
         }
     })?;
 
-    let resolved = config::load_from_path(&path)?;
-    *state.write() = resolved.clone();
-    Ok(resolved)
+    config::load_from_path(path)
 }
 
 /// Resets one section (or the whole file when `section` is `None`) to the
@@ -136,52 +157,64 @@ pub fn set_config_field(
 /// Whole-file reset rewrites the file with `atomic_write(&AppConfig::default)`,
 /// which produces byte-for-byte identical output to a fresh first-run seed.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn reset_config(
     section: Option<String>,
     app: AppHandle,
     state: State<'_, RwLock<AppConfig>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
+    let resolved = reset_section_on_disk(&path, section.as_deref())?;
+    *state.write() = resolved.clone();
+    Ok(resolved)
+}
 
-    if let Some(section_name) = section.as_ref() {
+/// Replaces one section (or the entire file when `section` is `None`) with
+/// the compiled defaults and returns the resolved `AppConfig`. Pulled out of
+/// the Tauri wrapper so the allowlist guard, table-replacement, atomic
+/// write, and post-write reload are exercised by the test suite without
+/// needing an `AppHandle`.
+pub(crate) fn reset_section_on_disk(
+    path: &Path,
+    section: Option<&str>,
+) -> Result<AppConfig, ConfigError> {
+    if let Some(section_name) = section {
         if !is_allowed_section(section_name) {
             return Err(ConfigError::UnknownSection {
-                section: section_name.clone(),
+                section: section_name.to_string(),
             });
         }
-        let mut doc = read_document(&path)?;
+        let mut doc = read_document(path)?;
         let defaults = AppConfig::default();
         let defaults_str =
             toml::to_string_pretty(&defaults).expect("AppConfig is always serializable to TOML");
         let defaults_doc: DocumentMut = defaults_str
             .parse()
             .expect("defaults serialize to a parseable TOML document");
-        let new_section =
-            defaults_doc
-                .get(section_name)
-                .cloned()
-                .ok_or_else(|| ConfigError::UnknownSection {
-                    section: section_name.clone(),
-                })?;
+        // is_allowed_section above guarantees `section_name` is one of the
+        // top-level keys produced by `AppConfig::default()` serialization, so
+        // the lookup is infallible by construction.
+        let new_section = defaults_doc
+            .get(section_name)
+            .cloned()
+            .expect("ALLOWED_SECTIONS implies AppConfig::default has this section");
         doc.insert(section_name, new_section);
-        config::atomic_write_bytes(&path, doc.to_string().as_bytes()).map_err(|source| {
+        config::atomic_write_bytes(path, doc.to_string().as_bytes()).map_err(|source| {
             ConfigError::IoError {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 source,
             }
         })?;
     } else {
-        config::atomic_write(&path, &AppConfig::default()).map_err(|source| {
+        config::atomic_write(path, &AppConfig::default()).map_err(|source| {
             ConfigError::IoError {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 source,
             }
         })?;
     }
 
-    let resolved = config::load_from_path(&path)?;
-    *state.write() = resolved.clone();
-    Ok(resolved)
+    config::load_from_path(path)
 }
 
 /// Re-reads the config file from disk and replaces the in-memory `AppConfig`.
@@ -191,6 +224,7 @@ pub fn reset_config(
 /// subsystem the eng review collapsed (see design doc Outside Voice
 /// Resolution).
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn reload_config_from_disk(
     app: AppHandle,
     state: State<'_, RwLock<AppConfig>>,
@@ -207,6 +241,7 @@ pub fn reload_config_from_disk(
 /// renders a dismissible recovery banner. The marker is deleted from disk on
 /// read so the banner appears at most once per corrupt event.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn get_corrupt_marker(app: AppHandle) -> Result<Option<CorruptMarker>, ConfigError> {
     let path = config_path(&app)?;
     let dir = path
@@ -339,10 +374,11 @@ pub(crate) fn coerce_json_to_toml(
             toml_value(n)
         }
         TomlValue::Float(_) => {
-            let f = value
-                .as_f64()
-                .or_else(|| value.as_i64().map(|i| i as f64))
-                .ok_or_else(|| mismatch("number"))?;
+            // `serde_json::Value::as_f64` already widens integer payloads to
+            // f64 (it inspects the inner Number, returning Some for both
+            // i64/u64 variants), so the legacy `or_else(as_i64)` fallback
+            // here was unreachable and dead. Drop it.
+            let f = value.as_f64().ok_or_else(|| mismatch("number"))?;
             toml_value(f)
         }
         TomlValue::String(_) => {

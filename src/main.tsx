@@ -19,23 +19,34 @@ import { SettingsWindow } from './settings/SettingsWindow';
  * the chat surface and avoids accidental cross-window state coupling.
  */
 
-const root = ReactDOM.createRoot(
-  document.getElementById('root') as HTMLElement,
-);
-const label = getCurrentWindow().label;
-
-if (label === 'settings') {
-  root.render(
-    <React.StrictMode>
-      <SettingsWindow />
-    </React.StrictMode>,
-  );
-} else {
-  root.render(
+/**
+ * Pure label-dispatch helper. Pulled out of the module-init expression so
+ * tests can exercise both branches without re-evaluating the entire
+ * module (vitest caches dynamic imports aggressively).
+ */
+export function rootForLabel(label: string): React.ReactElement {
+  if (label === 'settings') {
+    return (
+      <React.StrictMode>
+        <SettingsWindow />
+      </React.StrictMode>
+    );
+  }
+  return (
     <React.StrictMode>
       <ConfigProvider>
         <App />
       </ConfigProvider>
-    </React.StrictMode>,
+    </React.StrictMode>
   );
 }
+
+/* v8 ignore start */
+// Entry-point boilerplate: tested indirectly via `rootForLabel` above. The
+// `#root` existence guard lets the test suite import this module without
+// the React entry trying to mount into a missing container.
+const rootEl = document.getElementById('root');
+if (rootEl) {
+  ReactDOM.createRoot(rootEl).render(rootForLabel(getCurrentWindow().label));
+}
+/* v8 ignore stop */
