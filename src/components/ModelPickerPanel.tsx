@@ -16,7 +16,7 @@ export const OLLAMA_LIBRARY_URL = 'https://ollama.com/library';
  * the full sentence in one read.
  */
 export const OLLAMA_PILL_TOOLTIP =
-  'Open by design — browse and pull any model on Ollama. Thuki auto-detects it.';
+  'Open by design: browse and pull any model on Ollama. Thuki auto-detects it.';
 
 const CHECK_ICON_PATH = (
   <path
@@ -71,6 +71,14 @@ export interface ModelPickerPanelProps {
    * pass an empty map to render plain rows (legacy / loading states).
    */
   capabilities?: ModelCapabilitiesMap;
+  /**
+   * When true, the picker is rendered inside the chat-mode chip drawer
+   * (narrower, ~224px wide) and the Browse Ollama pill drops the
+   * "Ollama" word so the row stays uncluttered. The tooltip still
+   * spells out the full meaning on hover. Defaults to false (overlay
+   * mode, full-width "Browse Ollama" label).
+   */
+  compact?: boolean;
 }
 
 /**
@@ -87,6 +95,7 @@ export function ModelPickerPanel({
   onSelect,
   onClose,
   capabilities,
+  compact = false,
 }: ModelPickerPanelProps) {
   const [filter, setFilter] = useState('');
   const [highlightedIndex, setHighlightedIndex] = useState(0);
@@ -192,9 +201,9 @@ export function ModelPickerPanel({
             onClick={() => {
               void invoke('open_url', { url: OLLAMA_LIBRARY_URL });
             }}
-            className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-full px-2.5 py-0.5 hover:text-primary hover:bg-primary/12 transition-colors duration-120 cursor-pointer outline-none whitespace-nowrap"
+            className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-lg px-2 py-0.5 hover:text-primary hover:bg-primary/12 transition-colors duration-120 cursor-pointer outline-none whitespace-nowrap"
           >
-            Browse Ollama
+            {compact ? 'Browse' : 'Browse Ollama'}
             <svg
               className="w-2.5 h-2.5"
               viewBox="0 0 16 16"

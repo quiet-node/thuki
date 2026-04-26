@@ -341,4 +341,24 @@ describe('ModelPickerPanel "Browse Ollama" pill', () => {
     expect(OLLAMA_PILL_TOOLTIP).toMatch(/Open by design/i);
     expect(OLLAMA_PILL_TOOLTIP).toMatch(/Thuki auto-detects it/i);
   });
+
+  it('uses no em dashes in the tooltip body', () => {
+    expect(OLLAMA_PILL_TOOLTIP).not.toContain('—');
+  });
+
+  it('drops the "Ollama" word in compact mode so the chip drawer stays uncluttered', () => {
+    render(
+      <ModelPickerPanel
+        models={MODELS}
+        activeModel="gemma4:e2b"
+        onSelect={vi.fn()}
+        compact
+      />,
+    );
+    const pill = screen.getByTestId('model-picker-ollama-link');
+    expect(pill).toHaveTextContent(/^Browse$/);
+    expect(pill).not.toHaveTextContent(/Ollama/);
+    // Aria-label still spells it out for assistive tech.
+    expect(pill).toHaveAttribute('aria-label', 'Browse Ollama models');
+  });
 });

@@ -1798,6 +1798,7 @@ function App() {
                       onSelect={handleModelSelect}
                       onClose={handleModelPickerClose}
                       capabilities={modelCapabilities}
+                      compact
                     />
                   </motion.div>
                 ) : null}
