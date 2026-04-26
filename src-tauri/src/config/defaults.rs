@@ -128,3 +128,8 @@ pub const MAX_OLLAMA_TAGS_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// Modelfile and parameters can be sizable, but 4 MiB is comfortably above
 /// any real model and bounds attacker-controlled inputs.
 pub const MAX_OLLAMA_SHOW_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum accepted byte length for a model slug passed to `set_active_model`.
+/// Real Ollama slugs are a handful of characters; 256 is generous while still
+/// capping adversarial inputs long before any network or database work.
+pub const MAX_MODEL_SLUG_LEN: usize = 256;

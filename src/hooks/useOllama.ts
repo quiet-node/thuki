@@ -237,7 +237,7 @@ export function useOllama(
         role: 'assistant',
         content: '',
         fromThink: think ? true : undefined,
-        modelName: activeModel || undefined,
+        modelName: activeModel ?? undefined,
       };
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -392,7 +392,7 @@ export function useOllama(
         role: 'assistant',
         content: '',
         fromSearch: true,
-        modelName: activeModel || undefined,
+        modelName: activeModel ?? undefined,
       };
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);

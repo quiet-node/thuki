@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
-    MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES,
+    MAX_MODEL_SLUG_LEN, MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES,
 };
 use crate::config::AppConfig;
 use crate::database::{get_config, set_config};
@@ -29,11 +29,6 @@ use crate::history::Database;
 
 /// `app_config` key used to persist the user's selected model slug.
 pub const ACTIVE_MODEL_KEY: &str = "active_model";
-
-/// Maximum accepted byte length for a model slug passed to `set_active_model`.
-/// Real Ollama slugs are a handful of characters; 256 is generous while still
-/// capping adversarial inputs long before any network or database work.
-pub const MAX_MODEL_SLUG_LEN: usize = 256;
 
 /// Shared error-message prefix used when a requested slug is not present in
 /// the live Ollama inventory. Exported so the frontend and tests can match

@@ -932,9 +932,9 @@ describe('useOllama', () => {
       });
     });
 
-    it('leaves modelName undefined when activeModel is an empty string', async () => {
+    it('leaves modelName undefined when activeModel is null', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useOllama(null, onTurnComplete));
 
       await act(async () => {
         await result.current.ask('hi');
@@ -973,6 +973,29 @@ describe('useOllama', () => {
 
       const [, assistantMsg] = onTurnComplete.mock.calls[0];
       expect(assistantMsg.modelName).toBe('qwen2.5:7b');
+    });
+
+    it('leaves modelName undefined when activeModel is null on askSearch()', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama(null, onTurnComplete));
+
+      let pending: Promise<unknown> | undefined;
+      await act(async () => {
+        pending = result.current.askSearch('rust async');
+      });
+
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', content: 'answer' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      await act(async () => {
+        await pending;
+      });
+
+      const [, assistantMsg] = onTurnComplete.mock.calls[0];
+      expect(assistantMsg.modelName).toBeUndefined();
     });
   });
 
