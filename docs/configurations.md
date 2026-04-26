@@ -26,7 +26,7 @@ open ~/Library/Application\ Support/com.quietnode.thuki/config.toml
 ### Example
 
 ```toml
-[model]
+[inference]
 # Where Thuki finds your local Ollama server. The active model itself is
 # selected from the in-app picker (which lists whatever is installed in
 # Ollama via /api/tags) and is stored in Thuki's local database, not here.
@@ -80,9 +80,11 @@ Every domain below is shown as a single table that lists **all** constants Thuki
 
 ## Reference
 
-### `[model]`
+### `[inference]`
 
 Where to find your local Ollama server. The active model itself is **not** a TOML setting: Thuki discovers installed models live from Ollama's `/api/tags` endpoint, lets you pick one from the in-app model picker, and stores that selection in its local SQLite database (`app_config` table). Storing the active slug in TOML would duplicate ground truth from Ollama and break the moment you remove a model with `ollama rm`, so it lives next to the conversation history instead.
+
+When no model is installed and no choice has been persisted, Thuki refuses to dispatch a chat request and surfaces a "Pick a model" prompt in the input area. Pull a model with `ollama pull <slug>` and select it from the picker chip in the top-right of the overlay.
 
 | Constant     | Default                    | Tunable? | Why not tunable | Bounds        | Description                                                                                                                                                                                                          |
 | :----------- | :------------------------- | :------- | :-------------- | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -98,6 +100,7 @@ The table below also lists the baked-in safety limits that govern Thuki's commun
 | `DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS`  | `5 s`    | No       | Protocol cap on a hung daemon to keep the UI responsive. Same rationale as the tags timeout above.                                                                      | —      | How long Thuki waits for Ollama's `/api/show` endpoint to respond before giving up. Used when fetching capability flags (vision, thinking) for each installed model.                |
 | `MAX_OLLAMA_TAGS_BODY_BYTES`                | `4 MiB`  | No       | Defense-in-depth bound on attacker-controlled response body. A misbehaving or compromised Ollama could otherwise stream an unbounded payload and exhaust memory.        | —      | The largest `/api/tags` response body Thuki will accept. 4 MiB fits thousands of model entries; anything larger is rejected immediately and the request returns an error.            |
 | `MAX_OLLAMA_SHOW_BODY_BYTES`                | `4 MiB`  | No       | Defense-in-depth bound on attacker-controlled response body. Same rationale as `MAX_OLLAMA_TAGS_BODY_BYTES`.                                                            | —      | The largest `/api/show` response body Thuki will accept. Full Modelfiles and parameters can be sizable, but 4 MiB is well above any real model; larger responses are rejected.      |
+| `MAX_MODEL_SLUG_LEN`                        | `256 B`  | No       | Defense-in-depth bound on adversarial input. Real Ollama slugs are a handful of characters; capping the length stops malformed values long before any network or DB work. | —      | The longest model slug Thuki will accept from `set_active_model`. Anything longer is rejected immediately by `validate_model_slug`.                                                  |
 
 ### `[prompt]`
 

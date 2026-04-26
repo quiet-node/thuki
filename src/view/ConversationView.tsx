@@ -74,8 +74,9 @@ interface ConversationViewProps {
    * of the typing indicator.
    */
   searchStage?: SearchStage;
-  /** Currently active model slug forwarded to the WindowControls pill trigger. */
-  activeModel?: string;
+  /** Currently active model slug forwarded to the WindowControls pill trigger.
+   *  `null` keeps the chip visible with a "Pick a model" placeholder. */
+  activeModel?: string | null;
   /** Toggles the model picker panel; forwarded to WindowControls. */
   onModelPickerToggle?: () => void;
   /** Whether the model picker panel is open; drives aria-expanded on the pill. */

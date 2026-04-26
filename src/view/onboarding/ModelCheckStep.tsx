@@ -455,7 +455,7 @@ function RowOne({ active, done }: RowOneProps) {
                 letterSpacing: '-0.1px',
               }}
             >
-              Listening on {formatListenAddr(config.model.ollamaUrl)}
+              Listening on {formatListenAddr(config.inference.ollamaUrl)}
             </p>
           ) : null}
         </div>

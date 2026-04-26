@@ -17,8 +17,10 @@ import type { Message } from './hooks/useOllama';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { useModelSelection } from './hooks/useModelSelection';
 import { useModelCapabilities } from './hooks/useModelCapabilities';
-import { getCapabilityConflict } from './utils/capabilityConflicts';
-import { Toast } from './components/Toast';
+import {
+  getCapabilityConflict,
+  getEnvironmentMessage,
+} from './utils/capabilityConflicts';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView, MAX_IMAGES } from './view/AskBarView';
 import { OnboardingView } from './view/onboarding/index';
@@ -35,9 +37,6 @@ import {
   buildPrompt,
 } from './config/commands';
 import './App.css';
-
-/** Fallback model name used before get_model_picker_state resolves at startup. */
-const DEFAULT_MODEL_FALLBACK = 'gemma4:e2b';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 const ONBOARDING_EVENT = 'thuki://onboarding';
@@ -135,8 +134,13 @@ function App() {
    */
   const morphingContainerNodeRef = useRef<HTMLDivElement | null>(null);
 
-  const { activeModel, availableModels, refreshModels, setActiveModel } =
-    useModelSelection();
+  const {
+    activeModel,
+    availableModels,
+    ollamaReachable,
+    refreshModels,
+    setActiveModel,
+  } = useModelSelection();
 
   const { capabilities: modelCapabilities, refresh: refreshModelCapabilities } =
     useModelCapabilities();
@@ -145,14 +149,6 @@ function App() {
   const activeModelCapabilities = activeModel
     ? modelCapabilities[activeModel]
     : undefined;
-
-  /**
-   * Toast text shown by the submit-time capability gate. Set to a non-null
-   * string when the user attempts to send a message whose attached content
-   * the active model cannot handle (e.g. images on a text-only model).
-   * Cleared by the toast's auto-dismiss or on next submit attempt.
-   */
-  const [capabilityToast, setCapabilityToast] = useState<string | null>(null);
 
   /**
    * Pulses true to trigger the ask-bar shake animation when the
@@ -168,10 +164,6 @@ function App() {
     const timer = setTimeout(() => setShakeAskBar(false), 600);
     return () => clearTimeout(timer);
   }, [shakeAskBar]);
-
-  const dismissCapabilityToast = useCallback(() => {
-    setCapabilityToast(null);
-  }, []);
 
   const {
     conversationId,
@@ -667,9 +659,10 @@ function App() {
       if (isSaved) {
         await unsave();
       } else {
-        // activeModel is empty string until the model picker hook resolves on first
-        // load; fall back to the bootstrap default during that brief window.
-        await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
+        // `save` accepts `string | null` and short-circuits internally when
+        // there is no active model, so the no-model guard lives in one
+        // place rather than duplicated at every call site.
+        await save(messages, activeModel);
       }
     } catch {
       // State stays unchanged on failure; feedback is implicit in the icon.
@@ -710,7 +703,7 @@ function App() {
   const handleSaveAndLoad = useCallback(
     async (id: string) => {
       try {
-        await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
+        await save(messages, activeModel);
       } catch {
         // Save failed - abort to avoid leaving the current session unprotected.
         return;
@@ -784,7 +777,7 @@ function App() {
   /** Saves the current conversation then starts a fresh one. */
   const handleSaveAndNew = useCallback(async () => {
     try {
-      await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
+      await save(messages, activeModel);
     } catch {
       return;
     }
@@ -1079,13 +1072,25 @@ function App() {
   );
 
   /**
-   * Live capability conflict for the current compose state. Drives the
-   * inline `CapabilityMismatchStrip` so the user sees the mismatch as
-   * soon as incompatible content lands in compose, not only at submit
-   * time. The strip is purely informational: recovery happens through
-   * the model picker chip.
+   * Live strip message for the current environment + compose state. Drives
+   * the inline `CapabilityMismatchStrip` so the user sees the right cue as
+   * soon as content lands in compose, not only at submit time. The strip
+   * is purely informational: recovery happens through the model picker
+   * chip (or starting Ollama, when that is the actual problem).
+   *
+   * Resolution order matters: environment-state messaging wins over
+   * capability conflicts because telling the user to "switch models"
+   * makes no sense when Ollama is down or has no models installed. Once
+   * an active model exists and Ollama is reachable, fall through to the
+   * per-message capability check.
    */
   const liveCapabilityConflictMessage = useMemo(() => {
+    const envMessage = getEnvironmentMessage(
+      ollamaReachable,
+      availableModels.length,
+      activeModel,
+    );
+    if (envMessage !== null) return envMessage;
     const trimmed = query.trim();
     const { found } = parseCommands(trimmed);
     return getCapabilityConflict(activeModel, activeModelCapabilities, {
@@ -1093,7 +1098,14 @@ function App() {
       hasThinkCommand: found.has('/think'),
       imageCount: attachedImages.length,
     });
-  }, [query, attachedImages, activeModel, activeModelCapabilities]);
+  }, [
+    query,
+    attachedImages,
+    activeModel,
+    activeModelCapabilities,
+    ollamaReachable,
+    availableModels.length,
+  ]);
 
   const handleSubmit = useCallback(() => {
     if (
@@ -1116,11 +1128,11 @@ function App() {
     // the active model cannot handle (images on a text-only model). The
     // gate is the only gate: input affordances stay live so the user can
     // compose freely and recover via the model picker chip. When refused
-    // the ask bar shakes and a toast surfaces the reason. Compose state is
-    // preserved so the user does not lose their typing.
+    // the ask bar shakes; the persistent capability strip already surfaces
+    // the reason so we do not duplicate it in a transient toast. Compose
+    // state is preserved so the user does not lose their typing.
     if (liveCapabilityConflictMessage !== null) {
       setShakeAskBar(true);
-      setCapabilityToast(liveCapabilityConflictMessage);
       return;
     }
 
@@ -1654,7 +1666,9 @@ function App() {
                       onImagePreview={handleChatImagePreview}
                       searchStage={searchStage}
                       activeModel={activeModel}
-                      onModelPickerToggle={handleModelPickerToggle}
+                      onModelPickerToggle={
+                        ollamaReachable ? handleModelPickerToggle : undefined
+                      }
                       isModelPickerOpen={isModelPickerOpen}
                     />
                   ) : null}
@@ -1664,10 +1678,7 @@ function App() {
                     In chat mode the trigger and drawer move to the header area above. */}
                 {!isChatMode && (
                   <AnimatePresence>
-                    {isModelPickerOpen &&
-                    activeModel &&
-                    availableModels &&
-                    availableModels.length > 0 ? (
+                    {isModelPickerOpen && ollamaReachable ? (
                       <motion.div
                         ref={modelPickerAskBarRef}
                         key="model-picker-askbar"
@@ -1765,16 +1776,12 @@ function App() {
                   onImagePreview={handleAskBarImagePreview}
                   onScreenshot={handleScreenshot}
                   isDragOver={isDragOver ?? undefined}
-                  activeModel={activeModel}
-                  availableModels={availableModels}
-                  onModelPickerToggle={handleModelPickerToggle}
+                  onModelPickerToggle={
+                    ollamaReachable ? handleModelPickerToggle : undefined
+                  }
                   isModelPickerOpen={isModelPickerOpen}
                   capabilityConflictMessage={liveCapabilityConflictMessage}
                   shake={shakeAskBar}
-                />
-                <Toast
-                  message={capabilityToast}
-                  onDismiss={dismissCapabilityToast}
                 />
               </div>
 
@@ -1783,11 +1790,7 @@ function App() {
                   so it appears just below the header pill trigger without pushing
                   the conversation content. Click-outside closes it. */}
               <AnimatePresence>
-                {isChatMode &&
-                isModelPickerOpen &&
-                activeModel &&
-                availableModels &&
-                availableModels.length > 0 ? (
+                {isChatMode && isModelPickerOpen && ollamaReachable ? (
                   <motion.div
                     ref={modelPickerDropdownRef}
                     key="model-picker-dropdown"

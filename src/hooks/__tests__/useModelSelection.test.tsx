@@ -12,6 +12,7 @@ describe('useModelSelection', () => {
     invoke.mockResolvedValueOnce({
       active: 'gemma4:e2b',
       all: ['gemma4:e2b', 'qwen2.5:7b'],
+      ollamaReachable: true,
     });
 
     const { result } = renderHook(() => useModelSelection());
@@ -22,6 +23,54 @@ describe('useModelSelection', () => {
       'gemma4:e2b',
       'qwen2.5:7b',
     ]);
+    expect(result.current.ollamaReachable).toBe(true);
+  });
+
+  it('starts with a null active model before the first refresh resolves', () => {
+    invoke.mockImplementationOnce(() => new Promise<unknown>(() => {}));
+    const { result } = renderHook(() => useModelSelection());
+    expect(result.current.activeModel).toBeNull();
+    expect(result.current.availableModels).toEqual([]);
+    // Optimistic default avoids a cold-start flash of the unreachable strip
+    // while the first picker fetch is in flight.
+    expect(result.current.ollamaReachable).toBe(true);
+  });
+
+  it('accepts a null active payload from the backend (no model selected)', async () => {
+    // Ollama is the single source of truth: when nothing is installed and
+    // nothing is persisted, the backend returns active: null with the
+    // reachable flag still true so the strip points at "pull a model"
+    // instead of "start Ollama".
+    invoke.mockResolvedValueOnce({
+      active: null,
+      all: [],
+      ollamaReachable: true,
+    });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+
+    expect(result.current.activeModel).toBeNull();
+    expect(result.current.availableModels).toEqual([]);
+    expect(result.current.ollamaReachable).toBe(true);
+  });
+
+  it('marks Ollama unreachable when the backend reports it cannot connect', async () => {
+    // S1: backend collapses a transport failure into a structured payload
+    // so the hook can surface ollamaReachable=false without parsing error
+    // strings.
+    invoke.mockResolvedValueOnce({
+      active: null,
+      all: [],
+      ollamaReachable: false,
+    });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+
+    expect(result.current.activeModel).toBeNull();
+    expect(result.current.availableModels).toEqual([]);
+    expect(result.current.ollamaReachable).toBe(false);
   });
 
   it('persists a new active model and updates local state', async () => {
@@ -29,6 +78,7 @@ describe('useModelSelection', () => {
       .mockResolvedValueOnce({
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       })
       .mockResolvedValueOnce(undefined);
 
@@ -45,14 +95,17 @@ describe('useModelSelection', () => {
     expect(result.current.activeModel).toBe('qwen2.5:7b');
   });
 
-  it('clears available models when backend fetch fails', async () => {
+  it('clears available models and marks unreachable when backend fetch rejects', async () => {
     invoke.mockRejectedValueOnce(new Error('backend offline'));
 
     const { result } = renderHook(() => useModelSelection());
     await act(async () => {});
 
     expect(result.current.availableModels).toEqual([]);
-    expect(result.current.activeModel).toBe('');
+    expect(result.current.activeModel).toBeNull();
+    // A rejected IPC call is treated as unreachable: we cannot trust any
+    // field, so route the user toward starting Ollama rather than pulling.
+    expect(result.current.ollamaReachable).toBe(false);
   });
 
   it('falls back to empty state when payload shape is invalid', async () => {
@@ -62,15 +115,24 @@ describe('useModelSelection', () => {
     await act(async () => {});
 
     expect(result.current.availableModels).toEqual([]);
-    expect(result.current.activeModel).toBe('');
+    expect(result.current.activeModel).toBeNull();
+    // A malformed payload is also treated as unreachable: the hook cannot
+    // tell whether the daemon is healthy, so the safe default mirrors the
+    // rejection branch.
+    expect(result.current.ollamaReachable).toBe(false);
   });
 
   it('re-fetches models when refreshModels is called', async () => {
     invoke
-      .mockResolvedValueOnce({ active: 'gemma4:e2b', all: ['gemma4:e2b'] })
+      .mockResolvedValueOnce({
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      })
       .mockResolvedValueOnce({
         active: 'qwen2.5:7b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       });
 
     const { result } = renderHook(() => useModelSelection());
@@ -94,7 +156,7 @@ describe('useModelSelection', () => {
     await act(async () => {});
 
     expect(result.current.availableModels).toEqual([]);
-    expect(result.current.activeModel).toBe('');
+    expect(result.current.activeModel).toBeNull();
   });
 
   it('rejects non-object payloads from the backend', async () => {
@@ -104,17 +166,39 @@ describe('useModelSelection', () => {
     await act(async () => {});
 
     expect(result.current.availableModels).toEqual([]);
-    expect(result.current.activeModel).toBe('');
+    expect(result.current.activeModel).toBeNull();
   });
 
   it('rejects payloads whose `all` array contains non-string entries', async () => {
-    invoke.mockResolvedValueOnce({ active: 'gemma4:e2b', all: ['ok', 7] });
+    invoke.mockResolvedValueOnce({
+      active: 'gemma4:e2b',
+      all: ['ok', 7],
+      ollamaReachable: true,
+    });
 
     const { result } = renderHook(() => useModelSelection());
     await act(async () => {});
 
     expect(result.current.availableModels).toEqual([]);
-    expect(result.current.activeModel).toBe('');
+    expect(result.current.activeModel).toBeNull();
+  });
+
+  it('rejects payloads with non-boolean ollamaReachable', async () => {
+    // Defense-in-depth: the backend always emits a boolean, but the guard
+    // keeps the hook robust against shape drift in legacy builds or
+    // mocks.
+    invoke.mockResolvedValueOnce({
+      active: 'gemma4:e2b',
+      all: ['gemma4:e2b'],
+      ollamaReachable: 'yes',
+    });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+
+    expect(result.current.availableModels).toEqual([]);
+    expect(result.current.activeModel).toBeNull();
+    expect(result.current.ollamaReachable).toBe(false);
   });
 
   it('surfaces backend errors and leaves active model unchanged on rejection', async () => {
@@ -122,6 +206,7 @@ describe('useModelSelection', () => {
       .mockResolvedValueOnce({
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       })
       .mockRejectedValueOnce(
         new Error('Model is not installed in Ollama: mystery'),
@@ -144,6 +229,7 @@ describe('useModelSelection', () => {
       .mockResolvedValueOnce({
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       })
       .mockResolvedValueOnce({ active: 42, all: 'not-an-array' });
 
@@ -155,7 +241,7 @@ describe('useModelSelection', () => {
       await result.current.refreshModels();
     });
 
-    expect(result.current.activeModel).toBe('');
+    expect(result.current.activeModel).toBeNull();
     expect(result.current.availableModels).toEqual([]);
   });
 
@@ -163,6 +249,7 @@ describe('useModelSelection', () => {
     invoke.mockResolvedValueOnce({
       active: 'A',
       all: ['A', 'B', 'C'],
+      ollamaReachable: true,
     });
 
     const { result } = renderHook(() => useModelSelection());
@@ -200,6 +287,7 @@ describe('useModelSelection', () => {
     invoke.mockResolvedValueOnce({
       active: 'A',
       all: ['A', 'B', 'C'],
+      ollamaReachable: true,
     });
 
     const { result } = renderHook(() => useModelSelection());
@@ -247,7 +335,7 @@ describe('useModelSelection', () => {
     // Resolving after unmount would setState on an unmounted component without
     // the mounted guard, producing a React warning / test failure.
     await act(async () => {
-      resolveLate({ active: 'A', all: ['A'] });
+      resolveLate({ active: 'A', all: ['A'], ollamaReachable: true });
     });
   });
 

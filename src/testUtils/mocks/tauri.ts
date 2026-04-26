@@ -21,6 +21,18 @@ export const invoke = vi.fn<
 >(async () => {});
 
 /**
+ * Default model-picker state used by tests that do not opt into a specific
+ * inventory. Tests that need the no-model state should mock
+ * `get_model_picker_state` to `{ active: null, all: [], ollamaReachable: true }`
+ * (S2) or `{ active: null, all: [], ollamaReachable: false }` (S1) explicitly.
+ */
+export const TEST_DEFAULT_MODEL_PICKER_STATE = {
+  active: 'gemma4:e2b',
+  all: ['gemma4:e2b'],
+  ollamaReachable: true,
+} as const;
+
+/**
  * Channel capture state (per test).
  *
  * Tests should use getLastChannel() to read the captured channel after calling ask().
@@ -38,16 +50,38 @@ export function getLastChannel(): Channel | null {
 }
 
 /**
+ * Default seed for `get_model_picker_state`. Tests that do not opt into a
+ * specific model inventory still need a non-null active model so the
+ * capability-mismatch strip does not block submits with the "no model
+ * selected" copy. Real Ollama responses look like this on a fresh install
+ * with one model pulled.
+ */
+const DEFAULT_MODEL_PICKER_STATE = {
+  active: 'gemma4:e2b',
+  all: ['gemma4:e2b'],
+  ollamaReachable: true,
+} as const;
+
+/**
  * Enable channel capture: when invoke() is called with an onEvent argument,
  * that Channel will be stored in lastChannel for test use.
+ *
+ * Tests that do not specify their own `get_model_picker_state` response get a
+ * default single-model inventory so the no-model gate does not block their
+ * submits. Tests that need to assert no-model behaviour should use
+ * `enableChannelCaptureWithResponses({ get_model_picker_state: { active: null,
+ * all: [] } })` instead.
  *
  * IMPORTANT: Call resetChannelCapture() in afterEach to avoid state leaking between tests.
  */
 export function enableChannelCapture() {
   invoke.mockImplementation(
-    async (_cmd: string, args?: Record<string, unknown>) => {
+    async (cmd: string, args?: Record<string, unknown>) => {
       if (args && 'onEvent' in args) {
         lastChannel = args.onEvent as Channel;
+      }
+      if (cmd === 'get_model_picker_state') {
+        return DEFAULT_MODEL_PICKER_STATE;
       }
     },
   );
@@ -79,6 +113,12 @@ export function enableChannelCaptureWithResponses(
       }
       if (Object.prototype.hasOwnProperty.call(responses, cmd)) {
         return responses[cmd];
+      }
+      // Same default-seeding rationale as `enableChannelCapture`: tests
+      // that do not explicitly mock `get_model_picker_state` still need a
+      // non-null active model so the capability strip does not block submits.
+      if (cmd === 'get_model_picker_state') {
+        return DEFAULT_MODEL_PICKER_STATE;
       }
     },
   );

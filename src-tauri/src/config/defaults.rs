@@ -5,10 +5,6 @@
 //! Changing a default here propagates to a fresh first-run config file and to
 //! any field a user has left unset or left empty in their existing file.
 
-/// Default active model name, used when no config file exists yet and when a
-/// user's `[model] available` list is empty after whitespace resolution.
-pub const DEFAULT_MODEL_NAME: &str = "gemma4:e2b";
-
 /// Default Ollama HTTP endpoint (loopback, standard port).
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
 
@@ -132,3 +128,8 @@ pub const MAX_OLLAMA_TAGS_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// Modelfile and parameters can be sizable, but 4 MiB is comfortably above
 /// any real model and bounds attacker-controlled inputs.
 pub const MAX_OLLAMA_SHOW_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum accepted byte length for a model slug passed to `set_active_model`.
+/// Real Ollama slugs are a handful of characters; 256 is generous while still
+/// capping adversarial inputs long before any network or database work.
+pub const MAX_MODEL_SLUG_LEN: usize = 256;

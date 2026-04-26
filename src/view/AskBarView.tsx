@@ -189,13 +189,13 @@ interface AskBarViewProps {
    * "normal" = violet ring; "max" = red ring + label; undefined = no ring.
    */
   isDragOver?: 'normal' | 'max';
-  /** Currently active Ollama model slug. Enables the model picker when set. */
-  activeModel?: string;
-  /** Full list of model slugs available for selection in the picker. */
-  availableModels?: string[];
   /**
    * Called when the user clicks the model picker trigger. App.tsx owns the
    * open/close state and renders the ModelPickerPanel as an inline drawer.
+   * In compose mode App.tsx gates this on `ollamaReachable`, so its presence
+   * doubles as the signal that Ollama is reachable: the chip stays visible
+   * even when there is no active model or zero installed models so the user
+   * can recover by opening the picker.
    */
   onModelPickerToggle?: () => void;
   /** Whether the model picker panel is currently open (drives aria-expanded). */
@@ -288,8 +288,6 @@ export function AskBarView({
   onImagePreview,
   onScreenshot,
   isDragOver,
-  activeModel,
-  availableModels,
   onModelPickerToggle,
   isModelPickerOpen,
   capabilityConflictMessage,
@@ -330,15 +328,14 @@ export function AskBarView({
 
   /**
    * Prerequisites for rendering the chip trigger in the input bar.
-   * Hidden in chat mode — the pill trigger moves to the WindowControls header.
+   * Hidden in chat mode (the pill trigger moves to the WindowControls
+   * header). The chip renders whenever the picker callback is wired up
+   * regardless of model state: with no active model it surfaces the
+   * "Pick a model" recovery affordance, and the caller is expected to
+   * omit `onModelPickerToggle` (Ollama unreachable) when the chip should
+   * stay hidden.
    */
-  const modelPickerAvailable = Boolean(
-    !isChatMode &&
-    activeModel &&
-    availableModels &&
-    availableModels.length > 0 &&
-    onModelPickerToggle,
-  );
+  const modelPickerAvailable = Boolean(!isChatMode && onModelPickerToggle);
 
   // ─── Command suggestion state ─────────────────────────────────────────────
 

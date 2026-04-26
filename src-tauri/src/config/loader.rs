@@ -109,11 +109,11 @@ fn rename_corrupt(path: &Path) {
 /// and composes the system prompt appendix into `prompt.resolved_system`.
 /// After this runs, every `AppConfig` field holds a usable value.
 pub(crate) fn resolve(config: &mut AppConfig) {
-    // Model section: only the Ollama endpoint is configurable here. The
+    // Inference section: only the Ollama endpoint is configurable here. The
     // active model is runtime UI state owned by SQLite app_config, see
     // crate::models::ActiveModelState.
-    if config.model.ollama_url.trim().is_empty() {
-        config.model.ollama_url = DEFAULT_OLLAMA_URL.to_string();
+    if config.inference.ollama_url.trim().is_empty() {
+        config.inference.ollama_url = DEFAULT_OLLAMA_URL.to_string();
     }
 
     // Prompt section: empty base -> built-in. Compose resolved_system.

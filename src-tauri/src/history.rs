@@ -75,6 +75,8 @@ pub fn save_conversation(
         let guard = active_model.0.lock().map_err(|e| e.to_string())?;
         guard.clone()
     };
+    let model_slug =
+        model_slug.ok_or_else(|| "No model selected; cannot save conversation.".to_string())?;
 
     // Use the first user message (truncated) as the initial title placeholder.
     let placeholder_title = messages.iter().find(|m| m.role == "user").map(|m| {
@@ -293,7 +295,7 @@ pub async fn generate_title(
 
     let endpoint = format!(
         "{}/api/chat",
-        app_config.model.ollama_url.trim_end_matches('/')
+        app_config.inference.ollama_url.trim_end_matches('/')
     );
 
     let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -384,12 +386,9 @@ mod tests {
             .find(|m| m.role == "user")
             .map(|m| m.content.trim().to_string());
 
-        let conversation_id = database::create_conversation(
-            &conn,
-            placeholder_title.as_deref(),
-            crate::config::defaults::DEFAULT_MODEL_NAME,
-        )
-        .unwrap();
+        let conversation_id =
+            database::create_conversation(&conn, placeholder_title.as_deref(), "gemma4:e2b")
+                .unwrap();
 
         let batch: Vec<database::MessageBatchRow> = messages
             .into_iter()

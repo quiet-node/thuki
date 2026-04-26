@@ -8,8 +8,9 @@
  *
  * The backend treats Ollama's `/api/tags` response as authoritative: a
  * persisted model is only honored if it still appears in the live installed
- * list. If not, we fall back to the first installed model, then to the
- * bootstrap default from `THUKI_SUPPORTED_AI_MODELS`.
+ * list. If not, we fall back to the first installed model. There is no
+ * compiled fallback: when nothing is installed and nothing is persisted,
+ * the active model is `None` and the user is prompted to pick one.
  */
 
 use std::collections::HashMap;
@@ -20,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
-    MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES,
+    MAX_MODEL_SLUG_LEN, MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES,
 };
 use crate::config::AppConfig;
 use crate::database::{get_config, set_config};
@@ -28,11 +29,6 @@ use crate::history::Database;
 
 /// `app_config` key used to persist the user's selected model slug.
 pub const ACTIVE_MODEL_KEY: &str = "active_model";
-
-/// Maximum accepted byte length for a model slug passed to `set_active_model`.
-/// Real Ollama slugs are a handful of characters; 256 is generous while still
-/// capping adversarial inputs long before any network or database work.
-pub const MAX_MODEL_SLUG_LEN: usize = 256;
 
 /// Shared error-message prefix used when a requested slug is not present in
 /// the live Ollama inventory. Exported so the frontend and tests can match
@@ -42,8 +38,14 @@ pub const MODEL_NOT_INSTALLED_ERR_PREFIX: &str = "Model is not installed in Olla
 /// In-memory cache of the currently active model slug. Written once at
 /// startup (after `resolve_seed_active_model`) and updated every time the
 /// user picks a new model via `set_active_model`.
+///
+/// `None` means no model has been chosen yet: either the user has never
+/// picked one and Ollama has nothing installed, or the user removed every
+/// model with `ollama rm` between launches. Consumers must treat `None` as
+/// "refuse the request and steer the user to the picker", never as a
+/// trigger to invent a default.
 #[derive(Default)]
-pub struct ActiveModelState(pub Mutex<String>);
+pub struct ActiveModelState(pub Mutex<Option<String>>);
 
 /// Top-level shape of the Ollama `/api/tags` response. Only the `models`
 /// array is consumed; all other fields are ignored.
@@ -60,46 +62,38 @@ struct TagsModel {
     name: String,
 }
 
-/// Chooses which model slug should be active given a persisted preference,
-/// the live installed list from Ollama, and an env-derived bootstrap value.
+/// Chooses which model slug should be active given a persisted preference
+/// and the live installed list from Ollama.
 ///
 /// Resolution rules, in order:
 /// 1. If `persisted` is `Some` and still appears in `installed`, use it.
 /// 2. Otherwise use the first entry in `installed`.
-/// 3. Otherwise fall back to `bootstrap` (the compiled-in / env default).
+/// 3. Otherwise return `None`: nothing is installed and nothing is persisted,
+///    so there is no honest answer.
 ///
 /// This helper assumes `installed` reflects real Ollama ground truth. At
 /// startup when no ground truth is available, use
 /// [`resolve_seed_active_model`] instead so a valid persisted choice is
-/// never overridden by the bootstrap default just because Ollama has not
-/// been queried yet.
-pub fn resolve_active_model(
-    persisted: Option<&str>,
-    installed: &[String],
-    bootstrap: &str,
-) -> String {
+/// never lost just because Ollama has not been queried yet.
+pub fn resolve_active_model(persisted: Option<&str>, installed: &[String]) -> Option<String> {
     if let Some(p) = persisted {
         if installed.iter().any(|m| m == p) {
-            return p.to_string();
+            return Some(p.to_string());
         }
     }
-    if let Some(first) = installed.first() {
-        return first.clone();
-    }
-    bootstrap.to_string()
+    installed.first().cloned()
 }
 
 /// Startup-time resolver that never cross-checks against an installed list.
 ///
 /// At process start we cannot call Ollama (no async runtime yet), so the
-/// safe behavior is to trust the persisted value when present and only fall
-/// back to the bootstrap default when nothing was ever persisted. The first
-/// `get_model_picker_state` call from the frontend reconciles against the
-/// real installed list and may replace this seed.
-pub fn resolve_seed_active_model(persisted: Option<&str>, bootstrap: &str) -> String {
+/// safe behavior is to trust the persisted value when present and otherwise
+/// return `None`. The first `get_model_picker_state` call from the frontend
+/// reconciles against the real installed list and may replace this seed.
+pub fn resolve_seed_active_model(persisted: Option<&str>) -> Option<String> {
     match persisted {
-        Some(slug) if !slug.is_empty() => slug.to_string(),
-        _ => bootstrap.to_string(),
+        Some(slug) if !slug.is_empty() => Some(slug.to_string()),
+        _ => None,
     }
 }
 
@@ -232,15 +226,20 @@ async fn fetch_installed_model_names_inner(
     Ok(body.models.into_iter().map(|m| m.name).collect())
 }
 
-/// Returns the currently active model and the full list of installed models,
-/// persisting the resolved active model so future launches see it.
+/// Returns the currently active model, the full list of installed models, and
+/// a flag telling the frontend whether Ollama itself is reachable.
 ///
-/// Shape: `{ "active": "<slug>", "all": ["<slug>", ...] }`.
+/// Shape: `{ "active": "<slug>" | null, "all": ["<slug>", ...], "ollamaReachable": bool }`.
 ///
-/// Coalesces the read + conditional write into a single database critical
-/// section to avoid a TOCTOU window where a concurrent `set_active_model`
-/// could be clobbered, and refuses to persist when Ollama reports an empty
-/// inventory so a partially-up daemon cannot corrupt the persisted choice.
+/// The command intentionally never propagates a transport / fetch error to
+/// the frontend. Instead, an unreachable Ollama collapses into a structured
+/// `{ active: null, all: [], ollamaReachable: false }` payload so the UI can
+/// distinguish "Ollama is down" from "Ollama is up but has no models" without
+/// parsing error strings. The Ok branch coalesces the read + conditional
+/// write into a single database critical section to avoid a TOCTOU window
+/// where a concurrent `set_active_model` could be clobbered, and refuses to
+/// persist when Ollama reports an empty inventory so a partially-up daemon
+/// cannot corrupt the persisted choice.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn get_model_picker_state(
@@ -249,18 +248,28 @@ pub async fn get_model_picker_state(
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, AppConfig>,
 ) -> Result<serde_json::Value, String> {
-    let installed = fetch_installed_model_names(&client, &config.model.ollama_url).await?;
+    let fetch_result = fetch_installed_model_names(&client, &config.inference.ollama_url).await;
+
+    let installed = match fetch_result {
+        Ok(installed) => installed,
+        Err(_) => {
+            // Mirror the `None` active into the in-memory state so downstream
+            // callers (ask_ollama, search_pipeline) see the same truth as the
+            // frontend: with Ollama unreachable, no model is active.
+            let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
+            *guard = None;
+            return Ok(build_picker_state_payload(None, &[], false));
+        }
+    };
 
     let resolved = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let persisted = get_config(&conn, ACTIVE_MODEL_KEY).map_err(|e| e.to_string())?;
-        let resolved = resolve_active_model(
-            persisted.as_deref(),
-            &installed,
-            crate::config::defaults::DEFAULT_MODEL_NAME,
-        );
-        if should_persist_resolved(&installed, persisted.as_deref(), &resolved) {
-            set_config(&conn, ACTIVE_MODEL_KEY, &resolved).map_err(|e| e.to_string())?;
+        let resolved = resolve_active_model(persisted.as_deref(), &installed);
+        if let Some(slug) = resolved.as_deref() {
+            if should_persist_resolved(&installed, persisted.as_deref(), slug) {
+                set_config(&conn, ACTIVE_MODEL_KEY, slug).map_err(|e| e.to_string())?;
+            }
         }
         resolved
     };
@@ -270,7 +279,30 @@ pub async fn get_model_picker_state(
         *guard = resolved.clone();
     }
 
-    Ok(serde_json::json!({ "active": resolved, "all": installed }))
+    Ok(build_picker_state_payload(
+        resolved.as_deref(),
+        &installed,
+        true,
+    ))
+}
+
+/// Pure helper that shapes the `get_model_picker_state` payload. Extracted so
+/// the three states (unreachable, reachable + empty, reachable + populated)
+/// can be unit-tested without spinning up a Tauri runtime or an HTTP server.
+pub fn build_picker_state_payload(
+    active: Option<&str>,
+    installed: &[String],
+    ollama_reachable: bool,
+) -> serde_json::Value {
+    let active_value = match active {
+        Some(slug) => serde_json::Value::String(slug.to_string()),
+        None => serde_json::Value::Null,
+    };
+    serde_json::json!({
+        "active": active_value,
+        "all": installed,
+        "ollamaReachable": ollama_reachable,
+    })
 }
 
 /// Persists `model` as the active model after validating its shape and
@@ -287,7 +319,7 @@ pub async fn set_active_model(
 ) -> Result<(), String> {
     validate_model_slug(&model)?;
 
-    let installed = fetch_installed_model_names(&client, &config.model.ollama_url).await?;
+    let installed = fetch_installed_model_names(&client, &config.inference.ollama_url).await?;
     validate_model_installed(&model, &installed)?;
 
     {
@@ -297,7 +329,7 @@ pub async fn set_active_model(
 
     {
         let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
-        *guard = model;
+        *guard = Some(model);
     }
 
     Ok(())
@@ -340,22 +372,28 @@ pub enum ModelSetupState {
 /// here. The Tauri command is a thin wrapper that calls the fetcher,
 /// reads the persisted slug from SQLite, then delegates here.
 ///
-/// Resolution rules for the Ready arm match
-/// [`resolve_active_model`]: prefer the persisted slug when it is still
-/// installed; otherwise fall back to the first installed slug. The
-/// `bootstrap` argument is the compile-time fallback used only when
-/// both inputs are absent, which by definition cannot happen on the
-/// Ready arm (it would have routed to NoModelsInstalled).
+/// Resolution rules for the Ready arm match [`resolve_active_model`]:
+/// prefer the persisted slug when it is still installed; otherwise fall
+/// back to the first installed slug. Ready is gated on `!installed.is_empty()`
+/// so `installed.first()` is always `Some`; the unwrap is therefore total.
 pub fn derive_model_setup_state(
     installed_result: Result<Vec<String>, String>,
     persisted: Option<&str>,
-    bootstrap: &str,
 ) -> ModelSetupState {
     match installed_result {
         Err(_) => ModelSetupState::OllamaUnreachable,
         Ok(installed) if installed.is_empty() => ModelSetupState::NoModelsInstalled,
         Ok(installed) => {
-            let active_slug = resolve_active_model(persisted, &installed, bootstrap);
+            // The empty-list arm above guarantees `installed` has at least
+            // one entry. Mirror `resolve_active_model`'s logic inline so
+            // every branch is statically reachable from tests: when the
+            // persisted slug is still installed we keep it, otherwise we
+            // fall through to the first installed slug. This avoids a
+            // dead `unwrap_or_else` arm that coverage cannot exercise.
+            let active_slug = match persisted {
+                Some(p) if installed.iter().any(|m| m == p) => p.to_string(),
+                _ => installed[0].clone(),
+            };
             ModelSetupState::Ready {
                 active_slug,
                 installed,
@@ -390,18 +428,14 @@ pub async fn check_model_setup(
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, AppConfig>,
 ) -> Result<ModelSetupState, String> {
-    let installed_result = fetch_installed_model_names(&client, &config.model.ollama_url).await;
+    let installed_result = fetch_installed_model_names(&client, &config.inference.ollama_url).await;
 
     let persisted = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         get_config(&conn, ACTIVE_MODEL_KEY).map_err(|e| e.to_string())?
     };
 
-    let state = derive_model_setup_state(
-        installed_result,
-        persisted.as_deref(),
-        crate::config::defaults::DEFAULT_MODEL_NAME,
-    );
+    let state = derive_model_setup_state(installed_result, persisted.as_deref());
 
     if let ModelSetupState::Ready {
         ref active_slug,
@@ -413,7 +447,7 @@ pub async fn check_model_setup(
             set_config(&conn, ACTIVE_MODEL_KEY, active_slug).map_err(|e| e.to_string())?;
         }
         let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
-        *guard = active_slug.clone();
+        *guard = Some(active_slug.clone());
     }
 
     Ok(state)
@@ -657,7 +691,7 @@ pub async fn get_model_capabilities(
     cache: tauri::State<'_, ModelCapabilitiesCache>,
     config: tauri::State<'_, AppConfig>,
 ) -> Result<HashMap<String, Capabilities>, String> {
-    let base_url = &config.model.ollama_url;
+    let base_url = &config.inference.ollama_url;
     let installed = fetch_installed_model_names(&client, base_url).await?;
     Ok(reconcile_capabilities(&client, &cache, base_url, &installed).await)
 }
@@ -725,61 +759,102 @@ async fn reconcile_capabilities(
 mod tests {
     use super::*;
 
+    // ── build_picker_state_payload ───────────────────────────────────────────
+
+    #[test]
+    fn picker_payload_unreachable_emits_null_active_empty_list_and_flag() {
+        // S1 mirrors the unreachable case: no model can be resolved, the
+        // installed list is empty by definition, and the flag is false so
+        // the frontend can pick the right strip copy.
+        let payload = build_picker_state_payload(None, &[], false);
+        assert_eq!(payload["active"], serde_json::Value::Null);
+        assert_eq!(payload["all"], serde_json::json!([]));
+        assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn picker_payload_reachable_but_empty_keeps_flag_true_and_null_active() {
+        // S2: Ollama responded but installed list is empty. Active is null
+        // (nothing to resolve to) yet ollamaReachable is true so the strip
+        // can tell the user to pull a model rather than start the daemon.
+        let payload = build_picker_state_payload(None, &[], true);
+        assert_eq!(payload["active"], serde_json::Value::Null);
+        assert_eq!(payload["all"], serde_json::json!([]));
+        assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn picker_payload_reachable_with_models_carries_active_slug() {
+        // S4 (normal): active slug is present and ollamaReachable is true.
+        // The frontend renders the chip with the slug and skips the strip.
+        let installed = vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()];
+        let payload = build_picker_state_payload(Some("gemma4:e4b"), &installed, true);
+        assert_eq!(payload["active"], serde_json::json!("gemma4:e4b"));
+        assert_eq!(
+            payload["all"],
+            serde_json::json!(["gemma4:e2b", "gemma4:e4b"])
+        );
+        assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(true));
+    }
+
     // ── resolve_active_model ─────────────────────────────────────────────────
 
     #[test]
     fn resolve_prefers_persisted_when_still_installed() {
         let installed = vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()];
-        let result = resolve_active_model(Some("gemma4:e4b"), &installed, "gemma4:e2b");
-        assert_eq!(result, "gemma4:e4b");
+        let result = resolve_active_model(Some("gemma4:e4b"), &installed);
+        assert_eq!(result, Some("gemma4:e4b".to_string()));
     }
 
     #[test]
     fn resolve_falls_back_to_first_installed_when_persisted_missing() {
         let installed = vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()];
-        let result = resolve_active_model(Some("llama3:8b"), &installed, "bootstrap-model");
-        assert_eq!(result, "gemma4:e2b");
+        let result = resolve_active_model(Some("llama3:8b"), &installed);
+        assert_eq!(result, Some("gemma4:e2b".to_string()));
     }
 
     #[test]
-    fn resolve_falls_back_to_bootstrap_when_nothing_installed() {
+    fn resolve_returns_none_when_nothing_installed_and_nothing_persisted() {
         let installed: Vec<String> = vec![];
-        let result = resolve_active_model(None, &installed, "bootstrap-model");
-        assert_eq!(result, "bootstrap-model");
+        let result = resolve_active_model(None, &installed);
+        assert_eq!(result, None);
     }
 
     #[test]
     fn resolve_with_no_persisted_uses_first_installed() {
         let installed = vec!["gemma4:e2b".to_string()];
-        let result = resolve_active_model(None, &installed, "bootstrap-model");
-        assert_eq!(result, "gemma4:e2b");
+        let result = resolve_active_model(None, &installed);
+        assert_eq!(result, Some("gemma4:e2b".to_string()));
     }
 
     #[test]
-    fn resolve_with_empty_persisted_bootstrap_used_when_installed_empty() {
+    fn resolve_returns_none_when_persisted_present_but_installed_empty() {
+        // The persisted slug names a model the user removed with `ollama rm`
+        // and Ollama now reports an empty inventory. There is no honest
+        // answer here; refuse to invent one.
         let installed: Vec<String> = vec![];
-        let result = resolve_active_model(Some("gemma4:e2b"), &installed, "fallback");
-        assert_eq!(result, "fallback");
+        let result = resolve_active_model(Some("gemma4:e2b"), &installed);
+        assert_eq!(result, None);
     }
 
     // ── resolve_seed_active_model ────────────────────────────────────────────
 
     #[test]
     fn seed_resolve_prefers_persisted() {
-        let result = resolve_seed_active_model(Some("llama3:8b"), "bootstrap-model");
-        assert_eq!(result, "llama3:8b");
+        let result = resolve_seed_active_model(Some("llama3:8b"));
+        assert_eq!(result, Some("llama3:8b".to_string()));
     }
 
     #[test]
-    fn seed_resolve_falls_back_to_bootstrap_when_none() {
-        let result = resolve_seed_active_model(None, "bootstrap-model");
-        assert_eq!(result, "bootstrap-model");
+    fn seed_resolve_returns_none_when_nothing_persisted() {
+        let result = resolve_seed_active_model(None);
+        assert_eq!(result, None);
     }
 
     #[test]
-    fn seed_resolve_falls_back_to_bootstrap_when_empty_persisted() {
-        let result = resolve_seed_active_model(Some(""), "bootstrap-model");
-        assert_eq!(result, "bootstrap-model");
+    fn seed_resolve_returns_none_when_empty_persisted() {
+        let result = resolve_seed_active_model(Some(""));
+        assert_eq!(result, None);
     }
 
     // ── should_persist_resolved ─────────────────────────────────────────────
@@ -1173,9 +1248,9 @@ mod tests {
     // ── ActiveModelState ─────────────────────────────────────────────────────
 
     #[test]
-    fn active_model_state_defaults_to_empty_string() {
+    fn active_model_state_defaults_to_none() {
         let state = ActiveModelState::default();
-        assert_eq!(*state.0.lock().unwrap(), "");
+        assert_eq!(*state.0.lock().unwrap(), None);
     }
 
     #[test]
@@ -1183,9 +1258,9 @@ mod tests {
         let state = ActiveModelState::default();
         {
             let mut guard = state.0.lock().unwrap();
-            *guard = "gemma4:e2b".to_string();
+            *guard = Some("gemma4:e2b".to_string());
         }
-        assert_eq!(*state.0.lock().unwrap(), "gemma4:e2b");
+        assert_eq!(*state.0.lock().unwrap(), Some("gemma4:e2b".to_string()));
     }
 
     // ── Persistence round-trip through app_config ───────────────────────────
@@ -1215,8 +1290,7 @@ mod tests {
 
     #[test]
     fn derive_setup_state_returns_unreachable_on_fetch_error() {
-        let state =
-            derive_model_setup_state(Err("connection refused".to_string()), None, "gemma4:e2b");
+        let state = derive_model_setup_state(Err("connection refused".to_string()), None);
         assert_eq!(state, ModelSetupState::OllamaUnreachable);
     }
 
@@ -1224,14 +1298,13 @@ mod tests {
     fn derive_setup_state_returns_unreachable_even_when_persisted_choice_exists() {
         // Past selection must NOT mask a current outage. The user needs to
         // see the "Ollama not detected" screen even if SQLite remembers a slug.
-        let state =
-            derive_model_setup_state(Err("timeout".to_string()), Some("gemma4:e4b"), "gemma4:e2b");
+        let state = derive_model_setup_state(Err("timeout".to_string()), Some("gemma4:e4b"));
         assert_eq!(state, ModelSetupState::OllamaUnreachable);
     }
 
     #[test]
     fn derive_setup_state_returns_no_models_when_inventory_empty() {
-        let state = derive_model_setup_state(Ok(vec![]), None, "gemma4:e2b");
+        let state = derive_model_setup_state(Ok(vec![]), None);
         assert_eq!(state, ModelSetupState::NoModelsInstalled);
     }
 
@@ -1239,7 +1312,7 @@ mod tests {
     fn derive_setup_state_returns_no_models_even_with_stale_persisted_slug() {
         // Daemon up but the user removed every model with `ollama rm`. The
         // persisted slug is no longer valid; the gate must re-engage.
-        let state = derive_model_setup_state(Ok(vec![]), Some("removed-model:7b"), "gemma4:e2b");
+        let state = derive_model_setup_state(Ok(vec![]), Some("removed-model:7b"));
         assert_eq!(state, ModelSetupState::NoModelsInstalled);
     }
 
@@ -1248,7 +1321,6 @@ mod tests {
         let state = derive_model_setup_state(
             Ok(vec!["gemma4:e2b".to_string(), "llama3:8b".to_string()]),
             Some("llama3:8b"),
-            "gemma4:e2b",
         );
         assert_eq!(
             state,
@@ -1264,7 +1336,6 @@ mod tests {
         let state = derive_model_setup_state(
             Ok(vec!["gemma4:e4b".to_string(), "llama3:8b".to_string()]),
             Some("removed-model:7b"),
-            "gemma4:e2b",
         );
         assert_eq!(
             state,
@@ -1279,8 +1350,7 @@ mod tests {
     fn derive_setup_state_ready_uses_first_when_no_persisted_choice() {
         // First-time user who somehow has models installed already (rare:
         // they used Ollama for something else first). Pick the first.
-        let state =
-            derive_model_setup_state(Ok(vec!["qwen2.5:7b".to_string()]), None, "gemma4:e2b");
+        let state = derive_model_setup_state(Ok(vec!["qwen2.5:7b".to_string()]), None);
         assert_eq!(
             state,
             ModelSetupState::Ready {
