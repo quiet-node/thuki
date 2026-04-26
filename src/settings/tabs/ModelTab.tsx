@@ -1,12 +1,13 @@
 /**
- * Model tab — the AI brain.
+ * Model tab.
  *
- * Holds the active Ollama model list, the local Ollama URL, and the
- * custom system prompt. The Window/Quote knobs that used to live in
- * the old "General" tab now live in the Display tab.
+ * Holds the local Ollama URL and the custom system prompt. The active model
+ * picker lives in the main app overlay (see ModelPickerPanel) since model
+ * selection is runtime UI state owned by ActiveModelState in the backend, not
+ * a TOML-persisted field. The Window/Quote knobs live in the Display tab.
  */
 
-import { Section, TextField, Textarea, OrderedListEditor } from '../components';
+import { Section, TextField, Textarea } from '../components';
 import { SaveField } from '../components/SaveField';
 import { configHelp } from '../configHelpers';
 import styles from '../../styles/settings.module.css';
@@ -25,28 +26,11 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
     <>
       <Section heading="Model">
         <SaveField
-          section="model"
-          fieldKey="available"
-          label="Active Ollama model"
-          helper={configHelp('model', 'available')}
-          vertical
-          initialValue={config.model.available}
-          resyncToken={resyncToken}
-          onSaved={onSaved}
-          render={(value, setValue) => (
-            <OrderedListEditor
-              items={value}
-              onChange={setValue}
-              emptyMessage="No models. Run `ollama pull <name>` to add one."
-            />
-          )}
-        />
-        <SaveField
-          section="model"
+          section="inference"
           fieldKey="ollama_url"
           label="Ollama URL"
-          helper={configHelp('model', 'ollama_url')}
-          initialValue={config.model.ollama_url}
+          helper={configHelp('inference', 'ollama_url')}
+          initialValue={config.inference.ollama_url}
           resyncToken={resyncToken}
           onSaved={onSaved}
           render={(value, setValue, errored) => (

@@ -11,7 +11,6 @@ import {
   type ReactNode,
   useEffect,
   useId,
-  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -303,115 +302,6 @@ export function Dropdown<T extends string>({
         </option>
       ))}
     </select>
-  );
-}
-
-// ─── OrderedListEditor (model.available) ────────────────────────────────
-
-export function OrderedListEditor({
-  items,
-  onChange,
-  emptyMessage,
-  addPlaceholder = 'model:tag',
-}: {
-  items: string[];
-  onChange: (next: string[]) => void;
-  emptyMessage?: string;
-  addPlaceholder?: string;
-}) {
-  const [draft, setDraft] = useState('');
-  const trimmed = useMemo(() => draft.trim(), [draft]);
-
-  // The up/down buttons are disabled at the list edges so `move()` is
-  // never called with a target outside the array; no runtime guard needed.
-  const move = (idx: number, dir: -1 | 1) => {
-    const target = idx + dir;
-    const next = items.slice();
-    [next[idx], next[target]] = [next[target], next[idx]];
-    onChange(next);
-  };
-  const remove = (idx: number) => {
-    onChange(items.filter((_, i) => i !== idx));
-  };
-  const add = () => {
-    if (!trimmed) return;
-    if (items.includes(trimmed)) return;
-    onChange([...items, trimmed]);
-    setDraft('');
-  };
-
-  return (
-    <div className={styles.modelList}>
-      {items.length === 0 && emptyMessage ? (
-        <div className={styles.rowHelper}>{emptyMessage}</div>
-      ) : null}
-      {items.map((name, idx) => (
-        <div
-          key={name}
-          className={`${styles.modelItem} ${idx === 0 ? styles.modelItemActive : ''}`}
-        >
-          {idx === 0 ? (
-            <span className={styles.modelItemBadge}>Active</span>
-          ) : null}
-          <span className={styles.modelItemName}>{name}</span>
-          <div className={styles.modelItemActions}>
-            <button
-              type="button"
-              className={styles.iconBtn}
-              aria-label={`Move ${name} up`}
-              disabled={idx === 0}
-              onClick={() => move(idx, -1)}
-            >
-              ▲
-            </button>
-            <button
-              type="button"
-              className={styles.iconBtn}
-              aria-label={`Move ${name} down`}
-              disabled={idx === items.length - 1}
-              onClick={() => move(idx, 1)}
-            >
-              ▼
-            </button>
-            <button
-              type="button"
-              className={styles.iconBtn}
-              aria-label={`Remove ${name}`}
-              disabled={items.length === 1}
-              onClick={() => remove(idx)}
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      ))}
-      <div className={styles.modelAddRow}>
-        <input
-          type="text"
-          className={styles.input}
-          value={draft}
-          placeholder={addPlaceholder}
-          spellCheck={false}
-          autoComplete="off"
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              add();
-            }
-          }}
-          aria-label="Add model"
-        />
-        <button
-          type="button"
-          className={styles.button}
-          disabled={!trimmed || items.includes(trimmed)}
-          onClick={add}
-        >
-          + Add
-        </button>
-      </div>
-    </div>
   );
 }
 

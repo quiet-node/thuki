@@ -5,7 +5,7 @@ import { configHelp } from './configHelpers';
 describe('configHelp', () => {
   it('returns the doc-mirrored helper string for every section', () => {
     // One probe per section is enough to exercise the typed lookup branches.
-    expect(configHelp('model', 'available')).toMatch(/list of Ollama models/);
+    expect(configHelp('inference', 'ollama_url')).toMatch(/Ollama server/);
     expect(configHelp('prompt', 'system')).toMatch(/custom personality/);
     expect(configHelp('window', 'overlay_width')).toMatch(/in pixels/);
     expect(configHelp('quote', 'max_display_lines')).toMatch(
@@ -16,8 +16,7 @@ describe('configHelp', () => {
 
   it('returns a non-empty string for every documented field', () => {
     const fields: Array<[Parameters<typeof configHelp>[0], string]> = [
-      ['model', 'available'],
-      ['model', 'ollama_url'],
+      ['inference', 'ollama_url'],
       ['prompt', 'system'],
       ['window', 'overlay_width'],
       ['window', 'collapsed_height'],

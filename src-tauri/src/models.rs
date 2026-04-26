@@ -246,9 +246,10 @@ pub async fn get_model_picker_state(
     client: tauri::State<'_, reqwest::Client>,
     db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
-    config: tauri::State<'_, AppConfig>,
+    config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<serde_json::Value, String> {
-    let fetch_result = fetch_installed_model_names(&client, &config.inference.ollama_url).await;
+    let ollama_url = config.read().inference.ollama_url.clone();
+    let fetch_result = fetch_installed_model_names(&client, &ollama_url).await;
 
     let installed = match fetch_result {
         Ok(installed) => installed,
@@ -315,11 +316,12 @@ pub async fn set_active_model(
     client: tauri::State<'_, reqwest::Client>,
     db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
-    config: tauri::State<'_, AppConfig>,
+    config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<(), String> {
     validate_model_slug(&model)?;
 
-    let installed = fetch_installed_model_names(&client, &config.inference.ollama_url).await?;
+    let ollama_url = config.read().inference.ollama_url.clone();
+    let installed = fetch_installed_model_names(&client, &ollama_url).await?;
     validate_model_installed(&model, &installed)?;
 
     {
@@ -426,9 +428,10 @@ pub async fn check_model_setup(
     client: tauri::State<'_, reqwest::Client>,
     db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
-    config: tauri::State<'_, AppConfig>,
+    config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<ModelSetupState, String> {
-    let installed_result = fetch_installed_model_names(&client, &config.inference.ollama_url).await;
+    let ollama_url = config.read().inference.ollama_url.clone();
+    let installed_result = fetch_installed_model_names(&client, &ollama_url).await;
 
     let persisted = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -689,11 +692,11 @@ pub struct ModelCapabilitiesCache(pub Mutex<HashMap<String, Capabilities>>);
 pub async fn get_model_capabilities(
     client: tauri::State<'_, reqwest::Client>,
     cache: tauri::State<'_, ModelCapabilitiesCache>,
-    config: tauri::State<'_, AppConfig>,
+    config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<HashMap<String, Capabilities>, String> {
-    let base_url = &config.inference.ollama_url;
-    let installed = fetch_installed_model_names(&client, base_url).await?;
-    Ok(reconcile_capabilities(&client, &cache, base_url, &installed).await)
+    let base_url = config.read().inference.ollama_url.clone();
+    let installed = fetch_installed_model_names(&client, &base_url).await?;
+    Ok(reconcile_capabilities(&client, &cache, &base_url, &installed).await)
 }
 
 /// Pure-ish helper extracted so tests can drive the cache + fetch loop

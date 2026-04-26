@@ -12,9 +12,7 @@
  */
 
 const HELPERS = {
-  model: {
-    available:
-      'The list of Ollama models Thuki knows about. The first model in the list is the one Thuki actually uses. To switch models, reorder the list. Run `ollama pull <model>` before adding a new entry.',
+  inference: {
     ollama_url:
       'The web address where Thuki finds your local Ollama server. The default works if you run Ollama on this machine with its standard port. Change this only if you moved Ollama to a different port or another machine.',
   },

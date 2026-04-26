@@ -29,7 +29,7 @@ import type { RawAppConfig } from '../types';
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 const CONFIG: RawAppConfig = {
-  model: { available: ['gemma:2b'], ollama_url: 'http://127.0.0.1:11434' },
+  inference: { ollama_url: 'http://127.0.0.1:11434' },
   prompt: { system: 'hello' },
   window: {
     overlay_width: 600,
@@ -70,7 +70,6 @@ describe('ModelTab', () => {
     render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     expect(screen.getByText('Model')).toBeInTheDocument();
     expect(screen.getByText('Prompt')).toBeInTheDocument();
-    expect(screen.getByText('Active Ollama model')).toBeInTheDocument();
     expect(screen.getByText('Ollama URL')).toBeInTheDocument();
     expect(screen.getByText('System prompt')).toBeInTheDocument();
   });

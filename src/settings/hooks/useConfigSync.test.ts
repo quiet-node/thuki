@@ -13,7 +13,7 @@ import type { RawAppConfig } from '../types';
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 const CONFIG_A: RawAppConfig = {
-  model: { available: ['gemma:2b'], ollama_url: 'http://127.0.0.1:11434' },
+  inference: { ollama_url: 'http://127.0.0.1:11434' },
   prompt: { system: '' },
   window: {
     overlay_width: 600,
@@ -42,7 +42,7 @@ const CONFIG_A: RawAppConfig = {
 
 const CONFIG_B: RawAppConfig = {
   ...CONFIG_A,
-  model: { ...CONFIG_A.model, ollama_url: 'http://10.0.0.1:11434' },
+  inference: { ...CONFIG_A.inference, ollama_url: 'http://10.0.0.1:11434' },
 };
 
 beforeEach(() => {

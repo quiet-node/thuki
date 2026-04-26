@@ -13,8 +13,7 @@
  */
 
 export interface RawAppConfig {
-  model: {
-    available: string[];
+  inference: {
     ollama_url: string;
   };
   prompt: {

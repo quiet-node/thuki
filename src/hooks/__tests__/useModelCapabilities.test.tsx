@@ -84,6 +84,30 @@ describe('useModelCapabilities', () => {
     expect(result.current.capabilities).toEqual({ a: TEXT_ONLY, b: FULL });
   });
 
+  it('drops a stale resolution from a superseded fetch', async () => {
+    // Symmetric to the rejection case: a hanging first fetch eventually
+    // resolves AFTER a second refresh has already bumped the token. The
+    // late resolution must short-circuit at the isLatest check so it does
+    // not overwrite the newer state.
+    let resolveFirst: (val: Record<string, typeof FULL>) => void = () => {};
+    const firstPromise = new Promise<Record<string, typeof FULL>>((resolve) => {
+      resolveFirst = resolve;
+    });
+    invoke.mockReturnValueOnce(firstPromise).mockResolvedValueOnce({ b: FULL });
+
+    const { result } = renderHook(() => useModelCapabilities());
+    await act(async () => {});
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.capabilities).toEqual({ b: FULL });
+    await act(async () => {
+      resolveFirst({ stale: TEXT_ONLY });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(result.current.capabilities).toEqual({ b: FULL });
+  });
+
   it('drops a stale rejection from a superseded fetch', async () => {
     // First mount-call hangs and is later rejected. A second refresh in
     // the meantime resolves successfully and bumps the token. The first

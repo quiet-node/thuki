@@ -48,8 +48,9 @@ export interface DebouncedSaveHandle<TValue> {
  * from the last known saved value. The hook is value-agnostic across the
  * JSON primitives that the Settings panel can write (string, number,
  * boolean, string[]); the equality check uses `Object.is` for scalars and
- * an element-wise `Object.is` walk for the only array field
- * (`model.available: string[]`).
+ * an element-wise `Object.is` walk for arrays. No tunable schema field
+ * currently has an array type, but the array path is kept generic so
+ * future array-shaped tunables drop in without refactoring the hook.
  *
  * The `onSaved` callback fires after each successful invoke with the
  * resolved `RawAppConfig` so callers can replace local form state with

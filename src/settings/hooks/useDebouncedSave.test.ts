@@ -10,7 +10,7 @@ import type { ConfigError, RawAppConfig } from '../types';
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 const SAMPLE_CONFIG: RawAppConfig = {
-  model: { available: ['gemma:2b'], ollama_url: 'http://127.0.0.1:11434' },
+  inference: { ollama_url: 'http://127.0.0.1:11434' },
   prompt: { system: '' },
   window: {
     overlay_width: 600,
@@ -345,7 +345,7 @@ describe('useDebouncedSave', () => {
 
   it('treats string[] arrays as equal element-wise (no spurious saves on stable list)', async () => {
     const { rerender } = renderHook(
-      ({ v }) => useDebouncedSave('model', 'available', v, { delayMs: 10 }),
+      ({ v }) => useDebouncedSave('inference', 'available', v, { delayMs: 10 }),
       { initialProps: { v: ['gemma:2b'] } },
     );
     // Pass a NEW array reference with the same contents.
@@ -359,7 +359,7 @@ describe('useDebouncedSave', () => {
 
   it('saves when an array element changes', async () => {
     const { rerender } = renderHook(
-      ({ v }) => useDebouncedSave('model', 'available', v, { delayMs: 10 }),
+      ({ v }) => useDebouncedSave('inference', 'available', v, { delayMs: 10 }),
       { initialProps: { v: ['gemma:2b'] } },
     );
     rerender({ v: ['gemma:2b', 'qwen3:8b'] });
@@ -372,7 +372,7 @@ describe('useDebouncedSave', () => {
 
   it('saves when an array contains a different scalar at the same index', async () => {
     const { rerender } = renderHook(
-      ({ v }) => useDebouncedSave('model', 'available', v, { delayMs: 10 }),
+      ({ v }) => useDebouncedSave('inference', 'available', v, { delayMs: 10 }),
       { initialProps: { v: ['a', 'b'] } },
     );
     rerender({ v: ['a', 'c'] });
