@@ -34,6 +34,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
     });
 
@@ -54,6 +55,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
     });
 
@@ -66,11 +68,157 @@ describe('App', () => {
     ).toBeInTheDocument();
   });
 
+  it('keeps the chat-mode picker chip visible with "Pick a model" when active model disappears (S2)', async () => {
+    // S2: Ollama is reachable but no models are installed. The chip must
+    // stay in WindowControls in chat mode so the user has a one-click
+    // recovery path, and its label falls back to the picker prompt
+    // instead of showing a stale or empty slug.
+    //
+    // Simulating S2 from a cold start would block the submit at the
+    // env-state gate, so we cannot enter chat mode that way. Instead we
+    // start with an active model, complete a turn (which puts the user
+    // in chat mode), then arrange the next `get_model_picker_state`
+    // refresh to return the S2 payload.
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    // Send one message + simulate Done so messages.length > 0 → chat mode.
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'hi' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // Switch the picker mock to return the S2 payload, then trigger the
+    // chip click which calls `refreshModels` under the hood.
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: null,
+        all: [],
+        ollamaReachable: true,
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+
+    const chip = screen.getByRole('button', { name: 'Choose model' });
+    expect(chip).toBeInTheDocument();
+    expect(chip.textContent).toContain('Pick a model');
+  });
+
+  it('hides the chat-mode picker chip when Ollama becomes unreachable (S1)', async () => {
+    // S1: nothing to pick from. The chip is hidden in chat mode so the
+    // user is not pointed at a dead-end action; the strip handles the
+    // "start Ollama" cue separately. We mirror the S2 test setup but
+    // swap the second picker fetch to the unreachable payload.
+    //
+    // Triggering the refresh through the chip click rather than the
+    // overlay show event matters: the show handler also resets messages
+    // (so isChatMode flips back to false and the chip unmounts for an
+    // unrelated reason). The chip click drives the refresh in place.
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'hi' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // Confirm we are in chat mode with the chip rendered before flipping
+    // the picker state to the unreachable variant.
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toBeInTheDocument();
+
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: null,
+        all: [],
+        ollamaReachable: false,
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+
+    expect(screen.queryByRole('button', { name: 'Choose model' })).toBeNull();
+  });
+
+  it('renders the unreachable strip copy in compose mode when Ollama is down (S1)', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: null,
+        all: [],
+        ollamaReachable: false,
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const strip = screen.getByTestId('capability-mismatch-strip');
+    expect(strip.textContent).toContain("Ollama isn't running");
+  });
+
+  it('renders the no-models strip copy when Ollama is reachable but empty (S2)', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: null,
+        all: [],
+        ollamaReachable: true,
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const strip = screen.getByTestId('capability-mismatch-strip');
+    expect(strip.textContent).toContain('Pull one in Ollama');
+    expect(strip.textContent).toContain('ollama pull <model>');
+  });
+
   it('saves the conversation with the currently selected model', async () => {
     enableChannelCaptureWithResponses({
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
       save_conversation: { conversation_id: 'conv-1' },
       generate_title: undefined,
@@ -116,6 +264,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
     });
     render(<App />);
@@ -138,6 +287,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
       list_conversations: [],
     });
@@ -164,6 +314,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
       list_conversations: [],
     });
@@ -190,6 +341,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
       set_active_model: undefined,
     });
@@ -213,6 +365,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
     });
     render(<App />);
@@ -238,6 +391,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
     });
     render(<App />);
@@ -263,6 +417,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
     });
     render(<App />);
@@ -302,6 +457,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
     });
     render(<App />);
@@ -334,6 +490,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
     });
     render(<App />);
@@ -376,6 +533,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
     });
     render(<App />);
@@ -408,9 +566,17 @@ describe('App', () => {
       if (cmd === 'get_model_picker_state') {
         if (rejectionSeen) {
           refreshesAfterRejection += 1;
-          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
         }
-        return { active: 'gemma4:e2b', all: ['gemma4:e2b', 'qwen2.5:7b'] };
+        return {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        };
       }
       if (cmd === 'set_active_model') {
         rejectionSeen = true;
@@ -444,6 +610,7 @@ describe('App', () => {
       get_model_picker_state: {
         active: 'gemma4:e2b',
         all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
       },
     });
     render(<App />);
@@ -1096,6 +1263,7 @@ describe('App', () => {
         get_model_picker_state: {
           active: 'gemma4:e2b',
           all: ['gemma4:e2b'],
+          ollamaReachable: true,
         },
         list_conversations: [],
       });
@@ -1522,7 +1690,11 @@ describe('App', () => {
     it('handleSaveAndNew aborts reset when save fails', async () => {
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'get_model_picker_state')
-          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
         if (cmd === 'list_conversations') return [];
         if (cmd === 'save_conversation') throw new Error('disk full');
       });
@@ -1640,7 +1812,11 @@ describe('App', () => {
       // and could overwrite the current session with an unrelated conversation.
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'get_model_picker_state')
-          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
         if (cmd === 'list_conversations')
           return [
             {
@@ -1996,7 +2172,11 @@ describe('App', () => {
       // loadConversation() throws, leaving the panel open on failure.
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'get_model_picker_state')
-          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
         if (cmd === 'list_conversations')
           return [
             {
@@ -2270,7 +2450,11 @@ describe('App', () => {
     it('handleImagesAttached removes image when backend fails', async () => {
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'get_model_picker_state')
-          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
         if (cmd === 'save_image_command') throw new Error('disk full');
       });
 
@@ -2320,7 +2504,11 @@ describe('App', () => {
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
           if (cmd === 'get_model_picker_state')
-            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
           if (args && 'onEvent' in args) {
             // channel capture - no-op for this test
           }
@@ -2692,7 +2880,11 @@ describe('App', () => {
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
           if (cmd === 'get_model_picker_state')
-            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
           if (args && 'onEvent' in args) {
             // channel capture
           }
@@ -2798,7 +2990,11 @@ describe('App', () => {
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
           if (cmd === 'get_model_picker_state')
-            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
           if (args && 'onEvent' in args) {
             // channel capture - no-op
           }
@@ -2858,7 +3054,11 @@ describe('App', () => {
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
           if (cmd === 'get_model_picker_state')
-            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
           if (args && 'onEvent' in args) {
             // Accept channel for ask_ollama
           }
@@ -2955,7 +3155,11 @@ describe('App', () => {
 
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'get_model_picker_state')
-          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
         if (cmd === 'search_pipeline') {
           return new Promise<void>((res) => {
             resolveSearch = res;
@@ -3024,7 +3228,11 @@ describe('App', () => {
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
           if (cmd === 'get_model_picker_state')
-            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
           if (args && 'onEvent' in args) {
             // Accept channel
           }
@@ -3100,7 +3308,11 @@ describe('App', () => {
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
           if (cmd === 'get_model_picker_state')
-            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
           if (args && 'onEvent' in args) {
             // Accept channel
           }
@@ -3170,7 +3382,11 @@ describe('App', () => {
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
           if (cmd === 'get_model_picker_state')
-            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
           if (args && 'onEvent' in args) {
             // channel capture
           }
@@ -3280,6 +3496,7 @@ describe('App', () => {
         get_model_picker_state: {
           active: 'llama3',
           all: ['llama3', 'llama3.2-vision'],
+          ollamaReachable: true,
         },
         get_model_capabilities: {
           llama3: {
@@ -3312,6 +3529,7 @@ describe('App', () => {
         get_model_picker_state: {
           active: 'llama3',
           all: ['llama3'],
+          ollamaReachable: true,
         },
         get_model_capabilities: {
           llama3: {
@@ -3365,7 +3583,11 @@ describe('App', () => {
       vi.useFakeTimers();
       try {
         enableChannelCaptureWithResponses({
-          get_model_picker_state: { active: 'llama3', all: ['llama3'] },
+          get_model_picker_state: {
+            active: 'llama3',
+            all: ['llama3'],
+            ollamaReachable: true,
+          },
           get_model_capabilities: {
             llama3: {
               vision: false,
@@ -3416,6 +3638,7 @@ describe('App', () => {
         get_model_picker_state: {
           active: 'llama3.2-vision',
           all: ['llama3.2-vision'],
+          ollamaReachable: true,
         },
         get_model_capabilities: {
           'llama3.2-vision': {
@@ -3759,7 +3982,11 @@ describe('App', () => {
     it('does not call ask when capture_full_screen_command throws', async () => {
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'get_model_picker_state')
-          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
         if (cmd === 'capture_full_screen_command') {
           throw new Error('Permission denied');
         }
@@ -3791,7 +4018,11 @@ describe('App', () => {
     it('surfaces string errors from Tauri invoke directly', async () => {
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'get_model_picker_state')
-          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
         if (cmd === 'capture_full_screen_command') {
           // Tauri v2 rejects with the Err(String) value as a plain string.
           return Promise.reject(
@@ -3825,7 +4056,11 @@ describe('App', () => {
     it('handles non-Error non-string rejection values', async () => {
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'get_model_picker_state')
-          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
         if (cmd === 'capture_full_screen_command') {
           return Promise.reject(42);
         }
@@ -3851,7 +4086,11 @@ describe('App', () => {
       enableChannelCapture();
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'get_model_picker_state')
-          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
         if (cmd === 'capture_full_screen_command') {
           throw new Error('capture failed');
         }
@@ -4019,7 +4258,11 @@ describe('App', () => {
     it('restores query with cleanQuery text when capture fails mid-message', async () => {
       invoke.mockImplementation(async (cmd: string) => {
         if (cmd === 'get_model_picker_state')
-          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
         if (cmd === 'capture_full_screen_command') {
           throw new Error('Screen capture timed out');
         }
@@ -4701,7 +4944,11 @@ describe('App', () => {
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
           if (cmd === 'get_model_picker_state')
-            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
           if (args && 'onEvent' in args) {
             // Accept channel for ask_ollama
           }

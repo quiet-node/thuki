@@ -105,10 +105,27 @@ describe('ModelPickerPanel', () => {
     }
   });
 
-  it('shows no-models-available message when models list is empty', () => {
+  it('shows the ollama-pull empty state when models list is empty', () => {
+    // Empty state copy mirrors S2 in `getEnvironmentMessage`: route the
+    // user to `ollama pull <model>` rather than implying anything is
+    // wrong with the picker itself.
     renderPanel({ models: [] });
-    expect(screen.getByText(/no models available/i)).toBeInTheDocument();
+    const empty = screen.getByTestId('model-picker-empty');
+    expect(empty).toBeInTheDocument();
+    expect(empty.textContent).toContain('No models installed');
+    expect(empty.textContent).toContain('ollama pull <model>');
     expect(screen.queryByRole('option')).toBeNull();
+  });
+
+  it('renders no row as active when activeModel is null', () => {
+    // S2/S3: the chip stays clickable with a null active model. The panel
+    // must accept null without inventing a default and simply mark no row
+    // as aria-selected.
+    renderPanel({ activeModel: null as unknown as string });
+    for (const model of MODELS) {
+      const option = screen.getByRole('option', { name: model });
+      expect(option).toHaveAttribute('aria-selected', 'false');
+    }
   });
 
   it('marks the filter input as an aria-activedescendant combobox', () => {

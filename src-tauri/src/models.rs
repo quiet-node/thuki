@@ -231,15 +231,20 @@ async fn fetch_installed_model_names_inner(
     Ok(body.models.into_iter().map(|m| m.name).collect())
 }
 
-/// Returns the currently active model and the full list of installed models,
-/// persisting the resolved active model so future launches see it.
+/// Returns the currently active model, the full list of installed models, and
+/// a flag telling the frontend whether Ollama itself is reachable.
 ///
-/// Shape: `{ "active": "<slug>", "all": ["<slug>", ...] }`.
+/// Shape: `{ "active": "<slug>" | null, "all": ["<slug>", ...], "ollamaReachable": bool }`.
 ///
-/// Coalesces the read + conditional write into a single database critical
-/// section to avoid a TOCTOU window where a concurrent `set_active_model`
-/// could be clobbered, and refuses to persist when Ollama reports an empty
-/// inventory so a partially-up daemon cannot corrupt the persisted choice.
+/// The command intentionally never propagates a transport / fetch error to
+/// the frontend. Instead, an unreachable Ollama collapses into a structured
+/// `{ active: null, all: [], ollamaReachable: false }` payload so the UI can
+/// distinguish "Ollama is down" from "Ollama is up but has no models" without
+/// parsing error strings. The Ok branch coalesces the read + conditional
+/// write into a single database critical section to avoid a TOCTOU window
+/// where a concurrent `set_active_model` could be clobbered, and refuses to
+/// persist when Ollama reports an empty inventory so a partially-up daemon
+/// cannot corrupt the persisted choice.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn get_model_picker_state(
@@ -248,7 +253,19 @@ pub async fn get_model_picker_state(
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, AppConfig>,
 ) -> Result<serde_json::Value, String> {
-    let installed = fetch_installed_model_names(&client, &config.inference.ollama_url).await?;
+    let fetch_result = fetch_installed_model_names(&client, &config.inference.ollama_url).await;
+
+    let installed = match fetch_result {
+        Ok(installed) => installed,
+        Err(_) => {
+            // Mirror the `None` active into the in-memory state so downstream
+            // callers (ask_ollama, search_pipeline) see the same truth as the
+            // frontend: with Ollama unreachable, no model is active.
+            let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
+            *guard = None;
+            return Ok(build_picker_state_payload(None, &[], false));
+        }
+    };
 
     let resolved = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -267,11 +284,30 @@ pub async fn get_model_picker_state(
         *guard = resolved.clone();
     }
 
-    let active_value = match resolved {
-        Some(slug) => serde_json::Value::String(slug),
+    Ok(build_picker_state_payload(
+        resolved.as_deref(),
+        &installed,
+        true,
+    ))
+}
+
+/// Pure helper that shapes the `get_model_picker_state` payload. Extracted so
+/// the three states (unreachable, reachable + empty, reachable + populated)
+/// can be unit-tested without spinning up a Tauri runtime or an HTTP server.
+pub fn build_picker_state_payload(
+    active: Option<&str>,
+    installed: &[String],
+    ollama_reachable: bool,
+) -> serde_json::Value {
+    let active_value = match active {
+        Some(slug) => serde_json::Value::String(slug.to_string()),
         None => serde_json::Value::Null,
     };
-    Ok(serde_json::json!({ "active": active_value, "all": installed }))
+    serde_json::json!({
+        "active": active_value,
+        "all": installed,
+        "ollamaReachable": ollama_reachable,
+    })
 }
 
 /// Persists `model` as the active model after validating its shape and
@@ -727,6 +763,44 @@ async fn reconcile_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── build_picker_state_payload ───────────────────────────────────────────
+
+    #[test]
+    fn picker_payload_unreachable_emits_null_active_empty_list_and_flag() {
+        // S1 mirrors the unreachable case: no model can be resolved, the
+        // installed list is empty by definition, and the flag is false so
+        // the frontend can pick the right strip copy.
+        let payload = build_picker_state_payload(None, &[], false);
+        assert_eq!(payload["active"], serde_json::Value::Null);
+        assert_eq!(payload["all"], serde_json::json!([]));
+        assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn picker_payload_reachable_but_empty_keeps_flag_true_and_null_active() {
+        // S2: Ollama responded but installed list is empty. Active is null
+        // (nothing to resolve to) yet ollamaReachable is true so the strip
+        // can tell the user to pull a model rather than start the daemon.
+        let payload = build_picker_state_payload(None, &[], true);
+        assert_eq!(payload["active"], serde_json::Value::Null);
+        assert_eq!(payload["all"], serde_json::json!([]));
+        assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn picker_payload_reachable_with_models_carries_active_slug() {
+        // S4 (normal): active slug is present and ollamaReachable is true.
+        // The frontend renders the chip with the slug and skips the strip.
+        let installed = vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()];
+        let payload = build_picker_state_payload(Some("gemma4:e4b"), &installed, true);
+        assert_eq!(payload["active"], serde_json::json!("gemma4:e4b"));
+        assert_eq!(
+            payload["all"],
+            serde_json::json!(["gemma4:e2b", "gemma4:e4b"])
+        );
+        assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(true));
+    }
 
     // ── resolve_active_model ─────────────────────────────────────────────────
 

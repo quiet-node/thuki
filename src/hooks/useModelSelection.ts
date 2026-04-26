@@ -11,13 +11,18 @@ import type { ModelPickerState } from '../types/model';
  */
 function isModelPickerState(value: unknown): value is ModelPickerState {
   if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as { active?: unknown; all?: unknown };
+  const candidate = value as {
+    active?: unknown;
+    all?: unknown;
+    ollamaReachable?: unknown;
+  };
   const activeOk =
     candidate.active === null || typeof candidate.active === 'string';
   return (
     activeOk &&
     Array.isArray(candidate.all) &&
-    candidate.all.every((entry) => typeof entry === 'string')
+    candidate.all.every((entry) => typeof entry === 'string') &&
+    typeof candidate.ollamaReachable === 'boolean'
   );
 }
 
@@ -34,6 +39,15 @@ export interface UseModelSelectionResult {
   activeModel: string | null;
   /** All locally installed Ollama model names available for selection. */
   availableModels: string[];
+  /**
+   * Whether the most recent backend call reached the local Ollama daemon.
+   * `true` is the optimistic default before the first fetch resolves so the
+   * UI does not flash an "Ollama is down" strip during cold start. Set to
+   * `false` only when the backend explicitly reports unreachability or the
+   * IPC call itself rejects, so the strip can route the user to "start
+   * Ollama" instead of "pull a model".
+   */
+  ollamaReachable: boolean;
   /**
    * Re-fetch the model picker state from the backend. Sets `activeModel` to
    * `null` and clears `availableModels` when the backend returns a malformed
@@ -66,6 +80,10 @@ export function useModelSelection(): UseModelSelectionResult {
   // eslint-disable-next-line @eslint-react/use-state
   const [activeModel, setActiveModelState] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  // Optimistic default: assume reachable until the first fetch tells us
+  // otherwise. This prevents a cold-start flash of the "Ollama is down"
+  // strip while the IPC call is in flight.
+  const [ollamaReachable, setOllamaReachable] = useState<boolean>(true);
 
   const mountedRef = useRef(true);
   const latestTokenRef = useRef(0);
@@ -88,16 +106,22 @@ export function useModelSelection(): UseModelSelectionResult {
       const state = await invoke<unknown>('get_model_picker_state');
       if (!isLatest(token)) return;
       if (!isModelPickerState(state)) {
+        // Treat malformed payloads as a transport failure: we cannot trust
+        // any field, so fall back to the no-model state and assume Ollama
+        // is unreachable so the strip nudges the user toward starting it.
         setActiveModelState(null);
         setAvailableModels([]);
+        setOllamaReachable(false);
         return;
       }
       setActiveModelState(state.active);
       setAvailableModels(state.all);
+      setOllamaReachable(state.ollamaReachable);
     } catch {
       if (!isLatest(token)) return;
       setActiveModelState(null);
       setAvailableModels([]);
+      setOllamaReachable(false);
     }
   }, [isLatest]);
 
@@ -124,5 +148,11 @@ export function useModelSelection(): UseModelSelectionResult {
     [isLatest],
   );
 
-  return { activeModel, availableModels, refreshModels, setActiveModel };
+  return {
+    activeModel,
+    availableModels,
+    ollamaReachable,
+    refreshModels,
+    setActiveModel,
+  };
 }

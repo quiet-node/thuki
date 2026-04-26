@@ -56,8 +56,12 @@ export function formatCapabilityLabel(
 export interface ModelPickerPanelProps {
   /** Full list of available model slugs. */
   models: string[];
-  /** Currently active model slug. */
-  activeModel: string;
+  /**
+   * Currently active model slug, or `null` when nothing is selected. The
+   * panel handles `null` by simply rendering no row as active; it never
+   * tries to invent a default from an empty `models` list.
+   */
+  activeModel: string | null;
   /** Called with the chosen slug when the user clicks or keyboard-selects a row. */
   onSelect: (model: string) => void;
   /**
@@ -221,8 +225,13 @@ export function ModelPickerPanel({
         className="overflow-y-auto py-1 max-h-[280px]"
       >
         {models.length === 0 ? (
-          <p className="px-3 py-4 text-xs text-text-secondary text-center">
-            No models available.
+          <p
+            className="px-3 py-4 text-xs text-text-secondary text-center"
+            data-testid="model-picker-empty"
+          >
+            No models installed. Run{' '}
+            <code className="text-text-primary">ollama pull &lt;model&gt;</code>{' '}
+            in your terminal, then come back.
           </p>
         ) : filtered.length === 0 ? (
           <p className="px-3 py-4 text-xs text-text-secondary text-center">

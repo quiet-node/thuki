@@ -23,11 +23,13 @@ export const invoke = vi.fn<
 /**
  * Default model-picker state used by tests that do not opt into a specific
  * inventory. Tests that need the no-model state should mock
- * `get_model_picker_state` to `{ active: null, all: [] }` explicitly.
+ * `get_model_picker_state` to `{ active: null, all: [], ollamaReachable: true }`
+ * (S2) or `{ active: null, all: [], ollamaReachable: false }` (S1) explicitly.
  */
 export const TEST_DEFAULT_MODEL_PICKER_STATE = {
   active: 'gemma4:e2b',
   all: ['gemma4:e2b'],
+  ollamaReachable: true,
 } as const;
 
 /**
@@ -57,6 +59,7 @@ export function getLastChannel(): Channel | null {
 const DEFAULT_MODEL_PICKER_STATE = {
   active: 'gemma4:e2b',
   all: ['gemma4:e2b'],
+  ollamaReachable: true,
 } as const;
 
 /**

@@ -15,6 +15,14 @@ export interface ModelPickerState {
   active: string | null;
   /** All locally installed Ollama model names available for selection. */
   all: string[];
+  /**
+   * Whether the Rust backend successfully reached the local Ollama daemon
+   * during the last picker fetch. False when `/api/tags` errored (connection
+   * refused, timeout, DNS failure, port closed). The frontend uses this to
+   * distinguish "Ollama is down" from "Ollama is up but has no models" and
+   * to pick the correct recovery copy in `CapabilityMismatchStrip`.
+   */
+  ollamaReachable: boolean;
 }
 
 /**

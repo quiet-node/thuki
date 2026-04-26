@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { getCapabilityConflict } from '../capabilityConflicts';
+import {
+  getCapabilityConflict,
+  getEnvironmentMessage,
+  NO_MODELS_INSTALLED_MESSAGE,
+  OLLAMA_UNREACHABLE_MESSAGE,
+} from '../capabilityConflicts';
 import type { ModelCapabilities } from '../../types/model';
 import type { ComposeCapabilityState } from '../capabilityConflicts';
 
@@ -88,47 +93,31 @@ describe('getCapabilityConflict', () => {
     expect(result).toContain('reads text only');
   });
 
-  it('returns the no-model message when modelName is empty', () => {
-    // Ollama's /api/tags is the single source of truth for the active
-    // model. An empty name short-circuits to the picker prompt regardless
-    // of compose state: no model means no submit can succeed.
+  it('returns null when modelName is empty so the env-state helper can take over', () => {
+    // Environment-state messaging now lives in `getEnvironmentMessage`.
+    // The capability helper defers rather than emit a stale "pick a model"
+    // copy that would not know whether Ollama is reachable.
     const result = getCapabilityConflict('', TEXT_ONLY, {
       ...EMPTY,
       imageCount: 1,
     });
-    expect(result).toBe(
-      'Thuki needs a model to think with. Pull one in Ollama and tap the picker chip above to wire it up.',
-    );
+    expect(result).toBeNull();
   });
 
-  it('returns the no-model message when modelName is null', () => {
+  it('returns null when modelName is null', () => {
     const result = getCapabilityConflict(null, TEXT_ONLY, {
       ...EMPTY,
       imageCount: 1,
     });
-    expect(result).toBe(
-      'Thuki needs a model to think with. Pull one in Ollama and tap the picker chip above to wire it up.',
-    );
+    expect(result).toBeNull();
   });
 
-  it('returns the no-model message when modelName is undefined', () => {
+  it('returns null when modelName is undefined', () => {
     const result = getCapabilityConflict(undefined, TEXT_ONLY, {
       ...EMPTY,
       imageCount: 1,
     });
-    expect(result).toBe(
-      'Thuki needs a model to think with. Pull one in Ollama and tap the picker chip above to wire it up.',
-    );
-  });
-
-  it('returns the no-model message even when compose state is empty', () => {
-    // The strip needs to fire as soon as the user opens the overlay with
-    // nothing installed, before they type anything. Empty compose is the
-    // default state and must surface the "pick a model" copy.
-    const result = getCapabilityConflict(null, undefined, EMPTY);
-    expect(result).toBe(
-      'Thuki needs a model to think with. Pull one in Ollama and tap the picker chip above to wire it up.',
-    );
+    expect(result).toBeNull();
   });
 
   // ── max-images gate ───────────────────────────────────────────────────────
@@ -226,17 +215,15 @@ describe('getCapabilityConflict', () => {
     expect(result).toBeNull();
   });
 
-  it('surfaces the no-model message when name is empty even with /think queued', () => {
-    // The no-model gate runs before any capability check, so an empty name
-    // short-circuits to the picker prompt regardless of which command is
-    // queued. The /think mismatch copy never reaches the user.
+  it('returns null when name is empty even with /think queued', () => {
+    // Empty name still short-circuits to null so the env-state helper
+    // owns the messaging. The /think mismatch copy is meaningless without
+    // a real model anyway.
     const result = getCapabilityConflict('', TEXT_ONLY, {
       ...EMPTY,
       hasThinkCommand: true,
     });
-    expect(result).toBe(
-      'Thuki needs a model to think with. Pull one in Ollama and tap the picker chip above to wire it up.',
-    );
+    expect(result).toBeNull();
   });
 
   it('prefers the vision message when /think and images both mismatch', () => {
@@ -271,5 +258,50 @@ describe('getCapabilityConflict', () => {
       hasThinkCommand: true,
     });
     expect(result).toBeNull();
+  });
+});
+
+describe('getEnvironmentMessage', () => {
+  it('returns the unreachable copy when Ollama cannot be reached (S1)', () => {
+    // S1: connection refused / timeout / DNS failure. Even if the
+    // installedCount and activeModel happen to be non-empty (stale state
+    // from a prior fetch), reachability is the dominant constraint.
+    expect(getEnvironmentMessage(false, 0, null)).toBe(
+      OLLAMA_UNREACHABLE_MESSAGE,
+    );
+  });
+
+  it('returns the unreachable copy even with stale active/installed values', () => {
+    expect(getEnvironmentMessage(false, 3, 'gemma4:e4b')).toBe(
+      OLLAMA_UNREACHABLE_MESSAGE,
+    );
+  });
+
+  it('returns the no-models copy when reachable but installed list is empty (S2)', () => {
+    expect(getEnvironmentMessage(true, 0, null)).toBe(
+      NO_MODELS_INSTALLED_MESSAGE,
+    );
+  });
+
+  it('returns the pick-a-model copy when reachable, models present, none active (S3)', () => {
+    // S3 is the rare post-Phase-A defensive state. Backend auto-picks the
+    // first installed model on launch, but if a payload drift ever lands
+    // here we still surface a clear recovery cue instead of falling
+    // through to the capability helper with a null model.
+    const result = getEnvironmentMessage(true, 2, null);
+    expect(result).toBe('Pick a model from the chip above to start chatting.');
+  });
+
+  it('returns null when an active model is set so per-message gates can run (S4)', () => {
+    expect(getEnvironmentMessage(true, 2, 'gemma4:e4b')).toBeNull();
+  });
+
+  it('returns the pick-a-model copy when activeModel is the empty string', () => {
+    // Empty string is treated as "no active model" so the strip surfaces
+    // the recovery cue rather than letting the capability helper pretend
+    // the empty slug is a real selection.
+    expect(getEnvironmentMessage(true, 1, '')).toBe(
+      'Pick a model from the chip above to start chatting.',
+    );
   });
 });

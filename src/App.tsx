@@ -17,7 +17,10 @@ import type { Message } from './hooks/useOllama';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { useModelSelection } from './hooks/useModelSelection';
 import { useModelCapabilities } from './hooks/useModelCapabilities';
-import { getCapabilityConflict } from './utils/capabilityConflicts';
+import {
+  getCapabilityConflict,
+  getEnvironmentMessage,
+} from './utils/capabilityConflicts';
 import { Toast } from './components/Toast';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView, MAX_IMAGES } from './view/AskBarView';
@@ -132,8 +135,13 @@ function App() {
    */
   const morphingContainerNodeRef = useRef<HTMLDivElement | null>(null);
 
-  const { activeModel, availableModels, refreshModels, setActiveModel } =
-    useModelSelection();
+  const {
+    activeModel,
+    availableModels,
+    ollamaReachable,
+    refreshModels,
+    setActiveModel,
+  } = useModelSelection();
 
   const { capabilities: modelCapabilities, refresh: refreshModelCapabilities } =
     useModelCapabilities();
@@ -1077,13 +1085,25 @@ function App() {
   );
 
   /**
-   * Live capability conflict for the current compose state. Drives the
-   * inline `CapabilityMismatchStrip` so the user sees the mismatch as
-   * soon as incompatible content lands in compose, not only at submit
-   * time. The strip is purely informational: recovery happens through
-   * the model picker chip.
+   * Live strip message for the current environment + compose state. Drives
+   * the inline `CapabilityMismatchStrip` so the user sees the right cue as
+   * soon as content lands in compose, not only at submit time. The strip
+   * is purely informational: recovery happens through the model picker
+   * chip (or starting Ollama, when that is the actual problem).
+   *
+   * Resolution order matters: environment-state messaging wins over
+   * capability conflicts because telling the user to "switch models"
+   * makes no sense when Ollama is down or has no models installed. Once
+   * an active model exists and Ollama is reachable, fall through to the
+   * per-message capability check.
    */
   const liveCapabilityConflictMessage = useMemo(() => {
+    const envMessage = getEnvironmentMessage(
+      ollamaReachable,
+      availableModels.length,
+      activeModel,
+    );
+    if (envMessage !== null) return envMessage;
     const trimmed = query.trim();
     const { found } = parseCommands(trimmed);
     return getCapabilityConflict(activeModel, activeModelCapabilities, {
@@ -1091,7 +1111,14 @@ function App() {
       hasThinkCommand: found.has('/think'),
       imageCount: attachedImages.length,
     });
-  }, [query, attachedImages, activeModel, activeModelCapabilities]);
+  }, [
+    query,
+    attachedImages,
+    activeModel,
+    activeModelCapabilities,
+    ollamaReachable,
+    availableModels.length,
+  ]);
 
   const handleSubmit = useCallback(() => {
     if (
@@ -1652,7 +1679,9 @@ function App() {
                       onImagePreview={handleChatImagePreview}
                       searchStage={searchStage}
                       activeModel={activeModel}
-                      onModelPickerToggle={handleModelPickerToggle}
+                      onModelPickerToggle={
+                        ollamaReachable ? handleModelPickerToggle : undefined
+                      }
                       isModelPickerOpen={isModelPickerOpen}
                     />
                   ) : null}
@@ -1662,10 +1691,7 @@ function App() {
                     In chat mode the trigger and drawer move to the header area above. */}
                 {!isChatMode && (
                   <AnimatePresence>
-                    {isModelPickerOpen &&
-                    activeModel &&
-                    availableModels &&
-                    availableModels.length > 0 ? (
+                    {isModelPickerOpen && ollamaReachable ? (
                       <motion.div
                         ref={modelPickerAskBarRef}
                         key="model-picker-askbar"
@@ -1781,11 +1807,7 @@ function App() {
                   so it appears just below the header pill trigger without pushing
                   the conversation content. Click-outside closes it. */}
               <AnimatePresence>
-                {isChatMode &&
-                isModelPickerOpen &&
-                activeModel &&
-                availableModels &&
-                availableModels.length > 0 ? (
+                {isChatMode && isModelPickerOpen && ollamaReachable ? (
                   <motion.div
                     ref={modelPickerDropdownRef}
                     key="model-picker-dropdown"
