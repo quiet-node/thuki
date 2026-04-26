@@ -8,7 +8,7 @@ import { useSettingsAutoResize } from './useSettingsAutoResize';
 const SETTINGS_WIDTH = 580;
 const ANIMATE_MS = 220;
 const MIN_HEIGHT = 280;
-const MAX_HEIGHT = 900;
+const MAX_HEIGHT = 700;
 const CHROME = 148;
 
 let capturedRoCallback: ResizeObserverCallback | null = null;
@@ -105,15 +105,15 @@ describe('useSettingsAutoResize', () => {
   });
 
   it('animates between sizes via requestAnimationFrame', () => {
-    const { el } = makeHookHarness(400);
+    const { el } = makeHookHarness(300);
     __mockWindow.setSize.mockClear();
 
-    fireResize(el, 600);
+    fireResize(el, 500);
     vi.advanceTimersByTime(ANIMATE_MS + 50);
 
     expect(setSizeCalls().length).toBeGreaterThan(1);
     const finalCall = setSizeCalls()[setSizeCalls().length - 1][0];
-    expect(finalCall.height).toBe(600 + CHROME);
+    expect(finalCall.height).toBe(500 + CHROME);
   });
 
   it('clamps to MAX_HEIGHT when content exceeds the cap', () => {
@@ -138,24 +138,24 @@ describe('useSettingsAutoResize', () => {
   });
 
   it('cancels an in-flight animation when a new target arrives', () => {
-    const { el } = makeHookHarness(400);
+    const { el } = makeHookHarness(300);
     __mockWindow.setSize.mockClear();
 
-    fireResize(el, 600);
+    fireResize(el, 400);
     vi.advanceTimersByTime(60);
     const midCount = setSizeCalls().length;
 
-    fireResize(el, 700);
+    fireResize(el, 500);
     vi.advanceTimersByTime(ANIMATE_MS + 50);
 
     const finalCall = setSizeCalls()[setSizeCalls().length - 1][0];
-    expect(finalCall.height).toBe(700 + CHROME);
+    expect(finalCall.height).toBe(500 + CHROME);
     expect(setSizeCalls().length).toBeGreaterThan(midCount);
   });
 
   it('cleans up the observer and pending rAF on unmount', () => {
-    const { el, unmount } = makeHookHarness(400);
-    fireResize(el, 600);
+    const { el, unmount } = makeHookHarness(300);
+    fireResize(el, 500);
     unmount();
     __mockWindow.setSize.mockClear();
     vi.advanceTimersByTime(ANIMATE_MS + 50);
@@ -171,15 +171,15 @@ describe('useSettingsAutoResize', () => {
   });
 
   it('forces a re-measure when the revision value changes (tab switch)', () => {
-    const { el, setRevision } = makeHookHarness(400);
+    const { el, setRevision } = makeHookHarness(300);
     __mockWindow.setSize.mockClear();
 
-    setScrollHeight(el, 700);
+    setScrollHeight(el, 500);
     setRevision('next');
     vi.advanceTimersByTime(ANIMATE_MS + 50);
 
     const last = setSizeCalls()[setSizeCalls().length - 1][0];
-    expect(last.height).toBe(700 + CHROME);
+    expect(last.height).toBe(500 + CHROME);
   });
 
   it('reflects updated chromeHeight on the next resize', () => {

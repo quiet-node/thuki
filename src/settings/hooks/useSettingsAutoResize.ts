@@ -35,8 +35,12 @@ import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 const ANIMATE_MS = 220;
 /** Hard floor: settings panel below this is unusable on macOS. */
 const MIN_HEIGHT = 280;
-/** Hard ceiling: prevents the window from exceeding a 13" laptop display. */
-const MAX_HEIGHT = 900;
+/**
+ * Hard ceiling: keeps the panel comfortably small even on a 13" laptop.
+ * Tabs whose natural content exceeds this (Web's full timeouts list)
+ * scroll inside `.body` rather than push the window taller.
+ */
+const MAX_HEIGHT = 700;
 /** Settings is intentionally a fixed-width column. */
 const SETTINGS_WIDTH = 580;
 /** Sub-pixel ResizeObserver chatter is dropped below this threshold. */
