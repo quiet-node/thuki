@@ -50,9 +50,13 @@ export function Tooltip({
     /* v8 ignore stop */
     const rect = triggerRef.current.getBoundingClientRect();
     const rawLeft = rect.left + rect.width / 2;
-    // Conservative half-width estimate. Single-line tooltips fit "Conversation
-    // history" worst-case; multiline tooltips may use the full 320px max width.
-    const tooltipHalfWidth = multiline ? 160 : 90;
+    // Half-width estimate matched to the rendered max-width of each
+    // variant. Single-line tooltips fit "Conversation history"
+    // worst-case (~180px wide). Multiline tooltips render at
+    // max-w-[220px], so a 110px halfWidth keeps the centered box
+    // directly under the trigger even when the trigger sits near the
+    // right edge of a typical Thuki overlay (600px wide).
+    const tooltipHalfWidth = multiline ? 110 : 90;
     const edgePadding = 8;
     const left = Math.max(
       tooltipHalfWidth + edgePadding,
@@ -133,9 +137,10 @@ export function Tooltip({
                     className="absolute -top-1.5 h-3 w-3 -translate-x-1/2 rotate-45 border-l border-t border-surface-border bg-surface-base"
                   />
                   <div
+                    style={multiline ? { width: 220 } : undefined}
                     className={`relative rounded-lg border border-surface-border bg-surface-base px-2.5 py-1.5 text-[11px] text-text-primary shadow-chat ${
                       multiline
-                        ? 'max-w-xs whitespace-pre-line leading-snug'
+                        ? 'whitespace-pre-line leading-snug'
                         : 'whitespace-nowrap'
                     }`}
                   >
