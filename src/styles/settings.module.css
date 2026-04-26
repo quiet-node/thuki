@@ -172,15 +172,18 @@
 
 .body {
   flex: 1;
-  overflow-y: auto;
+  /* Default: hide overflow so tabs whose content fits the auto-sized
+   * window never show a scrollbar (and never produce a stray scrollbar
+   * artifact from sub-pixel rounding). The auto-resize hook flips this
+   * to .bodyScrollable only on tabs whose natural content was clamped
+   * to MAX_HEIGHT, where internal scrolling is the intended behavior. */
+  overflow: hidden;
   position: relative;
   padding: 18px 22px 24px;
   min-width: 0;
-  /* No reserved gutter: tabs whose natural height fits inside the
-   * window cap (AI, Display, About at default content sizes) render
-   * with no scrollbar at all. The macOS overlay scrollbar floats on
-   * top of content when it does appear (Web tab past the cap), so a
-   * reserved gutter would just create dead margin on the short tabs. */
+}
+.bodyScrollable {
+  overflow-y: auto;
 }
 /* No `::-webkit-scrollbar` overrides — letting macOS render its native
  * overlay scrollbar that auto-shows on scroll, matching the chat view. */

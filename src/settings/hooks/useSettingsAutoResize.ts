@@ -29,7 +29,7 @@
  * - Sub-pixel deltas (`< NEGLIGIBLE_DELTA_PX`) are no-ops.
  */
 
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 
 const ANIMATE_MS = 220;
@@ -56,12 +56,17 @@ function clampHeight(h: number): number {
  * Animates the OS window to fit `el.scrollHeight + chromeHeight`. Pass
  * `null` for `el` while the content is not yet mounted; the hook will
  * (re-)attach the ResizeObserver when a non-null element arrives.
+ *
+ * Returns `true` when the natural target exceeded MAX_HEIGHT (so the
+ * caller knows to enable internal scrolling on the body container);
+ * `false` while the window is hugging its content.
  */
 export function useSettingsAutoResize(
   el: HTMLElement | null,
   chromeHeight: number,
   revision: unknown,
-): void {
+): boolean {
+  const [isClamped, setIsClamped] = useState(false);
   const rafRef = useRef<number | null>(null);
   const initialisedRef = useRef(false);
   const lastSentRef = useRef<number | null>(null);
@@ -107,7 +112,13 @@ export function useSettingsAutoResize(
     };
 
     const handleResize = () => {
-      const target = clampHeight(el.scrollHeight + chromeRef.current);
+      const natural = el.scrollHeight + chromeRef.current;
+      const target = clampHeight(natural);
+      const shouldClamp = natural > MAX_HEIGHT;
+      // Only fire the state setter when the boolean actually flips so
+      // typical resizes (sub-cap content) do not schedule extra renders.
+      // eslint-disable-next-line @eslint-react/set-state-in-effect -- intended: the body's overflow class must follow the clamp state
+      setIsClamped((prev) => (prev === shouldClamp ? prev : shouldClamp));
       if (!initialisedRef.current) {
         initialisedRef.current = true;
         lastSentRef.current = target;
@@ -143,4 +154,6 @@ export function useSettingsAutoResize(
   useLayoutEffect(() => {
     handleResizeRef.current();
   }, [revision, chromeHeight]);
+
+  return isClamped;
 }

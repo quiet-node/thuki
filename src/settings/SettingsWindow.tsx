@@ -151,7 +151,7 @@ export function SettingsWindow() {
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
 
   const bannerVisible = Boolean(marker && !markerDismissed);
-  useSettingsAutoResize(
+  const bodyShouldScroll = useSettingsAutoResize(
     contentEl,
     CHROME_HEIGHT + (bannerVisible ? BANNER_HEIGHT : 0),
     activeTab,
@@ -311,7 +311,11 @@ export function SettingsWindow() {
         })}
       </div>
 
-      <div className={styles.body} id={`panel-${activeTab}`} role="tabpanel">
+      <div
+        className={`${styles.body} ${bodyShouldScroll ? styles.bodyScrollable : ''}`}
+        id={`panel-${activeTab}`}
+        role="tabpanel"
+      >
         <div ref={setContentEl}>
           {activeTab === 'general' ? (
             <ModelTab

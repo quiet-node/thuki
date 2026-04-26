@@ -105,6 +105,33 @@ describe('SettingsWindow', () => {
     );
   });
 
+  it('marks the body as scrollable only when natural content exceeds the cap', async () => {
+    // happy-dom's `requestAnimationFrame` runs callbacks via setTimeout
+    // which would loop here as the auto-resize animation reschedules
+    // itself; the assertion only needs the synchronous state flip, so
+    // stub rAF to a no-op for this test.
+    const rafSpy = vi
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation(() => 0);
+    const { container } = render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    const body = container.querySelector('[role="tabpanel"]')!;
+    expect(body.className).not.toMatch(/bodyScrollable/);
+
+    const wrapper = body.firstElementChild as HTMLElement;
+    Object.defineProperty(wrapper, 'scrollHeight', {
+      configurable: true,
+      value: 1500,
+    });
+    fireEvent.click(screen.getByRole('tab', { name: /Web/ }));
+    await waitFor(() =>
+      expect(container.querySelector('[role="tabpanel"]')!.className).toMatch(
+        /bodyScrollable/,
+      ),
+    );
+    rafSpy.mockRestore();
+  });
+
   it('ArrowRight rotates focus to the next tab', async () => {
     render(<SettingsWindow />);
     await waitFor(() => screen.getByRole('tab', { name: /AI/ }));

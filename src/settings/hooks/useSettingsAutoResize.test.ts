@@ -122,6 +122,34 @@ describe('useSettingsAutoResize', () => {
     expect(call.height).toBe(MAX_HEIGHT);
   });
 
+  it('returns true when natural content exceeds MAX_HEIGHT', () => {
+    const { result } = renderHook(() => {
+      const [el, setEl] = useState<HTMLDivElement | null>(null);
+      const clamped = useSettingsAutoResize(el, CHROME, 0);
+      return { clamped, setEl };
+    });
+    const node = document.createElement('div');
+    setScrollHeight(node, 1200);
+    act(() => {
+      result.current.setEl(node);
+    });
+    expect(result.current.clamped).toBe(true);
+  });
+
+  it('returns false when natural content fits under MAX_HEIGHT', () => {
+    const { result } = renderHook(() => {
+      const [el, setEl] = useState<HTMLDivElement | null>(null);
+      const clamped = useSettingsAutoResize(el, CHROME, 0);
+      return { clamped, setEl };
+    });
+    const node = document.createElement('div');
+    setScrollHeight(node, 300);
+    act(() => {
+      result.current.setEl(node);
+    });
+    expect(result.current.clamped).toBe(false);
+  });
+
   it('clamps to MIN_HEIGHT when content is too small', () => {
     makeHookHarness(50);
     const call = setSizeCalls()[0][0];
