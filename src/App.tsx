@@ -21,7 +21,6 @@ import {
   getCapabilityConflict,
   getEnvironmentMessage,
 } from './utils/capabilityConflicts';
-import { Toast } from './components/Toast';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView, MAX_IMAGES } from './view/AskBarView';
 import { OnboardingView } from './view/onboarding/index';
@@ -152,14 +151,6 @@ function App() {
     : undefined;
 
   /**
-   * Toast text shown by the submit-time capability gate. Set to a non-null
-   * string when the user attempts to send a message whose attached content
-   * the active model cannot handle (e.g. images on a text-only model).
-   * Cleared by the toast's auto-dismiss or on next submit attempt.
-   */
-  const [capabilityToast, setCapabilityToast] = useState<string | null>(null);
-
-  /**
    * Pulses true to trigger the ask-bar shake animation when the
    * submit-time gate refuses a message, then resets so the next blocked
    * submit gets its own animation. Reset is set just over the 500 ms
@@ -173,10 +164,6 @@ function App() {
     const timer = setTimeout(() => setShakeAskBar(false), 600);
     return () => clearTimeout(timer);
   }, [shakeAskBar]);
-
-  const dismissCapabilityToast = useCallback(() => {
-    setCapabilityToast(null);
-  }, []);
 
   const {
     conversationId,
@@ -1141,11 +1128,11 @@ function App() {
     // the active model cannot handle (images on a text-only model). The
     // gate is the only gate: input affordances stay live so the user can
     // compose freely and recover via the model picker chip. When refused
-    // the ask bar shakes and a toast surfaces the reason. Compose state is
-    // preserved so the user does not lose their typing.
+    // the ask bar shakes; the persistent capability strip already surfaces
+    // the reason so we do not duplicate it in a transient toast. Compose
+    // state is preserved so the user does not lose their typing.
     if (liveCapabilityConflictMessage !== null) {
       setShakeAskBar(true);
-      setCapabilityToast(liveCapabilityConflictMessage);
       return;
     }
 
@@ -1789,16 +1776,12 @@ function App() {
                   onImagePreview={handleAskBarImagePreview}
                   onScreenshot={handleScreenshot}
                   isDragOver={isDragOver ?? undefined}
-                  activeModel={activeModel}
-                  availableModels={availableModels}
-                  onModelPickerToggle={handleModelPickerToggle}
+                  onModelPickerToggle={
+                    ollamaReachable ? handleModelPickerToggle : undefined
+                  }
                   isModelPickerOpen={isModelPickerOpen}
                   capabilityConflictMessage={liveCapabilityConflictMessage}
                   shake={shakeAskBar}
-                />
-                <Toast
-                  message={capabilityToast}
-                  onDismiss={dismissCapabilityToast}
                 />
               </div>
 

@@ -223,8 +223,6 @@ describe('AskBarView', () => {
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
         inputRef={makeRef()}
-        activeModel="gemma4:e2b"
-        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
         onModelPickerToggle={vi.fn()}
       />,
     );
@@ -244,8 +242,6 @@ describe('AskBarView', () => {
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
         inputRef={makeRef()}
-        activeModel="gemma4:e2b"
-        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
         onModelPickerToggle={vi.fn()}
       />,
     );
@@ -264,8 +260,6 @@ describe('AskBarView', () => {
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
         inputRef={makeRef()}
-        activeModel="gemma4:e2b"
-        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
         onModelPickerToggle={onModelPickerToggle}
       />,
     );
@@ -284,8 +278,6 @@ describe('AskBarView', () => {
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
         inputRef={makeRef()}
-        activeModel="gemma4:e2b"
-        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
         onModelPickerToggle={vi.fn()}
         isModelPickerOpen={true}
       />,
@@ -306,8 +298,6 @@ describe('AskBarView', () => {
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
         inputRef={makeRef()}
-        activeModel="gemma4:e2b"
-        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
         onModelPickerToggle={vi.fn()}
       />,
     );
@@ -318,7 +308,11 @@ describe('AskBarView', () => {
     );
   });
 
-  it('hides the model picker trigger in ask-bar mode when no models are available', () => {
+  it('still shows the model picker trigger in ask-bar mode with no models so users can recover via the picker', () => {
+    // The compose-mode chip stays visible whenever the picker callback is
+    // wired up (Ollama reachable). With zero models or no active selection
+    // the user must still be able to open the picker to install or pick a
+    // model; hiding the chip would strand them.
     render(
       <AskBarView
         {...IMAGE_DEFAULTS}
@@ -329,9 +323,25 @@ describe('AskBarView', () => {
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
         inputRef={makeRef()}
-        activeModel=""
-        availableModels={[]}
         onModelPickerToggle={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toBeInTheDocument();
+  });
+
+  it('hides the model picker trigger in ask-bar mode when onModelPickerToggle is not provided (Ollama unreachable)', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
       />,
     );
     expect(screen.queryByRole('button', { name: 'Choose model' })).toBeNull();

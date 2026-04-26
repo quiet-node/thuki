@@ -209,7 +209,9 @@ describe('App', () => {
     await showOverlay();
 
     const strip = screen.getByTestId('capability-mismatch-strip');
-    expect(strip.textContent).toContain('Pull one in Ollama');
+    expect(strip.textContent).toContain(
+      "Thuki couldn't find any local LLM models",
+    );
     expect(strip.textContent).toContain('ollama pull <model>');
   });
 
@@ -3524,7 +3526,7 @@ describe('App', () => {
       );
     });
 
-    it('refuses submit and surfaces a toast when a text-only model has an image attached', async () => {
+    it('refuses submit and shakes the ask bar when a text-only model has an image attached', async () => {
       enableChannelCaptureWithResponses({
         get_model_picker_state: {
           active: 'llama3',
@@ -3562,12 +3564,11 @@ describe('App', () => {
         fireEvent.click(screen.getByRole('button', { name: /send message/i }));
       });
 
-      // Toast surfaces the reason.
-      await vi.waitFor(() => {
-        expect(screen.getByTestId('toast')).toHaveTextContent(
-          'llama3 reads text only',
-        );
-      });
+      // Capability strip remains the single surface for the conflict
+      // message; the duplicate transient toast was removed.
+      expect(screen.getByTestId('capability-mismatch-strip')).toHaveTextContent(
+        'llama3 reads text only',
+      );
       // ask_ollama is NOT invoked.
       const askInvocations = invoke.mock.calls.filter(
         (call) => call[0] === 'ask_ollama',
@@ -3577,60 +3578,12 @@ describe('App', () => {
       expect(screen.getByPlaceholderText('Ask Thuki anything...')).toHaveValue(
         'summarise these',
       );
-    });
-
-    it('toast auto-dismisses after the default duration', async () => {
-      vi.useFakeTimers();
-      try {
-        enableChannelCaptureWithResponses({
-          get_model_picker_state: {
-            active: 'llama3',
-            all: ['llama3'],
-            ollamaReachable: true,
-          },
-          get_model_capabilities: {
-            llama3: {
-              vision: false,
-              thinking: false,
-            },
-          },
-          save_image_command: '/tmp/staged/img1.jpg',
-        });
-        render(<App />);
-        await act(async () => {});
-        await showOverlay();
-        // Paste (real timers were running; pasteImage uses waitFor which
-        // works under fake timers if we advance them).
-        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-        const file = new File(['x'], 'p.png', { type: 'image/png' });
-        await act(async () => {
-          fireEvent.paste(textarea, {
-            clipboardData: {
-              items: [{ type: 'image/png', getAsFile: () => file }],
-            },
-          });
-        });
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(50);
-        });
-        // Submit with no text but an image (canSubmit honors images alone).
-        await act(async () => {
-          fireEvent.click(
-            screen.getByRole('button', { name: /send message/i }),
-          );
-        });
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(10);
-        });
-        expect(screen.queryByTestId('toast')).not.toBeNull();
-        // Advance past the 3000ms default duration.
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(3100);
-        });
-        expect(screen.queryByTestId('toast')).toBeNull();
-      } finally {
-        vi.useRealTimers();
-      }
+      // Wait past the 600 ms shake reset so the cleanup runs and the
+      // shake state pulses back to false. This exercises the effect's
+      // setTimeout/clearTimeout path that the gate relies on.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 650));
+      });
     });
 
     it('does not gate submit when the active model has vision', async () => {
