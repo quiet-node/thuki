@@ -151,6 +151,7 @@ export function SettingsWindow() {
   useSettingsAutoResize(
     contentRef,
     CHROME_HEIGHT + (bannerVisible ? BANNER_HEIGHT : 0),
+    activeTab,
   );
 
   const handleSaved = useCallback(

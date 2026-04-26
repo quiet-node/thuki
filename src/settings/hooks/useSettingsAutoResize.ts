@@ -25,7 +25,7 @@
  *   thrashing on sub-pixel ResizeObserver entries.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 
 const ANIMATE_MS = 220;
@@ -48,11 +48,17 @@ function clampHeight(h: number): number {
  * Observes `contentRef.current.scrollHeight` and animates the OS window
  * to fit. `chromeHeight` is the constant offset from content to total
  * window height (window padding + WindowControls + tab bar + banner +
- * body padding).
+ * body padding). `revision` is any value that changes whenever the
+ * caller knows the content has been replaced (e.g. the active tab id);
+ * the hook re-measures synchronously on every revision change so a
+ * tab swap that does not trigger a ResizeObserver entry (because the
+ * new tree mounts inside the same wrapper element within a single
+ * paint) still drives a resize.
  */
 export function useSettingsAutoResize(
   contentRef: React.RefObject<HTMLElement | null>,
   chromeHeight: number,
+  revision: unknown,
 ): void {
   const rafRef = useRef<number | null>(null);
   const initialisedRef = useRef(false);
@@ -62,6 +68,13 @@ export function useSettingsAutoResize(
   const toRef = useRef(0);
   const chromeRef = useRef(chromeHeight);
   chromeRef.current = chromeHeight;
+
+  /**
+   * `handleResize` is recreated on every effect run, so a separate
+   * effect that wants to invoke it (the revision-driven remeasure
+   * below) has to reach it through a ref to avoid stale closures.
+   */
+  const handleResizeRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const el = contentRef.current;
@@ -116,6 +129,7 @@ export function useSettingsAutoResize(
 
     const observer = new ResizeObserver(handleResize);
     observer.observe(el);
+    handleResizeRef.current = handleResize;
     // ResizeObserver is spec'd to fire once on observe(), but happy-dom
     // and a few engines skip the initial tick. Fire manually so the
     // window snaps to its measured size on mount regardless.
@@ -126,4 +140,12 @@ export function useSettingsAutoResize(
       cancelAnim();
     };
   }, [contentRef]);
+
+  // Force a re-measure whenever the caller-supplied revision changes
+  // (e.g. on tab switch). useLayoutEffect runs after DOM mutations are
+  // committed but before the browser paints, so `scrollHeight` reflects
+  // the freshly-mounted tab's natural height.
+  useLayoutEffect(() => {
+    handleResizeRef.current();
+  }, [revision, chromeHeight]);
 }

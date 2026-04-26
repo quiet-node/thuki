@@ -55,7 +55,11 @@ function setSizeCalls(): Array<[{ width: number; height: number }]> {
  * tested with a known content size. The element identity is stable
  * across renders.
  */
-function useHookWithEl(chromeHeight: number, initialScrollHeight = 400) {
+function useHookWithEl(
+  chromeHeight: number,
+  initialScrollHeight = 400,
+  revision: unknown = 0,
+) {
   const ref = useRef<HTMLDivElement | null>(null);
   if (ref.current === null) {
     // eslint-disable-next-line @eslint-react/purity -- ref initializer for tests
@@ -63,7 +67,7 @@ function useHookWithEl(chromeHeight: number, initialScrollHeight = 400) {
     setScrollHeight(el, initialScrollHeight);
     ref.current = el;
   }
-  useSettingsAutoResize(ref, chromeHeight);
+  useSettingsAutoResize(ref, chromeHeight, revision);
   return ref;
 }
 
@@ -154,7 +158,7 @@ describe('useSettingsAutoResize', () => {
   it('is a no-op when the ref has no element', () => {
     const { result } = renderHook(() => {
       const ref = useRef<HTMLDivElement | null>(null);
-      useSettingsAutoResize(ref, CHROME);
+      useSettingsAutoResize(ref, CHROME, 0);
       return ref;
     });
     expect(result.current.current).toBeNull();
@@ -170,7 +174,7 @@ describe('useSettingsAutoResize', () => {
         setScrollHeight(el, 400);
         ref.current = el;
       }
-      useSettingsAutoResize(ref, chrome);
+      useSettingsAutoResize(ref, chrome, 0);
       return ref;
     });
     const el = result.current.current!;
@@ -183,5 +187,34 @@ describe('useSettingsAutoResize', () => {
     vi.advanceTimersByTime(ANIMATE_MS + 50);
     const last = setSizeCalls()[setSizeCalls().length - 1][0];
     expect(last.height).toBe(400 + CHROME + 56);
+  });
+
+  it('forces a re-measure when the revision value changes (tab switch)', () => {
+    let revision = 'ai';
+    const { result, rerender } = renderHook(() => {
+      const ref = useRef<HTMLDivElement | null>(null);
+      if (ref.current === null) {
+        const el = document.createElement('div');
+        setScrollHeight(el, 400);
+        ref.current = el;
+      }
+      useSettingsAutoResize(ref, CHROME, revision);
+      return ref;
+    });
+    const el = result.current.current!;
+    // Initial mount snap.
+    expect(setSizeCalls()[0][0].height).toBe(400 + CHROME);
+    __mockWindow.setSize.mockClear();
+
+    // Simulate tab switch: ResizeObserver does NOT fire, but the layout
+    // effect should kick a remeasure off the new revision value.
+    setScrollHeight(el, 700);
+    revision = 'web';
+    rerender();
+    vi.advanceTimersByTime(ANIMATE_MS + 50);
+
+    expect(setSizeCalls().length).toBeGreaterThan(0);
+    const last = setSizeCalls()[setSizeCalls().length - 1][0];
+    expect(last.height).toBe(700 + CHROME);
   });
 });
