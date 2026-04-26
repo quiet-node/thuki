@@ -42,8 +42,7 @@ Tests use **Vitest** for the frontend (React/TypeScript with React Testing Libra
 
 **100% code coverage is mandatory.** Any new or modified code — frontend or backend — must maintain 100% coverage across lines, functions, branches, and statements. PRs that drop below 100% coverage will not be merged.
 
-- **Frontend:** Run `bun run test:coverage` and verify all metrics are 100%.
-- **Backend:** Run `bun run test:backend:coverage` to enforce 100% line coverage (identical to what CI runs). Functions excluded from coverage with `#[cfg_attr(coverage_nightly, coverage(off))]` must be thin wrappers (Tauri commands, filesystem I/O) whose logic is tested through the functions they delegate to.
+**Always run `bun run test:all:coverage` (never the bare `bun run test` / `bun run test:all`).** This single command runs both Vitest with coverage and the cargo llvm-cov gate that CI enforces. If it does not exit cleanly, the task is not done. Functions excluded from coverage with `#[cfg_attr(coverage_nightly, coverage(off))]` must be thin wrappers (Tauri commands, filesystem I/O) whose logic is tested through the functions they delegate to.
 
 ## Architecture
 
@@ -143,7 +142,7 @@ When extending the system, preserve this contract: **never panic on user input**
 
 After making any code changes and before ending your response, you must:
 
-1. Run `bun run test` — all tests must pass
+1. Run `bun run test:all:coverage` — frontend + backend tests must pass AND 100% coverage gate must hold
 2. Run `bun run validate-build` — must complete with **zero warnings and zero errors**
 
 Do not consider the task done if either step produces any warnings or errors. Fix all issues first.
