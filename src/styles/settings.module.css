@@ -176,9 +176,10 @@
   position: relative;
   padding: 18px 22px 24px;
   min-width: 0;
-  /* Reserve gutter so content doesn't shift when the macOS overlay
-   * scrollbar fades in. Matches .chat-messages-scroll in App.css. */
-  scrollbar-gutter: stable;
+  /* No `scrollbar-gutter: stable` — short tabs (AI, Display, About)
+   * fit under MAX_HEIGHT and should not reserve a phantom gutter on
+   * the right. The Web tab is the only one that overflows; macOS
+   * overlay scrollbars sit on top of content there, no layout shift. */
 }
 /* No `::-webkit-scrollbar` overrides — letting macOS render its native
  * overlay scrollbar that auto-shows on scroll, matching the chat view. */
