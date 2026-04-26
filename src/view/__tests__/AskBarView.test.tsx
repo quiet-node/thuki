@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { AskBarView } from '../AskBarView';
+import { AskBarView, renderHighlightedText } from '../AskBarView';
 import type { AttachedImage } from '../../types/image';
 
 function makeRef(): React.RefObject<HTMLTextAreaElement | null> {
@@ -1647,6 +1647,98 @@ describe('AskBarView', () => {
         />,
       );
       expect(screen.getByTestId('ask-bar-row')).toBeInTheDocument();
+    });
+  });
+
+  describe('slash command highlighting', () => {
+    it('mirror div renders the query so colored spans show through the textarea', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/search what is Rust?"
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const mirror = screen.getByTestId('askbar-mirror');
+      expect(mirror).toHaveTextContent('/search what is Rust?');
+      // The trigger token sits in its own span with the violet utility class.
+      const tokenSpan = Array.from(mirror.querySelectorAll('span')).find(
+        (s) => s.textContent === '/search',
+      );
+      expect(tokenSpan).toBeDefined();
+      expect(tokenSpan?.className).toContain('text-violet-400');
+    });
+
+    it('syncs mirror scrollTop with the textarea so the highlight tracks the caret', () => {
+      const ref = makeRef();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/think who is Elon"
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={ref}
+        />,
+      );
+      const mirror = screen.getByTestId('askbar-mirror') as HTMLDivElement;
+      // Pretend the textarea has been scrolled.
+      Object.defineProperty(ref.current, 'scrollTop', {
+        configurable: true,
+        value: 24,
+      });
+      Object.defineProperty(ref.current, 'scrollLeft', {
+        configurable: true,
+        value: 6,
+      });
+      fireEvent.scroll(ref.current!);
+      expect(mirror.scrollTop).toBe(24);
+      expect(mirror.scrollLeft).toBe(6);
+    });
+  });
+
+  describe('renderHighlightedText (pure)', () => {
+    it('returns a single span when no command trigger is present', () => {
+      const node = renderHighlightedText('plain text only');
+      const { container } = render(<>{node}</>);
+      const violet = container.querySelector('.text-violet-400');
+      expect(violet).toBeNull();
+      expect(container).toHaveTextContent('plain text only');
+    });
+
+    it('wraps the first valid trigger occurrence in the violet utility class', () => {
+      const node = renderHighlightedText('/search what is Rust?');
+      const { container } = render(<>{node}</>);
+      const tokens = container.querySelectorAll('.text-violet-400');
+      expect(tokens.length).toBe(1);
+      expect(tokens[0].textContent).toBe('/search');
+    });
+
+    it('only highlights the first occurrence of any given trigger', () => {
+      const node = renderHighlightedText('/search foo /search bar');
+      const { container } = render(<>{node}</>);
+      const tokens = container.querySelectorAll('.text-violet-400');
+      expect(tokens.length).toBe(1);
+    });
+
+    it('does not match a trigger embedded inside a longer word', () => {
+      // /searching contains /search but is not a standalone trigger token.
+      const node = renderHighlightedText('/searching');
+      const { container } = render(<>{node}</>);
+      expect(container.querySelector('.text-violet-400')).toBeNull();
+    });
+
+    it('returns an empty fragment for an empty string without throwing', () => {
+      const node = renderHighlightedText('');
+      const { container } = render(<>{node}</>);
+      expect(container.textContent).toBe('');
     });
   });
 });

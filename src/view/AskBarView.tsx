@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { ImageThumbnails } from '../components/ImageThumbnails';
@@ -214,6 +214,58 @@ interface AskBarViewProps {
 }
 
 /**
+ * Renders text with command triggers highlighted in violet for the mirror div.
+ * Only the first occurrence of each command is highlighted; duplicates render
+ * as plain text. Word-boundary aware: `/searching` does not match `/search`.
+ *
+ * Exported for direct unit testing.
+ */
+export function renderHighlightedText(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  let remaining = text;
+  const highlighted = new Set<string>();
+
+  while (remaining.length > 0) {
+    let earliest = -1;
+    let matchedTrigger = '';
+    for (const cmd of COMMANDS) {
+      if (highlighted.has(cmd.trigger)) continue;
+      const idx = remaining.indexOf(cmd.trigger);
+      if (idx !== -1 && (earliest === -1 || idx < earliest)) {
+        const before = idx === 0 || remaining[idx - 1] === ' ';
+        const after =
+          idx + cmd.trigger.length >= remaining.length ||
+          remaining[idx + cmd.trigger.length] === ' ';
+        if (before && after) {
+          earliest = idx;
+          matchedTrigger = cmd.trigger;
+        }
+      }
+    }
+
+    if (earliest === -1) {
+      parts.push(<span key={parts.length}>{remaining}</span>);
+      break;
+    }
+
+    if (earliest > 0) {
+      parts.push(
+        <span key={parts.length}>{remaining.slice(0, earliest)}</span>,
+      );
+    }
+    parts.push(
+      <span key={parts.length} className="text-violet-400">
+        {matchedTrigger}
+      </span>,
+    );
+    highlighted.add(matchedTrigger);
+    remaining = remaining.slice(earliest + matchedTrigger.length);
+  }
+
+  return <>{parts}</>;
+}
+
+/**
  * Renders the persistent bottom input bar of the application.
  *
  * Window dragging is handled by the application root container via event
@@ -245,6 +297,19 @@ export function AskBarView({
 }: AskBarViewProps) {
   /** Quote display limits resolved from the managed AppConfig. */
   const quote = useConfig().quote;
+
+  /** Ref to the mirror div behind the textarea for command highlighting. */
+  const mirrorRef = useRef<HTMLDivElement>(null);
+
+  /** Syncs the mirror div scroll position with the textarea so the colored
+   *  spans stay aligned with the caret on long inputs. */
+  const handleTextareaScroll = useCallback(() => {
+    /* v8 ignore start -- both refs are always set by React when this fires */
+    if (!mirrorRef.current || !inputRef.current) return;
+    /* v8 ignore stop */
+    mirrorRef.current.scrollTop = inputRef.current.scrollTop;
+    mirrorRef.current.scrollLeft = inputRef.current.scrollLeft;
+  }, [inputRef]);
 
   /** True when the UI should be locked - either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
@@ -601,17 +666,32 @@ export function AskBarView({
           )}
 
           <div className="relative flex-1 min-w-0">
+            {/* Mirror div: renders the same text with highlighted slash
+                commands. Sits behind the transparent textarea so colored
+                spans show through. Metrics (font, size, padding, leading,
+                wrap) MUST mirror the textarea exactly so the caret never
+                drifts off the rendered glyphs. */}
+            <div
+              ref={mirrorRef}
+              aria-hidden="true"
+              data-testid="askbar-mirror"
+              className="askbar-mirror absolute inset-0 pointer-events-none bg-transparent text-text-primary text-sm py-2 px-1 leading-5 whitespace-pre-wrap break-words overflow-hidden"
+            >
+              {renderHighlightedText(query)}
+            </div>
             <textarea
               ref={inputRef}
               value={query}
               onChange={handleTextareaChange}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
+              onScroll={handleTextareaScroll}
               disabled={isBusy}
               autoFocus
               rows={1}
               placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
-              className="askbar-textarea relative w-full bg-transparent border-none outline-none text-text-primary text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-5"
+              className="askbar-textarea relative w-full bg-transparent border-none outline-none text-transparent text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-5"
+              style={{ caretColor: 'var(--color-text-primary)' }}
             />
           </div>
 
