@@ -145,11 +145,14 @@ export function SettingsWindow() {
   const [resyncToken, setResyncToken] = useState(0);
 
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const contentRef = useRef<HTMLDivElement | null>(null);
+  // State-backed ref so the auto-resize hook re-runs its effect when the
+  // wrapper element actually mounts (it is gated behind `if (!config)
+  // return null` and so does not exist on the first render).
+  const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
 
   const bannerVisible = Boolean(marker && !markerDismissed);
   useSettingsAutoResize(
-    contentRef,
+    contentEl,
     CHROME_HEIGHT + (bannerVisible ? BANNER_HEIGHT : 0),
     activeTab,
   );
@@ -313,7 +316,7 @@ export function SettingsWindow() {
         id={`panel-${activeTab}`}
         role="tabpanel"
       >
-        <div ref={contentRef}>
+        <div ref={setContentEl}>
           {activeTab === 'general' ? (
             <ModelTab
               config={config}

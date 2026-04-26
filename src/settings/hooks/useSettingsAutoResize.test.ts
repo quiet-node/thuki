@@ -1,6 +1,6 @@
-import { renderHook } from '@testing-library/react';
+import { renderHook, act } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useRef } from 'react';
+import { useState } from 'react';
 
 import { __mockWindow } from '../../testUtils/mocks/tauri-window';
 import { useSettingsAutoResize } from './useSettingsAutoResize';
@@ -11,11 +11,6 @@ const MIN_HEIGHT = 280;
 const MAX_HEIGHT = 900;
 const CHROME = 148;
 
-/**
- * Captures the latest ResizeObserver callback so tests can drive layout
- * changes manually. Mirrors the pattern in `App.test.tsx` since happy-dom
- * does not compute layout.
- */
 let capturedRoCallback: ResizeObserverCallback | null = null;
 function spyOnResizeObserver() {
   const Original = globalThis.ResizeObserver;
@@ -42,7 +37,6 @@ function fireResize(el: HTMLElement, scrollHeight: number) {
   );
 }
 
-/** Strongly-typed view of `__mockWindow.setSize`'s recorded calls. */
 function setSizeCalls(): Array<[{ width: number; height: number }]> {
   return __mockWindow.setSize.mock.calls as unknown as Array<
     [{ width: number; height: number }]
@@ -50,25 +44,43 @@ function setSizeCalls(): Array<[{ width: number; height: number }]> {
 }
 
 /**
- * Wrapper that gives us a real DOM element with a configurable initial
- * `scrollHeight` so the hook's first observation snap-call can be
- * tested with a known content size. The element identity is stable
- * across renders.
+ * Mounts the hook with a real DOM element. Mirrors how SettingsWindow
+ * wires the state-backed callback ref, so the effect's `el`-dependent
+ * setup path is exercised end-to-end.
  */
-function useHookWithEl(
-  chromeHeight: number,
-  initialScrollHeight = 400,
-  revision: unknown = 0,
-) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  if (ref.current === null) {
-    // eslint-disable-next-line @eslint-react/purity -- ref initializer for tests
-    const el = document.createElement('div');
-    setScrollHeight(el, initialScrollHeight);
-    ref.current = el;
-  }
-  useSettingsAutoResize(ref, chromeHeight, revision);
-  return ref;
+function makeHookHarness(initialScrollHeight = 400) {
+  let updateRevision: ((rev: unknown) => void) | undefined;
+  let updateChrome: ((c: number) => void) | undefined;
+  const { result, rerender, unmount } = renderHook(() => {
+    const [el, setEl] = useState<HTMLDivElement | null>(null);
+    const [revision, setRevision] = useState<unknown>('initial');
+    const [chrome, setChrome] = useState(CHROME);
+    updateRevision = setRevision;
+    updateChrome = setChrome;
+    useSettingsAutoResize(el, chrome, revision);
+    return { el, setEl };
+  });
+
+  // Simulate ref-callback firing with a freshly created element.
+  const node = document.createElement('div');
+  setScrollHeight(node, initialScrollHeight);
+  act(() => {
+    result.current.setEl(node);
+  });
+
+  return {
+    el: node,
+    setRevision: (r: unknown) =>
+      act(() => {
+        updateRevision!(r);
+      }),
+    setChrome: (c: number) =>
+      act(() => {
+        updateChrome!(c);
+      }),
+    rerender,
+    unmount,
+  };
 }
 
 describe('useSettingsAutoResize', () => {
@@ -85,8 +97,7 @@ describe('useSettingsAutoResize', () => {
   });
 
   it('snaps without animation on the first measurement', () => {
-    renderHook(() => useHookWithEl(CHROME, 400));
-    // Hook fires `handleResize` once on mount.
+    makeHookHarness(400);
     expect(__mockWindow.setSize).toHaveBeenCalledTimes(1);
     const call = setSizeCalls()[0][0];
     expect(call.width).toBe(SETTINGS_WIDTH);
@@ -94,8 +105,7 @@ describe('useSettingsAutoResize', () => {
   });
 
   it('animates between sizes via requestAnimationFrame', () => {
-    const { result } = renderHook(() => useHookWithEl(CHROME, 400));
-    const el = result.current.current!;
+    const { el } = makeHookHarness(400);
     __mockWindow.setSize.mockClear();
 
     fireResize(el, 600);
@@ -107,20 +117,19 @@ describe('useSettingsAutoResize', () => {
   });
 
   it('clamps to MAX_HEIGHT when content exceeds the cap', () => {
-    renderHook(() => useHookWithEl(CHROME, 1200));
+    makeHookHarness(1200);
     const call = setSizeCalls()[0][0];
     expect(call.height).toBe(MAX_HEIGHT);
   });
 
   it('clamps to MIN_HEIGHT when content is too small', () => {
-    renderHook(() => useHookWithEl(CHROME, 50));
+    makeHookHarness(50);
     const call = setSizeCalls()[0][0];
     expect(call.height).toBe(MIN_HEIGHT);
   });
 
   it('skips negligible deltas (<4px)', () => {
-    const { result } = renderHook(() => useHookWithEl(CHROME, 400));
-    const el = result.current.current!;
+    const { el } = makeHookHarness(400);
     __mockWindow.setSize.mockClear();
 
     fireResize(el, 401);
@@ -129,8 +138,7 @@ describe('useSettingsAutoResize', () => {
   });
 
   it('cancels an in-flight animation when a new target arrives', () => {
-    const { result } = renderHook(() => useHookWithEl(CHROME, 400));
-    const el = result.current.current!;
+    const { el } = makeHookHarness(400);
     __mockWindow.setSize.mockClear();
 
     fireResize(el, 600);
@@ -146,75 +154,43 @@ describe('useSettingsAutoResize', () => {
   });
 
   it('cleans up the observer and pending rAF on unmount', () => {
-    const { result, unmount } = renderHook(() => useHookWithEl(CHROME, 400));
-    const el = result.current.current!;
-    fireResize(el, 600); // start animating
+    const { el, unmount } = makeHookHarness(400);
+    fireResize(el, 600);
     unmount();
     __mockWindow.setSize.mockClear();
     vi.advanceTimersByTime(ANIMATE_MS + 50);
     expect(__mockWindow.setSize).not.toHaveBeenCalled();
   });
 
-  it('is a no-op when the ref has no element', () => {
-    const { result } = renderHook(() => {
-      const ref = useRef<HTMLDivElement | null>(null);
-      useSettingsAutoResize(ref, CHROME, 0);
-      return ref;
+  it('is a no-op while the element ref has not yet attached', () => {
+    renderHook(() => {
+      const [el] = useState<HTMLDivElement | null>(null);
+      useSettingsAutoResize(el, CHROME, 0);
     });
-    expect(result.current.current).toBeNull();
     expect(__mockWindow.setSize).not.toHaveBeenCalled();
   });
 
+  it('forces a re-measure when the revision value changes (tab switch)', () => {
+    const { el, setRevision } = makeHookHarness(400);
+    __mockWindow.setSize.mockClear();
+
+    setScrollHeight(el, 700);
+    setRevision('next');
+    vi.advanceTimersByTime(ANIMATE_MS + 50);
+
+    const last = setSizeCalls()[setSizeCalls().length - 1][0];
+    expect(last.height).toBe(700 + CHROME);
+  });
+
   it('reflects updated chromeHeight on the next resize', () => {
-    let chrome = CHROME;
-    const { result, rerender } = renderHook(() => {
-      const ref = useRef<HTMLDivElement | null>(null);
-      if (ref.current === null) {
-        const el = document.createElement('div');
-        setScrollHeight(el, 400);
-        ref.current = el;
-      }
-      useSettingsAutoResize(ref, chrome, 0);
-      return ref;
-    });
-    const el = result.current.current!;
+    const { el, setChrome } = makeHookHarness(400);
     expect(setSizeCalls()[0][0].height).toBe(400 + CHROME);
 
-    chrome = CHROME + 56;
-    rerender();
+    setChrome(CHROME + 56);
     __mockWindow.setSize.mockClear();
-    fireResize(el, 400); // same content, new chrome
+    fireResize(el, 400);
     vi.advanceTimersByTime(ANIMATE_MS + 50);
     const last = setSizeCalls()[setSizeCalls().length - 1][0];
     expect(last.height).toBe(400 + CHROME + 56);
-  });
-
-  it('forces a re-measure when the revision value changes (tab switch)', () => {
-    let revision = 'ai';
-    const { result, rerender } = renderHook(() => {
-      const ref = useRef<HTMLDivElement | null>(null);
-      if (ref.current === null) {
-        const el = document.createElement('div');
-        setScrollHeight(el, 400);
-        ref.current = el;
-      }
-      useSettingsAutoResize(ref, CHROME, revision);
-      return ref;
-    });
-    const el = result.current.current!;
-    // Initial mount snap.
-    expect(setSizeCalls()[0][0].height).toBe(400 + CHROME);
-    __mockWindow.setSize.mockClear();
-
-    // Simulate tab switch: ResizeObserver does NOT fire, but the layout
-    // effect should kick a remeasure off the new revision value.
-    setScrollHeight(el, 700);
-    revision = 'web';
-    rerender();
-    vi.advanceTimersByTime(ANIMATE_MS + 50);
-
-    expect(setSizeCalls().length).toBeGreaterThan(0);
-    const last = setSizeCalls()[setSizeCalls().length - 1][0];
-    expect(last.height).toBe(700 + CHROME);
   });
 });
