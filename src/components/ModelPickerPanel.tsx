@@ -1,5 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import type { ModelCapabilitiesMap } from '../types/model';
+import { Tooltip } from './Tooltip';
+
+/**
+ * Public Ollama library URL opened by the "Browse Ollama" pill. Lives
+ * here as a module constant so tests can match it without importing the
+ * pill's render path.
+ */
+export const OLLAMA_LIBRARY_URL = 'https://ollama.com/library';
+
+/**
+ * Tooltip body shown when the user hovers the pill. Multi-line so the
+ * Tooltip component renders it as the wider variant and the user gets
+ * the full sentence in one read.
+ */
+export const OLLAMA_PILL_TOOLTIP =
+  'Open by design — browse and pull any model on Ollama. Thuki auto-detects it.';
 
 const CHECK_ICON_PATH = (
   <path
@@ -117,7 +134,7 @@ export function ModelPickerPanel({
 
   return (
     <div className="flex flex-col w-full">
-      <div className="px-3 pt-3 pb-2 border-b border-surface-border">
+      <div className="flex items-center gap-2 px-3 pt-3 pb-2 border-b border-surface-border">
         <input
           type="text"
           role="combobox"
@@ -165,8 +182,35 @@ export function ModelPickerPanel({
           }}
           placeholder="Filter models..."
           autoFocus
-          className="w-full bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
+          className="flex-1 min-w-0 bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
         />
+        <Tooltip label={OLLAMA_PILL_TOOLTIP} multiline>
+          <button
+            type="button"
+            data-testid="model-picker-ollama-link"
+            aria-label="Browse Ollama models"
+            onClick={() => {
+              void invoke('open_url', { url: OLLAMA_LIBRARY_URL });
+            }}
+            className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-full px-2.5 py-0.5 hover:text-primary hover:bg-primary/12 transition-colors duration-120 cursor-pointer outline-none whitespace-nowrap"
+          >
+            Browse Ollama
+            <svg
+              className="w-2.5 h-2.5"
+              viewBox="0 0 16 16"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M5 11l6-6m-5 0h5v5"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </Tooltip>
       </div>
 
       <div

@@ -1,7 +1,17 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
-import { ModelPickerPanel, formatCapabilityLabel } from '../ModelPickerPanel';
+import {
+  ModelPickerPanel,
+  formatCapabilityLabel,
+  OLLAMA_LIBRARY_URL,
+  OLLAMA_PILL_TOOLTIP,
+} from '../ModelPickerPanel';
 import type { ModelCapabilitiesMap } from '../../types/model';
+import { invoke } from '@tauri-apps/api/core';
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}));
 
 const MODELS = ['gemma4:e2b', 'qwen2.5:7b', 'llama3.2:3b'];
 
@@ -291,5 +301,44 @@ describe('formatCapabilityLabel', () => {
       x: { vision: false, thinking: true },
     };
     expect(formatCapabilityLabel(map, 'x')).toBe('text · thinking');
+  });
+});
+
+describe('ModelPickerPanel "Browse Ollama" pill', () => {
+  it('renders the Browse Ollama button next to the filter input', () => {
+    render(
+      <ModelPickerPanel
+        models={MODELS}
+        activeModel="gemma4:e2b"
+        onSelect={vi.fn()}
+      />,
+    );
+    const pill = screen.getByTestId('model-picker-ollama-link');
+    expect(pill).toBeInTheDocument();
+    expect(pill).toHaveTextContent(/Browse Ollama/i);
+    expect(pill).toHaveAttribute('aria-label', 'Browse Ollama models');
+  });
+
+  it('opens the Ollama library URL via open_url when clicked', () => {
+    render(
+      <ModelPickerPanel
+        models={MODELS}
+        activeModel="gemma4:e2b"
+        onSelect={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('model-picker-ollama-link'));
+    expect(invoke).toHaveBeenCalledWith('open_url', {
+      url: OLLAMA_LIBRARY_URL,
+    });
+  });
+
+  it('exports a stable Ollama library URL constant', () => {
+    expect(OLLAMA_LIBRARY_URL).toBe('https://ollama.com/library');
+  });
+
+  it('exports a stable tooltip body constant', () => {
+    expect(OLLAMA_PILL_TOOLTIP).toMatch(/Open by design/i);
+    expect(OLLAMA_PILL_TOOLTIP).toMatch(/Thuki auto-detects it/i);
   });
 });
