@@ -120,17 +120,15 @@ const TABS: ReadonlyArray<{
 const SAVED_PILL_DURATION_MS = 1500;
 
 /**
- * Static chrome offset from inner content to total window height:
- *   window padding-top (8) + WindowControls strip (~28) + tab bar (~70)
- *   + body padding top+bottom (18 + 24 = 42) + slack (16).
- * Empirically measured against the rendered Settings window with a
- * little slack added so short tabs never trip a scrollbar from a
- * sub-pixel chrome miscount: with `overflow-y: auto` the body shows a
- * scroller as soon as content exceeds the body box even by 1px.
+ * Body padding (`18px 22px 24px` → top+bottom = 42) plus the outer
+ * `.window` padding-top (8). These are CSS-constant; everything else
+ * that contributes to chrome height (WindowControls, optional banner,
+ * tab bar) is measured at runtime via `chromeEl` so the auto-resize
+ * hook never has to guess.
  */
-const CHROME_HEIGHT = 164;
-/** Recovery banner height when the corrupt-config marker is shown. */
-const BANNER_HEIGHT = 56;
+const STATIC_CHROME_PX = 8 + 42;
+/** Fallback chrome height used until the chrome ref attaches. */
+const FALLBACK_CHROME_PX = 180;
 
 export function SettingsWindow() {
   const { config, reload, setConfig } = useConfigSync();
@@ -145,17 +143,29 @@ export function SettingsWindow() {
   const [resyncToken, setResyncToken] = useState(0);
 
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // State-backed ref so the auto-resize hook re-runs its effect when the
-  // wrapper element actually mounts (it is gated behind `if (!config)
-  // return null` and so does not exist on the first render).
+  // State-backed refs so the auto-resize hook + the chrome-measurement
+  // effect re-run when their elements actually mount (they are gated
+  // behind `if (!config) return null` and so do not exist on the first
+  // render).
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
+  const [chromeEl, setChromeEl] = useState<HTMLDivElement | null>(null);
+  const [chromeHeight, setChromeHeight] = useState(FALLBACK_CHROME_PX);
 
-  const bannerVisible = Boolean(marker && !markerDismissed);
-  useSettingsAutoResize(
-    contentEl,
-    CHROME_HEIGHT + (bannerVisible ? BANNER_HEIGHT : 0),
-    activeTab,
-  );
+  // Measure chrome (WindowControls + optional banner + tab bar) at
+  // runtime instead of guessing. ResizeObserver re-fires when the
+  // banner appears or disappears so the auto-resize target stays
+  // accurate.
+  useEffect(() => {
+    if (!chromeEl) return;
+    const update = () =>
+      setChromeHeight(chromeEl.offsetHeight + STATIC_CHROME_PX);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(chromeEl);
+    return () => ro.disconnect();
+  }, [chromeEl]);
+
+  useSettingsAutoResize(contentEl, chromeHeight, activeTab);
 
   const handleSaved = useCallback(
     (next: RawAppConfig) => {
@@ -238,77 +248,79 @@ export function SettingsWindow() {
 
   return (
     <div className={styles.window} onMouseDown={handleDragStart}>
-      <WindowControls onClose={handleHide} />
+      <div ref={setChromeEl}>
+        <WindowControls onClose={handleHide} />
 
-      {marker && !markerDismissed ? (
-        <div className={styles.banner} role="alert">
-          <span className={styles.bannerIcon} aria-hidden>
-            ⚠
-          </span>
-          <span className={styles.bannerText}>
-            Your previous <code>config.toml</code> had a syntax error and was
-            saved as <code>{baseName(marker.path)}</code>. Defaults are now
-            active.
-          </span>
-          <span className={styles.bannerActions}>
-            <button
-              type="button"
-              className={`${styles.button} ${styles.buttonGhost}`}
-              onClick={() =>
-                void invoke('open_url', {
-                  url: `file://${encodeURI(marker.path).replace(/'/g, '%27')}`,
-                })
-              }
-            >
-              Reveal
-            </button>
-            <button
-              type="button"
-              className={`${styles.button} ${styles.buttonGhost}`}
-              onClick={() => setMarkerDismissed(true)}
-            >
-              Dismiss
-            </button>
-          </span>
-        </div>
-      ) : null}
-
-      <div
-        role="tablist"
-        aria-label="Settings sections"
-        className={styles.tabBar}
-      >
-        {TABS.map((tab) => {
-          const active = tab.id === activeTab;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              aria-controls={`panel-${tab.id}`}
-              tabIndex={active ? 0 : -1}
-              className={`${styles.tab} ${active ? styles.tabActive : ''}`}
-              onClick={() => setActiveTab(tab.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-                  e.preventDefault();
-                  const idx = TABS.findIndex((t) => t.id === activeTab);
-                  const next =
-                    e.key === 'ArrowRight'
-                      ? TABS[(idx + 1) % TABS.length]
-                      : TABS[(idx - 1 + TABS.length) % TABS.length];
-                  setActiveTab(next.id);
+        {marker && !markerDismissed ? (
+          <div className={styles.banner} role="alert">
+            <span className={styles.bannerIcon} aria-hidden>
+              ⚠
+            </span>
+            <span className={styles.bannerText}>
+              Your previous <code>config.toml</code> had a syntax error and was
+              saved as <code>{baseName(marker.path)}</code>. Defaults are now
+              active.
+            </span>
+            <span className={styles.bannerActions}>
+              <button
+                type="button"
+                className={`${styles.button} ${styles.buttonGhost}`}
+                onClick={() =>
+                  void invoke('open_url', {
+                    url: `file://${encodeURI(marker.path).replace(/'/g, '%27')}`,
+                  })
                 }
-              }}
-            >
-              <span className={styles.tabIcon} aria-hidden>
-                {tab.icon}
-              </span>
-              <span className={styles.tabLabel}>{tab.label}</span>
-            </button>
-          );
-        })}
+              >
+                Reveal
+              </button>
+              <button
+                type="button"
+                className={`${styles.button} ${styles.buttonGhost}`}
+                onClick={() => setMarkerDismissed(true)}
+              >
+                Dismiss
+              </button>
+            </span>
+          </div>
+        ) : null}
+
+        <div
+          role="tablist"
+          aria-label="Settings sections"
+          className={styles.tabBar}
+        >
+          {TABS.map((tab) => {
+            const active = tab.id === activeTab;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                aria-controls={`panel-${tab.id}`}
+                tabIndex={active ? 0 : -1}
+                className={`${styles.tab} ${active ? styles.tabActive : ''}`}
+                onClick={() => setActiveTab(tab.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    const idx = TABS.findIndex((t) => t.id === activeTab);
+                    const next =
+                      e.key === 'ArrowRight'
+                        ? TABS[(idx + 1) % TABS.length]
+                        : TABS[(idx - 1 + TABS.length) % TABS.length];
+                    setActiveTab(next.id);
+                  }
+                }}
+              >
+                <span className={styles.tabIcon} aria-hidden>
+                  {tab.icon}
+                </span>
+                <span className={styles.tabLabel}>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div className={styles.body} id={`panel-${activeTab}`} role="tabpanel">
