@@ -715,33 +715,17 @@ pub fn run() {
             // ── System tray icon + menu ───────────────────────────────────
             // Order chosen for muscle-memory parity with mac tray apps
             // (Bartender, CleanShot X, Rectangle): primary action at top,
-            // settings near it with the macOS-canonical ⌘, accelerator, an
-            // explicit "open the file" escape hatch for power users who
-            // hand-edit, then Quit at the bottom.
+            // settings near it with the macOS-canonical ⌘, accelerator,
+            // separator, then Quit at the bottom. The "Reveal app data"
+            // affordance lives inside the Settings → About tab so the tray
+            // stays focused on session-level actions.
             let show_item = MenuItem::with_id(app, "show", "Open Thuki", true, None::<&str>)?;
             let settings_item =
                 MenuItem::with_id(app, "settings", "Settings…", true, Some("Cmd+,"))?;
-            let reveal_item = MenuItem::with_id(
-                app,
-                "reveal_config",
-                "Reveal config.toml",
-                true,
-                None::<&str>,
-            )?;
-            let separator_top = tauri::menu::PredefinedMenuItem::separator(app)?;
-            let separator_bottom = tauri::menu::PredefinedMenuItem::separator(app)?;
+            let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Thuki", true, Some("Cmd+Q"))?;
-            let tray_menu = Menu::with_items(
-                app,
-                &[
-                    &show_item,
-                    &settings_item,
-                    &separator_top,
-                    &reveal_item,
-                    &separator_bottom,
-                    &quit_item,
-                ],
-            )?;
+            let tray_menu =
+                Menu::with_items(app, &[&show_item, &settings_item, &separator, &quit_item])?;
 
             let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))
                 .expect("Failed to load tray icon");
@@ -758,9 +742,6 @@ pub fn run() {
                     }
                     "settings" => {
                         show_settings_window(app);
-                    }
-                    "reveal_config" => {
-                        let _ = settings_commands::reveal_config_in_finder(app.clone());
                     }
                     "quit" => {
                         app.state::<crate::commands::GenerationState>().cancel();
