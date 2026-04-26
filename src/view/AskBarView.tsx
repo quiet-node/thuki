@@ -7,6 +7,7 @@ import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
 import { ModelPicker } from '../components/ModelPicker';
 import { Tooltip } from '../components/Tooltip';
+import { CapabilityMismatchStrip } from '../components/CapabilityMismatchStrip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
 import { COMMANDS } from '../config/commands';
@@ -199,6 +200,17 @@ interface AskBarViewProps {
   onModelPickerToggle?: () => void;
   /** Whether the model picker panel is currently open (drives aria-expanded). */
   isModelPickerOpen?: boolean;
+  /**
+   * Capability mismatch message to render between the attachments row and
+   * the input. `null` (or undefined) renders nothing. The host computes
+   * this string via `getCapabilityConflict` and passes it down.
+   */
+  capabilityConflictMessage?: string | null;
+  /**
+   * When true, the input row plays a brief horizontal shake animation.
+   * The host pulses this true / false to signal a refused submit.
+   */
+  shake?: boolean;
 }
 
 /**
@@ -228,6 +240,8 @@ export function AskBarView({
   availableModels,
   onModelPickerToggle,
   isModelPickerOpen,
+  capabilityConflictMessage,
+  shake = false,
 }: AskBarViewProps) {
   /** Quote display limits resolved from the managed AppConfig. */
   const quote = useConfig().quote;
@@ -526,6 +540,9 @@ export function AskBarView({
           />
         </div>
       )}
+      {capabilityConflictMessage && (
+        <CapabilityMismatchStrip message={capabilityConflictMessage} />
+      )}
       {/* Command suggestion renders above the input row in the normal DOM
           flow. Being inside the morphing container means the ResizeObserver
           detects the added height and grows the native window upward to reveal
@@ -552,7 +569,14 @@ export function AskBarView({
           </motion.div>
         )}
       </AnimatePresence>
-      <div className="relative">
+      <motion.div
+        className="relative"
+        data-testid="ask-bar-row"
+        animate={shake ? { x: [0, -4, 4, -3, 3, 0] } : { x: 0 }}
+        transition={
+          shake ? { duration: 0.5, ease: 'easeInOut' } : { duration: 0 }
+        }
+      >
         <div className="flex items-center w-full px-3 py-2.5 gap-2">
           <img
             src="/thuki-logo.png"
@@ -652,7 +676,7 @@ export function AskBarView({
             )}
           </motion.button>
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }

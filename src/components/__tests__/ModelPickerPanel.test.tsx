@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
-import { ModelPickerPanel } from '../ModelPickerPanel';
+import { ModelPickerPanel, formatCapabilityLabel } from '../ModelPickerPanel';
+import type { ModelCapabilitiesMap } from '../../types/model';
 
 const MODELS = ['gemma4:e2b', 'qwen2.5:7b', 'llama3.2:3b'];
 
@@ -213,5 +214,80 @@ describe('ModelPickerPanel', () => {
     fireEvent.keyDown(input, { key: 'a' });
     expect(onSelect).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('renders capability labels per row when capabilities prop is provided', () => {
+    const capabilities: ModelCapabilitiesMap = {
+      'gemma4:e2b': {
+        vision: true,
+        thinking: false,
+      },
+      'qwen2.5:7b': {
+        vision: false,
+        thinking: true,
+      },
+      'llama3.2:3b': {
+        vision: false,
+        thinking: false,
+      },
+    };
+    renderPanel({ capabilities });
+    // Every row gets a label now: plain models fall back to "text" so the
+    // caption line stays consistent across the list.
+    const labels = screen.getAllByTestId('model-capability-label');
+    expect(labels.length).toBe(3);
+    expect(labels[0]).toHaveTextContent('vision');
+    expect(labels[1]).toHaveTextContent('thinking');
+    expect(labels[2]).toHaveTextContent('text');
+  });
+
+  it('row aria-label includes capability summary when present', () => {
+    const capabilities: ModelCapabilitiesMap = {
+      'gemma4:e2b': {
+        vision: true,
+        thinking: false,
+      },
+    };
+    renderPanel({ models: ['gemma4:e2b'], capabilities });
+    const row = screen.getByRole('option', { name: /gemma4:e2b, vision/i });
+    expect(row).toBeInTheDocument();
+  });
+});
+
+describe('formatCapabilityLabel', () => {
+  it('returns null when capabilities map is undefined', () => {
+    expect(formatCapabilityLabel(undefined, 'x')).toBeNull();
+  });
+
+  it('returns null when the model is not in the map', () => {
+    expect(formatCapabilityLabel({}, 'x')).toBeNull();
+  });
+
+  it('returns "text" for plain models with no surface-worthy capabilities', () => {
+    const map: ModelCapabilitiesMap = {
+      x: { vision: false, thinking: false },
+    };
+    expect(formatCapabilityLabel(map, 'x')).toBe('text');
+  });
+
+  it('joins multiple flags with " · "', () => {
+    const map: ModelCapabilitiesMap = {
+      x: { vision: true, thinking: true },
+    };
+    expect(formatCapabilityLabel(map, 'x')).toBe('vision · thinking');
+  });
+
+  it('returns the single flag when only vision is present', () => {
+    const map: ModelCapabilitiesMap = {
+      x: { vision: true, thinking: false },
+    };
+    expect(formatCapabilityLabel(map, 'x')).toBe('vision');
+  });
+
+  it('returns the single flag when only thinking is present', () => {
+    const map: ModelCapabilitiesMap = {
+      x: { vision: false, thinking: true },
+    };
+    expect(formatCapabilityLabel(map, 'x')).toBe('thinking');
   });
 });

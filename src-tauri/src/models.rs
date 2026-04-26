@@ -12,9 +12,10 @@
  * bootstrap default from `THUKI_SUPPORTED_AI_MODELS`.
  */
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::defaults::DEFAULT_OLLAMA_URL;
 use crate::database::{get_config, set_config};
@@ -410,6 +411,229 @@ pub async fn check_model_setup(
     }
 
     Ok(state)
+}
+
+// ─── Model capabilities (vision, thinking) ──────────────────────────────────
+
+/// Per-request timeout for the Ollama `/api/show` POST. Local-loopback HTTP
+/// is normally instant, but capping at 5s prevents a wedged daemon from
+/// blocking picker rendering.
+const SHOW_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Maximum accepted body size for the `/api/show` response. The full
+/// Modelfile + parameters can be sizable, but 4 MiB is comfortably above
+/// any real model and bounds attacker-controlled inputs.
+const MAX_SHOW_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Per-model capability flags surfaced to the frontend so the picker can
+/// label rows and the submit-time gate can refuse mismatched messages
+/// (image attached + text-only model). Booleans are derived from Ollama's
+/// `/api/show` `capabilities` array; unknown strings are ignored so future
+/// Ollama additions cannot break the schema.
+///
+/// Thuki surfaces exactly two capability flags. `completion` is implicit
+/// (every chat model supports it; absence is rendered as the "text" tag
+/// on the frontend). `tools`, embedding, and any future Ollama additions
+/// are intentionally dropped so the picker stays focused on the
+/// distinctions Thuki actually drives behavior off of.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capabilities {
+    /// Model accepts image inputs alongside text prompts. Drives the
+    /// submit-time vision gate.
+    #[serde(default)]
+    pub vision: bool,
+    /// Model emits explicit reasoning tokens that Thuki renders in the
+    /// ThinkingBlock UI.
+    #[serde(default)]
+    pub thinking: bool,
+}
+
+/// Subset of the `/api/show` response that Thuki consumes. All other fields
+/// (modelfile, parameters, template, etc.) are ignored.
+#[derive(Deserialize)]
+struct ShowResponse {
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+/// Pure mapping from Ollama's capability strings into the typed
+/// [`Capabilities`] struct. Unknown strings are silently dropped so a
+/// future Ollama version that adds e.g. `"audio"` does not poison the
+/// frontend payload.
+pub fn capabilities_from_strings(items: &[String]) -> Capabilities {
+    let mut caps = Capabilities::default();
+    for c in items {
+        match c.as_str() {
+            "vision" => caps.vision = true,
+            "thinking" => caps.thinking = true,
+            _ => {}
+        }
+    }
+    caps
+}
+
+/// POSTs `{base_url}/api/show {"name": "<slug>"}` and returns the parsed
+/// [`Capabilities`] for that model.
+///
+/// Every failure mode (transport error, non-2xx status, oversized body,
+/// JSON decode error) is translated to `Err(String)` so the Tauri command
+/// layer can propagate it verbatim without panicking.
+pub async fn fetch_model_capabilities(
+    client: &reqwest::Client,
+    base_url: &str,
+    name: &str,
+) -> Result<Capabilities, String> {
+    fetch_model_capabilities_with_timeout(client, base_url, name, SHOW_REQUEST_TIMEOUT).await
+}
+
+/// Internal variant of [`fetch_model_capabilities`] with a configurable
+/// per-request timeout. Exists so tests can exercise the timeout branch
+/// deterministically without waiting the production 5s.
+async fn fetch_model_capabilities_with_timeout(
+    client: &reqwest::Client,
+    base_url: &str,
+    name: &str,
+    timeout: std::time::Duration,
+) -> Result<Capabilities, String> {
+    fetch_model_capabilities_inner(client, base_url, name, timeout, MAX_SHOW_BODY_BYTES).await
+}
+
+/// Innermost implementation of the `/api/show` fetcher. Both timeout and
+/// body size cap are configurable so the size-cap branches can be
+/// exercised in tests without allocating production-scale buffers.
+async fn fetch_model_capabilities_inner(
+    client: &reqwest::Client,
+    base_url: &str,
+    name: &str,
+    timeout: std::time::Duration,
+    max_body_bytes: usize,
+) -> Result<Capabilities, String> {
+    let url = format!("{}/api/show", base_url.trim_end_matches('/'));
+    let response = client
+        .post(&url)
+        .json(&serde_json::json!({ "name": name }))
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach Ollama: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Ollama /api/show returned HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+
+    if let Some(declared_len) = response.content_length() {
+        if declared_len as usize > max_body_bytes {
+            return Err(format!(
+                "/api/show response exceeded {max_body_bytes} bytes"
+            ));
+        }
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("failed to read /api/show body: {e}"))?;
+
+    if bytes.len() > max_body_bytes {
+        return Err(format!(
+            "/api/show response exceeded {max_body_bytes} bytes"
+        ));
+    }
+
+    let body: ShowResponse = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("failed to decode /api/show response: {e}"))?;
+
+    Ok(capabilities_from_strings(&body.capabilities))
+}
+
+/// In-memory cache of capabilities keyed by model slug. Populated lazily
+/// the first time a model is queried. Cleared on app restart, which is
+/// the simplest valid invalidation strategy: re-pulling a model under the
+/// same slug requires a process restart anyway because Tauri's reqwest
+/// client is process-scoped, and capabilities for a given (slug, digest)
+/// pair never change.
+#[derive(Default)]
+pub struct ModelCapabilitiesCache(pub Mutex<HashMap<String, Capabilities>>);
+
+/// Fetches `/api/tags` for the installed list, then returns a map of
+/// `model name -> Capabilities` covering every installed model. Uses the
+/// cache for hits and POSTs `/api/show` sequentially for misses, writing
+/// results through to the cache.
+///
+/// Sequential fetch is intentional: localhost Ollama responds in tens of
+/// milliseconds, the typical user has fewer than ten models installed,
+/// and sequential keeps lifetime / borrow plumbing simple. Per-model
+/// fetch failures are skipped (the offending entry is just absent from
+/// the result map) so a single bad model cannot blank out the whole
+/// picker.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn get_model_capabilities(
+    client: tauri::State<'_, reqwest::Client>,
+    cache: tauri::State<'_, ModelCapabilitiesCache>,
+) -> Result<HashMap<String, Capabilities>, String> {
+    let installed = fetch_installed_model_names(&client, DEFAULT_OLLAMA_URL).await?;
+    Ok(reconcile_capabilities(&client, &cache, DEFAULT_OLLAMA_URL, &installed).await)
+}
+
+/// Pure-ish helper extracted so tests can drive the cache + fetch loop
+/// against a `mockito` server without going through the Tauri command
+/// boundary. Honors the cache for already-known slugs and fetches the
+/// rest from `base_url`.
+///
+/// Defense-in-depth: every miss is shape-checked via [`validate_model_slug`]
+/// before being sent in the `/api/show` JSON body. Slugs that come from
+/// `/api/tags` should already be well-formed, but a compromised or
+/// misbehaving Ollama could return a slug containing control characters
+/// or shell metacharacters; this guard keeps such inputs out of the
+/// request entirely. Invalid slugs are silently dropped so they are
+/// simply absent from the result map.
+///
+/// Concurrency: the read snapshot, the per-miss fetch, and the
+/// write-back each take their own short-lived `Mutex` guard. Two
+/// concurrent calls for the same miss may both fetch and both write the
+/// same value. This is benign because the operation is idempotent (the
+/// same `(slug, /api/show)` always yields the same `Capabilities`); the
+/// only cost is a duplicate POST.
+async fn reconcile_capabilities(
+    client: &reqwest::Client,
+    cache: &ModelCapabilitiesCache,
+    base_url: &str,
+    installed: &[String],
+) -> HashMap<String, Capabilities> {
+    let mut hits: HashMap<String, Capabilities> = HashMap::new();
+    let mut misses: Vec<String> = Vec::new();
+    match cache.0.lock() {
+        Ok(guard) => {
+            for name in installed {
+                if let Some(c) = guard.get(name) {
+                    hits.insert(name.clone(), c.clone());
+                } else {
+                    misses.push(name.clone());
+                }
+            }
+        }
+        Err(_) => {
+            // Poisoned lock: treat every requested slug as a miss so the
+            // caller still gets a best-effort result.
+            misses.extend(installed.iter().cloned());
+        }
+    }
+    for name in &misses {
+        if validate_model_slug(name).is_err() {
+            continue;
+        }
+        if let Ok(caps) = fetch_model_capabilities(client, base_url, name).await {
+            if let Ok(mut guard) = cache.0.lock() {
+                guard.insert(name.clone(), caps.clone());
+            }
+            hits.insert(name.clone(), caps);
+        }
+    }
+    hits
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -970,5 +1194,362 @@ mod tests {
                 "installed": ["gemma4:e2b"],
             })
         );
+    }
+
+    // ── capabilities_from_strings ────────────────────────────────────────────
+
+    #[test]
+    fn capabilities_from_strings_recognises_all_known_flags() {
+        let caps = capabilities_from_strings(&["vision".to_string(), "thinking".to_string()]);
+        assert!(caps.vision);
+        assert!(caps.thinking);
+    }
+
+    #[test]
+    fn capabilities_from_strings_defaults_to_all_false_on_empty() {
+        let caps = capabilities_from_strings(&[]);
+        assert!(!caps.vision);
+        assert!(!caps.thinking);
+    }
+
+    #[test]
+    fn capabilities_from_strings_drops_unknown_flags_silently() {
+        let caps = capabilities_from_strings(&[
+            "vision".to_string(),
+            "tools".to_string(),
+            "audio".to_string(),
+            "completion".to_string(),
+            "future-thing".to_string(),
+        ]);
+        assert!(caps.vision);
+        assert!(!caps.thinking);
+    }
+
+    #[test]
+    fn capabilities_serialize_to_snake_case_booleans() {
+        let caps = Capabilities {
+            vision: true,
+            thinking: false,
+        };
+        let v = serde_json::to_value(&caps).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "vision": true,
+                "thinking": false,
+            })
+        );
+    }
+
+    #[test]
+    fn capabilities_deserialize_tolerates_missing_fields() {
+        let caps: Capabilities = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(caps, Capabilities::default());
+    }
+
+    // ── fetch_model_capabilities ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_capabilities_parses_full_response() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r#"{"capabilities":["completion","vision","thinking"],"modelfile":"…"}"#;
+        let _m = server
+            .mock("POST", "/api/show")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let caps = fetch_model_capabilities(&client, &server.url(), "llama3.2-vision")
+            .await
+            .unwrap();
+        assert!(caps.vision);
+        assert!(caps.thinking);
+    }
+
+    #[tokio::test]
+    async fn fetch_capabilities_handles_missing_array() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/api/show")
+            .with_status(200)
+            .with_body(r#"{"modelfile":"…"}"#)
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let caps = fetch_model_capabilities(&client, &server.url(), "x")
+            .await
+            .unwrap();
+        assert_eq!(caps, Capabilities::default());
+    }
+
+    #[tokio::test]
+    async fn fetch_capabilities_returns_err_on_non_2xx() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/api/show")
+            .with_status(404)
+            .with_body("not found")
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let err = fetch_model_capabilities(&client, &server.url(), "missing")
+            .await
+            .unwrap_err();
+        assert!(err.contains("404"));
+    }
+
+    #[tokio::test]
+    async fn fetch_capabilities_returns_err_on_invalid_json() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/api/show")
+            .with_status(200)
+            .with_body("not json")
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let err = fetch_model_capabilities(&client, &server.url(), "x")
+            .await
+            .unwrap_err();
+        assert!(err.contains("decode"));
+    }
+
+    #[tokio::test]
+    async fn fetch_capabilities_returns_err_on_unreachable() {
+        let client = reqwest::Client::new();
+        let err = fetch_model_capabilities(&client, "http://127.0.0.1:1", "x")
+            .await
+            .unwrap_err();
+        assert!(err.contains("failed to reach Ollama"));
+    }
+
+    #[tokio::test]
+    async fn fetch_capabilities_rejects_oversized_via_content_length() {
+        // Tight cap + 100-byte body; mockito sets Content-Length: 100, the
+        // pre-read guard on `content_length` must reject before bytes() is
+        // issued.
+        let mut server = mockito::Server::new_async().await;
+        let body = "x".repeat(100);
+        server
+            .mock("POST", "/api/show")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let err = fetch_model_capabilities_inner(
+            &client,
+            &server.url(),
+            "x",
+            std::time::Duration::from_secs(5),
+            32,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeded"));
+    }
+
+    #[tokio::test]
+    async fn fetch_capabilities_rejects_oversized_when_no_content_length() {
+        // Chunked-encoding response (no Content-Length); the post-read guard
+        // on `bytes.len()` must still reject.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let body = "x".repeat(200);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let err = fetch_model_capabilities_inner(
+            &client,
+            &base,
+            "x",
+            std::time::Duration::from_secs(5),
+            32,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeded"));
+    }
+
+    #[tokio::test]
+    async fn fetch_capabilities_maps_body_read_error_to_err_string() {
+        // Headers promise body but the server hangs up.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
+            );
+        });
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let err = fetch_model_capabilities(&client, &base, "x")
+            .await
+            .unwrap_err();
+        assert!(err.contains("failed to read /api/show body"));
+    }
+
+    #[tokio::test]
+    async fn fetch_capabilities_with_custom_timeout_branch_runs() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/api/show")
+            .with_status(200)
+            .with_body(r#"{"capabilities":["vision"]}"#)
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let caps = fetch_model_capabilities_with_timeout(
+            &client,
+            &server.url(),
+            "x",
+            std::time::Duration::from_millis(500),
+        )
+        .await
+        .unwrap();
+        assert!(caps.vision);
+    }
+
+    // ── reconcile_capabilities ───────────────────────────────────────────────
+
+    /// `reconcile_capabilities` calls `DEFAULT_OLLAMA_URL` directly which
+    /// points at 127.0.0.1:11434. To keep the test deterministic without a
+    /// running Ollama we exercise the helper in cache-only mode: pre-seed
+    /// every requested name into the cache so no network call is issued.
+    #[tokio::test]
+    async fn reconcile_returns_cached_entries_without_network() {
+        let cache = ModelCapabilitiesCache::default();
+        cache.0.lock().unwrap().insert(
+            "a".to_string(),
+            Capabilities {
+                vision: true,
+                ..Default::default()
+            },
+        );
+        cache.0.lock().unwrap().insert(
+            "b".to_string(),
+            Capabilities {
+                thinking: true,
+                ..Default::default()
+            },
+        );
+        let client = reqwest::Client::new();
+        let installed = vec!["a".to_string(), "b".to_string()];
+        let result = reconcile_capabilities(&client, &cache, "http://unused", &installed).await;
+        assert_eq!(result.len(), 2);
+        assert!(result["a"].vision);
+        assert!(result["b"].thinking);
+    }
+
+    #[tokio::test]
+    async fn reconcile_with_empty_installed_returns_empty_map() {
+        let cache = ModelCapabilitiesCache::default();
+        let client = reqwest::Client::new();
+        let result = reconcile_capabilities(&client, &cache, "http://unused", &[]).await;
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconcile_fetches_misses_and_writes_through_cache() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/api/show")
+            .with_status(200)
+            .with_body(r#"{"capabilities":["completion","vision"]}"#)
+            .expect_at_least(1)
+            .create_async()
+            .await;
+        let cache = ModelCapabilitiesCache::default();
+        let client = reqwest::Client::new();
+        let installed = vec!["fresh".to_string()];
+        let result = reconcile_capabilities(&client, &cache, &server.url(), &installed).await;
+        assert!(result["fresh"].vision);
+        // Cache must now hold the fetched entry.
+        let guard = cache.0.lock().unwrap();
+        assert!(guard.contains_key("fresh"));
+        assert!(guard["fresh"].vision);
+    }
+
+    #[tokio::test]
+    async fn reconcile_drops_unreachable_misses_without_failing() {
+        let cache = ModelCapabilitiesCache::default();
+        cache.0.lock().unwrap().insert(
+            "cached".to_string(),
+            Capabilities {
+                vision: true,
+                ..Default::default()
+            },
+        );
+        let client = reqwest::Client::new();
+        let installed = vec!["cached".to_string(), "missing".to_string()];
+        // Point base_url at a port nothing listens on so misses fail fast.
+        let result =
+            reconcile_capabilities(&client, &cache, "http://127.0.0.1:1", &installed).await;
+        assert!(result.contains_key("cached"));
+        assert!(!result.contains_key("missing"));
+    }
+
+    #[tokio::test]
+    async fn reconcile_skips_misses_with_invalid_slugs() {
+        // Defense in depth: a compromised Ollama returning a slug with
+        // shell metacharacters or whitespace must be dropped before any
+        // network work, never make it into the `/api/show` request.
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("POST", "/api/show")
+            .with_status(200)
+            .with_body(r#"{"capabilities":["vision"]}"#)
+            .expect(0)
+            .create_async()
+            .await;
+        let cache = ModelCapabilitiesCache::default();
+        let client = reqwest::Client::new();
+        let installed = vec!["bad name".to_string(), "bad$(whoami)".to_string()];
+        let result = reconcile_capabilities(&client, &cache, &server.url(), &installed).await;
+        assert!(result.is_empty());
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn reconcile_when_cache_poisoned_still_attempts_fetches() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/api/show")
+            .with_status(200)
+            .with_body(r#"{"capabilities":["vision"]}"#)
+            .create_async()
+            .await;
+        let cache = ModelCapabilitiesCache::default();
+        // Poison the mutex so the read-snapshot branch falls back to
+        // treating every slug as a miss.
+        let cache_ref = std::panic::AssertUnwindSafe(&cache.0);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = cache_ref.0.lock().unwrap();
+            panic!("poison");
+        });
+        let client = reqwest::Client::new();
+        let installed = vec!["x".to_string()];
+        let result = reconcile_capabilities(&client, &cache, &server.url(), &installed).await;
+        // Cache writes silently fail on the poisoned lock, but the
+        // result map still carries the freshly-fetched value.
+        assert!(result["x"].vision);
     }
 }

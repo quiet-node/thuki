@@ -15,3 +15,22 @@ export interface ModelPickerState {
   /** All locally installed Ollama model names available for selection. */
   all: string[];
 }
+
+/**
+ * Per-model capability flags returned by the Rust `get_model_capabilities`
+ * Tauri command. Mirrors the `Capabilities` struct in `src-tauri/src/models.rs`.
+ */
+export interface ModelCapabilities {
+  vision: boolean;
+  thinking: boolean;
+}
+
+/**
+ * Map of model slug to its capabilities. Built from the Rust command's
+ * `HashMap<String, Capabilities>` payload.
+ *
+ * Modelled as `Partial<Record<...>>` so that lookups on unknown slugs
+ * yield `undefined` instead of being silently typed as `ModelCapabilities`.
+ * Every consumer is forced to handle the missing-metadata case.
+ */
+export type ModelCapabilitiesMap = Partial<Record<string, ModelCapabilities>>;

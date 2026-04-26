@@ -3204,6 +3204,187 @@ describe('App', () => {
     });
   });
 
+  // ─── Capability gate (vision mismatch) ─────────────────────────────────────
+
+  describe('capability gate', () => {
+    /** Helper: paste an image file into the textarea and wait for thumbnails. */
+    async function pasteImage() {
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['fake-img-data'], 'photo.png', {
+        type: 'image/png',
+      });
+      const clipboardData = {
+        items: [{ type: 'image/png', getAsFile: () => file }],
+      };
+      await act(async () => {
+        fireEvent.paste(textarea, { clipboardData });
+      });
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+    }
+
+    it('shows the live mismatch strip when a text-only model has an image attached', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'llama3',
+          all: ['llama3', 'llama3.2-vision'],
+        },
+        get_model_capabilities: {
+          llama3: {
+            vision: false,
+            thinking: false,
+          },
+          'llama3.2-vision': {
+            vision: true,
+            thinking: false,
+          },
+        },
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+      await pasteImage();
+      await vi.waitFor(() => {
+        expect(
+          screen.getByTestId('capability-mismatch-strip'),
+        ).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('capability-mismatch-strip')).toHaveTextContent(
+        "llama3 can't see images",
+      );
+    });
+
+    it('refuses submit and surfaces a toast when a text-only model has an image attached', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'llama3',
+          all: ['llama3'],
+        },
+        get_model_capabilities: {
+          llama3: {
+            vision: false,
+            thinking: false,
+          },
+        },
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+      await pasteImage();
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      // Type and submit.
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'summarise these' } });
+      });
+      invoke.mockClear();
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /send message/i }));
+      });
+
+      // Toast surfaces the reason.
+      await vi.waitFor(() => {
+        expect(screen.getByTestId('toast')).toHaveTextContent(
+          "llama3 can't see images",
+        );
+      });
+      // ask_ollama is NOT invoked.
+      const askInvocations = invoke.mock.calls.filter(
+        (call) => call[0] === 'ask_ollama',
+      );
+      expect(askInvocations.length).toBe(0);
+      // Compose state survives.
+      expect(screen.getByPlaceholderText('Ask Thuki anything...')).toHaveValue(
+        'summarise these',
+      );
+    });
+
+    it('toast auto-dismisses after the default duration', async () => {
+      vi.useFakeTimers();
+      try {
+        enableChannelCaptureWithResponses({
+          get_model_picker_state: { active: 'llama3', all: ['llama3'] },
+          get_model_capabilities: {
+            llama3: {
+              vision: false,
+              thinking: false,
+            },
+          },
+          save_image_command: '/tmp/staged/img1.jpg',
+        });
+        render(<App />);
+        await act(async () => {});
+        await showOverlay();
+        // Paste (real timers were running; pasteImage uses waitFor which
+        // works under fake timers if we advance them).
+        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+        const file = new File(['x'], 'p.png', { type: 'image/png' });
+        await act(async () => {
+          fireEvent.paste(textarea, {
+            clipboardData: {
+              items: [{ type: 'image/png', getAsFile: () => file }],
+            },
+          });
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(50);
+        });
+        // Submit with no text but an image (canSubmit honors images alone).
+        await act(async () => {
+          fireEvent.click(
+            screen.getByRole('button', { name: /send message/i }),
+          );
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+        });
+        expect(screen.queryByTestId('toast')).not.toBeNull();
+        // Advance past the 3000ms default duration.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(3100);
+        });
+        expect(screen.queryByTestId('toast')).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not gate submit when the active model has vision', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'llama3.2-vision',
+          all: ['llama3.2-vision'],
+        },
+        get_model_capabilities: {
+          'llama3.2-vision': {
+            vision: true,
+            thinking: false,
+          },
+        },
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+      await pasteImage();
+      // Strip must not appear.
+      expect(screen.queryByTestId('capability-mismatch-strip')).toBeNull();
+    });
+  });
+
   // ─── Screenshot integration ────────────────────────────────────────────────
 
   describe('screenshot integration', () => {

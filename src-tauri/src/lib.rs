@@ -796,6 +796,7 @@ pub fn run() {
             app.manage(models::ActiveModelState(std::sync::Mutex::new(
                 initial_active_model,
             )));
+            app.manage(models::ModelCapabilitiesCache::default());
             app.manage(history::Database(std::sync::Mutex::new(db_conn)));
 
             // ── Orphaned image cleanup (startup + periodic) ─────────
@@ -823,6 +824,8 @@ pub fn run() {
             models::set_active_model,
             #[cfg(not(coverage))]
             models::check_model_setup,
+            #[cfg(not(coverage))]
+            models::get_model_capabilities,
             #[cfg(not(coverage))]
             history::save_conversation,
             #[cfg(not(coverage))]

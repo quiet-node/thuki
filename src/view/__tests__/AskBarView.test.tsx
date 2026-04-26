@@ -1577,4 +1577,76 @@ describe('AskBarView', () => {
       expect(setQuery).not.toHaveBeenCalled();
     });
   });
+
+  describe('capability gate UI', () => {
+    it('renders the capability mismatch strip when message provided', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          capabilityConflictMessage="llama3 can't see images."
+        />,
+      );
+      expect(screen.getByTestId('capability-mismatch-strip')).toHaveTextContent(
+        "llama3 can't see images.",
+      );
+    });
+
+    it('omits the strip when message is null', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          capabilityConflictMessage={null}
+        />,
+      );
+      expect(screen.queryByTestId('capability-mismatch-strip')).toBeNull();
+    });
+
+    it('mounts the shake animation branch when shake is true', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          shake
+        />,
+      );
+      expect(screen.getByTestId('ask-bar-row')).toBeInTheDocument();
+    });
+
+    it('keeps the no-shake branch when shake is false', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          shake={false}
+        />,
+      );
+      expect(screen.getByTestId('ask-bar-row')).toBeInTheDocument();
+    });
+  });
 });

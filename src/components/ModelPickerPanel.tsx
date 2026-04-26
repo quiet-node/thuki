@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ModelCapabilitiesMap } from '../types/model';
 
 const CHECK_ICON_PATH = (
   <path
@@ -11,6 +12,29 @@ const CHECK_ICON_PATH = (
 );
 
 const LISTBOX_ID = 'thuki-model-picker-listbox';
+
+/**
+ * Builds the capability caption rendered beneath each picker row's model
+ * name. Surfaces only the three capabilities Thuki cares about: vision,
+ * thinking, and a default "text" tag for plain-completion models so every
+ * row is consistently labelled. Returns `null` only when capabilities for
+ * the model are unknown (not yet loaded), which lets the caller suppress
+ * the caption line entirely during cold start.
+ *
+ * Exported for direct unit testing.
+ */
+export function formatCapabilityLabel(
+  capabilities: ModelCapabilitiesMap | undefined,
+  model: string,
+): string | null {
+  const caps = capabilities?.[model];
+  if (!caps) return null;
+  const flags: string[] = [];
+  if (caps.vision) flags.push('vision');
+  if (caps.thinking) flags.push('thinking');
+  if (flags.length === 0) flags.push('text');
+  return flags.join(' · ');
+}
 
 /** Props for the {@link ModelPickerPanel} content panel. */
 export interface ModelPickerPanelProps {
@@ -25,6 +49,12 @@ export interface ModelPickerPanelProps {
    * responsible for closing the drawer/dropdown in response.
    */
   onClose?: () => void;
+  /**
+   * Per-model capability map keyed by slug. When provided, each row
+   * renders a small capability suffix ("· vision · thinking"). Omit or
+   * pass an empty map to render plain rows (legacy / loading states).
+   */
+  capabilities?: ModelCapabilitiesMap;
 }
 
 /**
@@ -40,6 +70,7 @@ export function ModelPickerPanel({
   activeModel,
   onSelect,
   onClose,
+  capabilities,
 }: ModelPickerPanelProps) {
   const [filter, setFilter] = useState('');
   const [highlightedIndex, setHighlightedIndex] = useState(0);
@@ -158,6 +189,7 @@ export function ModelPickerPanel({
           filtered.map((model, index) => {
             const active = model === activeModel;
             const highlighted = index === highlightedIndex;
+            const capLabel = formatCapabilityLabel(capabilities, model);
             return (
               <button
                 key={model}
@@ -165,19 +197,33 @@ export function ModelPickerPanel({
                 type="button"
                 role="option"
                 aria-selected={active}
-                aria-label={model}
+                aria-label={
+                  capLabel
+                    ? `${model}, ${capLabel.replace(/ · /g, ', ')}`
+                    : model
+                }
                 tabIndex={-1}
                 onMouseEnter={() => setHighlightedIndex(index)}
                 onClick={() => commit(index)}
-                className={`flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg w-full text-left text-sm text-text-primary whitespace-nowrap cursor-pointer transition-colors duration-120 ${
+                className={`flex items-start justify-between gap-2.5 px-3 py-2 rounded-lg w-full text-left text-sm text-text-primary cursor-pointer transition-colors duration-120 ${
                   highlighted ? 'bg-white/5' : 'hover:bg-white/5'
                 }`}
               >
-                <span className="flex-1 min-w-0 overflow-hidden text-ellipsis">
-                  {model}
+                <span className="flex-1 min-w-0 flex flex-col gap-0.5">
+                  <span className="overflow-hidden text-ellipsis whitespace-nowrap leading-tight">
+                    {model}
+                  </span>
+                  {capLabel && (
+                    <span
+                      className="text-[10.5px] text-text-secondary leading-tight tracking-wide"
+                      data-testid="model-capability-label"
+                    >
+                      {capLabel}
+                    </span>
+                  )}
                 </span>
                 <svg
-                  className="w-3.5 h-3.5 shrink-0 text-primary"
+                  className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary"
                   style={{ opacity: active ? 1 : 0 }}
                   viewBox="0 0 16 16"
                   fill="none"

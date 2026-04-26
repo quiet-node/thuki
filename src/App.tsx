@@ -4,6 +4,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useMemo,
   useRef,
   useLayoutEffect,
 } from 'react';
@@ -15,6 +16,9 @@ import { useOllama } from './hooks/useOllama';
 import type { Message } from './hooks/useOllama';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { useModelSelection } from './hooks/useModelSelection';
+import { useModelCapabilities } from './hooks/useModelCapabilities';
+import { getCapabilityConflict } from './utils/capabilityConflicts';
+import { Toast } from './components/Toast';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView, MAX_IMAGES } from './view/AskBarView';
 import { OnboardingView } from './view/onboarding/index';
@@ -133,6 +137,40 @@ function App() {
 
   const { activeModel, availableModels, refreshModels, setActiveModel } =
     useModelSelection();
+
+  const { capabilities: modelCapabilities } = useModelCapabilities();
+
+  /** Capability flags for the currently active model, or undefined if not loaded yet. */
+  const activeModelCapabilities = activeModel
+    ? modelCapabilities[activeModel]
+    : undefined;
+
+  /**
+   * Toast text shown by the submit-time capability gate. Set to a non-null
+   * string when the user attempts to send a message whose attached content
+   * the active model cannot handle (e.g. images on a text-only model).
+   * Cleared by the toast's auto-dismiss or on next submit attempt.
+   */
+  const [capabilityToast, setCapabilityToast] = useState<string | null>(null);
+
+  /**
+   * Pulses true to trigger the ask-bar shake animation when the
+   * submit-time gate refuses a message, then resets so the next blocked
+   * submit gets its own animation. Reset is set just over the 500 ms
+   * keyframe duration in `AskBarView` so the bar never snaps back
+   * mid-animation if React schedules the state flip on the exact frame
+   * Framer is finishing.
+   */
+  const [shakeAskBar, setShakeAskBar] = useState(false);
+  useEffect(() => {
+    if (!shakeAskBar) return;
+    const timer = setTimeout(() => setShakeAskBar(false), 600);
+    return () => clearTimeout(timer);
+  }, [shakeAskBar]);
+
+  const dismissCapabilityToast = useCallback(() => {
+    setCapabilityToast(null);
+  }, []);
 
   const {
     conversationId,
@@ -1039,6 +1077,22 @@ function App() {
     ],
   );
 
+  /**
+   * Live capability conflict for the current compose state. Drives the
+   * inline `CapabilityMismatchStrip` so the user sees the mismatch as
+   * soon as incompatible content lands in compose, not only at submit
+   * time. The strip is purely informational: recovery happens through
+   * the model picker chip.
+   */
+  const liveCapabilityConflictMessage = useMemo(() => {
+    const trimmed = query.trim();
+    const { found } = parseCommands(trimmed);
+    return getCapabilityConflict(activeModel, activeModelCapabilities, {
+      hasImages: attachedImages.length > 0,
+      hasScreenCommand: found.has('/screen'),
+    });
+  }, [query, attachedImages, activeModel, activeModelCapabilities]);
+
   const handleSubmit = useCallback(() => {
     if (
       (query.trim().length === 0 && attachedImages.length === 0) ||
@@ -1055,6 +1109,26 @@ function App() {
     const hasScreen = found.has('/screen');
     const hasThink = found.has('/think');
     const hasSearch = found.has('/search');
+
+    // Submit-time capability gate. Refuses messages whose attached content
+    // the active model cannot handle (images on a text-only model). The
+    // gate is the only gate: input affordances stay live so the user can
+    // compose freely and recover via the model picker chip. When refused
+    // the ask bar shakes and a toast surfaces the reason. Compose state is
+    // preserved so the user does not lose their typing.
+    const submitConflict = getCapabilityConflict(
+      activeModel,
+      activeModelCapabilities,
+      {
+        hasImages: attachedImages.length > 0,
+        hasScreenCommand: hasScreen,
+      },
+    );
+    if (submitConflict !== null) {
+      setShakeAskBar(true);
+      setCapabilityToast(submitConflict);
+      return;
+    }
 
     // `/search` entry point AND sticky follow-ups. Once a search turn is in
     // flight, subsequent submits without an explicit slash command continue
@@ -1234,6 +1308,8 @@ function App() {
     askSearch,
     searchActive,
     quote.maxContextLength,
+    activeModel,
+    activeModelCapabilities,
   ]);
 
   // When a pending submit exists and all images finish processing, fire it.
@@ -1604,6 +1680,7 @@ function App() {
                           activeModel={activeModel}
                           onSelect={handleModelSelect}
                           onClose={handleModelPickerClose}
+                          capabilities={modelCapabilities}
                         />
                       </motion.div>
                     ) : null}
@@ -1683,6 +1760,12 @@ function App() {
                   availableModels={availableModels}
                   onModelPickerToggle={handleModelPickerToggle}
                   isModelPickerOpen={isModelPickerOpen}
+                  capabilityConflictMessage={liveCapabilityConflictMessage}
+                  shake={shakeAskBar}
+                />
+                <Toast
+                  message={capabilityToast}
+                  onDismiss={dismissCapabilityToast}
                 />
               </div>
 
@@ -1710,6 +1793,7 @@ function App() {
                       activeModel={activeModel}
                       onSelect={handleModelSelect}
                       onClose={handleModelPickerClose}
+                      capabilities={modelCapabilities}
                     />
                   </motion.div>
                 ) : null}
