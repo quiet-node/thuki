@@ -208,6 +208,31 @@ describe('App', () => {
     expect(screen.queryByRole('option', { name: 'qwen2.5:7b' })).toBeNull();
   });
 
+  it('closes model picker when the trigger is clicked while open', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const trigger = screen.getByRole('button', { name: 'Choose model' });
+    fireEvent.click(trigger);
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    // Second click on the trigger toggles the panel closed; this exercises
+    // the "opening = false" branch of handleModelPickerToggle.
+    fireEvent.click(trigger);
+    await act(async () => {});
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
+  });
+
   it('closes model picker when generation starts', async () => {
     enableChannelCaptureWithResponses({
       get_model_picker_state: {

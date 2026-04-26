@@ -138,7 +138,8 @@ function App() {
   const { activeModel, availableModels, refreshModels, setActiveModel } =
     useModelSelection();
 
-  const { capabilities: modelCapabilities } = useModelCapabilities();
+  const { capabilities: modelCapabilities, refresh: refreshModelCapabilities } =
+    useModelCapabilities();
 
   /** Capability flags for the currently active model, or undefined if not loaded yet. */
   const activeModelCapabilities = activeModel
@@ -1431,11 +1432,27 @@ function App() {
     setIsModelPickerOpen(false);
   }, []);
 
-  /** Toggles the model picker panel. Closes history panel (mutually exclusive). */
+  /**
+   * Toggles the model picker panel. Closes history panel (mutually exclusive).
+   *
+   * On open we re-pull both the installed-model list and the per-model
+   * capability map so newly-pulled models (e.g. user ran `ollama pull
+   * deepseek-r1:1.5b` while Thuki was running) appear with their full
+   * capability label without needing an app restart. Backend
+   * `reconcile_capabilities` honors its cache for already-known slugs and
+   * only fetches `/api/show` for genuinely new entries, so this is cheap.
+   */
   const handleModelPickerToggle = useCallback(() => {
-    setIsModelPickerOpen((prev) => !prev);
+    setIsModelPickerOpen((prev) => {
+      const opening = !prev;
+      if (opening) {
+        void refreshModels();
+        void refreshModelCapabilities();
+      }
+      return opening;
+    });
     setIsHistoryOpen(false);
-  }, []);
+  }, [refreshModels, refreshModelCapabilities]);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
