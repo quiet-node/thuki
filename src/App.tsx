@@ -1089,7 +1089,6 @@ function App() {
     const trimmed = query.trim();
     const { found } = parseCommands(trimmed);
     return getCapabilityConflict(activeModel, activeModelCapabilities, {
-      hasImages: attachedImages.length > 0,
       hasScreenCommand: found.has('/screen'),
       hasThinkCommand: found.has('/think'),
       imageCount: attachedImages.length,
@@ -1119,19 +1118,9 @@ function App() {
     // compose freely and recover via the model picker chip. When refused
     // the ask bar shakes and a toast surfaces the reason. Compose state is
     // preserved so the user does not lose their typing.
-    const submitConflict = getCapabilityConflict(
-      activeModel,
-      activeModelCapabilities,
-      {
-        hasImages: attachedImages.length > 0,
-        hasScreenCommand: hasScreen,
-        hasThinkCommand: hasThink,
-        imageCount: attachedImages.length,
-      },
-    );
-    if (submitConflict !== null) {
+    if (liveCapabilityConflictMessage !== null) {
       setShakeAskBar(true);
-      setCapabilityToast(submitConflict);
+      setCapabilityToast(liveCapabilityConflictMessage);
       return;
     }
 
@@ -1313,8 +1302,7 @@ function App() {
     askSearch,
     searchActive,
     quote.maxContextLength,
-    activeModel,
-    activeModelCapabilities,
+    liveCapabilityConflictMessage,
   ]);
 
   // When a pending submit exists and all images finish processing, fire it.

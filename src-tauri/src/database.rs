@@ -132,10 +132,48 @@ fn migrate_legacy_db(new_path: &std::path::Path) {
     }
 }
 
+/// Returns true if `s` is a safe SQL identifier: non-empty, starts with an
+/// ASCII letter or underscore, and contains only ASCII alphanumerics and
+/// underscores thereafter. This subset covers every identifier Thuki uses and
+/// excludes metacharacters that could turn a DDL statement into an injection.
+fn is_safe_sql_ident(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().enumerate().all(|(i, c)| {
+            if i == 0 {
+                c.is_ascii_alphabetic() || c == '_'
+            } else {
+                c.is_ascii_alphanumeric() || c == '_'
+            }
+        })
+}
+
 /// Idempotently adds a column to a SQLite table. A no-op when the column
 /// already exists. SQLite does not support `ALTER TABLE ... ADD COLUMN IF NOT
 /// EXISTS`, so we inspect `PRAGMA table_info` first.
+///
+/// `col_type` may contain spaces (e.g. `"TEXT NOT NULL"`); each
+/// whitespace-separated token is validated individually as a safe SQL
+/// identifier. `table` and `column` must each be a single safe identifier.
+/// Returns `Err` if any argument fails the allowlist check.
 fn ensure_column(conn: &Connection, table: &str, column: &str, col_type: &str) -> SqlResult<()> {
+    if !is_safe_sql_ident(table) {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "unsafe table name: {table:?}"
+        )));
+    }
+    if !is_safe_sql_ident(column) {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "unsafe column name: {column:?}"
+        )));
+    }
+    for token in col_type.split_whitespace() {
+        if !is_safe_sql_ident(token) {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "unsafe col_type token: {token:?}"
+            )));
+        }
+    }
+
     let exists: bool = conn
         .prepare(&format!("PRAGMA table_info({table})"))?
         .query_map([], |row| row.get::<_, String>(1))?
@@ -1082,6 +1120,38 @@ mod tests {
         assert!(msgs[2].thinking_content.is_none());
     }
 
+    // ── is_safe_sql_ident ─────────────────────────────────────────────────────
+
+    #[test]
+    fn is_safe_sql_ident_accepts_valid_identifiers() {
+        assert!(is_safe_sql_ident("messages"));
+        assert!(is_safe_sql_ident("model_name"));
+        assert!(is_safe_sql_ident("_private"));
+        assert!(is_safe_sql_ident("TEXT"));
+        assert!(is_safe_sql_ident("NOT"));
+        assert!(is_safe_sql_ident("NULL"));
+        assert!(is_safe_sql_ident("a"));
+    }
+
+    #[test]
+    fn is_safe_sql_ident_rejects_empty() {
+        assert!(!is_safe_sql_ident(""));
+    }
+
+    #[test]
+    fn is_safe_sql_ident_rejects_leading_digit() {
+        assert!(!is_safe_sql_ident("1abc"));
+    }
+
+    #[test]
+    fn is_safe_sql_ident_rejects_special_characters() {
+        assert!(!is_safe_sql_ident("bad;name"));
+        assert!(!is_safe_sql_ident("bad name"));
+        assert!(!is_safe_sql_ident("bad-name"));
+        assert!(!is_safe_sql_ident("bad.name"));
+        assert!(!is_safe_sql_ident("bad(name)"));
+    }
+
     // ── ensure_column ─────────────────────────────────────────────────────────
 
     #[test]
@@ -1101,6 +1171,69 @@ mod tests {
             .filter_map(|r| r.ok())
             .collect();
         assert!(cols.contains(&"new_test_col".to_string()));
+    }
+
+    #[test]
+    fn ensure_column_rejects_injection_in_table_name() {
+        let conn = open_in_memory().unwrap();
+        let result = ensure_column(&conn, "; DROP TABLE messages; --", "col", "TEXT");
+        assert!(
+            result.is_err(),
+            "expected error for injection in table name"
+        );
+    }
+
+    #[test]
+    fn ensure_column_rejects_injection_in_column_name() {
+        let conn = open_in_memory().unwrap();
+        let result = ensure_column(&conn, "messages", "; DROP TABLE messages; --", "TEXT");
+        assert!(
+            result.is_err(),
+            "expected error for injection in column name"
+        );
+    }
+
+    #[test]
+    fn ensure_column_rejects_injection_in_col_type() {
+        let conn = open_in_memory().unwrap();
+        let result = ensure_column(
+            &conn,
+            "messages",
+            "safe_col",
+            "TEXT; DROP TABLE messages; --",
+        );
+        assert!(result.is_err(), "expected error for injection in col_type");
+    }
+
+    #[test]
+    fn ensure_column_accepts_multi_token_col_type() {
+        // "TEXT COLLATE NOCASE" has three valid identifier tokens separated by
+        // whitespace and must be accepted by the per-token validator.
+        let conn = open_in_memory().unwrap();
+        ensure_column(&conn, "messages", "collated_col", "TEXT COLLATE NOCASE").unwrap();
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(messages)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(cols.contains(&"collated_col".to_string()));
+    }
+
+    #[test]
+    fn ensure_column_rejects_empty_table_name() {
+        let conn = open_in_memory().unwrap();
+        let result = ensure_column(&conn, "", "col", "TEXT");
+        assert!(result.is_err(), "expected error for empty table name");
+    }
+
+    #[test]
+    fn ensure_column_rejects_empty_column_name() {
+        let conn = open_in_memory().unwrap();
+        let result = ensure_column(&conn, "messages", "", "TEXT");
+        assert!(result.is_err(), "expected error for empty column name");
     }
 
     // ── search_warnings / search_metadata round-trip ─────────────────────────

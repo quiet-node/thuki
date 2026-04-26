@@ -108,23 +108,14 @@ export function ModelPickerPanel({
     return models.filter((m) => m.toLowerCase().includes(needle));
   }, [filter, models]);
 
-  /* eslint-disable @eslint-react/set-state-in-effect -- canonical index-clamp
-     when the filtered list shrinks; drives no secondary effects and React
-     bails out of the rerender when the next state equals the previous. */
-  useEffect(() => {
-    if (filtered.length === 0) {
-      setHighlightedIndex(0);
-      return;
-    }
-    if (highlightedIndex >= filtered.length) {
-      setHighlightedIndex(filtered.length - 1);
-    }
-  }, [filtered, highlightedIndex]);
-  /* eslint-enable @eslint-react/set-state-in-effect */
+  // Inline clamp: derive the safe render index without a useEffect so
+  // aria-activedescendant is consistent on the same render that filtered shrinks.
+  const safeHighlightedIndex =
+    filtered.length === 0 ? 0 : Math.min(highlightedIndex, filtered.length - 1);
 
   const activeId =
-    filtered.length > 0 && highlightedIndex < filtered.length
-      ? `${LISTBOX_ID}-option-${highlightedIndex}`
+    filtered.length > 0
+      ? `${LISTBOX_ID}-option-${safeHighlightedIndex}`
       : undefined;
 
   // Keep the highlighted row visible when it scrolls off-view. scrollIntoView
@@ -180,7 +171,7 @@ export function ModelPickerPanel({
             }
             if (e.key === 'Enter') {
               e.preventDefault();
-              commit(highlightedIndex);
+              commit(safeHighlightedIndex);
               return;
             }
             if (e.key === 'Escape') {
@@ -240,7 +231,7 @@ export function ModelPickerPanel({
         ) : (
           filtered.map((model, index) => {
             const active = model === activeModel;
-            const highlighted = index === highlightedIndex;
+            const highlighted = index === safeHighlightedIndex;
             const capLabel = formatCapabilityLabel(capabilities, model);
             return (
               <button

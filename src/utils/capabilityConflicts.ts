@@ -1,16 +1,15 @@
 import type { ModelCapabilities } from '../types/model';
 
 /**
- * Compose-state inputs the gate inspects. `hasImages` covers manually
+ * Compose-state inputs the gate inspects. `imageCount` covers manually
  * attached + pasted + dragged images. `hasScreenCommand` covers the
  * `/screen` slash command (which produces an image after capture and so
- * has the same vision-required constraint). `hasThinkCommand` covers the
- * `/think` slash command, which requires a model that emits reasoning
- * tokens for the ThinkingBlock UI to render anything meaningful.
+ * has the same vision-required constraint as a non-zero imageCount).
+ * `hasThinkCommand` covers the `/think` slash command, which requires a
+ * model that emits reasoning tokens for the ThinkingBlock UI to render
+ * anything meaningful.
  */
 export interface ComposeCapabilityState {
-  /** True if the user has at least one image attached or queued. */
-  hasImages: boolean;
   /** True if the message contains the `/screen` slash command. */
   hasScreenCommand: boolean;
   /** True if the message contains the `/think` slash command. */
@@ -42,7 +41,7 @@ export function getCapabilityConflict(
   capabilities: ModelCapabilities | undefined | null,
   state: ComposeCapabilityState,
 ): string | null {
-  const needsVision = state.hasImages || state.hasScreenCommand;
+  const needsVision = state.imageCount > 0 || state.hasScreenCommand;
   const needsThinking = state.hasThinkCommand;
   if (!needsVision && !needsThinking) return null;
   if (!capabilities) return null;

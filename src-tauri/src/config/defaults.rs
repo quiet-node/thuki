@@ -103,3 +103,32 @@ pub const BOUNDS_SEARXNG_MAX_RESULTS: (u32, u32) = (1, 20);
 /// ceiling: a timeout longer than that indicates a misconfiguration, not a
 /// slow service.
 pub const BOUNDS_TIMEOUT_S: (u64, u64) = (1, 300);
+
+// Ollama API baked-in limits: not exposed in config.toml because they bound
+// attacker-controlled data (response bodies from the local Ollama daemon) and
+// keep the UI responsive when the daemon is hung. Changing either timeout
+// value would require re-tuning the UX; changing the byte caps would require
+// re-evaluating the memory budget.
+
+/// Per-request timeout (in seconds) for the Ollama `/api/tags` GET. Guards
+/// the IPC boundary: if the daemon accepts the TCP connection but never
+/// responds, `get_model_picker_state` would otherwise block indefinitely and
+/// wedge the UI. 5 seconds is generous for a localhost call.
+pub const DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS: u64 = 5;
+
+/// Per-request timeout (in seconds) for the Ollama `/api/show` POST. Same
+/// rationale as `DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS`: local-loopback
+/// HTTP is normally instant, but capping prevents a wedged daemon from
+/// blocking picker rendering.
+pub const DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS: u64 = 5;
+
+/// Maximum accepted body size for the Ollama `/api/tags` response. Guards
+/// against a misbehaving or compromised localhost Ollama streaming an
+/// unbounded response that would exhaust memory. 4 MiB comfortably fits
+/// thousands of model entries.
+pub const MAX_OLLAMA_TAGS_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum accepted body size for the Ollama `/api/show` response. The full
+/// Modelfile and parameters can be sizable, but 4 MiB is comfortably above
+/// any real model and bounds attacker-controlled inputs.
+pub const MAX_OLLAMA_SHOW_BODY_BYTES: usize = 4 * 1024 * 1024;

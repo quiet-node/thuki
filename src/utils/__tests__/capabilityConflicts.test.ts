@@ -35,7 +35,6 @@ const VISION_AND_THINKING: ModelCapabilities = {
 };
 
 const EMPTY: ComposeCapabilityState = {
-  hasImages: false,
   hasScreenCommand: false,
   hasThinkCommand: false,
   imageCount: 0,
@@ -49,7 +48,6 @@ describe('getCapabilityConflict', () => {
   it('returns null when capabilities are unknown (defaults permissive)', () => {
     const result = getCapabilityConflict('llama3', undefined, {
       ...EMPTY,
-      hasImages: true,
       imageCount: 1,
     });
     expect(result).toBeNull();
@@ -58,7 +56,6 @@ describe('getCapabilityConflict', () => {
   it('returns null when capabilities is null', () => {
     const result = getCapabilityConflict('llama3', null, {
       ...EMPTY,
-      hasImages: true,
       imageCount: 1,
     });
     expect(result).toBeNull();
@@ -67,7 +64,6 @@ describe('getCapabilityConflict', () => {
   it('returns null when active model can see images and has no max-images cap', () => {
     const result = getCapabilityConflict('llava', VISION, {
       ...EMPTY,
-      hasImages: true,
       hasScreenCommand: true,
       imageCount: 3,
     });
@@ -77,7 +73,6 @@ describe('getCapabilityConflict', () => {
   it('returns conflict when images attached and model is text-only', () => {
     const result = getCapabilityConflict('llama3', TEXT_ONLY, {
       ...EMPTY,
-      hasImages: true,
       imageCount: 1,
     });
     expect(result).toBe(
@@ -96,7 +91,6 @@ describe('getCapabilityConflict', () => {
   it('falls back to a generic name when model name is empty', () => {
     const result = getCapabilityConflict('', TEXT_ONLY, {
       ...EMPTY,
-      hasImages: true,
       imageCount: 1,
     });
     expect(result).toBe(
@@ -107,7 +101,6 @@ describe('getCapabilityConflict', () => {
   it('falls back to a generic name when model name is null', () => {
     const result = getCapabilityConflict(null, TEXT_ONLY, {
       ...EMPTY,
-      hasImages: true,
       imageCount: 1,
     });
     expect(result?.startsWith('this model')).toBe(true);
@@ -116,7 +109,6 @@ describe('getCapabilityConflict', () => {
   it('falls back to a generic name when model name is undefined', () => {
     const result = getCapabilityConflict(undefined, TEXT_ONLY, {
       ...EMPTY,
-      hasImages: true,
       imageCount: 1,
     });
     expect(result?.startsWith('this model')).toBe(true);
@@ -128,7 +120,7 @@ describe('getCapabilityConflict', () => {
     const result = getCapabilityConflict(
       'llama3.2-vision',
       VISION_SINGLE_IMAGE,
-      { ...EMPTY, hasImages: true, imageCount: 1 },
+      { ...EMPTY, imageCount: 1 },
     );
     expect(result).toBeNull();
   });
@@ -137,7 +129,7 @@ describe('getCapabilityConflict', () => {
     const result = getCapabilityConflict(
       'llama3.2-vision',
       VISION_SINGLE_IMAGE,
-      { ...EMPTY, hasImages: true, imageCount: 2 },
+      { ...EMPTY, imageCount: 2 },
     );
     expect(result).toBe(
       'llama3.2-vision accepts one image at a time. Remove the extras to send.',
@@ -150,7 +142,7 @@ describe('getCapabilityConflict', () => {
     const result = getCapabilityConflict(
       'llama3.2-vision',
       VISION_SINGLE_IMAGE,
-      { ...EMPTY, hasImages: true, hasScreenCommand: true, imageCount: 1 },
+      { ...EMPTY, hasScreenCommand: true, imageCount: 1 },
     );
     expect(result).toBe(
       'llama3.2-vision accepts one image at a time. Remove the extras to send.',
@@ -169,7 +161,6 @@ describe('getCapabilityConflict', () => {
   it('pluralizes the noun for a multi-image cap', () => {
     const result = getCapabilityConflict('multi-cap', VISION_TWO_IMAGES, {
       ...EMPTY,
-      hasImages: true,
       imageCount: 5,
     });
     expect(result).toBe(
@@ -180,7 +171,6 @@ describe('getCapabilityConflict', () => {
   it('allows submits at the cap exactly', () => {
     const result = getCapabilityConflict('multi-cap', VISION_TWO_IMAGES, {
       ...EMPTY,
-      hasImages: true,
       imageCount: 2,
     });
     expect(result).toBeNull();
@@ -194,7 +184,6 @@ describe('getCapabilityConflict', () => {
     };
     const result = getCapabilityConflict('odd', odd, {
       ...EMPTY,
-      hasImages: true,
       imageCount: 3,
     });
     expect(result).toBeNull();
@@ -236,7 +225,6 @@ describe('getCapabilityConflict', () => {
     // /think requirement than the other way around.
     const result = getCapabilityConflict('llama3', TEXT_ONLY, {
       ...EMPTY,
-      hasImages: true,
       imageCount: 1,
       hasThinkCommand: true,
     });
@@ -248,7 +236,6 @@ describe('getCapabilityConflict', () => {
   it('still fires the /think gate when vision is satisfied but thinking is not', () => {
     const result = getCapabilityConflict('llava', VISION, {
       ...EMPTY,
-      hasImages: true,
       imageCount: 1,
       hasThinkCommand: true,
     });
@@ -260,7 +247,6 @@ describe('getCapabilityConflict', () => {
   it('returns null when both vision and thinking are satisfied', () => {
     const result = getCapabilityConflict('omnimodel', VISION_AND_THINKING, {
       ...EMPTY,
-      hasImages: true,
       imageCount: 1,
       hasThinkCommand: true,
     });

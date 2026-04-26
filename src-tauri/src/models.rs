@@ -15,8 +15,13 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
+use crate::config::defaults::{
+    DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
+    MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES,
+};
 use crate::config::AppConfig;
 use crate::database::{get_config, set_config};
 use crate::history::Database;
@@ -33,12 +38,6 @@ pub const MAX_MODEL_SLUG_LEN: usize = 256;
 /// the live Ollama inventory. Exported so the frontend and tests can match
 /// against a stable constant instead of a prose string.
 pub const MODEL_NOT_INSTALLED_ERR_PREFIX: &str = "Model is not installed in Ollama: ";
-
-/// Maximum accepted body size for the `/api/tags` response. Guards against
-/// a misbehaving or compromised localhost Ollama streaming an unbounded
-/// response that would exhaust memory. 4 MiB comfortably fits thousands of
-/// model entries.
-const MAX_TAGS_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// In-memory cache of the currently active model slug. Written once at
 /// startup (after `resolve_seed_active_model`) and updated every time the
@@ -150,13 +149,6 @@ pub fn validate_model_slug(model: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Per-request timeout for the Ollama `/api/tags` GET. Guards the IPC
-/// boundary: if the daemon accepts the TCP connection but never responds
-/// (hung socket, stuck process, network partition), `get_model_picker_state`
-/// and `set_active_model` would otherwise block indefinitely and wedge the
-/// UI. 5 seconds is generous for a localhost call.
-const TAGS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// GETs `{base_url}/api/tags` and returns the list of installed model slugs.
 ///
 /// Every failure mode (transport error, non-2xx status, oversized body,
@@ -166,7 +158,12 @@ pub async fn fetch_installed_model_names(
     client: &reqwest::Client,
     base_url: &str,
 ) -> Result<Vec<String>, String> {
-    fetch_installed_model_names_with_timeout(client, base_url, TAGS_REQUEST_TIMEOUT).await
+    fetch_installed_model_names_with_timeout(
+        client,
+        base_url,
+        std::time::Duration::from_secs(DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS),
+    )
+    .await
 }
 
 /// Internal variant of [`fetch_installed_model_names`] with a configurable
@@ -177,12 +174,17 @@ async fn fetch_installed_model_names_with_timeout(
     base_url: &str,
     timeout: std::time::Duration,
 ) -> Result<Vec<String>, String> {
-    fetch_installed_model_names_inner(client, base_url, timeout, MAX_TAGS_BODY_BYTES).await
+    fetch_installed_model_names_inner(client, base_url, timeout, MAX_OLLAMA_TAGS_BODY_BYTES).await
 }
 
 /// Innermost implementation of the tags fetcher with both timeout and body
 /// size cap configurable. Exists so the size-cap branches can be exercised
 /// deterministically in tests without allocating production-scale buffers.
+///
+/// The cap is enforced incrementally during the streaming read: each chunk
+/// is checked before being appended, so the connection is aborted the moment
+/// the running total would exceed `max_body_bytes` rather than after the full
+/// body has been buffered.
 async fn fetch_installed_model_names_inner(
     client: &reqwest::Client,
     base_url: &str,
@@ -212,18 +214,19 @@ async fn fetch_installed_model_names_inner(
         }
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("failed to read /api/tags body: {e}"))?;
-
-    if bytes.len() > max_body_bytes {
-        return Err(format!(
-            "/api/tags response exceeded {max_body_bytes} bytes"
-        ));
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("failed to read /api/tags body: {e}"))?;
+        if buf.len() + chunk.len() > max_body_bytes {
+            return Err(format!(
+                "/api/tags response exceeded {max_body_bytes} bytes"
+            ));
+        }
+        buf.extend_from_slice(&chunk);
     }
 
-    let body: TagsResponse = serde_json::from_slice(&bytes)
+    let body: TagsResponse = serde_json::from_slice(&buf)
         .map_err(|e| format!("failed to decode /api/tags response: {e}"))?;
 
     Ok(body.models.into_iter().map(|m| m.name).collect())
@@ -418,16 +421,6 @@ pub async fn check_model_setup(
 
 // ─── Model capabilities (vision, thinking) ──────────────────────────────────
 
-/// Per-request timeout for the Ollama `/api/show` POST. Local-loopback HTTP
-/// is normally instant, but capping at 5s prevents a wedged daemon from
-/// blocking picker rendering.
-const SHOW_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Maximum accepted body size for the `/api/show` response. The full
-/// Modelfile + parameters can be sizable, but 4 MiB is comfortably above
-/// any real model and bounds attacker-controlled inputs.
-const MAX_SHOW_BODY_BYTES: usize = 4 * 1024 * 1024;
-
 /// Per-model capability flags surfaced to the frontend so the picker can
 /// label rows and the submit-time gate can refuse mismatched messages
 /// (image attached + text-only model). Booleans are derived from Ollama's
@@ -549,7 +542,13 @@ pub async fn fetch_model_capabilities(
     base_url: &str,
     name: &str,
 ) -> Result<Capabilities, String> {
-    fetch_model_capabilities_with_timeout(client, base_url, name, SHOW_REQUEST_TIMEOUT).await
+    fetch_model_capabilities_with_timeout(
+        client,
+        base_url,
+        name,
+        std::time::Duration::from_secs(DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS),
+    )
+    .await
 }
 
 /// Internal variant of [`fetch_model_capabilities`] with a configurable
@@ -561,12 +560,18 @@ async fn fetch_model_capabilities_with_timeout(
     name: &str,
     timeout: std::time::Duration,
 ) -> Result<Capabilities, String> {
-    fetch_model_capabilities_inner(client, base_url, name, timeout, MAX_SHOW_BODY_BYTES).await
+    fetch_model_capabilities_inner(client, base_url, name, timeout, MAX_OLLAMA_SHOW_BODY_BYTES)
+        .await
 }
 
 /// Innermost implementation of the `/api/show` fetcher. Both timeout and
 /// body size cap are configurable so the size-cap branches can be
 /// exercised in tests without allocating production-scale buffers.
+///
+/// The cap is enforced incrementally during the streaming read: each chunk
+/// is checked before being appended, so the connection is aborted the moment
+/// the running total would exceed `max_body_bytes` rather than after the full
+/// body has been buffered.
 async fn fetch_model_capabilities_inner(
     client: &reqwest::Client,
     base_url: &str,
@@ -598,18 +603,19 @@ async fn fetch_model_capabilities_inner(
         }
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("failed to read /api/show body: {e}"))?;
-
-    if bytes.len() > max_body_bytes {
-        return Err(format!(
-            "/api/show response exceeded {max_body_bytes} bytes"
-        ));
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("failed to read /api/show body: {e}"))?;
+        if buf.len() + chunk.len() > max_body_bytes {
+            return Err(format!(
+                "/api/show response exceeded {max_body_bytes} bytes"
+            ));
+        }
+        buf.extend_from_slice(&chunk);
     }
 
-    let body: ShowResponse = serde_json::from_slice(&bytes)
+    let body: ShowResponse = serde_json::from_slice(&buf)
         .map_err(|e| format!("failed to decode /api/show response: {e}"))?;
 
     let mut caps = capabilities_from_strings(&body.capabilities);
@@ -1089,8 +1095,8 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_rejects_body_exceeding_size_cap_when_no_content_length() {
-        // Chunked-encoding response (no Content-Length); the post-read guard
-        // on `bytes.len()` must still reject.
+        // Chunked-encoding response (no Content-Length); the incremental stream
+        // cap must reject when the running total exceeds the limit.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1120,7 +1126,47 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             err.contains("exceeded"),
-            "expected post-read size-cap error, got: {err}"
+            "expected incremental stream cap error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_tags_chunked_early_abort_incremental() {
+        // Explicit test of the incremental streaming abort: the response has NO
+        // Content-Length header and sends chunks whose cumulative size exceeds
+        // the cap. The abort must fire during the streaming read, not after.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut request_buf = [0u8; 1024];
+            let _ = conn.read(&mut request_buf);
+            // Send two small chunks without Content-Length (chunked encoding).
+            // Each chunk alone is under the cap of 20 bytes, but together
+            // they exceed it, exercising the incremental buf.len() + chunk.len()
+            // check inside the stream loop.
+            let _ = conn.write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0\r\n\r\n",
+            );
+        });
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let err = fetch_installed_model_names_inner(
+            &client,
+            &base,
+            std::time::Duration::from_secs(5),
+            20,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains("exceeded"),
+            "expected incremental abort error, got: {err}"
         );
     }
 
@@ -1607,8 +1653,8 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_capabilities_rejects_oversized_when_no_content_length() {
-        // Chunked-encoding response (no Content-Length); the post-read guard
-        // on `bytes.len()` must still reject.
+        // Chunked-encoding response (no Content-Length); the incremental stream
+        // cap must reject when the running total exceeds the limit.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1636,6 +1682,47 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("exceeded"));
+    }
+
+    #[tokio::test]
+    async fn fetch_show_chunked_early_abort_incremental() {
+        // Explicit test of the incremental streaming abort for /api/show: the
+        // response has NO Content-Length header and sends chunks whose
+        // cumulative size exceeds the cap. The abort must fire during the
+        // streaming read, not after.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut request_buf = [0u8; 1024];
+            let _ = conn.read(&mut request_buf);
+            // Send three 10-byte chunks without Content-Length (chunked
+            // encoding). Each chunk alone is under the cap of 20 bytes, but
+            // together they exceed it, exercising the incremental check.
+            let _ = conn.write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0\r\n\r\n",
+            );
+        });
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let err = fetch_model_capabilities_inner(
+            &client,
+            &base,
+            "x",
+            std::time::Duration::from_secs(5),
+            20,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains("exceeded"),
+            "expected incremental abort error, got: {err}"
+        );
     }
 
     #[tokio::test]

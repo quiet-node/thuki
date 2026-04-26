@@ -174,10 +174,16 @@ describe('ModelPickerPanel', () => {
   });
 
   it('Escape without onClose is a safe no-op', () => {
-    renderPanel();
+    const onSelect = vi.fn();
+    renderPanel({ onSelect });
     const input = screen.getByPlaceholderText(/filter models/i);
-    // Asserting no throw by calling keyDown; onClose is undefined here.
     fireEvent.keyDown(input, { key: 'Escape' });
+    // Escape must never select a model.
+    expect(onSelect).not.toHaveBeenCalled();
+    // Focus must remain on the filter input.
+    expect(document.activeElement).toBe(screen.getByRole('combobox'));
+    // Filter value must be unchanged (Escape does not clear input).
+    expect((document.activeElement as HTMLInputElement).value).toBe('');
   });
 
   it('keyboard nav on empty filter result is a safe no-op', () => {
