@@ -23,6 +23,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { useConfigSync } from './hooks/useConfigSync';
+import { useSettingsAutoResize } from './hooks/useSettingsAutoResize';
 import { ModelTab } from './tabs/ModelTab';
 import { SearchTab } from './tabs/SearchTab';
 import { DisplayTab } from './tabs/DisplayTab';
@@ -118,6 +119,19 @@ const TABS: ReadonlyArray<{
 
 const SAVED_PILL_DURATION_MS = 1500;
 
+/**
+ * Static chrome offset from inner content to total window height:
+ *   window padding-top (8) + WindowControls strip (~28) + tab bar (~70)
+ *   + body padding top+bottom (18 + 24 = 42).
+ * Empirically measured against the rendered Settings window. If any of
+ * the chrome surfaces change height, update this constant rather than
+ * trying to read `offsetHeight` at runtime — the auto-resize hook fires
+ * before paint settles, so dynamic measurement of chrome would miss.
+ */
+const CHROME_HEIGHT = 148;
+/** Recovery banner height when the corrupt-config marker is shown. */
+const BANNER_HEIGHT = 56;
+
 export function SettingsWindow() {
   const { config, reload, setConfig } = useConfigSync();
   const [activeTab, setActiveTab] = useState<SettingsTabId>('general');
@@ -131,6 +145,13 @@ export function SettingsWindow() {
   const [resyncToken, setResyncToken] = useState(0);
 
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+
+  const bannerVisible = Boolean(marker && !markerDismissed);
+  useSettingsAutoResize(
+    contentRef,
+    CHROME_HEIGHT + (bannerVisible ? BANNER_HEIGHT : 0),
+  );
 
   const handleSaved = useCallback(
     (next: RawAppConfig) => {
@@ -291,30 +312,32 @@ export function SettingsWindow() {
         id={`panel-${activeTab}`}
         role="tabpanel"
       >
-        {activeTab === 'general' ? (
-          <ModelTab
-            config={config}
-            resyncToken={resyncToken}
-            onSaved={handleSaved}
-          />
-        ) : null}
-        {activeTab === 'search' ? (
-          <SearchTab
-            config={config}
-            resyncToken={resyncToken}
-            onSaved={handleSaved}
-          />
-        ) : null}
-        {activeTab === 'display' ? (
-          <DisplayTab
-            config={config}
-            resyncToken={resyncToken}
-            onSaved={handleSaved}
-          />
-        ) : null}
-        {activeTab === 'about' ? (
-          <AboutTab onSaved={handleSaved} onReload={reload} />
-        ) : null}
+        <div ref={contentRef}>
+          {activeTab === 'general' ? (
+            <ModelTab
+              config={config}
+              resyncToken={resyncToken}
+              onSaved={handleSaved}
+            />
+          ) : null}
+          {activeTab === 'search' ? (
+            <SearchTab
+              config={config}
+              resyncToken={resyncToken}
+              onSaved={handleSaved}
+            />
+          ) : null}
+          {activeTab === 'display' ? (
+            <DisplayTab
+              config={config}
+              resyncToken={resyncToken}
+              onSaved={handleSaved}
+            />
+          ) : null}
+          {activeTab === 'about' ? (
+            <AboutTab onSaved={handleSaved} onReload={reload} />
+          ) : null}
+        </div>
       </div>
 
       <SavedPill visible={savedVisible} />
