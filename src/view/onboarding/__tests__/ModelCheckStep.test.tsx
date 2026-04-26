@@ -106,7 +106,10 @@ describe('ModelCheckStep', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          model: { ...DEFAULT_CONFIG.model, ollamaUrl: 'http://10.0.0.5:9000' },
+          inference: {
+            ...DEFAULT_CONFIG.inference,
+            ollamaUrl: 'http://10.0.0.5:9000',
+          },
         }}
       >
         <ModelCheckStep />
@@ -126,7 +129,7 @@ describe('ModelCheckStep', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          model: { ...DEFAULT_CONFIG.model, ollamaUrl: 'not-a-url' },
+          inference: { ...DEFAULT_CONFIG.inference, ollamaUrl: 'not-a-url' },
         }}
       >
         <ModelCheckStep />

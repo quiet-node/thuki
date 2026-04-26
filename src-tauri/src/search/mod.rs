@@ -75,6 +75,16 @@ pub async fn search_pipeline(
         let guard = active_model_state.0.lock().map_err(|e| e.to_string())?;
         guard.clone()
     };
+    let Some(model_name) = model_name else {
+        // Mirrors the chat-path gate: refuse to dispatch with no active
+        // model. The frontend strip already steers the user to the picker
+        // before this point, so this branch is defense-in-depth for the
+        // race where the user's last installed model was removed mid-run.
+        let _ = on_event.send(SearchEvent::Error {
+            message: "No model selected. Pick a model in the picker.".to_string(),
+        });
+        return Ok(());
+    };
 
     // Pre-flight: verify both sandbox services are reachable before touching
     // the LLM or SearXNG. A 2-second probe prevents a long wait when the
@@ -92,7 +102,7 @@ pub async fn search_pipeline(
 
     let ollama_endpoint = format!(
         "{}/api/chat",
-        app_config.model.ollama_url.trim_end_matches('/')
+        app_config.inference.ollama_url.trim_end_matches('/')
     );
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());

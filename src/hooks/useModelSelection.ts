@@ -5,13 +5,17 @@ import type { ModelPickerState } from '../types/model';
 /**
  * Runtime guard for the IPC boundary. The Rust backend is trusted, but this
  * keeps the hook robust against shape drift (schema changes, legacy builds,
- * mocks) without pulling in a schema library.
+ * mocks) without pulling in a schema library. Accepts `null` for `active`
+ * because Ollama's `/api/tags` is the single source of truth: the backend
+ * returns null when nothing is installed and nothing is persisted.
  */
 function isModelPickerState(value: unknown): value is ModelPickerState {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as { active?: unknown; all?: unknown };
+  const activeOk =
+    candidate.active === null || typeof candidate.active === 'string';
   return (
-    typeof candidate.active === 'string' &&
+    activeOk &&
     Array.isArray(candidate.all) &&
     candidate.all.every((entry) => typeof entry === 'string')
   );
@@ -21,13 +25,18 @@ function isModelPickerState(value: unknown): value is ModelPickerState {
  * Shape returned by {@link useModelSelection}.
  */
 export interface UseModelSelectionResult {
-  /** The currently active Ollama model name. Empty string until loaded. */
-  activeModel: string;
+  /**
+   * The currently active Ollama model name, or `null` when none is selected
+   * (either nothing is installed or the picker has not resolved yet).
+   * Consumers must treat `null` as "block the action and surface the picker",
+   * never as a trigger to invent a default.
+   */
+  activeModel: string | null;
   /** All locally installed Ollama model names available for selection. */
   availableModels: string[];
   /**
-   * Re-fetch the model picker state from the backend. Clears both
-   * `activeModel` and `availableModels` when the backend returns a malformed
+   * Re-fetch the model picker state from the backend. Sets `activeModel` to
+   * `null` and clears `availableModels` when the backend returns a malformed
    * payload or the call rejects. Callers are the single trigger: this hook
    * does not auto-retry.
    */
@@ -55,7 +64,7 @@ export function useModelSelection(): UseModelSelectionResult {
   // The state setter is intentionally renamed because `setActiveModel` is the
   // public async callback returned by this hook.
   // eslint-disable-next-line @eslint-react/use-state
-  const [activeModel, setActiveModelState] = useState('');
+  const [activeModel, setActiveModelState] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
 
   const mountedRef = useRef(true);
@@ -79,7 +88,7 @@ export function useModelSelection(): UseModelSelectionResult {
       const state = await invoke<unknown>('get_model_picker_state');
       if (!isLatest(token)) return;
       if (!isModelPickerState(state)) {
-        setActiveModelState('');
+        setActiveModelState(null);
         setAvailableModels([]);
         return;
       }
@@ -87,7 +96,7 @@ export function useModelSelection(): UseModelSelectionResult {
       setAvailableModels(state.all);
     } catch {
       if (!isLatest(token)) return;
-      setActiveModelState('');
+      setActiveModelState(null);
       setAvailableModels([]);
     }
   }, [isLatest]);

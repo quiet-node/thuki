@@ -88,30 +88,47 @@ describe('getCapabilityConflict', () => {
     expect(result).toContain('reads text only');
   });
 
-  it('falls back to a generic name when model name is empty', () => {
+  it('returns the no-model message when modelName is empty', () => {
+    // Ollama's /api/tags is the single source of truth for the active
+    // model. An empty name short-circuits to the picker prompt regardless
+    // of compose state: no model means no submit can succeed.
     const result = getCapabilityConflict('', TEXT_ONLY, {
       ...EMPTY,
       imageCount: 1,
     });
     expect(result).toBe(
-      'this model reads text only. Try a vision model for images.',
+      'Thuki needs a model to think with. Pull one in Ollama and tap the picker chip above to wire it up.',
     );
   });
 
-  it('falls back to a generic name when model name is null', () => {
+  it('returns the no-model message when modelName is null', () => {
     const result = getCapabilityConflict(null, TEXT_ONLY, {
       ...EMPTY,
       imageCount: 1,
     });
-    expect(result?.startsWith('this model')).toBe(true);
+    expect(result).toBe(
+      'Thuki needs a model to think with. Pull one in Ollama and tap the picker chip above to wire it up.',
+    );
   });
 
-  it('falls back to a generic name when model name is undefined', () => {
+  it('returns the no-model message when modelName is undefined', () => {
     const result = getCapabilityConflict(undefined, TEXT_ONLY, {
       ...EMPTY,
       imageCount: 1,
     });
-    expect(result?.startsWith('this model')).toBe(true);
+    expect(result).toBe(
+      'Thuki needs a model to think with. Pull one in Ollama and tap the picker chip above to wire it up.',
+    );
+  });
+
+  it('returns the no-model message even when compose state is empty', () => {
+    // The strip needs to fire as soon as the user opens the overlay with
+    // nothing installed, before they type anything. Empty compose is the
+    // default state and must surface the "pick a model" copy.
+    const result = getCapabilityConflict(null, undefined, EMPTY);
+    expect(result).toBe(
+      'Thuki needs a model to think with. Pull one in Ollama and tap the picker chip above to wire it up.',
+    );
   });
 
   // ── max-images gate ───────────────────────────────────────────────────────
@@ -209,13 +226,16 @@ describe('getCapabilityConflict', () => {
     expect(result).toBeNull();
   });
 
-  it('falls back to a generic name when /think mismatches and name is empty', () => {
+  it('surfaces the no-model message when name is empty even with /think queued', () => {
+    // The no-model gate runs before any capability check, so an empty name
+    // short-circuits to the picker prompt regardless of which command is
+    // queued. The /think mismatch copy never reaches the user.
     const result = getCapabilityConflict('', TEXT_ONLY, {
       ...EMPTY,
       hasThinkCommand: true,
     });
     expect(result).toBe(
-      "this model doesn't show reasoning. Try a thinking model for /think.",
+      'Thuki needs a model to think with. Pull one in Ollama and tap the picker chip above to wire it up.',
     );
   });
 

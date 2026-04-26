@@ -24,7 +24,7 @@ use super::defaults::{
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path};
 use super::schema::{
-    AppConfig, ModelSection, PromptSection, QuoteSection, SearchSection, WindowSection,
+    AppConfig, InferenceSection, PromptSection, QuoteSection, SearchSection, WindowSection,
 };
 use super::writer::atomic_write;
 
@@ -47,7 +47,7 @@ fn defaults_const_values_match_schema_defaults() {
     // Guard rail: a change to a default in defaults.rs must flow through to
     // AppConfig::default(). If this test fails, someone changed one but not both.
     let c = AppConfig::default();
-    assert_eq!(c.model.ollama_url, DEFAULT_OLLAMA_URL);
+    assert_eq!(c.inference.ollama_url, DEFAULT_OLLAMA_URL);
     assert_eq!(c.prompt.system, "");
     assert_eq!(c.prompt.resolved_system, "");
     assert_eq!(c.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
@@ -85,7 +85,7 @@ fn defaults_prompt_base_is_nonempty() {
 
 #[test]
 fn section_defaults_are_sensible() {
-    let m = ModelSection::default();
+    let m = InferenceSection::default();
     assert_eq!(m.ollama_url, DEFAULT_OLLAMA_URL);
 
     let p = PromptSection::default();
@@ -105,7 +105,7 @@ fn app_config_serde_round_trip_matches_defaults() {
     let parsed: AppConfig = toml::from_str(&toml_str).expect("deserialize");
     // prompt.resolved_system is marked #[serde(skip)] so it does not round-trip
     // through the file. Compare everything else.
-    assert_eq!(parsed.model, original.model);
+    assert_eq!(parsed.inference, original.inference);
     assert_eq!(parsed.prompt.system, original.prompt.system);
     assert_eq!(parsed.window, original.window);
     assert_eq!(parsed.quote, original.quote);
@@ -115,11 +115,11 @@ fn app_config_serde_round_trip_matches_defaults() {
 fn app_config_partial_file_fills_missing_fields_with_defaults() {
     // Only declare one field; serde(default) fills the rest.
     let partial = r#"
-        [model]
+        [inference]
         ollama_url = "http://localhost:9999"
     "#;
     let parsed: AppConfig = toml::from_str(partial).expect("partial file parses");
-    assert_eq!(parsed.model.ollama_url, "http://localhost:9999");
+    assert_eq!(parsed.inference.ollama_url, "http://localhost:9999");
     assert_eq!(parsed.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
     assert_eq!(
         parsed.quote.max_display_lines,
@@ -164,7 +164,7 @@ fn load_missing_file_seeds_defaults_and_returns_them() {
     let config = load_from_path(&path).expect("seed on first run");
 
     assert!(path.exists(), "file should be seeded");
-    assert_eq!(config.model.ollama_url, DEFAULT_OLLAMA_URL);
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
     // Resolved system prompt composed from default base plus appendix.
     assert!(config
         .prompt
@@ -183,7 +183,7 @@ fn load_missing_file_in_missing_parent_dir_creates_dir() {
     let path = config_path_in(&nested);
     let config = load_from_path(&path).expect("creates parent dir and seeds");
     assert!(path.exists());
-    assert_eq!(config.model.ollama_url, DEFAULT_OLLAMA_URL);
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
 }
 
 #[test]
@@ -209,14 +209,14 @@ fn load_existing_valid_file_returns_resolved_config() {
     std::fs::write(
         &path,
         r#"
-            [model]
+            [inference]
             ollama_url = "http://localhost:99999"
         "#,
     )
     .unwrap();
 
     let config = load_from_path(&path).unwrap();
-    assert_eq!(config.model.ollama_url, "http://localhost:99999");
+    assert_eq!(config.inference.ollama_url, "http://localhost:99999");
 }
 
 #[test]
@@ -248,7 +248,7 @@ fn load_corrupt_file_is_renamed_and_reseeded() {
     std::fs::write(&path, "this is = definitely not [ valid toml").unwrap();
 
     let config = load_from_path(&path).expect("recover from corrupt file");
-    assert_eq!(config.model.ollama_url, DEFAULT_OLLAMA_URL);
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
 
     // Original file renamed with .corrupt- prefix.
     let renamed_exists = std::fs::read_dir(&dir)
@@ -274,7 +274,11 @@ fn load_unreadable_file_returns_in_memory_defaults() {
 
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
-    std::fs::write(&path, "[model]\nollama_url = \"http://127.0.0.1:11434\"\n").unwrap();
+    std::fs::write(
+        &path,
+        "[inference]\nollama_url = \"http://127.0.0.1:11434\"\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
     // If the current user is root, the permission bits are ignored and this
@@ -286,7 +290,7 @@ fn load_unreadable_file_returns_in_memory_defaults() {
     }
 
     let config = load_from_path(&path).expect("fallback to in-memory defaults");
-    assert_eq!(config.model.ollama_url, DEFAULT_OLLAMA_URL);
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
     // Restore so cleanup works.
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
 }
@@ -295,7 +299,7 @@ fn load_unreadable_file_returns_in_memory_defaults() {
 
 #[test]
 fn resolve_unknown_model_field_is_ignored() {
-    // Older config files seeded a `[model] available = [...]` list. After
+    // Older config files seeded a `[inference] available = [...]` list. After
     // removing that field from the schema, serde must silently drop it
     // rather than refusing to parse the file.
     let dir = fresh_temp_dir();
@@ -303,14 +307,14 @@ fn resolve_unknown_model_field_is_ignored() {
     std::fs::write(
         &path,
         r#"
-            [model]
+            [inference]
             available = ["legacy:model", "another:model"]
             ollama_url = "http://localhost:11434"
         "#,
     )
     .unwrap();
     let config = load_from_path(&path).unwrap();
-    assert_eq!(config.model.ollama_url, "http://localhost:11434");
+    assert_eq!(config.inference.ollama_url, "http://localhost:11434");
 }
 
 #[test]
@@ -320,13 +324,13 @@ fn resolve_empty_ollama_url_falls_back() {
     std::fs::write(
         &path,
         r#"
-            [model]
+            [inference]
             ollama_url = "   "
         "#,
     )
     .unwrap();
     let config = load_from_path(&path).unwrap();
-    assert_eq!(config.model.ollama_url, DEFAULT_OLLAMA_URL);
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
 }
 
 #[test]
@@ -807,7 +811,11 @@ fn search_batch_timeout_invariant_corrected() {
 fn toml_without_search_section_deserializes_to_defaults() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
-    std::fs::write(&path, "[model]\nollama_url = \"http://127.0.0.1:11434\"\n").unwrap();
+    std::fs::write(
+        &path,
+        "[inference]\nollama_url = \"http://127.0.0.1:11434\"\n",
+    )
+    .unwrap();
     let loaded = load_from_path(&path).unwrap();
     assert_eq!(
         loaded.search.searxng_url, DEFAULT_SEARXNG_URL,

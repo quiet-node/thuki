@@ -131,13 +131,16 @@ interface WindowControlsProps {
    */
   onNewConversation?: () => void;
   /**
-   * Currently active model slug displayed in the pill trigger.
-   * Requires `onModelPickerToggle` to be present; omit either to hide the pill.
+   * Currently active model slug displayed in the pill trigger. When `null`
+   * or `undefined` the pill renders a "Pick a model" placeholder so the
+   * affordance stays visible: the picker is the recovery path when no
+   * model is selected, so it must be reachable even with a null active.
    */
-  activeModel?: string;
+  activeModel?: string | null;
   /**
    * Called when the user clicks the active-model pill to open/close the picker.
-   * Requires `activeModel` to be present; omit either to hide the pill.
+   * Omit to hide the pill entirely. When provided the pill always renders,
+   * regardless of `activeModel`, so users can recover from a no-model state.
    */
   onModelPickerToggle?: () => void;
   /** Drives `aria-expanded` on the pill button. */
@@ -208,8 +211,12 @@ export const WindowControls = memo(function WindowControls({
 
         {/* Right-side header controls */}
         <div className="ml-auto flex items-center gap-1">
-          {/* Active model pill trigger: leftmost, before save */}
-          {activeModel !== undefined && onModelPickerToggle !== undefined && (
+          {/* Active model pill trigger: leftmost, before save. The pill
+              renders whenever the picker callback is wired up, regardless of
+              whether a model is currently selected. When no model is active
+              the chip surfaces the "Pick a model" affordance so the user
+              has a one-click recovery path out of the no-model state. */}
+          {onModelPickerToggle !== undefined && (
             <Tooltip label="Choose model">
               <button
                 type="button"
@@ -238,7 +245,9 @@ export const WindowControls = memo(function WindowControls({
                       : 'text-text-secondary group-hover/pill:text-text-primary'
                   }`}
                 >
-                  {activeModel}
+                  {activeModel != null && activeModel.length > 0
+                    ? activeModel
+                    : 'Pick a model'}
                 </span>
               </button>
             </Tooltip>

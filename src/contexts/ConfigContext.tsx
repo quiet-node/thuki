@@ -9,7 +9,9 @@
  *
  * The Rust `AppConfig` serializes with snake_case field names (matching the
  * on-disk TOML schema). We translate to camelCase here so React components
- * keep their idiomatic JS names.
+ * keep their idiomatic JS names. The active model is NOT in this config:
+ * Ollama's `/api/tags` is the source of truth and the active slug lives in
+ * the Tauri-side `ActiveModelState`, surfaced through `useModelSelection`.
  */
 
 import { createContext, use, useEffect, useState, type ReactNode } from 'react';
@@ -17,8 +19,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 /** Shape returned by the Rust `get_config` command (snake_case). */
 interface RawAppConfig {
-  model: {
-    available: string[];
+  inference: {
     ollama_url: string;
   };
   prompt: {
@@ -39,11 +40,7 @@ interface RawAppConfig {
 
 /** Camel-cased, frontend-friendly view of the configuration. */
 export interface AppConfig {
-  model: {
-    /** First entry of `available` (the list-order invariant). */
-    active: string;
-    /** Full list, in order. */
-    available: string[];
+  inference: {
     ollamaUrl: string;
   };
   prompt: {
@@ -65,10 +62,8 @@ export interface AppConfig {
 
 function transform(raw: RawAppConfig): AppConfig {
   return {
-    model: {
-      active: raw.model.available[0] ?? '',
-      available: raw.model.available,
-      ollamaUrl: raw.model.ollama_url,
+    inference: {
+      ollamaUrl: raw.inference.ollama_url,
     },
     prompt: {
       system: raw.prompt.system,
@@ -165,9 +160,7 @@ export function ConfigProviderForTest({
  * `src-tauri/src/config/defaults.rs`).
  */
 export const DEFAULT_CONFIG: AppConfig = {
-  model: {
-    active: 'gemma4:e2b',
-    available: ['gemma4:e2b'],
+  inference: {
     ollamaUrl: 'http://127.0.0.1:11434',
   },
   prompt: { system: '' },

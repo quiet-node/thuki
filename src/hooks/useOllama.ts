@@ -10,7 +10,11 @@ import type {
 } from '../types/search';
 
 /** Mirrors the Rust OllamaErrorKind enum sent over IPC. */
-export type OllamaErrorKind = 'NotRunning' | 'ModelNotFound' | 'Other';
+export type OllamaErrorKind =
+  | 'NotRunning'
+  | 'ModelNotFound'
+  | 'NoModelSelected'
+  | 'Other';
 
 /** Represents a single message in the chat thread. */
 export interface Message {
@@ -128,13 +132,13 @@ function finalizeSearchTraceSteps(
  * @param activeModel Ollama model slug that should be attributed to each
  *   assistant message produced by this hook. Passed as a hook parameter (not
  *   a per-call argument) so the latest App-level selection is captured via
- *   closure on every render. An empty string (briefly possible on startup,
- *   before the model list resolves) is coerced to `undefined` on the emitted
- *   `Message`, so no attribution chip is rendered rather than a blank one.
+ *   closure on every render. `null` (no model selected) and an empty string
+ *   are both coerced to `undefined` on the emitted `Message`, so no
+ *   attribution chip is rendered rather than a blank one.
  * @param onTurnComplete Optional callback invoked after each completed turn.
  */
 export function useOllama(
-  activeModel: string,
+  activeModel: string | null,
   onTurnComplete?: (userMsg: Message, assistantMsg: Message) => void,
 ) {
   const [messages, setMessages] = useState<Message[]>([]);

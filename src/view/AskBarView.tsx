@@ -189,8 +189,8 @@ interface AskBarViewProps {
    * "normal" = violet ring; "max" = red ring + label; undefined = no ring.
    */
   isDragOver?: 'normal' | 'max';
-  /** Currently active Ollama model slug. Enables the model picker when set. */
-  activeModel?: string;
+  /** Currently active Ollama model slug, or `null` when none is selected. */
+  activeModel?: string | null;
   /** Full list of model slugs available for selection in the picker. */
   availableModels?: string[];
   /**

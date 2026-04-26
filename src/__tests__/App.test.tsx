@@ -1521,6 +1521,8 @@ describe('App', () => {
 
     it('handleSaveAndNew aborts reset when save fails', async () => {
       invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
         if (cmd === 'list_conversations') return [];
         if (cmd === 'save_conversation') throw new Error('disk full');
       });
@@ -1637,6 +1639,8 @@ describe('App', () => {
       // Bug: without the early return on save failure, the load would still run
       // and could overwrite the current session with an unrelated conversation.
       invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
         if (cmd === 'list_conversations')
           return [
             {
@@ -1991,6 +1995,8 @@ describe('App', () => {
       // Bug: without try/catch, setIsHistoryOpen(false) is never reached when
       // loadConversation() throws, leaving the panel open on failure.
       invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
         if (cmd === 'list_conversations')
           return [
             {
@@ -2263,6 +2269,8 @@ describe('App', () => {
 
     it('handleImagesAttached removes image when backend fails', async () => {
       invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
         if (cmd === 'save_image_command') throw new Error('disk full');
       });
 
@@ -2311,6 +2319,8 @@ describe('App', () => {
       let saveCallCount = 0;
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'get_model_picker_state')
+            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
           if (args && 'onEvent' in args) {
             // channel capture - no-op for this test
           }
@@ -2681,6 +2691,8 @@ describe('App', () => {
       // Make save_image_command hang so the image stays as a blob URL
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'get_model_picker_state')
+            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
           if (args && 'onEvent' in args) {
             // channel capture
           }
@@ -2785,6 +2797,8 @@ describe('App', () => {
       // Make save_image_command hang forever (never resolve)
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'get_model_picker_state')
+            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
           if (args && 'onEvent' in args) {
             // channel capture - no-op
           }
@@ -2843,6 +2857,8 @@ describe('App', () => {
       const savePromises: Promise<string>[] = [];
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'get_model_picker_state')
+            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
           if (args && 'onEvent' in args) {
             // Accept channel for ask_ollama
           }
@@ -2938,6 +2954,8 @@ describe('App', () => {
       let resolveCancel!: () => void;
 
       invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
         if (cmd === 'search_pipeline') {
           return new Promise<void>((res) => {
             resolveSearch = res;
@@ -3005,6 +3023,8 @@ describe('App', () => {
 
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'get_model_picker_state')
+            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
           if (args && 'onEvent' in args) {
             // Accept channel
           }
@@ -3079,6 +3099,8 @@ describe('App', () => {
       const resolvers: ((path: string) => void)[] = [];
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'get_model_picker_state')
+            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
           if (args && 'onEvent' in args) {
             // Accept channel
           }
@@ -3147,6 +3169,8 @@ describe('App', () => {
       let rejectSave: ((err: Error) => void) | null = null;
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'get_model_picker_state')
+            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
           if (args && 'onEvent' in args) {
             // channel capture
           }
@@ -3734,6 +3758,8 @@ describe('App', () => {
 
     it('does not call ask when capture_full_screen_command throws', async () => {
       invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
         if (cmd === 'capture_full_screen_command') {
           throw new Error('Permission denied');
         }
@@ -3764,6 +3790,8 @@ describe('App', () => {
 
     it('surfaces string errors from Tauri invoke directly', async () => {
       invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
         if (cmd === 'capture_full_screen_command') {
           // Tauri v2 rejects with the Err(String) value as a plain string.
           return Promise.reject(
@@ -3796,6 +3824,8 @@ describe('App', () => {
 
     it('handles non-Error non-string rejection values', async () => {
       invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
         if (cmd === 'capture_full_screen_command') {
           return Promise.reject(42);
         }
@@ -3820,6 +3850,8 @@ describe('App', () => {
     it('clears capture error when a new submit is attempted', async () => {
       enableChannelCapture();
       invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
         if (cmd === 'capture_full_screen_command') {
           throw new Error('capture failed');
         }
@@ -3986,6 +4018,8 @@ describe('App', () => {
 
     it('restores query with cleanQuery text when capture fails mid-message', async () => {
       invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
         if (cmd === 'capture_full_screen_command') {
           throw new Error('Screen capture timed out');
         }
@@ -4666,6 +4700,8 @@ describe('App', () => {
       const savePromises: Promise<string>[] = [];
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'get_model_picker_state')
+            return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
           if (args && 'onEvent' in args) {
             // Accept channel for ask_ollama
           }

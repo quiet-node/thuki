@@ -36,9 +36,6 @@ import {
 } from './config/commands';
 import './App.css';
 
-/** Fallback model name used before get_model_picker_state resolves at startup. */
-const DEFAULT_MODEL_FALLBACK = 'gemma4:e2b';
-
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 const ONBOARDING_EVENT = 'thuki://onboarding';
 
@@ -667,9 +664,10 @@ function App() {
       if (isSaved) {
         await unsave();
       } else {
-        // activeModel is empty string until the model picker hook resolves on first
-        // load; fall back to the bootstrap default during that brief window.
-        await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
+        // `save` accepts `string | null` and short-circuits internally when
+        // there is no active model, so the no-model guard lives in one
+        // place rather than duplicated at every call site.
+        await save(messages, activeModel);
       }
     } catch {
       // State stays unchanged on failure; feedback is implicit in the icon.
@@ -710,7 +708,7 @@ function App() {
   const handleSaveAndLoad = useCallback(
     async (id: string) => {
       try {
-        await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
+        await save(messages, activeModel);
       } catch {
         // Save failed - abort to avoid leaving the current session unprotected.
         return;
@@ -784,7 +782,7 @@ function App() {
   /** Saves the current conversation then starts a fresh one. */
   const handleSaveAndNew = useCallback(async () => {
     try {
-      await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
+      await save(messages, activeModel);
     } catch {
       return;
     }

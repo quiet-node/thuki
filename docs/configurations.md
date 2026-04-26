@@ -26,7 +26,7 @@ open ~/Library/Application\ Support/com.quietnode.thuki/config.toml
 ### Example
 
 ```toml
-[model]
+[inference]
 # Where Thuki finds your local Ollama server. The active model itself is
 # selected from the in-app picker (which lists whatever is installed in
 # Ollama via /api/tags) and is stored in Thuki's local database, not here.
@@ -80,9 +80,11 @@ Every domain below is shown as a single table that lists **all** constants Thuki
 
 ## Reference
 
-### `[model]`
+### `[inference]`
 
 Where to find your local Ollama server. The active model itself is **not** a TOML setting: Thuki discovers installed models live from Ollama's `/api/tags` endpoint, lets you pick one from the in-app model picker, and stores that selection in its local SQLite database (`app_config` table). Storing the active slug in TOML would duplicate ground truth from Ollama and break the moment you remove a model with `ollama rm`, so it lives next to the conversation history instead.
+
+When no model is installed and no choice has been persisted, Thuki refuses to dispatch a chat request and surfaces a "Pick a model" prompt in the input area. Pull a model with `ollama pull <slug>` and select it from the picker chip in the top-right of the overlay.
 
 | Constant     | Default                    | Tunable? | Why not tunable | Bounds        | Description                                                                                                                                                                                                          |
 | :----------- | :------------------------- | :------- | :-------------- | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -13,7 +13,7 @@ function Probe() {
   const config = useConfig();
   return (
     <>
-      <div data-testid="active-model">{config.model.active}</div>
+      <div data-testid="ollama-url">{config.inference.ollamaUrl}</div>
       <div data-testid="overlay-width">{config.window.overlayWidth}</div>
       <div data-testid="max-display-lines">{config.quote.maxDisplayLines}</div>
       <div data-testid="system-prompt">{config.prompt.system}</div>
@@ -30,8 +30,8 @@ describe('ConfigContext', () => {
   describe('useConfig fallback', () => {
     it('returns DEFAULT_CONFIG when no provider is in the tree', () => {
       render(<Probe />);
-      expect(screen.getByTestId('active-model').textContent).toBe(
-        DEFAULT_CONFIG.model.active,
+      expect(screen.getByTestId('ollama-url').textContent).toBe(
+        DEFAULT_CONFIG.inference.ollamaUrl,
       );
       expect(screen.getByTestId('overlay-width').textContent).toBe(
         String(DEFAULT_CONFIG.window.overlayWidth),
@@ -46,9 +46,7 @@ describe('ConfigContext', () => {
     it('provides the supplied value to descendants', () => {
       const custom: AppConfig = {
         ...DEFAULT_CONFIG,
-        model: {
-          active: 'custom:model',
-          available: ['custom:model', 'other:model'],
+        inference: {
           ollamaUrl: 'http://example.test:11434',
         },
       };
@@ -57,8 +55,8 @@ describe('ConfigContext', () => {
           <Probe />
         </ConfigProviderForTest>,
       );
-      expect(screen.getByTestId('active-model').textContent).toBe(
-        'custom:model',
+      expect(screen.getByTestId('ollama-url').textContent).toBe(
+        'http://example.test:11434',
       );
     });
   });
@@ -66,8 +64,7 @@ describe('ConfigContext', () => {
   describe('ConfigProvider', () => {
     it('hydrates from the backend and transforms snake_case to camelCase', async () => {
       invoke.mockResolvedValueOnce({
-        model: {
-          available: ['gemma4:e4b', 'gemma4:e2b'],
+        inference: {
           ollama_url: 'http://127.0.0.1:11434',
         },
         prompt: { system: 'custom base prompt' },
@@ -92,7 +89,9 @@ describe('ConfigContext', () => {
       // Let the useEffect + promise resolution flush.
       await act(async () => {});
 
-      expect(screen.getByTestId('active-model').textContent).toBe('gemma4:e4b');
+      expect(screen.getByTestId('ollama-url').textContent).toBe(
+        'http://127.0.0.1:11434',
+      );
       expect(screen.getByTestId('overlay-width').textContent).toBe('800');
       expect(screen.getByTestId('max-display-lines').textContent).toBe('6');
       expect(screen.getByTestId('system-prompt').textContent).toBe(
@@ -111,41 +110,12 @@ describe('ConfigContext', () => {
       );
       await act(async () => {});
 
-      expect(screen.getByTestId('active-model').textContent).toBe(
-        DEFAULT_CONFIG.model.active,
+      expect(screen.getByTestId('ollama-url').textContent).toBe(
+        DEFAULT_CONFIG.inference.ollamaUrl,
       );
       expect(screen.getByTestId('overlay-width').textContent).toBe(
         String(DEFAULT_CONFIG.window.overlayWidth),
       );
-    });
-
-    it('falls back to DEFAULT_CONFIG when the available list is empty', async () => {
-      // Edge case: Rust loader always prevents this, but the frontend transform
-      // should still produce a usable `active` (empty string) from an empty list.
-      invoke.mockResolvedValueOnce({
-        model: { available: [], ollama_url: 'http://127.0.0.1:11434' },
-        prompt: { system: '' },
-        window: {
-          overlay_width: 600,
-          collapsed_height: 80,
-          max_chat_height: 648,
-          hide_commit_delay_ms: 350,
-        },
-        quote: {
-          max_display_lines: 4,
-          max_display_chars: 300,
-          max_context_length: 4096,
-        },
-      });
-
-      render(
-        <ConfigProvider>
-          <Probe />
-        </ConfigProvider>,
-      );
-      await act(async () => {});
-
-      expect(screen.getByTestId('active-model').textContent).toBe('');
     });
 
     it('falls back to DEFAULT_CONFIG when invoke rejects', async () => {
@@ -158,8 +128,8 @@ describe('ConfigContext', () => {
       );
       await act(async () => {});
 
-      expect(screen.getByTestId('active-model').textContent).toBe(
-        DEFAULT_CONFIG.model.active,
+      expect(screen.getByTestId('ollama-url').textContent).toBe(
+        DEFAULT_CONFIG.inference.ollamaUrl,
       );
       expect(screen.getByTestId('overlay-width').textContent).toBe(
         String(DEFAULT_CONFIG.window.overlayWidth),

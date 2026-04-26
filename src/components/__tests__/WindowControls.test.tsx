@@ -88,9 +88,40 @@ describe('WindowControls', () => {
     expect(screen.getByText('gemma4:e2b')).toBeInTheDocument();
   });
 
-  it('hides model pill when activeModel is not provided', () => {
+  it('renders the picker chip with a "Pick a model" placeholder when activeModel is null', () => {
+    // The chip is the recovery affordance for the no-model state, so it
+    // must stay visible (and clickable) even when activeModel is null.
+    // Without this, the user has no path back to the picker.
+    render(
+      <WindowControls
+        onClose={vi.fn()}
+        activeModel={null}
+        onModelPickerToggle={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Pick a model')).toBeInTheDocument();
+  });
+
+  it('renders the picker chip with a "Pick a model" placeholder when activeModel is omitted', () => {
     render(<WindowControls onClose={vi.fn()} onModelPickerToggle={vi.fn()} />);
-    expect(screen.queryByRole('button', { name: 'Choose model' })).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Pick a model')).toBeInTheDocument();
+  });
+
+  it('renders the picker chip with a "Pick a model" placeholder when activeModel is empty string', () => {
+    render(
+      <WindowControls
+        onClose={vi.fn()}
+        activeModel=""
+        onModelPickerToggle={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Pick a model')).toBeInTheDocument();
   });
 
   it('hides model pill when onModelPickerToggle is not provided', () => {

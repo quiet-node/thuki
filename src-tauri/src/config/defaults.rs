@@ -5,10 +5,6 @@
 //! Changing a default here propagates to a fresh first-run config file and to
 //! any field a user has left unset or left empty in their existing file.
 
-/// Default active model name, used when no config file exists yet and when a
-/// user's `[model] available` list is empty after whitespace resolution.
-pub const DEFAULT_MODEL_NAME: &str = "gemma4:e2b";
-
 /// Default Ollama HTTP endpoint (loopback, standard port).
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
 

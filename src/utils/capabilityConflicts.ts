@@ -31,21 +31,30 @@ export interface ComposeCapabilityState {
  * The strip and the submit-time toast both render the returned string
  * verbatim so the wording lives in exactly one place.
  *
- * Defaults to permissive: an unknown active model (capabilities not yet
- * fetched, or fetch failed) returns `null` so the user is never blocked
- * by missing metadata. The backend is the final authority and will
- * surface a real error if the model truly cannot accept the payload.
+ * Empty / null / undefined `modelName` short-circuits to a "pick a model"
+ * message regardless of compose state: Ollama's `/api/tags` is the single
+ * source of truth and the user must select a model before any submit can
+ * succeed. Capabilities-aware checks below only run once a model is
+ * actually selected.
+ *
+ * For a selected model with unknown capabilities (not yet fetched, or
+ * fetch failed) the gate is permissive and returns `null` so the user is
+ * never blocked by missing metadata. The backend surfaces a real error
+ * if the model truly cannot accept the payload.
  */
 export function getCapabilityConflict(
   modelName: string | undefined | null,
   capabilities: ModelCapabilities | undefined | null,
   state: ComposeCapabilityState,
 ): string | null {
+  if (!modelName) {
+    return 'Thuki needs a model to think with. Pull one in Ollama and tap the picker chip above to wire it up.';
+  }
   const needsVision = state.imageCount > 0 || state.hasScreenCommand;
   const needsThinking = state.hasThinkCommand;
   if (!needsVision && !needsThinking) return null;
   if (!capabilities) return null;
-  const name = modelName && modelName.length > 0 ? modelName : 'this model';
+  const name = modelName;
 
   // Vision is checked first when both apply because it is the more
   // fundamental constraint: a text-only model cannot consume the image

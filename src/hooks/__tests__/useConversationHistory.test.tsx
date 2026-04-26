@@ -138,6 +138,21 @@ describe('useConversationHistory', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it('save() is a no-op when active model is null', async () => {
+    // Ollama's /api/tags is the single source of truth: when no model is
+    // selected we cannot honestly attribute a conversation, so save() must
+    // short-circuit before any IPC call. Mirrors the backend save_conversation
+    // contract which also rejects on a null active model.
+    invoke.mockResolvedValue(undefined);
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(MESSAGES, null);
+    });
+
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('persistTurn() is a no-op when not saved', async () => {
     const { result } = renderHook(() => useConversationHistory());
 

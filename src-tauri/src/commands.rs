@@ -17,8 +17,24 @@ pub enum OllamaErrorKind {
     NotRunning,
     /// The requested model has not been pulled yet (HTTP 404).
     ModelNotFound,
+    /// No active model has been selected. The user must pick a model from
+    /// the in-app picker before any chat request can be issued. Distinct
+    /// from `ModelNotFound`, which fires when the daemon answered 404 for
+    /// a slug we did try to use.
+    NoModelSelected,
     /// Any other unexpected error.
     Other,
+}
+
+/// Builds the structured error returned when `ActiveModelState` holds `None`
+/// at the time `ask_ollama` is invoked. Pulled out as a free function so the
+/// exact title + body wording lives in one place and the branch is testable
+/// without a full Tauri runtime.
+pub fn no_model_selected_error() -> OllamaError {
+    OllamaError {
+        kind: OllamaErrorKind::NoModelSelected,
+        message: "No model selected\nPick a model in the picker.".to_string(),
+    }
 }
 
 /// Structured error emitted over the streaming channel.
@@ -351,11 +367,23 @@ pub async fn ask_ollama(
     config: State<'_, AppConfig>,
     active_model: State<'_, crate::models::ActiveModelState>,
 ) -> Result<(), String> {
-    let endpoint = format!("{}/api/chat", config.model.ollama_url.trim_end_matches('/'));
+    let endpoint = format!(
+        "{}/api/chat",
+        config.inference.ollama_url.trim_end_matches('/')
+    );
     // Snapshot the active model slug; drop the guard before any `.await`.
     let model_name = {
         let guard = active_model.0.lock().map_err(|e| e.to_string())?;
         guard.clone()
+    };
+    let Some(model_name) = model_name else {
+        // Defense in depth: the onboarding gate already refuses to open the
+        // overlay without a selected model, so this branch only fires if the
+        // user removed their last installed model with `ollama rm` between
+        // launches and the picker hasn't been opened yet. Surface a typed
+        // error so the frontend can route the user to the picker.
+        let _ = on_event.send(StreamChunk::Error(no_model_selected_error()));
+        return Ok(());
     };
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());
@@ -1264,6 +1292,30 @@ mod tests {
         let err = classify_http_error(401, "gemma4:e2b", "");
         assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("401"));
+    }
+
+    #[test]
+    fn no_model_selected_error_uses_typed_kind_and_actionable_message() {
+        // The frontend keys off `kind` to route to the picker; the message
+        // is rendered verbatim. Both are part of the IPC contract: lock
+        // them down so accidental wording drift does not silently break
+        // the recovery path.
+        let err = no_model_selected_error();
+        assert_eq!(err.kind, OllamaErrorKind::NoModelSelected);
+        assert!(
+            err.message.contains("Pick a model"),
+            "message should steer the user to the picker, got: {}",
+            err.message,
+        );
+    }
+
+    #[test]
+    fn ollama_error_kind_no_model_selected_serializes_as_pascal_case() {
+        // Wire format check: NoModelSelected must serialize verbatim in
+        // PascalCase so the React side can match on a stable string in the
+        // OllamaError discriminator.
+        let v = serde_json::to_value(OllamaErrorKind::NoModelSelected).unwrap();
+        assert_eq!(v, serde_json::Value::String("NoModelSelected".to_string()));
     }
 
     #[tokio::test]

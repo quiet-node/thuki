@@ -275,11 +275,16 @@ export function useConversationHistory() {
    * arrives (~2-5 seconds).
    *
    * @param messages The complete message history to persist.
-   * @param model The active Ollama model slug used for title generation.
+   * @param model The active Ollama model slug used for title generation,
+   *   or `null` when no model is selected. A null model short-circuits the
+   *   save (no conversation can be attributed to a missing model). The
+   *   backend `save_conversation` command also enforces this contract;
+   *   gating here keeps the IPC surface clean.
    */
   const save = useCallback(
-    async (messages: Message[], model: string): Promise<void> => {
+    async (messages: Message[], model: string | null): Promise<void> => {
       if (isSaved) return;
+      if (model == null) return;
 
       const payloads = messages.map(toPayload);
 

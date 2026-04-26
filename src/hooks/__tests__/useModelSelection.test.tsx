@@ -24,6 +24,26 @@ describe('useModelSelection', () => {
     ]);
   });
 
+  it('starts with a null active model before the first refresh resolves', () => {
+    invoke.mockImplementationOnce(() => new Promise<unknown>(() => {}));
+    const { result } = renderHook(() => useModelSelection());
+    expect(result.current.activeModel).toBeNull();
+    expect(result.current.availableModels).toEqual([]);
+  });
+
+  it('accepts a null active payload from the backend (no model selected)', async () => {
+    // Ollama is the single source of truth: when nothing is installed and
+    // nothing is persisted, the backend returns active: null. The hook
+    // must surface that as null so consumers can route the user to the picker.
+    invoke.mockResolvedValueOnce({ active: null, all: [] });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+
+    expect(result.current.activeModel).toBeNull();
+    expect(result.current.availableModels).toEqual([]);
+  });
+
   it('persists a new active model and updates local state', async () => {
     invoke
       .mockResolvedValueOnce({
@@ -52,7 +72,7 @@ describe('useModelSelection', () => {
     await act(async () => {});
 
     expect(result.current.availableModels).toEqual([]);
-    expect(result.current.activeModel).toBe('');
+    expect(result.current.activeModel).toBeNull();
   });
 
   it('falls back to empty state when payload shape is invalid', async () => {
@@ -62,7 +82,7 @@ describe('useModelSelection', () => {
     await act(async () => {});
 
     expect(result.current.availableModels).toEqual([]);
-    expect(result.current.activeModel).toBe('');
+    expect(result.current.activeModel).toBeNull();
   });
 
   it('re-fetches models when refreshModels is called', async () => {
@@ -94,7 +114,7 @@ describe('useModelSelection', () => {
     await act(async () => {});
 
     expect(result.current.availableModels).toEqual([]);
-    expect(result.current.activeModel).toBe('');
+    expect(result.current.activeModel).toBeNull();
   });
 
   it('rejects non-object payloads from the backend', async () => {
@@ -104,7 +124,7 @@ describe('useModelSelection', () => {
     await act(async () => {});
 
     expect(result.current.availableModels).toEqual([]);
-    expect(result.current.activeModel).toBe('');
+    expect(result.current.activeModel).toBeNull();
   });
 
   it('rejects payloads whose `all` array contains non-string entries', async () => {
@@ -114,7 +134,7 @@ describe('useModelSelection', () => {
     await act(async () => {});
 
     expect(result.current.availableModels).toEqual([]);
-    expect(result.current.activeModel).toBe('');
+    expect(result.current.activeModel).toBeNull();
   });
 
   it('surfaces backend errors and leaves active model unchanged on rejection', async () => {
@@ -155,7 +175,7 @@ describe('useModelSelection', () => {
       await result.current.refreshModels();
     });
 
-    expect(result.current.activeModel).toBe('');
+    expect(result.current.activeModel).toBeNull();
     expect(result.current.availableModels).toEqual([]);
   });
 

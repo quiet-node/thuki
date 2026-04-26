@@ -22,7 +22,7 @@ use super::defaults::{
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
 };
 
-/// Static, user-tunable model configuration.
+/// Static, user-tunable inference daemon configuration.
 ///
 /// The active model selection is NOT stored here. Active-model state is
 /// runtime UI state owned by [`crate::models::ActiveModelState`] and
@@ -34,12 +34,12 @@ use super::defaults::{
 /// endpoint URL.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
-pub struct ModelSection {
+pub struct InferenceSection {
     /// HTTP base URL of the local Ollama instance.
     pub ollama_url: String,
 }
 
-impl Default for ModelSection {
+impl Default for InferenceSection {
     fn default() -> Self {
         Self {
             ollama_url: DEFAULT_OLLAMA_URL.to_string(),
@@ -176,7 +176,7 @@ impl Default for SearchSection {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct AppConfig {
-    pub model: ModelSection,
+    pub inference: InferenceSection,
     pub prompt: PromptSection,
     pub window: WindowSection,
     pub quote: QuoteSection,
