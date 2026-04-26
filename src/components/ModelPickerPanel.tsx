@@ -11,12 +11,14 @@ import { Tooltip } from './Tooltip';
 export const OLLAMA_LIBRARY_URL = 'https://ollama.com/library';
 
 /**
- * Tooltip body shown when the user hovers the pill. Multi-line so the
- * Tooltip component renders it as the wider variant and the user gets
- * the full sentence in one read.
+ * Tooltip body shown when the user hovers the pill. Three forced lines
+ * so the tooltip box renders as a compact stack of short, balanced
+ * phrases regardless of the host window width. Without the explicit
+ * line breaks the prose wrapped awkwardly inside the chat-mode chip
+ * drawer, leaving an orphan "it." on its own line.
  */
 export const OLLAMA_PILL_TOOLTIP =
-  'Open by design: browse and pull any model on Ollama. Thuki auto-detects it.';
+  'Open by design.\nBrowse and pull any Ollama model.\nThuki auto-detects it.';
 
 const CHECK_ICON_PATH = (
   <path
