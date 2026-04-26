@@ -30,19 +30,42 @@ pub struct OllamaError {
     pub message: String,
 }
 
-/// Maps an HTTP status code to a user-friendly `OllamaError`. The `model_name`
-/// is woven into the `ModelNotFound` hint so the user sees the exact command
-/// to run, whatever their active model happens to be.
-pub fn classify_http_error(status: u16, model_name: &str) -> OllamaError {
+/// Pulls the human-readable reason out of an Ollama error payload. Ollama
+/// returns `{"error":"..."}` on every non-2xx status from `/api/chat`; when
+/// the body is empty, malformed, or missing the `error` key we return
+/// `None` so the caller can fall back to the bare status code.
+pub fn extract_ollama_error_message(body: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    serde_json::from_str::<serde_json::Value>(trimmed)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Maps an HTTP status code (plus the response body for non-404 paths) to a
+/// user-friendly `OllamaError`. The `model_name` is woven into the
+/// `ModelNotFound` hint so the user sees the exact command to run; for every
+/// other status we surface the concrete reason Ollama returned (e.g. "this
+/// model only supports one image while more than one image requested") so
+/// the user can act on it instead of staring at a bare HTTP code.
+pub fn classify_http_error(status: u16, model_name: &str, body: &str) -> OllamaError {
     match status {
         404 => OllamaError {
             kind: OllamaErrorKind::ModelNotFound,
             message: format!("Model not found\nRun: ollama pull {model_name} in a terminal."),
         },
-        _ => OllamaError {
-            kind: OllamaErrorKind::Other,
-            message: format!("Something went wrong\nHTTP {status}"),
-        },
+        _ => {
+            let detail =
+                extract_ollama_error_message(body).unwrap_or_else(|| format!("HTTP {status}"));
+            OllamaError {
+                kind: OllamaErrorKind::Other,
+                message: format!("Something went wrong\n{detail}"),
+            }
+        }
     }
 }
 
@@ -226,7 +249,15 @@ pub async fn stream_ollama_chat(
         Ok(response) => {
             if !response.status().is_success() {
                 let status = response.status().as_u16();
-                on_chunk(StreamChunk::Error(classify_http_error(status, model)));
+                // Drain the body so the user sees Ollama's own reason
+                // (e.g. "this model only supports one image while more
+                // than one image requested") instead of a bare HTTP code.
+                // A failed read collapses to an empty string and the
+                // classifier falls back to the status code.
+                let body = response.text().await.unwrap_or_default();
+                on_chunk(StreamChunk::Error(classify_http_error(
+                    status, model, &body,
+                )));
                 return accumulated;
             }
 
@@ -1159,28 +1190,78 @@ mod tests {
 
     #[test]
     fn classify_http_404_returns_model_not_found() {
-        let err = classify_http_error(404, "gemma4:e2b");
+        let err = classify_http_error(404, "gemma4:e2b", "");
         assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
         assert!(err.message.contains("gemma4:e2b"));
     }
 
     #[test]
     fn classify_http_404_includes_requested_model_name_in_hint() {
-        let err = classify_http_error(404, "custom:model");
+        let err = classify_http_error(404, "custom:model", "");
         assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
         assert!(err.message.contains("custom:model"));
     }
 
     #[test]
-    fn classify_http_500_returns_other_with_status() {
-        let err = classify_http_error(500, "gemma4:e2b");
+    fn classify_http_500_with_empty_body_falls_back_to_status_code() {
+        let err = classify_http_error(500, "gemma4:e2b", "");
         assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("500"));
     }
 
     #[test]
+    fn classify_http_500_surfaces_ollama_error_text_when_present() {
+        let body =
+            r#"{"error":"this model only supports one image while more than one image requested"}"#;
+        let err = classify_http_error(500, "llama3.2-vision:11b", body);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
+        assert!(err
+            .message
+            .contains("only supports one image while more than one image requested"));
+        assert!(!err.message.contains("HTTP 500"));
+    }
+
+    #[test]
+    fn classify_http_500_falls_back_to_status_when_body_is_not_json() {
+        let err = classify_http_error(500, "any", "<html>oops</html>");
+        assert_eq!(err.kind, OllamaErrorKind::Other);
+        assert!(err.message.contains("500"));
+    }
+
+    #[test]
+    fn classify_http_500_falls_back_to_status_when_error_field_is_missing() {
+        let err = classify_http_error(500, "any", r#"{"detail":"nope"}"#);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
+        assert!(err.message.contains("500"));
+    }
+
+    #[test]
+    fn classify_http_500_falls_back_to_status_when_error_field_is_blank() {
+        let err = classify_http_error(500, "any", r#"{"error":"   "}"#);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
+        assert!(err.message.contains("500"));
+    }
+
+    #[test]
+    fn extract_ollama_error_message_handles_known_shapes() {
+        assert_eq!(extract_ollama_error_message(""), None);
+        assert_eq!(extract_ollama_error_message("   "), None);
+        assert_eq!(extract_ollama_error_message("not json"), None);
+        assert_eq!(extract_ollama_error_message(r#"{}"#), None);
+        assert_eq!(
+            extract_ollama_error_message(r#"{"error":""}"#),
+            None,
+            "blank error string should be treated as missing",
+        );
+        assert_eq!(
+            extract_ollama_error_message(r#"{"error":"boom"}"#).as_deref(),
+            Some("boom"),
+        );
+    }
+
+    #[test]
     fn classify_http_401_returns_other_with_status() {
-        let err = classify_http_error(401, "gemma4:e2b");
+        let err = classify_http_error(401, "gemma4:e2b", "");
         assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("401"));
     }
@@ -1331,6 +1412,46 @@ mod tests {
         assert!(
             matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::Other && e.message.contains("500"))
         );
+    }
+
+    #[tokio::test]
+    async fn http_500_surfaces_ollama_error_body_through_stream() {
+        let mut server = mockito::Server::new_async().await;
+        let body =
+            r#"{"error":"this model only supports one image while more than one image requested"}"#;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(500)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let (chunks, callback) = collect_chunks();
+
+        stream_ollama_chat(
+            &format!("{}/api/chat", server.url()),
+            "llama3.2-vision:11b",
+            vec![],
+            false,
+            &client,
+            token,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+        let chunks = chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(
+            &chunks[0],
+            StreamChunk::Error(e)
+                if e.kind == OllamaErrorKind::Other
+                && e.message.contains("only supports one image")
+                && !e.message.contains("HTTP 500")
+        ));
     }
 
     /// Helper: builds a `/api/chat` response line with both thinking and content fields.

@@ -1090,6 +1090,7 @@ function App() {
     return getCapabilityConflict(activeModel, activeModelCapabilities, {
       hasImages: attachedImages.length > 0,
       hasScreenCommand: found.has('/screen'),
+      imageCount: attachedImages.length,
     });
   }, [query, attachedImages, activeModel, activeModelCapabilities]);
 
@@ -1122,6 +1123,7 @@ function App() {
       {
         hasImages: attachedImages.length > 0,
         hasScreenCommand: hasScreen,
+        imageCount: attachedImages.length,
       },
     );
     if (submitConflict !== null) {

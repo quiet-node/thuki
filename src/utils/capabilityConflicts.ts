@@ -11,6 +11,14 @@ export interface ComposeCapabilityState {
   hasImages: boolean;
   /** True if the message contains the `/screen` slash command. */
   hasScreenCommand: boolean;
+  /**
+   * Number of images attached to the compose state. Used by the
+   * max-images gate to refuse multi-image submits to single-image
+   * vision models (e.g. llama3.2-vision). The `/screen` command adds
+   * exactly one image at capture time so callers should fold it into
+   * this count when both are true.
+   */
+  imageCount: number;
 }
 
 /**
@@ -33,7 +41,21 @@ export function getCapabilityConflict(
   const needsVision = state.hasImages || state.hasScreenCommand;
   if (!needsVision) return null;
   if (!capabilities) return null;
-  if (capabilities.vision) return null;
   const name = modelName && modelName.length > 0 ? modelName : 'this model';
-  return `${name} reads text only. Try a vision model for images.`;
+  if (!capabilities.vision) {
+    return `${name} reads text only. Try a vision model for images.`;
+  }
+  // Vision model, but it may cap the number of images per request
+  // (today: mllama-family models such as llama3.2-vision are 1-image only).
+  // Fold the /screen command into the effective count so a queued capture
+  // counts toward the cap exactly like an attached image.
+  const max = capabilities.maxImages;
+  if (max != null && max >= 1) {
+    const effective = state.imageCount + (state.hasScreenCommand ? 1 : 0);
+    if (effective > max) {
+      const noun = max === 1 ? 'one image' : `${max} images`;
+      return `${name} accepts ${noun} at a time. Remove the extras to send.`;
+    }
+  }
+  return null;
 }

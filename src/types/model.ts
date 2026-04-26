@@ -23,6 +23,14 @@ export interface ModelPickerState {
 export interface ModelCapabilities {
   vision: boolean;
   thinking: boolean;
+  /**
+   * Maximum number of images the model accepts in a single request, when
+   * known. `null` (or omitted) means Thuki has no architecture-specific
+   * cap and trusts Ollama's runner as the final authority. Today this is
+   * set to `1` for `mllama`-family models (e.g. llama3.2-vision) which
+   * reject multi-image requests with HTTP 500.
+   */
+  maxImages?: number | null;
 }
 
 /**

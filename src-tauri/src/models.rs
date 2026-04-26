@@ -440,6 +440,7 @@ const MAX_SHOW_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// are intentionally dropped so the picker stays focused on the
 /// distinctions Thuki actually drives behavior off of.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Capabilities {
     /// Model accepts image inputs alongside text prompts. Drives the
     /// submit-time vision gate.
@@ -449,6 +450,29 @@ pub struct Capabilities {
     /// ThinkingBlock UI.
     #[serde(default)]
     pub thinking: bool,
+    /// Maximum number of images the model accepts in a single request, when
+    /// known. `None` means "unknown / unbounded by Thuki" and the gate lets
+    /// the request through. Today this is keyed off the model architecture
+    /// reported by `/api/show` (e.g. `mllama` → 1) because Ollama does not
+    /// surface a declarative max-image count anywhere in its metadata.
+    #[serde(default)]
+    pub max_images: Option<u32>,
+}
+
+/// Architecture-keyed cap on the number of images accepted per request.
+/// Ollama runners enforce these limits internally and answer with an HTTP
+/// 500 when violated; mirroring them here lets the frontend gate refuse
+/// the submit before the round-trip.
+///
+/// Unknown architectures fall through to `None`, which the gate interprets
+/// as "no Thuki-side cap", trusting Ollama's runner as the final authority.
+/// New architectures only need to be added when we observe a hard,
+/// model-specific limit (today: `mllama`, used by llama3.2-vision).
+pub fn max_images_for_architecture(arch: &str) -> Option<u32> {
+    match arch {
+        "mllama" => Some(1),
+        _ => None,
+    }
 }
 
 /// Subset of the `/api/show` response that Thuki consumes. All other fields
@@ -457,12 +481,51 @@ pub struct Capabilities {
 struct ShowResponse {
     #[serde(default)]
     capabilities: Vec<String>,
+    /// `details.family` (e.g. "mllama", "gemma4"). Older Ollama versions
+    /// omit this; the field stays optional so decoding never fails on a
+    /// model that pre-dates the field.
+    #[serde(default)]
+    details: Option<ShowDetails>,
+    /// Detailed `model_info` map. We only read `general.architecture` from
+    /// it. Stored as raw JSON so the rest of the (sometimes tens of fields,
+    /// arbitrary types) payload does not have to be modelled.
+    #[serde(default)]
+    model_info: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Subset of `details` from `/api/show`. Only `family` is consumed today;
+/// the rest of the object (parameter_size, quantization_level, etc.) is
+/// ignored so unrelated changes upstream cannot break decoding.
+#[derive(Deserialize)]
+struct ShowDetails {
+    #[serde(default)]
+    family: Option<String>,
+}
+
+/// Reads the model architecture string from a parsed `/api/show` payload.
+/// Prefers `model_info["general.architecture"]` (the canonical source);
+/// falls back to `details.family` for older Ollama builds that did not
+/// surface the structured `model_info` map. Returns `None` when neither
+/// source is populated.
+fn architecture_from_show(body: &ShowResponse) -> Option<&str> {
+    if let Some(mi) = &body.model_info {
+        if let Some(arch) = mi.get("general.architecture").and_then(|v| v.as_str()) {
+            if !arch.is_empty() {
+                return Some(arch);
+            }
+        }
+    }
+    body.details
+        .as_ref()
+        .and_then(|d| d.family.as_deref())
+        .filter(|s| !s.is_empty())
 }
 
 /// Pure mapping from Ollama's capability strings into the typed
 /// [`Capabilities`] struct. Unknown strings are silently dropped so a
 /// future Ollama version that adds e.g. `"audio"` does not poison the
-/// frontend payload.
+/// frontend payload. The `max_images` field is left at `None` here and
+/// populated by the caller once the architecture is known.
 pub fn capabilities_from_strings(items: &[String]) -> Capabilities {
     let mut caps = Capabilities::default();
     for c in items {
@@ -549,7 +612,16 @@ async fn fetch_model_capabilities_inner(
     let body: ShowResponse = serde_json::from_slice(&bytes)
         .map_err(|e| format!("failed to decode /api/show response: {e}"))?;
 
-    Ok(capabilities_from_strings(&body.capabilities))
+    let mut caps = capabilities_from_strings(&body.capabilities);
+    // Only attach max_images for vision models. There is no point capping a
+    // text-only model on an image count; the vision gate refuses those
+    // submits before the count check ever runs.
+    if caps.vision {
+        if let Some(arch) = architecture_from_show(&body) {
+            caps.max_images = max_images_for_architecture(arch);
+        }
+    }
+    Ok(caps)
 }
 
 /// In-memory cache of capabilities keyed by model slug. Populated lazily
@@ -1231,10 +1303,11 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_serialize_to_snake_case_booleans() {
+    fn capabilities_serialize_uses_camel_case_field_names() {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            max_images: Some(1),
         };
         let v = serde_json::to_value(&caps).unwrap();
         assert_eq!(
@@ -1242,14 +1315,117 @@ mod tests {
             serde_json::json!({
                 "vision": true,
                 "thinking": false,
+                "maxImages": 1,
             })
         );
+    }
+
+    #[test]
+    fn capabilities_serialize_emits_null_max_images_when_unknown() {
+        let caps = Capabilities {
+            vision: true,
+            thinking: false,
+            max_images: None,
+        };
+        let v = serde_json::to_value(&caps).unwrap();
+        assert_eq!(v["maxImages"], serde_json::Value::Null);
     }
 
     #[test]
     fn capabilities_deserialize_tolerates_missing_fields() {
         let caps: Capabilities = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(caps, Capabilities::default());
+    }
+
+    #[test]
+    fn capabilities_deserialize_round_trips_max_images() {
+        let caps: Capabilities = serde_json::from_value(serde_json::json!({
+            "vision": true,
+            "thinking": false,
+            "maxImages": 3
+        }))
+        .unwrap();
+        assert!(caps.vision);
+        assert_eq!(caps.max_images, Some(3));
+    }
+
+    // ── max_images_for_architecture ─────────────────────────────────────────
+
+    #[test]
+    fn max_images_caps_mllama_at_one() {
+        assert_eq!(max_images_for_architecture("mllama"), Some(1));
+    }
+
+    #[test]
+    fn max_images_returns_none_for_unknown_arch() {
+        assert_eq!(max_images_for_architecture("gemma4"), None);
+        assert_eq!(max_images_for_architecture(""), None);
+        assert_eq!(max_images_for_architecture("future-arch"), None);
+    }
+
+    // ── architecture_from_show ──────────────────────────────────────────────
+
+    #[test]
+    fn architecture_prefers_model_info_general_architecture() {
+        let body: ShowResponse = serde_json::from_value(serde_json::json!({
+            "capabilities": ["completion","vision"],
+            "details": {"family": "fallback-family"},
+            "model_info": {"general.architecture": "mllama"}
+        }))
+        .unwrap();
+        assert_eq!(architecture_from_show(&body), Some("mllama"));
+    }
+
+    #[test]
+    fn architecture_falls_back_to_details_family_when_model_info_absent() {
+        let body: ShowResponse = serde_json::from_value(serde_json::json!({
+            "capabilities": ["completion","vision"],
+            "details": {"family": "mllama"}
+        }))
+        .unwrap();
+        assert_eq!(architecture_from_show(&body), Some("mllama"));
+    }
+
+    #[test]
+    fn architecture_falls_back_when_model_info_arch_is_blank() {
+        let body: ShowResponse = serde_json::from_value(serde_json::json!({
+            "capabilities": [],
+            "details": {"family": "mllama"},
+            "model_info": {"general.architecture": ""}
+        }))
+        .unwrap();
+        assert_eq!(architecture_from_show(&body), Some("mllama"));
+    }
+
+    #[test]
+    fn architecture_returns_none_when_neither_source_populated() {
+        let body: ShowResponse = serde_json::from_value(serde_json::json!({
+            "capabilities": []
+        }))
+        .unwrap();
+        assert_eq!(architecture_from_show(&body), None);
+    }
+
+    #[test]
+    fn architecture_returns_none_when_details_family_blank() {
+        let body: ShowResponse = serde_json::from_value(serde_json::json!({
+            "capabilities": [],
+            "details": {"family": ""}
+        }))
+        .unwrap();
+        assert_eq!(architecture_from_show(&body), None);
+    }
+
+    #[test]
+    fn architecture_ignores_non_string_general_architecture() {
+        let body: ShowResponse = serde_json::from_value(serde_json::json!({
+            "capabilities": [],
+            "details": {"family": "mllama"},
+            "model_info": {"general.architecture": 7}
+        }))
+        .unwrap();
+        // Non-string in model_info falls through; details.family wins.
+        assert_eq!(architecture_from_show(&body), Some("mllama"));
     }
 
     // ── fetch_model_capabilities ─────────────────────────────────────────────
@@ -1271,6 +1447,78 @@ mod tests {
             .unwrap();
         assert!(caps.vision);
         assert!(caps.thinking);
+    }
+
+    #[tokio::test]
+    async fn fetch_capabilities_attaches_max_images_for_mllama_vision_models() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r#"{
+            "capabilities":["completion","vision"],
+            "details":{"family":"mllama"},
+            "model_info":{"general.architecture":"mllama"}
+        }"#;
+        let _m = server
+            .mock("POST", "/api/show")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let caps = fetch_model_capabilities(&client, &server.url(), "llama3.2-vision:11b")
+            .await
+            .unwrap();
+        assert!(caps.vision);
+        assert_eq!(caps.max_images, Some(1));
+    }
+
+    #[tokio::test]
+    async fn fetch_capabilities_leaves_max_images_unset_for_unknown_arch() {
+        let mut server = mockito::Server::new_async().await;
+        let body = r#"{
+            "capabilities":["completion","vision","thinking"],
+            "details":{"family":"gemma4"},
+            "model_info":{"general.architecture":"gemma4"}
+        }"#;
+        let _m = server
+            .mock("POST", "/api/show")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let caps = fetch_model_capabilities(&client, &server.url(), "gemma4:e2b")
+            .await
+            .unwrap();
+        assert!(caps.vision);
+        assert!(caps.thinking);
+        assert_eq!(caps.max_images, None);
+    }
+
+    #[tokio::test]
+    async fn fetch_capabilities_skips_max_images_for_text_only_models() {
+        // No point capping a text-only model on image count; vision gate
+        // will refuse the submit before max_images is consulted anyway.
+        let mut server = mockito::Server::new_async().await;
+        let body = r#"{
+            "capabilities":["completion"],
+            "details":{"family":"mllama"},
+            "model_info":{"general.architecture":"mllama"}
+        }"#;
+        let _m = server
+            .mock("POST", "/api/show")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let caps = fetch_model_capabilities(&client, &server.url(), "x")
+            .await
+            .unwrap();
+        assert!(!caps.vision);
+        assert_eq!(caps.max_images, None);
     }
 
     #[tokio::test]
