@@ -311,11 +311,7 @@ export function SettingsWindow() {
         })}
       </div>
 
-      <div
-        className={`${styles.body} ${activeTab === 'about' ? styles.bodyNoScroll : ''}`}
-        id={`panel-${activeTab}`}
-        role="tabpanel"
-      >
+      <div className={styles.body} id={`panel-${activeTab}`} role="tabpanel">
         <div ref={setContentEl}>
           {activeTab === 'general' ? (
             <ModelTab

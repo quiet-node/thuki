@@ -180,12 +180,6 @@
    * scrollbar fades in. Matches .chat-messages-scroll in App.css. */
   scrollbar-gutter: stable;
 }
-/* About tab is sized to fit; suppress the gutter + auto-scroll so the
- * faint always-on scrollbar track does not show on the right edge. */
-.bodyNoScroll {
-  overflow: hidden;
-  scrollbar-gutter: auto;
-}
 /* No `::-webkit-scrollbar` overrides — letting macOS render its native
  * overlay scrollbar that auto-shows on scroll, matching the chat view. */
 
