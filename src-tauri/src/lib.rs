@@ -191,6 +191,17 @@ fn monitor_info_fallback() -> (f64, f64, f64, f64) {
     cg_displays::main_display()
 }
 
+/// Activates the app before showing the overlay panel so AppKit treats the
+/// WebView as part of the key application, restoring hover and cursor updates.
+#[cfg(target_os = "macos")]
+pub(crate) fn activate_app() {
+    if let Some(mtm) = tauri_nspanel::objc2_foundation::MainThreadMarker::new() {
+        let app = tauri_nspanel::objc2_app_kit::NSApplication::sharedApplication(mtm);
+        #[allow(deprecated)]
+        app.activateIgnoringOtherApps(true);
+    }
+}
+
 /// Shows the overlay and requests the frontend to replay its entrance animation.
 ///
 /// Uses `show_and_make_key()` to guarantee the NSPanel becomes the key window,
@@ -264,24 +275,36 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
         None => (None, None, None),
     };
 
-    match app_handle.get_webview_panel("main") {
-        Ok(panel) => {
-            panel.show_and_make_key();
-            emit_overlay_visibility(
-                app_handle,
-                OVERLAY_VISIBILITY_SHOW,
-                selected_text,
-                window_x,
-                window_y,
-                screen_bottom_y,
-            );
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        if let (Some(x), Some(y), Some(window)) =
+            (window_x, window_y, handle.get_webview_window("main"))
+        {
+            let _ =
+                window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
         }
-        Err(e) => {
-            eprintln!("thuki: [show_overlay] get_webview_panel FAILED: {e:?}");
-            // Reset the flag so future activation attempts are not permanently blocked.
-            OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
+
+        activate_app();
+
+        match handle.get_webview_panel("main") {
+            Ok(panel) => {
+                panel.show_and_make_key();
+                emit_overlay_visibility(
+                    &handle,
+                    OVERLAY_VISIBILITY_SHOW,
+                    selected_text,
+                    window_x,
+                    window_y,
+                    screen_bottom_y,
+                );
+            }
+            Err(e) => {
+                eprintln!("thuki: [show_overlay] get_webview_panel FAILED: {e:?}");
+                // Reset the flag so future activation attempts are not permanently blocked.
+                OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
+            }
         }
-    }
+    });
 }
 
 /// Requests an animated hide sequence from the frontend. The actual native
@@ -529,6 +552,7 @@ fn init_panel(app_handle: &tauri::AppHandle) {
 fn show_onboarding_window(app_handle: &tauri::AppHandle, stage: onboarding::OnboardingStage) {
     let handle = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
+        activate_app();
         if let Some(window) = handle.get_webview_window("main") {
             let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
                 ONBOARDING_LOGICAL_WIDTH,

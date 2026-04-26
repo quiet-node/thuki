@@ -95,6 +95,7 @@ pub async fn capture_screenshot_command(
     let show_handle = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
         use tauri_nspanel::ManagerExt;
+        crate::activate_app();
         match show_handle.get_webview_panel("main") {
             Ok(panel) => panel.show_and_make_key(),
             Err(_) => {
