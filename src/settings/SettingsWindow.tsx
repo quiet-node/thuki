@@ -122,13 +122,13 @@ const SAVED_PILL_DURATION_MS = 1500;
 /**
  * Static chrome offset from inner content to total window height:
  *   window padding-top (8) + WindowControls strip (~28) + tab bar (~70)
- *   + body padding top+bottom (18 + 24 = 42).
- * Empirically measured against the rendered Settings window. If any of
- * the chrome surfaces change height, update this constant rather than
- * trying to read `offsetHeight` at runtime — the auto-resize hook fires
- * before paint settles, so dynamic measurement of chrome would miss.
+ *   + body padding top+bottom (18 + 24 = 42) + slack (16).
+ * Empirically measured against the rendered Settings window with a
+ * little slack added so short tabs never trip a scrollbar from a
+ * sub-pixel chrome miscount: with `overflow-y: auto` the body shows a
+ * scroller as soon as content exceeds the body box even by 1px.
  */
-const CHROME_HEIGHT = 148;
+const CHROME_HEIGHT = 164;
 /** Recovery banner height when the corrupt-config marker is shown. */
 const BANNER_HEIGHT = 56;
 
