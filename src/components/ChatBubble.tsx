@@ -77,6 +77,38 @@ function avatarColor(domain: string): string {
 const CITATION_RE = /\[(\d+)\]/g;
 
 /**
+ * Hoisted static SVG glyph for the model attribution chip. Mirrors the
+ * chip icon used by the model picker so the attribution visually couples
+ * to the picker UI. Rendered as a child of a color-controlled span.
+ */
+const ATTRIB_CHIP_ICON = (
+  <svg
+    width="9"
+    height="9"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <rect
+      x="3"
+      y="3"
+      width="10"
+      height="10"
+      rx="1.5"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    />
+    <path
+      d="M5 1V3M8 1V3M11 1V3M5 13V15M8 13V15M11 13V15M1 5H3M1 8H3M1 11H3M13 5H15M13 8H15M13 11H15"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
+/**
  * Walks the rendered answer DOM and replaces every plain-text `[N]` occurrence
  * with an anchor element that links to the matching source URL. Called inside
  * a `useEffect` that re-runs whenever the answer content or sources change so
@@ -228,6 +260,8 @@ interface ChatBubbleProps {
   /** Whether the search pipeline is currently running. When true, renders a
    * `SearchTraceBlock` in loading state even before any traces arrive. */
   isSearching?: boolean;
+  /** When set on an assistant message, renders a chip-style attribution badge beside the CopyButton so the user sees which model produced this response. */
+  modelName?: string;
 }
 
 /**
@@ -277,6 +311,7 @@ export function ChatBubble({
   sandboxUnavailable = false,
   searchTraces,
   isSearching = false,
+  modelName,
 }: ChatBubbleProps) {
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -538,6 +573,19 @@ export function ChatBubble({
                 </button>
               )}
               <SearchWarningIcon warnings={activeWarnings} />
+              {/* Model attribution chip: visually couples the response to the
+                  model-picker UI so users can see which model produced it. */}
+              {modelName && (
+                <span
+                  data-testid="model-attribution"
+                  className="inline-flex items-center gap-[5px] px-[6px] py-[2px] pr-[8px] rounded-md border border-primary/15 bg-primary/5 text-[10.5px] tracking-[0.01em] text-text-secondary w-fit transition-[background-color,border-color,color] duration-150 hover:text-text-primary hover:bg-primary/10 hover:border-primary/25"
+                >
+                  <span className="text-primary/85 shrink-0 flex items-center">
+                    {ATTRIB_CHIP_ICON}
+                  </span>
+                  <span className="max-w-[100px] truncate">{modelName}</span>
+                </span>
+              )}
             </div>
           )}
         </div>

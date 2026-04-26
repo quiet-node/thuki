@@ -64,7 +64,7 @@ export function IntroStep({ onComplete }: Props) {
               margin: '0 0 6px',
             }}
           >
-            Before you dive in
+            {"You're all set"}
           </h1>
           <p
             style={{
@@ -74,7 +74,7 @@ export function IntroStep({ onComplete }: Props) {
               margin: 0,
             }}
           >
-            {"You'll get the hang of it quickly."}
+            {"Five quick tips and you're chatting in seconds."}
           </p>
         </div>
 

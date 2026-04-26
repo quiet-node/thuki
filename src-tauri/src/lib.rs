@@ -20,6 +20,7 @@ pub mod config;
 pub mod database;
 pub mod history;
 pub mod images;
+pub mod models;
 pub mod onboarding;
 pub mod screenshot;
 pub mod search;
@@ -390,35 +391,46 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
                 let stage = onboarding::get_stage(&conn)
                     .unwrap_or(onboarding::OnboardingStage::Permissions);
 
-                // The "intro" stage means quit_and_relaunch already wrote it
-                // before restarting, confirming the user just granted all
-                // permissions. Skip the live permission check here: on macOS 15+
-                // CGPreflightScreenCaptureAccess can return a stale false negative
-                // immediately after a restart, which would wrongly loop the user
-                // back to the permissions screen.
+                // The "intro" stage means the user already cleared both the
+                // permissions and the model-check gates on a previous launch.
+                // Skip the live permission re-check here: on macOS 15+
+                // CGPreflightScreenCaptureAccess can return a stale false
+                // negative immediately after a restart, which would wrongly
+                // loop the user back to the permissions screen.
                 if matches!(stage, onboarding::OnboardingStage::Intro) {
                     show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
                     return;
                 }
 
-                // For the "permissions" and "complete" stages, check live
-                // permissions. "permissions" is the standard first-launch path.
-                // "complete" detects revocation: if a user revokes a permission
-                // after finishing onboarding, they should see the permissions
-                // screen again on the next launch.
+                // For "permissions", "model_check", and "complete" stages,
+                // re-validate live macOS permissions. "complete" detects
+                // revocation after onboarding finished. "model_check" detects
+                // mid-onboarding revocation. "permissions" is the first-launch
+                // path. All three must restart the flow at Permissions if
+                // either grant has been withdrawn.
                 let ax = permissions::is_accessibility_granted();
                 let sr = permissions::is_screen_recording_granted();
-
                 if !ax || !sr {
                     let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Permissions);
                     show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
                     return;
                 }
 
-                // All permissions granted. If not yet complete, show intro.
-                if !matches!(stage, onboarding::OnboardingStage::Complete) {
-                    let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Intro);
-                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
+                // Permissions granted. If the user has not yet cleared the
+                // model-check gate, route them there. The frontend probes
+                // Ollama via `check_model_setup` and either renders the gate
+                // (Ollama unreachable / no models) or fires
+                // `advance_past_model_check` to skip straight to Intro on
+                // Ready. We do not probe here because /api/tags requires the
+                // async runtime and notify_frontend_ready is invoked
+                // synchronously from a Tauri command worker.
+                if matches!(
+                    stage,
+                    onboarding::OnboardingStage::Permissions
+                        | onboarding::OnboardingStage::ModelCheck
+                ) {
+                    let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::ModelCheck);
+                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::ModelCheck);
                     return;
                 }
                 // Complete: fall through to show the overlay.
@@ -430,6 +442,37 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
         }
         show_overlay(&app_handle, crate::context::ActivationContext::empty());
     }
+}
+
+/// Advances the onboarding stage from `model_check` to `intro` and emits
+/// the onboarding event so the frontend swaps to `IntroStep` without a
+/// window flicker.
+///
+/// Called by `ModelCheckStep` when it observes a `Ready` setup state on
+/// mount or after a Re-check click. The caller has already verified that
+/// Ollama is reachable and at least one model is installed; this command
+/// only commits the stage advance and notifies the frontend.
+///
+/// Idempotent: writing `intro` over `intro` is a harmless no-op, so a
+/// double-fire from a frontend race cannot corrupt the stage.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn advance_past_model_check(
+    db: tauri::State<history::Database>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| format!("db lock poisoned: {e}"))?;
+    onboarding::set_stage(&conn, &onboarding::OnboardingStage::Intro)
+        .map_err(|e| format!("db write failed: {e}"))?;
+    drop(conn);
+
+    let _ = app_handle.emit(
+        ONBOARDING_EVENT,
+        OnboardingPayload {
+            stage: onboarding::OnboardingStage::Intro,
+        },
+    );
+    Ok(())
 }
 
 // ─── Onboarding completion ───────────────────────────────────────────────────
@@ -733,6 +776,27 @@ pub fn run() {
                 .expect("failed to resolve app data directory");
             let db_conn = database::open_database(&app_data_dir)
                 .expect("failed to initialise SQLite database");
+
+            // ── Active-model state: seed from SQLite app_config table ──
+            // The installed list isn't queried here (no async runtime yet).
+            // get_model_picker_state reconciles against the live /api/tags
+            // inventory on first picker open and may replace this seed.
+            // The placeholder DEFAULT_MODEL_NAME bootstrap is a transient
+            // value used only until that first reconciliation, and is the
+            // last-resort fallback when both the persisted slug and the
+            // live installed list are absent. Phase 3 will gate the
+            // overlay on a real installed model so that placeholder is
+            // never streamed to Ollama.
+            let persisted_active = database::get_config(&db_conn, models::ACTIVE_MODEL_KEY)
+                .expect("failed to read active_model from app_config");
+            let initial_active_model = models::resolve_seed_active_model(
+                persisted_active.as_deref(),
+                crate::config::defaults::DEFAULT_MODEL_NAME,
+            );
+            app.manage(models::ActiveModelState(std::sync::Mutex::new(
+                initial_active_model,
+            )));
+            app.manage(models::ModelCapabilitiesCache::default());
             app.manage(history::Database(std::sync::Mutex::new(db_conn)));
 
             // ── Orphaned image cleanup (startup + periodic) ─────────
@@ -754,6 +818,14 @@ pub fn run() {
             commands::reset_conversation,
             #[cfg(not(coverage))]
             commands::get_config,
+            #[cfg(not(coverage))]
+            models::get_model_picker_state,
+            #[cfg(not(coverage))]
+            models::set_active_model,
+            #[cfg(not(coverage))]
+            models::check_model_setup,
+            #[cfg(not(coverage))]
+            models::get_model_capabilities,
             #[cfg(not(coverage))]
             history::save_conversation,
             #[cfg(not(coverage))]
@@ -793,7 +865,8 @@ pub fn run() {
             permissions::check_screen_recording_tcc_granted,
             #[cfg(not(coverage))]
             permissions::quit_and_relaunch,
-            finish_onboarding
+            finish_onboarding,
+            advance_past_model_check
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

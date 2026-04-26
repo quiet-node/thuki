@@ -5,7 +5,9 @@ import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
+import { ModelPicker } from '../components/ModelPicker';
 import { Tooltip } from '../components/Tooltip';
+import { CapabilityMismatchStrip } from '../components/CapabilityMismatchStrip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
 import { COMMANDS } from '../config/commands';
@@ -95,8 +97,8 @@ const BORDER_TRACE_RING = (
 /** Hoisted static history (clock) icon - prevents re-allocation on every render. */
 const HISTORY_ICON = (
   <svg
-    width="14"
-    height="14"
+    width="16"
+    height="16"
     viewBox="0 0 24 24"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
@@ -139,55 +141,6 @@ const CAMERA_ICON = (
     />
   </svg>
 );
-
-/**
- * Renders text with command triggers highlighted in violet for the mirror div.
- * Only the first occurrence of each command is highlighted; duplicates render plain.
- */
-export function renderHighlightedText(text: string): React.ReactNode {
-  const parts: React.ReactNode[] = [];
-  let remaining = text;
-  const highlighted = new Set<string>();
-
-  while (remaining.length > 0) {
-    let earliest = -1;
-    let matchedTrigger = '';
-    for (const cmd of COMMANDS) {
-      if (highlighted.has(cmd.trigger)) continue;
-      const idx = remaining.indexOf(cmd.trigger);
-      if (idx !== -1 && (earliest === -1 || idx < earliest)) {
-        const before = idx === 0 || remaining[idx - 1] === ' ';
-        const after =
-          idx + cmd.trigger.length >= remaining.length ||
-          remaining[idx + cmd.trigger.length] === ' ';
-        if (before && after) {
-          earliest = idx;
-          matchedTrigger = cmd.trigger;
-        }
-      }
-    }
-
-    if (earliest === -1) {
-      parts.push(<span key={parts.length}>{remaining}</span>);
-      break;
-    }
-
-    if (earliest > 0) {
-      parts.push(
-        <span key={parts.length}>{remaining.slice(0, earliest)}</span>,
-      );
-    }
-    parts.push(
-      <span key={parts.length} className="text-violet-400">
-        {matchedTrigger}
-      </span>,
-    );
-    highlighted.add(matchedTrigger);
-    remaining = remaining.slice(earliest + matchedTrigger.length);
-  }
-
-  return <>{parts}</>;
-}
 
 /**
  * Maximum number of manually attached images per message. The backend allows
@@ -236,6 +189,80 @@ interface AskBarViewProps {
    * "normal" = violet ring; "max" = red ring + label; undefined = no ring.
    */
   isDragOver?: 'normal' | 'max';
+  /** Currently active Ollama model slug. Enables the model picker when set. */
+  activeModel?: string;
+  /** Full list of model slugs available for selection in the picker. */
+  availableModels?: string[];
+  /**
+   * Called when the user clicks the model picker trigger. App.tsx owns the
+   * open/close state and renders the ModelPickerPanel as an inline drawer.
+   */
+  onModelPickerToggle?: () => void;
+  /** Whether the model picker panel is currently open (drives aria-expanded). */
+  isModelPickerOpen?: boolean;
+  /**
+   * Capability mismatch message to render between the attachments row and
+   * the input. `null` (or undefined) renders nothing. The host computes
+   * this string via `getCapabilityConflict` and passes it down.
+   */
+  capabilityConflictMessage?: string | null;
+  /**
+   * When true, the input row plays a brief horizontal shake animation.
+   * The host pulses this true / false to signal a refused submit.
+   */
+  shake?: boolean;
+}
+
+/**
+ * Renders text with command triggers highlighted in violet for the mirror div.
+ * Only the first occurrence of each command is highlighted; duplicates render
+ * as plain text. Word-boundary aware: `/searching` does not match `/search`.
+ *
+ * Exported for direct unit testing.
+ */
+export function renderHighlightedText(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  let remaining = text;
+  const highlighted = new Set<string>();
+
+  while (remaining.length > 0) {
+    let earliest = -1;
+    let matchedTrigger = '';
+    for (const cmd of COMMANDS) {
+      if (highlighted.has(cmd.trigger)) continue;
+      const idx = remaining.indexOf(cmd.trigger);
+      if (idx !== -1 && (earliest === -1 || idx < earliest)) {
+        const before = idx === 0 || remaining[idx - 1] === ' ';
+        const after =
+          idx + cmd.trigger.length >= remaining.length ||
+          remaining[idx + cmd.trigger.length] === ' ';
+        if (before && after) {
+          earliest = idx;
+          matchedTrigger = cmd.trigger;
+        }
+      }
+    }
+
+    if (earliest === -1) {
+      parts.push(<span key={parts.length}>{remaining}</span>);
+      break;
+    }
+
+    if (earliest > 0) {
+      parts.push(
+        <span key={parts.length}>{remaining.slice(0, earliest)}</span>,
+      );
+    }
+    parts.push(
+      <span key={parts.length} className="text-violet-400">
+        {matchedTrigger}
+      </span>,
+    );
+    highlighted.add(matchedTrigger);
+    remaining = remaining.slice(earliest + matchedTrigger.length);
+  }
+
+  return <>{parts}</>;
 }
 
 /**
@@ -261,12 +288,28 @@ export function AskBarView({
   onImagePreview,
   onScreenshot,
   isDragOver,
+  activeModel,
+  availableModels,
+  onModelPickerToggle,
+  isModelPickerOpen,
+  capabilityConflictMessage,
+  shake = false,
 }: AskBarViewProps) {
+  /** Quote display limits resolved from the managed AppConfig. */
+  const quote = useConfig().quote;
+
   /** Ref to the mirror div behind the textarea for command highlighting. */
   const mirrorRef = useRef<HTMLDivElement>(null);
 
-  /** Quote display limits resolved from the managed AppConfig. */
-  const quote = useConfig().quote;
+  /** Syncs the mirror div scroll position with the textarea so the colored
+   *  spans stay aligned with the caret on long inputs. */
+  const handleTextareaScroll = useCallback(() => {
+    /* v8 ignore start -- both refs are always set by React when this fires */
+    if (!mirrorRef.current || !inputRef.current) return;
+    /* v8 ignore stop */
+    mirrorRef.current.scrollTop = inputRef.current.scrollTop;
+    mirrorRef.current.scrollLeft = inputRef.current.scrollLeft;
+  }, [inputRef]);
 
   /** True when the UI should be locked - either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
@@ -282,6 +325,20 @@ export function AskBarView({
     const timer = setTimeout(() => setPasteMaxError(false), 2000);
     return () => clearTimeout(timer);
   }, [pasteMaxError]);
+
+  // ─── Model picker availability gate ───────────────────────────────────────
+
+  /**
+   * Prerequisites for rendering the chip trigger in the input bar.
+   * Hidden in chat mode — the pill trigger moves to the WindowControls header.
+   */
+  const modelPickerAvailable = Boolean(
+    !isChatMode &&
+    activeModel &&
+    availableModels &&
+    availableModels.length > 0 &&
+    onModelPickerToggle,
+  );
 
   // ─── Command suggestion state ─────────────────────────────────────────────
 
@@ -473,14 +530,6 @@ export function AskBarView({
     ],
   );
 
-  /** Syncs the mirror div scroll position with the textarea. */
-  const handleTextareaScroll = useCallback(() => {
-    /* v8 ignore start -- both refs are always set by React when this fires */
-    if (!mirrorRef.current || !inputRef.current) return;
-    /* v8 ignore stop */
-    mirrorRef.current.scrollTop = inputRef.current.scrollTop;
-  }, [inputRef]);
-
   /** Handles clipboard paste - extracts image items from clipboardData. */
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
@@ -556,6 +605,9 @@ export function AskBarView({
           />
         </div>
       )}
+      {capabilityConflictMessage && (
+        <CapabilityMismatchStrip message={capabilityConflictMessage} />
+      )}
       {/* Command suggestion renders above the input row in the normal DOM
           flow. Being inside the morphing container means the ResizeObserver
           detects the added height and grows the native window upward to reveal
@@ -582,7 +634,14 @@ export function AskBarView({
           </motion.div>
         )}
       </AnimatePresence>
-      <div className="relative">
+      <motion.div
+        className="relative"
+        data-testid="ask-bar-row"
+        animate={shake ? { x: [0, -4, 4, -3, 3, 0] } : { x: 0 }}
+        transition={
+          shake ? { duration: 0.5, ease: 'easeInOut' } : { duration: 0 }
+        }
+      >
         <div className="flex items-center w-full px-3 py-2.5 gap-2">
           <img
             src="/thuki-logo.png"
@@ -600,19 +659,23 @@ export function AskBarView({
               type="button"
               onClick={onHistoryOpen}
               aria-label="Open history"
-              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 cursor-pointer outline-none"
+              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-primary hover:bg-primary/10 transition-colors duration-150 cursor-pointer outline-none"
             >
               {HISTORY_ICON}
             </button>
           )}
 
           <div className="relative flex-1 min-w-0">
-            {/* Mirror div: renders the same text with highlighted commands.
-                Sits behind the transparent textarea so colored spans show through. */}
+            {/* Mirror div: renders the same text with highlighted slash
+                commands. Sits behind the transparent textarea so colored
+                spans show through. Metrics (font, size, padding, leading,
+                wrap) MUST mirror the textarea exactly so the caret never
+                drifts off the rendered glyphs. */}
             <div
               ref={mirrorRef}
               aria-hidden="true"
-              className="absolute inset-0 pointer-events-none bg-transparent text-text-primary text-sm py-2 px-1 leading-relaxed whitespace-pre-wrap break-words overflow-hidden"
+              data-testid="askbar-mirror"
+              className="askbar-mirror absolute inset-0 pointer-events-none bg-transparent text-text-primary text-sm py-2 px-1 leading-5 whitespace-pre-wrap break-words overflow-hidden"
             >
               {renderHighlightedText(query)}
             </div>
@@ -627,7 +690,7 @@ export function AskBarView({
               autoFocus
               rows={1}
               placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
-              className="relative w-full bg-transparent border-none outline-none text-transparent text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
+              className="askbar-textarea relative w-full bg-transparent border-none outline-none text-transparent text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-5"
               style={{ caretColor: 'var(--color-text-primary)' }}
             />
           </div>
@@ -651,10 +714,20 @@ export function AskBarView({
                 onClick={onScreenshot}
                 disabled={isBusy}
                 aria-label="Take screenshot"
-                className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
+                className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-primary hover:bg-primary/10 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
               >
                 {CAMERA_ICON}
               </button>
+            </Tooltip>
+          )}
+
+          {modelPickerAvailable && onModelPickerToggle && (
+            <Tooltip label="Choose model">
+              <ModelPicker
+                onClick={onModelPickerToggle}
+                disabled={isBusy}
+                isOpen={isModelPickerOpen ?? false}
+              />
             </Tooltip>
           )}
 
@@ -683,7 +756,7 @@ export function AskBarView({
             )}
           </motion.button>
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }

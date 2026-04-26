@@ -4,6 +4,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useMemo,
   useRef,
   useLayoutEffect,
 } from 'react';
@@ -14,11 +15,16 @@ import { LogicalSize } from '@tauri-apps/api/dpi';
 import { useOllama } from './hooks/useOllama';
 import type { Message } from './hooks/useOllama';
 import { useConversationHistory } from './hooks/useConversationHistory';
+import { useModelSelection } from './hooks/useModelSelection';
+import { useModelCapabilities } from './hooks/useModelCapabilities';
+import { getCapabilityConflict } from './utils/capabilityConflicts';
+import { Toast } from './components/Toast';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView, MAX_IMAGES } from './view/AskBarView';
 import { OnboardingView } from './view/onboarding/index';
 import type { OnboardingStage } from './view/onboarding/index';
 import { HistoryPanel } from './components/HistoryPanel';
+import { ModelPickerPanel } from './components/ModelPickerPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import type { AttachedImage } from './types/image';
 import { MAX_IMAGE_SIZE_BYTES } from './types/image';
@@ -29,6 +35,9 @@ import {
   buildPrompt,
 } from './config/commands';
 import './App.css';
+
+/** Fallback model name used before get_model_picker_state resolves at startup. */
+const DEFAULT_MODEL_FALLBACK = 'gemma4:e2b';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 const ONBOARDING_EVENT = 'thuki://onboarding';
@@ -109,6 +118,9 @@ function App() {
    * but rendered differently based on `isChatMode`).
    */
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+
+  /** Whether the model picker panel is currently open. Mutually exclusive with `isHistoryOpen`. */
+  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   /**
    * True when the user clicked + while an unsaved conversation is active.
    * Causes the history dropdown to show a SwitchConfirmation prompt instead
@@ -122,6 +134,44 @@ function App() {
    * without going through React state (direct DOM mutation + CSS transition).
    */
   const morphingContainerNodeRef = useRef<HTMLDivElement | null>(null);
+
+  const { activeModel, availableModels, refreshModels, setActiveModel } =
+    useModelSelection();
+
+  const { capabilities: modelCapabilities, refresh: refreshModelCapabilities } =
+    useModelCapabilities();
+
+  /** Capability flags for the currently active model, or undefined if not loaded yet. */
+  const activeModelCapabilities = activeModel
+    ? modelCapabilities[activeModel]
+    : undefined;
+
+  /**
+   * Toast text shown by the submit-time capability gate. Set to a non-null
+   * string when the user attempts to send a message whose attached content
+   * the active model cannot handle (e.g. images on a text-only model).
+   * Cleared by the toast's auto-dismiss or on next submit attempt.
+   */
+  const [capabilityToast, setCapabilityToast] = useState<string | null>(null);
+
+  /**
+   * Pulses true to trigger the ask-bar shake animation when the
+   * submit-time gate refuses a message, then resets so the next blocked
+   * submit gets its own animation. Reset is set just over the 500 ms
+   * keyframe duration in `AskBarView` so the bar never snaps back
+   * mid-animation if React schedules the state flip on the exact frame
+   * Framer is finishing.
+   */
+  const [shakeAskBar, setShakeAskBar] = useState(false);
+  useEffect(() => {
+    if (!shakeAskBar) return;
+    const timer = setTimeout(() => setShakeAskBar(false), 600);
+    return () => clearTimeout(timer);
+  }, [shakeAskBar]);
+
+  const dismissCapabilityToast = useCallback(() => {
+    setCapabilityToast(null);
+  }, []);
 
   const {
     conversationId,
@@ -158,7 +208,7 @@ function App() {
     searchStage,
     reset,
     loadMessages,
-  } = useOllama(handleTurnComplete);
+  } = useOllama(activeModel, handleTurnComplete);
 
   /**
    * Sticky flag: once the user invokes `/search`, subsequent submits in the
@@ -362,6 +412,16 @@ function App() {
     }
   }, [isGenerating]);
 
+  /* eslint-disable @eslint-react/set-state-in-effect -- intentional: close
+     the picker when the user triggers generation so it can't stay open over
+     a streaming response. No secondary effects are triggered by this reset. */
+  useEffect(() => {
+    if (isGenerating || isSubmitPending) {
+      setIsModelPickerOpen(false);
+    }
+  }, [isGenerating, isSubmitPending]);
+  /* eslint-enable @eslint-react/set-state-in-effect */
+
   /**
    * Replays the entrance sequence by transitioning the overlay to the visible state.
    * Clears conversation state for a fresh session each time the overlay appears.
@@ -390,6 +450,7 @@ function App() {
       setQuery('');
       setSelectedContext(context);
       setIsHistoryOpen(false);
+      setIsModelPickerOpen(false);
       setAttachedImages((prev) => {
         for (const img of prev) URL.revokeObjectURL(img.blobUrl);
         return [];
@@ -402,11 +463,12 @@ function App() {
       setCaptureError(null);
       setSearchActive(false);
 
+      void refreshModels();
       reset();
       resetHistory();
       setOverlayState('visible');
     },
-    [reset, resetHistory],
+    [reset, resetHistory, refreshModels],
   );
 
   /**
@@ -437,9 +499,39 @@ function App() {
   /** Ref attached to the chat-mode history dropdown for click-outside detection. */
   const historyDropdownRef = useRef<HTMLDivElement>(null);
 
-  /** Toggles the history panel open/closed. */
+  /** Ref attached to the chat-mode model picker dropdown for click-outside detection. */
+  const modelPickerDropdownRef = useRef<HTMLDivElement>(null);
+  /** Ref attached to the ask-bar mode model picker drawer for click-outside detection. */
+  const modelPickerAskBarRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Close the model picker when the user clicks outside it, in either mode.
+   * Clicks on any pill trigger (data-model-picker-toggle) are excluded so the
+   * trigger's own onClick can manage the toggle without a double-close race.
+   */
+  useEffect(() => {
+    if (!isModelPickerOpen) return;
+
+    const handleMouseDown = (e: MouseEvent) => {
+      const target = e.target as Element;
+      if (
+        modelPickerDropdownRef.current?.contains(target) ||
+        modelPickerAskBarRef.current?.contains(target) ||
+        target.closest?.('[data-model-picker-toggle]')
+      ) {
+        return;
+      }
+      setIsModelPickerOpen(false);
+    };
+
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [isModelPickerOpen]);
+
+  /** Toggles the history panel open/closed. Closes model picker (mutually exclusive). */
   const handleHistoryToggle = useCallback(() => {
     setIsHistoryOpen((prev) => !prev);
+    setIsModelPickerOpen(false);
   }, []);
 
   /**
@@ -575,12 +667,14 @@ function App() {
       if (isSaved) {
         await unsave();
       } else {
-        await save(messages);
+        // activeModel is empty string until the model picker hook resolves on first
+        // load; fall back to the bootstrap default during that brief window.
+        await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
       }
     } catch {
       // State stays unchanged on failure; feedback is implicit in the icon.
     }
-  }, [isSaved, unsave, save, messages]);
+  }, [isSaved, unsave, save, messages, activeModel]);
 
   /**
    * Loads a conversation from history, replacing the current session.
@@ -616,7 +710,7 @@ function App() {
   const handleSaveAndLoad = useCallback(
     async (id: string) => {
       try {
-        await save(messages);
+        await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
       } catch {
         // Save failed - abort to avoid leaving the current session unprotected.
         return;
@@ -631,7 +725,7 @@ function App() {
         setIsHistoryOpen(false);
       }
     },
-    [save, messages, loadConversation, loadMessages],
+    [save, messages, loadConversation, loadMessages, activeModel],
   );
 
   /**
@@ -690,12 +784,12 @@ function App() {
   /** Saves the current conversation then starts a fresh one. */
   const handleSaveAndNew = useCallback(async () => {
     try {
-      await save(messages);
+      await save(messages, activeModel || DEFAULT_MODEL_FALLBACK);
     } catch {
       return;
     }
     resetForNewConversation();
-  }, [save, messages, resetForNewConversation]);
+  }, [save, messages, resetForNewConversation, activeModel]);
 
   /** Discards the current conversation and starts a fresh one. */
   const handleJustNew = useCallback(() => {
@@ -984,6 +1078,23 @@ function App() {
     ],
   );
 
+  /**
+   * Live capability conflict for the current compose state. Drives the
+   * inline `CapabilityMismatchStrip` so the user sees the mismatch as
+   * soon as incompatible content lands in compose, not only at submit
+   * time. The strip is purely informational: recovery happens through
+   * the model picker chip.
+   */
+  const liveCapabilityConflictMessage = useMemo(() => {
+    const trimmed = query.trim();
+    const { found } = parseCommands(trimmed);
+    return getCapabilityConflict(activeModel, activeModelCapabilities, {
+      hasScreenCommand: found.has('/screen'),
+      hasThinkCommand: found.has('/think'),
+      imageCount: attachedImages.length,
+    });
+  }, [query, attachedImages, activeModel, activeModelCapabilities]);
+
   const handleSubmit = useCallback(() => {
     if (
       (query.trim().length === 0 && attachedImages.length === 0) ||
@@ -1000,6 +1111,18 @@ function App() {
     const hasScreen = found.has('/screen');
     const hasThink = found.has('/think');
     const hasSearch = found.has('/search');
+
+    // Submit-time capability gate. Refuses messages whose attached content
+    // the active model cannot handle (images on a text-only model). The
+    // gate is the only gate: input affordances stay live so the user can
+    // compose freely and recover via the model picker chip. When refused
+    // the ask bar shakes and a toast surfaces the reason. Compose state is
+    // preserved so the user does not lose their typing.
+    if (liveCapabilityConflictMessage !== null) {
+      setShakeAskBar(true);
+      setCapabilityToast(liveCapabilityConflictMessage);
+      return;
+    }
 
     // `/search` entry point AND sticky follow-ups. Once a search turn is in
     // flight, subsequent submits without an explicit slash command continue
@@ -1179,6 +1302,7 @@ function App() {
     askSearch,
     searchActive,
     quote.maxContextLength,
+    liveCapabilityConflictMessage,
   ]);
 
   // When a pending submit exists and all images finish processing, fire it.
@@ -1274,6 +1398,49 @@ function App() {
     setSearchActive(false);
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [isSubmitPending, cancel, setSearchActive, setSelectedContext]);
+
+  /**
+   * Persists the user's model choice via the backend and closes the picker panel.
+   * On rejection (e.g. the chosen model was uninstalled between render and click),
+   * triggers a refresh so the picker list and the active chip resync with the
+   * actual backend state instead of silently drifting.
+   */
+  const handleModelSelect = useCallback(
+    (model: string) => {
+      setIsModelPickerOpen(false);
+      void setActiveModel(model).catch(() => {
+        void refreshModels();
+      });
+    },
+    [setActiveModel, refreshModels],
+  );
+
+  /** Closes the model picker panel. Wired to Escape key inside the panel. */
+  const handleModelPickerClose = useCallback(() => {
+    setIsModelPickerOpen(false);
+  }, []);
+
+  /**
+   * Toggles the model picker panel. Closes history panel (mutually exclusive).
+   *
+   * On open we re-pull both the installed-model list and the per-model
+   * capability map so newly-pulled models (e.g. user ran `ollama pull
+   * deepseek-r1:1.5b` while Thuki was running) appear with their full
+   * capability label without needing an app restart. Backend
+   * `reconcile_capabilities` honors its cache for already-known slugs and
+   * only fetches `/api/show` for genuinely new entries, so this is cheap.
+   */
+  const handleModelPickerToggle = useCallback(() => {
+    setIsModelPickerOpen((prev) => {
+      const opening = !prev;
+      if (opening) {
+        void refreshModels();
+        void refreshModelCapabilities();
+      }
+      return opening;
+    });
+    setIsHistoryOpen(false);
+  }, [refreshModels, refreshModelCapabilities]);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
@@ -1468,7 +1635,7 @@ function App() {
                     : 'rounded-2xl shadow-bar'
                 }`}
               >
-                {/* Chat Messages Area - morphs in when in chat mode */}
+                {/* Chat Messages Area - morphs in when in chat mode. */}
                 <AnimatePresence>
                   {isChatMode ? (
                     <ConversationView
@@ -1486,9 +1653,48 @@ function App() {
                       onHistoryOpen={handleHistoryToggle}
                       onImagePreview={handleChatImagePreview}
                       searchStage={searchStage}
+                      activeModel={activeModel}
+                      onModelPickerToggle={handleModelPickerToggle}
+                      isModelPickerOpen={isModelPickerOpen}
                     />
                   ) : null}
                 </AnimatePresence>
+
+                {/* Ask-bar mode model picker drawer - above the input bar.
+                    In chat mode the trigger and drawer move to the header area above. */}
+                {!isChatMode && (
+                  <AnimatePresence>
+                    {isModelPickerOpen &&
+                    activeModel &&
+                    availableModels &&
+                    availableModels.length > 0 ? (
+                      <motion.div
+                        ref={modelPickerAskBarRef}
+                        key="model-picker-askbar"
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{
+                          height: {
+                            duration: 0.3,
+                            ease: [0.33, 1, 0.68, 1],
+                          },
+                          opacity: { duration: 0.2, delay: 0.08 },
+                        }}
+                        style={{ overflow: 'hidden' }}
+                        className="border-t border-surface-border"
+                      >
+                        <ModelPickerPanel
+                          models={availableModels}
+                          activeModel={activeModel}
+                          onSelect={handleModelSelect}
+                          onClose={handleModelPickerClose}
+                          capabilities={modelCapabilities}
+                        />
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
+                )}
 
                 {/* Ask-bar mode history panel - inline below the input bar.
                     The !isChatMode gate lives OUTSIDE AnimatePresence so that when
@@ -1559,8 +1765,49 @@ function App() {
                   onImagePreview={handleAskBarImagePreview}
                   onScreenshot={handleScreenshot}
                   isDragOver={isDragOver ?? undefined}
+                  activeModel={activeModel}
+                  availableModels={availableModels}
+                  onModelPickerToggle={handleModelPickerToggle}
+                  isModelPickerOpen={isModelPickerOpen}
+                  capabilityConflictMessage={liveCapabilityConflictMessage}
+                  shake={shakeAskBar}
+                />
+                <Toast
+                  message={capabilityToast}
+                  onDismiss={dismissCapabilityToast}
                 />
               </div>
+
+              {/* Chat-mode model picker dropdown - floating card identical in style
+                  to the chat-history dropdown. Anchored absolute right-3 top-10
+                  so it appears just below the header pill trigger without pushing
+                  the conversation content. Click-outside closes it. */}
+              <AnimatePresence>
+                {isChatMode &&
+                isModelPickerOpen &&
+                activeModel &&
+                availableModels &&
+                availableModels.length > 0 ? (
+                  <motion.div
+                    ref={modelPickerDropdownRef}
+                    key="model-picker-dropdown"
+                    initial={{ opacity: 0, y: -8, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                    transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                    className="absolute right-3 top-10 z-50 w-56 rounded-xl border border-surface-border bg-surface-base shadow-chat overflow-hidden flex flex-col"
+                  >
+                    <ModelPickerPanel
+                      models={availableModels}
+                      activeModel={activeModel}
+                      onSelect={handleModelSelect}
+                      onClose={handleModelPickerClose}
+                      capabilities={modelCapabilities}
+                      compact
+                    />
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
 
               {/* Chat-mode history dropdown - sibling of the morphing container so
                   it is never clipped by its overflow-hidden. Positioned absolutely

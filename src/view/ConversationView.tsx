@@ -74,6 +74,12 @@ interface ConversationViewProps {
    * of the typing indicator.
    */
   searchStage?: SearchStage;
+  /** Currently active model slug forwarded to the WindowControls pill trigger. */
+  activeModel?: string;
+  /** Toggles the model picker panel; forwarded to WindowControls. */
+  onModelPickerToggle?: () => void;
+  /** Whether the model picker panel is open; drives aria-expanded on the pill. */
+  isModelPickerOpen?: boolean;
 }
 
 /**
@@ -97,6 +103,9 @@ export function ConversationView({
   onNewConversation,
   onImagePreview,
   searchStage = null,
+  activeModel,
+  onModelPickerToggle,
+  isModelPickerOpen,
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -197,6 +206,9 @@ export function ConversationView({
         canSave={canSave}
         onNewConversation={onNewConversation}
         onHistoryOpen={onHistoryOpen}
+        activeModel={activeModel}
+        onModelPickerToggle={onModelPickerToggle}
+        isModelPickerOpen={isModelPickerOpen}
       />
 
       <div
@@ -252,6 +264,7 @@ export function ConversationView({
               searchWarnings={msg.searchWarnings}
               sandboxUnavailable={msg.sandboxUnavailable}
               searchTraces={msg.searchTraces}
+              modelName={msg.modelName}
               isSearching={
                 isGenerating &&
                 msg.fromSearch === true &&

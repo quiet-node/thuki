@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { AskBarView } from '../AskBarView';
+import { AskBarView, renderHighlightedText } from '../AskBarView';
 import type { AttachedImage } from '../../types/image';
 
 function makeRef(): React.RefObject<HTMLTextAreaElement | null> {
@@ -210,6 +210,131 @@ describe('AskBarView', () => {
     expect(
       screen.getByRole('button', { name: 'Send message' }),
     ).toBeInTheDocument();
+  });
+
+  it('renders a model picker trigger in ask-bar mode when models are available', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        activeModel="gemma4:e2b"
+        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
+        onModelPickerToggle={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toBeInTheDocument();
+  });
+
+  it('hides model picker trigger in chat mode (trigger moves to WindowControls header)', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={true}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        activeModel="gemma4:e2b"
+        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
+        onModelPickerToggle={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Choose model' })).toBeNull();
+  });
+
+  it('calls onModelPickerToggle when the Choose model button is clicked', () => {
+    const onModelPickerToggle = vi.fn();
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        activeModel="gemma4:e2b"
+        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
+        onModelPickerToggle={onModelPickerToggle}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    expect(onModelPickerToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('sets aria-expanded on model picker trigger from isModelPickerOpen prop', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        activeModel="gemma4:e2b"
+        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
+        onModelPickerToggle={vi.fn()}
+        isModelPickerOpen={true}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('renders the model picker inside a Choose model tooltip wrapper in ask-bar mode', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        activeModel="gemma4:e2b"
+        availableModels={['gemma4:e2b', 'qwen2.5:7b']}
+        onModelPickerToggle={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: 'Choose model' });
+    fireEvent.mouseEnter(trigger.parentElement!);
+    expect(screen.getAllByText('Choose model').length).toBeGreaterThanOrEqual(
+      1,
+    );
+  });
+
+  it('hides the model picker trigger in ask-bar mode when no models are available', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        activeModel=""
+        availableModels={[]}
+        onModelPickerToggle={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Choose model' })).toBeNull();
   });
 
   it('displays selectedText when provided', () => {
@@ -996,8 +1121,8 @@ describe('AskBarView', () => {
         />,
       );
       const btn = screen.getByRole('button', { name: 'Take screenshot' });
-      expect(btn.className).not.toContain('hover:text-text-primary');
-      expect(btn.className).not.toContain('hover:bg-white/8');
+      expect(btn.className).not.toContain('hover:text-primary');
+      expect(btn.className).not.toContain('hover:bg-primary/10');
     });
 
     it('has hover classes when below max images', () => {
@@ -1015,8 +1140,8 @@ describe('AskBarView', () => {
         />,
       );
       const btn = screen.getByRole('button', { name: 'Take screenshot' });
-      expect(btn.className).toContain('hover:text-text-primary');
-      expect(btn.className).toContain('hover:bg-white/8');
+      expect(btn.className).toContain('hover:text-primary');
+      expect(btn.className).toContain('hover:bg-primary/10');
     });
 
     it('shows tooltip explaining limit when camera button is hovered at max images', () => {
@@ -1453,12 +1578,84 @@ describe('AskBarView', () => {
     });
   });
 
-  describe('Command highlighting mirror div', () => {
-    it('renders a mirror div with aria-hidden behind the textarea', () => {
-      const { container } = render(
+  describe('capability gate UI', () => {
+    it('renders the capability mismatch strip when message provided', () => {
+      render(
         <AskBarView
           {...IMAGE_DEFAULTS}
-          query="/screen explain"
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          capabilityConflictMessage="llama3 can't see images."
+        />,
+      );
+      expect(screen.getByTestId('capability-mismatch-strip')).toHaveTextContent(
+        "llama3 can't see images.",
+      );
+    });
+
+    it('omits the strip when message is null', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          capabilityConflictMessage={null}
+        />,
+      );
+      expect(screen.queryByTestId('capability-mismatch-strip')).toBeNull();
+    });
+
+    it('mounts the shake animation branch when shake is true', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          shake
+        />,
+      );
+      expect(screen.getByTestId('ask-bar-row')).toBeInTheDocument();
+    });
+
+    it('keeps the no-shake branch when shake is false', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          shake={false}
+        />,
+      );
+      expect(screen.getByTestId('ask-bar-row')).toBeInTheDocument();
+    });
+  });
+
+  describe('slash command highlighting', () => {
+    it('mirror div renders the query so colored spans show through the textarea', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="/search what is Rust?"
           setQuery={vi.fn()}
           isChatMode={false}
           isGenerating={false}
@@ -1467,132 +1664,22 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const mirror = container.querySelector('[aria-hidden="true"]');
-      expect(mirror).not.toBeNull();
-      expect(mirror!.classList.contains('pointer-events-none')).toBe(true);
-    });
-
-    it('highlights /screen command in violet in the mirror div', () => {
-      const { container } = render(
-        <AskBarView
-          {...IMAGE_DEFAULTS}
-          query="/screen explain this"
-          setQuery={vi.fn()}
-          isChatMode={false}
-          isGenerating={false}
-          onSubmit={vi.fn()}
-          onCancel={vi.fn()}
-          inputRef={makeRef()}
-        />,
+      const mirror = screen.getByTestId('askbar-mirror');
+      expect(mirror).toHaveTextContent('/search what is Rust?');
+      // The trigger token sits in its own span with the violet utility class.
+      const tokenSpan = Array.from(mirror.querySelectorAll('span')).find(
+        (s) => s.textContent === '/search',
       );
-      const mirror = container.querySelector('[aria-hidden="true"]');
-      const highlighted = mirror!.querySelector('.text-violet-400');
-      expect(highlighted).not.toBeNull();
-      expect(highlighted!.textContent).toBe('/screen');
+      expect(tokenSpan).toBeDefined();
+      expect(tokenSpan?.className).toContain('text-violet-400');
     });
 
-    it('highlights multiple commands in the mirror div', () => {
-      const { container } = render(
-        <AskBarView
-          {...IMAGE_DEFAULTS}
-          query="/screen /think explain"
-          setQuery={vi.fn()}
-          isChatMode={false}
-          isGenerating={false}
-          onSubmit={vi.fn()}
-          onCancel={vi.fn()}
-          inputRef={makeRef()}
-        />,
-      );
-      const mirror = container.querySelector('[aria-hidden="true"]');
-      const highlighted = mirror!.querySelectorAll('.text-violet-400');
-      expect(highlighted).toHaveLength(2);
-      expect(highlighted[0].textContent).toBe('/screen');
-      expect(highlighted[1].textContent).toBe('/think');
-    });
-
-    it('does not highlight partial command matches like /screensaver', () => {
-      const { container } = render(
-        <AskBarView
-          {...IMAGE_DEFAULTS}
-          query="/screensaver is nice"
-          setQuery={vi.fn()}
-          isChatMode={false}
-          isGenerating={false}
-          onSubmit={vi.fn()}
-          onCancel={vi.fn()}
-          inputRef={makeRef()}
-        />,
-      );
-      const mirror = container.querySelector('[aria-hidden="true"]');
-      expect(mirror!.querySelector('.text-violet-400')).toBeNull();
-      expect(mirror!.textContent).toBe('/screensaver is nice');
-    });
-
-    it('renders plain text in mirror div when no commands present', () => {
-      const { container } = render(
-        <AskBarView
-          {...IMAGE_DEFAULTS}
-          query="hello world"
-          setQuery={vi.fn()}
-          isChatMode={false}
-          isGenerating={false}
-          onSubmit={vi.fn()}
-          onCancel={vi.fn()}
-          inputRef={makeRef()}
-        />,
-      );
-      const mirror = container.querySelector('[aria-hidden="true"]');
-      expect(mirror!.querySelector('.text-violet-400')).toBeNull();
-      expect(mirror!.textContent).toBe('hello world');
-    });
-
-    it('makes the textarea text transparent for the mirror overlay', () => {
-      const { container } = render(
-        <AskBarView
-          {...IMAGE_DEFAULTS}
-          query="/think test"
-          setQuery={vi.fn()}
-          isChatMode={false}
-          isGenerating={false}
-          onSubmit={vi.fn()}
-          onCancel={vi.fn()}
-          inputRef={makeRef()}
-        />,
-      );
-      const textarea = container.querySelector('textarea');
-      expect(textarea!.classList.contains('text-transparent')).toBe(true);
-      expect(textarea!.style.caretColor).toBe('var(--color-text-primary)');
-    });
-
-    it('handles scroll event gracefully when refs are not yet set', () => {
-      // Render with a ref that has current = null to exercise the null guard
-      const nullRef = { current: null };
-      const { container } = render(
-        <AskBarView
-          {...IMAGE_DEFAULTS}
-          query="/screen test"
-          setQuery={vi.fn()}
-          isChatMode={false}
-          isGenerating={false}
-          onSubmit={vi.fn()}
-          onCancel={vi.fn()}
-          inputRef={nullRef}
-        />,
-      );
-      // The textarea is rendered by React, but the inputRef.current is null
-      // because we passed a ref with current=null that was not wired via callback.
-      // The scroll handler should not throw.
-      const textarea = container.querySelector('textarea')!;
-      expect(() => fireEvent.scroll(textarea)).not.toThrow();
-    });
-
-    it('syncs mirror div scroll with textarea scroll', () => {
+    it('syncs mirror scrollTop with the textarea so the highlight tracks the caret', () => {
       const ref = makeRef();
-      const { container } = render(
+      render(
         <AskBarView
           {...IMAGE_DEFAULTS}
-          query="/screen long text here"
+          query="/think who is Elon"
           setQuery={vi.fn()}
           isChatMode={false}
           isGenerating={false}
@@ -1601,16 +1688,57 @@ describe('AskBarView', () => {
           inputRef={ref}
         />,
       );
-      const textarea = container.querySelector('textarea')!;
-      const mirror = container.querySelector('[aria-hidden="true"]')!;
-
-      // Simulate scrolling
-      Object.defineProperty(textarea, 'scrollTop', {
-        value: 42,
-        writable: true,
+      const mirror = screen.getByTestId('askbar-mirror') as HTMLDivElement;
+      // Pretend the textarea has been scrolled.
+      Object.defineProperty(ref.current, 'scrollTop', {
+        configurable: true,
+        value: 24,
       });
-      fireEvent.scroll(textarea);
-      expect(mirror.scrollTop).toBe(42);
+      Object.defineProperty(ref.current, 'scrollLeft', {
+        configurable: true,
+        value: 6,
+      });
+      fireEvent.scroll(ref.current!);
+      expect(mirror.scrollTop).toBe(24);
+      expect(mirror.scrollLeft).toBe(6);
+    });
+  });
+
+  describe('renderHighlightedText (pure)', () => {
+    it('returns a single span when no command trigger is present', () => {
+      const node = renderHighlightedText('plain text only');
+      const { container } = render(<>{node}</>);
+      const violet = container.querySelector('.text-violet-400');
+      expect(violet).toBeNull();
+      expect(container).toHaveTextContent('plain text only');
+    });
+
+    it('wraps the first valid trigger occurrence in the violet utility class', () => {
+      const node = renderHighlightedText('/search what is Rust?');
+      const { container } = render(<>{node}</>);
+      const tokens = container.querySelectorAll('.text-violet-400');
+      expect(tokens.length).toBe(1);
+      expect(tokens[0].textContent).toBe('/search');
+    });
+
+    it('only highlights the first occurrence of any given trigger', () => {
+      const node = renderHighlightedText('/search foo /search bar');
+      const { container } = render(<>{node}</>);
+      const tokens = container.querySelectorAll('.text-violet-400');
+      expect(tokens.length).toBe(1);
+    });
+
+    it('does not match a trigger embedded inside a longer word', () => {
+      // /searching contains /search but is not a standalone trigger token.
+      const node = renderHighlightedText('/searching');
+      const { container } = render(<>{node}</>);
+      expect(container.querySelector('.text-violet-400')).toBeNull();
+    });
+
+    it('returns an empty fragment for an empty string without throwing', () => {
+      const node = renderHighlightedText('');
+      const { container } = render(<>{node}</>);
+      expect(container.textContent).toBe('');
     });
   });
 });

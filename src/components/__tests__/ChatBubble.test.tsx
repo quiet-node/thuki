@@ -1111,4 +1111,77 @@ describe('ChatBubble', () => {
       ).toBeTruthy();
     });
   });
+
+  describe('model attribution', () => {
+    it('renders the attribution chip when modelName is provided on assistant messages', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Hello there"
+          index={0}
+          modelName="gemma4:e2b"
+        />,
+      );
+      const chip = screen.getByTestId('model-attribution');
+      expect(chip).toBeInTheDocument();
+      expect(chip).toHaveTextContent('gemma4:e2b');
+    });
+
+    it('does not render the attribution chip when modelName is absent', () => {
+      render(<ChatBubble role="assistant" content="Hello" index={0} />);
+      expect(screen.queryByTestId('model-attribution')).toBeNull();
+    });
+
+    it('does not render the attribution chip on user messages even with modelName', () => {
+      render(
+        <ChatBubble
+          role="user"
+          content="Hello"
+          index={0}
+          modelName="gemma4:e2b"
+        />,
+      );
+      expect(screen.queryByTestId('model-attribution')).toBeNull();
+    });
+
+    it('does not render the attribution chip when the message is an error callout', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Something went wrong"
+          index={0}
+          modelName="gemma4:e2b"
+          errorKind="Other"
+        />,
+      );
+      expect(screen.queryByTestId('model-attribution')).toBeNull();
+    });
+
+    it('does not render the attribution chip when sandbox is unavailable', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          modelName="gemma4:e2b"
+          sandboxUnavailable
+        />,
+      );
+      expect(screen.queryByTestId('model-attribution')).toBeNull();
+    });
+
+    it('does not render the attribution chip while the assistant is still streaming', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="partial..."
+          index={0}
+          isStreaming
+          modelName="gemma4:e2b"
+        />,
+      );
+      // Footer row including the attribution is hidden during streaming.
+      expect(screen.queryByTestId('model-attribution')).toBeNull();
+    });
+  });
 });

@@ -110,6 +110,21 @@ describe('Tooltip', () => {
     expect(wrapper?.classList.contains('inline-flex')).toBe(true);
   });
 
+  it('hides on mouseDown so the tooltip does not overlap a popup the click opens', () => {
+    render(
+      <Tooltip label="Choose model">
+        <button type="button">Trigger</button>
+      </Tooltip>,
+    );
+    const wrapper = screen.getByRole('button', {
+      name: 'Trigger',
+    }).parentElement!;
+    fireEvent.mouseEnter(wrapper);
+    expect(screen.getByText('Choose model')).toBeInTheDocument();
+    fireEvent.mouseDown(wrapper);
+    expect(screen.queryByText('Choose model')).not.toBeInTheDocument();
+  });
+
   it('applies extra className to the wrapper div', () => {
     const { container } = render(
       <Tooltip label="Test" className="flex-1 min-w-0">
@@ -120,5 +135,26 @@ describe('Tooltip', () => {
     expect(wrapper?.classList.contains('flex-1')).toBe(true);
     expect(wrapper?.classList.contains('min-w-0')).toBe(true);
     expect(wrapper?.classList.contains('inline-flex')).toBe(true);
+  });
+
+  it('renders multiline tooltips at a fixed 225px width so the box stays directly below the trigger near edges', () => {
+    render(
+      <Tooltip label={'Open by design: browse and pull any model.'} multiline>
+        <button type="button">Trigger</button>
+      </Tooltip>,
+    );
+    const wrapper = screen.getByRole('button', {
+      name: 'Trigger',
+    }).parentElement!;
+    fireEvent.mouseEnter(wrapper);
+    const fixedBox = document.body.querySelector(
+      '[style*="position: fixed"]',
+    ) as HTMLElement | null;
+    expect(fixedBox).not.toBeNull();
+    // The inner content div (under the fixed-positioned outer + motion
+    // wrapper) carries the explicit 225px width style.
+    const inner = fixedBox?.querySelector('div[style*="width"]');
+    expect(inner).not.toBeNull();
+    expect((inner as HTMLElement).style.width).toBe('225px');
   });
 });

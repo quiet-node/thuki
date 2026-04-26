@@ -28,6 +28,441 @@ describe('App', () => {
     enableChannelCapture();
   });
 
+  it('fetches model picker state on mount and refreshes it when the overlay shows', async () => {
+    invoke.mockReset();
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+
+    render(<App />);
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith('get_model_picker_state');
+
+    invoke.mockClear();
+
+    await showOverlay();
+
+    expect(invoke).toHaveBeenCalledWith('get_model_picker_state');
+  });
+
+  it('renders the model picker when the overlay is visible and models load', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    expect(
+      screen.getByRole('button', { name: 'Choose model' }),
+    ).toBeInTheDocument();
+  });
+
+  it('saves the conversation with the currently selected model', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+      save_conversation: { conversation_id: 'conv-1' },
+      generate_title: undefined,
+      set_active_model: undefined,
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+    });
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    fireEvent.change(textarea, { target: { value: 'hello there' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await act(async () => {});
+
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hi there!' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Save conversation'));
+    });
+
+    // The picker selection is threaded into `generate_title` (which uses the
+    // active slug as the title-generation model) and stamped onto the
+    // assistant message via `model_name`. `save_conversation` itself does
+    // not take a top-level `model` arg; the active model is sourced
+    // backend-side from the loaded TOML AppConfig.
+    expect(invoke).toHaveBeenCalledWith(
+      'generate_title',
+      expect.objectContaining({ model: 'qwen2.5:7b' }),
+    );
+  });
+
+  it('opens model picker panel when trigger is clicked', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', { name: 'qwen2.5:7b' }),
+    ).toBeInTheDocument();
+  });
+
+  it('closes model picker and opens history when history toggle clicked', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+      list_conversations: [],
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open history' }));
+    await act(async () => {});
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
+    expect(
+      screen.getByPlaceholderText(/search past chats/i),
+    ).toBeInTheDocument();
+  });
+
+  it('closes history and opens model picker when model picker trigger clicked', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+      list_conversations: [],
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open history' }));
+    await act(async () => {});
+    expect(
+      screen.getByPlaceholderText(/search past chats/i),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(screen.queryByPlaceholderText(/search past chats/i)).toBeNull();
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+  });
+
+  it('closes model picker when a model is selected', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+      set_active_model: undefined,
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'qwen2.5:7b' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+    await act(async () => {});
+    expect(screen.queryByRole('option', { name: 'qwen2.5:7b' })).toBeNull();
+  });
+
+  it('closes model picker when the trigger is clicked while open', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const trigger = screen.getByRole('button', { name: 'Choose model' });
+    fireEvent.click(trigger);
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    // Second click on the trigger toggles the panel closed; this exercises
+    // the "opening = false" branch of handleModelPickerToggle.
+    fireEvent.click(trigger);
+    await act(async () => {});
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
+  });
+
+  it('closes model picker when generation starts', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    fireEvent.change(textarea, { target: { value: 'hi' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await act(async () => {});
+
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
+  });
+
+  it('shows active model pill in chat mode header and opens picker from there', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    // Transition to chat mode by submitting a message
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    fireEvent.change(textarea, { target: { value: 'hi' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await act(async () => {});
+
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hello!' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // Pill button should now be in the header (WindowControls), showing the model name
+    const pill = screen.getByRole('button', { name: 'Choose model' });
+    expect(pill).toBeInTheDocument();
+    expect(pill.textContent).toContain('gemma4:e2b');
+
+    // Click pill → model picker panel opens ABOVE the conversation
+    fireEvent.click(pill);
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', { name: 'qwen2.5:7b' }),
+    ).toBeInTheDocument();
+  });
+
+  it('closes chat-mode model picker when clicking outside the dropdown', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    fireEvent.change(textarea, { target: { value: 'hi' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hello!' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    fireEvent.mouseDown(document.body);
+    await act(async () => {});
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
+  });
+
+  it('chat-mode click-outside does NOT close when clicking inside the dropdown or on the pill', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    fireEvent.change(textarea, { target: { value: 'hi' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hello!' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    const pill = screen.getByRole('button', { name: 'Choose model' });
+    fireEvent.click(pill);
+    await act(async () => {});
+    const option = screen.getByRole('option', { name: 'gemma4:e2b' });
+    expect(option).toBeInTheDocument();
+
+    // mousedown inside the dropdown must not close the picker
+    fireEvent.mouseDown(option);
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    // mousedown on the pill trigger must not close the picker either
+    fireEvent.mouseDown(pill);
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+  });
+
+  it('ask-bar mode click-outside closes the model picker drawer', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    // Clicking inside the drawer must NOT close it
+    fireEvent.mouseDown(screen.getByRole('option', { name: 'gemma4:e2b' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    // Clicking outside closes the drawer
+    fireEvent.mouseDown(document.body);
+    await act(async () => {});
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
+  });
+
+  it('refreshes model list when set_active_model rejects', async () => {
+    let rejectionSeen = false;
+    let refreshesAfterRejection = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_model_picker_state') {
+        if (rejectionSeen) {
+          refreshesAfterRejection += 1;
+          return { active: 'gemma4:e2b', all: ['gemma4:e2b'] };
+        }
+        return { active: 'gemma4:e2b', all: ['gemma4:e2b', 'qwen2.5:7b'] };
+      }
+      if (cmd === 'set_active_model') {
+        rejectionSeen = true;
+        throw new Error('Model is not installed in Ollama: qwen2.5:7b');
+      }
+      return undefined;
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+    await act(async () => {});
+
+    // The rejection handler must have triggered at least one refresh fetch.
+    expect(refreshesAfterRejection).toBeGreaterThanOrEqual(1);
+
+    // Reopen to confirm the list is the post-refresh one (qwen was removed).
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'qwen2.5:7b' })).toBeNull();
+  });
+
+  it('closes the model picker drawer when Escape is pressed in the filter input', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await act(async () => {});
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByPlaceholderText(/filter models/i), {
+      key: 'Escape',
+    });
+    await act(async () => {});
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
+  });
+
   it('grows upward when near bottom screen edge', async () => {
     const { container } = render(<App />);
     await act(async () => {});
@@ -658,6 +1093,10 @@ describe('App', () => {
 
     it('closes history panel when a conversation is loaded', async () => {
       enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b'],
+        },
         list_conversations: [],
       });
 
@@ -2790,6 +3229,187 @@ describe('App', () => {
     });
   });
 
+  // ─── Capability gate (vision mismatch) ─────────────────────────────────────
+
+  describe('capability gate', () => {
+    /** Helper: paste an image file into the textarea and wait for thumbnails. */
+    async function pasteImage() {
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['fake-img-data'], 'photo.png', {
+        type: 'image/png',
+      });
+      const clipboardData = {
+        items: [{ type: 'image/png', getAsFile: () => file }],
+      };
+      await act(async () => {
+        fireEvent.paste(textarea, { clipboardData });
+      });
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+    }
+
+    it('shows the live mismatch strip when a text-only model has an image attached', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'llama3',
+          all: ['llama3', 'llama3.2-vision'],
+        },
+        get_model_capabilities: {
+          llama3: {
+            vision: false,
+            thinking: false,
+          },
+          'llama3.2-vision': {
+            vision: true,
+            thinking: false,
+          },
+        },
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+      await pasteImage();
+      await vi.waitFor(() => {
+        expect(
+          screen.getByTestId('capability-mismatch-strip'),
+        ).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('capability-mismatch-strip')).toHaveTextContent(
+        'llama3 reads text only',
+      );
+    });
+
+    it('refuses submit and surfaces a toast when a text-only model has an image attached', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'llama3',
+          all: ['llama3'],
+        },
+        get_model_capabilities: {
+          llama3: {
+            vision: false,
+            thinking: false,
+          },
+        },
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+      await pasteImage();
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      // Type and submit.
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'summarise these' } });
+      });
+      invoke.mockClear();
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /send message/i }));
+      });
+
+      // Toast surfaces the reason.
+      await vi.waitFor(() => {
+        expect(screen.getByTestId('toast')).toHaveTextContent(
+          'llama3 reads text only',
+        );
+      });
+      // ask_ollama is NOT invoked.
+      const askInvocations = invoke.mock.calls.filter(
+        (call) => call[0] === 'ask_ollama',
+      );
+      expect(askInvocations.length).toBe(0);
+      // Compose state survives.
+      expect(screen.getByPlaceholderText('Ask Thuki anything...')).toHaveValue(
+        'summarise these',
+      );
+    });
+
+    it('toast auto-dismisses after the default duration', async () => {
+      vi.useFakeTimers();
+      try {
+        enableChannelCaptureWithResponses({
+          get_model_picker_state: { active: 'llama3', all: ['llama3'] },
+          get_model_capabilities: {
+            llama3: {
+              vision: false,
+              thinking: false,
+            },
+          },
+          save_image_command: '/tmp/staged/img1.jpg',
+        });
+        render(<App />);
+        await act(async () => {});
+        await showOverlay();
+        // Paste (real timers were running; pasteImage uses waitFor which
+        // works under fake timers if we advance them).
+        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+        const file = new File(['x'], 'p.png', { type: 'image/png' });
+        await act(async () => {
+          fireEvent.paste(textarea, {
+            clipboardData: {
+              items: [{ type: 'image/png', getAsFile: () => file }],
+            },
+          });
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(50);
+        });
+        // Submit with no text but an image (canSubmit honors images alone).
+        await act(async () => {
+          fireEvent.click(
+            screen.getByRole('button', { name: /send message/i }),
+          );
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+        });
+        expect(screen.queryByTestId('toast')).not.toBeNull();
+        // Advance past the 3000ms default duration.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(3100);
+        });
+        expect(screen.queryByTestId('toast')).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not gate submit when the active model has vision', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'llama3.2-vision',
+          all: ['llama3.2-vision'],
+        },
+        get_model_capabilities: {
+          'llama3.2-vision': {
+            vision: true,
+            thinking: false,
+          },
+        },
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+      await pasteImage();
+      // Strip must not appear.
+      expect(screen.queryByTestId('capability-mismatch-strip')).toBeNull();
+    });
+  });
+
   // ─── Screenshot integration ────────────────────────────────────────────────
 
   describe('screenshot integration', () => {
@@ -4479,13 +5099,13 @@ describe('App', () => {
         emitTauriEvent('thuki://onboarding', { stage: 'intro' });
       });
 
-      expect(screen.getByText('Before you dive in')).toBeInTheDocument();
+      expect(screen.getByText("You're all set")).toBeInTheDocument();
 
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /get started/i }));
       });
 
-      expect(screen.queryByText('Before you dive in')).toBeNull();
+      expect(screen.queryByText("You're all set")).toBeNull();
     });
   });
 });

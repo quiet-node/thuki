@@ -41,6 +41,7 @@ function toPayload(msg: Message): SaveMessagePayload {
         : msg.searchTraces && msg.searchTraces.length > 0
           ? JSON.stringify(msg.searchTraces)
           : null,
+    model_name: msg.modelName ?? null,
   };
 }
 
@@ -241,6 +242,7 @@ function fromPersisted(msg: PersistedMessage): Message {
     searchMetadata,
     searchTraces:
       searchTraces && searchTraces.length > 0 ? searchTraces : undefined,
+    modelName: msg.model_name ?? undefined,
   };
 }
 
@@ -266,18 +268,17 @@ export function useConversationHistory() {
    * Subsequent calls while `isSaved` is true are no-ops - the bookmark
    * icon on the frontend enforces single-save semantics.
    *
-   * The active model name is sourced by the Rust `save_conversation` command
-   * from the managed `AppConfig` state; the frontend no longer tracks or
-   * forwards it.
-   *
-   * Fires `generate_title` as a fire-and-forget background task after saving;
-   * the frontend should schedule a `listConversations` refresh to pick up the
-   * AI-generated title once it arrives (~2-5 seconds).
+   * Fires `generate_title` as a fire-and-forget background task after saving,
+   * threading the active model slug through so the title is produced by the
+   * same model that produced the conversation. The frontend should schedule a
+   * `listConversations` refresh to pick up the AI-generated title once it
+   * arrives (~2-5 seconds).
    *
    * @param messages The complete message history to persist.
+   * @param model The active Ollama model slug used for title generation.
    */
   const save = useCallback(
-    async (messages: Message[]): Promise<void> => {
+    async (messages: Message[], model: string): Promise<void> => {
       if (isSaved) return;
 
       const payloads = messages.map(toPayload);
@@ -296,6 +297,7 @@ export function useConversationHistory() {
       void invoke('generate_title', {
         conversationId: response.conversation_id,
         messages: payloads,
+        model,
       });
     },
     [isSaved],
@@ -324,6 +326,7 @@ export function useConversationHistory() {
           searchSources: null,
           searchWarnings: null,
           searchMetadata: null,
+          modelName: null,
         }),
         invoke('persist_message', {
           conversationId,
@@ -345,6 +348,7 @@ export function useConversationHistory() {
                   assistantMsg.searchTraces.length > 0
                 ? JSON.stringify(assistantMsg.searchTraces)
                 : null,
+          modelName: assistantMsg.modelName ?? null,
         }),
       ]);
     },
