@@ -232,12 +232,12 @@ describe('ModelPickerPanel', () => {
       },
     };
     renderPanel({ capabilities });
-    // Every row gets a label now: plain models fall back to "text" so the
-    // caption line stays consistent across the list.
+    // Every row leads with "text" (every chat model handles text), then
+    // appends vision/thinking when supported. Plain models render just "text".
     const labels = screen.getAllByTestId('model-capability-label');
     expect(labels.length).toBe(3);
-    expect(labels[0]).toHaveTextContent('vision');
-    expect(labels[1]).toHaveTextContent('thinking');
+    expect(labels[0]).toHaveTextContent('text · vision');
+    expect(labels[1]).toHaveTextContent('text · thinking');
     expect(labels[2]).toHaveTextContent('text');
   });
 
@@ -249,7 +249,9 @@ describe('ModelPickerPanel', () => {
       },
     };
     renderPanel({ models: ['gemma4:e2b'], capabilities });
-    const row = screen.getByRole('option', { name: /gemma4:e2b, vision/i });
+    const row = screen.getByRole('option', {
+      name: /gemma4:e2b, text, vision/i,
+    });
     expect(row).toBeInTheDocument();
   });
 });
@@ -270,24 +272,24 @@ describe('formatCapabilityLabel', () => {
     expect(formatCapabilityLabel(map, 'x')).toBe('text');
   });
 
-  it('joins multiple flags with " · "', () => {
+  it('leads with "text" and appends every supported flag, joined with " · "', () => {
     const map: ModelCapabilitiesMap = {
       x: { vision: true, thinking: true },
     };
-    expect(formatCapabilityLabel(map, 'x')).toBe('vision · thinking');
+    expect(formatCapabilityLabel(map, 'x')).toBe('text · vision · thinking');
   });
 
-  it('returns the single flag when only vision is present', () => {
+  it('appends "vision" after the leading "text" when only vision is present', () => {
     const map: ModelCapabilitiesMap = {
       x: { vision: true, thinking: false },
     };
-    expect(formatCapabilityLabel(map, 'x')).toBe('vision');
+    expect(formatCapabilityLabel(map, 'x')).toBe('text · vision');
   });
 
-  it('returns the single flag when only thinking is present', () => {
+  it('appends "thinking" after the leading "text" when only thinking is present', () => {
     const map: ModelCapabilitiesMap = {
       x: { vision: false, thinking: true },
     };
-    expect(formatCapabilityLabel(map, 'x')).toBe('thinking');
+    expect(formatCapabilityLabel(map, 'x')).toBe('text · thinking');
   });
 });

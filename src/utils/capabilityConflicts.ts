@@ -35,5 +35,5 @@ export function getCapabilityConflict(
   if (!capabilities) return null;
   if (capabilities.vision) return null;
   const name = modelName && modelName.length > 0 ? modelName : 'this model';
-  return `${name} can't see images. Switch to a vision model to send.`;
+  return `${name} reads text only. Try a vision model for images.`;
 }

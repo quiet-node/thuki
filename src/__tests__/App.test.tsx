@@ -3254,7 +3254,7 @@ describe('App', () => {
         ).toBeInTheDocument();
       });
       expect(screen.getByTestId('capability-mismatch-strip')).toHaveTextContent(
-        "llama3 can't see images",
+        'llama3 reads text only',
       );
     });
 
@@ -3298,7 +3298,7 @@ describe('App', () => {
       // Toast surfaces the reason.
       await vi.waitFor(() => {
         expect(screen.getByTestId('toast')).toHaveTextContent(
-          "llama3 can't see images",
+          'llama3 reads text only',
         );
       });
       // ask_ollama is NOT invoked.

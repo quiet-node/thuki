@@ -52,7 +52,7 @@ export function ModelPicker({ onClick, disabled, isOpen }: ModelPickerProps) {
       data-model-picker-toggle
       disabled={disabled}
       onClick={onClick}
-      className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-primary hover:bg-primary/10 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
+      className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-primary hover:bg-primary/10 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer outline-none"
     >
       {CHIP_ICON}
     </button>

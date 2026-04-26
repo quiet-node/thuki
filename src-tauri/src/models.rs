@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::defaults::DEFAULT_OLLAMA_URL;
+use crate::config::AppConfig;
 use crate::database::{get_config, set_config};
 use crate::history::Database;
 
@@ -244,8 +244,9 @@ pub async fn get_model_picker_state(
     client: tauri::State<'_, reqwest::Client>,
     db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
+    config: tauri::State<'_, AppConfig>,
 ) -> Result<serde_json::Value, String> {
-    let installed = fetch_installed_model_names(&client, DEFAULT_OLLAMA_URL).await?;
+    let installed = fetch_installed_model_names(&client, &config.model.ollama_url).await?;
 
     let resolved = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -279,10 +280,11 @@ pub async fn set_active_model(
     client: tauri::State<'_, reqwest::Client>,
     db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
+    config: tauri::State<'_, AppConfig>,
 ) -> Result<(), String> {
     validate_model_slug(&model)?;
 
-    let installed = fetch_installed_model_names(&client, DEFAULT_OLLAMA_URL).await?;
+    let installed = fetch_installed_model_names(&client, &config.model.ollama_url).await?;
     validate_model_installed(&model, &installed)?;
 
     {
@@ -383,8 +385,9 @@ pub async fn check_model_setup(
     client: tauri::State<'_, reqwest::Client>,
     db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
+    config: tauri::State<'_, AppConfig>,
 ) -> Result<ModelSetupState, String> {
-    let installed_result = fetch_installed_model_names(&client, DEFAULT_OLLAMA_URL).await;
+    let installed_result = fetch_installed_model_names(&client, &config.model.ollama_url).await;
 
     let persisted = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -574,9 +577,11 @@ pub struct ModelCapabilitiesCache(pub Mutex<HashMap<String, Capabilities>>);
 pub async fn get_model_capabilities(
     client: tauri::State<'_, reqwest::Client>,
     cache: tauri::State<'_, ModelCapabilitiesCache>,
+    config: tauri::State<'_, AppConfig>,
 ) -> Result<HashMap<String, Capabilities>, String> {
-    let installed = fetch_installed_model_names(&client, DEFAULT_OLLAMA_URL).await?;
-    Ok(reconcile_capabilities(&client, &cache, DEFAULT_OLLAMA_URL, &installed).await)
+    let base_url = &config.model.ollama_url;
+    let installed = fetch_installed_model_names(&client, base_url).await?;
+    Ok(reconcile_capabilities(&client, &cache, base_url, &installed).await)
 }
 
 /// Pure-ish helper extracted so tests can drive the cache + fetch loop

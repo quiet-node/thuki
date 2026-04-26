@@ -50,7 +50,7 @@ describe('getCapabilityConflict', () => {
       hasScreenCommand: false,
     });
     expect(result).toBe(
-      "llama3 can't see images. Switch to a vision model to send.",
+      'llama3 reads text only. Try a vision model for images.',
     );
   });
 
@@ -59,7 +59,7 @@ describe('getCapabilityConflict', () => {
       hasImages: false,
       hasScreenCommand: true,
     });
-    expect(result).toContain("can't see images");
+    expect(result).toContain('reads text only');
   });
 
   it('falls back to a generic name when model name is empty', () => {
@@ -68,7 +68,7 @@ describe('getCapabilityConflict', () => {
       hasScreenCommand: false,
     });
     expect(result).toBe(
-      "this model can't see images. Switch to a vision model to send.",
+      'this model reads text only. Try a vision model for images.',
     );
   });
 
