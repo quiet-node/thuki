@@ -12,8 +12,8 @@ use serde_json::json;
 use toml_edit::DocumentMut;
 
 use super::{
-    coerce_json_to_toml, is_allowed_field, is_allowed_section, json_type_name, patch_document,
-    read_document, reset_section_on_disk, write_field_to_disk,
+    coerce_json_to_toml, is_allowed_field, is_allowed_section, json_type_name, json_value_to_toml_item,
+    patch_document, read_document, reset_section_on_disk, write_field_to_disk,
 };
 use crate::config::defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS};
 use crate::config::ConfigError;
@@ -308,17 +308,108 @@ fn patch_document_unknown_section_errors() {
 }
 
 #[test]
-fn patch_document_unknown_field_errors() {
-    let mut doc = parse_sample();
+fn patch_document_inserts_missing_float_field() {
+    // Simulate a hand-edited config where `overlay_width` was removed.
+    let toml = "[window]\nmax_chat_height = 648.0\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+    patch_document(&mut doc, "window", "overlay_width", json!(800.5)).unwrap();
+    let inserted = doc
+        .get("window")
+        .unwrap()
+        .get("overlay_width")
+        .unwrap()
+        .as_float()
+        .expect("float");
+    assert!((inserted - 800.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn patch_document_inserts_missing_string_field() {
+    let toml = "[inference]\navailable = [\"gemma4:e2b\"]\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+    patch_document(
+        &mut doc,
+        "inference",
+        "ollama_url",
+        json!("http://10.0.0.1:11434"),
+    )
+    .unwrap();
+    let inserted = doc
+        .get("inference")
+        .unwrap()
+        .get("ollama_url")
+        .unwrap()
+        .as_str()
+        .expect("string");
+    assert_eq!(inserted, "http://10.0.0.1:11434");
+}
+
+#[test]
+fn patch_document_inserts_missing_integer_field() {
+    let toml = "[search]\ntop_k_urls = 10\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+    patch_document(&mut doc, "search", "max_iterations", json!(5)).unwrap();
+    let inserted = doc
+        .get("search")
+        .unwrap()
+        .get("max_iterations")
+        .unwrap()
+        .as_integer()
+        .expect("integer");
+    assert_eq!(inserted, 5);
+}
+
+#[test]
+fn patch_document_inserts_missing_array_field() {
+    let toml = "[inference]\nollama_url = \"http://127.0.0.1:11434\"\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+    patch_document(
+        &mut doc,
+        "inference",
+        "available",
+        json!(["gemma4:e2b", "qwen3:8b"]),
+    )
+    .unwrap();
+    let arr = doc
+        .get("inference")
+        .unwrap()
+        .get("available")
+        .unwrap()
+        .as_array()
+        .expect("array");
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr.get(0).and_then(|v| v.as_str()), Some("gemma4:e2b"));
+}
+
+#[test]
+fn patch_document_insert_rejects_object_for_missing_field() {
+    let toml = "[window]\nmax_chat_height = 648.0\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
     let err =
-        patch_document(&mut doc, "inference", "secret_api_key", json!("hunter2")).unwrap_err();
-    match err {
-        ConfigError::UnknownField { section, key } => {
-            assert_eq!(section, "inference");
-            assert_eq!(key, "secret_api_key");
-        }
-        other => panic!("expected UnknownField, got {other:?}"),
-    }
+        patch_document(&mut doc, "window", "overlay_width", json!({"a": 1})).unwrap_err();
+    matches_type_mismatch(&err, "window", "overlay_width");
+}
+
+#[test]
+fn patch_document_insert_rejects_array_with_non_string_for_missing_field() {
+    let toml = "[inference]\nollama_url = \"http://127.0.0.1:11434\"\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+    let err = patch_document(
+        &mut doc,
+        "inference",
+        "available",
+        json!(["ok", 42]),
+    )
+    .unwrap_err();
+    matches_type_mismatch(&err, "inference", "available");
+}
+
+// ─── json_value_to_toml_item ─────────────────────────────────────────────────
+
+#[test]
+fn json_value_to_toml_item_inserts_bool() {
+    let item = json_value_to_toml_item(json!(true), "s", "k").unwrap();
+    assert_eq!(item.as_bool(), Some(true));
 }
 
 // ─── read_document ──────────────────────────────────────────────────────────

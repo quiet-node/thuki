@@ -53,7 +53,7 @@ use crate::config::{
 /// has been replaced. Subscribers (the main overlay's `ConfigProvider` and
 /// the Settings window) refetch via `get_config` so React state matches the
 /// authoritative `RwLock<AppConfig>` snapshot. Without this broadcast, only
-/// backend-side consumers (e.g. `ask_ollama` reading `State<AppConfig>` per
+/// backend-side consumers (e.g. `ask_ollama` reading `State<RwLock<AppConfig>>` per
 /// invocation) see config edits; frontend-driven values like window dims
 /// stay frozen at the mount-time snapshot.
 pub const CONFIG_UPDATED_EVENT: &str = "thuki://config-updated";
@@ -122,8 +122,12 @@ pub fn set_config_field(
     state: State<'_, RwLock<AppConfig>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let resolved = write_field_to_disk(&path, &section, &key, value)?;
-    *state.write() = resolved.clone();
+    let resolved = {
+        let mut guard = state.write();
+        let resolved = write_field_to_disk(&path, &section, &key, value)?;
+        *guard = resolved.clone();
+        resolved
+    };
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -181,8 +185,12 @@ pub fn reset_config(
     state: State<'_, RwLock<AppConfig>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let resolved = reset_section_on_disk(&path, section.as_deref())?;
-    *state.write() = resolved.clone();
+    let resolved = {
+        let mut guard = state.write();
+        let resolved = reset_section_on_disk(&path, section.as_deref())?;
+        *guard = resolved.clone();
+        resolved
+    };
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -248,8 +256,12 @@ pub fn reload_config_from_disk(
     state: State<'_, RwLock<AppConfig>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let resolved = config::load_from_path(&path)?;
-    *state.write() = resolved.clone();
+    let resolved = {
+        let mut guard = state.write();
+        let resolved = config::load_from_path(&path)?;
+        *guard = resolved.clone();
+        resolved
+    };
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -319,7 +331,20 @@ pub(crate) fn read_document(path: &Path) -> Result<DocumentMut, ConfigError> {
 /// Locates `[section][key]` inside `doc` and overwrites it with `value`,
 /// preserving the existing TOML type. Rejects type drift with `TypeMismatch`.
 ///
-/// Type-coercion rules (existing item type → accepted JSON):
+/// If the key is absent from the section (e.g. the user hand-edited it out),
+/// a new item is inserted with the type inferred from the JSON value rather
+/// than returning an error. Inference rules for absent keys:
+///
+/// | JSON type             | Inserted TOML type |
+/// | :-------------------- | :----------------- |
+/// | Bool                  | Boolean            |
+/// | Integer number        | Integer            |
+/// | Float number          | Float              |
+/// | String                | String             |
+/// | Array of strings      | Array              |
+/// | Object / null / other | TypeMismatch error |
+///
+/// Type-coercion rules for existing items (existing item type -> accepted JSON):
 ///
 /// | Existing TOML type | Accepted JSON                          |
 /// | :----------------- | :------------------------------------- |
@@ -344,14 +369,56 @@ pub(crate) fn patch_document(
             section: section.to_string(),
         })?;
 
-    let existing = table.get(key).ok_or_else(|| ConfigError::UnknownField {
-        section: section.to_string(),
-        key: key.to_string(),
-    })?;
-
-    let coerced = coerce_json_to_toml(existing, value, section, key)?;
+    let coerced = if let Some(existing) = table.get(key) {
+        coerce_json_to_toml(existing, value, section, key)?
+    } else {
+        json_value_to_toml_item(value, section, key)?
+    };
     table.insert(key, coerced);
     Ok(())
+}
+
+/// Converts a JSON value to a TOML item by inferring the type from the JSON,
+/// used when the target key is absent from the on-disk document.
+pub(crate) fn json_value_to_toml_item(value: JsonValue, section: &str, key: &str) -> Result<Item, ConfigError> {
+    let type_mismatch = |msg: &str| ConfigError::TypeMismatch {
+        section: section.to_string(),
+        key: key.to_string(),
+        message: msg.to_string(),
+    };
+
+    Ok(match &value {
+        JsonValue::Bool(b) => toml_value(*b),
+        JsonValue::Number(n) => {
+            // Prefer integer representation; fall back to float for u64 values
+            // that exceed i64::MAX or numbers with fractional parts. serde_json
+            // guarantees as_f64() returns Some for every Number variant.
+            if let Some(i) = n.as_i64() {
+                toml_value(i)
+            } else {
+                toml_value(n.as_f64().unwrap_or(f64::NAN))
+            }
+        }
+        JsonValue::String(s) => toml_value(s.as_str()),
+        JsonValue::Array(arr) => {
+            let mut toml_arr = Array::new();
+            for item in arr {
+                let s = item.as_str().ok_or_else(|| ConfigError::TypeMismatch {
+                    section: section.to_string(),
+                    key: key.to_string(),
+                    message: "array elements must be strings".into(),
+                })?;
+                toml_arr.push(s);
+            }
+            toml_value(toml_arr)
+        }
+        _ => {
+            return Err(type_mismatch(&format!(
+                "cannot infer TOML type from {}",
+                json_type_name(&value)
+            )));
+        }
+    })
 }
 
 /// Coerces `value` to a `toml_edit::Item` whose primitive type matches the
