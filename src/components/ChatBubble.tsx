@@ -19,6 +19,7 @@ import type {
 import { SEARCH_WARNING_SEVERITY } from '../config/searchWarnings';
 import { SearchTraceBlock } from './SearchTraceBlock';
 import { SandboxSetupCard } from './SandboxSetupCard';
+import { cleanForRender } from '../utils/sanitizeAssistantContent';
 
 /**
  * Extracts a bare hostname from a URL for the sources footer. Strips the
@@ -316,6 +317,13 @@ export function ChatBubble({
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const quote = useConfig().quote;
+  // Render-time defense for legacy assistant content that may carry
+  // special turn-boundary tokens leaked by older Ollama versions or
+  // mis-tuned models. Backend now strips these on write, so the scrub is
+  // a no-op for fresh replies; pre-Phase-B history on disk relies on it.
+  // User input never contains these markers naturally so we skip the
+  // scrub for user bubbles.
+  const displayContent = isUser ? content : cleanForRender(content);
 
   const activeWarnings = searchWarnings ?? [];
   const warningSeverity: 'error' | 'warn' | null = activeWarnings.some(
@@ -466,7 +474,10 @@ export function ChatBubble({
             ) : errorKind ? (
               <ErrorCard kind={errorKind} message={content} />
             ) : (
-              <MarkdownRenderer content={content} isStreaming={isStreaming} />
+              <MarkdownRenderer
+                content={displayContent}
+                isStreaming={isStreaming}
+              />
             )}
           </div>
           {!errorKind && !sandboxUnavailable && !isStreaming && (
@@ -531,7 +542,7 @@ export function ChatBubble({
               {/* shrink-0 wrapper prevents CopyButton's internal w-full from
                   pushing the sources trigger to the opposite end. */}
               <div className="shrink-0">
-                <CopyButton content={content} align="left" />
+                <CopyButton content={displayContent} align="left" />
               </div>
               {searchSources && searchSources.length > 0 && (
                 <button

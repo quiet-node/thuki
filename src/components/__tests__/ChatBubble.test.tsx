@@ -1184,4 +1184,31 @@ describe('ChatBubble', () => {
       expect(screen.queryByTestId('model-attribution')).toBeNull();
     });
   });
+
+  describe('Render-time legacy artifact scrub', () => {
+    it('hides leaked special tokens from assistant markdown output', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="<|im_start|>assistant\nHello there<|im_end|>"
+          index={0}
+        />,
+      );
+      // The markdown body should render the visible text but never expose
+      // the raw special tokens, regardless of where they appeared.
+      expect(container.textContent).toContain('Hello there');
+      expect(container.textContent).not.toContain('<|im_start|>');
+      expect(container.textContent).not.toContain('<|im_end|>');
+    });
+
+    it('does not scrub user content (markers passed through verbatim)', () => {
+      // User input never contains real model markers; if it ever does
+      // (paste, debugging) we render it verbatim so the user sees what
+      // they sent.
+      const { container } = render(
+        <ChatBubble role="user" content="<|im_start|>" index={0} />,
+      );
+      expect(container.textContent).toContain('<|im_start|>');
+    });
+  });
 });

@@ -20,6 +20,7 @@ import { useModelCapabilities } from './hooks/useModelCapabilities';
 import {
   getCapabilityConflict,
   getEnvironmentMessage,
+  isComposeCapabilityConflict,
 } from './utils/capabilityConflicts';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView, MAX_IMAGES } from './view/AskBarView';
@@ -1117,6 +1118,44 @@ function App() {
    * an active model exists and Ollama is reachable, fall through to the
    * per-message capability check.
    */
+  /**
+   * History-state derived from the current `messages` array. Drives the
+   * Phase B history-based capability strip: a heads-up when the active
+   * model lacks a capability earlier turns relied on (vision, thinking).
+   * `messages.some(...)` is O(n) per render but bounded by typical chat
+   * lengths and memoized against the messages reference.
+   */
+  const historyCapabilityState = useMemo(() => {
+    let maxImages = 0;
+    let hasThinking = false;
+    for (const m of messages) {
+      const count = m.imagePaths?.length ?? 0;
+      if (count > maxImages) maxImages = count;
+      if ((m.thinkingContent?.length ?? 0) > 0) hasThinking = true;
+    }
+    return {
+      historyHasImages: maxImages > 0,
+      historyHasThinking: hasThinking,
+      historyMaxImagesPerMessage: maxImages,
+    };
+  }, [messages]);
+
+  /**
+   * Compose-state slice the conflict gate consumes. Recomputed only when
+   * the underlying inputs change so downstream memos can short-circuit on
+   * reference equality. Pulled out so the live conflict memo and the
+   * submit-time shake gate can share one source of truth and never drift.
+   */
+  const composeCapabilityState = useMemo(() => {
+    const trimmed = query.trim();
+    const { found } = parseCommands(trimmed);
+    return {
+      hasScreenCommand: found.has('/screen'),
+      hasThinkCommand: found.has('/think'),
+      imageCount: attachedImages.length,
+    };
+  }, [query, attachedImages]);
+
   const liveCapabilityConflictMessage = useMemo(() => {
     const envMessage = getEnvironmentMessage(
       ollamaReachable,
@@ -1124,20 +1163,48 @@ function App() {
       activeModel,
     );
     if (envMessage !== null) return envMessage;
-    const trimmed = query.trim();
-    const { found } = parseCommands(trimmed);
-    return getCapabilityConflict(activeModel, activeModelCapabilities, {
-      hasScreenCommand: found.has('/screen'),
-      hasThinkCommand: found.has('/think'),
-      imageCount: attachedImages.length,
-    });
+    return getCapabilityConflict(
+      activeModel,
+      activeModelCapabilities,
+      composeCapabilityState,
+      historyCapabilityState,
+    );
   }, [
-    query,
-    attachedImages,
+    composeCapabilityState,
+    historyCapabilityState,
     activeModel,
     activeModelCapabilities,
     ollamaReachable,
     availableModels.length,
+  ]);
+
+  /**
+   * Submit-time shake gate. Shakes on compose-state conflicts (image
+   * attached to text-only model, /think on non-thinking, multi-image
+   * overflow) and on environment-state conflicts (Ollama unreachable,
+   * no models installed, no active model). History-only conflicts
+   * inform via the strip but never shake; the backend per-request
+   * filter strips incompatible content so submit keeps working, and
+   * shaking every turn until the user switches models would trap them
+   * in the conversation.
+   */
+  const hasBlockingConflict = useMemo(() => {
+    const envMessage = getEnvironmentMessage(
+      ollamaReachable,
+      availableModels.length,
+      activeModel,
+    );
+    if (envMessage !== null) return true;
+    return isComposeCapabilityConflict(
+      activeModelCapabilities,
+      composeCapabilityState,
+    );
+  }, [
+    ollamaReachable,
+    availableModels.length,
+    activeModel,
+    activeModelCapabilities,
+    composeCapabilityState,
   ]);
 
   const handleSubmit = useCallback(() => {
@@ -1158,13 +1225,17 @@ function App() {
     const hasSearch = found.has('/search');
 
     // Submit-time capability gate. Refuses messages whose attached content
-    // the active model cannot handle (images on a text-only model). The
-    // gate is the only gate: input affordances stay live so the user can
+    // the active model cannot handle (images on a text-only model) and
+    // environment-state failures (Ollama unreachable, no model selected).
+    // History-only mismatches do NOT shake: the backend filter strips
+    // incompatible content from the per-request snapshot, so submit keeps
+    // working and the strip already explains what is happening. The gate
+    // is the only gate: input affordances stay live so the user can
     // compose freely and recover via the model picker chip. When refused
     // the ask bar shakes; the persistent capability strip already surfaces
     // the reason so we do not duplicate it in a transient toast. Compose
     // state is preserved so the user does not lose their typing.
-    if (liveCapabilityConflictMessage !== null) {
+    if (hasBlockingConflict) {
       setShakeAskBar(true);
       return;
     }
@@ -1347,7 +1418,7 @@ function App() {
     askSearch,
     searchActive,
     quote.maxContextLength,
-    liveCapabilityConflictMessage,
+    hasBlockingConflict,
   ]);
 
   // When a pending submit exists and all images finish processing, fire it.
