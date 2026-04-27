@@ -6,7 +6,85 @@ use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, State};
 use tokio_util::sync::CancellationToken;
 
+use crate::config::defaults::STRIP_PATTERNS;
 use crate::config::AppConfig;
+use crate::models::{Capabilities, ModelCapabilitiesCache};
+
+/// Removes special turn-boundary tokens (see [`STRIP_PATTERNS`]) and ASCII
+/// control characters from assistant content before it is persisted to
+/// history. Whitespace control chars (`\n`, `\t`, `\r`) are preserved so
+/// markdown rendering and code blocks survive intact.
+///
+/// Pure function: same input always yields the same output. No allocation
+/// happens when the input is already clean.
+pub fn sanitize_assistant_content(input: &str) -> String {
+    let mut out = input.to_string();
+    for pattern in STRIP_PATTERNS {
+        if out.contains(pattern) {
+            out = out.replace(pattern, "");
+        }
+    }
+    if out.chars().any(is_unsafe_control_char) {
+        out = out
+            .chars()
+            .filter(|c| !is_unsafe_control_char(*c))
+            .collect();
+    }
+    out
+}
+
+/// True for ASCII control characters in `0x00..=0x1F` except the three
+/// whitespace controls Thuki actively renders (`\n`, `\t`, `\r`).
+fn is_unsafe_control_char(c: char) -> bool {
+    let code = c as u32;
+    code <= 0x1F && c != '\n' && c != '\t' && c != '\r'
+}
+
+/// Counts of items stripped by [`apply_capability_filter`]. Returned to the
+/// caller for telemetry only; the filter itself acts on the snapshot in
+/// place. Storage is never mutated.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FilterStats {
+    /// Total images dropped across every message in the snapshot. A single
+    /// message contributing N images to the strip increments by N.
+    pub stripped_images: usize,
+}
+
+/// Per-request filter that aligns a snapshot of conversation history with
+/// what the active model can actually consume. Storage is never touched:
+/// the caller passes the working snapshot, this function trims it in
+/// place, and on the next turn the caller rebuilds the snapshot from full
+/// stored history again. Switching back to a capable model later restores
+/// the full original payload because nothing was lost.
+///
+/// Today this strips images for non-vision models and trims per-message
+/// image counts to a vision model's `max_images` cap. Multi-image trim
+/// keeps the FIRST `max` images per message to preserve the order the
+/// user attached them (OQ-1, doc decision).
+pub fn apply_capability_filter(messages: &mut [ChatMessage], caps: &Capabilities) -> FilterStats {
+    let mut stats = FilterStats::default();
+    if !caps.vision {
+        for msg in messages.iter_mut() {
+            if let Some(imgs) = msg.images.take() {
+                stats.stripped_images += imgs.len();
+            }
+        }
+        return stats;
+    }
+    if let Some(max) = caps.max_images {
+        let max = max as usize;
+        for msg in messages.iter_mut() {
+            if let Some(imgs) = msg.images.as_mut() {
+                if imgs.len() > max {
+                    let dropped = imgs.len() - max;
+                    imgs.truncate(max);
+                    stats.stripped_images += dropped;
+                }
+            }
+        }
+    }
+    stats
+}
 
 /// Classifies the kind of error returned from the Ollama backend.
 /// Used by the frontend to pick accent bar color and display copy.
@@ -77,9 +155,26 @@ pub fn classify_http_error(status: u16, model_name: &str, body: &str) -> OllamaE
         _ => {
             let detail =
                 extract_ollama_error_message(body).unwrap_or_else(|| format!("HTTP {status}"));
+            // Backend filter is best-effort: if the capability cache lied
+            // (e.g. user pulled a re-tagged variant we have not refreshed)
+            // and Ollama still rejects on image/vision grounds, point the
+            // user at the picker instead of letting them stare at a raw
+            // upstream string. Substring check is intentionally loose so
+            // we catch the half-dozen phrasings Ollama uses across model
+            // families ("does not support images", "vision capability
+            // required", "only supports one image", ...).
+            let lower = body.to_ascii_lowercase();
+            let mentions_image_or_vision = lower.contains("image") || lower.contains("vision");
+            let message = if mentions_image_or_vision {
+                format!(
+                    "Something went wrong\n{detail}\nTry switching to a vision model from the picker chip."
+                )
+            } else {
+                format!("Something went wrong\n{detail}")
+            };
             OllamaError {
                 kind: OllamaErrorKind::Other,
-                message: format!("Something went wrong\n{detail}"),
+                message,
             }
         }
     }
@@ -359,6 +454,7 @@ pub async fn ask_ollama(
     history: State<'_, ConversationHistory>,
     config: State<'_, parking_lot::RwLock<AppConfig>>,
     active_model: State<'_, crate::models::ActiveModelState>,
+    capabilities_cache: State<'_, ModelCapabilitiesCache>,
 ) -> Result<(), String> {
     // Snapshot the config once so all downstream reads (endpoint, prompt, model)
     // see a consistent view even if the user edits Settings mid-stream.
@@ -412,7 +508,7 @@ pub async fn ask_ollama(
     // The user message is NOT yet committed to history - it is only added
     // after a response (including partial/cancelled) to prevent orphaned
     // messages on errors.
-    let (epoch_at_start, messages) = {
+    let (epoch_at_start, mut messages) = {
         let conv = history.messages.lock().unwrap();
         let epoch = history.epoch.load(Ordering::SeqCst);
         let mut msgs = vec![ChatMessage {
@@ -424,6 +520,30 @@ pub async fn ask_ollama(
         msgs.push(user_msg.clone());
         (epoch, msgs)
     };
+
+    // Per-request capability filter. The snapshot is the working copy;
+    // stored history (`conv`) is never mutated. On a cache miss we leave
+    // the payload untouched and trust Ollama to surface a structured error
+    // through `classify_http_error`'s picker hint, which the user can act on.
+    let cache_hit = capabilities_cache
+        .0
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(&model_name).cloned());
+    if let Some(caps) = cache_hit {
+        let stats = apply_capability_filter(&mut messages, &caps);
+        if stats.stripped_images > 0 {
+            eprintln!(
+                "thuki: [capability filter] model={} stripped_images={}",
+                model_name, stats.stripped_images
+            );
+        }
+    } else {
+        eprintln!(
+            "thuki: [capability filter] cache miss for model={}, sending payload as-is",
+            model_name
+        );
+    }
 
     let accumulated = stream_ollama_chat(
         &endpoint,
@@ -452,7 +572,7 @@ pub async fn ask_ollama(
         conv.push(user_msg);
         conv.push(ChatMessage {
             role: "assistant".to_string(),
-            content: accumulated,
+            content: sanitize_assistant_content(&accumulated),
             images: None,
         });
     }
@@ -1629,5 +1749,206 @@ mod tests {
         assert!(chunks
             .iter()
             .any(|c| matches!(c, StreamChunk::Token(t) if t == "Hello")));
+    }
+
+    // ─── sanitize_assistant_content ──────────────────────────────────────────
+
+    #[test]
+    fn sanitize_returns_clean_input_unchanged() {
+        let input = "Hello **world**\n\n```rust\nlet x = 1;\n```\nDone.";
+        assert_eq!(sanitize_assistant_content(input), input);
+    }
+
+    #[test]
+    fn sanitize_strips_every_known_pattern() {
+        for pattern in STRIP_PATTERNS {
+            let dirty = format!("before{pattern}after");
+            assert_eq!(
+                sanitize_assistant_content(&dirty),
+                "beforeafter",
+                "pattern {pattern} should be removed"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_strips_multiple_occurrences() {
+        let dirty = "<|im_start|>a<|im_start|>b<|im_end|>c";
+        assert_eq!(sanitize_assistant_content(dirty), "abc");
+    }
+
+    #[test]
+    fn sanitize_drops_unsafe_control_chars_but_keeps_whitespace() {
+        let dirty = "a\x00b\x07c\nd\te\rf\x1Fg";
+        assert_eq!(sanitize_assistant_content(dirty), "abc\nd\te\rfg");
+    }
+
+    #[test]
+    fn sanitize_preserves_unicode_and_emoji() {
+        let input = "héllo 世界 🚀\nline two";
+        assert_eq!(sanitize_assistant_content(input), input);
+    }
+
+    #[test]
+    fn sanitize_handles_empty_string() {
+        assert_eq!(sanitize_assistant_content(""), "");
+    }
+
+    // ─── apply_capability_filter ─────────────────────────────────────────────
+
+    fn msg(role: &str, content: &str, images: Option<Vec<String>>) -> ChatMessage {
+        ChatMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+            images,
+        }
+    }
+
+    #[test]
+    fn filter_strips_images_when_vision_false() {
+        let mut messages = vec![
+            msg(
+                "user",
+                "first",
+                Some(vec!["a".to_string(), "b".to_string()]),
+            ),
+            msg("assistant", "reply", None),
+            msg("user", "again", Some(vec!["c".to_string()])),
+        ];
+        let caps = Capabilities {
+            vision: false,
+            thinking: false,
+            max_images: None,
+        };
+        let stats = apply_capability_filter(&mut messages, &caps);
+        assert_eq!(stats.stripped_images, 3);
+        assert!(messages.iter().all(|m| m.images.is_none()));
+    }
+
+    #[test]
+    fn filter_preserves_images_when_vision_true_and_no_cap() {
+        let mut messages = vec![msg(
+            "user",
+            "x",
+            Some(vec!["a".to_string(), "b".to_string()]),
+        )];
+        let caps = Capabilities {
+            vision: true,
+            thinking: false,
+            max_images: None,
+        };
+        let stats = apply_capability_filter(&mut messages, &caps);
+        assert_eq!(stats.stripped_images, 0);
+        assert_eq!(messages[0].images.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn filter_truncates_to_max_images_keeping_first() {
+        let mut messages = vec![msg(
+            "user",
+            "x",
+            Some(vec![
+                "first".to_string(),
+                "second".to_string(),
+                "third".to_string(),
+            ]),
+        )];
+        let caps = Capabilities {
+            vision: true,
+            thinking: false,
+            max_images: Some(1),
+        };
+        let stats = apply_capability_filter(&mut messages, &caps);
+        assert_eq!(stats.stripped_images, 2);
+        let imgs = messages[0].images.as_ref().unwrap();
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(imgs[0], "first");
+    }
+
+    #[test]
+    fn filter_no_op_when_under_max_images() {
+        let mut messages = vec![msg("user", "x", Some(vec!["only".to_string()]))];
+        let caps = Capabilities {
+            vision: true,
+            thinking: false,
+            max_images: Some(2),
+        };
+        let stats = apply_capability_filter(&mut messages, &caps);
+        assert_eq!(stats.stripped_images, 0);
+        assert_eq!(messages[0].images.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn filter_handles_text_only_messages_under_vision_false() {
+        let mut messages = vec![msg("user", "hi", None), msg("assistant", "hello", None)];
+        let caps = Capabilities {
+            vision: false,
+            thinking: false,
+            max_images: None,
+        };
+        let stats = apply_capability_filter(&mut messages, &caps);
+        assert_eq!(stats.stripped_images, 0);
+    }
+
+    #[test]
+    fn filter_skips_messages_without_images_under_max_cap() {
+        let mut messages = vec![
+            msg("user", "no imgs", None),
+            msg(
+                "user",
+                "two imgs",
+                Some(vec!["a".to_string(), "b".to_string()]),
+            ),
+        ];
+        let caps = Capabilities {
+            vision: true,
+            thinking: false,
+            max_images: Some(1),
+        };
+        let stats = apply_capability_filter(&mut messages, &caps);
+        assert_eq!(stats.stripped_images, 1);
+        assert!(messages[0].images.is_none());
+        assert_eq!(messages[1].images.as_ref().unwrap().len(), 1);
+    }
+
+    // ─── classify_http_error: Phase B picker hint ────────────────────────────
+
+    #[test]
+    fn classify_http_500_appends_picker_hint_when_body_mentions_image() {
+        let body = r#"{"error":"this model only supports one image"}"#;
+        let err = classify_http_error(500, "any", body);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
+        assert!(err.message.contains("only supports one image"));
+        assert!(err.message.contains("picker chip"));
+    }
+
+    #[test]
+    fn classify_http_500_appends_picker_hint_when_body_mentions_vision() {
+        let body = r#"{"error":"vision capability required"}"#;
+        let err = classify_http_error(500, "any", body);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
+        assert!(err.message.contains("vision capability required"));
+        assert!(err.message.contains("picker chip"));
+    }
+
+    #[test]
+    fn classify_http_500_omits_picker_hint_for_unrelated_errors() {
+        let body = r#"{"error":"context window exceeded"}"#;
+        let err = classify_http_error(500, "any", body);
+        assert!(!err.message.contains("picker chip"));
+    }
+
+    #[test]
+    fn classify_http_500_omits_picker_hint_when_body_is_empty() {
+        let err = classify_http_error(500, "any", "");
+        assert!(!err.message.contains("picker chip"));
+        assert!(err.message.contains("500"));
+    }
+
+    #[test]
+    fn classify_http_404_does_not_append_picker_hint() {
+        let err = classify_http_error(404, "vision-model", "image required");
+        assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
+        assert!(!err.message.contains("picker chip"));
     }
 }

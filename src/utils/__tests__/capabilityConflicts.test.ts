@@ -2,11 +2,15 @@ import { describe, it, expect } from 'vitest';
 import {
   getCapabilityConflict,
   getEnvironmentMessage,
+  isComposeCapabilityConflict,
   NO_MODELS_INSTALLED_MESSAGE,
   OLLAMA_UNREACHABLE_MESSAGE,
 } from '../capabilityConflicts';
 import type { ModelCapabilities } from '../../types/model';
-import type { ComposeCapabilityState } from '../capabilityConflicts';
+import type {
+  ComposeCapabilityState,
+  HistoryCapabilityState,
+} from '../capabilityConflicts';
 
 const VISION: ModelCapabilities = {
   vision: true,
@@ -258,6 +262,325 @@ describe('getCapabilityConflict', () => {
       hasThinkCommand: true,
     });
     expect(result).toBeNull();
+  });
+
+  // ── history-state gates (Phase B) ─────────────────────────────────────────
+
+  const HISTORY_HAS_IMAGES: HistoryCapabilityState = {
+    historyHasImages: true,
+    historyHasThinking: false,
+    historyMaxImagesPerMessage: 1,
+  };
+  const HISTORY_HAS_THINKING: HistoryCapabilityState = {
+    historyHasImages: false,
+    historyHasThinking: true,
+    historyMaxImagesPerMessage: 0,
+  };
+  const HISTORY_HAS_BOTH: HistoryCapabilityState = {
+    historyHasImages: true,
+    historyHasThinking: true,
+    historyMaxImagesPerMessage: 1,
+  };
+  const HISTORY_HAS_TWO_IMAGES: HistoryCapabilityState = {
+    historyHasImages: true,
+    historyHasThinking: false,
+    historyMaxImagesPerMessage: 2,
+  };
+
+  it('warns when history has images but active model is text-only', () => {
+    const result = getCapabilityConflict(
+      'llama3',
+      TEXT_ONLY,
+      EMPTY,
+      HISTORY_HAS_IMAGES,
+    );
+    expect(result).toBe(
+      'Images from earlier turns are hidden from llama3 because it reads text only. Switch to a vision model to keep them.',
+    );
+  });
+
+  it('warns when history has thinking but active model does not emit it', () => {
+    const result = getCapabilityConflict(
+      'llama3',
+      TEXT_ONLY,
+      EMPTY,
+      HISTORY_HAS_THINKING,
+    );
+    expect(result).toBe(
+      'Reasoning from earlier turns is hidden from llama3 because it does not emit thinking tokens. Switch to a thinking model to keep it.',
+    );
+  });
+
+  it('returns null when history has images and model is vision-capable', () => {
+    const result = getCapabilityConflict(
+      'llava',
+      VISION,
+      EMPTY,
+      HISTORY_HAS_IMAGES,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('returns null when history has thinking and model is thinking-capable', () => {
+    const result = getCapabilityConflict(
+      'reasoner',
+      THINKING_ONLY,
+      EMPTY,
+      HISTORY_HAS_THINKING,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('prefers history-images warning over history-thinking when both apply', () => {
+    // Vision is the more fundamental loss; surface it first.
+    const result = getCapabilityConflict(
+      'llama3',
+      TEXT_ONLY,
+      EMPTY,
+      HISTORY_HAS_BOTH,
+    );
+    expect(result).toContain('Images from earlier turns are hidden');
+  });
+
+  it('compose conflict wins over history conflict when both apply', () => {
+    // Compose is actionable now; history is passive. The user can fix
+    // compose before submit, so surface it first.
+    const result = getCapabilityConflict(
+      'llama3',
+      TEXT_ONLY,
+      { ...EMPTY, imageCount: 1 },
+      HISTORY_HAS_IMAGES,
+    );
+    expect(result).toBe(
+      'llama3 reads text only. Try a vision model for images.',
+    );
+  });
+
+  it('defers history check when capabilities are unknown', () => {
+    const result = getCapabilityConflict(
+      'unknown',
+      undefined,
+      EMPTY,
+      HISTORY_HAS_IMAGES,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('defaults history-state to empty when caller omits the argument', () => {
+    // Existing callers (and earlier tests in this file) pass only 3 args.
+    // The 4th argument defaults to a no-history shape so the legacy
+    // contract is preserved.
+    const result = getCapabilityConflict('llama3', TEXT_ONLY, EMPTY);
+    expect(result).toBeNull();
+  });
+
+  it('still warns from history when compose is empty', () => {
+    const result = getCapabilityConflict(
+      'llama3',
+      TEXT_ONLY,
+      EMPTY,
+      HISTORY_HAS_IMAGES,
+    );
+    expect(result).toContain('hidden from llama3');
+  });
+
+  it('warns when history has more images per message than vision model accepts', () => {
+    const result = getCapabilityConflict(
+      'llama3.2-vision',
+      VISION_SINGLE_IMAGE,
+      EMPTY,
+      HISTORY_HAS_TWO_IMAGES,
+    );
+    expect(result).toBe(
+      'llama3.2-vision accepts one image per message. Extra images from earlier turns are hidden. Switch to a multi-image vision model to keep them.',
+    );
+  });
+
+  it('pluralizes per-message history cap warning for max>1', () => {
+    const result = getCapabilityConflict(
+      'multi-cap',
+      VISION_TWO_IMAGES,
+      EMPTY,
+      {
+        historyHasImages: true,
+        historyHasThinking: false,
+        historyMaxImagesPerMessage: 5,
+      },
+    );
+    expect(result).toBe(
+      'multi-cap accepts 2 images per message. Extra images from earlier turns are hidden. Switch to a multi-image vision model to keep them.',
+    );
+  });
+
+  it('does not warn when history image count fits within the cap', () => {
+    const result = getCapabilityConflict(
+      'llama3.2-vision',
+      VISION_SINGLE_IMAGE,
+      EMPTY,
+      HISTORY_HAS_IMAGES,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('does not fire history-cap warning for non-vision models (text-only branch wins)', () => {
+    // Even though historyMaxImagesPerMessage > 1, the model is text-only
+    // so the more fundamental "reads text only" copy takes priority.
+    const result = getCapabilityConflict(
+      'llama3',
+      TEXT_ONLY,
+      EMPTY,
+      HISTORY_HAS_TWO_IMAGES,
+    );
+    expect(result).toContain('reads text only');
+  });
+
+  it('ignores history-cap warning when vision model has no max-images cap', () => {
+    const result = getCapabilityConflict(
+      'omnimodel',
+      VISION,
+      EMPTY,
+      HISTORY_HAS_TWO_IMAGES,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('ignores history-cap warning for defensive max=0 caps', () => {
+    const odd: ModelCapabilities = {
+      vision: true,
+      thinking: false,
+      maxImages: 0,
+    };
+    const result = getCapabilityConflict(
+      'odd',
+      odd,
+      EMPTY,
+      HISTORY_HAS_TWO_IMAGES,
+    );
+    expect(result).toBeNull();
+  });
+});
+
+describe('isComposeCapabilityConflict', () => {
+  it('returns false when capabilities are unknown', () => {
+    expect(
+      isComposeCapabilityConflict(undefined, {
+        hasScreenCommand: false,
+        hasThinkCommand: false,
+        imageCount: 1,
+      }),
+    ).toBe(false);
+    expect(
+      isComposeCapabilityConflict(null, {
+        hasScreenCommand: false,
+        hasThinkCommand: false,
+        imageCount: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('returns true when image attached to text-only model', () => {
+    expect(
+      isComposeCapabilityConflict(TEXT_ONLY, {
+        hasScreenCommand: false,
+        hasThinkCommand: false,
+        imageCount: 1,
+      }),
+    ).toBe(true);
+  });
+
+  it('returns true when /screen on text-only model', () => {
+    expect(
+      isComposeCapabilityConflict(TEXT_ONLY, {
+        hasScreenCommand: true,
+        hasThinkCommand: false,
+        imageCount: 0,
+      }),
+    ).toBe(true);
+  });
+
+  it('returns true when image count exceeds vision model max', () => {
+    expect(
+      isComposeCapabilityConflict(VISION_SINGLE_IMAGE, {
+        hasScreenCommand: false,
+        hasThinkCommand: false,
+        imageCount: 2,
+      }),
+    ).toBe(true);
+  });
+
+  it('returns true when /screen pushes count over the cap', () => {
+    expect(
+      isComposeCapabilityConflict(VISION_SINGLE_IMAGE, {
+        hasScreenCommand: true,
+        hasThinkCommand: false,
+        imageCount: 1,
+      }),
+    ).toBe(true);
+  });
+
+  it('returns false when image count is under the cap', () => {
+    expect(
+      isComposeCapabilityConflict(VISION_TWO_IMAGES, {
+        hasScreenCommand: false,
+        hasThinkCommand: false,
+        imageCount: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('returns true when /think on a non-thinking model', () => {
+    expect(
+      isComposeCapabilityConflict(TEXT_ONLY, {
+        hasScreenCommand: false,
+        hasThinkCommand: true,
+        imageCount: 0,
+      }),
+    ).toBe(true);
+  });
+
+  it('returns false when /think on a thinking-capable model', () => {
+    expect(
+      isComposeCapabilityConflict(THINKING_ONLY, {
+        hasScreenCommand: false,
+        hasThinkCommand: true,
+        imageCount: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when nothing is queued', () => {
+    expect(
+      isComposeCapabilityConflict(TEXT_ONLY, {
+        hasScreenCommand: false,
+        hasThinkCommand: false,
+        imageCount: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when vision-capable model has no max-images cap', () => {
+    expect(
+      isComposeCapabilityConflict(VISION, {
+        hasScreenCommand: false,
+        hasThinkCommand: false,
+        imageCount: 5,
+      }),
+    ).toBe(false);
+  });
+
+  it('ignores a max-images cap below 1 (defensive)', () => {
+    const odd: ModelCapabilities = {
+      vision: true,
+      thinking: false,
+      maxImages: 0,
+    };
+    expect(
+      isComposeCapabilityConflict(odd, {
+        hasScreenCommand: false,
+        hasThinkCommand: false,
+        imageCount: 5,
+      }),
+    ).toBe(false);
   });
 });
 

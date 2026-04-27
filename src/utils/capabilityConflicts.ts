@@ -25,6 +25,36 @@ export interface ComposeCapabilityState {
 }
 
 /**
+ * History-state inputs the gate inspects so the strip can warn when the
+ * active model lacks a capability earlier turns relied on. Stored history
+ * is never mutated; the backend per-request filter strips incompatible
+ * content from the snapshot so the conversation keeps working. The strip
+ * exists to tell the user what is happening, not to block them.
+ */
+export interface HistoryCapabilityState {
+  /** True if any prior message in the conversation carried images. */
+  historyHasImages: boolean;
+  /** True if any prior assistant message produced thinking content. */
+  historyHasThinking: boolean;
+  /**
+   * Maximum images attached to any single prior message. Used to surface
+   * a heads-up when the active vision model has a per-message image cap
+   * (e.g. llama3.2-vision = 1) and earlier turns carried more than that.
+   * Zero when no prior message carried images.
+   */
+  historyMaxImagesPerMessage: number;
+}
+
+/** Empty history-state literal used as the default when no history is
+ *  passed in. Internal: the public default lives on the function
+ *  parameter signature, this constant exists so we never drift. */
+const EMPTY_HISTORY_STATE: HistoryCapabilityState = {
+  historyHasImages: false,
+  historyHasThinking: false,
+  historyMaxImagesPerMessage: 0,
+};
+
+/**
  * Copy used when Ollama is reachable but the user has no models installed.
  * Exported so tests can match it without duplicating the prose, and so
  * App.tsx can route through one symbol per state.
@@ -94,6 +124,7 @@ export function getCapabilityConflict(
   modelName: string | undefined | null,
   capabilities: ModelCapabilities | undefined | null,
   state: ComposeCapabilityState,
+  history: HistoryCapabilityState = EMPTY_HISTORY_STATE,
 ): string | null {
   if (!modelName) {
     // Environment-state messaging lives in `getEnvironmentMessage`. This
@@ -101,17 +132,22 @@ export function getCapabilityConflict(
     // so the safe behavior is to defer rather than emit a stale copy.
     return null;
   }
+  if (!capabilities) {
+    // Capabilities unknown (not yet fetched, or fetch failed). The gate
+    // is permissive: never block the user on missing metadata, regardless
+    // of compose or history state. Backend surfaces a real error if the
+    // model truly cannot accept the payload.
+    return null;
+  }
+  const name = modelName;
   const needsVision = state.imageCount > 0 || state.hasScreenCommand;
   const needsThinking = state.hasThinkCommand;
-  if (!needsVision && !needsThinking) return null;
-  if (!capabilities) return null;
-  const name = modelName;
 
-  // Vision is checked first when both apply because it is the more
-  // fundamental constraint: a text-only model cannot consume the image
-  // payload at all, while /think on a non-thinking model just degrades
-  // to a normal answer. Picking the vision message keeps the user
-  // pointed at the action that unblocks the most.
+  // Compose-state checks fire before history checks because compose
+  // conflicts are the actionable kind: the user is mid-edit and can fix
+  // the conflict by removing content or switching models before send.
+  // History conflicts are passive (the conversation already exists, the
+  // user is continuing it) and only inform.
   if (needsVision) {
     if (!capabilities.vision) {
       return `${name} reads text only. Try a vision model for images.`;
@@ -138,5 +174,64 @@ export function getCapabilityConflict(
     return `${name} doesn't show reasoning. Try a thinking model for /think.`;
   }
 
+  // History-state checks (Phase B). The backend already strips images
+  // and thinking artifacts from the per-request snapshot when the active
+  // model lacks the capability; the strip is purely informational so the
+  // user knows why earlier content is missing from the model's view of
+  // the thread, and how to recover (switch back to a capable model).
+  if (history.historyHasImages && !capabilities.vision) {
+    return `Images from earlier turns are hidden from ${name} because it reads text only. Switch to a vision model to keep them.`;
+  }
+  // Vision-capable but with a per-message image cap that earlier turns
+  // exceed. The backend filter trims to `maxImages` keeping the first
+  // image per message; the user should know the rest is dropped from the
+  // model's view.
+  if (
+    capabilities.vision &&
+    capabilities.maxImages != null &&
+    capabilities.maxImages >= 1 &&
+    history.historyMaxImagesPerMessage > capabilities.maxImages
+  ) {
+    const noun =
+      capabilities.maxImages === 1
+        ? 'one image'
+        : `${capabilities.maxImages} images`;
+    return `${name} accepts ${noun} per message. Extra images from earlier turns are hidden. Switch to a multi-image vision model to keep them.`;
+  }
+  if (history.historyHasThinking && !capabilities.thinking) {
+    return `Reasoning from earlier turns is hidden from ${name} because it does not emit thinking tokens. Switch to a thinking model to keep it.`;
+  }
+
   return null;
+}
+
+/**
+ * True when the conflict message returned by {@link getCapabilityConflict}
+ * is rooted in compose state (image attached to text-only model, /think on
+ * a non-thinking model, multi-image overflow). False when the conflict is
+ * history-only or there is no conflict.
+ *
+ * The submit-time gate uses this to decide whether to shake the ask bar.
+ * Compose conflicts shake (the user is about to send something the model
+ * cannot take); history conflicts do not (the user is just continuing the
+ * conversation; the backend filter handles the payload, and shaking would
+ * trap the user every turn until they switched models).
+ */
+export function isComposeCapabilityConflict(
+  capabilities: ModelCapabilities | undefined | null,
+  state: ComposeCapabilityState,
+): boolean {
+  if (!capabilities) return false;
+  const needsVision = state.imageCount > 0 || state.hasScreenCommand;
+  const needsThinking = state.hasThinkCommand;
+  if (needsVision && !capabilities.vision) return true;
+  if (needsVision && capabilities.vision) {
+    const max = capabilities.maxImages;
+    if (max != null && max >= 1) {
+      const effective = state.imageCount + (state.hasScreenCommand ? 1 : 0);
+      if (effective > max) return true;
+    }
+  }
+  if (needsThinking && !capabilities.thinking) return true;
+  return false;
 }

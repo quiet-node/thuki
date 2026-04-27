@@ -175,3 +175,40 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
 /// Authoritative allowlist of section names accepted by `reset_config`.
 /// Mirrors the top-level structure of `AppConfig`.
 pub const ALLOWED_SECTIONS: &[&str] = &["inference", "prompt", "window", "quote", "search"];
+
+/// Special turn-boundary tokens used by the major Ollama-served model families.
+/// Ollama normally parses these out of `/api/chat` responses, but some fine-tunes
+/// leak them into `message.content` as plain text. If the leaked bytes are persisted
+/// into history and replayed to a model from a different family on the next turn,
+/// that model treats them as garbage tokens and the conversation visibly degrades.
+///
+/// Stripped before persisting assistant replies and again at render time so legacy
+/// on-disk content stays clean visually without a migration. Exact-string match,
+/// case-sensitive: these markers are not natural English, so any false-positive
+/// collision would already be a bug elsewhere.
+///
+/// The TypeScript mirror of this list lives in `src/utils/sanitizeAssistantContent.ts`
+/// (`STRIP_PATTERNS`). Keep both in sync when adding new model families.
+///
+/// Not user-tunable: defense-in-depth bound on external/attacker-controlled data.
+/// Exposing it would let a malformed or adversarial model response disable the
+/// sanitization layer.
+pub const STRIP_PATTERNS: &[&str] = &[
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|begin_of_text|>",
+    "<|end_of_text|>",
+    "<|start_header_id|>",
+    "<|end_header_id|>",
+    "<|eot_id|>",
+    "[INST]",
+    "[/INST]",
+    "<start_of_turn>",
+    "<end_of_turn>",
+    "<|endoftext|>",
+    "<|user|>",
+    "<|assistant|>",
+    "<|system|>",
+    "<think>",
+    "</think>",
+];
