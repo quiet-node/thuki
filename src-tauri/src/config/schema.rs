@@ -169,7 +169,7 @@ impl Default for SearchSection {
 }
 
 /// Top-level application configuration. Managed Tauri state; every subsystem
-/// reads from `State<AppConfig>` and nowhere else. The loader resolves all
+/// reads from `State<RwLock<AppConfig>>` and nowhere else. The loader resolves all
 /// empty strings and out-of-bounds numerics to compiled defaults before the
 /// `AppConfig` is installed, so every field here holds a usable value.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
