@@ -6,7 +6,7 @@
  * legacy messages visually clean without a SQLite migration.
  *
  * Keep this list in lock-step with `STRIP_PATTERNS` in
- * `src-tauri/src/commands.rs`. Exact-string match, case-sensitive: these
+ * `src-tauri/src/config/defaults.rs`. Exact-string match, case-sensitive: these
  * markers are not natural English so a false-positive collision would
  * already be a bug elsewhere.
  */

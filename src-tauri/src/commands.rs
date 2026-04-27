@@ -6,40 +6,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, State};
 use tokio_util::sync::CancellationToken;
 
+use crate::config::defaults::STRIP_PATTERNS;
 use crate::config::AppConfig;
 use crate::models::{Capabilities, ModelCapabilitiesCache};
-
-/// Special turn-boundary tokens used by the major Ollama-served model
-/// families. Ollama normally parses these out of `/api/chat` responses, but
-/// some fine-tunes leak them into `message.content` as plain text. If the
-/// leaked bytes are persisted into history and replayed to a model from a
-/// different family on the next turn, that model treats them as garbage
-/// tokens and the conversation visibly degrades.
-///
-/// We strip them defensively before persisting assistant replies (B-1) and
-/// again at render time (B-9) so legacy on-disk content stays clean visually
-/// without a migration. Exact-string match, case-sensitive: these markers
-/// are not natural English and any false-positive collision would already
-/// be a bug elsewhere.
-pub const STRIP_PATTERNS: &[&str] = &[
-    "<|im_start|>",
-    "<|im_end|>",
-    "<|begin_of_text|>",
-    "<|end_of_text|>",
-    "<|start_header_id|>",
-    "<|end_header_id|>",
-    "<|eot_id|>",
-    "[INST]",
-    "[/INST]",
-    "<start_of_turn>",
-    "<end_of_turn>",
-    "<|endoftext|>",
-    "<|user|>",
-    "<|assistant|>",
-    "<|system|>",
-    "<think>",
-    "</think>",
-];
 
 /// Removes special turn-boundary tokens (see [`STRIP_PATTERNS`]) and ASCII
 /// control characters from assistant content before it is persisted to
