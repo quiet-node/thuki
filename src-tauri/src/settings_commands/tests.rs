@@ -12,8 +12,9 @@ use serde_json::json;
 use toml_edit::DocumentMut;
 
 use super::{
-    coerce_json_to_toml, is_allowed_field, is_allowed_section, json_type_name, json_value_to_toml_item,
-    patch_document, read_document, reset_section_on_disk, write_field_to_disk,
+    coerce_json_to_toml, is_allowed_field, is_allowed_section, json_type_name,
+    json_value_to_toml_item, patch_document, read_document, reset_section_on_disk,
+    write_field_to_disk,
 };
 use crate::config::defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS};
 use crate::config::ConfigError;
@@ -385,8 +386,7 @@ fn patch_document_inserts_missing_array_field() {
 fn patch_document_insert_rejects_object_for_missing_field() {
     let toml = "[window]\nmax_chat_height = 648.0\n";
     let mut doc: DocumentMut = toml.parse().unwrap();
-    let err =
-        patch_document(&mut doc, "window", "overlay_width", json!({"a": 1})).unwrap_err();
+    let err = patch_document(&mut doc, "window", "overlay_width", json!({"a": 1})).unwrap_err();
     matches_type_mismatch(&err, "window", "overlay_width");
 }
 
@@ -394,13 +394,7 @@ fn patch_document_insert_rejects_object_for_missing_field() {
 fn patch_document_insert_rejects_array_with_non_string_for_missing_field() {
     let toml = "[inference]\nollama_url = \"http://127.0.0.1:11434\"\n";
     let mut doc: DocumentMut = toml.parse().unwrap();
-    let err = patch_document(
-        &mut doc,
-        "inference",
-        "available",
-        json!(["ok", 42]),
-    )
-    .unwrap_err();
+    let err = patch_document(&mut doc, "inference", "available", json!(["ok", 42])).unwrap_err();
     matches_type_mismatch(&err, "inference", "available");
 }
 

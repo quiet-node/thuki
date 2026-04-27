@@ -380,7 +380,11 @@ pub(crate) fn patch_document(
 
 /// Converts a JSON value to a TOML item by inferring the type from the JSON,
 /// used when the target key is absent from the on-disk document.
-pub(crate) fn json_value_to_toml_item(value: JsonValue, section: &str, key: &str) -> Result<Item, ConfigError> {
+pub(crate) fn json_value_to_toml_item(
+    value: JsonValue,
+    section: &str,
+    key: &str,
+) -> Result<Item, ConfigError> {
     let type_mismatch = |msg: &str| ConfigError::TypeMismatch {
         section: section.to_string(),
         key: key.to_string(),
