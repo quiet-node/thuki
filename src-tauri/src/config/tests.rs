@@ -547,7 +547,7 @@ fn marker_write_failure_is_logged_but_does_not_block_recovery() {
     std::fs::create_dir(&blocker).unwrap();
 
     let config = load_from_path(&path).expect("recover even when marker write fails");
-    assert_eq!(config.model.ollama_url, DEFAULT_OLLAMA_URL);
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
 
     // Marker squatter is still a directory: the failed write did not replace it.
     assert!(blocker.is_dir());

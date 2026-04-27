@@ -217,8 +217,7 @@ fn coerce_array_accepts_string_array() {
 fn coerce_array_rejects_non_string_element() {
     let doc = parse_sample();
     let item = doc.get("inference").unwrap().get("available").unwrap();
-    let err =
-        coerce_json_to_toml(item, json!(["a", 42]), "inference", "available").unwrap_err();
+    let err = coerce_json_to_toml(item, json!(["a", 42]), "inference", "available").unwrap_err();
     matches_type_mismatch(&err, "inference", "available");
 }
 
@@ -439,9 +438,14 @@ fn write_field_to_disk_persists_and_returns_resolved_config() {
     let path = dir.join("config.toml");
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
 
-    let resolved =
-        write_field_to_disk(&path, "model", "ollama_url", json!("http://10.0.0.1:11434")).unwrap();
-    assert_eq!(resolved.model.ollama_url, "http://10.0.0.1:11434");
+    let resolved = write_field_to_disk(
+        &path,
+        "inference",
+        "ollama_url",
+        json!("http://10.0.0.1:11434"),
+    )
+    .unwrap();
+    assert_eq!(resolved.inference.ollama_url, "http://10.0.0.1:11434");
 
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(on_disk.contains("http://10.0.0.1:11434"));
@@ -464,10 +468,11 @@ fn write_field_to_disk_rejects_unknown_field() {
     let dir = tempdir();
     let path = dir.join("config.toml");
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
-    let err = write_field_to_disk(&path, "model", "secret_api_key", json!("hunter2")).unwrap_err();
+    let err =
+        write_field_to_disk(&path, "inference", "secret_api_key", json!("hunter2")).unwrap_err();
     match err {
         ConfigError::UnknownField { section, key } => {
-            assert_eq!(section, "model");
+            assert_eq!(section, "inference");
             assert_eq!(key, "secret_api_key");
         }
         other => panic!("expected UnknownField, got {other:?}"),
@@ -478,7 +483,7 @@ fn write_field_to_disk_rejects_unknown_field() {
 fn write_field_to_disk_propagates_read_error_for_missing_file() {
     let dir = tempdir();
     let path = dir.join("missing.toml");
-    let err = write_field_to_disk(&path, "model", "ollama_url", json!("http://x")).unwrap_err();
+    let err = write_field_to_disk(&path, "inference", "ollama_url", json!("http://x")).unwrap_err();
     matches!(err, ConfigError::IoError { .. });
 }
 
@@ -487,8 +492,8 @@ fn write_field_to_disk_propagates_patch_error_for_type_mismatch() {
     let dir = tempdir();
     let path = dir.join("config.toml");
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
-    let err = write_field_to_disk(&path, "model", "ollama_url", json!(42)).unwrap_err();
-    matches_type_mismatch(&err, "model", "ollama_url");
+    let err = write_field_to_disk(&path, "inference", "ollama_url", json!(42)).unwrap_err();
+    matches_type_mismatch(&err, "inference", "ollama_url");
 }
 
 #[cfg(unix)]
@@ -505,8 +510,13 @@ fn write_field_to_disk_propagates_io_error_when_parent_dir_is_readonly() {
     perms.set_mode(0o500);
     std::fs::set_permissions(&dir, perms.clone()).unwrap();
 
-    let err = write_field_to_disk(&path, "model", "ollama_url", json!("http://10.0.0.1:11434"))
-        .unwrap_err();
+    let err = write_field_to_disk(
+        &path,
+        "inference",
+        "ollama_url",
+        json!("http://10.0.0.1:11434"),
+    )
+    .unwrap_err();
 
     // Restore writability so the OS can clean up the tempdir later.
     let mut restore = perms;
@@ -525,10 +535,16 @@ fn reset_section_on_disk_replaces_named_section_with_defaults() {
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
 
     // Mutate the field first so reset has something to revert.
-    write_field_to_disk(&path, "model", "ollama_url", json!("http://10.0.0.1:11434")).unwrap();
+    write_field_to_disk(
+        &path,
+        "inference",
+        "ollama_url",
+        json!("http://10.0.0.1:11434"),
+    )
+    .unwrap();
 
-    let resolved = reset_section_on_disk(&path, Some("model")).unwrap();
-    assert_eq!(resolved.model.ollama_url, "http://127.0.0.1:11434");
+    let resolved = reset_section_on_disk(&path, Some("inference")).unwrap();
+    assert_eq!(resolved.inference.ollama_url, "http://127.0.0.1:11434");
 }
 
 #[test]
@@ -538,11 +554,17 @@ fn reset_section_on_disk_preserves_other_sections() {
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
 
     // Change two sections.
-    write_field_to_disk(&path, "model", "ollama_url", json!("http://10.0.0.1:11434")).unwrap();
+    write_field_to_disk(
+        &path,
+        "inference",
+        "ollama_url",
+        json!("http://10.0.0.1:11434"),
+    )
+    .unwrap();
     write_field_to_disk(&path, "search", "max_iterations", json!(7)).unwrap();
 
-    // Reset only model — search.max_iterations should still be 7.
-    let resolved = reset_section_on_disk(&path, Some("model")).unwrap();
+    // Reset only inference; search.max_iterations should still be 7.
+    let resolved = reset_section_on_disk(&path, Some("inference")).unwrap();
     assert_eq!(resolved.search.max_iterations, 7);
 }
 
@@ -574,7 +596,7 @@ fn reset_section_on_disk_rejects_unknown_section() {
 fn reset_section_on_disk_propagates_read_error_for_missing_file_named_section() {
     let dir = tempdir();
     let path = dir.join("missing.toml");
-    let err = reset_section_on_disk(&path, Some("model")).unwrap_err();
+    let err = reset_section_on_disk(&path, Some("inference")).unwrap_err();
     matches!(err, ConfigError::IoError { .. });
 }
 
@@ -590,7 +612,7 @@ fn reset_section_on_disk_propagates_io_error_when_parent_dir_is_readonly() {
     perms.set_mode(0o500);
     std::fs::set_permissions(&dir, perms.clone()).unwrap();
 
-    let err = reset_section_on_disk(&path, Some("model")).unwrap_err();
+    let err = reset_section_on_disk(&path, Some("inference")).unwrap_err();
 
     let mut restore = perms;
     restore.set_mode(0o700);
