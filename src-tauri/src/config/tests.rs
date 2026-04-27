@@ -13,9 +13,8 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS, DEFAULT_JUDGE_TIMEOUT_S,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
@@ -51,9 +50,7 @@ fn defaults_const_values_match_schema_defaults() {
     assert_eq!(c.prompt.system, "");
     assert_eq!(c.prompt.resolved_system, "");
     assert_eq!(c.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
-    assert_eq!(c.window.collapsed_height, DEFAULT_COLLAPSED_HEIGHT);
     assert_eq!(c.window.max_chat_height, DEFAULT_MAX_CHAT_HEIGHT);
-    assert_eq!(c.window.hide_commit_delay_ms, DEFAULT_HIDE_COMMIT_DELAY_MS);
     assert_eq!(c.quote.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
     assert_eq!(c.quote.max_display_chars, DEFAULT_QUOTE_MAX_DISPLAY_CHARS);
     assert_eq!(c.quote.max_context_length, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH);
@@ -388,14 +385,12 @@ fn resolve_out_of_bounds_floats_reset_to_defaults() {
         r#"
             [window]
             overlay_width = 0.0
-            collapsed_height = 99999.0
             max_chat_height = -1.0
         "#,
     )
     .unwrap();
     let config = load_from_path(&path).unwrap();
     assert_eq!(config.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
-    assert_eq!(config.window.collapsed_height, DEFAULT_COLLAPSED_HEIGHT);
     assert_eq!(config.window.max_chat_height, DEFAULT_MAX_CHAT_HEIGHT);
 }
 
@@ -413,25 +408,6 @@ fn resolve_non_finite_float_resets() {
     .unwrap();
     let config = load_from_path(&path).unwrap();
     assert_eq!(config.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
-}
-
-#[test]
-fn resolve_out_of_bounds_u64_resets() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        r#"
-            [window]
-            hide_commit_delay_ms = 99999
-        "#,
-    )
-    .unwrap();
-    let config = load_from_path(&path).unwrap();
-    assert_eq!(
-        config.window.hide_commit_delay_ms,
-        DEFAULT_HIDE_COMMIT_DELAY_MS
-    );
 }
 
 #[test]
@@ -472,9 +448,7 @@ fn resolve_values_within_bounds_are_preserved() {
         r#"
             [window]
             overlay_width = 800.0
-            collapsed_height = 100.0
             max_chat_height = 1000.0
-            hide_commit_delay_ms = 250
             [quote]
             max_display_lines = 6
             max_display_chars = 500
@@ -484,9 +458,7 @@ fn resolve_values_within_bounds_are_preserved() {
     .unwrap();
     let config = load_from_path(&path).unwrap();
     assert_eq!(config.window.overlay_width, 800.0);
-    assert_eq!(config.window.collapsed_height, 100.0);
     assert_eq!(config.window.max_chat_height, 1000.0);
-    assert_eq!(config.window.hide_commit_delay_ms, 250);
     assert_eq!(config.quote.max_display_lines, 6);
     assert_eq!(config.quote.max_display_chars, 500);
     assert_eq!(config.quote.max_context_length, 8192);
@@ -527,6 +499,30 @@ fn rename_corrupt_failure_is_logged_but_does_not_block() {
         }
         Err(other) => panic!("unexpected error: {other:?}"),
     }
+}
+
+/// Triggers ONLY the marker-write failure branch in `rename_corrupt`: the
+/// rename itself must succeed (so the parent must be writable), but writing
+/// the marker file must fail. We force the latter by pre-creating a
+/// DIRECTORY at the marker path, which makes `std::fs::write` to that name
+/// fail with `IsADirectory`. The corrupt file is still renamed and the
+/// loader still seeds defaults; only the warning eprintln fires.
+#[cfg(unix)]
+#[test]
+fn marker_write_failure_is_logged_but_does_not_block_recovery() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "garbage [oops").unwrap();
+
+    // Squat the marker filename with a directory so std::fs::write fails.
+    let blocker = dir.join(crate::config::CORRUPT_MARKER_FILE_NAME);
+    std::fs::create_dir(&blocker).unwrap();
+
+    let config = load_from_path(&path).expect("recover even when marker write fails");
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
+
+    // Marker squatter is still a directory: the failed write did not replace it.
+    assert!(blocker.is_dir());
 }
 
 // ── writer: atomic_write ────────────────────────────────────────────────────
@@ -839,4 +835,22 @@ fn toml_partial_search_section_fills_missing_fields_from_defaults() {
         "unset field in partial [search] must fall back to default"
     );
     assert_eq!(loaded.search.max_iterations, DEFAULT_MAX_ITERATIONS);
+}
+
+// ── error: serde_json round-trip ────────────────────────────────────────────
+
+/// `ConfigError::IoError` carries a non-Serialize `std::io::Error`; the
+/// `serialize_io_error` helper is wired in via `#[serde(serialize_with)]`.
+/// This round-trip test exists solely to exercise that helper so it shows
+/// up as covered.
+#[test]
+fn config_error_io_error_serializes_io_source_as_display_string() {
+    let err = ConfigError::IoError {
+        path: PathBuf::from("/tmp/nope.toml"),
+        source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied here"),
+    };
+    let json = serde_json::to_value(&err).expect("ConfigError serializes");
+    assert_eq!(json["kind"], "io_error");
+    assert_eq!(json["path"], "/tmp/nope.toml");
+    assert_eq!(json["source"], "denied here");
 }

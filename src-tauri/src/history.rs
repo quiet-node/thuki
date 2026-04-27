@@ -258,8 +258,9 @@ pub async fn generate_title(
     model: String,
     db: State<'_, Database>,
     client: State<'_, reqwest::Client>,
-    app_config: State<'_, AppConfig>,
+    app_config: State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<(), String> {
+    let app_config = app_config.read().clone();
     // Build a condensed context for title generation.
     let mut context = String::new();
     for msg in &messages {

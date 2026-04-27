@@ -1,0 +1,829 @@
+/* ─────────────────────────────────────────────────────────────────────────
+ * Thuki Settings panel — chat-app aesthetic.
+ *
+ * Visual language matches the Thuki chat overlay (App.css): warm dark
+ * surface (var(--color-surface-base)), faint radial-orange aura at the
+ * top, a single hairline glow line at the very top edge (like
+ * .morphing-container::before), AI-bubble-style hairline borders
+ * (rgba(255,255,255,0.06) with rgba(255,141,92,0.1) at the top),
+ * subtle 12px rounding, no chunky pill tabs, no hard top-bar divider.
+ *
+ * Topbar is a horizontal row of icon-above-label tabs (CodexBar layout)
+ * that bleeds seamlessly into the body — no border line, just a faded
+ * hairline gradient. Active tab uses a subtle dark inset + warm orange
+ * icon/label; inactive tabs are gray.
+ *
+ * The window itself is a real NSWindow; OS chrome (title bar, traffic
+ * lights) is delegated to macOS. This file styles the inside only.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* The settings webview is decorations:false + transparent:true. The
+ * `.window` element fills the entire OS window with rounded corners; the
+ * area outside the rounded corners is transparent (the OS window itself
+ * is borderless and clear). No breathing margin / drop shadow because
+ * those would render against the OS window's own background — only the
+ * NSPanel-converted main window can render past its bounds cleanly.
+ * Vocabulary still mirrors .morphing-container in App.css. */
+.window {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  /* Top breathing room so the WindowControls strip sits with a touch of
+   * space above the traffic-light dots — mirrors the chat overlay's
+   * outer `pt-2` padding so both panels feel the same vertically. */
+  padding-top: 8px;
+  background:
+    radial-gradient(
+      ellipse 70% 40% at 50% 0%,
+      rgba(255, 141, 92, 0.08) 0%,
+      transparent 65%
+    ),
+    var(--color-surface-base);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  font-size: 13px;
+  user-select: none;
+  border: 1px solid var(--color-surface-border);
+  border-top-color: rgba(255, 141, 92, 0.2);
+  border-radius: 10px;
+  overflow: hidden;
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+/* Glowing 1px hairline at the very top edge — matches morphing-container. */
+.window::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 15%;
+  right: 15%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 141, 92, 0.35),
+    transparent
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ─── Banner (corrupt-config recovery) ──────────────────────────────────── */
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin: 8px 16px 0;
+  background: rgba(36, 30, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-top-color: rgba(230, 156, 5, 0.32);
+  border-radius: 10px;
+  font-size: 12.5px;
+  color: var(--color-text-primary);
+  flex-shrink: 0;
+  box-shadow:
+    0 2px 8px -2px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.bannerIcon {
+  flex-shrink: 0;
+  color: var(--color-tertiary);
+}
+.bannerText {
+  flex: 1;
+  line-height: 1.45;
+}
+.bannerActions {
+  display: flex;
+  gap: 6px;
+}
+
+/* ─── Top bar (horizontal icon tabs, CodexBar layout) ───────────────────── */
+
+.tabBar {
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 12px 20px 10px;
+  flex-shrink: 0;
+}
+
+.tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 8px;
+  border: none;
+  background: transparent;
+  color: rgba(240, 240, 242, 0.5);
+  cursor: pointer;
+  font-family: inherit;
+  border-radius: 10px;
+  min-width: 72px;
+  transition:
+    color 180ms ease,
+    background 180ms ease;
+}
+.tab:hover:not(.tabActive) {
+  color: var(--color-text-primary);
+  background: rgba(255, 255, 255, 0.025);
+}
+.tab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.32);
+}
+.tab svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+  stroke-width: 1.6;
+}
+.tabLabel {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: inherit;
+}
+.tabActive {
+  color: var(--color-primary);
+  background: rgba(0, 0, 0, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(255, 141, 92, 0.1);
+}
+.tabActive svg {
+  color: var(--color-primary);
+}
+/* Decorative wrapper kept for backward-compat with structure; in the
+ * top-bar layout the icon sits inline with the label, no chrome of its
+ * own. */
+.tabIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ─── Body (scrolling content) ──────────────────────────────────────────── */
+
+.body {
+  flex: 1;
+  /* Default: hide overflow so tabs whose content fits the auto-sized
+   * window never show a scrollbar (and never produce a stray scrollbar
+   * artifact from sub-pixel rounding). The auto-resize hook flips this
+   * to .bodyScrollable only on tabs whose natural content was clamped
+   * to MAX_HEIGHT, where internal scrolling is the intended behavior. */
+  overflow: hidden;
+  position: relative;
+  padding: 18px 22px 24px;
+  min-width: 0;
+}
+.bodyScrollable {
+  overflow-y: auto;
+}
+/* No `::-webkit-scrollbar` overrides — letting macOS render its native
+ * overlay scrollbar that auto-shows on scroll, matching the chat view. */
+
+/* ─── Section + Row primitives ──────────────────────────────────────────── */
+
+.section {
+  margin-bottom: 28px;
+}
+.section:last-of-type {
+  margin-bottom: 8px;
+}
+/* Hairline divider between adjacent sections so the visual hierarchy
+ * matches the dividers between rows. Mirrors `.row + .row` so the
+ * Permissions/File split (and similar splits in other tabs) reads at
+ * the same weight as the row separators inside each section. */
+.section + .section {
+  border-top: 1px solid rgba(255, 255, 255, 0.045);
+  padding-top: 24px;
+}
+.sectionHeading {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  margin-bottom: 14px;
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  padding: 12px 0;
+  gap: 16px;
+  min-height: 48px;
+}
+.row + .row {
+  border-top: 1px solid rgba(255, 255, 255, 0.045);
+}
+.rowVertical {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.rowLabelGroup {
+  flex: 0 0 168px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 6px;
+}
+.rowVertical .rowLabelGroup {
+  flex: none;
+  padding-top: 0;
+}
+.rowLabel {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+.infoBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  font-family: inherit;
+  line-height: 1;
+  cursor: help;
+  padding: 0;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease;
+}
+.infoBtn:hover {
+  background: rgba(255, 141, 92, 0.12);
+  color: var(--color-primary);
+  border-color: rgba(255, 141, 92, 0.4);
+}
+.infoBtn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.rowControl {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.charCounter {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  text-align: right;
+  letter-spacing: 0.02em;
+}
+.rowHelper {
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+  line-height: 1.45;
+}
+.rowError {
+  font-size: 11.5px;
+  color: #ff8a80;
+  line-height: 1.45;
+}
+
+/* ─── Inputs (chat-bubble-ai vocabulary: hairline, warm top edge) ───────── */
+
+.input,
+.textarea {
+  width: 100%;
+  background: rgba(36, 30, 26, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-top-color: rgba(255, 141, 92, 0.1);
+  border-radius: 8px;
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 0 12px;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+.input {
+  height: 32px;
+}
+.textarea {
+  min-height: 96px;
+  padding: 10px 12px;
+  line-height: 1.55;
+  resize: vertical;
+  font-family: inherit;
+}
+.input:hover,
+.textarea:hover {
+  background: rgba(36, 30, 26, 0.8);
+  border-color: rgba(255, 255, 255, 0.1);
+  border-top-color: rgba(255, 141, 92, 0.18);
+}
+.input:focus-visible,
+.textarea:focus-visible {
+  outline: none;
+  background: rgba(36, 30, 26, 0.95);
+  border-color: rgba(255, 141, 92, 0.42);
+  box-shadow:
+    0 0 0 3px rgba(255, 141, 92, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.inputError {
+  border-color: rgba(255, 138, 128, 0.55);
+  border-top-color: rgba(255, 138, 128, 0.55);
+}
+
+.dropdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  background: rgba(36, 30, 26, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-top-color: rgba(255, 141, 92, 0.1);
+  border-radius: 8px;
+  padding: 0 10px 0 12px;
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease;
+}
+.dropdown:hover {
+  background: rgba(36, 30, 26, 0.8);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.dropdown:focus-visible {
+  outline: none;
+  border-color: rgba(255, 141, 92, 0.42);
+  box-shadow: 0 0 0 3px rgba(255, 141, 92, 0.1);
+}
+
+/* ─── Buttons (chat-bubble-ai surface for ghost / chat-bubble-user gradient
+ *    feel for primary; the warm gradient is reserved for primary action
+ *    buttons used sparingly, like Reveal/Dismiss in the banner are ghost). */
+
+.button {
+  background: rgba(36, 30, 26, 0.95);
+  color: var(--color-text-primary);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-top-color: rgba(255, 141, 92, 0.1);
+  border-radius: 8px;
+  padding: 6px 13px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+.button:hover {
+  background: rgba(46, 38, 32, 0.95);
+  border-color: rgba(255, 255, 255, 0.1);
+  border-top-color: rgba(255, 141, 92, 0.2);
+}
+.button:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 0 0 3px rgba(255, 141, 92, 0.22);
+}
+.button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.buttonGhost {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.06);
+  border-top-color: rgba(255, 255, 255, 0.06);
+  color: var(--color-text-primary);
+  box-shadow: none;
+}
+.buttonGhost:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.buttonDestructive {
+  background: rgba(36, 30, 26, 0.95);
+  border-color: rgba(255, 138, 128, 0.3);
+  border-top-color: rgba(255, 138, 128, 0.3);
+  color: #ff8a80;
+}
+.buttonDestructive:hover {
+  background: rgba(48, 34, 32, 0.95);
+  border-color: rgba(255, 138, 128, 0.5);
+}
+
+/* ─── Slider (hairline rail with warm gradient thumb) ───────────────────── */
+
+.sliderRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+.sliderInput {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+.sliderInput::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ff8d5c 0%, #e06b30 100%);
+  border: none;
+  box-shadow:
+    0 0 10px rgba(255, 141, 92, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+}
+.sliderInput::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ff8d5c 0%, #e06b30 100%);
+  border: none;
+  box-shadow:
+    0 0 10px rgba(255, 141, 92, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  cursor: grab;
+}
+.sliderInput:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 0 14px rgba(255, 141, 92, 0.65),
+    0 0 0 3px rgba(255, 141, 92, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+.valChip {
+  background: rgba(36, 30, 26, 0.95);
+  color: var(--color-text-primary);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-top-color: rgba(255, 141, 92, 0.1);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  min-width: 64px;
+  text-align: center;
+}
+
+/* ─── Stepper ───────────────────────────────────────────────────────────── */
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  /* Right-aligned compact pill so the +/- controls stay close to the
+   * value instead of stretching across the row. The parent rowControl
+   * is a column flex; align-self overrides the default `stretch`. */
+  align-self: flex-end;
+  width: auto;
+  min-width: 132px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-top-color: rgba(255, 141, 92, 0.1);
+  border-radius: 8px;
+  background: rgba(36, 30, 26, 0.6);
+  overflow: hidden;
+}
+.stepperBtn {
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    color 150ms ease,
+    background 150ms ease;
+}
+.stepperBtn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--color-text-primary);
+}
+.stepperBtn:focus-visible {
+  outline: none;
+  background: rgba(255, 141, 92, 0.14);
+  color: var(--color-primary);
+}
+.stepperBtn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.stepperValue {
+  min-width: 60px;
+  padding: 0 10px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+/* ─── Saved chip (warm gradient like user bubble, but small) ────────────── */
+
+.savedPill {
+  position: fixed;
+  bottom: 16px;
+  right: 22px;
+  /* Solid base so the pill never blends into rows that scroll behind it. */
+  background-color: #2a221d;
+  background-image: linear-gradient(
+    135deg,
+    rgba(255, 141, 92, 0.22) 0%,
+    rgba(224, 107, 48, 0.18) 100%
+  );
+  color: var(--color-primary);
+  border: 1px solid rgba(255, 141, 92, 0.45);
+  border-radius: 999px;
+  padding: 5px 13px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow:
+    0 6px 18px -6px rgba(0, 0, 0, 0.65),
+    0 2px 6px -2px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  transition: opacity 220ms ease;
+}
+.savedPillVisible {
+  opacity: 1;
+}
+
+/* ─── Reset link ────────────────────────────────────────────────────────── */
+
+.resetLink {
+  background: none;
+  border: none;
+  color: var(--color-primary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-align: right;
+  display: block;
+  margin-left: auto;
+  margin-top: 8px;
+  font-family: inherit;
+  letter-spacing: 0.01em;
+}
+.resetLink:hover {
+  text-decoration: underline;
+}
+.resetLink:focus-visible {
+  outline: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ─── Confirm dialog ────────────────────────────────────────────────────── */
+
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.dialog {
+  background: rgba(36, 30, 26, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-top-color: rgba(255, 141, 92, 0.18);
+  border-radius: 14px;
+  padding: 22px 24px;
+  min-width: 340px;
+  max-width: 460px;
+  box-shadow:
+    0 4px 14px -3px rgba(0, 0, 0, 0.5),
+    0 1px 4px -1px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(255, 141, 92, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+.dialogTitle {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0 0 8px;
+}
+.dialogMessage {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.55;
+  margin: 0 0 20px;
+}
+.dialogActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* ─── About tab ─────────────────────────────────────────────────────────── */
+
+.aboutBody {
+  /* Wrapper for About-tab overrides. Lets the tab tighten spacing and
+   * suppress dividers that other tabs still want, without forking the
+   * shared row/section primitives. */
+  padding-bottom: 8px;
+}
+/* Drop the row hairline between Permissions rows — Permissions reads as
+ * one cluster, not two stacked items. The same divider stays useful in
+ * tabs with many tunable rows under one heading. */
+.aboutBody .row + .row {
+  border-top: none;
+}
+.aboutBody .row {
+  padding: 8px 0;
+  min-height: 40px;
+}
+.aboutBody .section {
+  margin-bottom: 14px;
+}
+.aboutBody .section + .section {
+  padding-top: 14px;
+}
+.aboutBody .section:last-of-type {
+  margin-bottom: 0;
+}
+.aboutBody .sectionHeading {
+  margin-bottom: 10px;
+}
+.aboutHero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  /* Tight top padding because the tab-bar already sets the visual
+   * starting line; bigger bottom padding keeps the hero from bleeding
+   * into the Permissions section. */
+  padding: 0 24px 18px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+}
+.aboutHeroLogo {
+  width: 72px;
+  height: 72px;
+  margin-bottom: 10px;
+  filter: drop-shadow(0 8px 24px rgba(255, 141, 92, 0.22));
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.aboutHeroTitle {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--color-text-primary);
+  margin-bottom: 2px;
+}
+.aboutHeroVersion {
+  display: inline-block;
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin-bottom: 8px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  text-decoration: underline transparent;
+  text-underline-offset: 3px;
+  transition:
+    color 150ms ease,
+    text-decoration-color 150ms ease;
+}
+.aboutHeroVersion:hover {
+  color: var(--color-primary);
+  text-decoration-color: var(--color-primary);
+}
+.aboutHeroVersion:focus-visible {
+  outline: none;
+  color: var(--color-primary);
+  text-decoration-color: var(--color-primary);
+}
+.aboutHeroTagline {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin-bottom: 14px;
+  max-width: 340px;
+}
+.aboutHeroMantra {
+  display: inline-block;
+}
+.aboutHeroActions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.iconLinkBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    color 150ms ease,
+    transform 150ms ease;
+}
+.iconLinkBtn:hover {
+  color: var(--color-primary);
+  transform: translateY(-1px);
+}
+.iconLinkBtn:focus-visible {
+  outline: none;
+  color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.35);
+  border-radius: 6px;
+}
+.aboutInfoLine {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+.aboutInfoLine strong {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+.aboutLinkRow {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.permissionPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.permissionGranted {
+  background: rgba(74, 222, 128, 0.1);
+  color: rgba(180, 240, 200, 0.92);
+  border: 1px solid rgba(74, 222, 128, 0.22);
+}
+.permissionRequired {
+  background: rgba(255, 138, 128, 0.1);
+  color: #ff8a80;
+  border: 1px solid rgba(255, 138, 128, 0.3);
+}
+
+/* ─── Reduced motion ────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .tab,
+  .tabIcon,
+  .input,
+  .textarea,
+  .button,
+  .savedPill,
+  .modelItem,
+  .stepperBtn,
+  .iconBtn {
+    transition: none !important;
+  }
+}

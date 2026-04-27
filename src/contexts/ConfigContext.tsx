@@ -16,6 +16,16 @@
 
 import { createContext, use, useEffect, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+
+/**
+ * Backend event broadcast after the in-memory `AppConfig` is replaced
+ * (`set_config_field`, `reset_config`, `reload_config_from_disk`). Mirrors
+ * the Rust-side `CONFIG_UPDATED_EVENT` constant in `settings_commands.rs`.
+ * Kept as a string literal here to avoid pulling a Rust-codegen dep into
+ * the frontend.
+ */
+const CONFIG_UPDATED_EVENT = 'thuki://config-updated';
 
 /** Shape returned by the Rust `get_config` command (snake_case). */
 interface RawAppConfig {
@@ -27,9 +37,7 @@ interface RawAppConfig {
   };
   window: {
     overlay_width: number;
-    collapsed_height: number;
     max_chat_height: number;
-    hide_commit_delay_ms: number;
   };
   quote: {
     max_display_lines: number;
@@ -49,9 +57,7 @@ export interface AppConfig {
   };
   window: {
     overlayWidth: number;
-    collapsedHeight: number;
     maxChatHeight: number;
-    hideCommitDelayMs: number;
   };
   quote: {
     maxDisplayLines: number;
@@ -70,9 +76,7 @@ function transform(raw: RawAppConfig): AppConfig {
     },
     window: {
       overlayWidth: raw.window.overlay_width,
-      collapsedHeight: raw.window.collapsed_height,
       maxChatHeight: raw.window.max_chat_height,
-      hideCommitDelayMs: raw.window.hide_commit_delay_ms,
     },
     quote: {
       maxDisplayLines: raw.quote.max_display_lines,
@@ -93,26 +97,55 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<AppConfig | null>(null);
 
   useEffect(() => {
-    void invoke<RawAppConfig>('get_config')
-      .then((raw) => {
-        // In production Rust always returns a fully-populated RawAppConfig.
-        // A nullish response here only happens in tests where `invoke` is
-        // mocked without a handler for `get_config`; we fall back to
-        // DEFAULT_CONFIG so the tree still mounts instead of spinning on a
-        // null state.
-        if (raw == null) {
-          setConfig(DEFAULT_CONFIG);
+    let cancelled = false;
+
+    /**
+     * Fetches `get_config` and pushes the transformed value into state. Used
+     * for initial hydrate and for every `CONFIG_UPDATED_EVENT` refresh after
+     * the Settings window writes a change. The post-mount path tolerates
+     * the same nullish/error fallbacks as initial mount: a transient IPC
+     * failure should not flip the tree back to DEFAULT_CONFIG and lose any
+     * good values already in place.
+     */
+    const refresh = (initial: boolean) => {
+      void invoke<RawAppConfig>('get_config')
+        .then((raw) => {
+          if (cancelled) return;
+          if (raw == null) {
+            if (initial) setConfig(DEFAULT_CONFIG);
+            return;
+          }
+          setConfig(transform(raw));
+        })
+        .catch(() => {
+          if (cancelled) return;
+          if (initial) setConfig(DEFAULT_CONFIG);
+        });
+    };
+
+    refresh(true);
+
+    let unlisten: UnlistenFn | undefined;
+    void listen<unknown>(CONFIG_UPDATED_EVENT, () => {
+      refresh(false);
+    })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
           return;
         }
-        setConfig(transform(raw));
+        unlisten = fn;
       })
       .catch(() => {
-        // IPC rejection (Tauri bridge error, Rust-side panic before the
-        // command handler resolves, mis-registered command in tests). Prefer
-        // a degraded-but-running app over a blank screen; every subsystem
-        // that reads config already tolerates DEFAULT_CONFIG values.
-        setConfig(DEFAULT_CONFIG);
+        // Event bridge unavailable (test env, Tauri not ready). Initial
+        // hydrate still happened above; subscribers fall back to a static
+        // snapshot and pick up edits on next mount.
       });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   if (!config) return null;
@@ -166,9 +199,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   prompt: { system: '' },
   window: {
     overlayWidth: 600,
-    collapsedHeight: 80,
     maxChatHeight: 648,
-    hideCommitDelayMs: 350,
   },
   quote: {
     maxDisplayLines: 4,

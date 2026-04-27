@@ -22,16 +22,16 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::defaults::{
-    BOUNDS_COLLAPSED_HEIGHT, BOUNDS_HIDE_COMMIT_DELAY_MS, BOUNDS_MAX_CHAT_HEIGHT,
-    BOUNDS_MAX_ITERATIONS, BOUNDS_OVERLAY_WIDTH, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
-    BOUNDS_QUOTE_MAX_DISPLAY_CHARS, BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_SEARXNG_MAX_RESULTS,
-    BOUNDS_TIMEOUT_S, BOUNDS_TOP_K_URLS, DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS,
-    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
-    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
-    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
-    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
-    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS, SLASH_COMMAND_PROMPT_APPENDIX,
+    BOUNDS_MAX_CHAT_HEIGHT, BOUNDS_MAX_ITERATIONS, BOUNDS_OVERLAY_WIDTH,
+    BOUNDS_QUOTE_MAX_CONTEXT_LENGTH, BOUNDS_QUOTE_MAX_DISPLAY_CHARS,
+    BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_SEARXNG_MAX_RESULTS, BOUNDS_TIMEOUT_S,
+    BOUNDS_TOP_K_URLS, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS,
+    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
+    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
+    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
+    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
+    SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::schema::AppConfig;
@@ -87,8 +87,14 @@ fn seed_defaults(path: &Path) -> Result<AppConfig, ConfigError> {
     Ok(config)
 }
 
-/// Renames a corrupt or incompatible file to `<path>.corrupt-<unix_ts>`.
-/// Best-effort; failures are logged but do not block the reseed.
+/// Renames a corrupt or incompatible file to `<path>.corrupt-<unix_ts>` and
+/// writes a one-line marker file at `<dir>/.corrupt-recovery-pending` containing
+/// the absolute path of the renamed file.
+///
+/// The Settings window reads (and deletes) the marker via the
+/// `get_corrupt_marker` Tauri command on mount so it can render a recovery
+/// banner. Both rename and marker-write are best-effort: failures are logged
+/// but do not block the default reseed.
 fn rename_corrupt(path: &Path) {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -101,6 +107,20 @@ fn rename_corrupt(path: &Path) {
         eprintln!(
             "thuki: [config] could not rename corrupt file {}: {e}",
             path.display()
+        );
+        return;
+    }
+    // `path.parent()` is `None` only for filesystem roots like `/`, which we
+    // can never receive here (callers always pass `<dir>/config.toml`). Use a
+    // `unwrap_or` value so the fallback path stays in the binary without an
+    // unreachable closure region that coverage cannot exercise.
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let marker_path = parent.join(super::CORRUPT_MARKER_FILE_NAME);
+    let payload = format!("{}\n{ts}\n", target.display());
+    if let Err(e) = std::fs::write(&marker_path, payload) {
+        eprintln!(
+            "thuki: [config] could not write corrupt marker at {}: {e}",
+            marker_path.display()
         );
     }
 }
@@ -132,22 +152,10 @@ pub(crate) fn resolve(config: &mut AppConfig) {
         "window.overlay_width",
     );
     clamp_f64(
-        &mut config.window.collapsed_height,
-        BOUNDS_COLLAPSED_HEIGHT,
-        DEFAULT_COLLAPSED_HEIGHT,
-        "window.collapsed_height",
-    );
-    clamp_f64(
         &mut config.window.max_chat_height,
         BOUNDS_MAX_CHAT_HEIGHT,
         DEFAULT_MAX_CHAT_HEIGHT,
         "window.max_chat_height",
-    );
-    clamp_u64(
-        &mut config.window.hide_commit_delay_ms,
-        BOUNDS_HIDE_COMMIT_DELAY_MS,
-        DEFAULT_HIDE_COMMIT_DELAY_MS,
-        "window.hide_commit_delay_ms",
     );
 
     // Quote section.

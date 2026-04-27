@@ -220,16 +220,9 @@ impl ConversationHistory {
     }
 }
 
-/// Returns the full resolved `AppConfig` to the frontend.
-///
-/// Thin wrapper around a state clone; the config lives behind `app.manage(...)`
-/// and is loaded once at startup by `config::load`. The frontend hydrates its
-/// `ConfigContext` from this command on mount.
-#[cfg_attr(coverage_nightly, coverage(off))]
-#[cfg_attr(not(coverage), tauri::command)]
-pub fn get_config(config: tauri::State<'_, crate::config::AppConfig>) -> crate::config::AppConfig {
-    config.inner().clone()
-}
+// `get_config` lives in `crate::settings_commands` so all configuration-touching
+// commands share one module. The Settings panel uses the same command via
+// `invoke('get_config')`; this is the single source of truth across the app.
 
 /// Core streaming logic for Ollama `/api/chat`, separated from the Tauri
 /// command for testability. Uses `tokio::select!` to race each chunk read
@@ -364,9 +357,12 @@ pub async fn ask_ollama(
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
     history: State<'_, ConversationHistory>,
-    config: State<'_, AppConfig>,
+    config: State<'_, parking_lot::RwLock<AppConfig>>,
     active_model: State<'_, crate::models::ActiveModelState>,
 ) -> Result<(), String> {
+    // Snapshot the config once so all downstream reads (endpoint, prompt, model)
+    // see a consistent view even if the user edits Settings mid-stream.
+    let config = config.read().clone();
     let endpoint = format!(
         "{}/api/chat",
         config.inference.ollama_url.trim_end_matches('/')
@@ -989,12 +985,14 @@ mod tests {
 
         cancel_task.await.unwrap();
 
-        let chunks = chunks.lock().unwrap();
-        assert!(chunks
-            .iter()
-            .any(|c| matches!(c, StreamChunk::Token(t) if t == "A")));
-        assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Cancelled)));
-        assert!(chunks.iter().all(|c| !matches!(c, StreamChunk::Done)));
+        {
+            let chunks = chunks.lock().unwrap();
+            assert!(chunks
+                .iter()
+                .any(|c| matches!(c, StreamChunk::Token(t) if t == "A")));
+            assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Cancelled)));
+            assert!(chunks.iter().all(|c| !matches!(c, StreamChunk::Done)));
+        }
 
         server_done.notify_one();
         tokio::task::yield_now().await;
