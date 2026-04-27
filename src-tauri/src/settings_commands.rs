@@ -390,9 +390,8 @@ pub(crate) fn json_value_to_toml_item(value: JsonValue, section: &str, key: &str
     Ok(match &value {
         JsonValue::Bool(b) => toml_value(*b),
         JsonValue::Number(n) => {
-            // Prefer integer representation; fall back to float for u64 values
-            // that exceed i64::MAX or numbers with fractional parts. serde_json
-            // guarantees as_f64() returns Some for every Number variant.
+            // Else branch: u64 above i64::MAX only; unreachable via ALLOWED_FIELDS
+            // (all tunables are u32/u64 within i64::MAX). Loader clamps regardless.
             if let Some(i) = n.as_i64() {
                 toml_value(i)
             } else {
