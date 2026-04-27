@@ -230,6 +230,15 @@ describe('SettingsWindow', () => {
     expect(__mockWindow.setFocus).not.toHaveBeenCalled();
   });
 
+  it('Cmd+W on the document hides the settings window', async () => {
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+
+    __mockWindow.hide.mockClear();
+    fireEvent.keyDown(document, { key: 'w', metaKey: true });
+    expect(__mockWindow.hide).toHaveBeenCalled();
+  });
+
   it('the close button hides the window instead of quitting', async () => {
     render(<SettingsWindow />);
     await waitFor(() => screen.getByRole('tab', { name: /AI/ }));

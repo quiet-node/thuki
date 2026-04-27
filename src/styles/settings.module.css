@@ -656,6 +656,7 @@
   /* Wrapper for About-tab overrides. Lets the tab tighten spacing and
    * suppress dividers that other tabs still want, without forking the
    * shared row/section primitives. */
+  padding-bottom: 8px;
 }
 /* Drop the row hairline between Permissions rows — Permissions reads as
  * one cluster, not two stacked items. The same divider stays useful in

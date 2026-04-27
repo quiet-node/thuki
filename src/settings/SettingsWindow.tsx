@@ -185,15 +185,18 @@ export function SettingsWindow() {
     });
   }, []);
 
-  // Cmd+, on the Settings window itself: re-focus / re-raise (mac convention
-  // for "already open"). Listener only fires while Settings is the focused
-  // window, which is the only context where this shortcut should do
-  // anything per design doc P5.
+  // Keyboard shortcuts scoped to the Settings window.
+  // Cmd+,: re-focus/re-raise (mac convention for "already open").
+  // Cmd+W: hide the window (mac convention for closing a panel).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.metaKey && e.key === ',') {
         e.preventDefault();
         void getCurrentWindow().setFocus();
+      }
+      if (e.metaKey && e.key === 'w') {
+        e.preventDefault();
+        void getCurrentWindow().hide();
       }
     };
     document.addEventListener('keydown', handler);
