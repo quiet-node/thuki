@@ -118,6 +118,8 @@ Size knobs for the floating Thuki window. The collapsed-bar height and the close
 | :---------------- | :------ | :------- | :-------------- | :---------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `overlay_width`   | `600.0` | Yes      | —               | `[200.0, 2000.0]` | How wide the floating Thuki window is, in pixels. Raise for wider input/chat at the cost of more screen space; lower to keep Thuki compact.                                            |
 | `max_chat_height` | `648.0` | Yes      | —               | `[200.0, 2000.0]` | The largest the chat window can grow to as conversation gets longer. Raise to see more chat history without scrolling; lower to keep Thuki from taking over your screen on long chats. |
+| `COLLAPSED_WINDOW_HEIGHT` | `80 px` | No | Frontend constant; overwritten by ResizeObserver before the frame renders, so any value in the user-visible range produces identical results. | — | The initial height of the collapsed input bar, in pixels. Overwritten by ResizeObserver on every render, so the value the user sees is always determined dynamically. |
+| `HIDE_COMMIT_DELAY_MS` | `350 ms` | No | Frontend constant; the value sits below normal perception across its usable range and creates a visible pop if dropped below the exit-animation duration. | — | How long Thuki waits after you close the window before it hides the underlying NSPanel. Keeps the exit animation from being cut off. |
 
 ### `[quote]`
 
