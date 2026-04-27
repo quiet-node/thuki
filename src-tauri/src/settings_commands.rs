@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 use parking_lot::RwLock;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use toml_edit::{value as toml_value, Array, DocumentMut, Item, Value as TomlValue};
 
 use crate::config::{
@@ -48,6 +48,22 @@ use crate::config::{
     defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS},
     AppConfig, ConfigError, CorruptMarker, CONFIG_FILE_NAME,
 };
+
+/// Frontend event emitted to every webview after the in-memory `AppConfig`
+/// has been replaced. Subscribers (the main overlay's `ConfigProvider` and
+/// the Settings window) refetch via `get_config` so React state matches the
+/// authoritative `RwLock<AppConfig>` snapshot. Without this broadcast, only
+/// backend-side consumers (e.g. `ask_ollama` reading `State<AppConfig>` per
+/// invocation) see config edits; frontend-driven values like window dims
+/// stay frozen at the mount-time snapshot.
+pub const CONFIG_UPDATED_EVENT: &str = "thuki://config-updated";
+
+/// Emits `CONFIG_UPDATED_EVENT` to every webview. Errors are intentionally
+/// swallowed: an emit failure must not break a successful disk write.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn emit_config_updated(app: &AppHandle) {
+    let _ = app.emit(CONFIG_UPDATED_EVENT, ());
+}
 
 /// Resolves the absolute path to the user config file.
 ///
@@ -108,6 +124,7 @@ pub fn set_config_field(
     let path = config_path(&app)?;
     let resolved = write_field_to_disk(&path, &section, &key, value)?;
     *state.write() = resolved.clone();
+    emit_config_updated(&app);
     Ok(resolved)
 }
 
@@ -166,6 +183,7 @@ pub fn reset_config(
     let path = config_path(&app)?;
     let resolved = reset_section_on_disk(&path, section.as_deref())?;
     *state.write() = resolved.clone();
+    emit_config_updated(&app);
     Ok(resolved)
 }
 
@@ -232,6 +250,7 @@ pub fn reload_config_from_disk(
     let path = config_path(&app)?;
     let resolved = config::load_from_path(&path)?;
     *state.write() = resolved.clone();
+    emit_config_updated(&app);
     Ok(resolved)
 }
 

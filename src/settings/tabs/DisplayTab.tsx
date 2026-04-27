@@ -43,26 +43,6 @@ export function DisplayTab({ config, resyncToken, onSaved }: DisplayTabProps) {
         />
         <SaveField
           section="window"
-          fieldKey="collapsed_height"
-          label="Collapsed height"
-          helper={configHelp('window', 'collapsed_height')}
-          initialValue={config.window.collapsed_height}
-          resyncToken={resyncToken}
-          onSaved={onSaved}
-          render={(value, setValue) => (
-            <NumberSlider
-              value={value}
-              min={40}
-              max={400}
-              step={5}
-              unit="px"
-              onChange={setValue}
-              ariaLabel="Collapsed height"
-            />
-          )}
-        />
-        <SaveField
-          section="window"
           fieldKey="max_chat_height"
           label="Max chat height"
           helper={configHelp('window', 'max_chat_height')}
@@ -78,26 +58,6 @@ export function DisplayTab({ config, resyncToken, onSaved }: DisplayTabProps) {
               unit="px"
               onChange={setValue}
               ariaLabel="Max chat height"
-            />
-          )}
-        />
-        <SaveField
-          section="window"
-          fieldKey="hide_commit_delay_ms"
-          label="Hide-commit delay"
-          helper={configHelp('window', 'hide_commit_delay_ms')}
-          initialValue={config.window.hide_commit_delay_ms}
-          resyncToken={resyncToken}
-          onSaved={onSaved}
-          render={(value, setValue) => (
-            <NumberSlider
-              value={value}
-              min={0}
-              max={5000}
-              step={50}
-              unit="ms"
-              onChange={setValue}
-              ariaLabel="Hide-commit delay"
             />
           )}
         />

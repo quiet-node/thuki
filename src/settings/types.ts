@@ -21,9 +21,7 @@ export interface RawAppConfig {
   };
   window: {
     overlay_width: number;
-    collapsed_height: number;
     max_chat_height: number;
-    hide_commit_delay_ms: number;
   };
   quote: {
     max_display_lines: number;

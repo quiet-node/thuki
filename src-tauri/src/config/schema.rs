@@ -14,9 +14,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{
-    DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS, DEFAULT_JUDGE_TIMEOUT_S,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
@@ -66,27 +65,27 @@ pub struct PromptSection {
     pub resolved_system: String,
 }
 
-/// Overlay window geometry and animation timing.
+/// Overlay window geometry. Only the user-tunable knobs live here; the
+/// collapsed-bar height and the close-animation deadline are baked into the
+/// frontend (see `App.tsx`) because their effective range is invisible to
+/// the user (collapsed height is overwritten by the ResizeObserver within a
+/// frame; the hide delay sits below normal perception across its usable
+/// range and creates a visible pop if dropped below the exit-animation
+/// duration).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct WindowSection {
     /// Logical width of the overlay window.
     pub overlay_width: f64,
-    /// Height of the collapsed (AskBar) state.
-    pub collapsed_height: f64,
     /// Maximum height the expanded chat window is allowed to grow to.
     pub max_chat_height: f64,
-    /// Delay before actually hiding the NSPanel after the exit animation starts.
-    pub hide_commit_delay_ms: u64,
 }
 
 impl Default for WindowSection {
     fn default() -> Self {
         Self {
             overlay_width: DEFAULT_OVERLAY_WIDTH,
-            collapsed_height: DEFAULT_COLLAPSED_HEIGHT,
             max_chat_height: DEFAULT_MAX_CHAT_HEIGHT,
-            hide_commit_delay_ms: DEFAULT_HIDE_COMMIT_DELAY_MS,
         }
     }
 }

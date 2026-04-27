@@ -40,9 +40,7 @@ system = ""
 
 [window]
 overlay_width = 600
-collapsed_height = 80
 max_chat_height = 648
-hide_commit_delay_ms = 350
 
 [quote]
 max_display_lines = 4
@@ -114,14 +112,12 @@ Controls the personality and instructions Thuki gives to the AI at the start of 
 
 ### `[window]`
 
-Size and animation timing for the floating Thuki window.
+Size knobs for the floating Thuki window. The collapsed-bar height and the close-animation deadline are baked into the frontend (see `App.tsx`) because their effective range is invisible to users (collapsed height is overwritten by the ResizeObserver within a frame; the hide delay sits below normal perception across its usable range and creates a visible pop if dropped below the exit-animation duration).
 
-| Constant               | Default | Tunable? | Why not tunable | Bounds            | Description                                                                                                                                                                                           |
-| :--------------------- | :------ | :------- | :-------------- | :---------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `overlay_width`        | `600.0` | Yes      | —               | `[200.0, 2000.0]` | How wide the floating Thuki window is, in pixels. Raise for wider input/chat at the cost of more screen space; lower to keep Thuki compact.                                                           |
-| `collapsed_height`     | `80.0`  | Yes      | —               | `[40.0, 400.0]`   | How tall the input bar is before you have asked anything (the small spotlight-style bar). Raise if you frequently paste long prompts and want more visible text; lower for a slimmer initial bar.     |
-| `max_chat_height`      | `648.0` | Yes      | —               | `[200.0, 2000.0]` | The largest the chat window can grow to as conversation gets longer. Raise to see more chat history without scrolling; lower to keep Thuki from taking over your screen on long chats.                |
-| `hide_commit_delay_ms` | `350`   | Yes      | —               | `[0, 5000]`       | How long (in milliseconds) Thuki keeps the close animation playing before the window actually disappears. Raise for a smoother, more leisurely exit; lower (or set 0) to hide instantly when closing. |
+| Constant          | Default | Tunable? | Why not tunable | Bounds            | Description                                                                                                                                                                            |
+| :---------------- | :------ | :------- | :-------------- | :---------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `overlay_width`   | `600.0` | Yes      | —               | `[200.0, 2000.0]` | How wide the floating Thuki window is, in pixels. Raise for wider input/chat at the cost of more screen space; lower to keep Thuki compact.                                            |
+| `max_chat_height` | `648.0` | Yes      | —               | `[200.0, 2000.0]` | The largest the chat window can grow to as conversation gets longer. Raise to see more chat history without scrolling; lower to keep Thuki from taking over your screen on long chats. |
 
 ### `[quote]`
 

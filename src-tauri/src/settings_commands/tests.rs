@@ -31,9 +31,7 @@ system = ""
 
 [window]
 overlay_width = 600.0
-collapsed_height = 80.0
 max_chat_height = 648.0
-hide_commit_delay_ms = 350
 
 [quote]
 max_display_lines = 4
@@ -61,12 +59,15 @@ fn parse_sample() -> DocumentMut {
 
 #[test]
 fn allowed_fields_count_matches_schema_field_count() {
-    // Hand-counted from `AppConfig`: inference(1) + prompt(1) + window(4) + quote(3)
-    // + search(10) = 19 tunable fields. The active model slug lives in the
-    // SQLite app_config table via ActiveModelState, not in TOML. If this
-    // assertion fails, the schema has drifted from the allowlist and someone
-    // added a field without extending ALLOWED_FIELDS.
-    assert_eq!(ALLOWED_FIELDS.len(), 19);
+    // Hand-counted from `AppConfig`: inference(1) + prompt(1) + window(2) + quote(3)
+    // + search(10) = 17 tunable fields. The active model slug lives in the
+    // SQLite app_config table via ActiveModelState, not in TOML. The collapsed
+    // bar height and hide-commit delay are baked into the frontend (see
+    // `WindowSection` doc) because they have no perceptible effect across
+    // their usable range. If this assertion fails, the schema has drifted
+    // from the allowlist and someone added a field without extending
+    // ALLOWED_FIELDS.
+    assert_eq!(ALLOWED_FIELDS.len(), 17);
 }
 
 #[test]
@@ -107,52 +108,33 @@ fn is_allowed_section_rejects_unknown() {
 #[test]
 fn coerce_integer_accepts_json_integer() {
     let doc = parse_sample();
-    let item = doc
-        .get("window")
-        .unwrap()
-        .get("hide_commit_delay_ms")
-        .unwrap();
-    let coerced = coerce_json_to_toml(item, json!(500), "window", "hide_commit_delay_ms").unwrap();
+    let item = doc.get("search").unwrap().get("search_timeout_s").unwrap();
+    let coerced = coerce_json_to_toml(item, json!(500), "search", "search_timeout_s").unwrap();
     assert_eq!(coerced.as_integer(), Some(500));
 }
 
 #[test]
 fn coerce_integer_accepts_whole_float() {
     let doc = parse_sample();
-    let item = doc
-        .get("window")
-        .unwrap()
-        .get("hide_commit_delay_ms")
-        .unwrap();
-    let coerced =
-        coerce_json_to_toml(item, json!(500.0), "window", "hide_commit_delay_ms").unwrap();
+    let item = doc.get("search").unwrap().get("search_timeout_s").unwrap();
+    let coerced = coerce_json_to_toml(item, json!(500.0), "search", "search_timeout_s").unwrap();
     assert_eq!(coerced.as_integer(), Some(500));
 }
 
 #[test]
 fn coerce_integer_rejects_fractional_float() {
     let doc = parse_sample();
-    let item = doc
-        .get("window")
-        .unwrap()
-        .get("hide_commit_delay_ms")
-        .unwrap();
-    let err =
-        coerce_json_to_toml(item, json!(500.5), "window", "hide_commit_delay_ms").unwrap_err();
-    matches_type_mismatch(&err, "window", "hide_commit_delay_ms");
+    let item = doc.get("search").unwrap().get("search_timeout_s").unwrap();
+    let err = coerce_json_to_toml(item, json!(500.5), "search", "search_timeout_s").unwrap_err();
+    matches_type_mismatch(&err, "search", "search_timeout_s");
 }
 
 #[test]
 fn coerce_integer_rejects_string() {
     let doc = parse_sample();
-    let item = doc
-        .get("window")
-        .unwrap()
-        .get("hide_commit_delay_ms")
-        .unwrap();
-    let err =
-        coerce_json_to_toml(item, json!("nope"), "window", "hide_commit_delay_ms").unwrap_err();
-    matches_type_mismatch(&err, "window", "hide_commit_delay_ms");
+    let item = doc.get("search").unwrap().get("search_timeout_s").unwrap();
+    let err = coerce_json_to_toml(item, json!("nope"), "search", "search_timeout_s").unwrap_err();
+    matches_type_mismatch(&err, "search", "search_timeout_s");
 }
 
 #[test]

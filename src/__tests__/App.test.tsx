@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import App from '../App';
+import { DEFAULT_CONFIG } from '../contexts/ConfigContext';
 import {
   invoke,
   emitTauriEvent,
@@ -660,7 +661,7 @@ describe('App', () => {
     expect(
       (container.querySelector('.morphing-container') as HTMLElement).style
         .height,
-    ).toBe('600px');
+    ).toBe(`${DEFAULT_CONFIG.window.maxChatHeight}px`);
   });
 
   it('keeps full chat height after clicking the expanded upward chat surface', async () => {
@@ -686,7 +687,9 @@ describe('App', () => {
     const morphingContainer = container.querySelector(
       '.morphing-container',
     ) as HTMLElement;
-    expect(morphingContainer.style.height).toBe('600px');
+    expect(morphingContainer.style.height).toBe(
+      `${DEFAULT_CONFIG.window.maxChatHeight}px`,
+    );
 
     const chatArea = container.querySelector('.chat-area');
     expect(chatArea).not.toBeNull();
@@ -696,7 +699,9 @@ describe('App', () => {
       fireEvent.mouseUp(window);
     });
 
-    expect(morphingContainer.style.height).toBe('600px');
+    expect(morphingContainer.style.height).toBe(
+      `${DEFAULT_CONFIG.window.maxChatHeight}px`,
+    );
   });
 
   it('renders nothing when overlay is hidden', async () => {

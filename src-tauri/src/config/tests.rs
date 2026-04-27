@@ -13,9 +13,8 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    DEFAULT_COLLAPSED_HEIGHT, DEFAULT_HIDE_COMMIT_DELAY_MS, DEFAULT_JUDGE_TIMEOUT_S,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
@@ -51,9 +50,7 @@ fn defaults_const_values_match_schema_defaults() {
     assert_eq!(c.prompt.system, "");
     assert_eq!(c.prompt.resolved_system, "");
     assert_eq!(c.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
-    assert_eq!(c.window.collapsed_height, DEFAULT_COLLAPSED_HEIGHT);
     assert_eq!(c.window.max_chat_height, DEFAULT_MAX_CHAT_HEIGHT);
-    assert_eq!(c.window.hide_commit_delay_ms, DEFAULT_HIDE_COMMIT_DELAY_MS);
     assert_eq!(c.quote.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
     assert_eq!(c.quote.max_display_chars, DEFAULT_QUOTE_MAX_DISPLAY_CHARS);
     assert_eq!(c.quote.max_context_length, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH);
@@ -388,14 +385,12 @@ fn resolve_out_of_bounds_floats_reset_to_defaults() {
         r#"
             [window]
             overlay_width = 0.0
-            collapsed_height = 99999.0
             max_chat_height = -1.0
         "#,
     )
     .unwrap();
     let config = load_from_path(&path).unwrap();
     assert_eq!(config.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
-    assert_eq!(config.window.collapsed_height, DEFAULT_COLLAPSED_HEIGHT);
     assert_eq!(config.window.max_chat_height, DEFAULT_MAX_CHAT_HEIGHT);
 }
 
@@ -413,25 +408,6 @@ fn resolve_non_finite_float_resets() {
     .unwrap();
     let config = load_from_path(&path).unwrap();
     assert_eq!(config.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
-}
-
-#[test]
-fn resolve_out_of_bounds_u64_resets() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        r#"
-            [window]
-            hide_commit_delay_ms = 99999
-        "#,
-    )
-    .unwrap();
-    let config = load_from_path(&path).unwrap();
-    assert_eq!(
-        config.window.hide_commit_delay_ms,
-        DEFAULT_HIDE_COMMIT_DELAY_MS
-    );
 }
 
 #[test]
@@ -472,9 +448,7 @@ fn resolve_values_within_bounds_are_preserved() {
         r#"
             [window]
             overlay_width = 800.0
-            collapsed_height = 100.0
             max_chat_height = 1000.0
-            hide_commit_delay_ms = 250
             [quote]
             max_display_lines = 6
             max_display_chars = 500
@@ -484,9 +458,7 @@ fn resolve_values_within_bounds_are_preserved() {
     .unwrap();
     let config = load_from_path(&path).unwrap();
     assert_eq!(config.window.overlay_width, 800.0);
-    assert_eq!(config.window.collapsed_height, 100.0);
     assert_eq!(config.window.max_chat_height, 1000.0);
-    assert_eq!(config.window.hide_commit_delay_ms, 250);
     assert_eq!(config.quote.max_display_lines, 6);
     assert_eq!(config.quote.max_display_chars, 500);
     assert_eq!(config.quote.max_context_length, 8192);

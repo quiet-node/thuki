@@ -19,11 +19,12 @@ pub const DEFAULT_SYSTEM_PROMPT_BASE: &str = include_str!("../../prompts/system_
 pub const SLASH_COMMAND_PROMPT_APPENDIX: &str =
     include_str!("../../prompts/generated/slash_commands.txt");
 
-/// Window defaults (logical pixels / milliseconds).
+/// Window defaults (logical pixels). Only the user-tunable knobs live here;
+/// the collapsed-bar height and the close-animation deadline are baked into
+/// `App.tsx` because their effective range is invisible to users (see the
+/// rationale comment on `WindowSection` in `schema.rs`).
 pub const DEFAULT_OVERLAY_WIDTH: f64 = 600.0;
-pub const DEFAULT_COLLAPSED_HEIGHT: f64 = 80.0;
 pub const DEFAULT_MAX_CHAT_HEIGHT: f64 = 648.0;
-pub const DEFAULT_HIDE_COMMIT_DELAY_MS: u64 = 350;
 
 /// Quote display defaults.
 pub const DEFAULT_QUOTE_MAX_DISPLAY_LINES: u32 = 4;
@@ -35,9 +36,7 @@ pub const DEFAULT_QUOTE_MAX_CONTEXT_LENGTH: u32 = 4096;
 /// themselves are intentionally generous: the intent is to catch typos
 /// (zeros, missing digits), not to second-guess tasteful customization.
 pub const BOUNDS_OVERLAY_WIDTH: (f64, f64) = (200.0, 2000.0);
-pub const BOUNDS_COLLAPSED_HEIGHT: (f64, f64) = (40.0, 400.0);
 pub const BOUNDS_MAX_CHAT_HEIGHT: (f64, f64) = (200.0, 2000.0);
-pub const BOUNDS_HIDE_COMMIT_DELAY_MS: (u64, u64) = (0, 5000);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_LINES: (u32, u32) = (1, 100);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_CHARS: (u32, u32) = (1, 10_000);
 pub const BOUNDS_QUOTE_MAX_CONTEXT_LENGTH: (u32, u32) = (1, 65_536);
@@ -155,9 +154,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("prompt", "system"),
     // [window]
     ("window", "overlay_width"),
-    ("window", "collapsed_height"),
     ("window", "max_chat_height"),
-    ("window", "hide_commit_delay_ms"),
     // [quote]
     ("quote", "max_display_lines"),
     ("quote", "max_display_chars"),

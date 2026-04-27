@@ -41,23 +41,27 @@ import './App.css';
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 const ONBOARDING_EVENT = 'thuki://onboarding';
 
+/** Total transparent padding around the morphing container: pt-2(8) + pb-6(24) + motion py-2(16). */
+const CONTAINER_VERTICAL_PADDING = 48;
+
+/**
+ * Collapsed-bar height used as the seed for the show-time upward-grow Y math
+ * and as the fallback when the morphing container reports `offsetHeight === 0`.
+ * Baked in: only observable for a single frame at show time before the
+ * ResizeObserver replaces it with the real measured height, so a user-tunable
+ * knob would have no perceptible effect.
+ */
+const COLLAPSED_WINDOW_HEIGHT = 80;
+
 /**
  * Authoritative deadline from the start of the hide transition to the native
  * window hide call. Accounts for WKWebView `requestAnimationFrame` throttling
  * in non-key windows, which stalls spring animations indefinitely and makes
  * `AnimatePresence.onExitComplete` unreliable when the panel is unfocused.
+ * Baked in: subjectively imperceptible across the usable range, and lowering
+ * it below the exit-animation duration causes a visible pop.
  */
 const HIDE_COMMIT_DELAY_MS = 350;
-
-/** Must match `OVERLAY_LOGICAL_WIDTH` in `src-tauri/src/lib.rs`. */
-const OVERLAY_WIDTH = 600;
-/** Total transparent padding around the morphing container: pt-2(8) + pb-6(24) + motion py-2(16). */
-const CONTAINER_VERTICAL_PADDING = 48;
-/** Max morphing-container height in chat mode (matches `max-h-[600px]`) + vertical padding. */
-const MAX_CHAT_WINDOW_HEIGHT = 600 + CONTAINER_VERTICAL_PADDING;
-
-/** Must match `OVERLAY_LOGICAL_HEIGHT_COLLAPSED` in `src-tauri/src/lib.rs`. */
-const COLLAPSED_WINDOW_HEIGHT = 80;
 
 /**
  * Parses a message to detect all valid slash commands present as whole words.
@@ -328,6 +332,34 @@ function App() {
   const maxHeightRef = useRef(0);
 
   /**
+   * Mirrors of the user-tunable window dimensions from `[window]` config.
+   * Stored in refs so the ResizeObserver closure can read the latest value
+   * without being recreated on each config edit (which would tear down /
+   * recreate the observer mid-stream). The effect below keeps refs in sync
+   * with React state and proactively re-applies width edits via `setSize`
+   * (the ResizeObserver only fires on DOM height changes, so a pure width
+   * change would otherwise stay invisible until the next content reflow).
+   */
+  const overlayWidthRef = useRef(config.window.overlayWidth);
+  const maxChatHeightRef = useRef(config.window.maxChatHeight);
+  useEffect(() => {
+    overlayWidthRef.current = config.window.overlayWidth;
+    maxChatHeightRef.current = config.window.maxChatHeight;
+    /* v8 ignore start -- requires real Tauri webview to setSize */
+    if (overlayState === 'visible') {
+      const node = morphingContainerNodeRef.current;
+      const currentHeight = node
+        ? Math.ceil(node.getBoundingClientRect().height) +
+          CONTAINER_VERTICAL_PADDING
+        : COLLAPSED_WINDOW_HEIGHT;
+      void getCurrentWindow().setSize(
+        new LogicalSize(config.window.overlayWidth, currentHeight),
+      );
+    }
+    /* v8 ignore stop */
+  }, [config.window.overlayWidth, config.window.maxChatHeight, overlayState]);
+
+  /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
    * rendered Framer Motion container actually mounts in the DOM. This fixes
    * the bug where a standard useEffect would run before the DOM node was ready,
@@ -375,12 +407,12 @@ function App() {
                 void invoke('set_window_frame', {
                   x,
                   y: newY,
-                  width: OVERLAY_WIDTH,
+                  width: overlayWidthRef.current,
                   height: targetHeight,
                 });
               } else {
                 void getCurrentWindow().setSize(
-                  new LogicalSize(OVERLAY_WIDTH, targetHeight),
+                  new LogicalSize(overlayWidthRef.current, targetHeight),
                 );
               }
             }
@@ -428,7 +460,8 @@ function App() {
       const shouldGrowUp =
         windowY !== null &&
         screenBottomY !== null &&
-        windowY + MAX_CHAT_WINDOW_HEIGHT > screenBottomY;
+        windowY + maxChatHeightRef.current + CONTAINER_VERTICAL_PADDING >
+          screenBottomY;
       growsUpwardRef.current = shouldGrowUp;
       setGrowsUpward(shouldGrowUp);
       maxHeightRef.current = 0;
@@ -588,7 +621,7 @@ function App() {
     const frameId = requestAnimationFrame(() => {
       // 0.4s and slightly softer cubic bezier specifically for upward morph
       container.style.transition = 'height 0.4s cubic-bezier(0.2, 0.8, 0.2, 1)';
-      container.style.height = '600px';
+      container.style.height = `${maxChatHeightRef.current}px`;
     });
 
     return () => cancelAnimationFrame(frameId);
@@ -1622,7 +1655,7 @@ function App() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -16, scale: 0.98 }}
             transition={{ type: 'spring', stiffness: 260, damping: 24 }}
-            className="w-full max-w-2xl px-4 py-2 overflow-visible"
+            className="w-full px-4 py-2 overflow-visible"
           >
             {/* Relative wrapper - serves as the positioning context for the
                 chat-mode history dropdown so it can sit outside the morphing
@@ -1640,8 +1673,9 @@ function App() {
                 style={{
                   transition:
                     'height 0.25s cubic-bezier(0.16, 1, 0.3, 1), min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+                  maxHeight: `${config.window.maxChatHeight}px`,
                 }}
-                className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border max-h-[600px] overflow-hidden ${
+                className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border overflow-hidden ${
                   isChatMode
                     ? `rounded-lg shadow-chat`
                     : 'rounded-2xl shadow-bar'

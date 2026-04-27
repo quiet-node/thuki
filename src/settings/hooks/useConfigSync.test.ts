@@ -17,9 +17,7 @@ const CONFIG_A: RawAppConfig = {
   prompt: { system: '' },
   window: {
     overlay_width: 600,
-    collapsed_height: 80,
     max_chat_height: 648,
-    hide_commit_delay_ms: 350,
   },
   quote: {
     max_display_lines: 4,

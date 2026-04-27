@@ -23,12 +23,8 @@ const HELPERS = {
   window: {
     overlay_width:
       'How wide the floating Thuki window is, in pixels. Raise for wider input/chat at the cost of more screen space; lower to keep Thuki compact.',
-    collapsed_height:
-      'How tall the input bar is before you have asked anything (the small spotlight-style bar). Raise if you frequently paste long prompts and want more visible text; lower for a slimmer initial bar.',
     max_chat_height:
       'The largest the chat window can grow to as conversation gets longer. Raise to see more chat history without scrolling; lower to keep Thuki from taking over your screen on long chats.',
-    hide_commit_delay_ms:
-      'How long (in milliseconds) Thuki keeps the close animation playing before the window actually disappears. Raise for a smoother, more leisurely exit; lower (or set 0) to hide instantly when closing.',
   },
   quote: {
     max_display_lines:

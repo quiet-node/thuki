@@ -87,7 +87,8 @@ interface ConversationViewProps {
  * Renders the expanded chat history area of the Thuki application.
  *
  * Always fills its parent's available height (flex-1) so the window expands
- * to the morphing container's max-h-[600px] immediately - no dynamic height
+ * to the morphing container's `max-chat-height` cap (config-driven, applied
+ * as an inline `style.maxHeight` in App.tsx) immediately - no dynamic height
  * calculation. Content beyond the visible area scrolls inside the flex child.
  *
  * Encapsulates the scrolling logic ("smart auto-scroll") that pins the view
