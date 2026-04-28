@@ -188,6 +188,11 @@ export function ModelPickerPanel({
           autoFocus
           className="flex-1 min-w-0 bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
         />
+        {!compact && (
+          <span className="shrink-0 text-[10px] text-text-secondary/60 italic">
+            Larger models answer better.
+          </span>
+        )}
         <Tooltip label={OLLAMA_PILL_TOOLTIP} multiline>
           <button
             type="button"
@@ -289,6 +294,14 @@ export function ModelPickerPanel({
           })
         )}
       </div>
+
+      {compact && models.length > 0 && (
+        <div className="border-t border-surface-border px-3 py-2">
+          <p className="text-[10px] text-text-secondary/60 text-center">
+            Larger models answer better.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
