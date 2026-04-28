@@ -43,24 +43,46 @@ use tauri::{
 use tauri::ActivationPolicy;
 
 #[cfg(target_os = "macos")]
-use tauri_nspanel::{
-    tauri_panel, CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt,
-};
+use tauri_nspanel::{CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt};
 
 // ─── NSPanel definition (macOS only) ────────────────────────────────────────
 
-// ThukiPanel - custom NSPanel subclass for the overlay.
-// `can_become_key_window: true` allows keyboard input for the chat.
-// `is_floating_panel: true` keeps the panel above normal windows.
+// Each tauri_panel! invocation emits `use` statements at its call-site
+// module scope. Two calls in the same module cause name collisions, so
+// each panel subclass lives in its own private module.
+//
+// ThukiPanel - overlay NSPanel: floating, keyboard input for chat.
+// SettingsPanel - settings NSPanel: non-floating, keyboard input,
+//   no ActivationPolicy switch so the Dock icon never appears.
 #[cfg(target_os = "macos")]
-tauri_panel! {
-    panel!(ThukiPanel {
-        config: {
-            can_become_key_window: true,
-            is_floating_panel: true
-        }
-    })
+mod _thuki_panel {
+    use tauri::Manager;
+    tauri_nspanel::tauri_panel! {
+        panel!(ThukiPanel {
+            config: {
+                can_become_key_window: true,
+                is_floating_panel: true
+            }
+        })
+    }
 }
+#[cfg(target_os = "macos")]
+use _thuki_panel::ThukiPanel;
+
+#[cfg(target_os = "macos")]
+mod _settings_panel {
+    use tauri::Manager;
+    tauri_nspanel::tauri_panel! {
+        panel!(SettingsPanel {
+            config: {
+                can_become_key_window: true,
+                is_floating_panel: false
+            }
+        })
+    }
+}
+#[cfg(target_os = "macos")]
+use _settings_panel::SettingsPanel;
 
 // ─── Window helpers ─────────────────────────────────────────────────────────
 
@@ -288,35 +310,35 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 
 /// Shows (or focuses, if already visible) the Settings window.
 ///
-/// Setup contract:
-/// 1. Switch the app's `ActivationPolicy` to `Regular` while Settings is
-///    visible. Without this, an Accessory app cannot reliably take focus on
-///    its own non-overlay windows. Restored to `Accessory` on close.
-/// 2. `show()` + `set_focus()` so the user lands in the window even if Thuki
-///    was not frontmost when Settings was invoked from the tray.
+/// The settings window is converted to a SettingsPanel NSPanel subclass
+/// (done once in `init_settings_panel` during setup). Using NSPanel with
+/// `can_become_key_window: true` allows the window to receive keyboard focus
+/// without switching the app's ActivationPolicy to Regular. Switching to
+/// Regular is what causes the Dock icon to appear; restoring it back to
+/// Accessory is unreliable when the app is frontmost. Staying in Accessory
+/// mode permanently avoids both problems.
 ///
 /// Idempotent: invoking while Settings is already visible re-focuses without
 /// double-mounting the React tree (close handler hides instead of destroying).
 fn show_settings_window(app_handle: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        match app_handle.get_webview_panel("settings") {
+            Ok(panel) => {
+                panel.show_and_make_key();
+                return;
+            }
+            Err(e) => {
+                eprintln!("thuki: [settings] get_webview_panel failed: {e:?}");
+            }
+        }
+    }
     let Some(window) = app_handle.get_webview_window("settings") else {
         eprintln!("thuki: [settings] window 'settings' not found in app config");
         return;
     };
-    #[cfg(target_os = "macos")]
-    {
-        let _ = app_handle.set_activation_policy(ActivationPolicy::Regular);
-    }
     let _ = window.show();
     let _ = window.set_focus();
-    let _ = window.unminimize();
-}
-
-/// Restores the Accessory activation policy after the Settings window closes
-/// or is destroyed. Called from the WindowEvent::CloseRequested handler in
-/// the run loop. Idempotent.
-#[cfg(target_os = "macos")]
-fn restore_accessory_policy(app_handle: &tauri::AppHandle) {
-    let _ = app_handle.set_activation_policy(ActivationPolicy::Accessory);
 }
 
 /// Requests an animated hide sequence from the frontend. The actual native
@@ -592,6 +614,34 @@ fn init_panel(app_handle: &tauri::AppHandle) {
     panel.set_has_shadow(false);
 }
 
+// ─── Settings panel initialisation ──────────────────────────────────────────
+
+/// Converts the settings Tauri window into a SettingsPanel NSPanel subclass.
+///
+/// Called once during app setup. The resulting panel handle is stored in the
+/// tauri-nspanel WebviewPanelManager, so subsequent calls to
+/// `get_webview_panel("settings")` retrieve the same panel without
+/// re-converting. Not floating and at normal window level so Settings sits
+/// in the window stack like any standard app window.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn init_settings_panel(app_handle: &tauri::AppHandle) {
+    let Some(window) = app_handle.get_webview_window("settings") else {
+        eprintln!("thuki: [settings] window not found during init_settings_panel");
+        return;
+    };
+    match window.to_panel::<SettingsPanel>() {
+        Ok(panel) => {
+            panel.set_floating_panel(false);
+            panel.set_level(0);
+            panel.set_has_shadow(true);
+        }
+        Err(e) => {
+            eprintln!("thuki: [settings] NSPanel conversion failed: {e:?}");
+        }
+    }
+}
+
 // ─── Onboarding window ───────────────────────────────────────────────────────
 
 /// Sizes the main window for the onboarding screen, centers it, makes it
@@ -711,6 +761,8 @@ pub fn run() {
             // ── NSPanel conversion (macOS only) ──────────────────────────
             #[cfg(target_os = "macos")]
             init_panel(app.app_handle());
+            #[cfg(target_os = "macos")]
+            init_settings_panel(app.app_handle());
 
             // ── System tray icon + menu ───────────────────────────────────
             // Order chosen for muscle-memory parity with mac tray apps
@@ -936,15 +988,11 @@ pub fn run() {
                     request_overlay_hide(app_handle);
                 } else if label == "settings" {
                     // Hide instead of destroy so React state (active tab,
-                    // form values) survives close/reopen. Restore the
-                    // accessory activation policy so Thuki returns to its
-                    // dockless steady state.
+                    // form values) survives close/reopen.
                     api.prevent_close();
                     if let Some(window) = app_handle.get_webview_window("settings") {
                         let _ = window.hide();
                     }
-                    #[cfg(target_os = "macos")]
-                    restore_accessory_policy(app_handle);
                 }
             }
         });
