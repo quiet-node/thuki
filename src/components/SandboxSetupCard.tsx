@@ -8,7 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
  */
 export function SandboxSetupCard() {
   const SETUP_URL =
-    'https://github.com/quiet-node/thuki#setup-the-search-sandbox-optional-required-for-search';
+    'https://github.com/quiet-node/thuki#step-2-setup-the-search-sandbox-optional-required-for-search';
 
   const handleOpenGuide = () => {
     void invoke('open_url', { url: SETUP_URL });
