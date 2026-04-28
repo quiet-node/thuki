@@ -49,10 +49,12 @@ use tauri_nspanel::{CollectionBehavior, ManagerExt, PanelLevel, StyleMask, Webvi
 
 // Each tauri_panel! invocation emits `use` statements at its call-site
 // module scope. Two calls in the same module cause name collisions, so
-// each panel subclass lives in its own private module.
+// each panel subclass lives in its own private module. The underscore
+// prefix marks each module as an internal implementation detail; add
+// any future panel subclass the same way.
 //
 // ThukiPanel - overlay NSPanel: floating, keyboard input for chat.
-// SettingsPanel - settings NSPanel: non-floating, keyboard input,
+// ThukiSettingsPanel - settings NSPanel: non-floating, keyboard input,
 //   no ActivationPolicy switch so the Dock icon never appears.
 #[cfg(target_os = "macos")]
 mod _thuki_panel {
@@ -73,7 +75,7 @@ use _thuki_panel::ThukiPanel;
 mod _settings_panel {
     use tauri::Manager;
     tauri_nspanel::tauri_panel! {
-        panel!(SettingsPanel {
+        panel!(ThukiSettingsPanel {
             config: {
                 can_become_key_window: true,
                 is_floating_panel: false
@@ -82,7 +84,7 @@ mod _settings_panel {
     }
 }
 #[cfg(target_os = "macos")]
-use _settings_panel::SettingsPanel;
+use _settings_panel::ThukiSettingsPanel;
 
 // ─── Window helpers ─────────────────────────────────────────────────────────
 
@@ -310,7 +312,7 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 
 /// Shows (or focuses, if already visible) the Settings window.
 ///
-/// The settings window is converted to a SettingsPanel NSPanel subclass
+/// The settings window is converted to a ThukiSettingsPanel NSPanel subclass
 /// (done once in `init_settings_panel` during setup). Using NSPanel with
 /// `can_become_key_window: true` allows the window to receive keyboard focus
 /// without switching the app's ActivationPolicy to Regular. Switching to
@@ -320,6 +322,9 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 ///
 /// Idempotent: invoking while Settings is already visible re-focuses without
 /// double-mounting the React tree (close handler hides instead of destroying).
+///
+/// Falls back to raw WebviewWindow show/focus if the panel handle is
+/// unavailable (e.g., if init_settings_panel failed at startup).
 fn show_settings_window(app_handle: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
@@ -616,7 +621,7 @@ fn init_panel(app_handle: &tauri::AppHandle) {
 
 // ─── Settings panel initialisation ──────────────────────────────────────────
 
-/// Converts the settings Tauri window into a SettingsPanel NSPanel subclass.
+/// Converts the settings Tauri window into a ThukiSettingsPanel NSPanel subclass.
 ///
 /// Called once during app setup. The resulting panel handle is stored in the
 /// tauri-nspanel WebviewPanelManager, so subsequent calls to
@@ -630,7 +635,7 @@ fn init_settings_panel(app_handle: &tauri::AppHandle) {
         eprintln!("thuki: [settings] window not found during init_settings_panel");
         return;
     };
-    match window.to_panel::<SettingsPanel>() {
+    match window.to_panel::<ThukiSettingsPanel>() {
         Ok(panel) => {
             panel.set_floating_panel(false);
             panel.set_level(0);
@@ -738,8 +743,9 @@ fn spawn_periodic_image_cleanup(app_handle: tauri::AppHandle) {
 /// Setup order:
 /// 1. `ActivationPolicy::Accessory` suppresses the Dock icon.
 /// 2. The main window is converted to an NSPanel for fullscreen overlay.
-/// 3. System tray is registered; double-tap Option listener starts.
-/// 4. `CloseRequested` is intercepted to hide instead of destroy.
+/// 3. The settings window is converted to a ThukiSettingsPanel NSPanel subclass.
+/// 4. System tray is registered; double-tap Option listener starts.
+/// 5. `CloseRequested` is intercepted to hide instead of destroy.
 ///
 /// # Panics
 ///
