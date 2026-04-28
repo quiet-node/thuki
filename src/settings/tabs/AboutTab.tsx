@@ -29,9 +29,16 @@ interface PermissionsState {
   screenRecording: boolean;
 }
 
-const APP_VERSION: string = pkg.version;
-
 export function AboutTab({ onSaved, onReload }: AboutTabProps) {
+  // Evaluated per-render so vi.stubEnv works in tests.
+  // VITE_GIT_COMMIT_SHA is injected by the nightly CI workflow; absent in
+  // local dev and stable release builds. When present, the version is
+  // suffixed with semver build metadata: 0.6.1+nightly.abc1234
+  const sha = import.meta.env.VITE_GIT_COMMIT_SHA?.slice(0, 7);
+  const APP_VERSION = sha ? `${pkg.version}+nightly.${sha}` : pkg.version;
+  const releaseUrl = sha
+    ? 'https://github.com/quiet-node/thuki/releases/tag/nightly'
+    : `https://github.com/quiet-node/thuki/releases/tag/v${pkg.version}`;
   const [confirmResetAll, setConfirmResetAll] = useState(false);
   const [perms, setPerms] = useState<PermissionsState>({
     accessibility: false,
@@ -77,11 +84,7 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
             type="button"
             className={styles.aboutHeroVersion}
             aria-label={`View v${APP_VERSION} release notes on GitHub`}
-            onClick={() =>
-              void invoke('open_url', {
-                url: `https://github.com/quiet-node/thuki/releases/tag/v${APP_VERSION}`,
-              })
-            }
+            onClick={() => void invoke('open_url', { url: releaseUrl })}
           >
             v{APP_VERSION}
           </button>
