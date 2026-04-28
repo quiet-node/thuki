@@ -84,9 +84,7 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
             type="button"
             className={styles.aboutHeroVersion}
             aria-label={`View v${APP_VERSION} release notes on GitHub`}
-            onClick={() =>
-              void invoke('open_url', { url: releaseUrl })
-            }
+            onClick={() => void invoke('open_url', { url: releaseUrl })}
           >
             v{APP_VERSION}
           </button>
