@@ -452,7 +452,11 @@ mod tests {
             is_pressed: false,
             last_activation: None,
         };
-        assert!(!evaluate_activation_at(&mut state, true, base + Duration::from_millis(400)));
+        assert!(!evaluate_activation_at(
+            &mut state,
+            true,
+            base + Duration::from_millis(400)
+        ));
     }
 
     #[test]
@@ -463,7 +467,11 @@ mod tests {
             is_pressed: false,
             last_activation: None,
         };
-        assert!(evaluate_activation_at(&mut state, true, base + Duration::from_millis(399)));
+        assert!(evaluate_activation_at(
+            &mut state,
+            true,
+            base + Duration::from_millis(399)
+        ));
     }
 
     #[test]
