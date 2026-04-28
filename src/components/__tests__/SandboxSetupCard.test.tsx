@@ -35,7 +35,7 @@ describe('SandboxSetupCard', () => {
     const button = screen.getByRole('button', { name: /Setup Guide/i });
     fireEvent.click(button);
     expect(invoke).toHaveBeenCalledWith('open_url', {
-      url: 'https://github.com/quiet-node/thuki#setup-the-search-sandbox-optional-required-for-search',
+      url: 'https://github.com/quiet-node/thuki#step-2-setup-the-search-sandbox-optional-required-for-search',
     });
   });
 
