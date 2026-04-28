@@ -95,6 +95,10 @@ jobs:
         run: bun run test:all:coverage
 
       - name: Build frontend
+        # Inject the full commit SHA; AboutTab slices it to 7 chars for display
+        # (e.g. v0.6.1+nightly.abc1234). Absent in local dev and stable builds.
+        env:
+          VITE_GIT_COMMIT_SHA: ${{ needs.guard.outputs.head_sha }}
         run: bun run build:frontend
 
       - name: Build Tauri app

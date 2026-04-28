@@ -121,19 +121,31 @@ describe('AboutTab', () => {
     );
   });
 
-  it('version button opens the GitHub release notes', async () => {
+  it('version button links to the stable release tag when no SHA is set', async () => {
     renderAbout();
     await waitFor(() => screen.getByText(/v\d/));
-    const versionBtn = screen.getByRole('button', {
-      name: /release notes on GitHub/,
-    });
-    fireEvent.click(versionBtn);
+    fireEvent.click(
+      screen.getByRole('button', { name: /release notes on GitHub/ }),
+    );
     expect(invokeMock).toHaveBeenCalledWith(
       'open_url',
       expect.objectContaining({
         url: expect.stringContaining('/releases/tag/v'),
       }),
     );
+  });
+
+  it('version button links to the nightly release and shows build metadata when VITE_GIT_COMMIT_SHA is set', async () => {
+    vi.stubEnv('VITE_GIT_COMMIT_SHA', 'abc1234def');
+    renderAbout();
+    await waitFor(() => screen.getByText(/nightly/));
+    fireEvent.click(
+      screen.getByRole('button', { name: /release notes on GitHub/ }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith('open_url', {
+      url: 'https://github.com/quiet-node/thuki/releases/tag/nightly',
+    });
+    vi.unstubAllEnvs();
   });
 
   it('GitHub icon button opens the repo', async () => {
