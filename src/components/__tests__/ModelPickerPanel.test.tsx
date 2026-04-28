@@ -241,17 +241,23 @@ describe('ModelPickerPanel', () => {
 
   it('shows nudge inline in header when not compact', () => {
     renderPanel();
-    expect(screen.getByText('Larger models answer better.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Larger models answer better.'),
+    ).toBeInTheDocument();
   });
 
   it('shows nudge as bottom footer when compact', () => {
     renderPanel({ compact: true });
-    expect(screen.getByText('Larger models answer better.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Larger models answer better.'),
+    ).toBeInTheDocument();
   });
 
   it('hides compact footer nudge when no models are installed', () => {
     renderPanel({ compact: true, models: [] });
-    expect(screen.queryByText('Larger models answer better.')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Larger models answer better.'),
+    ).not.toBeInTheDocument();
   });
 
   it('ignores other keys without preventing default or firing handlers', () => {
