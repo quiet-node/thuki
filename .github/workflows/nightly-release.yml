@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
+      head_sha: ${{ steps.check.outputs.head_sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -25,7 +27,11 @@ jobs:
         run: |
           NIGHTLY_SHA=$(git rev-parse nightly 2>/dev/null || echo "none")
           HEAD_SHA=$(git rev-parse HEAD)
-          if [ "$NIGHTLY_SHA" = "$HEAD_SHA" ]; then
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "manual trigger, forcing build"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          elif [ "$NIGHTLY_SHA" = "$HEAD_SHA" ]; then
             echo "nightly tag already at HEAD ($HEAD_SHA), skipping build"
             echo "should_build=false" >> "$GITHUB_OUTPUT"
           else
@@ -42,6 +48,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
+          ref: ${{ needs.guard.outputs.head_sha }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
@@ -110,13 +117,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -f nightly
-          git push origin nightly --force
+          git push origin refs/tags/nightly --force
 
       - name: Publish nightly prerelease
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete nightly --yes 2>/dev/null || true
+          gh release delete nightly --yes || true
           gh release create nightly \
             --title "Thuki Nightly" \
             --notes "Automated build from main ($(git rev-parse --short HEAD)). Not for production use." \
