@@ -94,14 +94,13 @@ jobs:
       - name: Run all tests with coverage enforcement
         run: bun run test:all:coverage
 
-      - name: Build frontend
-        # Inject the full commit SHA; AboutTab slices it to 7 chars for display
-        # (e.g. v0.6.1+nightly.abc1234). Absent in local dev and stable builds.
+      - name: Build Tauri app
+        # VITE_GIT_COMMIT_SHA is set here, not on a separate frontend step, because
+        # tauri build runs beforeBuildCommand (bun run build:frontend) internally.
+        # A separate frontend build step would be overwritten by that second pass.
+        # AboutTab slices the SHA to 7 chars: v0.6.1+nightly.abc1234
         env:
           VITE_GIT_COMMIT_SHA: ${{ needs.guard.outputs.head_sha }}
-        run: bun run build:frontend
-
-      - name: Build Tauri app
         run: bun run build:backend
 
       # Ad-hoc signing with "-" satisfies Gatekeeper for drag-install without
