@@ -1,9 +1,14 @@
 name: Nightly Release
 
+# Fires on every push to main and on manual re-trigger.
+# Produces a single rolling "nightly" prerelease DMG: one tag, one release,
+# always pointing to the latest successful build on main.
 on:
   push:
     branches:
       - main
+  # workflow_dispatch lets you force a rebuild without a no-op commit,
+  # useful when a previous run failed due to a transient CI flake.
   workflow_dispatch:
 
 permissions:
@@ -12,9 +17,14 @@ permissions:
 jobs:
   guard:
     name: Check if build needed
+    # Runs on a cheap ubuntu runner to avoid spinning up a macOS runner
+    # when the nightly tag already points to HEAD (duplicate push, bot commit, etc.).
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
+      # head_sha pins the exact commit this guard evaluated. The nightly job
+      # checks out this SHA explicitly so a concurrent push between jobs cannot
+      # cause the build and the tag to diverge.
       head_sha: ${{ steps.check.outputs.head_sha }}
     steps:
       - name: Checkout repository
@@ -28,6 +38,7 @@ jobs:
           NIGHTLY_SHA=$(git rev-parse nightly 2>/dev/null || echo "none")
           HEAD_SHA=$(git rev-parse HEAD)
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          # Manual triggers always build, regardless of tag state.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "manual trigger, forcing build"
             echo "should_build=true" >> "$GITHUB_OUTPUT"
@@ -48,6 +59,9 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
+          # Pin to the SHA guard evaluated, not the live HEAD. Without this, a
+          # second push landing between guard and this checkout would build a
+          # different commit than the one guard approved.
           ref: ${{ needs.guard.outputs.head_sha }}
 
       - name: Setup Bun
@@ -58,6 +72,8 @@ jobs:
       - name: Install stable Rust toolchain
         run: rustup toolchain install stable --no-self-update
 
+      # The nightly toolchain with llvm-tools is required by cargo-llvm-cov
+      # to instrument binaries and enforce the 100% coverage gate.
       - name: Install nightly Rust toolchain
         run: rustup toolchain install nightly-2026-03-30 --component llvm-tools --no-self-update
 
@@ -84,6 +100,9 @@ jobs:
       - name: Build Tauri app
         run: bun run build:backend
 
+      # Ad-hoc signing with "-" satisfies Gatekeeper for drag-install without
+      # requiring an Apple Developer certificate in CI secrets. The app is not
+      # notarized, which is acceptable for a nightly/dev artifact.
       - name: Ad-hoc sign the app
         run: |
           codesign --deep --force --sign - src-tauri/target/release/bundle/macos/Thuki.app
@@ -112,6 +131,8 @@ jobs:
 
           rm -rf /tmp/thuki-dmg-src
 
+      # refs/tags/ is explicit to prevent ambiguity if a "nightly" branch
+      # is ever created alongside the tag.
       - name: Force-push nightly tag
         run: |
           git config user.name "github-actions[bot]"
@@ -119,10 +140,14 @@ jobs:
           git tag -f nightly
           git push origin refs/tags/nightly --force
 
+      # Floating release: delete the previous nightly release (if it exists)
+      # then recreate it. There is always exactly one nightly prerelease,
+      # always pointing to the latest build.
       - name: Publish nightly prerelease
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # "|| true" tolerates the first run when no nightly release exists yet.
           gh release delete nightly --yes || true
           gh release create nightly \
             --title "Thuki Nightly" \
