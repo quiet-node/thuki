@@ -32,6 +32,22 @@ describe('WindowControls', () => {
     expect(container.querySelector('.bg-surface-border')).not.toBeNull();
   });
 
+  it('close button blurs itself on programmatic focus (no relatedTarget)', () => {
+    render(<WindowControls onClose={vi.fn()} />);
+    const btn = screen.getByRole('button', { name: 'Close window' });
+    const blurSpy = vi.spyOn(btn, 'blur');
+    fireEvent.focus(btn, { relatedTarget: null });
+    expect(blurSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('close button keeps focus when focused via keyboard tab (relatedTarget present)', () => {
+    render(<WindowControls onClose={vi.fn()} />);
+    const btn = screen.getByRole('button', { name: 'Close window' });
+    const blurSpy = vi.spyOn(btn, 'blur');
+    fireEvent.focus(btn, { relatedTarget: document.body });
+    expect(blurSpy).not.toHaveBeenCalled();
+  });
+
   it('close button has x icon svg', () => {
     render(<WindowControls onClose={vi.fn()} />);
     const closeBtn = screen.getByRole('button', { name: 'Close window' });

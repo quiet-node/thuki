@@ -96,10 +96,10 @@ struct ActivationState {
 ///
 /// Implements a state machine that filters for state transitions (press/release)
 /// and enforces temporal constraints defined by [`ACTIVATION_WINDOW`].
-fn evaluate_activation(state: &mut ActivationState, is_press: bool) -> bool {
+/// Accepts an explicit `now` instant so tests can inject deterministic time.
+fn evaluate_activation_at(state: &mut ActivationState, is_press: bool, now: Instant) -> bool {
     if is_press && !state.is_pressed {
         state.is_pressed = true;
-        let now = Instant::now();
 
         // Enforce cooldown period after a successful activation to prevent
         // rapid tapping from triggering multiple toggles.
@@ -122,6 +122,10 @@ fn evaluate_activation(state: &mut ActivationState, is_press: bool) -> bool {
     }
 
     false
+}
+
+fn evaluate_activation(state: &mut ActivationState, is_press: bool) -> bool {
+    evaluate_activation_at(state, is_press, Instant::now())
 }
 
 // ─── Public Interface ────────────────────────────────────────────────────────
@@ -442,24 +446,32 @@ mod tests {
 
     #[test]
     fn boundary_timing_at_exactly_400ms_is_rejected() {
+        let base = Instant::now();
         let mut state = ActivationState {
-            last_trigger: Some(Instant::now() - Duration::from_millis(400)),
+            last_trigger: Some(base),
             is_pressed: false,
             last_activation: None,
         };
-
-        assert!(!evaluate_activation(&mut state, true));
+        assert!(!evaluate_activation_at(
+            &mut state,
+            true,
+            base + Duration::from_millis(400)
+        ));
     }
 
     #[test]
     fn boundary_timing_at_399ms_is_accepted() {
+        let base = Instant::now();
         let mut state = ActivationState {
-            last_trigger: Some(Instant::now() - Duration::from_millis(399)),
+            last_trigger: Some(base),
             is_pressed: false,
             last_activation: None,
         };
-
-        assert!(evaluate_activation(&mut state, true));
+        assert!(evaluate_activation_at(
+            &mut state,
+            true,
+            base + Duration::from_millis(399)
+        ));
     }
 
     #[test]

@@ -174,6 +174,13 @@ export const WindowControls = memo(function WindowControls({
         <button
           type="button"
           onClick={onClose}
+          onFocus={(e) => {
+            // show_and_make_key() calls makeFirstResponder:contentView, which
+            // causes WebKit to auto-focus the first focusable element. Keyboard
+            // Tab focus always carries a relatedTarget; programmatic focus does
+            // not. Blur immediately so no focus ring appears on panel open.
+            if (e.relatedTarget === null) e.currentTarget.blur();
+          }}
           className="group/close-btn p-1.5 -m-1.5 flex items-center justify-center rounded-full cursor-pointer"
           aria-label="Close window"
         >
