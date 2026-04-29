@@ -234,6 +234,30 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
         return;
     }
 
+    // Pre-load the active model so the user's first message does not pay
+    // the cold-start penalty. Fires on all show paths: double-tap, tray,
+    // and first-launch auto-show.
+    let warmup_model = app_handle
+        .state::<models::ActiveModelState>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
+    if let Some(model) = warmup_model {
+        let warmup_config = app_handle
+            .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+            .read()
+            .clone();
+        let endpoint = format!(
+            "{}/api/generate",
+            warmup_config.inference.ollama_url.trim_end_matches('/')
+        );
+        let client = app_handle.state::<reqwest::Client>().inner().clone();
+        app_handle
+            .state::<warmup::WarmupState>()
+            .fire(endpoint, model, client);
+    }
+
     // Extract before building local_ctx to avoid an extra clone.
     let selected_text = ctx.selected_text;
 
@@ -840,31 +864,6 @@ pub fn run() {
                         let is_visible = OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst);
                         let handle = app_handle.clone();
                         let handle2 = app_handle.clone();
-
-                        // Pre-load the active model into VRAM so the user's first message
-                        // does not pay the cold-start penalty.
-                        if !is_visible {
-                            let model = app_handle
-                                .state::<models::ActiveModelState>()
-                                .0
-                                .lock()
-                                .ok()
-                                .and_then(|g| g.clone());
-                            if let Some(model) = model {
-                                let config = app_handle
-                                    .state::<parking_lot::RwLock<crate::config::AppConfig>>()
-                                    .read()
-                                    .clone();
-                                let endpoint = format!(
-                                    "{}/api/generate",
-                                    config.inference.ollama_url.trim_end_matches('/')
-                                );
-                                let client = app_handle.state::<reqwest::Client>().inner().clone();
-                                app_handle
-                                    .state::<warmup::WarmupState>()
-                                    .fire(endpoint, model, client);
-                            }
-                        }
 
                         // Dispatch context capture to a dedicated thread so the event
                         // tap callback returns immediately. AX attribute lookups and
