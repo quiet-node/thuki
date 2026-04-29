@@ -25,6 +25,7 @@ pub mod onboarding;
 pub mod screenshot;
 pub mod search;
 pub mod settings_commands;
+pub mod warmup;
 
 #[cfg(target_os = "macos")]
 mod activator;
@@ -839,6 +840,32 @@ pub fn run() {
                         let is_visible = OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst);
                         let handle = app_handle.clone();
                         let handle2 = app_handle.clone();
+
+                        // Pre-load the active model into VRAM so the user's first message
+                        // does not pay the cold-start penalty.
+                        if !is_visible {
+                            let model = app_handle
+                                .state::<models::ActiveModelState>()
+                                .0
+                                .lock()
+                                .ok()
+                                .and_then(|g| g.clone());
+                            if let Some(model) = model {
+                                let config = app_handle
+                                    .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                                    .read()
+                                    .clone();
+                                let endpoint = format!(
+                                    "{}/api/generate",
+                                    config.inference.ollama_url.trim_end_matches('/')
+                                );
+                                let client = app_handle.state::<reqwest::Client>().inner().clone();
+                                app_handle
+                                    .state::<warmup::WarmupState>()
+                                    .fire(endpoint, model, client);
+                            }
+                        }
+
                         // Dispatch context capture to a dedicated thread so the event
                         // tap callback returns immediately. AX attribute lookups and
                         // clipboard simulation can block for seconds (macOS AX default
@@ -858,6 +885,7 @@ pub fn run() {
 
             // ── Persistent HTTP client ────────────────────────────────
             app.manage(reqwest::Client::new());
+            app.manage(warmup::WarmupState::new());
 
             // ── Configuration (TOML file at app_config_dir) ─────────
             // Loaded once at startup. Missing file -> seed defaults.
