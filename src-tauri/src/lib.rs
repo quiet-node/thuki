@@ -1005,7 +1005,9 @@ pub fn run() {
             #[cfg(not(coverage))]
             permissions::quit_and_relaunch,
             finish_onboarding,
-            advance_past_model_check
+            advance_past_model_check,
+            #[cfg(not(coverage))]
+            warmup::warm_up_model
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

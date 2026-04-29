@@ -1903,6 +1903,7 @@ function App() {
                   capabilityConflictMessage={liveCapabilityConflictMessage}
                   shake={shakeAskBar}
                   maxImages={config.window.maxImages}
+                  onFirstKeystroke={() => void invoke('warm_up_model')}
                 />
                 {/* Tip bar: ask-bar mode only. The !isChatMode gate lives
                     OUTSIDE AnimatePresence for the same reason as the history

@@ -1752,4 +1752,65 @@ describe('AskBarView', () => {
       expect(container.textContent).toBe('');
     });
   });
+
+  describe('onFirstKeystroke', () => {
+    it('fires when textarea transitions from empty to non-empty', () => {
+      const onFirstKeystroke = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          onFirstKeystroke={onFirstKeystroke}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      fireEvent.change(textarea, { target: { value: 'h' } });
+      expect(onFirstKeystroke).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fire on subsequent keystrokes when query is already non-empty', () => {
+      const onFirstKeystroke = vi.fn();
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query="h"
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+          onFirstKeystroke={onFirstKeystroke}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      fireEvent.change(textarea, { target: { value: 'he' } });
+      expect(onFirstKeystroke).not.toHaveBeenCalled();
+    });
+
+    it('does not fire when omitted', () => {
+      render(
+        <AskBarView
+          {...IMAGE_DEFAULTS}
+          query=""
+          setQuery={vi.fn()}
+          isChatMode={false}
+          isGenerating={false}
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          inputRef={makeRef()}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      expect(() =>
+        fireEvent.change(textarea, { target: { value: 'h' } }),
+      ).not.toThrow();
+    });
+  });
 });

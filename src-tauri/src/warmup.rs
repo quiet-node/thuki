@@ -1,8 +1,7 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct WarmupState {
-    in_flight: Arc<AtomicBool>,
+    in_flight: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for WarmupState {
@@ -15,25 +14,44 @@ impl Default for WarmupState {
 impl WarmupState {
     pub fn new() -> Self {
         Self {
-            in_flight: Arc::new(AtomicBool::new(false)),
+            in_flight: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Fire-and-forget model warm-up. Returns immediately.
-    /// No-op if model is empty, endpoint is empty, or a request is already in-flight.
+    /// No-op if model/endpoint empty or same model already in flight.
+    /// A different model supersedes the in-flight slot and fires a new request.
     pub fn fire(&self, endpoint: String, model: String, client: reqwest::Client) {
         if model.is_empty() || endpoint.is_empty() {
             return;
         }
-        if self
-            .in_flight
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
         {
-            return;
+            let mut guard = self.in_flight.lock().unwrap();
+            if guard.as_deref() == Some(model.as_str()) {
+                return;
+            }
+            *guard = Some(model.clone());
         }
         let in_flight = Arc::clone(&self.in_flight);
         tauri::async_runtime::spawn(run_warmup(endpoint, model, client, in_flight));
+    }
+}
+
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn warm_up_model(
+    warmup: tauri::State<WarmupState>,
+    models: tauri::State<crate::models::ActiveModelState>,
+    config: tauri::State<parking_lot::RwLock<crate::config::AppConfig>>,
+    client: tauri::State<reqwest::Client>,
+) {
+    let model = models.0.lock().ok().and_then(|g| g.clone());
+    if let Some(model) = model {
+        let endpoint = format!(
+            "{}/api/generate",
+            config.read().inference.ollama_url.trim_end_matches('/')
+        );
+        warmup.fire(endpoint, model, client.inner().clone());
     }
 }
 
@@ -41,7 +59,7 @@ async fn run_warmup(
     endpoint: String,
     model: String,
     client: reqwest::Client,
-    in_flight: Arc<AtomicBool>,
+    in_flight: Arc<Mutex<Option<String>>>,
 ) {
     let body = serde_json::json!({
         "model": model,
@@ -50,9 +68,7 @@ async fn run_warmup(
     });
 
     match client.post(&endpoint).json(&body).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            // Model loaded into VRAM; discard response body.
-        }
+        Ok(resp) if resp.status().is_success() => {}
         Ok(resp) => {
             eprintln!("thuki: [warmup] HTTP {} for model={}", resp.status(), model);
         }
@@ -61,7 +77,10 @@ async fn run_warmup(
         }
     }
 
-    in_flight.store(false, Ordering::SeqCst);
+    let mut guard = in_flight.lock().unwrap();
+    if guard.as_deref() == Some(model.as_str()) {
+        *guard = None;
+    }
 }
 
 #[cfg(test)]
@@ -71,9 +90,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[cfg_attr(coverage_nightly, coverage(off))]
-    fn wait_in_flight_false(in_flight: &Arc<AtomicBool>, timeout: Duration) {
+    fn wait_in_flight_clear(in_flight: &Arc<Mutex<Option<String>>>, timeout: Duration) {
         let deadline = Instant::now() + timeout;
-        while in_flight.load(Ordering::SeqCst) {
+        while in_flight.lock().unwrap().is_some() {
             if Instant::now() >= deadline {
                 break;
             }
@@ -99,8 +118,8 @@ mod tests {
             reqwest::Client::new(),
         );
 
-        wait_in_flight_false(&in_flight, Duration::from_secs(5));
-        assert!(!in_flight.load(Ordering::SeqCst));
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+        assert!(in_flight.lock().unwrap().is_none());
         mock.assert_async().await;
     }
 
@@ -122,14 +141,13 @@ mod tests {
             reqwest::Client::new(),
         );
 
-        wait_in_flight_false(&in_flight, Duration::from_secs(5));
-        assert!(!in_flight.load(Ordering::SeqCst));
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+        assert!(in_flight.lock().unwrap().is_none());
         mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn connection_refused_resets_in_flight() {
-        // Point at a port that has nothing listening.
         let state = WarmupState::new();
         let in_flight = Arc::clone(&state.in_flight);
         state.fire(
@@ -138,14 +156,13 @@ mod tests {
             reqwest::Client::new(),
         );
 
-        wait_in_flight_false(&in_flight, Duration::from_secs(10));
-        assert!(!in_flight.load(Ordering::SeqCst));
+        wait_in_flight_clear(&in_flight, Duration::from_secs(10));
+        assert!(in_flight.lock().unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn dedup_fires_only_one_request() {
+    async fn same_model_dedup() {
         let mut server = Server::new_async().await;
-        // Expect exactly one request.
         let mock = server
             .mock("POST", "/api/generate")
             .with_status(200)
@@ -162,8 +179,82 @@ mod tests {
         state.fire(endpoint.clone(), "llama3".to_string(), client.clone());
         state.fire(endpoint.clone(), "llama3".to_string(), client.clone());
 
-        wait_in_flight_false(&in_flight, Duration::from_secs(5));
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn different_model_fires_new_request() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/generate")
+            .with_status(200)
+            .with_body("{}")
+            .expect(2)
+            .create_async()
+            .await;
+
+        let state = WarmupState::new();
+        let in_flight = Arc::clone(&state.in_flight);
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/generate", server.url());
+
+        state.fire(endpoint.clone(), "llama3".to_string(), client.clone());
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+        state.fire(endpoint.clone(), "phi3".to_string(), client.clone());
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn different_model_supersedes_in_flight() {
+        // Simulate model A in flight; firing model B should still proceed.
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/generate")
+            .with_status(200)
+            .with_body("{}")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = WarmupState::new();
+        // Manually mark model A as in flight.
+        *state.in_flight.lock().unwrap() = Some("llama3".to_string());
+
+        let in_flight = Arc::clone(&state.in_flight);
+        state.fire(
+            format!("{}/api/generate", server.url()),
+            "phi3".to_string(),
+            reqwest::Client::new(),
+        );
+
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+        assert!(in_flight.lock().unwrap().is_none());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn task_clears_only_own_slot() {
+        // Simulate: in_flight = Some("llama3"), task for "phi3" completes.
+        // "phi3" task must NOT clear the "llama3" slot.
+        let in_flight: Arc<Mutex<Option<String>>> =
+            Arc::new(Mutex::new(Some("llama3".to_string())));
+
+        run_warmup(
+            "http://127.0.0.1:1/api/generate".to_string(),
+            "phi3".to_string(),
+            reqwest::Client::new(),
+            Arc::clone(&in_flight),
+        )
+        .await;
+
+        assert_eq!(
+            in_flight.lock().unwrap().as_deref(),
+            Some("llama3"),
+            "phi3 task must not clear slot held by llama3"
+        );
     }
 
     #[tokio::test]
@@ -223,7 +314,7 @@ mod tests {
             reqwest::Client::new(),
         );
 
-        wait_in_flight_false(&in_flight, Duration::from_secs(5));
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
         mock.assert_async().await;
     }
 }

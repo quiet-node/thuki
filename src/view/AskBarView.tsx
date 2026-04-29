@@ -206,6 +206,12 @@ interface AskBarViewProps {
   shake?: boolean;
   /** Maximum number of manually attached images. Sourced from AppConfig. */
   maxImages: number;
+  /**
+   * Called once when the textarea transitions from empty to non-empty.
+   * Used to trigger model pre-warming so Ollama is ready before the user
+   * submits their first message.
+   */
+  onFirstKeystroke?: () => void;
 }
 
 /**
@@ -288,6 +294,7 @@ export function AskBarView({
   capabilityConflictMessage,
   shake = false,
   maxImages,
+  onFirstKeystroke,
 }: AskBarViewProps) {
   /** Quote display limits resolved from the managed AppConfig. */
   const quote = useConfig().quote;
@@ -439,12 +446,15 @@ export function AskBarView({
       // Any keystroke clears the dismissed state so the popover can reopen
       // if the user types a new "/" prefix after having pressed Escape.
       setDismissedQuery('');
+      if (query.length === 0 && newValue.length > 0) {
+        onFirstKeystroke?.();
+      }
       setQuery(newValue);
       const el = e.target;
       el.style.height = 'auto'; // Reset to auto to trigger height recalculation
       el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
     },
-    [setQuery],
+    [setQuery, query, onFirstKeystroke],
   );
 
   /**
