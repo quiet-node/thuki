@@ -12,6 +12,7 @@ import {
   SettingRow,
   TextField,
   Textarea,
+  Toggle,
 } from './index';
 import type { ConfigError } from '../types';
 
@@ -373,6 +374,36 @@ describe('NumberStepper', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Increase' }));
     expect(onChange).toHaveBeenCalledWith(10);
+  });
+});
+
+describe('Toggle', () => {
+  it('renders with role=switch and the initial aria-checked state', () => {
+    render(<Toggle checked={false} onChange={() => {}} ariaLabel="Enable X" />);
+    const btn = screen.getByRole('switch', { name: 'Enable X' });
+    expect(btn).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('renders aria-checked=true when checked=true', () => {
+    render(<Toggle checked={true} onChange={() => {}} ariaLabel="Enable X" />);
+    expect(screen.getByRole('switch', { name: 'Enable X' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+  });
+
+  it('calls onChange with the flipped value on click', () => {
+    const onChange = vi.fn();
+    render(<Toggle checked={false} onChange={onChange} ariaLabel="t" />);
+    fireEvent.click(screen.getByRole('switch', { name: 't' }));
+    expect(onChange).toHaveBeenCalledWith(true);
+  });
+
+  it('calls onChange with false when checked=true and clicked', () => {
+    const onChange = vi.fn();
+    render(<Toggle checked={true} onChange={onChange} ariaLabel="t" />);
+    fireEvent.click(screen.getByRole('switch', { name: 't' }));
+    expect(onChange).toHaveBeenCalledWith(false);
   });
 });
 

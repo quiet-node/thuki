@@ -15,6 +15,8 @@ const HELPERS = {
   inference: {
     ollama_url:
       'The web address where Thuki finds your local Ollama server. The default works if you run Ollama on this machine with its standard port. Change this only if you moved Ollama to a different port or another machine.',
+    keep_warm:
+      'When on, Thuki tells Ollama to keep the active model loaded in GPU memory between conversations, saving the cold-load wait on every open. Set "Release after" to −1 to keep it warm indefinitely, or pick a timeout in minutes so GPU memory is reclaimed when you stop using Thuki for a while.',
   },
   prompt: {
     system:

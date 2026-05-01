@@ -15,6 +15,8 @@
 export interface RawAppConfig {
   inference: {
     ollama_url: string;
+    keep_warm: boolean;
+    keep_warm_inactivity_minutes: number;
   };
   prompt: {
     system: string;

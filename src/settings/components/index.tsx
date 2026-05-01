@@ -305,6 +305,31 @@ export function Dropdown<T extends string>({
   );
 }
 
+// ─── Toggle switch ───────────────────────────────────────────────────────
+
+export function Toggle({
+  checked,
+  onChange,
+  ariaLabel,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  ariaLabel?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      className={`${styles.toggle} ${checked ? styles.toggleOn : ''}`}
+      onClick={() => onChange(!checked)}
+    >
+      <span className={styles.toggleThumb} />
+    </button>
+  );
+}
+
 // ─── SavedPill ──────────────────────────────────────────────────────────
 
 export function SavedPill({ visible }: { visible: boolean }) {

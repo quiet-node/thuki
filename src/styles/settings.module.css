@@ -812,6 +812,206 @@
   border: 1px solid rgba(255, 138, 128, 0.3);
 }
 
+/* ─── Toggle switch ─────────────────────────────────────────────────────── */
+
+.toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 34px;
+  height: 20px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(36, 30, 26, 0.8);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease;
+}
+.toggleOn {
+  background: var(--color-primary);
+  border-color: rgba(255, 141, 92, 0.5);
+}
+.toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(255, 141, 92, 0.22);
+}
+.toggleThumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(240, 240, 242, 0.5);
+  transition:
+    transform 180ms ease,
+    background 180ms ease;
+}
+.toggleOn .toggleThumb {
+  transform: translateX(14px);
+  background: white;
+}
+
+/* ─── Keep Warm layout ──────────────────────────────────────────────────── */
+
+.keepWarmToggleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+}
+.keepWarmLabelGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+}
+.keepWarmLabelLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.keepWarmLabel {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+/* Single-line bar: label + editable number + eject pill all on one baseline */
+.keepWarmBar {
+  display: flex;
+  align-items: center;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(36, 30, 26, 0.6);
+  padding: 0 6px 0 14px;
+  height: 44px;
+  margin-top: 6px;
+  margin-bottom: 4px;
+}
+/* Left inline group: "Release after" label + number + "min" */
+.keepWarmBarInline {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+}
+.keepWarmBarFieldLabel {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+/* Number: underline-only cue — no heavy boxy border */
+.keepWarmNumberInput {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  width: 32px;
+  padding: 1px 4px;
+  text-align: center;
+  outline: none;
+  -moz-appearance: textfield;
+  transition: border-color 150ms ease;
+}
+.keepWarmNumberInput::-webkit-inner-spin-button,
+.keepWarmNumberInput::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.keepWarmNumberInput:focus-visible {
+  border-bottom-color: rgba(255, 141, 92, 0.7);
+}
+.keepWarmUnit {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-left: -3px;
+}
+/* Thin pipe separator between inline group and eject pill */
+.keepWarmBarSep {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 0 10px;
+  flex-shrink: 0;
+}
+/* Eject ghost pill: icon + "Free VRAM" inline */
+.keepWarmEjectPill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 141, 92, 0.18);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.keepWarmEjectPill:hover:not(:disabled) {
+  background: rgba(255, 141, 92, 0.08);
+  border-color: rgba(255, 141, 92, 0.36);
+}
+.keepWarmEjectPill:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.32);
+}
+.keepWarmEjectPill:disabled {
+  cursor: default;
+  color: #5ec98a;
+  border-color: rgba(94, 201, 138, 0.25);
+}
+
+/* Circle-draw + checkmark — 16×16 viewbox, circle r=7 (circumference ≈ 44) */
+@keyframes keepWarmDrawCircle {
+  from {
+    stroke-dashoffset: 44;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes keepWarmDrawCheck {
+  from {
+    stroke-dashoffset: 16;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.keepWarmCircleAnim {
+  stroke-dasharray: 44;
+  stroke-dashoffset: 44;
+  animation: keepWarmDrawCircle 550ms ease-out forwards;
+}
+.keepWarmCheckAnim {
+  stroke-dasharray: 16;
+  stroke-dashoffset: 16;
+  animation: keepWarmDrawCheck 300ms ease-out 450ms forwards;
+}
+
+.keepWarmDimmed {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 /* ─── Reduced motion ────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -823,7 +1023,11 @@
   .savedPill,
   .modelItem,
   .stepperBtn,
-  .iconBtn {
+  .iconBtn,
+  .keepWarmEjectIconBtn,
+  .keepWarmCircleAnim,
+  .keepWarmCheckAnim {
     transition: none !important;
+    animation: none !important;
   }
 }

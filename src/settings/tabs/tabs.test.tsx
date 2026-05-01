@@ -29,7 +29,11 @@ import type { RawAppConfig } from '../types';
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 const CONFIG: RawAppConfig = {
-  inference: { ollama_url: 'http://127.0.0.1:11434' },
+  inference: {
+    ollama_url: 'http://127.0.0.1:11434',
+    keep_warm: false,
+    keep_warm_inactivity_minutes: 30,
+  },
   prompt: { system: 'hello' },
   window: {
     overlay_width: 600,
@@ -76,6 +80,100 @@ describe('ModelTab', () => {
   it('renders the live char counter for the prompt textarea', () => {
     render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     expect(screen.getByText(/5 \/ 8000/)).toBeInTheDocument();
+  });
+
+  it('renders the Keep Warm section with toggle, Release after, and Unload now button', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(screen.getByText('Keep Warm')).toBeInTheDocument();
+    expect(screen.getByText('Keep active model in VRAM')).toBeInTheDocument();
+    expect(screen.getByText('Release after')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Unload now' }),
+    ).toBeInTheDocument();
+  });
+
+  it('keep warm toggle is off when config.inference.keep_warm is false', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(
+      screen.getByRole('switch', { name: 'Keep active model in VRAM' }),
+    ).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('keep warm toggle is on when config.inference.keep_warm is true', () => {
+    const warmConfig: RawAppConfig = {
+      ...CONFIG,
+      inference: { ...CONFIG.inference, keep_warm: true },
+    };
+    render(<ModelTab config={warmConfig} resyncToken={0} onSaved={() => {}} />);
+    expect(
+      screen.getByRole('switch', { name: 'Keep active model in VRAM' }),
+    ).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('clicking the keep warm toggle flips aria-checked immediately', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const toggle = screen.getByRole('switch', {
+      name: 'Keep active model in VRAM',
+    });
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('Unload now button invokes evict_model', async () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Unload now' }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('evict_model'));
+  });
+
+  it('Unload now button is disabled while ejecting and resets after 2.5 s', () => {
+    vi.useFakeTimers();
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const btn = screen.getByRole('button', { name: 'Unload now' });
+    fireEvent.click(btn);
+    expect(btn).toBeDisabled();
+    act(() => {
+      vi.advanceTimersByTime(2500);
+    });
+    expect(btn).not.toBeDisabled();
+  });
+
+  it('changing the inactivity minutes input updates its value', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    fireEvent.change(input, { target: { value: '60' } });
+    expect((input as HTMLInputElement).value).toBe('60');
+  });
+
+  it('non-numeric inactivity input is ignored', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    fireEvent.change(input, { target: { value: '' } });
+    expect((input as HTMLInputElement).value).toBe('30');
+  });
+
+  it('resyncs keepWarm state when resyncToken changes', () => {
+    const { rerender } = render(
+      <ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />,
+    );
+    const row = screen.getByTestId('keep-warm-inactivity-row');
+    // keep_warm=false → dimmed class present
+    expect(row.className).toContain('keepWarmDimmed');
+
+    const warmConfig: RawAppConfig = {
+      ...CONFIG,
+      inference: { ...CONFIG.inference, keep_warm: true },
+    };
+    rerender(
+      <ModelTab config={warmConfig} resyncToken={1} onSaved={() => {}} />,
+    );
+    // keep_warm=true → dimmed class removed
+    expect(row.className).not.toContain('keepWarmDimmed');
   });
 });
 
