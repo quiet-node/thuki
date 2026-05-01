@@ -1904,20 +1904,26 @@ function App() {
                   shake={shakeAskBar}
                   maxImages={config.window.maxImages}
                 />
-                <AnimatePresence>
-                  {isTipVisible && (
-                    <motion.div
-                      key="tip-bar"
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                      style={{ overflow: 'hidden' }}
-                    >
-                      <TipBar tip={activeTip} tipKey={tipKey} />
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                {/* Tip bar: ask-bar mode only. The !isChatMode gate lives
+                    OUTSIDE AnimatePresence for the same reason as the history
+                    panel above: prevents two simultaneous ResizeObserver
+                    setSize() calls (jitter) when isChatMode transitions. */}
+                {!isChatMode && (
+                  <AnimatePresence>
+                    {isTipVisible && (
+                      <motion.div
+                        key="tip-bar"
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                        style={{ overflow: 'hidden' }}
+                      >
+                        <TipBar tip={activeTip} tipKey={tipKey} />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                )}
               </div>
 
               {/* Chat-mode model picker dropdown - floating card identical in style

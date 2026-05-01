@@ -5374,5 +5374,42 @@ describe('App', () => {
       await showOverlay();
       expect(screen.getByTestId('tip-text')).toBeInTheDocument();
     });
+
+    it('does not render TipBar when useTips returns isVisible=false', async () => {
+      render(<App />);
+      await showOverlay();
+      expect(screen.queryByTestId('tip-text')).not.toBeInTheDocument();
+    });
+
+    it('hides TipBar in chat mode even when isVisible=true', async () => {
+      vi.mocked(useTips).mockReturnValue({
+        tip: 'Test tip',
+        tipKey: 1,
+        isVisible: true,
+      });
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b'],
+          ollamaReachable: true,
+        },
+      });
+      render(<App />);
+      await showOverlay();
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'hi' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+      expect(screen.queryByTestId('tip-text')).not.toBeInTheDocument();
+    });
   });
 });

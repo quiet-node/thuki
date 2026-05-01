@@ -35,7 +35,7 @@ export function useTips(active: boolean): {
   isVisible: boolean;
 } {
   const [index, setIndex] = useState(0);
-  const [tipKey, setTipKey] = useState(0);
+  const [tipKey, setTipKey] = useState(-1);
   const [isVisible, setIsVisible] = useState(false);
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
