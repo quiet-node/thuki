@@ -104,6 +104,61 @@ pub fn warm_up_model(
     }
 }
 
+/// Core logic for checking whether a specific model is currently loaded in
+/// Ollama's VRAM. Queries `/api/ps` and returns `Ok(Some(slug))` if the
+/// model appears in the running list, `Ok(None)` if not present or the list
+/// is empty, and `Err` on network failure.
+pub(crate) async fn get_loaded_model_request(
+    endpoint: &str,
+    model: &str,
+    client: &reqwest::Client,
+) -> Result<Option<String>, String> {
+    let resp = client
+        .get(endpoint)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+
+    let found = body
+        .get("models")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| entry.get("name").and_then(|n| n.as_str()))
+                .any(|name| name == model)
+        })
+        .unwrap_or(false);
+
+    Ok(if found { Some(model.to_string()) } else { None })
+}
+
+/// Returns the active model's name if it is currently loaded in Ollama's VRAM,
+/// `None` if no model is selected or the selected model is not running.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn get_loaded_model(
+    models: tauri::State<'_, crate::models::ActiveModelState>,
+    config: tauri::State<'_, parking_lot::RwLock<crate::config::AppConfig>>,
+    client: tauri::State<'_, reqwest::Client>,
+) -> Result<Option<String>, String> {
+    let model = models.0.lock().ok().and_then(|g| g.clone());
+    if let Some(model) = model {
+        let endpoint = format!(
+            "{}/api/ps",
+            config.read().inference.ollama_url.trim_end_matches('/')
+        );
+        get_loaded_model_request(&endpoint, &model, client.inner()).await
+    } else {
+        Ok(None)
+    }
+}
+
 /// Core logic for evicting the active model from Ollama's VRAM. Sends a
 /// `/api/generate` request with `keep_alive: "0"` which tells Ollama to evict
 /// the model immediately regardless of the configured TTL.
@@ -631,5 +686,117 @@ mod tests {
         let result =
             evict_model_request("http://127.0.0.1:1/api/generate", "llama3", &client).await;
         assert!(result.is_err(), "connection refused should return Err");
+    }
+
+    #[tokio::test]
+    async fn get_loaded_model_request_found_returns_some() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/ps")
+            .with_status(200)
+            .with_body(r#"{"models":[{"name":"llama3.2:3b","model":"llama3.2:3b"}]}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/ps", server.url());
+        let result = get_loaded_model_request(&endpoint, "llama3.2:3b", &client).await;
+        assert_eq!(result, Ok(Some("llama3.2:3b".to_string())));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn get_loaded_model_request_not_found_returns_none() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/ps")
+            .with_status(200)
+            .with_body(r#"{"models":[{"name":"phi3:mini","model":"phi3:mini"}]}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/ps", server.url());
+        let result = get_loaded_model_request(&endpoint, "llama3.2:3b", &client).await;
+        assert_eq!(result, Ok(None));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn get_loaded_model_request_empty_models_returns_none() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/ps")
+            .with_status(200)
+            .with_body(r#"{"models":[]}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/ps", server.url());
+        let result = get_loaded_model_request(&endpoint, "llama3.2:3b", &client).await;
+        assert_eq!(result, Ok(None));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn get_loaded_model_request_http_error_returns_none() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/ps")
+            .with_status(503)
+            .with_body("{}")
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/ps", server.url());
+        let result = get_loaded_model_request(&endpoint, "llama3.2:3b", &client).await;
+        assert_eq!(result, Ok(None));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn get_loaded_model_request_connection_refused_returns_err() {
+        let client = reqwest::Client::new();
+        let result =
+            get_loaded_model_request("http://127.0.0.1:1/api/ps", "llama3.2:3b", &client).await;
+        assert!(result.is_err(), "connection refused should return Err");
+    }
+
+    #[tokio::test]
+    async fn get_loaded_model_request_invalid_json_returns_err() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/ps")
+            .with_status(200)
+            .with_body("not valid json")
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/ps", server.url());
+        let result = get_loaded_model_request(&endpoint, "llama3.2:3b", &client).await;
+        assert!(result.is_err(), "invalid JSON body should return Err");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn get_loaded_model_request_multiple_models_finds_correct() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/ps")
+            .with_status(200)
+            .with_body(
+                r#"{"models":[{"name":"phi3:mini"},{"name":"llama3.2:3b"},{"name":"gemma:2b"}]}"#,
+            )
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/ps", server.url());
+        let result = get_loaded_model_request(&endpoint, "llama3.2:3b", &client).await;
+        assert_eq!(result, Ok(Some("llama3.2:3b".to_string())));
+        mock.assert_async().await;
     }
 }

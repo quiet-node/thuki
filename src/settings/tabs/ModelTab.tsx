@@ -8,7 +8,7 @@
  * Window/Quote knobs live in the Display tab.
  */
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import { Section, TextField, Textarea, Toggle } from '../components';
@@ -34,6 +34,13 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
     config.inference.keep_warm_inactivity_minutes,
   );
   const [ejecting, setEjecting] = useState(false);
+  const [loadedModel, setLoadedModel] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<string | null>('get_loaded_model')
+      .then(setLoadedModel)
+      .catch(() => {});
+  }, []);
 
   const { resetTo: resetWarm } = useDebouncedSave(
     'inference',
@@ -61,7 +68,10 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
   function handleEject() {
     setEjecting(true);
     invoke('evict_model')
-      .then(() => setTimeout(() => setEjecting(false), EJECT_RESET_MS))
+      .then(() => {
+        setLoadedModel(null);
+        setTimeout(() => setEjecting(false), EJECT_RESET_MS);
+      })
       .catch(() => setEjecting(false));
   }
 
@@ -105,12 +115,27 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
                 </button>
               </Tooltip>
             </div>
+            {loadedModel !== null && (
+              <div className={styles.keepWarmVramSubtitle}>
+                <span
+                  className={styles.keepWarmVramDot}
+                  data-testid="vram-status-dot"
+                  aria-hidden="true"
+                />
+                <span className={styles.keepWarmVramModelName}>
+                  {loadedModel}
+                </span>
+                <span>&nbsp;· in VRAM</span>
+              </div>
+            )}
           </div>
-          <Toggle
-            checked={keepWarm}
-            onChange={(next) => setKeepWarm(next)}
-            ariaLabel="Keep active model in VRAM"
-          />
+          <div className={styles.keepWarmToggleWrap}>
+            <Toggle
+              checked={keepWarm}
+              onChange={(next) => setKeepWarm(next)}
+              ariaLabel="Keep active model in VRAM"
+            />
+          </div>
         </div>
 
         <div
@@ -142,7 +167,8 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
             type="button"
             className={styles.keepWarmEjectPill}
             aria-label="Unload now"
-            disabled={ejecting}
+            disabled={ejecting || loadedModel === null}
+            data-ejecting={ejecting}
             onClick={handleEject}
           >
             {ejecting ? (

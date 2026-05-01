@@ -1020,7 +1020,9 @@ pub fn run() {
             #[cfg(not(coverage))]
             warmup::warm_up_model,
             #[cfg(not(coverage))]
-            warmup::evict_model
+            warmup::evict_model,
+            #[cfg(not(coverage))]
+            warmup::get_loaded_model
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

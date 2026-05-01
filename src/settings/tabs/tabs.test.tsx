@@ -61,7 +61,10 @@ const CONFIG: RawAppConfig = {
 
 beforeEach(() => {
   invokeMock.mockReset();
-  invokeMock.mockResolvedValue(CONFIG);
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === 'get_loaded_model') return Promise.resolve(null);
+    return Promise.resolve(CONFIG);
+  });
 });
 
 afterEach(() => {
@@ -122,37 +125,147 @@ describe('ModelTab', () => {
   });
 
   it('Unload now button invokes evict_model', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(undefined);
+    });
     render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Unload now' }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('evict_model'));
   });
 
-  it('Unload now button is disabled while ejecting and resets after 2.5 s', async () => {
+  it('Unload now button is disabled while ejecting and stays disabled after model unloads', async () => {
     vi.useFakeTimers();
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(undefined);
+    });
     render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    // Flush the get_loaded_model effect so the button becomes enabled.
+    await act(async () => {
+      await Promise.resolve();
+    });
     const btn = screen.getByRole('button', { name: 'Unload now' });
+    expect(btn).not.toBeDisabled();
     fireEvent.click(btn);
-    expect(btn).toBeDisabled();
-    // Flush microtasks so the invoke().then() callback registers the setTimeout.
+    expect(btn).toBeDisabled(); // disabled from ejecting state
+    // Flush microtasks so evict_model resolves and loadedModel is cleared.
     await act(async () => {
       await Promise.resolve();
     });
     act(() => {
-      vi.advanceTimersByTime(2500);
+      vi.advanceTimersByTime(2500); // ejecting clears
     });
-    expect(btn).not.toBeDisabled();
+    // Button stays disabled because loadedModel is now null.
+    expect(btn).toBeDisabled();
   });
 
   it('Unload now button resets immediately when evict_model rejects', async () => {
-    invokeMock.mockRejectedValueOnce(new Error('connection refused'));
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      if (cmd === 'evict_model')
+        return Promise.reject(new Error('connection refused'));
+      return Promise.resolve(undefined);
+    });
     render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
     const btn = screen.getByRole('button', { name: 'Unload now' });
+    expect(btn).not.toBeDisabled();
     fireEvent.click(btn);
     expect(btn).toBeDisabled();
     await act(async () => {
       await Promise.resolve();
     });
+    // Ejecting cleared; loadedModel still set (eject failed), button re-enabled.
     expect(btn).not.toBeDisabled();
+  });
+
+  it('Unload now button is disabled when no model is loaded in VRAM', async () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+  });
+
+  it('Unload now button is enabled when a model is loaded in VRAM', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(CONFIG);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByRole('button', { name: 'Unload now' }),
+    ).not.toBeDisabled();
+  });
+
+  it('shows VRAM subtitle with model name and dot when a model is loaded', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(CONFIG);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText('llama3.2:3b')).toBeInTheDocument();
+    expect(screen.getByTestId('vram-status-dot')).toBeInTheDocument();
+  });
+
+  it('hides VRAM subtitle when no model is loaded', async () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
+  });
+
+  it('handles get_loaded_model failure gracefully and leaves button disabled', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model')
+        return Promise.reject(new Error('network error'));
+      return Promise.resolve(CONFIG);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
+  });
+
+  it('clears VRAM subtitle and keeps button disabled after successful eject', async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(undefined);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText('llama3.2:3b')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Unload now' }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByText('llama3.2:3b')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
+    // Button disabled: ejecting still true (timer not yet fired).
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+    act(() => {
+      vi.advanceTimersByTime(2500);
+    });
+    // After timer: ejecting clears but loadedModel=null keeps button disabled.
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
   });
 
   it('changing the inactivity minutes input updates its value', () => {
