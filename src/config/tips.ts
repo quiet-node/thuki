@@ -1,4 +1,4 @@
-export const TIPS: string[] = [
+export const TIPS: readonly string[] = [
   'Use /screen to snap your display and attach it to the chat for visual context',
   'Highlight text in any app before summoning Thuki to include it as context',
   '/think makes Thuki reason step by step before answering, great for hard questions',
@@ -18,5 +18,5 @@ export const TIPS: string[] = [
   'Type / in the ask bar to see all available commands and pick one with Tab',
   'Commands can combine in one message: try /screen /think to capture your screen and reason through it',
   'Everything runs locally through Ollama; your conversations never leave your machine',
-  'Attach up to three images per message; combine with /screen for a fourth',
+  'Attach images to your messages for visual context; visit Settings to adjust the limit',
 ];

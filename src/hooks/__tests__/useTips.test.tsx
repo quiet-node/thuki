@@ -48,7 +48,7 @@ describe('useTips', () => {
 
   it('tip and tipKey update on each interval tick during showing', () => {
     // tipsThisCycle=2: first tick advances tip rather than ending the cycle
-    // shuffled(12) with all 0s → [1,2,...,11,0]; first two pops: TIPS[1], TIPS[2]
+    // shuffled(n) with all 0s → [1,2,...,n-1,0]; first two pops: TIPS[1], TIPS[2]
     vi.spyOn(Math, 'random')
       .mockReturnValueOnce(0) // cycle pause → 30000
       .mockReturnValueOnce(0.5) // tipsThisCycle → 2

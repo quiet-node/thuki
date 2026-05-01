@@ -11,4 +11,10 @@ describe('TIPS', () => {
       expect(tip.length).toBeLessThanOrEqual(110);
     }
   });
+
+  it('includes an images tip pointing to Settings', () => {
+    const imagesTip = TIPS.find((t) => t.includes('Settings'));
+    expect(imagesTip).toBeDefined();
+    expect(imagesTip!.toLowerCase()).toContain('image');
+  });
 });
