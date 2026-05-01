@@ -29,6 +29,8 @@ import type { OnboardingStage } from './view/onboarding/index';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ModelPickerPanel } from './components/ModelPickerPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
+import { TipBar } from './components/TipBar';
+import { useTips } from './hooks/useTips';
 import type { AttachedImage } from './types/image';
 import { MAX_IMAGE_SIZE_BYTES } from './types/image';
 import { useConfig } from './contexts/ConfigContext';
@@ -299,6 +301,11 @@ function App() {
    */
   const canSave = !isGenerating && messages.some((m) => m.role === 'assistant');
   const shouldRenderOverlay = overlayState === 'visible';
+  const {
+    tip: activeTip,
+    tipKey,
+    isVisible: isTipVisible,
+  } = useTips(shouldRenderOverlay);
 
   /**
    * Reference stored for ResizeObserver cleanup.
@@ -1897,6 +1904,20 @@ function App() {
                   shake={shakeAskBar}
                   maxImages={config.window.maxImages}
                 />
+                <AnimatePresence>
+                  {isTipVisible && (
+                    <motion.div
+                      key="tip-bar"
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                      style={{ overflow: 'hidden' }}
+                    >
+                      <TipBar tip={activeTip} tipKey={tipKey} />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
 
               {/* Chat-mode model picker dropdown - floating card identical in style

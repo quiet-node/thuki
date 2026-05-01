@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import App from '../App';
 import { DEFAULT_CONFIG } from '../contexts/ConfigContext';
 import {
@@ -10,6 +10,11 @@ import {
   getLastChannel,
 } from '../testUtils/mocks/tauri';
 import { __mockWindow } from '../testUtils/mocks/tauri-window';
+import { useTips } from '../hooks/useTips';
+
+vi.mock('../hooks/useTips', () => ({
+  useTips: vi.fn(() => ({ tip: '', tipKey: 0, isVisible: false })),
+}));
 
 async function showOverlay(selectedText: string | null = null) {
   await act(async () => {
@@ -5347,6 +5352,27 @@ describe('App', () => {
       });
 
       expect(screen.queryByText("You're all set")).toBeNull();
+    });
+  });
+
+  describe('tip bar', () => {
+    afterEach(() => {
+      vi.mocked(useTips).mockReturnValue({
+        tip: '',
+        tipKey: 0,
+        isVisible: false,
+      });
+    });
+
+    it('renders TipBar when useTips returns isVisible=true', async () => {
+      vi.mocked(useTips).mockReturnValue({
+        tip: 'Capture a screenshot with /screen',
+        tipKey: 1,
+        isVisible: true,
+      });
+      render(<App />);
+      await showOverlay();
+      expect(screen.getByTestId('tip-text')).toBeInTheDocument();
     });
   });
 });
