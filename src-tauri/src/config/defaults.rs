@@ -8,6 +8,19 @@
 /// Default Ollama HTTP endpoint (loopback, standard port).
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
 
+/// Whether the keep-warm feature is enabled by default. Off so users who care
+/// about memory pressure are not surprised on first launch.
+pub const DEFAULT_KEEP_WARM: bool = false;
+
+/// Default inactivity window in minutes before Thuki tells Ollama to release
+/// the model. -1 means never release.
+pub const DEFAULT_KEEP_WARM_INACTIVITY_MINUTES: i32 = 30;
+
+/// Accepted range for `keep_warm_inactivity_minutes`. -1 is the never-release
+/// sentinel; 0 is rejected (would release immediately, defeating the feature);
+/// anything else must be in 1..=1440 (max 24 hours).
+pub const BOUNDS_KEEP_WARM_INACTIVITY_MINUTES: (i32, i32) = (-1, 1440);
+
 /// Built-in secretary persona prompt. User overrides via `[prompt] system` in
 /// the config file. The slash-command appendix is composed on top at load time
 /// and is never written back to the file.
@@ -156,6 +169,8 @@ pub const MAX_MODEL_SLUG_LEN: usize = 256;
 pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     // [inference]
     ("inference", "ollama_url"),
+    ("inference", "keep_warm"),
+    ("inference", "keep_warm_inactivity_minutes"),
     // [prompt]
     ("prompt", "system"),
     // [window]

@@ -277,6 +277,7 @@ async fn run_streaming_branch(
             }
             other => on_event(translate_chunk(other)),
         },
+        None,
     )
     .await;
 

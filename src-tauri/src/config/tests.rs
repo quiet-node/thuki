@@ -13,13 +13,13 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS,
-    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
-    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
-    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
-    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
-    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
-    SLASH_COMMAND_PROMPT_APPENDIX,
+    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
+    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
+    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
+    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS, SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path};
@@ -48,6 +48,11 @@ fn defaults_const_values_match_schema_defaults() {
     // AppConfig::default(). If this test fails, someone changed one but not both.
     let c = AppConfig::default();
     assert_eq!(c.inference.ollama_url, DEFAULT_OLLAMA_URL);
+    assert_eq!(c.inference.keep_warm, DEFAULT_KEEP_WARM);
+    assert_eq!(
+        c.inference.keep_warm_inactivity_minutes,
+        DEFAULT_KEEP_WARM_INACTIVITY_MINUTES
+    );
     assert_eq!(c.prompt.system, "");
     assert_eq!(c.prompt.resolved_system, "");
     assert_eq!(c.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
@@ -315,6 +320,78 @@ fn resolve_unknown_model_field_is_ignored() {
     .unwrap();
     let config = load_from_path(&path).unwrap();
     assert_eq!(config.inference.ollama_url, "http://localhost:11434");
+}
+
+#[test]
+fn resolve_keep_warm_inactivity_zero_falls_back_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            keep_warm_inactivity_minutes = 0
+        "#,
+    )
+    .unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(
+        config.inference.keep_warm_inactivity_minutes,
+        DEFAULT_KEEP_WARM_INACTIVITY_MINUTES
+    );
+}
+
+#[test]
+fn resolve_keep_warm_inactivity_below_minus_one_falls_back_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            keep_warm_inactivity_minutes = -999
+        "#,
+    )
+    .unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(
+        config.inference.keep_warm_inactivity_minutes,
+        DEFAULT_KEEP_WARM_INACTIVITY_MINUTES
+    );
+}
+
+#[test]
+fn resolve_keep_warm_inactivity_valid_values_are_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            keep_warm = true
+            keep_warm_inactivity_minutes = 60
+        "#,
+    )
+    .unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert!(config.inference.keep_warm);
+    assert_eq!(config.inference.keep_warm_inactivity_minutes, 60);
+}
+
+#[test]
+fn resolve_keep_warm_inactivity_minus_one_is_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            keep_warm_inactivity_minutes = -1
+        "#,
+    )
+    .unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(config.inference.keep_warm_inactivity_minutes, -1);
 }
 
 #[test]

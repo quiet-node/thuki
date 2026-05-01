@@ -240,6 +240,8 @@ struct OllamaChatRequest {
     stream: bool,
     think: bool,
     options: OllamaOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<String>,
 }
 
 /// Nested message object in Ollama `/api/chat` response chunks.
@@ -324,6 +326,7 @@ impl ConversationHistory {
 /// against the cancellation token, ensuring the HTTP connection is dropped
 /// immediately when the user cancels - which signals Ollama to stop inference.
 /// Returns the accumulated assistant response so the caller can persist it.
+#[allow(clippy::too_many_arguments)]
 pub async fn stream_ollama_chat(
     endpoint: &str,
     model: &str,
@@ -332,6 +335,7 @@ pub async fn stream_ollama_chat(
     client: &reqwest::Client,
     cancel_token: CancellationToken,
     on_chunk: impl Fn(StreamChunk),
+    keep_alive: Option<String>,
 ) -> String {
     let request_payload = OllamaChatRequest {
         model: model.to_string(),
@@ -343,6 +347,7 @@ pub async fn stream_ollama_chat(
             top_p: 0.95,
             top_k: 64,
         },
+        keep_alive,
     };
 
     let mut accumulated = String::new();
@@ -545,6 +550,14 @@ pub async fn ask_ollama(
         );
     }
 
+    let keep_alive = if config.inference.keep_warm {
+        Some(crate::warmup::keep_alive_string(
+            config.inference.keep_warm_inactivity_minutes,
+        ))
+    } else {
+        None
+    };
+
     let accumulated = stream_ollama_chat(
         &endpoint,
         &model_name,
@@ -555,6 +568,7 @@ pub async fn ask_ollama(
         |chunk| {
             let _ = on_event.send(chunk);
         },
+        keep_alive,
     )
     .await;
 
@@ -673,6 +687,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -709,6 +724,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -739,6 +755,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -776,6 +793,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -805,6 +823,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -842,6 +861,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -881,6 +901,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -924,6 +945,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -965,6 +987,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -998,6 +1021,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -1027,6 +1051,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -1098,6 +1123,7 @@ mod tests {
                 &client,
                 token,
                 callback,
+                None,
             ),
         )
         .await
@@ -1141,6 +1167,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -1184,6 +1211,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -1211,6 +1239,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -1297,6 +1326,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -1450,6 +1480,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -1482,6 +1513,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -1513,6 +1545,7 @@ mod tests {
                 top_p: 0.95,
                 top_k: 64,
             },
+            keep_alive: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["think"], false);
@@ -1530,6 +1563,7 @@ mod tests {
                 top_p: 0.95,
                 top_k: 64,
             },
+            keep_alive: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["think"], true);
@@ -1573,6 +1607,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -1609,6 +1644,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -1659,6 +1695,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -1703,6 +1740,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 
@@ -1735,6 +1773,7 @@ mod tests {
             &client,
             token,
             callback,
+            None,
         )
         .await;
 

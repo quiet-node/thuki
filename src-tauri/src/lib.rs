@@ -252,10 +252,17 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
             "{}/api/generate",
             warmup_config.inference.ollama_url.trim_end_matches('/')
         );
+        let keep_alive = if warmup_config.inference.keep_warm {
+            Some(warmup::keep_alive_string(
+                warmup_config.inference.keep_warm_inactivity_minutes,
+            ))
+        } else {
+            None
+        };
         let client = app_handle.state::<reqwest::Client>().inner().clone();
         app_handle
             .state::<warmup::WarmupState>()
-            .fire(endpoint, model, client);
+            .fire(endpoint, model, client, keep_alive);
     }
 
     // Extract before building local_ctx to avoid an extra clone.
@@ -1006,7 +1013,9 @@ pub fn run() {
             finish_onboarding,
             advance_past_model_check,
             #[cfg(not(coverage))]
-            warmup::warm_up_model
+            warmup::warm_up_model,
+            #[cfg(not(coverage))]
+            warmup::evict_model
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

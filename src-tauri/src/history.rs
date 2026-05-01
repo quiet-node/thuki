@@ -308,6 +308,7 @@ pub async fn generate_title(
         &client,
         cancel_token,
         |_| {}, // No per-chunk side effects; we use the accumulated return value.
+        None,
     )
     .await;
 

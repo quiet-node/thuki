@@ -25,8 +25,9 @@ use super::defaults::{
     BOUNDS_MAX_CHAT_HEIGHT, BOUNDS_MAX_IMAGES, BOUNDS_MAX_ITERATIONS, BOUNDS_OVERLAY_WIDTH,
     BOUNDS_QUOTE_MAX_CONTEXT_LENGTH, BOUNDS_QUOTE_MAX_DISPLAY_CHARS,
     BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_SEARXNG_MAX_RESULTS, BOUNDS_TIMEOUT_S,
-    BOUNDS_TOP_K_URLS, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
-    DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    BOUNDS_TOP_K_URLS, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH,
     DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
@@ -135,6 +136,14 @@ pub(crate) fn resolve(config: &mut AppConfig) {
     if config.inference.ollama_url.trim().is_empty() {
         config.inference.ollama_url = DEFAULT_OLLAMA_URL.to_string();
     }
+    // keep_warm is bool — serde handles missing (false) and present correctly.
+    // keep_warm_inactivity_minutes: -1 is the never-release sentinel; 0 and
+    // anything < -1 are invalid; values above 1440 (24 h) are unreasonable.
+    clamp_keep_warm_inactivity(
+        &mut config.inference.keep_warm_inactivity_minutes,
+        DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+        "inference.keep_warm_inactivity_minutes",
+    );
 
     // Prompt section: empty base -> built-in. Compose resolved_system.
     let base = if config.prompt.system.trim().is_empty() {
@@ -266,6 +275,18 @@ pub fn compose_system_prompt(base: &str, appendix: &str) -> String {
         base.to_string()
     } else {
         format!("{base}\n\n{appendix}")
+    }
+}
+
+fn clamp_keep_warm_inactivity(value: &mut i32, default: i32, field: &str) {
+    // -1 = never release (valid sentinel). 1..=1440 = valid minute range.
+    // 0 and values < -1 are rejected and reset to the compiled default.
+    if *value != -1 && !(1..=1440).contains(value) {
+        eprintln!(
+            "thuki: [config] {field}={value} out of bounds (must be -1 or 1..=1440); using default {default}",
+            value = *value
+        );
+        *value = default;
     }
 }
 
