@@ -13,12 +13,13 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
-    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
-    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
-    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
-    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS, SLASH_COMMAND_PROMPT_APPENDIX,
+    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS,
+    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
+    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
+    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
+    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
+    SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path};
@@ -51,6 +52,7 @@ fn defaults_const_values_match_schema_defaults() {
     assert_eq!(c.prompt.resolved_system, "");
     assert_eq!(c.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
     assert_eq!(c.window.max_chat_height, DEFAULT_MAX_CHAT_HEIGHT);
+    assert_eq!(c.window.max_images, DEFAULT_MAX_IMAGES);
     assert_eq!(c.quote.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
     assert_eq!(c.quote.max_display_chars, DEFAULT_QUOTE_MAX_DISPLAY_CHARS);
     assert_eq!(c.quote.max_context_length, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH);
@@ -90,6 +92,7 @@ fn section_defaults_are_sensible() {
 
     let w = WindowSection::default();
     assert_eq!(w.overlay_width, DEFAULT_OVERLAY_WIDTH);
+    assert_eq!(w.max_images, DEFAULT_MAX_IMAGES);
 
     let q = QuoteSection::default();
     assert_eq!(q.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
@@ -395,6 +398,28 @@ fn resolve_out_of_bounds_floats_reset_to_defaults() {
 }
 
 #[test]
+fn resolve_out_of_bounds_max_images_resets_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[window]\nmax_images = 0\n").unwrap();
+    let config_low = load_from_path(&path).unwrap();
+    assert_eq!(config_low.window.max_images, DEFAULT_MAX_IMAGES);
+
+    std::fs::write(&path, "[window]\nmax_images = 99\n").unwrap();
+    let config_high = load_from_path(&path).unwrap();
+    assert_eq!(config_high.window.max_images, DEFAULT_MAX_IMAGES);
+}
+
+#[test]
+fn resolve_max_images_in_bounds_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[window]\nmax_images = 5\n").unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(config.window.max_images, 5);
+}
+
+#[test]
 fn resolve_non_finite_float_resets() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
@@ -449,6 +474,7 @@ fn resolve_values_within_bounds_are_preserved() {
             [window]
             overlay_width = 800.0
             max_chat_height = 1000.0
+            max_images = 7
             [quote]
             max_display_lines = 6
             max_display_chars = 500
@@ -459,6 +485,7 @@ fn resolve_values_within_bounds_are_preserved() {
     let config = load_from_path(&path).unwrap();
     assert_eq!(config.window.overlay_width, 800.0);
     assert_eq!(config.window.max_chat_height, 1000.0);
+    assert_eq!(config.window.max_images, 7);
     assert_eq!(config.quote.max_display_lines, 6);
     assert_eq!(config.quote.max_display_chars, 500);
     assert_eq!(config.quote.max_context_length, 8192);

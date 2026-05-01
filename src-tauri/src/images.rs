@@ -32,9 +32,6 @@ const MAX_DIMENSION: u32 = 1920;
 /// for vision model consumption.
 const JPEG_QUALITY: u8 = 85;
 
-/// Maximum number of images allowed per message (3 manual + 1 /screen = 4).
-pub const MAX_IMAGES_PER_MESSAGE: usize = 4;
-
 /// Resolves the root images directory: `<base_dir>/images/`.
 pub fn images_root(base_dir: &Path) -> PathBuf {
     base_dir.join("images")
@@ -468,11 +465,6 @@ mod tests {
     fn images_root_resolves_correctly() {
         let base = Path::new("/tmp/thuki-test");
         assert_eq!(images_root(base), PathBuf::from("/tmp/thuki-test/images"));
-    }
-
-    #[test]
-    fn max_images_per_message_is_four() {
-        assert_eq!(MAX_IMAGES_PER_MESSAGE, 4);
     }
 
     #[test]

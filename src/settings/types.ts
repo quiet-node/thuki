@@ -22,6 +22,7 @@ export interface RawAppConfig {
   window: {
     overlay_width: number;
     max_chat_height: number;
+    max_images: number;
   };
   quote: {
     max_display_lines: number;

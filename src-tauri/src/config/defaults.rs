@@ -19,12 +19,17 @@ pub const DEFAULT_SYSTEM_PROMPT_BASE: &str = include_str!("../../prompts/system_
 pub const SLASH_COMMAND_PROMPT_APPENDIX: &str =
     include_str!("../../prompts/generated/slash_commands.txt");
 
-/// Window defaults (logical pixels). Only the user-tunable knobs live here;
-/// the collapsed-bar height and the close-animation deadline are baked into
-/// `App.tsx` because their effective range is invisible to users (see the
-/// rationale comment on `WindowSection` in `schema.rs`).
+/// Window defaults (logical pixels and counts). Only the user-tunable knobs
+/// live here; the collapsed-bar height and the close-animation deadline are
+/// baked into `App.tsx` because their effective range is invisible to users
+/// (see the rationale comment on `WindowSection` in `schema.rs`).
 pub const DEFAULT_OVERLAY_WIDTH: f64 = 600.0;
 pub const DEFAULT_MAX_CHAT_HEIGHT: f64 = 648.0;
+/// Maximum number of manually attached images per message. One additional
+/// image from /screen capture is allowed on top of this, so the total
+/// per-message image count is max_images + 1. Raise for more visual context
+/// per message; lower to keep prompts compact.
+pub const DEFAULT_MAX_IMAGES: u32 = 3;
 
 /// Quote display defaults.
 pub const DEFAULT_QUOTE_MAX_DISPLAY_LINES: u32 = 4;
@@ -37,6 +42,7 @@ pub const DEFAULT_QUOTE_MAX_CONTEXT_LENGTH: u32 = 4096;
 /// (zeros, missing digits), not to second-guess tasteful customization.
 pub const BOUNDS_OVERLAY_WIDTH: (f64, f64) = (200.0, 2000.0);
 pub const BOUNDS_MAX_CHAT_HEIGHT: (f64, f64) = (200.0, 2000.0);
+pub const BOUNDS_MAX_IMAGES: (u32, u32) = (1, 20);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_LINES: (u32, u32) = (1, 100);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_CHARS: (u32, u32) = (1, 10_000);
 pub const BOUNDS_QUOTE_MAX_CONTEXT_LENGTH: (u32, u32) = (1, 65_536);
@@ -155,6 +161,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     // [window]
     ("window", "overlay_width"),
     ("window", "max_chat_height"),
+    ("window", "max_images"),
     // [quote]
     ("quote", "max_display_lines"),
     ("quote", "max_display_chars"),

@@ -14,11 +14,12 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{
-    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
-    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
-    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
-    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
+    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS,
+    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
+    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
+    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
+    DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
 };
 
 /// Static, user-tunable inference daemon configuration.
@@ -65,13 +66,13 @@ pub struct PromptSection {
     pub resolved_system: String,
 }
 
-/// Overlay window geometry. Only the user-tunable knobs live here; the
-/// collapsed-bar height and the close-animation deadline are baked into the
-/// frontend (see `App.tsx`) because their effective range is invisible to
-/// the user (collapsed height is overwritten by the ResizeObserver within a
-/// frame; the hide delay sits below normal perception across its usable
-/// range and creates a visible pop if dropped below the exit-animation
-/// duration).
+/// Overlay UI configuration. Holds window geometry and input attachment
+/// limits. The collapsed-bar height and the close-animation deadline are
+/// baked into the frontend (see `App.tsx`) because their effective range is
+/// invisible to the user (collapsed height is overwritten by the
+/// ResizeObserver within a frame; the hide delay sits below normal perception
+/// across its usable range and creates a visible pop if dropped below the
+/// exit-animation duration).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct WindowSection {
@@ -79,6 +80,10 @@ pub struct WindowSection {
     pub overlay_width: f64,
     /// Maximum height the expanded chat window is allowed to grow to.
     pub max_chat_height: f64,
+    /// Maximum number of manually attached images per message. One additional
+    /// image from /screen capture is allowed on top, for a total of
+    /// max_images + 1 per message.
+    pub max_images: u32,
 }
 
 impl Default for WindowSection {
@@ -86,6 +91,7 @@ impl Default for WindowSection {
         Self {
             overlay_width: DEFAULT_OVERLAY_WIDTH,
             max_chat_height: DEFAULT_MAX_CHAT_HEIGHT,
+            max_images: DEFAULT_MAX_IMAGES,
         }
     }
 }

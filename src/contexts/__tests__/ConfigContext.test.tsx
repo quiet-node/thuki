@@ -78,6 +78,7 @@ describe('ConfigContext', () => {
         window: {
           overlay_width: 800,
           max_chat_height: 700,
+          max_images: 5,
         },
         quote: {
           max_display_lines: 6,
@@ -160,6 +161,7 @@ describe('ConfigContext', () => {
         window: {
           overlay_width: 600,
           max_chat_height: 648,
+          max_images: 3,
         },
         quote: {
           max_display_lines: 4,
@@ -172,6 +174,7 @@ describe('ConfigContext', () => {
         window: {
           overlay_width: 900,
           max_chat_height: 800,
+          max_images: 3,
         },
       };
       invoke.mockResolvedValueOnce(initial).mockResolvedValueOnce(updated);
@@ -199,6 +202,7 @@ describe('ConfigContext', () => {
         window: {
           overlay_width: 700,
           max_chat_height: 648,
+          max_images: 3,
         },
         quote: {
           max_display_lines: 4,
@@ -239,6 +243,7 @@ describe('ConfigContext', () => {
         window: {
           overlay_width: 600,
           max_chat_height: 648,
+          max_images: 3,
         },
         quote: {
           max_display_lines: 4,
@@ -269,6 +274,7 @@ describe('ConfigContext', () => {
         window: {
           overlay_width: 600,
           max_chat_height: 648,
+          max_images: 3,
         },
         quote: {
           max_display_lines: 4,

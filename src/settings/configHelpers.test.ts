@@ -20,6 +20,7 @@ describe('configHelp', () => {
       ['prompt', 'system'],
       ['window', 'overlay_width'],
       ['window', 'max_chat_height'],
+      ['window', 'max_images'],
       ['quote', 'max_display_lines'],
       ['quote', 'max_display_chars'],
       ['quote', 'max_context_length'],

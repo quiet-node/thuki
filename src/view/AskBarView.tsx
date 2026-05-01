@@ -142,13 +142,6 @@ const CAMERA_ICON = (
   </svg>
 );
 
-/**
- * Maximum number of manually attached images per message. The backend allows
- * one additional image from /screen capture, for a total of 4 per message
- * (MAX_IMAGES_PER_MESSAGE in images.rs).
- */
-export const MAX_IMAGES = 3;
-
 /** Props for the AskBarView component. */
 interface AskBarViewProps {
   /** The current user input text. */
@@ -211,6 +204,8 @@ interface AskBarViewProps {
    * The host pulses this true / false to signal a refused submit.
    */
   shake?: boolean;
+  /** Maximum number of manually attached images. Sourced from AppConfig. */
+  maxImages: number;
 }
 
 /**
@@ -292,6 +287,7 @@ export function AskBarView({
   isModelPickerOpen,
   capabilityConflictMessage,
   shake = false,
+  maxImages,
 }: AskBarViewProps) {
   /** Quote display limits resolved from the managed AppConfig. */
   const quote = useConfig().quote;
@@ -313,7 +309,7 @@ export function AskBarView({
   const isBusy = isGenerating || isSubmitPending;
   const canSubmit =
     (query.trim().length > 0 || attachedImages.length > 0) && !isBusy;
-  const isAtMaxImages = attachedImages.length >= MAX_IMAGES;
+  const isAtMaxImages = attachedImages.length >= maxImages;
 
   /** True briefly after a paste attempt is rejected because max images reached. */
   const [pasteMaxError, setPasteMaxError] = useState(false);
@@ -533,7 +529,7 @@ export function AskBarView({
       const items = e.clipboardData?.items;
       if (!items || isBusy) return;
 
-      const remaining = MAX_IMAGES - attachedImages.length;
+      const remaining = maxImages - attachedImages.length;
       if (remaining <= 0) {
         const hasImageItem = Array.from(items).some((item) =>
           item.type.startsWith('image/'),
@@ -556,7 +552,7 @@ export function AskBarView({
       e.preventDefault();
       onImagesAttached(imageFiles);
     },
-    [isBusy, attachedImages.length, onImagesAttached],
+    [isBusy, attachedImages.length, maxImages, onImagesAttached],
   );
 
   // Suppress the paste error label while a drag is active so the drag-state
@@ -586,7 +582,9 @@ export function AskBarView({
         </div>
       )}
       {showMaxLabel && (
-        <p className="px-4 pt-2 pb-0 text-xs text-red-400">Max 3 images</p>
+        <p className="px-4 pt-2 pb-0 text-xs text-red-400">
+          Max {maxImages} images
+        </p>
       )}
       {attachedImages.length > 0 && (
         <div className="px-4 pt-2 pb-0">
@@ -693,7 +691,7 @@ export function AskBarView({
           </div>
 
           {isAtMaxImages ? (
-            <Tooltip label="Maximum 3 images attached">
+            <Tooltip label={`Maximum ${maxImages} images attached`}>
               <button
                 type="button"
                 onClick={onScreenshot}
