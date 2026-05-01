@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-type InFlightSlot = Arc<Mutex<Option<(String, Option<String>)>>>;
+type InFlightSlot = Arc<Mutex<Option<(String, Option<String>, String)>>>;
 
 pub struct WarmupState {
     in_flight: InFlightSlot,
@@ -32,14 +32,15 @@ impl WarmupState {
     }
 
     /// Fire-and-forget model warm-up. Returns immediately.
-    /// No-op if model/endpoint empty or same (model, keep_alive) pair already in flight.
-    /// A different model or keep_alive value supersedes the in-flight slot and fires a new request.
+    /// No-op if model/endpoint empty or same (model, keep_alive, system_prompt) triple already in flight.
+    /// Any differing field supersedes the in-flight slot and fires a new request.
     /// `keep_alive` is forwarded to Ollama as-is; `None` omits the field so
     /// Ollama uses its server default (typically 5 minutes).
     pub fn fire(
         &self,
         endpoint: String,
         model: String,
+        system_prompt: String,
         client: reqwest::Client,
         keep_alive: Option<String>,
     ) {
@@ -48,13 +49,24 @@ impl WarmupState {
         }
         {
             let mut guard = self.in_flight.lock().unwrap();
-            if guard.as_ref().map(|(m, k)| m == &model && k == &keep_alive) == Some(true) {
+            if guard
+                .as_ref()
+                .map(|(m, k, s)| m == &model && k == &keep_alive && s == &system_prompt)
+                == Some(true)
+            {
                 return;
             }
-            *guard = Some((model.clone(), keep_alive.clone()));
+            *guard = Some((model.clone(), keep_alive.clone(), system_prompt.clone()));
         }
         let in_flight = Arc::clone(&self.in_flight);
-        tauri::async_runtime::spawn(run_warmup(endpoint, model, client, in_flight, keep_alive));
+        tauri::async_runtime::spawn(run_warmup(
+            endpoint,
+            model,
+            system_prompt,
+            client,
+            in_flight,
+            keep_alive,
+        ));
     }
 }
 
@@ -70,9 +82,10 @@ pub fn warm_up_model(
     if let Some(model) = model {
         let cfg = config.read();
         let endpoint = format!(
-            "{}/api/generate",
+            "{}/api/chat",
             cfg.inference.ollama_url.trim_end_matches('/')
         );
+        let system_prompt = cfg.prompt.resolved_system.clone();
         let keep_alive = if cfg.inference.keep_warm {
             Some(keep_alive_string(
                 cfg.inference.keep_warm_inactivity_minutes,
@@ -81,7 +94,13 @@ pub fn warm_up_model(
             None
         };
         drop(cfg);
-        warmup.fire(endpoint, model, client.inner().clone(), keep_alive);
+        warmup.fire(
+            endpoint,
+            model,
+            system_prompt,
+            client.inner().clone(),
+            keep_alive,
+        );
     }
 }
 
@@ -133,22 +152,34 @@ pub async fn evict_model(
 async fn run_warmup(
     endpoint: String,
     model: String,
+    system_prompt: String,
     client: reqwest::Client,
     in_flight: InFlightSlot,
     keep_alive: Option<String>,
 ) {
+    // Use /api/chat with the resolved system prompt so Ollama primes the KV cache
+    // for the prefix the real chat will share. num_predict:0 prevents any token
+    // generation — the goal is prompt evaluation only.
+    let messages = serde_json::json!([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": ""}
+    ]);
+    let options = serde_json::json!({"num_predict": 0});
+
     let body = if let Some(ref ka) = keep_alive {
         serde_json::json!({
             "model": model,
-            "prompt": "",
+            "messages": messages,
             "stream": false,
+            "options": options,
             "keep_alive": ka
         })
     } else {
         serde_json::json!({
             "model": model,
-            "prompt": "",
-            "stream": false
+            "messages": messages,
+            "stream": false,
+            "options": options
         })
     };
 
@@ -163,7 +194,11 @@ async fn run_warmup(
     }
 
     let mut guard = in_flight.lock().unwrap();
-    if guard.as_ref().map(|(m, k)| m == &model && k == &keep_alive) == Some(true) {
+    if guard
+        .as_ref()
+        .map(|(m, k, s)| m == &model && k == &keep_alive && s == &system_prompt)
+        == Some(true)
+    {
         *guard = None;
     }
 }
@@ -173,6 +208,8 @@ mod tests {
     use super::*;
     use mockito::Server;
     use std::time::{Duration, Instant};
+
+    const SYS: &str = "You are a helpful assistant.";
 
     #[cfg_attr(coverage_nightly, coverage(off))]
     fn wait_in_flight_clear(in_flight: &InFlightSlot, timeout: Duration) {
@@ -189,7 +226,7 @@ mod tests {
     async fn success_resets_in_flight() {
         let mut server = Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/generate")
+            .mock("POST", "/api/chat")
             .with_status(200)
             .with_body("{}")
             .create_async()
@@ -198,8 +235,9 @@ mod tests {
         let state = WarmupState::new();
         let in_flight = Arc::clone(&state.in_flight);
         state.fire(
-            format!("{}/api/generate", server.url()),
+            format!("{}/api/chat", server.url()),
             "llama3".to_string(),
+            SYS.to_string(),
             reqwest::Client::new(),
             None,
         );
@@ -213,7 +251,7 @@ mod tests {
     async fn http_error_resets_in_flight() {
         let mut server = Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/generate")
+            .mock("POST", "/api/chat")
             .with_status(500)
             .with_body("internal error")
             .create_async()
@@ -222,8 +260,9 @@ mod tests {
         let state = WarmupState::new();
         let in_flight = Arc::clone(&state.in_flight);
         state.fire(
-            format!("{}/api/generate", server.url()),
+            format!("{}/api/chat", server.url()),
             "llama3".to_string(),
+            SYS.to_string(),
             reqwest::Client::new(),
             None,
         );
@@ -238,8 +277,9 @@ mod tests {
         let state = WarmupState::new();
         let in_flight = Arc::clone(&state.in_flight);
         state.fire(
-            "http://127.0.0.1:1/api/generate".to_string(),
+            "http://127.0.0.1:1/api/chat".to_string(),
             "llama3".to_string(),
+            SYS.to_string(),
             reqwest::Client::new(),
             None,
         );
@@ -252,7 +292,7 @@ mod tests {
     async fn same_model_dedup() {
         let mut server = Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/generate")
+            .mock("POST", "/api/chat")
             .with_status(200)
             .with_body("{}")
             .expect(1)
@@ -262,10 +302,22 @@ mod tests {
         let state = WarmupState::new();
         let in_flight = Arc::clone(&state.in_flight);
         let client = reqwest::Client::new();
-        let endpoint = format!("{}/api/generate", server.url());
+        let endpoint = format!("{}/api/chat", server.url());
 
-        state.fire(endpoint.clone(), "llama3".to_string(), client.clone(), None);
-        state.fire(endpoint.clone(), "llama3".to_string(), client.clone(), None);
+        state.fire(
+            endpoint.clone(),
+            "llama3".to_string(),
+            SYS.to_string(),
+            client.clone(),
+            None,
+        );
+        state.fire(
+            endpoint.clone(),
+            "llama3".to_string(),
+            SYS.to_string(),
+            client.clone(),
+            None,
+        );
 
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
         mock.assert_async().await;
@@ -275,7 +327,7 @@ mod tests {
     async fn different_model_fires_new_request() {
         let mut server = Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/generate")
+            .mock("POST", "/api/chat")
             .with_status(200)
             .with_body("{}")
             .expect(2)
@@ -285,11 +337,23 @@ mod tests {
         let state = WarmupState::new();
         let in_flight = Arc::clone(&state.in_flight);
         let client = reqwest::Client::new();
-        let endpoint = format!("{}/api/generate", server.url());
+        let endpoint = format!("{}/api/chat", server.url());
 
-        state.fire(endpoint.clone(), "llama3".to_string(), client.clone(), None);
+        state.fire(
+            endpoint.clone(),
+            "llama3".to_string(),
+            SYS.to_string(),
+            client.clone(),
+            None,
+        );
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
-        state.fire(endpoint.clone(), "phi3".to_string(), client.clone(), None);
+        state.fire(
+            endpoint.clone(),
+            "phi3".to_string(),
+            SYS.to_string(),
+            client.clone(),
+            None,
+        );
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
 
         mock.assert_async().await;
@@ -300,7 +364,7 @@ mod tests {
         // Simulate model A in flight; firing model B should still proceed.
         let mut server = Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/generate")
+            .mock("POST", "/api/chat")
             .with_status(200)
             .with_body("{}")
             .expect(1)
@@ -309,12 +373,13 @@ mod tests {
 
         let state = WarmupState::new();
         // Manually mark model A as in flight.
-        *state.in_flight.lock().unwrap() = Some(("llama3".to_string(), None));
+        *state.in_flight.lock().unwrap() = Some(("llama3".to_string(), None, SYS.to_string()));
 
         let in_flight = Arc::clone(&state.in_flight);
         state.fire(
-            format!("{}/api/generate", server.url()),
+            format!("{}/api/chat", server.url()),
             "phi3".to_string(),
+            SYS.to_string(),
             reqwest::Client::new(),
             None,
         );
@@ -326,13 +391,18 @@ mod tests {
 
     #[tokio::test]
     async fn task_clears_only_own_slot() {
-        // Simulate: in_flight = Some(("llama3", None)), task for "phi3" completes.
+        // Simulate: in_flight = Some(("llama3", None, SYS)), task for "phi3" completes.
         // "phi3" task must NOT clear the "llama3" slot.
-        let in_flight: InFlightSlot = Arc::new(Mutex::new(Some(("llama3".to_string(), None))));
+        let in_flight: InFlightSlot = Arc::new(Mutex::new(Some((
+            "llama3".to_string(),
+            None,
+            SYS.to_string(),
+        ))));
 
         run_warmup(
-            "http://127.0.0.1:1/api/generate".to_string(),
+            "http://127.0.0.1:1/api/chat".to_string(),
             "phi3".to_string(),
+            SYS.to_string(),
             reqwest::Client::new(),
             Arc::clone(&in_flight),
             None,
@@ -340,7 +410,11 @@ mod tests {
         .await;
 
         assert_eq!(
-            in_flight.lock().unwrap().as_ref().map(|(m, _)| m.as_str()),
+            in_flight
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|(m, _, _)| m.as_str()),
             Some("llama3"),
             "phi3 task must not clear slot held by llama3"
         );
@@ -350,15 +424,16 @@ mod tests {
     async fn empty_model_no_request() {
         let mut server = Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/generate")
+            .mock("POST", "/api/chat")
             .expect(0)
             .create_async()
             .await;
 
         let state = WarmupState::new();
         state.fire(
-            format!("{}/api/generate", server.url()),
+            format!("{}/api/chat", server.url()),
             String::new(),
+            SYS.to_string(),
             reqwest::Client::new(),
             None,
         );
@@ -371,7 +446,7 @@ mod tests {
     async fn empty_endpoint_no_request() {
         let mut server = Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/generate")
+            .mock("POST", "/api/chat")
             .expect(0)
             .create_async()
             .await;
@@ -380,6 +455,7 @@ mod tests {
         state.fire(
             String::new(),
             "llama3".to_string(),
+            SYS.to_string(),
             reqwest::Client::new(),
             None,
         );
@@ -392,9 +468,9 @@ mod tests {
     async fn request_body_shape_no_keep_alive() {
         let mut server = Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/generate")
+            .mock("POST", "/api/chat")
             .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"model":"llama3","prompt":"","stream":false}"#.to_string(),
+                r#"{"model":"llama3","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":""}],"stream":false,"options":{"num_predict":0}}"#.to_string(),
             ))
             .with_status(200)
             .with_body("{}")
@@ -404,8 +480,9 @@ mod tests {
         let state = WarmupState::new();
         let in_flight = Arc::clone(&state.in_flight);
         state.fire(
-            format!("{}/api/generate", server.url()),
+            format!("{}/api/chat", server.url()),
             "llama3".to_string(),
+            SYS.to_string(),
             reqwest::Client::new(),
             None,
         );
@@ -418,9 +495,9 @@ mod tests {
     async fn request_body_shape_with_keep_alive() {
         let mut server = Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/generate")
+            .mock("POST", "/api/chat")
             .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"model":"llama3","prompt":"","stream":false,"keep_alive":"30m"}"#.to_string(),
+                r#"{"model":"llama3","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":""}],"stream":false,"options":{"num_predict":0},"keep_alive":"30m"}"#.to_string(),
             ))
             .with_status(200)
             .with_body("{}")
@@ -430,8 +507,9 @@ mod tests {
         let state = WarmupState::new();
         let in_flight = Arc::clone(&state.in_flight);
         state.fire(
-            format!("{}/api/generate", server.url()),
+            format!("{}/api/chat", server.url()),
             "llama3".to_string(),
+            SYS.to_string(),
             reqwest::Client::new(),
             Some("30m".to_string()),
         );
@@ -444,7 +522,7 @@ mod tests {
     async fn same_model_different_keep_alive_fires_new_request() {
         let mut server = Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/generate")
+            .mock("POST", "/api/chat")
             .with_status(200)
             .with_body("{}")
             .expect(2)
@@ -454,15 +532,58 @@ mod tests {
         let state = WarmupState::new();
         let in_flight = Arc::clone(&state.in_flight);
         let client = reqwest::Client::new();
-        let endpoint = format!("{}/api/generate", server.url());
+        let endpoint = format!("{}/api/chat", server.url());
 
-        state.fire(endpoint.clone(), "llama3".to_string(), client.clone(), None);
+        state.fire(
+            endpoint.clone(),
+            "llama3".to_string(),
+            SYS.to_string(),
+            client.clone(),
+            None,
+        );
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
         state.fire(
             endpoint.clone(),
             "llama3".to_string(),
+            SYS.to_string(),
             client.clone(),
             Some("30m".to_string()),
+        );
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn same_model_different_system_prompt_fires_new_request() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_body("{}")
+            .expect(2)
+            .create_async()
+            .await;
+
+        let state = WarmupState::new();
+        let in_flight = Arc::clone(&state.in_flight);
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/chat", server.url());
+
+        state.fire(
+            endpoint.clone(),
+            "llama3".to_string(),
+            "prompt A".to_string(),
+            client.clone(),
+            None,
+        );
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+        state.fire(
+            endpoint.clone(),
+            "llama3".to_string(),
+            "prompt B".to_string(),
+            client.clone(),
+            None,
         );
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
 

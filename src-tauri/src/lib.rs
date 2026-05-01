@@ -249,9 +249,10 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
             .read()
             .clone();
         let endpoint = format!(
-            "{}/api/generate",
+            "{}/api/chat",
             warmup_config.inference.ollama_url.trim_end_matches('/')
         );
+        let system_prompt = warmup_config.prompt.resolved_system.clone();
         let keep_alive = if warmup_config.inference.keep_warm {
             Some(warmup::keep_alive_string(
                 warmup_config.inference.keep_warm_inactivity_minutes,
@@ -260,9 +261,13 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
             None
         };
         let client = app_handle.state::<reqwest::Client>().inner().clone();
-        app_handle
-            .state::<warmup::WarmupState>()
-            .fire(endpoint, model, client, keep_alive);
+        app_handle.state::<warmup::WarmupState>().fire(
+            endpoint,
+            model,
+            system_prompt,
+            client,
+            keep_alive,
+        );
     }
 
     // Extract before building local_ctx to avoid an extra clone.
