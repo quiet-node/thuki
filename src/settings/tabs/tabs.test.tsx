@@ -127,14 +127,30 @@ describe('ModelTab', () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('evict_model'));
   });
 
-  it('Unload now button is disabled while ejecting and resets after 2.5 s', () => {
+  it('Unload now button is disabled while ejecting and resets after 2.5 s', async () => {
     vi.useFakeTimers();
     render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     const btn = screen.getByRole('button', { name: 'Unload now' });
     fireEvent.click(btn);
     expect(btn).toBeDisabled();
+    // Flush microtasks so the invoke().then() callback registers the setTimeout.
+    await act(async () => {
+      await Promise.resolve();
+    });
     act(() => {
       vi.advanceTimersByTime(2500);
+    });
+    expect(btn).not.toBeDisabled();
+  });
+
+  it('Unload now button resets immediately when evict_model rejects', async () => {
+    invokeMock.mockRejectedValueOnce(new Error('connection refused'));
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const btn = screen.getByRole('button', { name: 'Unload now' });
+    fireEvent.click(btn);
+    expect(btn).toBeDisabled();
+    await act(async () => {
+      await Promise.resolve();
     });
     expect(btn).not.toBeDisabled();
   });

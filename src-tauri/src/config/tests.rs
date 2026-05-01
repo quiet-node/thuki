@@ -395,6 +395,51 @@ fn resolve_keep_warm_inactivity_minus_one_is_preserved() {
 }
 
 #[test]
+fn resolve_keep_warm_inactivity_above_max_falls_back_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            keep_warm_inactivity_minutes = 1441
+        "#,
+    )
+    .unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(
+        config.inference.keep_warm_inactivity_minutes,
+        DEFAULT_KEEP_WARM_INACTIVITY_MINUTES
+    );
+}
+
+#[test]
+fn inference_keep_warm_roundtrips_through_toml() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            keep_warm = true
+            keep_warm_inactivity_minutes = 60
+        "#,
+    )
+    .unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert!(config.inference.keep_warm);
+    assert_eq!(config.inference.keep_warm_inactivity_minutes, 60);
+
+    atomic_write(&path, &config).unwrap();
+    let reloaded = load_from_path(&path).unwrap();
+    assert_eq!(reloaded.inference.keep_warm, config.inference.keep_warm);
+    assert_eq!(
+        reloaded.inference.keep_warm_inactivity_minutes,
+        config.inference.keep_warm_inactivity_minutes,
+    );
+}
+
+#[test]
 fn resolve_empty_ollama_url_falls_back() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);

@@ -244,6 +244,16 @@ struct OllamaChatRequest {
     keep_alive: Option<String>,
 }
 
+/// Groups the per-request parameters for `stream_ollama_chat` to keep the
+/// function signature within clippy's argument-count limit.
+pub struct OllamaChatParams {
+    pub endpoint: String,
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    pub think: bool,
+    pub keep_alive: Option<String>,
+}
+
 /// Nested message object in Ollama `/api/chat` response chunks.
 #[derive(Deserialize)]
 struct OllamaChatResponseMessage {
@@ -326,19 +336,21 @@ impl ConversationHistory {
 /// against the cancellation token, ensuring the HTTP connection is dropped
 /// immediately when the user cancels - which signals Ollama to stop inference.
 /// Returns the accumulated assistant response so the caller can persist it.
-#[allow(clippy::too_many_arguments)]
 pub async fn stream_ollama_chat(
-    endpoint: &str,
-    model: &str,
-    messages: Vec<ChatMessage>,
-    think: bool,
+    params: OllamaChatParams,
     client: &reqwest::Client,
     cancel_token: CancellationToken,
     on_chunk: impl Fn(StreamChunk),
-    keep_alive: Option<String>,
 ) -> String {
+    let OllamaChatParams {
+        endpoint,
+        model,
+        messages,
+        think,
+        keep_alive,
+    } = params;
     let request_payload = OllamaChatRequest {
-        model: model.to_string(),
+        model,
         messages,
         stream: true,
         think,
@@ -365,7 +377,9 @@ pub async fn stream_ollama_chat(
                 // classifier falls back to the status code.
                 let body = response.text().await.unwrap_or_default();
                 on_chunk(StreamChunk::Error(classify_http_error(
-                    status, model, &body,
+                    status,
+                    &request_payload.model,
+                    &body,
                 )));
                 return accumulated;
             }
@@ -559,16 +573,18 @@ pub async fn ask_ollama(
     };
 
     let accumulated = stream_ollama_chat(
-        &endpoint,
-        &model_name,
-        messages,
-        think,
+        OllamaChatParams {
+            endpoint,
+            model: model_name,
+            messages,
+            think,
+            keep_alive,
+        },
         &client,
         cancel_token.clone(),
         |chunk| {
             let _ = on_event.send(chunk);
         },
-        keep_alive,
     )
     .await;
 
@@ -680,14 +696,16 @@ mod tests {
         }];
 
         let accumulated = stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            messages,
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages,
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -717,14 +735,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         let accumulated = stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -748,14 +768,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         let accumulated = stream_ollama_chat(
-            "http://127.0.0.1:1/api/chat",
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: "http://127.0.0.1:1/api/chat".to_string(),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -786,14 +808,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -816,14 +840,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         let accumulated = stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -854,14 +880,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         let accumulated = stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -894,14 +922,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -938,14 +968,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         let accumulated = stream_ollama_chat(
-            &format!("http://127.0.0.1:{}/api/chat", port),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("http://127.0.0.1:{}/api/chat", port),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -980,14 +1012,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1014,14 +1048,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1044,14 +1080,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1116,14 +1154,16 @@ mod tests {
         timeout(
             Duration::from_secs(5),
             stream_ollama_chat(
-                &format!("http://127.0.0.1:{}/api/chat", port),
-                "test-model",
-                vec![],
-                false,
+                OllamaChatParams {
+                    endpoint: format!("http://127.0.0.1:{}/api/chat", port),
+                    model: "test-model".to_string(),
+                    messages: vec![],
+                    think: false,
+                    keep_alive: None,
+                },
                 &client,
                 token,
                 callback,
-                None,
             ),
         )
         .await
@@ -1160,14 +1200,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1204,14 +1246,16 @@ mod tests {
         ];
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            messages,
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages,
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1232,14 +1276,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1319,14 +1365,16 @@ mod tests {
         let (_, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1473,14 +1521,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            "http://127.0.0.1:1/api/chat",
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: "http://127.0.0.1:1/api/chat".to_string(),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1506,14 +1556,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1600,14 +1652,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1637,14 +1691,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "llama3.2-vision:11b",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "llama3.2-vision:11b".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1688,14 +1744,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         let accumulated = stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            true,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: true,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1733,14 +1791,16 @@ mod tests {
         let (_, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            true,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: true,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 
@@ -1766,14 +1826,16 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            true,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: true,
+                keep_alive: None,
+            },
             &client,
             token,
             callback,
-            None,
         )
         .await;
 

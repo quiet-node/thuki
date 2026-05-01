@@ -22,8 +22,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::defaults::{
-    BOUNDS_MAX_CHAT_HEIGHT, BOUNDS_MAX_IMAGES, BOUNDS_MAX_ITERATIONS, BOUNDS_OVERLAY_WIDTH,
-    BOUNDS_QUOTE_MAX_CONTEXT_LENGTH, BOUNDS_QUOTE_MAX_DISPLAY_CHARS,
+    BOUNDS_KEEP_WARM_INACTIVITY_MINUTES, BOUNDS_MAX_CHAT_HEIGHT, BOUNDS_MAX_IMAGES,
+    BOUNDS_MAX_ITERATIONS, BOUNDS_OVERLAY_WIDTH, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
+    BOUNDS_QUOTE_MAX_DISPLAY_CHARS,
     BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_SEARXNG_MAX_RESULTS, BOUNDS_TIMEOUT_S,
     BOUNDS_TOP_K_URLS, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
     DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL,
@@ -279,11 +280,13 @@ pub fn compose_system_prompt(base: &str, appendix: &str) -> String {
 }
 
 fn clamp_keep_warm_inactivity(value: &mut i32, default: i32, field: &str) {
-    // -1 = never release (valid sentinel). 1..=1440 = valid minute range.
-    // 0 and values < -1 are rejected and reset to the compiled default.
-    if *value != -1 && !(1..=1440).contains(value) {
+    // BOUNDS_KEEP_WARM_INACTIVITY_MINUTES.0 is -1 (never-release sentinel).
+    // Any other value must be in 1..=BOUNDS_KEEP_WARM_INACTIVITY_MINUTES.1.
+    // 0 and values below -1 are rejected and reset to the compiled default.
+    let (lo, hi) = BOUNDS_KEEP_WARM_INACTIVITY_MINUTES;
+    if *value != lo && !(1..=hi).contains(value) {
         eprintln!(
-            "thuki: [config] {field}={value} out of bounds (must be -1 or 1..=1440); using default {default}",
+            "thuki: [config] {field}={value} out of bounds (must be {lo} or 1..={hi}); using default {default}",
             value = *value
         );
         *value = default;

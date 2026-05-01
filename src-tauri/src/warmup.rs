@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 
+type InFlightSlot = Arc<Mutex<Option<(String, Option<String>)>>>;
+
 pub struct WarmupState {
-    in_flight: Arc<Mutex<Option<String>>>,
+    in_flight: InFlightSlot,
 }
 
 /// Converts an inactivity timeout in minutes to an Ollama `keep_alive` string.
@@ -30,8 +32,8 @@ impl WarmupState {
     }
 
     /// Fire-and-forget model warm-up. Returns immediately.
-    /// No-op if model/endpoint empty or same model already in flight.
-    /// A different model supersedes the in-flight slot and fires a new request.
+    /// No-op if model/endpoint empty or same (model, keep_alive) pair already in flight.
+    /// A different model or keep_alive value supersedes the in-flight slot and fires a new request.
     /// `keep_alive` is forwarded to Ollama as-is; `None` omits the field so
     /// Ollama uses its server default (typically 5 minutes).
     pub fn fire(
@@ -46,10 +48,10 @@ impl WarmupState {
         }
         {
             let mut guard = self.in_flight.lock().unwrap();
-            if guard.as_deref() == Some(model.as_str()) {
+            if guard.as_ref().map(|(m, k)| m == &model && k == &keep_alive) == Some(true) {
                 return;
             }
-            *guard = Some(model.clone());
+            *guard = Some((model.clone(), keep_alive.clone()));
         }
         let in_flight = Arc::clone(&self.in_flight);
         tauri::async_runtime::spawn(run_warmup(endpoint, model, client, in_flight, keep_alive));
@@ -83,44 +85,56 @@ pub fn warm_up_model(
     }
 }
 
+/// Core logic for evicting the active model from Ollama's VRAM. Sends a
+/// `/api/generate` request with `keep_alive: "0"` which tells Ollama to evict
+/// the model immediately regardless of the configured TTL.
+pub(crate) async fn evict_model_request(
+    endpoint: &str,
+    model: &str,
+    client: &reqwest::Client,
+) -> Result<(), String> {
+    let body = serde_json::json!({
+        "model": model,
+        "keep_alive": "0",
+        "prompt": "",
+        "stream": false
+    });
+    client
+        .post(endpoint)
+        .json(&body)
+        .send()
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Unloads the active model from Ollama's VRAM immediately.
 ///
-/// Sends a `/api/generate` request with `keep_alive: 0` which tells Ollama
-/// to evict the model right now regardless of the configured TTL. Fire-and-forget;
-/// failures are logged and swallowed since the button is best-effort.
+/// Delegates to `evict_model_request`; returns an error string on failure so
+/// the frontend can react (e.g. reset the eject button state).
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub fn evict_model(
-    models: tauri::State<crate::models::ActiveModelState>,
-    config: tauri::State<parking_lot::RwLock<crate::config::AppConfig>>,
-    client: tauri::State<reqwest::Client>,
-) {
+pub async fn evict_model(
+    models: tauri::State<'_, crate::models::ActiveModelState>,
+    config: tauri::State<'_, parking_lot::RwLock<crate::config::AppConfig>>,
+    client: tauri::State<'_, reqwest::Client>,
+) -> Result<(), String> {
     let model = models.0.lock().ok().and_then(|g| g.clone());
     if let Some(model) = model {
         let endpoint = format!(
             "{}/api/generate",
             config.read().inference.ollama_url.trim_end_matches('/')
         );
-        let client = client.inner().clone();
-        tauri::async_runtime::spawn(async move {
-            let body = serde_json::json!({
-                "model": model,
-                "keep_alive": 0,
-                "prompt": "",
-                "stream": false
-            });
-            if let Err(e) = client.post(&endpoint).json(&body).send().await {
-                eprintln!("thuki: [evict] request failed: {e}");
-            }
-        });
+        evict_model_request(&endpoint, &model, client.inner()).await?;
     }
+    Ok(())
 }
 
 async fn run_warmup(
     endpoint: String,
     model: String,
     client: reqwest::Client,
-    in_flight: Arc<Mutex<Option<String>>>,
+    in_flight: InFlightSlot,
     keep_alive: Option<String>,
 ) {
     let body = if let Some(ref ka) = keep_alive {
@@ -149,7 +163,7 @@ async fn run_warmup(
     }
 
     let mut guard = in_flight.lock().unwrap();
-    if guard.as_deref() == Some(model.as_str()) {
+    if guard.as_ref().map(|(m, k)| m == &model && k == &keep_alive) == Some(true) {
         *guard = None;
     }
 }
@@ -161,7 +175,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[cfg_attr(coverage_nightly, coverage(off))]
-    fn wait_in_flight_clear(in_flight: &Arc<Mutex<Option<String>>>, timeout: Duration) {
+    fn wait_in_flight_clear(in_flight: &InFlightSlot, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         while in_flight.lock().unwrap().is_some() {
             if Instant::now() >= deadline {
@@ -295,7 +309,7 @@ mod tests {
 
         let state = WarmupState::new();
         // Manually mark model A as in flight.
-        *state.in_flight.lock().unwrap() = Some("llama3".to_string());
+        *state.in_flight.lock().unwrap() = Some(("llama3".to_string(), None));
 
         let in_flight = Arc::clone(&state.in_flight);
         state.fire(
@@ -312,10 +326,9 @@ mod tests {
 
     #[tokio::test]
     async fn task_clears_only_own_slot() {
-        // Simulate: in_flight = Some("llama3"), task for "phi3" completes.
+        // Simulate: in_flight = Some(("llama3", None)), task for "phi3" completes.
         // "phi3" task must NOT clear the "llama3" slot.
-        let in_flight: Arc<Mutex<Option<String>>> =
-            Arc::new(Mutex::new(Some("llama3".to_string())));
+        let in_flight: InFlightSlot = Arc::new(Mutex::new(Some(("llama3".to_string(), None))));
 
         run_warmup(
             "http://127.0.0.1:1/api/generate".to_string(),
@@ -327,7 +340,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            in_flight.lock().unwrap().as_deref(),
+            in_flight.lock().unwrap().as_ref().map(|(m, _)| m.as_str()),
             Some("llama3"),
             "phi3 task must not clear slot held by llama3"
         );
@@ -427,6 +440,35 @@ mod tests {
         mock.assert_async().await;
     }
 
+    #[tokio::test]
+    async fn same_model_different_keep_alive_fires_new_request() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/generate")
+            .with_status(200)
+            .with_body("{}")
+            .expect(2)
+            .create_async()
+            .await;
+
+        let state = WarmupState::new();
+        let in_flight = Arc::clone(&state.in_flight);
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/generate", server.url());
+
+        state.fire(endpoint.clone(), "llama3".to_string(), client.clone(), None);
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+        state.fire(
+            endpoint.clone(),
+            "llama3".to_string(),
+            client.clone(),
+            Some("30m".to_string()),
+        );
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+
+        mock.assert_async().await;
+    }
+
     #[test]
     fn keep_alive_string_minutes() {
         assert_eq!(keep_alive_string(30), "30m");
@@ -437,5 +479,36 @@ mod tests {
     #[test]
     fn keep_alive_string_never() {
         assert_eq!(keep_alive_string(-1), "-1");
+    }
+
+    #[tokio::test]
+    async fn evict_model_request_sends_keep_alive_zero_as_string() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/generate")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"keep_alive":"0","prompt":"","stream":false}"#.to_string(),
+            ))
+            .with_status(200)
+            .with_body("{}")
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/generate", server.url());
+
+        evict_model_request(&endpoint, "llama3", &client)
+            .await
+            .expect("evict should succeed");
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn evict_model_request_returns_error_on_connection_refused() {
+        let client = reqwest::Client::new();
+        let result =
+            evict_model_request("http://127.0.0.1:1/api/generate", "llama3", &client).await;
+        assert!(result.is_err(), "connection refused should return Err");
     }
 }

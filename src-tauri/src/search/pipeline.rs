@@ -25,7 +25,9 @@ use std::sync::atomic::Ordering;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use crate::commands::{stream_ollama_chat, ChatMessage, ConversationHistory, StreamChunk};
+use crate::commands::{
+    stream_ollama_chat, ChatMessage, ConversationHistory, OllamaChatParams, StreamChunk,
+};
 
 use super::chunker;
 use super::config;
@@ -265,10 +267,13 @@ async fn run_streaming_branch(
     let saw_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let saw_done_for_callback = saw_done.clone();
     let accumulated = stream_ollama_chat(
-        endpoint,
-        model,
-        messages,
-        false,
+        OllamaChatParams {
+            endpoint: endpoint.to_string(),
+            model: model.to_string(),
+            messages,
+            think: false,
+            keep_alive: None,
+        },
         client,
         cancel_token,
         |chunk| match chunk {
@@ -277,7 +282,6 @@ async fn run_streaming_branch(
             }
             other => on_event(translate_chunk(other)),
         },
-        None,
     )
     .await;
 

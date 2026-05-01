@@ -31,6 +31,11 @@ open ~/Library/Application\ Support/com.quietnode.thuki/config.toml
 # selected from the in-app picker (which lists whatever is installed in
 # Ollama via /api/tags) and is stored in Thuki's local database, not here.
 ollama_url = "http://127.0.0.1:11434"
+# Keep the active model loaded in VRAM when Thuki is idle.
+keep_warm = false
+# Minutes of inactivity before Thuki tells Ollama to release the model.
+# -1 means never release (keep loaded until Ollama itself exits).
+keep_warm_inactivity_minutes = 30
 
 [prompt]
 # Leave empty to use the built-in secretary persona.
@@ -88,6 +93,8 @@ When no model is installed and no choice has been persisted, Thuki refuses to di
 | Constant     | Default                    | Tunable? | Why not tunable | Bounds        | Description                                                                                                                                                                                                          |
 | :----------- | :------------------------- | :------- | :-------------- | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ollama_url` | `"http://127.0.0.1:11434"` | Yes      | —               | non-empty URL | The web address where Thuki finds your local Ollama server. The default works if you run Ollama on this machine with its standard port. Change this only if you moved Ollama to a different port or another machine. |
+| `keep_warm` | `false` | Yes | — | `true` / `false` | Whether Thuki should keep the active model loaded in Ollama's VRAM between conversations. Enable this to get instant responses when you reopen Thuki; disable it to free GPU memory when Thuki is idle. |
+| `keep_warm_inactivity_minutes` | `30` | Yes | — | `-1` or `[1, 1440]` | How many minutes of inactivity before Thuki tells Ollama to release the model from VRAM. `-1` means never release (the model stays loaded until Ollama itself exits). Raise for longer sessions between uses; lower to reclaim VRAM sooner after closing Thuki. Has no effect when `keep_warm` is `false`. |
 
 If the active model has been removed from Ollama between launches, Thuki silently falls back to the first installed model the next time you open the picker. If no models are installed at all, the next request surfaces a "Model not found" error with the exact `ollama pull <name>` command to run.
 

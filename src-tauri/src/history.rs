@@ -301,14 +301,16 @@ pub async fn generate_title(
 
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let accumulated = crate::commands::stream_ollama_chat(
-        &endpoint,
-        &model,
-        title_messages,
-        false,
+        crate::commands::OllamaChatParams {
+            endpoint,
+            model,
+            messages: title_messages,
+            think: false,
+            keep_alive: None,
+        },
         &client,
         cancel_token,
         |_| {}, // No per-chunk side effects; we use the accumulated return value.
-        None,
     )
     .await;
 

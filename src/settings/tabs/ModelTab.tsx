@@ -60,8 +60,9 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
 
   function handleEject() {
     setEjecting(true);
-    void invoke('evict_model');
-    setTimeout(() => setEjecting(false), EJECT_RESET_MS);
+    invoke('evict_model')
+      .then(() => setTimeout(() => setEjecting(false), EJECT_RESET_MS))
+      .catch(() => setEjecting(false));
   }
 
   return (

@@ -907,7 +907,7 @@
   white-space: nowrap;
   flex-shrink: 0;
 }
-/* Number: underline-only cue — no heavy boxy border */
+/* Number: underline-only cue; no heavy boxy border */
 .keepWarmNumberInput {
   background: transparent;
   border: none;
@@ -979,7 +979,7 @@
   border-color: rgba(94, 201, 138, 0.25);
 }
 
-/* Circle-draw + checkmark — 16×16 viewbox, circle r=7 (circumference ≈ 44) */
+/* Circle-draw + checkmark: 16x16 viewbox, circle r=7 (circumference ~44) */
 @keyframes keepWarmDrawCircle {
   from {
     stroke-dashoffset: 44;
