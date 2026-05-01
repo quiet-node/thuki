@@ -23,7 +23,7 @@ import {
   isComposeCapabilityConflict,
 } from './utils/capabilityConflicts';
 import { ConversationView } from './view/ConversationView';
-import { AskBarView, MAX_IMAGES } from './view/AskBarView';
+import { AskBarView } from './view/AskBarView';
 import { OnboardingView } from './view/onboarding/index';
 import type { OnboardingStage } from './view/onboarding/index';
 import { HistoryPanel } from './components/HistoryPanel';
@@ -885,9 +885,16 @@ function App() {
     (e: React.DragEvent) => {
       e.preventDefault();
       if (isGenerating || isSubmitPending) return;
-      setIsDragOver(attachedImages.length >= MAX_IMAGES ? 'max' : 'normal');
+      setIsDragOver(
+        attachedImages.length >= config.window.maxImages ? 'max' : 'normal',
+      );
     },
-    [isGenerating, isSubmitPending, attachedImages.length],
+    [
+      isGenerating,
+      isSubmitPending,
+      attachedImages.length,
+      config.window.maxImages,
+    ],
   );
 
   const handleRootDragLeave = useCallback((e: React.DragEvent) => {
@@ -908,7 +915,7 @@ function App() {
       if (isGenerating || isSubmitPending) return;
       const files = e.dataTransfer?.files;
       if (!files) return;
-      const remaining = MAX_IMAGES - attachedImages.length;
+      const remaining = config.window.maxImages - attachedImages.length;
       if (remaining <= 0) return;
       const accepted: File[] = [];
       for (let i = 0; i < files.length && accepted.length < remaining; i++) {
@@ -926,6 +933,7 @@ function App() {
       isSubmitPending,
       attachedImages.length,
       handleImagesAttached,
+      config.window.maxImages,
     ],
   );
 
@@ -938,7 +946,7 @@ function App() {
    */
   const handleScreenshot = useCallback(async () => {
     /* v8 ignore start -- defensive guard: button is always disabled at max images, so this branch is unreachable through normal UI interaction */
-    if (attachedImages.length >= MAX_IMAGES) return;
+    if (attachedImages.length >= config.window.maxImages) return;
     /* v8 ignore stop */
     const base64 = await invoke<string | null>('capture_screenshot_command');
     if (!base64) return;
@@ -950,7 +958,7 @@ function App() {
     const blob = new Blob([bytes], { type: 'image/png' });
     const file = new File([blob], 'screenshot.png', { type: 'image/png' });
     handleImagesAttached([file]);
-  }, [attachedImages, handleImagesAttached]);
+  }, [attachedImages, handleImagesAttached, config.window.maxImages]);
 
   /** Removes an attached image from state, revokes the blob URL, and
    *  deletes the staged file from disk if processing completed. */
@@ -1887,6 +1895,7 @@ function App() {
                   isModelPickerOpen={isModelPickerOpen}
                   capabilityConflictMessage={liveCapabilityConflictMessage}
                   shake={shakeAskBar}
+                  maxImages={config.window.maxImages}
                 />
               </div>
 

@@ -38,6 +38,7 @@ interface RawAppConfig {
   window: {
     overlay_width: number;
     max_chat_height: number;
+    max_images: number;
   };
   quote: {
     max_display_lines: number;
@@ -58,6 +59,7 @@ export interface AppConfig {
   window: {
     overlayWidth: number;
     maxChatHeight: number;
+    maxImages: number;
   };
   quote: {
     maxDisplayLines: number;
@@ -77,6 +79,7 @@ function transform(raw: RawAppConfig): AppConfig {
     window: {
       overlayWidth: raw.window.overlay_width,
       maxChatHeight: raw.window.max_chat_height,
+      maxImages: raw.window.max_images,
     },
     quote: {
       maxDisplayLines: raw.quote.max_display_lines,
@@ -200,6 +203,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   window: {
     overlayWidth: 600,
     maxChatHeight: 648,
+    maxImages: 3,
   },
   quote: {
     maxDisplayLines: 4,

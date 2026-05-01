@@ -25,6 +25,7 @@ const IMAGE_DEFAULTS = {
   onImageRemove: vi.fn(),
   onImagePreview: vi.fn(),
   onScreenshot: vi.fn(),
+  maxImages: 3,
 };
 
 describe('AskBarView', () => {

@@ -41,6 +41,7 @@ system = ""
 [window]
 overlay_width = 600
 max_chat_height = 648
+max_images = 3
 
 [quote]
 max_display_lines = 4
@@ -112,12 +113,13 @@ Controls the personality and instructions Thuki gives to the AI at the start of 
 
 ### `[window]`
 
-Size knobs for the floating Thuki window. The collapsed-bar height and the close-animation deadline are baked into the frontend (see `App.tsx`) because their effective range is invisible to users (collapsed height is overwritten by the ResizeObserver within a frame; the hide delay sits below normal perception across its usable range and creates a visible pop if dropped below the exit-animation duration).
+UI configuration for the floating Thuki window: geometry knobs and input attachment limits. The collapsed-bar height and the close-animation deadline are baked into the frontend (see `App.tsx`) because their effective range is invisible to users (collapsed height is overwritten by the ResizeObserver within a frame; the hide delay sits below normal perception across its usable range and creates a visible pop if dropped below the exit-animation duration).
 
 | Constant          | Default | Tunable? | Why not tunable | Bounds            | Description                                                                                                                                                                            |
 | :---------------- | :------ | :------- | :-------------- | :---------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `overlay_width`   | `600.0` | Yes      | —               | `[200.0, 2000.0]` | How wide the floating Thuki window is, in pixels. Raise for wider input/chat at the cost of more screen space; lower to keep Thuki compact.                                            |
 | `max_chat_height` | `648.0` | Yes      | —               | `[200.0, 2000.0]` | The largest the chat window can grow to as conversation gets longer. Raise to see more chat history without scrolling; lower to keep Thuki from taking over your screen on long chats. |
+| `max_images`      | `3`     | Yes      | —               | `[1, 20]`         | Maximum number of images you can manually attach to a single message by pasting or dragging. A /screen capture always counts as one extra on top of this limit. Raise for richer visual context per message; lower to keep prompts compact. |
 | `COLLAPSED_WINDOW_HEIGHT` | `80 px` | No | Frontend constant; overwritten by ResizeObserver before the frame renders, so any value in the user-visible range produces identical results. | — | The initial height of the collapsed input bar, in pixels. Overwritten by ResizeObserver on every render, so the value the user sees is always determined dynamically. |
 | `HIDE_COMMIT_DELAY_MS` | `350 ms` | No | Frontend constant; the value sits below normal perception across its usable range and creates a visible pop if dropped below the exit-animation duration. | — | How long Thuki waits after you close the window before it hides the underlying NSPanel. Keeps the exit animation from being cut off. |
 

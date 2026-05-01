@@ -63,7 +63,25 @@ export function DisplayTab({ config, resyncToken, onSaved }: DisplayTabProps) {
         />
       </Section>
 
-      <Section heading="Quote">
+      <Section heading="Input">
+        <SaveField
+          section="window"
+          fieldKey="max_images"
+          label="Max images"
+          helper={configHelp('window', 'max_images')}
+          initialValue={config.window.max_images}
+          resyncToken={resyncToken}
+          onSaved={onSaved}
+          render={(value, setValue) => (
+            <NumberStepper
+              value={value}
+              min={1}
+              max={20}
+              onChange={setValue}
+              ariaLabel="Max images"
+            />
+          )}
+        />
         <SaveField
           section="quote"
           fieldKey="max_display_lines"

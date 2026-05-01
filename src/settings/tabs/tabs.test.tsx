@@ -34,6 +34,7 @@ const CONFIG: RawAppConfig = {
   window: {
     overlay_width: 600,
     max_chat_height: 648,
+    max_images: 3,
   },
   quote: {
     max_display_lines: 4,
@@ -79,10 +80,10 @@ describe('ModelTab', () => {
 });
 
 describe('DisplayTab', () => {
-  it('renders Window and Quote sections', () => {
+  it('renders Window and Input sections', () => {
     render(<DisplayTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     expect(screen.getByText('Window')).toBeInTheDocument();
-    expect(screen.getByText('Quote')).toBeInTheDocument();
+    expect(screen.getByText('Input')).toBeInTheDocument();
     expect(screen.getByText('Overlay width')).toBeInTheDocument();
     expect(screen.getByText('Max display lines')).toBeInTheDocument();
   });
