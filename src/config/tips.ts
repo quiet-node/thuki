@@ -44,7 +44,7 @@ export const TIPS: readonly Tip[] = [
   'Type a token count directly into the chip next to the Context Window slider for an exact value',
   'Run `ollama ps` in a terminal to see which model is loaded, its size, and the active context length',
   {
-    text: 'Click here to learn how to tune the Context Window for your Mac in 5 minutes',
+    text: 'Context Window can be tuned in Settings. Learn how in five minutes ↗',
     url: 'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md',
   },
 ];
