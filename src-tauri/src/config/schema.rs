@@ -45,7 +45,7 @@ pub struct InferenceSection {
     /// Warmup and chat use the same value so Ollama reuses the same runner
     /// instance and its cached KV prefix for the system prompt. Raise to fit
     /// longer conversations in a single context; lower to use less VRAM.
-    /// Valid range: 2048..=131072.
+    /// Valid range: 2048..=1048576.
     pub num_ctx: u32,
 }
 

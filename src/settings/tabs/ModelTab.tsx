@@ -216,7 +216,11 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
               aria-label="Release after N minutes"
               onChange={(e) => {
                 const n = parseInt(e.target.value, 10);
-                if (!Number.isNaN(n)) setInactivityMin(n);
+                if (!Number.isNaN(n)) {
+                  // Clamp to BOUNDS_KEEP_WARM_INACTIVITY_MINUTES so the UI
+                  // mirrors the backend cap and never desyncs after a save.
+                  setInactivityMin(Math.max(-1, Math.min(1440, n)));
+                }
               }}
             />
             <span className={styles.keepWarmUnit}>min</span>

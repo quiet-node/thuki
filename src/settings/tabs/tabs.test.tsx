@@ -269,6 +269,24 @@ describe('ModelTab', () => {
     expect((input as HTMLInputElement).value).toBe('0');
   });
 
+  it('clamps below-range inactivity input to -1', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    fireEvent.change(input, { target: { value: '-99' } });
+    expect((input as HTMLInputElement).value).toBe('-1');
+  });
+
+  it('clamps above-range inactivity input to 1440', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    fireEvent.change(input, { target: { value: '9999' } });
+    expect((input as HTMLInputElement).value).toBe('1440');
+  });
+
   it('updates VRAM subtitle when warmup:model-loaded event fires', async () => {
     render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     await act(async () => {
@@ -408,7 +426,7 @@ describe('ModelTab', () => {
     // Embedded button opens the tuning doc on GitHub via open_url so the
     // link works inside the Tauri webview (target="_blank" is a no-op here).
     const tuneButton = screen.getByRole('button', {
-      name: /How to tune Context Window/,
+      name: /how to tune Context Window/i,
     });
     fireEvent.click(tuneButton);
     expect(invokeMock).toHaveBeenCalledWith('open_url', {
