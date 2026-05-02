@@ -31,6 +31,15 @@ open ~/Library/Application\ Support/com.quietnode.thuki/config.toml
 # selected from the in-app picker (which lists whatever is installed in
 # Ollama via /api/tags) and is stored in Thuki's local database, not here.
 ollama_url = "http://127.0.0.1:11434"
+# Minutes of inactivity before Thuki tells Ollama to release the model.
+# 0 = let Ollama manage (its own 5-minute default applies).
+# -1 = never release (keep loaded until Ollama itself exits or you unload manually).
+keep_warm_inactivity_minutes = 0
+# Context window size in tokens sent to Ollama with every request.
+# Warmup and chat share this value so Ollama reuses the same runner and its
+# cached KV prefix for the system prompt. Raise to fit longer conversations;
+# lower to reduce GPU memory use. Valid range: 2048–1048576.
+num_ctx = 16384
 
 [prompt]
 # Leave empty to use the built-in secretary persona.
@@ -88,6 +97,8 @@ When no model is installed and no choice has been persisted, Thuki refuses to di
 | Constant     | Default                    | Tunable? | Why not tunable | Bounds        | Description                                                                                                                                                                                                          |
 | :----------- | :------------------------- | :------- | :-------------- | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ollama_url` | `"http://127.0.0.1:11434"` | Yes      | —               | non-empty URL | The web address where Thuki finds your local Ollama server. The default works if you run Ollama on this machine with its standard port. Change this only if you moved Ollama to a different port or another machine. |
+| `keep_warm_inactivity_minutes` | `0` | Yes | — | `-1` or `[0, 1440]` | Minutes of inactivity before Thuki tells Ollama to release the model from VRAM. `0` means do not manage: Ollama's own 5-minute default applies. `-1` means never release (stays until Ollama exits or you unload manually). Raise for longer sessions between uses; lower to reclaim VRAM sooner. |
+| `num_ctx` | `16384` | Yes | — | `[2048, 1048576]` | Context window size in tokens sent to Ollama with every request. Warmup and chat share this value so Ollama reuses the same runner instance and its cached KV prefix for the system prompt: they must match or Ollama creates a second runner and the warmup saves nothing. Ollama silently clamps this to the model's physical maximum, so values above the model's capacity are accepted but have no extra effect. Raise to fit longer conversations without the model forgetting early messages: each doubling roughly doubles VRAM for the KV cache; lower to reclaim GPU memory at the cost of a shorter effective history. 16384 is the default because it comfortably holds the full system prompt (~4000 tokens) plus many turns while staying within 8 GB GPU budgets. See [Tuning the Context Window](./tuning-context-window.md) for a 5-minute benchmark recipe to find the right value for your hardware. |
 
 If the active model has been removed from Ollama between launches, Thuki silently falls back to the first installed model the next time you open the picker. If no models are installed at all, the next request surfaces a "Model not found" error with the exact `ollama pull <name>` command to run.
 
@@ -100,6 +111,7 @@ The table below also lists the baked-in safety limits that govern Thuki's commun
 | `MAX_OLLAMA_TAGS_BODY_BYTES`                | `4 MiB`  | No       | Defense-in-depth bound on attacker-controlled response body. A misbehaving or compromised Ollama could otherwise stream an unbounded payload and exhaust memory.        | —      | The largest `/api/tags` response body Thuki will accept. 4 MiB fits thousands of model entries; anything larger is rejected immediately and the request returns an error.            |
 | `MAX_OLLAMA_SHOW_BODY_BYTES`                | `4 MiB`  | No       | Defense-in-depth bound on attacker-controlled response body. Same rationale as `MAX_OLLAMA_TAGS_BODY_BYTES`.                                                            | —      | The largest `/api/show` response body Thuki will accept. Full Modelfiles and parameters can be sizable, but 4 MiB is well above any real model; larger responses are rejected.      |
 | `MAX_MODEL_SLUG_LEN`                        | `256 B`  | No       | Defense-in-depth bound on adversarial input. Real Ollama slugs are a handful of characters; capping the length stops malformed values long before any network or DB work. | —      | The longest model slug Thuki will accept from `set_active_model`. Anything longer is rejected immediately by `validate_model_slug`.                                                  |
+| `VRAM_POLL_INTERVAL_SECS`                   | `5 s`    | No       | Tuning this trades responsiveness against localhost polling load; 5 s is the sweet spot for loopback calls and matches Ollama's internal TTL resolution granularity. | —      | How often Thuki polls Ollama's `/api/ps` to detect VRAM changes made outside Thuki (for example, running `ollama stop` or a TTL expiry). The Settings panel VRAM indicator reflects these changes within one interval. |
 
 ### `[prompt]`
 

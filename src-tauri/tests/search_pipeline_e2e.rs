@@ -17,6 +17,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use thuki_agent_lib::commands::ConversationHistory;
+use thuki_agent_lib::config::defaults::DEFAULT_NUM_CTX;
 use thuki_agent_lib::search::{
     run_agentic, Action, JudgeCaller, JudgeSource, JudgeVerdict, RouterJudgeCaller,
     RouterJudgeOutput, SearchError, SearchEvent, SearchMetadata, SearchWarning, Sufficiency,
@@ -228,6 +229,7 @@ async fn happy_path_snippets_sufficient_streams_answer() {
         &router,
         &judge,
         &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
+        DEFAULT_NUM_CTX,
     )
     .await
     .unwrap();
@@ -363,6 +365,7 @@ async fn reader_escalation_with_chunks_sufficient() {
         &router,
         &judge,
         &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
+        DEFAULT_NUM_CTX,
     )
     .await
     .unwrap();
@@ -446,6 +449,7 @@ async fn reader_unavailable_degrades_to_snippets_and_warns() {
         &router,
         &judge,
         &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
+        DEFAULT_NUM_CTX,
     )
     .await
     .unwrap();
@@ -547,6 +551,7 @@ async fn exhausted_gap_loop_warns_iteration_cap_and_streams_fallback() {
         &router,
         &judge,
         &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
+        DEFAULT_NUM_CTX,
     )
     .await
     .unwrap();
@@ -641,6 +646,7 @@ async fn cancel_midloop_does_not_persist_and_emits_cancelled() {
         &router,
         &judge,
         &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
+        DEFAULT_NUM_CTX,
     )
     .await
     .unwrap();

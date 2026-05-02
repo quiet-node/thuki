@@ -25,13 +25,17 @@ pub mod onboarding;
 pub mod screenshot;
 pub mod search;
 pub mod settings_commands;
+pub mod warmup;
 
 #[cfg(target_os = "macos")]
 mod activator;
 pub mod context;
 pub mod permissions;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -44,6 +48,11 @@ use tauri::ActivationPolicy;
 
 #[cfg(target_os = "macos")]
 use tauri_nspanel::{CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt};
+
+#[cfg(target_os = "macos")]
+use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::NSApplication;
 
 // ─── NSPanel definition (macOS only) ────────────────────────────────────────
 
@@ -233,6 +242,44 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
         return;
     }
 
+    // Pre-load the active model so the user's first message does not pay
+    // the cold-start penalty. Fires on all show paths: double-tap, tray,
+    // and first-launch auto-show.
+    let warmup_model = app_handle
+        .state::<models::ActiveModelState>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
+    if let Some(model) = warmup_model {
+        let warmup_config = app_handle
+            .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+            .read()
+            .clone();
+        let endpoint = format!(
+            "{}/api/chat",
+            warmup_config.inference.ollama_url.trim_end_matches('/')
+        );
+        let system_prompt = warmup_config.prompt.resolved_system.clone();
+        let keep_alive = if warmup_config.inference.keep_warm_inactivity_minutes == 0 {
+            None
+        } else {
+            Some(warmup::keep_alive_string(
+                warmup_config.inference.keep_warm_inactivity_minutes,
+            ))
+        };
+        let num_ctx = warmup_config.inference.num_ctx;
+        let client = app_handle.state::<reqwest::Client>().inner().clone();
+        app_handle.state::<warmup::WarmupState>().fire(
+            endpoint,
+            model,
+            system_prompt,
+            client,
+            keep_alive,
+            num_ctx,
+        );
+    }
+
     // Extract before building local_ctx to avoid an extra clone.
     let selected_text = ctx.selected_text;
 
@@ -330,7 +377,18 @@ fn show_settings_window(app_handle: &tauri::AppHandle) {
     {
         match app_handle.get_webview_panel("settings") {
             Ok(panel) => {
-                panel.show_and_make_key();
+                // Activate the app so macOS knows which Space is "current".
+                // Without this, Thuki is not the active process (ActivationPolicy::Accessory
+                // + tray menu just dismissed), and moveToActiveSpace has no anchor Space to
+                // move to — the panel silently appears on its last-known Space (usually Space 1).
+                let _ = app_handle.run_on_main_thread(move || {
+                    if let Some(mtm) = MainThreadMarker::new() {
+                        let ns_app = NSApplication::sharedApplication(mtm);
+                        #[allow(deprecated)]
+                        ns_app.activateIgnoringOtherApps(true);
+                    }
+                    panel.show_and_make_key();
+                });
                 return;
             }
             Err(e) => {
@@ -626,8 +684,12 @@ fn init_panel(app_handle: &tauri::AppHandle) {
 /// Called once during app setup. The resulting panel handle is stored in the
 /// tauri-nspanel WebviewPanelManager, so subsequent calls to
 /// `get_webview_panel("settings")` retrieve the same panel without
-/// re-converting. Not floating and at normal window level so Settings sits
-/// in the window stack like any standard app window.
+/// re-converting.
+///
+/// Collection behavior: `move_to_active_space` moves the panel to whichever
+/// Space is current when `show_and_make_key` is called (requires the app to be
+/// the active process first — see `show_settings_window`). `full_screen_auxiliary`
+/// allows the panel to coexist with fullscreen app Spaces.
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn init_settings_panel(app_handle: &tauri::AppHandle) {
@@ -638,8 +700,14 @@ fn init_settings_panel(app_handle: &tauri::AppHandle) {
     match window.to_panel::<ThukiSettingsPanel>() {
         Ok(panel) => {
             panel.set_floating_panel(false);
-            panel.set_level(0);
+            panel.set_level(PanelLevel::Floating.value());
             panel.set_has_shadow(true);
+            panel.set_collection_behavior(
+                CollectionBehavior::new()
+                    .move_to_active_space()
+                    .full_screen_auxiliary()
+                    .into(),
+            );
         }
         Err(e) => {
             eprintln!("thuki: [settings] NSPanel conversion failed: {e:?}");
@@ -839,6 +907,7 @@ pub fn run() {
                         let is_visible = OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst);
                         let handle = app_handle.clone();
                         let handle2 = app_handle.clone();
+
                         // Dispatch context capture to a dedicated thread so the event
                         // tap callback returns immediately. AX attribute lookups and
                         // clipboard simulation can block for seconds (macOS AX default
@@ -858,6 +927,12 @@ pub fn run() {
 
             // ── Persistent HTTP client ────────────────────────────────
             app.manage(reqwest::Client::new());
+            let warmup_handle = app.handle().clone();
+            app.manage(warmup::WarmupState::with_on_loaded(Arc::new(
+                move |model| {
+                    let _ = warmup_handle.emit("warmup:model-loaded", model);
+                },
+            )));
 
             // ── Configuration (TOML file at app_config_dir) ─────────
             // Loaded once at startup. Missing file -> seed defaults.
@@ -908,6 +983,13 @@ pub fn run() {
             // ── Orphaned image cleanup (startup + periodic) ─────────
             run_image_cleanup(app.handle());
             spawn_periodic_image_cleanup(app.handle().clone());
+
+            // ── VRAM sentinel poll ─────────────────────────────────
+            // Detects external VRAM changes (ollama stop, TTL expiry,
+            // daemon restart) that Thuki did not initiate. Polls
+            // /api/ps every VRAM_POLL_INTERVAL_SECS seconds and emits
+            // warmup:model-loaded or warmup:model-evicted as needed.
+            warmup::spawn_vram_poller(app.handle().clone());
 
             Ok(())
         })
@@ -977,7 +1059,13 @@ pub fn run() {
             #[cfg(not(coverage))]
             permissions::quit_and_relaunch,
             finish_onboarding,
-            advance_past_model_check
+            advance_past_model_check,
+            #[cfg(not(coverage))]
+            warmup::warm_up_model,
+            #[cfg(not(coverage))]
+            warmup::evict_model,
+            #[cfg(not(coverage))]
+            warmup::get_loaded_model
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

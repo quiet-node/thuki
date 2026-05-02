@@ -4309,6 +4309,8 @@ dependencies = [
  "html-escape",
  "image",
  "mockito",
+ "objc2",
+ "objc2-app-kit",
  "parking_lot",
  "reqwest",
  "rusqlite",

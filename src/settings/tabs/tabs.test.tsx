@@ -19,6 +19,10 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { invoke } from '@tauri-apps/api/core';
+import {
+  clearEventHandlers,
+  emitTauriEvent,
+} from '../../testUtils/mocks/tauri';
 
 import { ModelTab } from './ModelTab';
 import { DisplayTab } from './DisplayTab';
@@ -29,7 +33,11 @@ import type { RawAppConfig } from '../types';
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 const CONFIG: RawAppConfig = {
-  inference: { ollama_url: 'http://127.0.0.1:11434' },
+  inference: {
+    ollama_url: 'http://127.0.0.1:11434',
+    keep_warm_inactivity_minutes: 0,
+    num_ctx: 16384,
+  },
   prompt: { system: 'hello' },
   window: {
     overlay_width: 600,
@@ -57,11 +65,15 @@ const CONFIG: RawAppConfig = {
 
 beforeEach(() => {
   invokeMock.mockReset();
-  invokeMock.mockResolvedValue(CONFIG);
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === 'get_loaded_model') return Promise.resolve(null);
+    return Promise.resolve(CONFIG);
+  });
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  clearEventHandlers();
 });
 
 describe('ModelTab', () => {
@@ -76,6 +88,504 @@ describe('ModelTab', () => {
   it('renders the live char counter for the prompt textarea', () => {
     render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     expect(screen.getByText(/5 \/ 8000/)).toBeInTheDocument();
+  });
+
+  it('renders the Keep Warm section with Release after input and Unload now button', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(screen.getByText('Keep Warm')).toBeInTheDocument();
+    expect(screen.getByText('Keep active model in VRAM')).toBeInTheDocument();
+    expect(screen.getByText('Release after')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Unload now' }),
+    ).toBeInTheDocument();
+  });
+
+  it('Unload now button invokes evict_model', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(undefined);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Unload now' }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('evict_model'));
+  });
+
+  it('Unload now button is disabled while ejecting and stays disabled after model unloads', async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(undefined);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    // Flush the get_loaded_model effect so the button becomes enabled.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const btn = screen.getByRole('button', { name: 'Unload now' });
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    expect(btn).toBeDisabled(); // disabled from ejecting state
+    // Flush microtasks so evict_model resolves, then backend emits model-evicted.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      emitTauriEvent('warmup:model-evicted', null);
+    });
+    act(() => {
+      vi.advanceTimersByTime(2500); // ejecting clears
+    });
+    // Button stays disabled because loadedModel is now null.
+    expect(btn).toBeDisabled();
+  });
+
+  it('Unload now button resets immediately when evict_model rejects', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      if (cmd === 'evict_model')
+        return Promise.reject(new Error('connection refused'));
+      return Promise.resolve(undefined);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const btn = screen.getByRole('button', { name: 'Unload now' });
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    expect(btn).toBeDisabled();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // Ejecting cleared; loadedModel still set (eject failed), button re-enabled.
+    expect(btn).not.toBeDisabled();
+  });
+
+  it('Unload now button is disabled when no model is loaded in VRAM', async () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+  });
+
+  it('Unload now button is enabled when a model is loaded in VRAM', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(CONFIG);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByRole('button', { name: 'Unload now' }),
+    ).not.toBeDisabled();
+  });
+
+  it('shows VRAM subtitle with model name and dot when a model is loaded', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(CONFIG);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText('llama3.2:3b')).toBeInTheDocument();
+    expect(screen.getByTestId('vram-status-dot')).toBeInTheDocument();
+  });
+
+  it('hides VRAM subtitle when no model is loaded', async () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
+  });
+
+  it('handles get_loaded_model failure gracefully and leaves button disabled', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model')
+        return Promise.reject(new Error('network error'));
+      return Promise.resolve(CONFIG);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
+  });
+
+  it('clears VRAM subtitle and keeps button disabled after successful eject', async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(undefined);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText('llama3.2:3b')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Unload now' }));
+    // Flush microtasks so evict_model resolves, then backend emits model-evicted.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      emitTauriEvent('warmup:model-evicted', null);
+    });
+    expect(screen.queryByText('llama3.2:3b')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
+    // Button disabled: ejecting still true (timer not yet fired).
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+    act(() => {
+      vi.advanceTimersByTime(2500);
+    });
+    // After timer: ejecting clears but loadedModel=null keeps button disabled.
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+  });
+
+  it('changing the inactivity minutes input updates its value', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    fireEvent.change(input, { target: { value: '60' } });
+    expect((input as HTMLInputElement).value).toBe('60');
+  });
+
+  it('non-numeric inactivity input is ignored', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    fireEvent.change(input, { target: { value: '' } });
+    expect((input as HTMLInputElement).value).toBe('0');
+  });
+
+  it('clamps below-range inactivity input to -1', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    fireEvent.change(input, { target: { value: '-99' } });
+    expect((input as HTMLInputElement).value).toBe('-1');
+  });
+
+  it('clamps above-range inactivity input to 1440', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    fireEvent.change(input, { target: { value: '9999' } });
+    expect((input as HTMLInputElement).value).toBe('1440');
+  });
+
+  it('updates VRAM subtitle when warmup:model-loaded event fires', async () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
+    act(() => {
+      emitTauriEvent('warmup:model-loaded', 'phi3:mini');
+    });
+    expect(screen.getByText('phi3:mini')).toBeInTheDocument();
+    expect(screen.getByTestId('vram-status-dot')).toBeInTheDocument();
+  });
+
+  it('clears VRAM subtitle when warmup:model-evicted event fires', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(CONFIG);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText('llama3.2:3b')).toBeInTheDocument();
+    act(() => {
+      emitTauriEvent('warmup:model-evicted', null);
+    });
+    expect(screen.queryByText('llama3.2:3b')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
+  });
+
+  it('re-queries get_loaded_model when visibilitychange fires and panel is visible', async () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // Initially no model loaded.
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
+
+    // Switch mock: now a model is loaded in VRAM.
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(CONFIG);
+    });
+
+    // Simulate settings panel becoming visible (document.hidden is false in happy-dom).
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('vram-status-dot')).toBeInTheDocument();
+    expect(screen.getByText('llama3.2:3b')).toBeInTheDocument();
+  });
+
+  it('handles get_loaded_model failure gracefully on visibilitychange', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.reject(new Error('fail'));
+      return Promise.resolve(CONFIG);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // Fires visibilitychange with a rejecting get_loaded_model — covers the .catch path.
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+  });
+
+  it('skips get_loaded_model when visibilitychange fires while document is hidden', async () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    invokeMock.mockClear();
+
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => true,
+    });
+
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+    });
+
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => false,
+    });
+
+    expect(invokeMock).not.toHaveBeenCalledWith('get_loaded_model');
+  });
+
+  it('resyncs inactivity minutes when resyncToken changes', () => {
+    const { rerender } = render(
+      <ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />,
+    );
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    expect((input as HTMLInputElement).value).toBe('0');
+
+    const updatedConfig: RawAppConfig = {
+      ...CONFIG,
+      inference: { ...CONFIG.inference, keep_warm_inactivity_minutes: 60 },
+    };
+    rerender(
+      <ModelTab config={updatedConfig} resyncToken={1} onSaved={() => {}} />,
+    );
+    expect((input as HTMLInputElement).value).toBe('60');
+  });
+
+  it('renders Context Window section with label, slider, chip, tick marks, and VRAM note', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(screen.getByText('Context Window')).toBeInTheDocument();
+    expect(screen.getByText('Context window')).toBeInTheDocument();
+    expect(
+      screen.getByRole('slider', { name: 'Context window tokens' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('spinbutton', { name: 'Context window tokens' }),
+    ).toBeInTheDocument();
+    // Tick marks
+    expect(screen.getByText('8K')).toBeInTheDocument();
+    expect(screen.getByText('16K')).toBeInTheDocument();
+    expect(screen.getByText('1M')).toBeInTheDocument();
+    // VRAM note
+    expect(
+      screen.getByText(
+        /doubling the context roughly doubles its memory footprint/,
+      ),
+    ).toBeInTheDocument();
+    // Embedded button opens the tuning doc on GitHub via open_url so the
+    // link works inside the Tauri webview (target="_blank" is a no-op here).
+    const tuneButton = screen.getByRole('button', {
+      name: /how to tune Context Window/i,
+    });
+    fireEvent.click(tuneButton);
+    expect(invokeMock).toHaveBeenCalledWith('open_url', {
+      url: 'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md#the-5-minute-benchmark-recipe',
+    });
+  });
+
+  it('typing a valid value in the chip and blurring commits it', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    fireEvent.change(chip, { target: { value: '32768' } });
+    fireEvent.blur(chip);
+    expect(chip.value).toBe('32768');
+  });
+
+  it('typing an invalid value in the chip and blurring reverts to committed value', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    fireEvent.change(chip, { target: { value: 'abc' } });
+    fireEvent.blur(chip);
+    expect(chip.value).toBe('16384');
+  });
+
+  it('typing a value below CTX_MIN and blurring reverts to committed value', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    fireEvent.change(chip, { target: { value: '512' } });
+    fireEvent.blur(chip);
+    expect(chip.value).toBe('16384');
+  });
+
+  it('typing a value above CTX_MAX and blurring clamps to CTX_MAX', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    fireEvent.change(chip, { target: { value: '99999999' } });
+    fireEvent.blur(chip);
+    expect(chip.value).toBe('1048576');
+  });
+
+  it('Enter key in chip commits by blurring', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    fireEvent.change(chip, { target: { value: '131072' } });
+    fireEvent.keyDown(chip, { key: 'Enter' });
+    expect(chip.value).toBe('131072');
+  });
+
+  it('non-Enter keyDown in chip does not commit', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    fireEvent.change(chip, { target: { value: '32768' } });
+    fireEvent.keyDown(chip, { key: 'Tab' });
+    // No blur triggered, so the chip still shows the in-progress text.
+    expect(chip.value).toBe('32768');
+  });
+
+  it('slider onChange updates chip text via posToCtx', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // pos=556 → 2048 * 512^(556/1000) ≈ 64K (65536) with CTX_MAX=1M
+    fireEvent.change(slider, { target: { value: '556' } });
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    expect(chip.value).toBe('65536');
+  });
+
+  it('slider onMouseUp commits the current slider position', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // pos=444 → 2048 * 512^(444/1000) ≈ 32K (32768) with CTX_MAX=1M
+    fireEvent.change(slider, { target: { value: '444' } });
+    fireEvent.mouseUp(slider);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    expect(chip.value).toBe('32768');
+  });
+
+  it('slider onTouchEnd commits the current slider position', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // pos=667 → 2048 * 512^(667/1000) ≈ 128K (131072) with CTX_MAX=1M
+    fireEvent.change(slider, { target: { value: '667' } });
+    fireEvent.touchEnd(slider);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    expect(chip.value).toBe('131072');
+  });
+
+  it('slider onKeyUp commits when not in a drag sequence', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // No preceding onChange, so ctxDraggingRef is false → onKeyUp commits.
+    fireEvent.keyUp(slider);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // No position change yet; committed value stays 16384.
+    expect(chip.value).toBe('16384');
+  });
+
+  it('slider onKeyUp does not commit when a drag is in progress', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // onChange sets ctxDraggingRef to true; wrap in act so React flushes the
+    // setCtxPos/setCtxChip state updates before the keyUp fires.
+    act(() => {
+      fireEvent.change(slider, { target: { value: '556' } });
+    });
+    // onKeyUp while dragging: skips commitCtx, chip still shows intermediate.
+    fireEvent.keyUp(slider);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // pos=556 → 64K (65536); numCtx unchanged, chip shows the intermediate value.
+    expect(chip.value).toBe('65536');
+  });
+
+  it('resyncs context window chip and slider when resyncToken changes', () => {
+    const { rerender } = render(
+      <ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />,
+    );
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    expect(chip.value).toBe('16384');
+
+    const updatedConfig: RawAppConfig = {
+      ...CONFIG,
+      inference: { ...CONFIG.inference, num_ctx: 65536 },
+    };
+    rerender(
+      <ModelTab config={updatedConfig} resyncToken={1} onSaved={() => {}} />,
+    );
+    expect(chip.value).toBe('65536');
   });
 });
 

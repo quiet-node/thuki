@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import type { Tip } from '../config/tips';
 
 const NOISE_CHARS = '!@#$%^&*<>?/|abcdefghijklmnopqrstuvwxyz0123456789░▒';
 const CHAR_DELAY = 36;
@@ -6,12 +8,30 @@ const FLICKER_MS = 40;
 const FLICKER_COUNT = 4;
 const FADE_MS = 280;
 
+/**
+ * Tips arrive as either a plain string or a `{ text, url }` pair. When a URL
+ * is present the entire bar becomes a clickable affordance that opens the
+ * link in the user's default browser via the Tauri `open_url` command. We
+ * use `open_url` rather than a plain `<a target="_blank">` because the
+ * Tauri webview does not navigate `target="_blank"` to the system browser
+ * by default, so a bare anchor would silently do nothing.
+ */
+function tipText(tip: Tip): string {
+  return typeof tip === 'string' ? tip : tip.text;
+}
+
+function tipUrl(tip: Tip): string | null {
+  return typeof tip === 'string' ? null : tip.url;
+}
+
 interface TipBarProps {
-  tip: string;
+  tip: Tip;
   tipKey: number;
 }
 
 export function TipBar({ tip, tipKey }: TipBarProps) {
+  const text = tipText(tip);
+  const url = tipUrl(tip);
   const spanRef = useRef<HTMLSpanElement>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
@@ -31,7 +51,7 @@ export function TipBar({ tip, tipKey }: TipBarProps) {
     };
 
     const runTypewriter = () => {
-      const chars = tip.split('');
+      const chars = text.split('');
       span.innerHTML = chars
         .map((_, i) => `<span data-ci="${i}"></span>`)
         .join('');
@@ -92,7 +112,31 @@ export function TipBar({ tip, tipKey }: TipBarProps) {
       timersRef.current.forEach(clearTimeout);
       timersRef.current = [];
     };
-  }, [tip, tipKey]);
+  }, [text, tipKey]);
+
+  if (url) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          void invoke('open_url', { url });
+        }}
+        className="flex w-full items-center justify-center gap-1.5 border-t border-white/5 px-4 py-[5px] cursor-pointer transition-colors hover:bg-white/[0.03]"
+        data-testid="tip-bar"
+        aria-label={`Open tip link: ${url}`}
+      >
+        <span className="text-[9px] font-bold tracking-widest uppercase text-[#ff8d5c] bg-[#ff8d5c]/10 rounded px-1.5 py-0.5 flex-shrink-0">
+          TIP
+        </span>
+        <span
+          ref={spanRef}
+          className="text-[10px] underline decoration-dotted underline-offset-2 decoration-[#ff8d5c]/40"
+          style={{ color: '#8a8a8e' }}
+          data-testid="tip-text"
+        />
+      </button>
+    );
+  }
 
   return (
     <div

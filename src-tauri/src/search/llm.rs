@@ -116,6 +116,10 @@ struct RouterOptions {
     top_p: f64,
     top_k: u32,
     num_predict: i32,
+    /// Must match the value sent by warmup and the chat path so Ollama keeps
+    /// the warmed-up model resident. Omitting it would cause Ollama to reload
+    /// the model with its default 4096-token window.
+    num_ctx: u32,
 }
 
 #[derive(Serialize)]
@@ -152,6 +156,7 @@ struct OllamaResponseBody {
 /// the router/judge timeout fields from
 /// [`SearchRuntimeConfig`](super::config::SearchRuntimeConfig); tests pass
 /// the corresponding `DEFAULT_*` constants from [`crate::config::defaults`].
+#[allow(clippy::too_many_arguments)]
 async fn request_json(
     endpoint: &str,
     model: &str,
@@ -160,6 +165,7 @@ async fn request_json(
     format: serde_json::Value,
     cancel_token: &CancellationToken,
     timeout_secs: u64,
+    num_ctx: u32,
 ) -> Result<String, SearchError> {
     let body = OllamaJsonRequest {
         model: model.to_string(),
@@ -171,6 +177,7 @@ async fn request_json(
             top_p: 1.0,
             top_k: 1,
             num_predict: ROUTER_MAX_TOKENS,
+            num_ctx,
         },
     };
 
@@ -231,6 +238,7 @@ pub async fn call_router_merged(
     today: &str,
     cancel_token: &CancellationToken,
     timeout_secs: u64,
+    num_ctx: u32,
 ) -> Result<RouterJudgeOutput, SearchError> {
     if cancel_token.is_cancelled() {
         return Err(SearchError::Cancelled);
@@ -248,6 +256,7 @@ pub async fn call_router_merged(
         router_output_schema(),
         cancel_token,
         timeout_secs,
+        num_ctx,
     )
     .await?;
     if let Some(output) = try_parse_router_output(&raw) {
@@ -270,6 +279,7 @@ pub async fn call_router_merged(
         router_output_schema(),
         cancel_token,
         timeout_secs,
+        num_ctx,
     )
     .await?;
     if let Some(output) = try_parse_router_output(&retry_raw) {
@@ -394,6 +404,7 @@ fn parse_router_sufficiency(value: &str) -> Option<Sufficiency> {
 /// to a safe default (`Partial` + empty `gap_queries` + diagnostic reasoning)
 /// so the pipeline always produces a result rather than surfacing a cryptic
 /// parse error.
+#[allow(clippy::too_many_arguments)]
 pub async fn call_judge(
     endpoint: &str,
     model: &str,
@@ -402,6 +413,7 @@ pub async fn call_judge(
     sources: &[JudgeSource],
     cancel_token: &CancellationToken,
     timeout_secs: u64,
+    num_ctx: u32,
 ) -> Result<JudgeVerdict, SearchError> {
     if cancel_token.is_cancelled() {
         return Err(SearchError::Cancelled);
@@ -428,6 +440,7 @@ pub async fn call_judge(
         serde_json::json!("json"),
         cancel_token,
         timeout_secs,
+        num_ctx,
     )
     .await?;
     if let Ok(mut verdict) = crate::search::judge::parse_verdict(&raw) {
@@ -465,6 +478,7 @@ pub async fn call_judge(
         serde_json::json!("json"),
         cancel_token,
         timeout_secs,
+        num_ctx,
     )
     .await?;
     if let Ok(mut verdict) = crate::search::judge::parse_verdict(&retry_raw) {
@@ -979,6 +993,7 @@ mod router_judge_tests {
             "2026-04-18",
             &token,
             ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .expect("schema-constrained router call should parse");
@@ -1012,6 +1027,7 @@ mod router_judge_tests {
             "2026-04-18",
             &token,
             ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -1057,6 +1073,7 @@ mod router_judge_tests {
             "2026-04-18",
             &token,
             ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -1101,6 +1118,7 @@ mod router_judge_tests {
             "2026-04-18",
             &token,
             ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -1124,6 +1142,7 @@ mod router_judge_tests {
             "2026-04-18",
             &token,
             ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
@@ -1153,6 +1172,7 @@ mod router_judge_tests {
             "2026-04-18",
             &token,
             ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .expect_err("router should fail closed when no valid JSON is recoverable");
@@ -1182,6 +1202,7 @@ mod router_judge_tests {
             "2026-04-18",
             &token,
             ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .expect_err("router should fail closed when the response shape stays invalid");
@@ -1220,6 +1241,7 @@ mod router_judge_tests {
             "2026-04-18",
             &token,
             ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
@@ -1265,6 +1287,7 @@ mod router_judge_tests {
             "2026-04-18",
             &token,
             ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -1311,6 +1334,7 @@ mod router_judge_tests {
             &sources,
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -1347,6 +1371,7 @@ mod router_judge_tests {
             &[],
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -1374,6 +1399,7 @@ mod router_judge_tests {
             &[],
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
@@ -1402,6 +1428,7 @@ mod router_judge_tests {
             &[],
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .expect("judge should fall back to safe defaults, not error");
@@ -1435,6 +1462,7 @@ mod router_judge_tests {
             &[],
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .expect("judge should fall back to safe defaults, not error");
@@ -1483,6 +1511,7 @@ mod router_judge_tests {
             &[],
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -1522,6 +1551,7 @@ mod router_judge_tests {
             &[],
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
@@ -1550,9 +1580,83 @@ mod router_judge_tests {
             "2026-04-18",
             &token,
             ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
         assert_eq!(err, SearchError::LlmHttp(503));
+    }
+
+    #[tokio::test]
+    async fn merged_router_sends_num_ctx_in_request_options() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(wiremock::matchers::body_string_contains(
+                "\"num_ctx\":32768",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"action\":\"proceed\",\"clarifying_question\":null,\"history_sufficiency\":\"sufficient\",\"optimized_query\":\"q\"}"
+                },
+                "done": true
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let output = call_router_merged(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            &[],
+            "q",
+            "2026-04-18",
+            &token,
+            ROUTER_TIMEOUT_SECS,
+            32768,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            output.action,
+            crate::search::types::Action::Proceed
+        ));
+    }
+
+    #[tokio::test]
+    async fn judge_call_sends_num_ctx_in_request_options() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(wiremock::matchers::body_string_contains(
+                "\"num_ctx\":65536",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"sufficiency\":\"sufficient\",\"reasoning\":\"r\",\"gap_queries\":[]}"
+                },
+                "done": true
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let _ = call_judge(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            "q",
+            &[],
+            &token,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            65536,
+        )
+        .await
+        .unwrap();
     }
 }

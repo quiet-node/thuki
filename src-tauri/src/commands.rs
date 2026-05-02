@@ -230,6 +230,9 @@ struct OllamaOptions {
     temperature: f64,
     top_p: f64,
     top_k: u32,
+    /// Context window size. Must match the warmup request so Ollama reuses
+    /// the same runner instance and its cached KV prefix for the system prompt.
+    num_ctx: u32,
 }
 
 /// Request payload for Ollama `/api/chat` endpoint.
@@ -240,6 +243,21 @@ struct OllamaChatRequest {
     stream: bool,
     think: bool,
     options: OllamaOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<String>,
+}
+
+/// Groups the per-request parameters for `stream_ollama_chat` to keep the
+/// function signature within clippy's argument-count limit.
+pub struct OllamaChatParams {
+    pub endpoint: String,
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    pub think: bool,
+    pub keep_alive: Option<String>,
+    /// Context window size in tokens. Must match the warmup request so Ollama
+    /// reuses the same runner instance and its cached KV prefix.
+    pub num_ctx: u32,
 }
 
 /// Nested message object in Ollama `/api/chat` response chunks.
@@ -325,16 +343,21 @@ impl ConversationHistory {
 /// immediately when the user cancels - which signals Ollama to stop inference.
 /// Returns the accumulated assistant response so the caller can persist it.
 pub async fn stream_ollama_chat(
-    endpoint: &str,
-    model: &str,
-    messages: Vec<ChatMessage>,
-    think: bool,
+    params: OllamaChatParams,
     client: &reqwest::Client,
     cancel_token: CancellationToken,
     on_chunk: impl Fn(StreamChunk),
 ) -> String {
+    let OllamaChatParams {
+        endpoint,
+        model,
+        messages,
+        think,
+        keep_alive,
+        num_ctx,
+    } = params;
     let request_payload = OllamaChatRequest {
-        model: model.to_string(),
+        model,
         messages,
         stream: true,
         think,
@@ -342,7 +365,9 @@ pub async fn stream_ollama_chat(
             temperature: 1.0,
             top_p: 0.95,
             top_k: 64,
+            num_ctx,
         },
+        keep_alive,
     };
 
     let mut accumulated = String::new();
@@ -360,7 +385,9 @@ pub async fn stream_ollama_chat(
                 // classifier falls back to the status code.
                 let body = response.text().await.unwrap_or_default();
                 on_chunk(StreamChunk::Error(classify_http_error(
-                    status, model, &body,
+                    status,
+                    &request_payload.model,
+                    &body,
                 )));
                 return accumulated;
             }
@@ -545,11 +572,23 @@ pub async fn ask_ollama(
         );
     }
 
+    let keep_alive = if config.inference.keep_warm_inactivity_minutes == 0 {
+        None
+    } else {
+        Some(crate::warmup::keep_alive_string(
+            config.inference.keep_warm_inactivity_minutes,
+        ))
+    };
+
     let accumulated = stream_ollama_chat(
-        &endpoint,
-        &model_name,
-        messages,
-        think,
+        OllamaChatParams {
+            endpoint,
+            model: model_name,
+            messages,
+            think,
+            keep_alive,
+            num_ctx: config.inference.num_ctx,
+        },
         &client,
         cancel_token.clone(),
         |chunk| {
@@ -622,6 +661,7 @@ pub fn reset_conversation(history: State<'_, ConversationHistory>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::defaults::DEFAULT_NUM_CTX;
     use std::sync::{Arc, Mutex as StdMutex};
 
     fn collect_chunks() -> (Arc<StdMutex<Vec<StreamChunk>>>, impl Fn(StreamChunk)) {
@@ -666,10 +706,14 @@ mod tests {
         }];
 
         let accumulated = stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            messages,
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages,
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -702,10 +746,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         let accumulated = stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -732,10 +780,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         let accumulated = stream_ollama_chat(
-            "http://127.0.0.1:1/api/chat",
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: "http://127.0.0.1:1/api/chat".to_string(),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -769,10 +821,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -798,10 +854,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         let accumulated = stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -835,10 +895,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         let accumulated = stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -874,10 +938,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -917,10 +985,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         let accumulated = stream_ollama_chat(
-            &format!("http://127.0.0.1:{}/api/chat", port),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("http://127.0.0.1:{}/api/chat", port),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -958,10 +1030,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -991,10 +1067,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -1020,10 +1100,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -1091,10 +1175,14 @@ mod tests {
         timeout(
             Duration::from_secs(5),
             stream_ollama_chat(
-                &format!("http://127.0.0.1:{}/api/chat", port),
-                "test-model",
-                vec![],
-                false,
+                OllamaChatParams {
+                    endpoint: format!("http://127.0.0.1:{}/api/chat", port),
+                    model: "test-model".to_string(),
+                    messages: vec![],
+                    think: false,
+                    keep_alive: None,
+                    num_ctx: DEFAULT_NUM_CTX,
+                },
                 &client,
                 token,
                 callback,
@@ -1134,10 +1222,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -1177,10 +1269,14 @@ mod tests {
         ];
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            messages,
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages,
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -1204,10 +1300,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -1290,10 +1390,49 @@ mod tests {
         let (_, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
+            &client,
+            token,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn sends_num_ctx_in_request() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(format!(
+                r#"{{"options":{{"num_ctx":{}}}}}"#,
+                DEFAULT_NUM_CTX
+            )))
+            .with_body(chat_line("", true))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let (_, callback) = collect_chunks();
+
+        stream_ollama_chat(
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -1443,10 +1582,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            "http://127.0.0.1:1/api/chat",
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: "http://127.0.0.1:1/api/chat".to_string(),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -1475,10 +1618,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -1512,7 +1659,9 @@ mod tests {
                 temperature: 1.0,
                 top_p: 0.95,
                 top_k: 64,
+                num_ctx: DEFAULT_NUM_CTX,
             },
+            keep_alive: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["think"], false);
@@ -1529,7 +1678,9 @@ mod tests {
                 temperature: 1.0,
                 top_p: 0.95,
                 top_k: 64,
+                num_ctx: DEFAULT_NUM_CTX,
             },
+            keep_alive: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["think"], true);
@@ -1566,10 +1717,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -1602,10 +1757,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "llama3.2-vision:11b",
-            vec![],
-            false,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "llama3.2-vision:11b".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -1652,10 +1811,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         let accumulated = stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            true,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: true,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -1696,10 +1859,14 @@ mod tests {
         let (_, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            true,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: true,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,
@@ -1728,10 +1895,14 @@ mod tests {
         let (chunks, callback) = collect_chunks();
 
         stream_ollama_chat(
-            &format!("{}/api/chat", server.url()),
-            "test-model",
-            vec![],
-            true,
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: true,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
             &client,
             token,
             callback,

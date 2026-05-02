@@ -22,11 +22,12 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::defaults::{
-    BOUNDS_MAX_CHAT_HEIGHT, BOUNDS_MAX_IMAGES, BOUNDS_MAX_ITERATIONS, BOUNDS_OVERLAY_WIDTH,
-    BOUNDS_QUOTE_MAX_CONTEXT_LENGTH, BOUNDS_QUOTE_MAX_DISPLAY_CHARS,
-    BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_SEARXNG_MAX_RESULTS, BOUNDS_TIMEOUT_S,
-    BOUNDS_TOP_K_URLS, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
-    DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    BOUNDS_KEEP_WARM_INACTIVITY_MINUTES, BOUNDS_MAX_CHAT_HEIGHT, BOUNDS_MAX_IMAGES,
+    BOUNDS_MAX_ITERATIONS, BOUNDS_NUM_CTX, BOUNDS_OVERLAY_WIDTH, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
+    BOUNDS_QUOTE_MAX_DISPLAY_CHARS, BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_SEARXNG_MAX_RESULTS,
+    BOUNDS_TIMEOUT_S, BOUNDS_TOP_K_URLS, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
     DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
@@ -135,6 +136,19 @@ pub(crate) fn resolve(config: &mut AppConfig) {
     if config.inference.ollama_url.trim().is_empty() {
         config.inference.ollama_url = DEFAULT_OLLAMA_URL.to_string();
     }
+    // keep_warm_inactivity_minutes: -1 = never release, 0 = disabled (Ollama
+    // default), 1..=1440 = explicit timeout. Below -1 or above 1440: reset to default.
+    clamp_keep_warm_inactivity(
+        &mut config.inference.keep_warm_inactivity_minutes,
+        DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+        "inference.keep_warm_inactivity_minutes",
+    );
+    clamp_u32(
+        &mut config.inference.num_ctx,
+        BOUNDS_NUM_CTX,
+        DEFAULT_NUM_CTX,
+        "inference.num_ctx",
+    );
 
     // Prompt section: empty base -> built-in. Compose resolved_system.
     let base = if config.prompt.system.trim().is_empty() {
@@ -266,6 +280,19 @@ pub fn compose_system_prompt(base: &str, appendix: &str) -> String {
         base.to_string()
     } else {
         format!("{base}\n\n{appendix}")
+    }
+}
+
+fn clamp_keep_warm_inactivity(value: &mut i32, default: i32, field: &str) {
+    // Valid: -1 (never release), 0 (disabled), or 1..=1440 (explicit timeout).
+    // Invalid: below -1 or above 1440 — reset to compiled default.
+    let (lo, hi) = BOUNDS_KEEP_WARM_INACTIVITY_MINUTES;
+    if !(lo..=hi).contains(value) {
+        eprintln!(
+            "thuki: [config] {field}={value} out of bounds (must be {lo}..={hi}); using default {default}",
+            value = *value
+        );
+        *value = default;
     }
 }
 

@@ -495,6 +495,207 @@
   text-align: center;
 }
 
+/* ─── Context window log-scale slider ──────────────────────────────────── */
+
+.ctxBlock {
+  padding: 10px 16px 14px;
+}
+.ctxTopRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.ctxLabel {
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+.ctxChipGroup {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.ctxChipInput {
+  background: rgba(36, 30, 26, 0.95);
+  border: 1px solid rgba(255, 141, 92, 0.3);
+  border-radius: 6px;
+  color: var(--color-primary);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  padding: 3px 8px;
+  text-align: right;
+  width: 82px;
+  outline: none;
+  caret-color: var(--color-primary);
+  /* hide the native number spinners — the slider + pills are the affordance */
+  -moz-appearance: textfield;
+}
+.ctxChipInput::-webkit-outer-spin-button,
+.ctxChipInput::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.ctxChipInput:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2.5px rgba(255, 141, 92, 0.18);
+}
+.ctxChipUnit {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+/* Full-width log-scale slider. Fill percentage is controlled via the
+ * --fill CSS custom property set inline from React state. */
+.ctxSlider {
+  --fill: 30%;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  border-radius: 3px;
+  /* Fill ends at thumb center: 8px + fill% * (track_width - 16px).
+   * The 16px subtraction accounts for thumb-width travel offset so the
+   * colored portion lines up with the thumb regardless of track width. */
+  background: linear-gradient(
+    to right,
+    var(--color-primary) 0%,
+    var(--color-primary) calc(8px + var(--fill) * (100% - 16px) / 100%),
+    rgba(255, 255, 255, 0.1) calc(8px + var(--fill) * (100% - 16px) / 100%),
+    rgba(255, 255, 255, 0.1) 100%
+  );
+  outline: none;
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+.ctxSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ff8d5c 0%, #e06b30 100%);
+  box-shadow:
+    0 0 12px rgba(255, 141, 92, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+}
+.ctxSlider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ff8d5c 0%, #e06b30 100%);
+  border: none;
+  box-shadow:
+    0 0 12px rgba(255, 141, 92, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  cursor: grab;
+}
+.ctxSlider:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 0 14px rgba(255, 141, 92, 0.65),
+    0 0 0 3px rgba(255, 141, 92, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+/* Tick labels are positioned absolutely at exact log-scale percentages.
+ * The 8px horizontal margin matches the slider thumb radius (16px / 2)
+ * so that left:0% and left:100% align with the thumb center at the
+ * extremes of its travel. */
+.ctxTickRow {
+  position: relative;
+  height: 14px;
+  margin: 0 8px 10px 8px;
+}
+.ctxTick {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 9.5px;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ctxPillRow {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ctxPill {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+.ctxPill:hover {
+  background: rgba(255, 141, 92, 0.1);
+  border-color: rgba(255, 141, 92, 0.22);
+  color: var(--color-primary);
+}
+.ctxPill:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.3);
+}
+.ctxPillActive {
+  background: rgba(255, 141, 92, 0.14);
+  border-color: rgba(255, 141, 92, 0.3);
+  color: var(--color-primary);
+}
+.ctxHelper {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+.ctxVramNote {
+  display: flex;
+  gap: 7px;
+  padding: 8px 10px;
+  background: rgba(255, 141, 92, 0.05);
+  border: 1px solid rgba(255, 141, 92, 0.14);
+  border-left: 2px solid rgba(255, 141, 92, 0.38);
+  border-radius: 0 6px 6px 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.48);
+  line-height: 1.55;
+}
+.ctxVramIcon {
+  flex-shrink: 0;
+  color: rgba(255, 141, 92, 0.7);
+  font-size: 11px;
+  margin-top: 0.5px;
+}
+.ctxVramLink {
+  display: inline;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  color: rgba(255, 141, 92, 0.85);
+  text-decoration: none;
+  white-space: nowrap;
+  font-weight: 500;
+  cursor: pointer;
+}
+.ctxVramLink:hover {
+  color: rgba(255, 141, 92, 1);
+  text-decoration: underline;
+}
+.ctxVramLink:focus-visible {
+  outline: 1px solid rgba(255, 141, 92, 0.6);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 /* ─── Stepper ───────────────────────────────────────────────────────────── */
 
 .stepper {
@@ -812,6 +1013,248 @@
   border: 1px solid rgba(255, 138, 128, 0.3);
 }
 
+/* ─── Toggle switch ─────────────────────────────────────────────────────── */
+
+.toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 34px;
+  height: 20px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(36, 30, 26, 0.8);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease;
+}
+.toggleOn {
+  background: var(--color-primary);
+  border-color: rgba(255, 141, 92, 0.5);
+}
+.toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(255, 141, 92, 0.22);
+}
+.toggleThumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(240, 240, 242, 0.5);
+  transition:
+    transform 180ms ease,
+    background 180ms ease;
+}
+.toggleOn .toggleThumb {
+  transform: translateX(14px);
+  background: white;
+}
+
+/* ─── Keep Warm layout ──────────────────────────────────────────────────── */
+
+/* Row 1: label + [?] on left | "Release after [N] min" on right */
+.keepWarmRow1 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0 8px;
+}
+.keepWarmLabelLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.keepWarmLabel {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+/* Right-side group: "Release after" + number input + "min" */
+.keepWarmTimerGroup {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+}
+
+/* Row 2: slug/status on left | Unload now on right */
+.keepWarmStatusRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  min-height: 36px;
+}
+.keepWarmStatusLeft {
+  flex: 1;
+}
+.keepWarmVramSubtitle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-weight: 400;
+  line-height: 1;
+}
+.keepWarmVramModelName {
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+.keepWarmNoModel {
+  font-size: 11px;
+  color: rgba(138, 138, 142, 0.35);
+  font-style: italic;
+}
+@keyframes keepWarmVramBreath {
+  0%,
+  100% {
+    opacity: 0.65;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.3);
+  }
+}
+.keepWarmVramDot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #5ec98a;
+  flex-shrink: 0;
+  animation: keepWarmVramBreath 2s ease-in-out infinite;
+}
+
+.keepWarmBarFieldLabel {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+/* Number: underline-only cue; no heavy boxy border */
+.keepWarmNumberInput {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  width: 32px;
+  padding: 1px 4px;
+  text-align: center;
+  outline: none;
+  -moz-appearance: textfield;
+  transition: border-color 150ms ease;
+}
+.keepWarmNumberInput::-webkit-inner-spin-button,
+.keepWarmNumberInput::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.keepWarmNumberInput:focus-visible {
+  border-bottom-color: rgba(255, 141, 92, 0.7);
+}
+.keepWarmUnit {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-left: -3px;
+}
+/* Thin pipe separator between inline group and eject pill */
+.keepWarmBarSep {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 0 10px;
+  flex-shrink: 0;
+}
+/* Eject ghost pill: icon + "Free VRAM" inline */
+.keepWarmEjectPill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 141, 92, 0.18);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.keepWarmEjectPill:hover:not(:disabled) {
+  background: rgba(255, 141, 92, 0.08);
+  border-color: rgba(255, 141, 92, 0.36);
+}
+.keepWarmEjectPill:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.32);
+}
+.keepWarmEjectPill:disabled {
+  cursor: default;
+}
+/* No model loaded: gray */
+.keepWarmEjectPill:disabled:not([data-ejecting='true']) {
+  color: rgba(138, 138, 142, 0.45);
+  border-color: rgba(255, 255, 255, 0.07);
+}
+/* Ejecting in progress: green to match the circle/checkmark animation */
+.keepWarmEjectPill[data-ejecting='true']:disabled {
+  color: #5ec98a;
+  border-color: rgba(94, 201, 138, 0.25);
+}
+
+/* Circle-draw + checkmark: 16x16 viewbox, circle r=7 (circumference ~44) */
+@keyframes keepWarmDrawCircle {
+  from {
+    stroke-dashoffset: 44;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes keepWarmDrawCheck {
+  from {
+    stroke-dashoffset: 16;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.keepWarmCircleAnim {
+  stroke-dasharray: 44;
+  stroke-dashoffset: 44;
+  animation: keepWarmDrawCircle 550ms ease-out forwards;
+}
+.keepWarmCheckAnim {
+  stroke-dasharray: 16;
+  stroke-dashoffset: 16;
+  animation: keepWarmDrawCheck 300ms ease-out 450ms forwards;
+}
+
+.keepWarmDimmed {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 /* ─── Reduced motion ────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -823,7 +1266,11 @@
   .savedPill,
   .modelItem,
   .stepperBtn,
-  .iconBtn {
+  .iconBtn,
+  .keepWarmCircleAnim,
+  .keepWarmCheckAnim,
+  .keepWarmVramDot {
     transition: none !important;
+    animation: none !important;
   }
 }

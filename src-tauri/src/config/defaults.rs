@@ -8,6 +8,31 @@
 /// Default Ollama HTTP endpoint (loopback, standard port).
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
 
+/// Default inactivity window before Thuki tells Ollama to release the model.
+/// 0 means do not manage: Ollama's own 5-minute default applies.
+/// -1 means keep indefinitely. Positive values are minutes (1..=1440).
+pub const DEFAULT_KEEP_WARM_INACTIVITY_MINUTES: i32 = 0;
+
+/// Ollama context window size (tokens) sent with every /api/chat request.
+/// 16 384 tokens gives the full system prompt (~4 000 tokens) plus ~12 000
+/// tokens of conversation history while staying within the VRAM budget of
+/// the target models. Warmup and chat MUST use the same value so Ollama
+/// reuses the same runner instance and its cached KV prefix.
+pub const DEFAULT_NUM_CTX: u32 = 16384;
+
+/// Accepted range for `num_ctx`. Values below 2 048 cannot fit the built-in
+/// system prompt and leave nothing for conversation history. No upper cap is
+/// enforced here: Ollama silently clamps `num_ctx` to the model's physical
+/// maximum, so any value is safe to pass through. The 1 048 576 (1 M) ceiling
+/// is a sanity guard against TOML typos (e.g. an extra zero) and covers every
+/// current consumer model including the largest 1 M-context variants.
+pub const BOUNDS_NUM_CTX: (u32, u32) = (2048, 1_048_576);
+
+/// Accepted range for `keep_warm_inactivity_minutes`.
+/// -1 = never release, 0 = disabled (Ollama default), 1..=1440 = explicit timeout.
+/// Values below -1 or above 1440 are clamped to the compiled default.
+pub const BOUNDS_KEEP_WARM_INACTIVITY_MINUTES: (i32, i32) = (-1, 1440);
+
 /// Built-in secretary persona prompt. User overrides via `[prompt] system` in
 /// the config file. The slash-command appendix is composed on top at load time
 /// and is never written back to the file.
@@ -88,6 +113,12 @@ pub const DEFAULT_TOP_K_CHUNKS: usize = 8;
 /// Milliseconds before retrying a failed reader fetch.
 pub const DEFAULT_READER_RETRY_DELAY_MS: u64 = 500;
 
+/// Interval between background polls of Ollama `/api/ps` for external VRAM
+/// changes (user-initiated `ollama stop`, TTL expiry, daemon restart). Not
+/// user-tunable: tuning this trades responsiveness against localhost load but
+/// the 5 s value is already generous for a loopback call.
+pub const VRAM_POLL_INTERVAL_SECS: u64 = 5;
+
 /// Search timeout defaults (seconds).
 pub const DEFAULT_SEARCH_TIMEOUT_S: u64 = 20;
 pub const DEFAULT_READER_PER_URL_TIMEOUT_S: u64 = 10;
@@ -156,6 +187,8 @@ pub const MAX_MODEL_SLUG_LEN: usize = 256;
 pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     // [inference]
     ("inference", "ollama_url"),
+    ("inference", "keep_warm_inactivity_minutes"),
+    ("inference", "num_ctx"),
     // [prompt]
     ("prompt", "system"),
     // [window]
