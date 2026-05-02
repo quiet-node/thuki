@@ -59,13 +59,9 @@ GPU History is a separate floating window inside Activity Monitor. To open it:
 
 > If you don't see a "Window" menu in the menu bar, click anywhere in the Activity Monitor window first to focus it, then look at the menu bar again.
 
-<!-- screenshot: Activity Monitor menu bar showing the Window menu open with GPU History highlighted -->
-
-<!-- screenshot: GPU History floating window showing spike pattern during a Thuki message -->
-
 ### Step 4 — Open Terminal
 
-1. Press `Cmd + Space`, type **Terminal**, press Enter.
+1. Press `Cmd + Space`, type **Terminal** (or use your favorite terminal emulator), press Enter.
 2. Place it next to the other two windows.
 
 ### Step 5 — Send a test message
@@ -89,8 +85,6 @@ You'll see something like:
 NAME         ID            SIZE     PROCESSOR    CONTEXT    UNTIL
 gemma4:e2b   7fbdbf8f5e45  7.4 GB   100% GPU     16384      4 minutes from now
 ```
-
-<!-- screenshot: Terminal output of `ollama ps` for a healthy 100% GPU run -->
 
 What to read:
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { TIPS } from '../config/tips';
+import { TIPS, type Tip } from '../config/tips';
 
 /** Random pause before the first cycle and between cycles (seconds). */
 const CYCLE_PAUSE_MIN_MS = 30_000;
@@ -30,7 +30,7 @@ function shuffled(n: number): number[] {
 }
 
 export function useTips(active: boolean): {
-  tip: string;
+  tip: Tip;
   tipKey: number;
   isVisible: boolean;
 } {

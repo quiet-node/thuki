@@ -58,16 +58,19 @@ describe('TipBar', () => {
     expect(() => unmount()).not.toThrow();
   });
 
-  it('renders as a non-clickable div when the tip has no URL', () => {
+  it('renders as a non-clickable div when the tip is a plain string', () => {
     render(<TipBar tip="Plain tip without any link" tipKey={0} />);
     const bar = screen.getByTestId('tip-bar');
     expect(bar.tagName).toBe('DIV');
   });
 
-  it('renders as a button and opens the URL via open_url when tip contains a https link', () => {
+  it('renders as a button and opens the URL via open_url when tip carries a url field', () => {
     render(
       <TipBar
-        tip="See https://github.com/quiet-node/thuki for more"
+        tip={{
+          text: 'Click here to learn how to tune Context Window',
+          url: 'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md',
+        }}
         tipKey={0}
       />,
     );
@@ -75,20 +78,23 @@ describe('TipBar', () => {
     expect(bar.tagName).toBe('BUTTON');
     fireEvent.click(bar);
     expect(invokeMock).toHaveBeenCalledWith('open_url', {
-      url: 'https://github.com/quiet-node/thuki',
+      url: 'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md',
     });
   });
 
-  it('promotes a bare github.com host to https before opening', () => {
+  it('renders only the friendly text from a linked tip (no raw URL)', () => {
     render(
       <TipBar
-        tip="How to tune Context Window: github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md"
+        tip={{
+          text: 'Click here to learn how to tune Context Window',
+          url: 'https://github.com/quiet-node/thuki',
+        }}
         tipKey={0}
       />,
     );
-    fireEvent.click(screen.getByTestId('tip-bar'));
-    expect(invokeMock).toHaveBeenCalledWith('open_url', {
-      url: 'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md',
-    });
+    act(() => vi.advanceTimersByTime(5000));
+    expect(screen.getByTestId('tip-text').textContent).toBe(
+      'Click here to learn how to tune Context Window',
+    );
   });
 });

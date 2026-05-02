@@ -405,16 +405,15 @@ describe('ModelTab', () => {
         /doubling the context roughly doubles its memory footprint/,
       ),
     ).toBeInTheDocument();
-    // Embedded link points at the tuning doc on GitHub.
-    const tuneLink = screen.getByRole('link', {
+    // Embedded button opens the tuning doc on GitHub via open_url so the
+    // link works inside the Tauri webview (target="_blank" is a no-op here).
+    const tuneButton = screen.getByRole('button', {
       name: /How to tune Context Window/,
     });
-    expect(tuneLink).toHaveAttribute(
-      'href',
-      'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md#the-5-minute-benchmark-recipe',
-    );
-    expect(tuneLink).toHaveAttribute('target', '_blank');
-    expect(tuneLink).toHaveAttribute('rel', 'noopener noreferrer');
+    fireEvent.click(tuneButton);
+    expect(invokeMock).toHaveBeenCalledWith('open_url', {
+      url: 'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md#the-5-minute-benchmark-recipe',
+    });
   });
 
   it('typing a valid value in the chip and blurring commits it', () => {

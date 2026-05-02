@@ -1,4 +1,13 @@
-export const TIPS: readonly string[] = [
+/**
+ * A tip is either a plain string or a `{ text, url }` pair where the entire
+ * tip bar becomes clickable and opens `url` in the user's default browser
+ * via the Tauri `open_url` command. Use the linked form when the tip
+ * references a public resource (docs, repo) so DMG users without the
+ * codebase on disk can still reach it.
+ */
+export type Tip = string | { text: string; url: string };
+
+export const TIPS: readonly Tip[] = [
   'Use /screen to snap your display and attach it to the chat for visual context',
   'Highlight text in any app before summoning Thuki to include it as context',
   '/think makes Thuki reason step by step before answering, great for hard questions',
@@ -34,5 +43,8 @@ export const TIPS: readonly string[] = [
   'The default 16K context fits a long chat; raise it in Settings when you paste big documents or whole files',
   'Type a token count directly into the chip next to the Context Window slider for an exact value',
   'Run `ollama ps` in a terminal to see which model is loaded, its size, and the active context length',
-  'How to tune Context Window: github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md',
+  {
+    text: 'Click here to learn how to tune the Context Window for your Mac in 5 minutes',
+    url: 'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md',
+  },
 ];

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import type { Tip } from '../config/tips';
 
 const NOISE_CHARS = '!@#$%^&*<>?/|abcdefghijklmnopqrstuvwxyz0123456789░▒';
 const CHAR_DELAY = 36;
@@ -8,28 +9,29 @@ const FLICKER_COUNT = 4;
 const FADE_MS = 280;
 
 /**
- * Tips containing a bare hostname like `github.com/...` are detected and the
- * whole tip bar becomes a clickable affordance that opens the URL in the
- * user's default browser via the Tauri `open_url` command. This keeps the
- * typewriter animation intact (a real `<a>` would be torn down each pass)
- * and works for DMG users who do not have the source repo on disk.
+ * Tips arrive as either a plain string or a `{ text, url }` pair. When a URL
+ * is present the entire bar becomes a clickable affordance that opens the
+ * link in the user's default browser via the Tauri `open_url` command. We
+ * use `open_url` rather than a plain `<a target="_blank">` because the
+ * Tauri webview does not navigate `target="_blank"` to the system browser
+ * by default, so a bare anchor would silently do nothing.
  */
-const URL_PATTERN = /(https?:\/\/\S+|(?:github|docs)\.[a-z0-9./_#?=:-]+)/i;
+function tipText(tip: Tip): string {
+  return typeof tip === 'string' ? tip : tip.text;
+}
 
-function extractUrl(tip: string): string | null {
-  const match = tip.match(URL_PATTERN);
-  if (!match) return null;
-  const raw = match[0];
-  return raw.startsWith('http') ? raw : `https://${raw}`;
+function tipUrl(tip: Tip): string | null {
+  return typeof tip === 'string' ? null : tip.url;
 }
 
 interface TipBarProps {
-  tip: string;
+  tip: Tip;
   tipKey: number;
 }
 
 export function TipBar({ tip, tipKey }: TipBarProps) {
-  const url = extractUrl(tip);
+  const text = tipText(tip);
+  const url = tipUrl(tip);
   const spanRef = useRef<HTMLSpanElement>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
@@ -49,7 +51,7 @@ export function TipBar({ tip, tipKey }: TipBarProps) {
     };
 
     const runTypewriter = () => {
-      const chars = tip.split('');
+      const chars = text.split('');
       span.innerHTML = chars
         .map((_, i) => `<span data-ci="${i}"></span>`)
         .join('');
@@ -110,7 +112,7 @@ export function TipBar({ tip, tipKey }: TipBarProps) {
       timersRef.current.forEach(clearTimeout);
       timersRef.current = [];
     };
-  }, [tip, tipKey]);
+  }, [text, tipKey]);
 
   if (url) {
     return (
@@ -128,7 +130,7 @@ export function TipBar({ tip, tipKey }: TipBarProps) {
         </span>
         <span
           ref={spanRef}
-          className="text-[10px]"
+          className="text-[10px] underline decoration-dotted underline-offset-2 decoration-[#ff8d5c]/40"
           style={{ color: '#8a8a8e' }}
           data-testid="tip-text"
         />

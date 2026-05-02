@@ -675,14 +675,25 @@
   margin-top: 0.5px;
 }
 .ctxVramLink {
+  display: inline;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  font: inherit;
   color: rgba(255, 141, 92, 0.85);
   text-decoration: none;
   white-space: nowrap;
   font-weight: 500;
+  cursor: pointer;
 }
 .ctxVramLink:hover {
   color: rgba(255, 141, 92, 1);
   text-decoration: underline;
+}
+.ctxVramLink:focus-visible {
+  outline: 1px solid rgba(255, 141, 92, 0.6);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 /* ─── Stepper ───────────────────────────────────────────────────────────── */
