@@ -34,5 +34,5 @@ export const TIPS: readonly string[] = [
   'The default 16K context fits a long chat; raise it in Settings when you paste big documents or whole files',
   'Type a token count directly into the chip next to the Context Window slider for an exact value',
   'Run `ollama ps` in a terminal to see which model is loaded, its size, and the active context length',
-  'Find your Mac sweet spot for Context Window: see docs/tuning-context-window.md for a 5-minute recipe',
+  'How to tune Context Window: github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md',
 ];

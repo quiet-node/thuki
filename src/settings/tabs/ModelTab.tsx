@@ -391,7 +391,7 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
                 rel="noopener noreferrer"
                 className={styles.ctxVramLink}
               >
-                Learn how →
+                How to tune Context Window →
               </a>
             </span>
           </div>

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 
 const NOISE_CHARS = '!@#$%^&*<>?/|abcdefghijklmnopqrstuvwxyz0123456789░▒';
 const CHAR_DELAY = 36;
@@ -6,12 +7,29 @@ const FLICKER_MS = 40;
 const FLICKER_COUNT = 4;
 const FADE_MS = 280;
 
+/**
+ * Tips containing a bare hostname like `github.com/...` are detected and the
+ * whole tip bar becomes a clickable affordance that opens the URL in the
+ * user's default browser via the Tauri `open_url` command. This keeps the
+ * typewriter animation intact (a real `<a>` would be torn down each pass)
+ * and works for DMG users who do not have the source repo on disk.
+ */
+const URL_PATTERN = /(https?:\/\/\S+|(?:github|docs)\.[a-z0-9./_#?=:-]+)/i;
+
+function extractUrl(tip: string): string | null {
+  const match = tip.match(URL_PATTERN);
+  if (!match) return null;
+  const raw = match[0];
+  return raw.startsWith('http') ? raw : `https://${raw}`;
+}
+
 interface TipBarProps {
   tip: string;
   tipKey: number;
 }
 
 export function TipBar({ tip, tipKey }: TipBarProps) {
+  const url = extractUrl(tip);
   const spanRef = useRef<HTMLSpanElement>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
@@ -93,6 +111,30 @@ export function TipBar({ tip, tipKey }: TipBarProps) {
       timersRef.current = [];
     };
   }, [tip, tipKey]);
+
+  if (url) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          void invoke('open_url', { url });
+        }}
+        className="flex w-full items-center justify-center gap-1.5 border-t border-white/5 px-4 py-[5px] cursor-pointer transition-colors hover:bg-white/[0.03]"
+        data-testid="tip-bar"
+        aria-label={`Open tip link: ${url}`}
+      >
+        <span className="text-[9px] font-bold tracking-widest uppercase text-[#ff8d5c] bg-[#ff8d5c]/10 rounded px-1.5 py-0.5 flex-shrink-0">
+          TIP
+        </span>
+        <span
+          ref={spanRef}
+          className="text-[10px]"
+          style={{ color: '#8a8a8e' }}
+          data-testid="tip-text"
+        />
+      </button>
+    );
+  }
 
   return (
     <div

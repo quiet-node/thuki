@@ -405,14 +405,16 @@ describe('ModelTab', () => {
         /doubling the context roughly doubles its memory footprint/,
       ),
     ).toBeInTheDocument();
-    // Embedded "Learn how" link points at the tuning doc on GitHub.
-    const learnHow = screen.getByRole('link', { name: /Learn how/ });
-    expect(learnHow).toHaveAttribute(
+    // Embedded link points at the tuning doc on GitHub.
+    const tuneLink = screen.getByRole('link', {
+      name: /How to tune Context Window/,
+    });
+    expect(tuneLink).toHaveAttribute(
       'href',
       'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md#the-5-minute-benchmark-recipe',
     );
-    expect(learnHow).toHaveAttribute('target', '_blank');
-    expect(learnHow).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(tuneLink).toHaveAttribute('target', '_blank');
+    expect(tuneLink).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
   it('typing a valid value in the chip and blurring commits it', () => {
