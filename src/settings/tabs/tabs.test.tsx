@@ -401,7 +401,9 @@ describe('ModelTab', () => {
     expect(screen.getByText('1M')).toBeInTheDocument();
     // VRAM note
     expect(
-      screen.getByText(/Doubling the context roughly doubles memory/),
+      screen.getByText(
+        /doubling the context roughly doubles its memory footprint/,
+      ),
     ).toBeInTheDocument();
   });
 

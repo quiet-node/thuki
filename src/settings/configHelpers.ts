@@ -18,7 +18,7 @@ const HELPERS = {
     keep_warm:
       'When on, Thuki tells Ollama to keep the active model loaded in GPU memory between conversations, saving the cold-load wait on every open. Set "Release after" to −1 to keep it warm indefinitely, or pick a timeout in minutes so GPU memory is reclaimed when you stop using Thuki for a while.',
     num_ctx:
-      'The size of the context window sent to Ollama with every request, in tokens. This value must match between warmup and chat so Ollama can reuse the same runner and its cached key-value prefix for the system prompt. Raise to fit longer conversations without the model forgetting early messages; lower to reduce GPU memory use. Valid range: 2048–131072. The default (16384) comfortably fits the system prompt plus several long turns.',
+      "The size of the context window sent to Ollama with every request, in tokens. This value must match between warmup and chat so Ollama can reuse the same runner and its cached key-value prefix for the system prompt. Raise to fit longer conversations without the model forgetting early messages; lower to reduce GPU memory use. Ollama caps the effective value at the model's trained maximum, so anything beyond that is silently clamped, not used. Valid range: 2048–1048576. The default (16384) comfortably fits the system prompt plus several long turns.",
   },
   prompt: {
     system:

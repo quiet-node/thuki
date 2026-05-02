@@ -374,7 +374,7 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
           <div className={styles.ctxHelper}>
             ~{ctxTurns.toLocaleString()} turns of context
             {' · '}
-            Ollama clamps to model max so it's safe to push this up.
+            Ollama caps to your model&apos;s trained maximum.
           </div>
 
           <div className={styles.ctxVramNote}>
@@ -382,9 +382,9 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
               ⚠
             </span>
             <span>
-              Larger context windows allocate proportionally more VRAM for the
-              KV cache. Doubling the context roughly doubles memory use.
-              Benchmark with your hardware before pushing it high.
+              The KV cache scales linearly with context length, so doubling the
+              context roughly doubles its memory footprint (model weights stay
+              the same). Benchmark with your hardware before pushing it high.
             </span>
           </div>
         </div>

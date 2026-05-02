@@ -19,7 +19,7 @@ export const TIPS: readonly string[] = [
   'Commands can combine in one message: try /screen /think to capture your screen and reason through it',
   'Everything runs locally through Ollama; your conversations never leave your machine',
   'Attach images to your messages for visual context; visit Settings to adjust the limit',
-  'Turn on Keep Warm in Settings to skip the active model load time so your first reply is instant every time',
+  'Turn on Keep Warm in Settings to skip the cold-load wait so your first reply is near-instant every time',
   'Keep Warm holds your active model ready in VRAM so there is no loading delay when you summon Thuki',
   'Set a release timer in Settings to keep your active model warm for a while, then free VRAM automatically',
   'Keep Warm auto-releases after your chosen timeout so it never holds GPU memory longer than you need',
@@ -30,7 +30,8 @@ export const TIPS: readonly string[] = [
   'Crank the Context Window slider in Settings up if Thuki is forgetting earlier parts of long conversations',
   'Lower the Context Window in Settings to reclaim VRAM if your GPU is running tight on memory',
   'Doubling the context window roughly doubles the VRAM the KV cache needs; nudge it up gradually',
-  'Ollama auto-clamps the Context Window to whatever your model supports, so the slider is safe to push higher',
+  'Ollama caps the effective context to your model trained max, so values above that are silently clamped down',
   'The default 16K context fits a long chat; raise it in Settings when you paste big documents or whole files',
   'Type a token count directly into the chip next to the Context Window slider for an exact value',
+  'Run `ollama ps` in a terminal to see which model is loaded, its size, and the active context length',
 ];
