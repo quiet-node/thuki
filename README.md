@@ -71,8 +71,13 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **Isolated sandbox:** optionally run models in a hardened Docker container with capability dropping, read-only volumes, and localhost-only networking
 - **Image input:** paste or drag images and screenshots directly into the chat
 - **Screen capture:** type `/screen` to instantly capture your entire screen and attach it to your question as context
+- **Agentic search:** type `/search` to run a fully local, multi-step search pipeline (SearXNG + Trafilatura reader) with a live trace of every query, fetch, and judgement step
 - **Slash commands:** built-in commands for live search and prompt shortcuts: `/search`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`. Highlight text anywhere, summon Thuki, type a command, and hit Enter
 - **Extended reasoning:** type `/think` to have the model reason through a problem step by step before answering
+- **In-app model picker:** browse the models installed in your local Ollama and switch the active model from the ask bar without ever opening a config file
+- **Cross-model continuity:** swap models mid-conversation and Thuki sanitizes history and filters capabilities (vision, thinking) to whatever the new model supports
+- **Settings panel:** a four-tab native window (⌘,) for inference, prompt, window, and search settings, including a log-scale context-window slider and a tunable image-attachment cap (up to 20)
+- **Contextual tip bar:** lightweight in-overlay hints surface the right shortcut or command at the right moment
 - **Privacy-first:** zero-trust architecture, all data stays on your device
 
 ## Getting Started
@@ -160,7 +165,7 @@ The `/search` command uses an agentic search pipeline that depends on two local 
 
 #### Download (Recommended)
 
-1. Download `Thuki.dmg` from the [latest release](https://github.com/quiet-node/thuki/releases/latest)
+1. Download `Thuki.dmg` from the [latest stable release](https://github.com/quiet-node/thuki/releases/latest), or grab the bleeding-edge build from the [`nightly`](https://github.com/quiet-node/thuki/releases/tag/nightly) channel which is rebuilt automatically from `main`.
 2. Double-click `Thuki.dmg` to open it. A window appears showing the Thuki app icon next to an Applications folder shortcut.
 3. Drag `Thuki` onto the `Applications` folder shortcut.
 4. Eject the disk image (drag it to Trash in the Finder sidebar, or right-click and choose Eject).
@@ -217,9 +222,11 @@ The app starts hidden. The hotkey or tray menu shows it. The window close button
 
 ## Configuration
 
-See [docs/configurations.md](docs/configurations.md) for the full configuration reference (quote display limits and system prompt).
+Thuki reads a single typed TOML file at `~/Library/Application Support/com.quietnode.thuki/config.toml`, seeded with sensible defaults on first launch. The in-app Settings panel (⌘,) writes to the same file, so you can edit by hand or click through tabs, whichever you prefer.
 
-See [docs/commands.md](docs/commands.md) for the full slash command reference.
+See [docs/configurations.md](docs/configurations.md) for the full schema covering the `[inference]`, `[prompt]`, `[window]`, `[quote]`, and `[search]` sections (Ollama URL, system prompt, context window, image cap, agentic-search timeouts, and more).
+
+See [docs/commands.md](docs/commands.md) for the full slash command reference, and [docs/tuning-context-window.md](docs/tuning-context-window.md) for guidance on picking a `num_ctx` value.
 
 ## Contributing
 
@@ -247,15 +254,13 @@ Thuki is just getting started. Here's where it's headed:
 
 The big leap: from answering questions to taking action.
 
-- **Internet search:** let Thuki look things up in real time, not just reason from its training data
 - **Tool integrations via [MCP](https://modelcontextprotocol.io/):** connect Thuki to Gmail, Slack, Discord, Google Calendar, and any other MCP-compatible service; ask it to draft a reply, summarize a thread, or schedule a meeting without ever leaving your current app
-- **More slash commands:** `/screen`, `/think`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, and `/todos` are live. More domain-specific commands are on the way
+- **More slash commands:** more domain-specific commands on top of the existing `/search`, `/screen`, `/think`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, and `/todos`
 
 ### Better AI Control
 
 More flexibility over the model powering Thuki.
 
-- **Native settings panel (⌘,):** a proper macOS preferences window to configure your model, Ollama endpoint, activation shortcut, slash commands, and system prompt. No config files needed.
 - **Multiple provider support:** opt in to OpenAI, Anthropic, or any OpenAI-compatible endpoint as an alternative to local Ollama
 - **Custom activation shortcut:** change the double-tap trigger to any key or combo you prefer
 
