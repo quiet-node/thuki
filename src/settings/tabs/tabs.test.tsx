@@ -19,6 +19,10 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { invoke } from '@tauri-apps/api/core';
+import {
+  clearEventHandlers,
+  emitTauriEvent,
+} from '../../testUtils/mocks/tauri';
 
 import { ModelTab } from './ModelTab';
 import { DisplayTab } from './DisplayTab';
@@ -31,8 +35,7 @@ const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 const CONFIG: RawAppConfig = {
   inference: {
     ollama_url: 'http://127.0.0.1:11434',
-    keep_warm: false,
-    keep_warm_inactivity_minutes: 30,
+    keep_warm_inactivity_minutes: 0,
   },
   prompt: { system: 'hello' },
   window: {
@@ -69,6 +72,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  clearEventHandlers();
 });
 
 describe('ModelTab', () => {
@@ -85,7 +89,7 @@ describe('ModelTab', () => {
     expect(screen.getByText(/5 \/ 8000/)).toBeInTheDocument();
   });
 
-  it('renders the Keep Warm section with toggle, Release after, and Unload now button', () => {
+  it('renders the Keep Warm section with Release after input and Unload now button', () => {
     render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     expect(screen.getByText('Keep Warm')).toBeInTheDocument();
     expect(screen.getByText('Keep active model in VRAM')).toBeInTheDocument();
@@ -93,35 +97,6 @@ describe('ModelTab', () => {
     expect(
       screen.getByRole('button', { name: 'Unload now' }),
     ).toBeInTheDocument();
-  });
-
-  it('keep warm toggle is off when config.inference.keep_warm is false', () => {
-    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
-    expect(
-      screen.getByRole('switch', { name: 'Keep active model in VRAM' }),
-    ).toHaveAttribute('aria-checked', 'false');
-  });
-
-  it('keep warm toggle is on when config.inference.keep_warm is true', () => {
-    const warmConfig: RawAppConfig = {
-      ...CONFIG,
-      inference: { ...CONFIG.inference, keep_warm: true },
-    };
-    render(<ModelTab config={warmConfig} resyncToken={0} onSaved={() => {}} />);
-    expect(
-      screen.getByRole('switch', { name: 'Keep active model in VRAM' }),
-    ).toHaveAttribute('aria-checked', 'true');
-  });
-
-  it('clicking the keep warm toggle flips aria-checked immediately', () => {
-    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
-    const toggle = screen.getByRole('switch', {
-      name: 'Keep active model in VRAM',
-    });
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute('aria-checked', 'true');
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute('aria-checked', 'false');
   });
 
   it('Unload now button invokes evict_model', async () => {
@@ -152,9 +127,12 @@ describe('ModelTab', () => {
     expect(btn).not.toBeDisabled();
     fireEvent.click(btn);
     expect(btn).toBeDisabled(); // disabled from ejecting state
-    // Flush microtasks so evict_model resolves and loadedModel is cleared.
+    // Flush microtasks so evict_model resolves, then backend emits model-evicted.
     await act(async () => {
       await Promise.resolve();
+    });
+    act(() => {
+      emitTauriEvent('warmup:model-evicted', null);
     });
     act(() => {
       vi.advanceTimersByTime(2500); // ejecting clears
@@ -254,8 +232,12 @@ describe('ModelTab', () => {
     });
     expect(screen.getByText('llama3.2:3b')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Unload now' }));
+    // Flush microtasks so evict_model resolves, then backend emits model-evicted.
     await act(async () => {
       await Promise.resolve();
+    });
+    act(() => {
+      emitTauriEvent('warmup:model-evicted', null);
     });
     expect(screen.queryByText('llama3.2:3b')).not.toBeInTheDocument();
     expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
@@ -283,26 +265,123 @@ describe('ModelTab', () => {
       name: 'Release after N minutes',
     });
     fireEvent.change(input, { target: { value: '' } });
-    expect((input as HTMLInputElement).value).toBe('30');
+    expect((input as HTMLInputElement).value).toBe('0');
   });
 
-  it('resyncs keepWarm state when resyncToken changes', () => {
+  it('updates VRAM subtitle when warmup:model-loaded event fires', async () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
+    act(() => {
+      emitTauriEvent('warmup:model-loaded', 'phi3:mini');
+    });
+    expect(screen.getByText('phi3:mini')).toBeInTheDocument();
+    expect(screen.getByTestId('vram-status-dot')).toBeInTheDocument();
+  });
+
+  it('clears VRAM subtitle when warmup:model-evicted event fires', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(CONFIG);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText('llama3.2:3b')).toBeInTheDocument();
+    act(() => {
+      emitTauriEvent('warmup:model-evicted', null);
+    });
+    expect(screen.queryByText('llama3.2:3b')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
+  });
+
+  it('re-queries get_loaded_model when visibilitychange fires and panel is visible', async () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // Initially no model loaded.
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
+
+    // Switch mock: now a model is loaded in VRAM.
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve('llama3.2:3b');
+      return Promise.resolve(CONFIG);
+    });
+
+    // Simulate settings panel becoming visible (document.hidden is false in happy-dom).
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('vram-status-dot')).toBeInTheDocument();
+    expect(screen.getByText('llama3.2:3b')).toBeInTheDocument();
+  });
+
+  it('handles get_loaded_model failure gracefully on visibilitychange', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.reject(new Error('fail'));
+      return Promise.resolve(CONFIG);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // Fires visibilitychange with a rejecting get_loaded_model — covers the .catch path.
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+  });
+
+  it('skips get_loaded_model when visibilitychange fires while document is hidden', async () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    invokeMock.mockClear();
+
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => true,
+    });
+
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+    });
+
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => false,
+    });
+
+    expect(invokeMock).not.toHaveBeenCalledWith('get_loaded_model');
+  });
+
+  it('resyncs inactivity minutes when resyncToken changes', () => {
     const { rerender } = render(
       <ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />,
     );
-    const row = screen.getByTestId('keep-warm-inactivity-row');
-    // keep_warm=false → dimmed class present
-    expect(row.className).toContain('keepWarmDimmed');
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    expect((input as HTMLInputElement).value).toBe('0');
 
-    const warmConfig: RawAppConfig = {
+    const updatedConfig: RawAppConfig = {
       ...CONFIG,
-      inference: { ...CONFIG.inference, keep_warm: true },
+      inference: { ...CONFIG.inference, keep_warm_inactivity_minutes: 60 },
     };
     rerender(
-      <ModelTab config={warmConfig} resyncToken={1} onSaved={() => {}} />,
+      <ModelTab config={updatedConfig} resyncToken={1} onSaved={() => {}} />,
     );
-    // keep_warm=true → dimmed class removed
-    expect(row.className).not.toContain('keepWarmDimmed');
+    expect((input as HTMLInputElement).value).toBe('60');
   });
 });
 

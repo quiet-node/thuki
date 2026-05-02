@@ -564,12 +564,12 @@ pub async fn ask_ollama(
         );
     }
 
-    let keep_alive = if config.inference.keep_warm {
+    let keep_alive = if config.inference.keep_warm_inactivity_minutes == 0 {
+        None
+    } else {
         Some(crate::warmup::keep_alive_string(
             config.inference.keep_warm_inactivity_minutes,
         ))
-    } else {
-        None
     };
 
     let accumulated = stream_ollama_chat(

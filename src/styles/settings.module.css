@@ -857,22 +857,13 @@
 
 /* ─── Keep Warm layout ──────────────────────────────────────────────────── */
 
-.keepWarmToggleRow {
+/* Row 1: label + [?] on left | "Release after [N] min" on right */
+.keepWarmRow1 {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 10px 0;
-}
-.keepWarmToggleWrap {
-  margin-top: 2px;
-  flex-shrink: 0;
-}
-.keepWarmLabelGroup {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  flex: 1;
+  padding: 12px 0 8px;
 }
 .keepWarmLabelLine {
   display: flex;
@@ -883,6 +874,26 @@
   font-size: 13px;
   font-weight: 500;
   color: var(--color-text-primary);
+}
+/* Right-side group: "Release after" + number input + "min" */
+.keepWarmTimerGroup {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+}
+
+/* Row 2: slug/status on left | Unload now on right */
+.keepWarmStatusRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  min-height: 36px;
+}
+.keepWarmStatusLeft {
+  flex: 1;
 }
 .keepWarmVramSubtitle {
   display: flex;
@@ -896,6 +907,11 @@
 .keepWarmVramModelName {
   font-weight: 500;
   color: var(--color-text-primary);
+}
+.keepWarmNoModel {
+  font-size: 11px;
+  color: rgba(138, 138, 142, 0.35);
+  font-style: italic;
 }
 @keyframes keepWarmVramBreath {
   0%,
@@ -918,25 +934,6 @@
   animation: keepWarmVramBreath 2s ease-in-out infinite;
 }
 
-/* Single-line bar: label + editable number + eject pill all on one baseline */
-.keepWarmBar {
-  display: flex;
-  align-items: center;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  background: rgba(36, 30, 26, 0.6);
-  padding: 0 6px 0 14px;
-  height: 44px;
-  margin-top: 6px;
-  margin-bottom: 4px;
-}
-/* Left inline group: "Release after" label + number + "min" */
-.keepWarmBarInline {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  flex: 1;
-}
 .keepWarmBarFieldLabel {
   font-size: 12px;
   color: var(--color-text-secondary);
@@ -1069,7 +1066,6 @@
   .modelItem,
   .stepperBtn,
   .iconBtn,
-  .keepWarmEjectIconBtn,
   .keepWarmCircleAnim,
   .keepWarmCheckAnim,
   .keepWarmVramDot {

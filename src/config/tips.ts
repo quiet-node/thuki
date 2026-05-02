@@ -19,4 +19,10 @@ export const TIPS: readonly string[] = [
   'Commands can combine in one message: try /screen /think to capture your screen and reason through it',
   'Everything runs locally through Ollama; your conversations never leave your machine',
   'Attach images to your messages for visual context; visit Settings to adjust the limit',
+  'Turn on Keep Warm in Settings to skip the active model load time — your first reply is instant every time',
+  'Keep Warm holds your active model ready in VRAM so there is no loading delay when you summon Thuki',
+  'Set a release timer in Settings to keep your active model warm for a while, then free VRAM automatically',
+  'Keep Warm auto-releases after your chosen timeout so it never holds GPU memory longer than you need',
+  'The green dot next to your active model in Settings means it is live in VRAM and ready to respond instantly',
+  'Keep Warm in Settings keeps your active model loaded between sessions so Thuki is always ready at full speed',
 ];

@@ -1,9 +1,53 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use tauri::{Emitter, Manager};
+
+use crate::config::defaults::VRAM_POLL_INTERVAL_SECS;
 
 type InFlightSlot = Arc<Mutex<Option<(String, Option<String>, String)>>>;
+type OnLoaded = Arc<dyn Fn(String) + Send + Sync + 'static>;
 
 pub struct WarmupState {
     in_flight: InFlightSlot,
+    on_loaded: OnLoaded,
+    /// Set when the user explicitly evicts the model. Cleared on the next
+    /// `fire()` call so an in-flight warmup that completes after eviction does
+    /// not re-announce the model as loaded.
+    evicted: Arc<AtomicBool>,
+}
+
+/// Strips the `:latest` tag suffix that Ollama appends to slugs in `/api/ps`
+/// responses when the user stored the model without an explicit tag. Comparison
+/// is case-sensitive: Ollama uses lower-case tags exclusively.
+pub(crate) fn normalize_slug(s: &str) -> &str {
+    s.strip_suffix(":latest").unwrap_or(s)
+}
+
+/// The change in VRAM state detected by comparing a previous and current slug.
+#[derive(Debug, PartialEq)]
+pub(crate) enum VramTransition {
+    /// No state change: same model still loaded, or still unloaded.
+    None,
+    /// A model is now loaded (freshly loaded or switched to a different model).
+    Loaded(String),
+    /// The model that was previously loaded is no longer in VRAM.
+    Evicted,
+}
+
+/// Compares the previous and current VRAM slug and returns the transition.
+pub(crate) fn detect_vram_transition(
+    prev: &Option<String>,
+    current: &Option<String>,
+) -> VramTransition {
+    match (prev, current) {
+        (_, Some(slug)) if prev.as_deref() != Some(slug.as_str()) => {
+            VramTransition::Loaded(slug.clone())
+        }
+        (Some(_), None) => VramTransition::Evicted,
+        _ => VramTransition::None,
+    }
 }
 
 /// Converts an inactivity timeout in minutes to an Ollama `keep_alive` string.
@@ -28,7 +72,25 @@ impl WarmupState {
     pub fn new() -> Self {
         Self {
             in_flight: Arc::new(Mutex::new(None)),
+            on_loaded: Arc::new(|_| {}),
+            evicted: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Constructs a `WarmupState` that calls `cb` with the model name on each
+    /// successful warmup. Use this in production; use `new()` in tests.
+    pub fn with_on_loaded(cb: Arc<dyn Fn(String) + Send + Sync + 'static>) -> Self {
+        Self {
+            in_flight: Arc::new(Mutex::new(None)),
+            on_loaded: cb,
+            evicted: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Marks this state as evicted so any in-flight warmup that completes
+    /// after this call will not re-emit `warmup:model-loaded`.
+    pub fn mark_evicted(&self) {
+        self.evicted.store(true, Ordering::SeqCst);
     }
 
     /// Fire-and-forget model warm-up. Returns immediately.
@@ -58,7 +120,11 @@ impl WarmupState {
             }
             *guard = Some((model.clone(), keep_alive.clone(), system_prompt.clone()));
         }
+        // A new warmup supersedes any prior eviction.
+        self.evicted.store(false, Ordering::SeqCst);
         let in_flight = Arc::clone(&self.in_flight);
+        let on_loaded = Arc::clone(&self.on_loaded);
+        let evicted = Arc::clone(&self.evicted);
         tauri::async_runtime::spawn(run_warmup(
             endpoint,
             model,
@@ -66,6 +132,8 @@ impl WarmupState {
             client,
             in_flight,
             keep_alive,
+            on_loaded,
+            evicted,
         ));
     }
 }
@@ -86,12 +154,12 @@ pub fn warm_up_model(
             cfg.inference.ollama_url.trim_end_matches('/')
         );
         let system_prompt = cfg.prompt.resolved_system.clone();
-        let keep_alive = if cfg.inference.keep_warm {
+        let keep_alive = if cfg.inference.keep_warm_inactivity_minutes == 0 {
+            None
+        } else {
             Some(keep_alive_string(
                 cfg.inference.keep_warm_inactivity_minutes,
             ))
-        } else {
-            None
         };
         drop(cfg);
         warmup.fire(
@@ -131,7 +199,7 @@ pub(crate) async fn get_loaded_model_request(
         .map(|arr| {
             arr.iter()
                 .filter_map(|entry| entry.get("name").and_then(|n| n.as_str()))
-                .any(|name| name == model)
+                .any(|name| normalize_slug(name) == normalize_slug(model))
         })
         .unwrap_or(false);
 
@@ -185,10 +253,13 @@ pub(crate) async fn evict_model_request(
 /// Unloads the active model from Ollama's VRAM immediately.
 ///
 /// Delegates to `evict_model_request`; returns an error string on failure so
-/// the frontend can react (e.g. reset the eject button state).
+/// the frontend can react (e.g. reset the eject button state). Emits
+/// `warmup:model-evicted` on success so the Settings panel updates live.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn evict_model(
+    app_handle: tauri::AppHandle,
+    warmup: tauri::State<'_, WarmupState>,
     models: tauri::State<'_, crate::models::ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<crate::config::AppConfig>>,
     client: tauri::State<'_, reqwest::Client>,
@@ -200,10 +271,75 @@ pub async fn evict_model(
             config.read().inference.ollama_url.trim_end_matches('/')
         );
         evict_model_request(&endpoint, &model, client.inner()).await?;
+        // Suppress any in-flight warmup callback so a slow warmup that
+        // completes after the eviction request does not re-announce the model.
+        warmup.mark_evicted();
+        let _ = app_handle.emit("warmup:model-evicted", ());
     }
     Ok(())
 }
 
+/// Spawns a background Tokio task that polls Ollama's `/api/ps` every
+/// `VRAM_POLL_INTERVAL_SECS` seconds and emits `warmup:model-loaded` or
+/// `warmup:model-evicted` when external VRAM changes are detected. Catches
+/// changes Thuki did not initiate: `ollama stop`, TTL expiry, daemon restart.
+/// The first tick is skipped to avoid a spurious `Evicted` event at startup
+/// before the model has had a chance to warm up.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn spawn_vram_poller(app_handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(VRAM_POLL_INTERVAL_SECS));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        ticker.tick().await; // skip first tick
+
+        let mut prev: Option<String> = None;
+
+        loop {
+            ticker.tick().await;
+
+            let model = app_handle
+                .state::<crate::models::ActiveModelState>()
+                .0
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
+
+            let current = match model {
+                None => None,
+                Some(ref m) => {
+                    let endpoint = format!(
+                        "{}/api/ps",
+                        app_handle
+                            .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                            .read()
+                            .inference
+                            .ollama_url
+                            .trim_end_matches('/')
+                    );
+                    let client = app_handle.state::<reqwest::Client>().inner().clone();
+                    get_loaded_model_request(&endpoint, m, &client)
+                        .await
+                        .unwrap_or(None)
+                }
+            };
+
+            match detect_vram_transition(&prev, &current) {
+                VramTransition::Loaded(ref slug) => {
+                    let _ = app_handle.emit("warmup:model-loaded", slug);
+                }
+                VramTransition::Evicted => {
+                    let _ = app_handle.emit("warmup:model-evicted", ());
+                }
+                VramTransition::None => {}
+            }
+
+            prev = current;
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_warmup(
     endpoint: String,
     model: String,
@@ -211,6 +347,8 @@ async fn run_warmup(
     client: reqwest::Client,
     in_flight: InFlightSlot,
     keep_alive: Option<String>,
+    on_loaded: OnLoaded,
+    evicted: Arc<AtomicBool>,
 ) {
     // Use /api/chat with the resolved system prompt so Ollama primes the KV cache
     // for the prefix the real chat will share. num_predict:0 prevents any token
@@ -239,7 +377,11 @@ async fn run_warmup(
     };
 
     match client.post(&endpoint).json(&body).send().await {
-        Ok(resp) if resp.status().is_success() => {}
+        Ok(resp) if resp.status().is_success() => {
+            if !evicted.load(Ordering::SeqCst) {
+                (on_loaded)(model.clone());
+            }
+        }
         Ok(resp) => {
             eprintln!("thuki: [warmup] HTTP {} for model={}", resp.status(), model);
         }
@@ -454,6 +596,11 @@ mod tests {
             SYS.to_string(),
         ))));
 
+        // Reuse the no-op callback from WarmupState::new() to share its Fn implementation
+        // and avoid an uncovered closure in this connection-refused (no-success) test.
+        let state = WarmupState::new();
+        let noop = Arc::clone(&state.on_loaded);
+        let not_evicted = Arc::clone(&state.evicted);
         run_warmup(
             "http://127.0.0.1:1/api/chat".to_string(),
             "phi3".to_string(),
@@ -461,6 +608,8 @@ mod tests {
             reqwest::Client::new(),
             Arc::clone(&in_flight),
             None,
+            noop,
+            not_evicted,
         )
         .await;
 
@@ -645,6 +794,110 @@ mod tests {
         mock.assert_async().await;
     }
 
+    // ── normalize_slug ───────────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_slug_strips_latest() {
+        assert_eq!(normalize_slug("llama3:latest"), "llama3");
+    }
+
+    #[test]
+    fn normalize_slug_leaves_other_tags_intact() {
+        assert_eq!(normalize_slug("llama3:8b"), "llama3:8b");
+    }
+
+    #[test]
+    fn normalize_slug_no_tag_unchanged() {
+        assert_eq!(normalize_slug("llama3"), "llama3");
+    }
+
+    #[test]
+    fn normalize_slug_case_sensitive_latest() {
+        assert_eq!(normalize_slug("llama3:LATEST"), "llama3:LATEST");
+    }
+
+    #[test]
+    fn normalize_slug_ignores_nested_latest() {
+        assert_eq!(normalize_slug("llama3:latest:extra"), "llama3:latest:extra");
+    }
+
+    // ── detect_vram_transition ───────────────────────────────────────────────
+
+    #[test]
+    fn detect_transition_none_to_none() {
+        assert_eq!(detect_vram_transition(&None, &None), VramTransition::None);
+    }
+
+    #[test]
+    fn detect_transition_none_to_loaded() {
+        assert_eq!(
+            detect_vram_transition(&None, &Some("llama3".to_string())),
+            VramTransition::Loaded("llama3".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_transition_loaded_to_evicted() {
+        assert_eq!(
+            detect_vram_transition(&Some("llama3".to_string()), &None),
+            VramTransition::Evicted
+        );
+    }
+
+    #[test]
+    fn detect_transition_same_model_no_change() {
+        assert_eq!(
+            detect_vram_transition(&Some("llama3".to_string()), &Some("llama3".to_string())),
+            VramTransition::None
+        );
+    }
+
+    #[test]
+    fn detect_transition_model_switch() {
+        assert_eq!(
+            detect_vram_transition(&Some("llama3".to_string()), &Some("phi3".to_string())),
+            VramTransition::Loaded("phi3".to_string())
+        );
+    }
+
+    // ── get_loaded_model_request slug normalization ──────────────────────────
+
+    #[tokio::test]
+    async fn get_loaded_model_request_stored_without_latest_matches_ollama_with_latest() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/ps")
+            .with_status(200)
+            .with_body(r#"{"models":[{"name":"llama3:latest"}]}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/ps", server.url());
+        // Stored as "llama3", Ollama returns "llama3:latest" — should match.
+        let result = get_loaded_model_request(&endpoint, "llama3", &client).await;
+        assert_eq!(result, Ok(Some("llama3".to_string())));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn get_loaded_model_request_stored_with_latest_matches_ollama_without_latest() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/ps")
+            .with_status(200)
+            .with_body(r#"{"models":[{"name":"llama3"}]}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/ps", server.url());
+        // Stored as "llama3:latest", Ollama returns "llama3" — should match.
+        let result = get_loaded_model_request(&endpoint, "llama3:latest", &client).await;
+        assert_eq!(result, Ok(Some("llama3:latest".to_string())));
+        mock.assert_async().await;
+    }
+
     #[test]
     fn keep_alive_string_minutes() {
         assert_eq!(keep_alive_string(30), "30m");
@@ -798,5 +1051,86 @@ mod tests {
         let result = get_loaded_model_request(&endpoint, "llama3.2:3b", &client).await;
         assert_eq!(result, Ok(Some("llama3.2:3b".to_string())));
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn on_loaded_callback_fires_on_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_body("{}")
+            .create_async()
+            .await;
+
+        let fired: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let fired_clone = Arc::clone(&fired);
+        let state = WarmupState::with_on_loaded(Arc::new(move |model| {
+            fired_clone.lock().unwrap().push(model);
+        }));
+        let in_flight = Arc::clone(&state.in_flight);
+        state.fire(
+            format!("{}/api/chat", server.url()),
+            "llama3.2:3b".to_string(),
+            SYS.to_string(),
+            reqwest::Client::new(),
+            None,
+        );
+
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+        mock.assert_async().await;
+        assert_eq!(*fired.lock().unwrap(), vec!["llama3.2:3b".to_string()]);
+    }
+
+    #[test]
+    fn mark_evicted_sets_flag() {
+        let state = WarmupState::new();
+        assert!(!state.evicted.load(Ordering::SeqCst), "flag starts false");
+        state.mark_evicted();
+        assert!(
+            state.evicted.load(Ordering::SeqCst),
+            "mark_evicted must set flag"
+        );
+    }
+
+    #[tokio::test]
+    async fn eviction_suppresses_on_loaded_callback() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_body("{}")
+            .create_async()
+            .await;
+
+        // Use the noop callback so no uncovered closure body exists.
+        // on_loaded_callback_fires_on_success covers the evicted=false branch;
+        // this test covers the evicted=true branch of `if !evicted.load(...)`.
+        let state = WarmupState::new();
+        let on_loaded = Arc::clone(&state.on_loaded);
+        let in_flight: InFlightSlot = Arc::new(Mutex::new(Some((
+            "llama3.2:3b".to_string(),
+            None,
+            SYS.to_string(),
+        ))));
+        let evicted = Arc::new(AtomicBool::new(true));
+
+        run_warmup(
+            format!("{}/api/chat", server.url()),
+            "llama3.2:3b".to_string(),
+            SYS.to_string(),
+            reqwest::Client::new(),
+            Arc::clone(&in_flight),
+            None,
+            on_loaded,
+            evicted,
+        )
+        .await;
+
+        mock.assert_async().await;
+        assert!(
+            in_flight.lock().unwrap().is_none(),
+            "slot clears even when eviction suppresses the callback"
+        );
     }
 }

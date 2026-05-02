@@ -8,17 +8,14 @@
 /// Default Ollama HTTP endpoint (loopback, standard port).
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
 
-/// Whether the keep-warm feature is enabled by default. Off so users who care
-/// about memory pressure are not surprised on first launch.
-pub const DEFAULT_KEEP_WARM: bool = false;
+/// Default inactivity window before Thuki tells Ollama to release the model.
+/// 0 means do not manage: Ollama's own 5-minute default applies.
+/// -1 means keep indefinitely. Positive values are minutes (1..=1440).
+pub const DEFAULT_KEEP_WARM_INACTIVITY_MINUTES: i32 = 0;
 
-/// Default inactivity window in minutes before Thuki tells Ollama to release
-/// the model. -1 means never release.
-pub const DEFAULT_KEEP_WARM_INACTIVITY_MINUTES: i32 = 30;
-
-/// Accepted range for `keep_warm_inactivity_minutes`. -1 is the never-release
-/// sentinel; 0 is rejected (would release immediately, defeating the feature);
-/// anything else must be in 1..=1440 (max 24 hours).
+/// Accepted range for `keep_warm_inactivity_minutes`.
+/// -1 = never release, 0 = disabled (Ollama default), 1..=1440 = explicit timeout.
+/// Values below -1 or above 1440 are clamped to the compiled default.
 pub const BOUNDS_KEEP_WARM_INACTIVITY_MINUTES: (i32, i32) = (-1, 1440);
 
 /// Built-in secretary persona prompt. User overrides via `[prompt] system` in
@@ -101,6 +98,12 @@ pub const DEFAULT_TOP_K_CHUNKS: usize = 8;
 /// Milliseconds before retrying a failed reader fetch.
 pub const DEFAULT_READER_RETRY_DELAY_MS: u64 = 500;
 
+/// Interval between background polls of Ollama `/api/ps` for external VRAM
+/// changes (user-initiated `ollama stop`, TTL expiry, daemon restart). Not
+/// user-tunable: tuning this trades responsiveness against localhost load but
+/// the 5 s value is already generous for a loopback call.
+pub const VRAM_POLL_INTERVAL_SECS: u64 = 5;
+
 /// Search timeout defaults (seconds).
 pub const DEFAULT_SEARCH_TIMEOUT_S: u64 = 20;
 pub const DEFAULT_READER_PER_URL_TIMEOUT_S: u64 = 10;
@@ -169,7 +172,6 @@ pub const MAX_MODEL_SLUG_LEN: usize = 256;
 pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     // [inference]
     ("inference", "ollama_url"),
-    ("inference", "keep_warm"),
     ("inference", "keep_warm_inactivity_minutes"),
     // [prompt]
     ("prompt", "system"),

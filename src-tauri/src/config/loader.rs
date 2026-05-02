@@ -136,9 +136,8 @@ pub(crate) fn resolve(config: &mut AppConfig) {
     if config.inference.ollama_url.trim().is_empty() {
         config.inference.ollama_url = DEFAULT_OLLAMA_URL.to_string();
     }
-    // keep_warm is bool — serde handles missing (false) and present correctly.
-    // keep_warm_inactivity_minutes: -1 is the never-release sentinel; 0 and
-    // anything < -1 are invalid; values above 1440 (24 h) are unreasonable.
+    // keep_warm_inactivity_minutes: -1 = never release, 0 = disabled (Ollama
+    // default), 1..=1440 = explicit timeout. Below -1 or above 1440: reset to default.
     clamp_keep_warm_inactivity(
         &mut config.inference.keep_warm_inactivity_minutes,
         DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
@@ -279,13 +278,12 @@ pub fn compose_system_prompt(base: &str, appendix: &str) -> String {
 }
 
 fn clamp_keep_warm_inactivity(value: &mut i32, default: i32, field: &str) {
-    // BOUNDS_KEEP_WARM_INACTIVITY_MINUTES.0 is -1 (never-release sentinel).
-    // Any other value must be in 1..=BOUNDS_KEEP_WARM_INACTIVITY_MINUTES.1.
-    // 0 and values below -1 are rejected and reset to the compiled default.
+    // Valid: -1 (never release), 0 (disabled), or 1..=1440 (explicit timeout).
+    // Invalid: below -1 or above 1440 — reset to compiled default.
     let (lo, hi) = BOUNDS_KEEP_WARM_INACTIVITY_MINUTES;
-    if *value != lo && !(1..=hi).contains(value) {
+    if !(lo..=hi).contains(value) {
         eprintln!(
-            "thuki: [config] {field}={value} out of bounds (must be {lo} or 1..={hi}); using default {default}",
+            "thuki: [config] {field}={value} out of bounds (must be {lo}..={hi}); using default {default}",
             value = *value
         );
         *value = default;

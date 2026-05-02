@@ -13,9 +13,9 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
+    DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
@@ -48,7 +48,6 @@ fn defaults_const_values_match_schema_defaults() {
     // AppConfig::default(). If this test fails, someone changed one but not both.
     let c = AppConfig::default();
     assert_eq!(c.inference.ollama_url, DEFAULT_OLLAMA_URL);
-    assert_eq!(c.inference.keep_warm, DEFAULT_KEEP_WARM);
     assert_eq!(
         c.inference.keep_warm_inactivity_minutes,
         DEFAULT_KEEP_WARM_INACTIVITY_MINUTES
@@ -323,7 +322,7 @@ fn resolve_unknown_model_field_is_ignored() {
 }
 
 #[test]
-fn resolve_keep_warm_inactivity_zero_falls_back_to_default() {
+fn resolve_keep_warm_inactivity_zero_is_valid() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
     std::fs::write(
@@ -335,10 +334,7 @@ fn resolve_keep_warm_inactivity_zero_falls_back_to_default() {
     )
     .unwrap();
     let config = load_from_path(&path).unwrap();
-    assert_eq!(
-        config.inference.keep_warm_inactivity_minutes,
-        DEFAULT_KEEP_WARM_INACTIVITY_MINUTES
-    );
+    assert_eq!(config.inference.keep_warm_inactivity_minutes, 0);
 }
 
 #[test]
@@ -368,13 +364,11 @@ fn resolve_keep_warm_inactivity_valid_values_are_preserved() {
         &path,
         r#"
             [inference]
-            keep_warm = true
             keep_warm_inactivity_minutes = 60
         "#,
     )
     .unwrap();
     let config = load_from_path(&path).unwrap();
-    assert!(config.inference.keep_warm);
     assert_eq!(config.inference.keep_warm_inactivity_minutes, 60);
 }
 
@@ -414,25 +408,22 @@ fn resolve_keep_warm_inactivity_above_max_falls_back_to_default() {
 }
 
 #[test]
-fn inference_keep_warm_roundtrips_through_toml() {
+fn inference_keep_warm_inactivity_roundtrips_through_toml() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
     std::fs::write(
         &path,
         r#"
             [inference]
-            keep_warm = true
             keep_warm_inactivity_minutes = 60
         "#,
     )
     .unwrap();
     let config = load_from_path(&path).unwrap();
-    assert!(config.inference.keep_warm);
     assert_eq!(config.inference.keep_warm_inactivity_minutes, 60);
 
     atomic_write(&path, &config).unwrap();
     let reloaded = load_from_path(&path).unwrap();
-    assert_eq!(reloaded.inference.keep_warm, config.inference.keep_warm);
     assert_eq!(
         reloaded.inference.keep_warm_inactivity_minutes,
         config.inference.keep_warm_inactivity_minutes,

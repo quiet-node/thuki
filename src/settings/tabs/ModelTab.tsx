@@ -10,8 +10,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
-import { Section, TextField, Textarea, Toggle } from '../components';
+import { Section, TextField, Textarea } from '../components';
 import { SaveField } from '../components/SaveField';
 import { useDebouncedSave } from '../hooks/useDebouncedSave';
 import { configHelp } from '../configHelpers';
@@ -28,8 +29,13 @@ interface ModelTabProps {
 const PROMPT_MAX_CHARS = 8000;
 const EJECT_RESET_MS = 2500;
 
+const KEEP_WARM_TOOLTIP =
+  'Keep Warm holds your active model loaded in VRAM after each use. ' +
+  'The timer below sets how long before it auto-releases; use -1 to keep it indefinitely. ' +
+  'Unload now releases it immediately. ' +
+  'If set to 0, Ollama unloads models after its default 5-minute timeout.';
+
 export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
-  const [keepWarm, setKeepWarm] = useState(config.inference.keep_warm);
   const [inactivityMin, setInactivityMin] = useState(
     config.inference.keep_warm_inactivity_minutes,
   );
@@ -37,17 +43,39 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
   const [loadedModel, setLoadedModel] = useState<string | null>(null);
 
   useEffect(() => {
-    invoke<string | null>('get_loaded_model')
-      .then(setLoadedModel)
-      .catch(() => {});
+    let unlistenLoaded: (() => void) | null = null;
+    let unlistenEvicted: (() => void) | null = null;
+
+    async function setup() {
+      unlistenLoaded = await listen<string>('warmup:model-loaded', (e) => {
+        setLoadedModel(e.payload);
+      });
+      unlistenEvicted = await listen<null>('warmup:model-evicted', () => {
+        setLoadedModel(null);
+      });
+      invoke<string | null>('get_loaded_model')
+        .then(setLoadedModel)
+        .catch(() => {});
+    }
+
+    setup();
+
+    function handleVisibilityChange() {
+      if (!document.hidden) {
+        invoke<string | null>('get_loaded_model')
+          .then(setLoadedModel)
+          .catch(() => {});
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      unlistenLoaded?.();
+      unlistenEvicted?.();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
 
-  const { resetTo: resetWarm } = useDebouncedSave(
-    'inference',
-    'keep_warm',
-    keepWarm,
-    { onSaved },
-  );
   const { resetTo: resetMin } = useDebouncedSave(
     'inference',
     'keep_warm_inactivity_minutes',
@@ -59,9 +87,7 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
 
   if (prevTokenRef.current !== resyncToken) {
     prevTokenRef.current = resyncToken;
-    setKeepWarm(config.inference.keep_warm);
     setInactivityMin(config.inference.keep_warm_inactivity_minutes);
-    resetWarm(config.inference.keep_warm);
     resetMin(config.inference.keep_warm_inactivity_minutes);
   }
 
@@ -69,7 +95,6 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
     setEjecting(true);
     invoke('evict_model')
       .then(() => {
-        setLoadedModel(null);
         setTimeout(() => setEjecting(false), EJECT_RESET_MS);
       })
       .catch(() => setEjecting(false));
@@ -99,51 +124,23 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
       </Section>
 
       <Section heading="Keep Warm">
-        <div className={styles.keepWarmToggleRow}>
-          <div className={styles.keepWarmLabelGroup}>
-            <div className={styles.keepWarmLabelLine}>
-              <span className={styles.keepWarmLabel}>
-                Keep active model in VRAM
-              </span>
-              <Tooltip label={configHelp('inference', 'keep_warm')} multiline>
-                <button
-                  type="button"
-                  className={styles.infoBtn}
-                  aria-label="About Keep active model in VRAM"
-                >
-                  ?
-                </button>
-              </Tooltip>
-            </div>
-            {loadedModel !== null && (
-              <div className={styles.keepWarmVramSubtitle}>
-                <span
-                  className={styles.keepWarmVramDot}
-                  data-testid="vram-status-dot"
-                  aria-hidden="true"
-                />
-                <span className={styles.keepWarmVramModelName}>
-                  {loadedModel}
-                </span>
-                <span>&nbsp;· in VRAM</span>
-              </div>
-            )}
+        {/* Row 1: label + [?] on left | Release after [N] min on right */}
+        <div className={styles.keepWarmRow1}>
+          <div className={styles.keepWarmLabelLine}>
+            <span className={styles.keepWarmLabel}>
+              Keep active model in VRAM
+            </span>
+            <Tooltip label={KEEP_WARM_TOOLTIP} multiline>
+              <button
+                type="button"
+                className={styles.infoBtn}
+                aria-label="About Keep active model in VRAM"
+              >
+                ?
+              </button>
+            </Tooltip>
           </div>
-          <div className={styles.keepWarmToggleWrap}>
-            <Toggle
-              checked={keepWarm}
-              onChange={(next) => setKeepWarm(next)}
-              ariaLabel="Keep active model in VRAM"
-            />
-          </div>
-        </div>
-
-        <div
-          data-testid="keep-warm-inactivity-row"
-          className={`${styles.keepWarmBar}${keepWarm ? '' : ` ${styles.keepWarmDimmed}`}`}
-        >
-          {/* Inline: "Release after [30] min" — no separate ? tooltip */}
-          <div className={styles.keepWarmBarInline}>
+          <div className={styles.keepWarmTimerGroup}>
             <span className={styles.keepWarmBarFieldLabel}>Release after</span>
             <input
               type="number"
@@ -159,10 +156,28 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
             />
             <span className={styles.keepWarmUnit}>min</span>
           </div>
+        </div>
 
-          <div className={styles.keepWarmBarSep} />
+        {/* Row 2: slug status on left | Unload now on right */}
+        <div className={styles.keepWarmStatusRow}>
+          <div className={styles.keepWarmStatusLeft}>
+            {loadedModel !== null ? (
+              <div className={styles.keepWarmVramSubtitle}>
+                <span
+                  className={styles.keepWarmVramDot}
+                  data-testid="vram-status-dot"
+                  aria-hidden="true"
+                />
+                <span className={styles.keepWarmVramModelName}>
+                  {loadedModel}
+                </span>
+                <span>&nbsp;· in VRAM</span>
+              </div>
+            ) : (
+              <span className={styles.keepWarmNoModel}>No model loaded</span>
+            )}
+          </div>
 
-          {/* Eject pill: icon + label inline, circle-draw animation on click */}
           <button
             type="button"
             className={styles.keepWarmEjectPill}
