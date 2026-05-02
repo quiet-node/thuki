@@ -384,7 +384,15 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
             <span>
               The KV cache scales linearly with context length, so doubling the
               context roughly doubles its memory footprint (model weights stay
-              the same). Benchmark with your hardware before pushing it high.
+              the same). Benchmark with your hardware before pushing it high.{' '}
+              <a
+                href="https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md#the-5-minute-benchmark-recipe"
+                target="_blank"
+                rel="noopener noreferrer"
+                className={styles.ctxVramLink}
+              >
+                Learn how →
+              </a>
             </span>
           </div>
         </div>

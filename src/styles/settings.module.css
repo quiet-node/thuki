@@ -674,6 +674,16 @@
   font-size: 11px;
   margin-top: 0.5px;
 }
+.ctxVramLink {
+  color: rgba(255, 141, 92, 0.85);
+  text-decoration: none;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.ctxVramLink:hover {
+  color: rgba(255, 141, 92, 1);
+  text-decoration: underline;
+}
 
 /* ─── Stepper ───────────────────────────────────────────────────────────── */
 
