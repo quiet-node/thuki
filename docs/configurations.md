@@ -6,7 +6,7 @@ Thuki reads its runtime configuration from a single TOML file located at:
 ~/Library/Application Support/com.quietnode.thuki/config.toml
 ```
 
-The file is created automatically the first time the app launches. You can edit it with any text editor; changes take effect on the next launch. A future Settings panel will let you make the same changes from inside the app, writing to the same file.
+The file is created automatically the first time the app launches. You can edit it with any text editor; changes take effect on the next launch. The in-app Settings panel (⌘,) writes to this same file, so editing by hand and clicking through the panel are interchangeable.
 
 ## First launch
 
