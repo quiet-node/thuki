@@ -13,6 +13,21 @@ pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
 /// -1 means keep indefinitely. Positive values are minutes (1..=1440).
 pub const DEFAULT_KEEP_WARM_INACTIVITY_MINUTES: i32 = 0;
 
+/// Ollama context window size (tokens) sent with every /api/chat request.
+/// 16 384 tokens gives the full system prompt (~4 000 tokens) plus ~12 000
+/// tokens of conversation history while staying within the VRAM budget of
+/// the target models. Warmup and chat MUST use the same value so Ollama
+/// reuses the same runner instance and its cached KV prefix.
+pub const DEFAULT_NUM_CTX: u32 = 16384;
+
+/// Accepted range for `num_ctx`. Values below 2 048 cannot fit the built-in
+/// system prompt and leave nothing for conversation history. No upper cap is
+/// enforced here: Ollama silently clamps `num_ctx` to the model's physical
+/// maximum, so any value is safe to pass through. The 1 048 576 (1 M) ceiling
+/// is a sanity guard against TOML typos (e.g. an extra zero) and covers every
+/// current consumer model including the largest 1 M-context variants.
+pub const BOUNDS_NUM_CTX: (u32, u32) = (2048, 1_048_576);
+
 /// Accepted range for `keep_warm_inactivity_minutes`.
 /// -1 = never release, 0 = disabled (Ollama default), 1..=1440 = explicit timeout.
 /// Values below -1 or above 1440 are clamped to the compiled default.
@@ -173,6 +188,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     // [inference]
     ("inference", "ollama_url"),
     ("inference", "keep_warm_inactivity_minutes"),
+    ("inference", "num_ctx"),
     // [prompt]
     ("prompt", "system"),
     // [window]

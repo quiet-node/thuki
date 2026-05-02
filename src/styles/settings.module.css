@@ -495,6 +495,186 @@
   text-align: center;
 }
 
+/* ─── Context window log-scale slider ──────────────────────────────────── */
+
+.ctxBlock {
+  padding: 10px 16px 14px;
+}
+.ctxTopRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.ctxLabel {
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+.ctxChipGroup {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.ctxChipInput {
+  background: rgba(36, 30, 26, 0.95);
+  border: 1px solid rgba(255, 141, 92, 0.3);
+  border-radius: 6px;
+  color: var(--color-primary);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  padding: 3px 8px;
+  text-align: right;
+  width: 82px;
+  outline: none;
+  caret-color: var(--color-primary);
+  /* hide the native number spinners — the slider + pills are the affordance */
+  -moz-appearance: textfield;
+}
+.ctxChipInput::-webkit-outer-spin-button,
+.ctxChipInput::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.ctxChipInput:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2.5px rgba(255, 141, 92, 0.18);
+}
+.ctxChipUnit {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+/* Full-width log-scale slider. Fill percentage is controlled via the
+ * --fill CSS custom property set inline from React state. */
+.ctxSlider {
+  --fill: 30%;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  border-radius: 3px;
+  /* Fill ends at thumb center: 8px + fill% * (track_width - 16px).
+   * The 16px subtraction accounts for thumb-width travel offset so the
+   * colored portion lines up with the thumb regardless of track width. */
+  background: linear-gradient(
+    to right,
+    var(--color-primary) 0%,
+    var(--color-primary) calc(8px + var(--fill) * (100% - 16px) / 100%),
+    rgba(255, 255, 255, 0.1) calc(8px + var(--fill) * (100% - 16px) / 100%),
+    rgba(255, 255, 255, 0.1) 100%
+  );
+  outline: none;
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+.ctxSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ff8d5c 0%, #e06b30 100%);
+  box-shadow:
+    0 0 12px rgba(255, 141, 92, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+}
+.ctxSlider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ff8d5c 0%, #e06b30 100%);
+  border: none;
+  box-shadow:
+    0 0 12px rgba(255, 141, 92, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  cursor: grab;
+}
+.ctxSlider:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 0 14px rgba(255, 141, 92, 0.65),
+    0 0 0 3px rgba(255, 141, 92, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+/* Tick labels are positioned absolutely at exact log-scale percentages.
+ * The 8px horizontal margin matches the slider thumb radius (16px / 2)
+ * so that left:0% and left:100% align with the thumb center at the
+ * extremes of its travel. */
+.ctxTickRow {
+  position: relative;
+  height: 14px;
+  margin: 0 8px 10px 8px;
+}
+.ctxTick {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 9.5px;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ctxPillRow {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ctxPill {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+.ctxPill:hover {
+  background: rgba(255, 141, 92, 0.1);
+  border-color: rgba(255, 141, 92, 0.22);
+  color: var(--color-primary);
+}
+.ctxPill:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.3);
+}
+.ctxPillActive {
+  background: rgba(255, 141, 92, 0.14);
+  border-color: rgba(255, 141, 92, 0.3);
+  color: var(--color-primary);
+}
+.ctxHelper {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+.ctxVramNote {
+  display: flex;
+  gap: 7px;
+  padding: 8px 10px;
+  background: rgba(255, 141, 92, 0.05);
+  border: 1px solid rgba(255, 141, 92, 0.14);
+  border-left: 2px solid rgba(255, 141, 92, 0.38);
+  border-radius: 0 6px 6px 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.48);
+  line-height: 1.55;
+}
+.ctxVramIcon {
+  flex-shrink: 0;
+  color: rgba(255, 141, 92, 0.7);
+  font-size: 11px;
+  margin-top: 0.5px;
+}
+
 /* ─── Stepper ───────────────────────────────────────────────────────────── */
 
 .stepper {

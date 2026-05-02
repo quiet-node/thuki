@@ -36,6 +36,7 @@ const CONFIG: RawAppConfig = {
   inference: {
     ollama_url: 'http://127.0.0.1:11434',
     keep_warm_inactivity_minutes: 0,
+    num_ctx: 16384,
   },
   prompt: { system: 'hello' },
   window: {
@@ -382,6 +383,170 @@ describe('ModelTab', () => {
       <ModelTab config={updatedConfig} resyncToken={1} onSaved={() => {}} />,
     );
     expect((input as HTMLInputElement).value).toBe('60');
+  });
+
+  it('renders Context Window section with label, slider, chip, tick marks, and VRAM note', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(screen.getByText('Context Window')).toBeInTheDocument();
+    expect(screen.getByText('Context window')).toBeInTheDocument();
+    expect(
+      screen.getByRole('slider', { name: 'Context window tokens' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('spinbutton', { name: 'Context window tokens' }),
+    ).toBeInTheDocument();
+    // Tick marks
+    expect(screen.getByText('8K')).toBeInTheDocument();
+    expect(screen.getByText('16K')).toBeInTheDocument();
+    expect(screen.getByText('1M')).toBeInTheDocument();
+    // VRAM note
+    expect(
+      screen.getByText(/Doubling the context roughly doubles memory/),
+    ).toBeInTheDocument();
+  });
+
+  it('typing a valid value in the chip and blurring commits it', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    fireEvent.change(chip, { target: { value: '32768' } });
+    fireEvent.blur(chip);
+    expect(chip.value).toBe('32768');
+  });
+
+  it('typing an invalid value in the chip and blurring reverts to committed value', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    fireEvent.change(chip, { target: { value: 'abc' } });
+    fireEvent.blur(chip);
+    expect(chip.value).toBe('16384');
+  });
+
+  it('typing a value below CTX_MIN and blurring reverts to committed value', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    fireEvent.change(chip, { target: { value: '512' } });
+    fireEvent.blur(chip);
+    expect(chip.value).toBe('16384');
+  });
+
+  it('Enter key in chip commits by blurring', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    fireEvent.change(chip, { target: { value: '131072' } });
+    fireEvent.keyDown(chip, { key: 'Enter' });
+    expect(chip.value).toBe('131072');
+  });
+
+  it('non-Enter keyDown in chip does not commit', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    fireEvent.change(chip, { target: { value: '32768' } });
+    fireEvent.keyDown(chip, { key: 'Tab' });
+    // No blur triggered, so the chip still shows the in-progress text.
+    expect(chip.value).toBe('32768');
+  });
+
+  it('slider onChange updates chip text via posToCtx', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // pos=556 → 2048 * 512^(556/1000) ≈ 64K (65536) with CTX_MAX=1M
+    fireEvent.change(slider, { target: { value: '556' } });
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    expect(chip.value).toBe('65536');
+  });
+
+  it('slider onMouseUp commits the current slider position', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // pos=444 → 2048 * 512^(444/1000) ≈ 32K (32768) with CTX_MAX=1M
+    fireEvent.change(slider, { target: { value: '444' } });
+    fireEvent.mouseUp(slider);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    expect(chip.value).toBe('32768');
+  });
+
+  it('slider onTouchEnd commits the current slider position', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // pos=667 → 2048 * 512^(667/1000) ≈ 128K (131072) with CTX_MAX=1M
+    fireEvent.change(slider, { target: { value: '667' } });
+    fireEvent.touchEnd(slider);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    expect(chip.value).toBe('131072');
+  });
+
+  it('slider onKeyUp commits when not in a drag sequence', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // No preceding onChange, so ctxDraggingRef is false → onKeyUp commits.
+    fireEvent.keyUp(slider);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // No position change yet; committed value stays 16384.
+    expect(chip.value).toBe('16384');
+  });
+
+  it('slider onKeyUp does not commit when a drag is in progress', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // onChange sets ctxDraggingRef to true; wrap in act so React flushes the
+    // setCtxPos/setCtxChip state updates before the keyUp fires.
+    act(() => {
+      fireEvent.change(slider, { target: { value: '556' } });
+    });
+    // onKeyUp while dragging: skips commitCtx, chip still shows intermediate.
+    fireEvent.keyUp(slider);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    // pos=556 → 64K (65536); numCtx unchanged, chip shows the intermediate value.
+    expect(chip.value).toBe('65536');
+  });
+
+  it('resyncs context window chip and slider when resyncToken changes', () => {
+    const { rerender } = render(
+      <ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />,
+    );
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    expect(chip.value).toBe('16384');
+
+    const updatedConfig: RawAppConfig = {
+      ...CONFIG,
+      inference: { ...CONFIG.inference, num_ctx: 65536 },
+    };
+    rerender(
+      <ModelTab config={updatedConfig} resyncToken={1} onSaved={() => {}} />,
+    );
+    expect(chip.value).toBe('65536');
   });
 });
 

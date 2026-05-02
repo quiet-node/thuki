@@ -230,6 +230,9 @@ struct OllamaOptions {
     temperature: f64,
     top_p: f64,
     top_k: u32,
+    /// Context window size. Must match the warmup request so Ollama reuses
+    /// the same runner instance and its cached KV prefix for the system prompt.
+    num_ctx: u32,
 }
 
 /// Request payload for Ollama `/api/chat` endpoint.
@@ -252,6 +255,9 @@ pub struct OllamaChatParams {
     pub messages: Vec<ChatMessage>,
     pub think: bool,
     pub keep_alive: Option<String>,
+    /// Context window size in tokens. Must match the warmup request so Ollama
+    /// reuses the same runner instance and its cached KV prefix.
+    pub num_ctx: u32,
 }
 
 /// Nested message object in Ollama `/api/chat` response chunks.
@@ -348,6 +354,7 @@ pub async fn stream_ollama_chat(
         messages,
         think,
         keep_alive,
+        num_ctx,
     } = params;
     let request_payload = OllamaChatRequest {
         model,
@@ -358,6 +365,7 @@ pub async fn stream_ollama_chat(
             temperature: 1.0,
             top_p: 0.95,
             top_k: 64,
+            num_ctx,
         },
         keep_alive,
     };
@@ -579,6 +587,7 @@ pub async fn ask_ollama(
             messages,
             think,
             keep_alive,
+            num_ctx: config.inference.num_ctx,
         },
         &client,
         cancel_token.clone(),
@@ -652,6 +661,7 @@ pub fn reset_conversation(history: State<'_, ConversationHistory>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::defaults::DEFAULT_NUM_CTX;
     use std::sync::{Arc, Mutex as StdMutex};
 
     fn collect_chunks() -> (Arc<StdMutex<Vec<StreamChunk>>>, impl Fn(StreamChunk)) {
@@ -702,6 +712,7 @@ mod tests {
                 messages,
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -741,6 +752,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -774,6 +786,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -814,6 +827,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -846,6 +860,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -886,6 +901,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -928,6 +944,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -974,6 +991,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1018,6 +1036,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1054,6 +1073,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1086,6 +1106,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1160,6 +1181,7 @@ mod tests {
                     messages: vec![],
                     think: false,
                     keep_alive: None,
+                    num_ctx: DEFAULT_NUM_CTX,
                 },
                 &client,
                 token,
@@ -1206,6 +1228,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1252,6 +1275,7 @@ mod tests {
                 messages,
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1282,6 +1306,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1371,6 +1396,42 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            },
+            &client,
+            token,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn sends_num_ctx_in_request() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(format!(
+                r#"{{"options":{{"num_ctx":{}}}}}"#,
+                DEFAULT_NUM_CTX
+            )))
+            .with_body(chat_line("", true))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let (_, callback) = collect_chunks();
+
+        stream_ollama_chat(
+            OllamaChatParams {
+                endpoint: format!("{}/api/chat", server.url()),
+                model: "test-model".to_string(),
+                messages: vec![],
+                think: false,
+                keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1527,6 +1588,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1562,6 +1624,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1596,6 +1659,7 @@ mod tests {
                 temperature: 1.0,
                 top_p: 0.95,
                 top_k: 64,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             keep_alive: None,
         };
@@ -1614,6 +1678,7 @@ mod tests {
                 temperature: 1.0,
                 top_p: 0.95,
                 top_k: 64,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             keep_alive: None,
         };
@@ -1658,6 +1723,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1697,6 +1763,7 @@ mod tests {
                 messages: vec![],
                 think: false,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1750,6 +1817,7 @@ mod tests {
                 messages: vec![],
                 think: true,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1797,6 +1865,7 @@ mod tests {
                 messages: vec![],
                 think: true,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,
@@ -1832,6 +1901,7 @@ mod tests {
                 messages: vec![],
                 think: true,
                 keep_alive: None,
+                num_ctx: DEFAULT_NUM_CTX,
             },
             &client,
             token,

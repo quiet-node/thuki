@@ -119,6 +119,7 @@ pub async fn search_pipeline(
         cancel_token.clone(),
         today.clone(),
         runtime_config.router_timeout_s,
+        app_config.inference.num_ctx,
     );
     let judge = pipeline::DefaultJudge::new(
         ollama_endpoint.clone(),
@@ -126,6 +127,7 @@ pub async fn search_pipeline(
         (*client).clone(),
         cancel_token.clone(),
         runtime_config.judge_timeout_s,
+        app_config.inference.num_ctx,
     );
 
     let result = pipeline::run_agentic(
@@ -145,6 +147,7 @@ pub async fn search_pipeline(
         &router,
         &judge,
         &runtime_config,
+        app_config.inference.num_ctx,
     )
     .await;
 

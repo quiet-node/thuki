@@ -12,6 +12,7 @@ const SAMPLE: RawAppConfig = {
   inference: {
     ollama_url: 'http://127.0.0.1:11434',
     keep_warm_inactivity_minutes: 0,
+    num_ctx: 16384,
   },
   prompt: { system: '' },
   window: {

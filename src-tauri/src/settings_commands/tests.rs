@@ -68,7 +68,7 @@ fn allowed_fields_count_matches_schema_field_count() {
     // their usable range. If this assertion fails, the schema has drifted
     // from the allowlist and someone added a field without extending
     // ALLOWED_FIELDS.
-    assert_eq!(ALLOWED_FIELDS.len(), 19);
+    assert_eq!(ALLOWED_FIELDS.len(), 20);
 }
 
 #[test]

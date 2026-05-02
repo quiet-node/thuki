@@ -35,12 +35,53 @@ const KEEP_WARM_TOOLTIP =
   'Unload now releases it immediately. ' +
   'If set to 0, Ollama unloads models after its default 5-minute timeout.';
 
+// Log-scale context window slider: slider pos [0..1000] ↔ token count.
+// Scale: value = CTX_MIN * (CTX_MAX / CTX_MIN)^(pos/1000)
+// With CTX_MAX/CTX_MIN = 512 (= 2^9), each 1/9 of the slider doubles the value.
+const CTX_MIN = 2048;
+const CTX_MAX = 1_048_576; // 1M
+const CTX_LOG_RATIO = Math.log(CTX_MAX / CTX_MIN);
+
+function ctxToPos(v: number): number {
+  return Math.round((1000 * Math.log(v / CTX_MIN)) / CTX_LOG_RATIO);
+}
+
+function posToCtx(pos: number): number {
+  // Snap to nearest 1 KiB boundary (standard Ollama increment).
+  return (
+    Math.round((CTX_MIN * Math.pow(CTX_MAX / CTX_MIN, pos / 1000)) / 1024) *
+    1024
+  );
+}
+
+const CTX_TICKS = [
+  '2K',
+  '4K',
+  '8K',
+  '16K',
+  '32K',
+  '64K',
+  '128K',
+  '256K',
+  '512K',
+  '1M',
+];
+
 export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
   const [inactivityMin, setInactivityMin] = useState(
     config.inference.keep_warm_inactivity_minutes,
   );
   const [ejecting, setEjecting] = useState(false);
   const [loadedModel, setLoadedModel] = useState<string | null>(null);
+
+  // Context window: committed value drives the debounced save; local slider
+  // pos updates live on drag without committing on every pixel.
+  const [numCtx, setNumCtx] = useState(config.inference.num_ctx);
+  const [ctxPos, setCtxPos] = useState(() =>
+    ctxToPos(config.inference.num_ctx),
+  );
+  const [ctxChip, setCtxChip] = useState(String(config.inference.num_ctx));
+  const ctxDraggingRef = useRef(false);
 
   useEffect(() => {
     let unlistenLoaded: (() => void) | null = null;
@@ -83,12 +124,30 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
     { onSaved },
   );
 
+  const { resetTo: resetNumCtx } = useDebouncedSave(
+    'inference',
+    'num_ctx',
+    numCtx,
+    { onSaved },
+  );
+
   const prevTokenRef = useRef(resyncToken);
 
   if (prevTokenRef.current !== resyncToken) {
     prevTokenRef.current = resyncToken;
     setInactivityMin(config.inference.keep_warm_inactivity_minutes);
     resetMin(config.inference.keep_warm_inactivity_minutes);
+    const nextCtx = config.inference.num_ctx;
+    setNumCtx(nextCtx);
+    setCtxPos(ctxToPos(nextCtx));
+    setCtxChip(String(nextCtx));
+    resetNumCtx(nextCtx);
+  }
+
+  function commitCtx(v: number) {
+    setNumCtx(v);
+    setCtxPos(ctxToPos(v));
+    setCtxChip(String(v));
   }
 
   function handleEject() {
@@ -99,6 +158,9 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
       })
       .catch(() => setEjecting(false));
   }
+
+  const ctxTurns = Math.round(numCtx / 400);
+  const fillPct = `${ctxPos / 10}%`;
 
   return (
     <>
@@ -226,6 +288,99 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
             )}
             Unload now
           </button>
+        </div>
+      </Section>
+
+      <Section heading="Context Window">
+        <div className={styles.ctxBlock}>
+          {/* Label row: "Context window" left + editable token chip right */}
+          <div className={styles.ctxTopRow}>
+            <span className={styles.ctxLabel}>Context window</span>
+            <div className={styles.ctxChipGroup}>
+              <input
+                type="number"
+                className={styles.ctxChipInput}
+                value={ctxChip}
+                min={CTX_MIN}
+                aria-label="Context window tokens"
+                onChange={(e) => setCtxChip(e.target.value)}
+                onBlur={() => {
+                  const n = parseInt(ctxChip, 10);
+                  if (!Number.isNaN(n) && n >= CTX_MIN) {
+                    commitCtx(n);
+                  } else {
+                    setCtxChip(String(numCtx));
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                }}
+              />
+              <span className={styles.ctxChipUnit}>tokens</span>
+            </div>
+          </div>
+
+          {/* Log-scale slider — fill percentage tracked via CSS custom property */}
+          <input
+            type="range"
+            className={styles.ctxSlider}
+            style={{ '--fill': fillPct } as React.CSSProperties}
+            min={0}
+            max={1000}
+            step={1}
+            value={ctxPos}
+            aria-label="Context window tokens"
+            aria-valuemin={CTX_MIN}
+            aria-valuemax={CTX_MAX}
+            aria-valuenow={numCtx}
+            aria-valuetext={`${numCtx} tokens`}
+            onChange={(e) => {
+              ctxDraggingRef.current = true;
+              const pos = Number(e.target.value);
+              setCtxPos(pos);
+              setCtxChip(String(posToCtx(pos)));
+            }}
+            onMouseUp={() => {
+              ctxDraggingRef.current = false;
+              commitCtx(posToCtx(ctxPos));
+            }}
+            onTouchEnd={() => {
+              ctxDraggingRef.current = false;
+              commitCtx(posToCtx(ctxPos));
+            }}
+            onKeyUp={() => {
+              if (!ctxDraggingRef.current) commitCtx(posToCtx(ctxPos));
+            }}
+          />
+
+          <div className={styles.ctxTickRow} aria-hidden="true">
+            {CTX_TICKS.map((label, i) => (
+              <span
+                key={label}
+                className={styles.ctxTick}
+                style={{ left: `${(i / (CTX_TICKS.length - 1)) * 100}%` }}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+
+          <div className={styles.ctxHelper}>
+            ~{ctxTurns.toLocaleString()} turns of context
+            {' · '}
+            Ollama clamps to model max
+          </div>
+
+          <div className={styles.ctxVramNote}>
+            <span className={styles.ctxVramIcon} aria-hidden="true">
+              ⚠
+            </span>
+            <span>
+              Larger context windows allocate proportionally more VRAM for the
+              KV cache. Doubling the context roughly doubles memory use.
+              Benchmark with your hardware before pushing it high.
+            </span>
+          </div>
         </div>
       </Section>
 

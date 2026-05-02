@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use super::defaults::{
     DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
-    DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
@@ -41,6 +41,12 @@ pub struct InferenceSection {
     /// 0 means do not manage (Ollama's 5-minute default applies).
     /// -1 means keep indefinitely. Valid range: -1 or 0..=1440.
     pub keep_warm_inactivity_minutes: i32,
+    /// Context window size (in tokens) sent to Ollama with every request.
+    /// Warmup and chat use the same value so Ollama reuses the same runner
+    /// instance and its cached KV prefix for the system prompt. Raise to fit
+    /// longer conversations in a single context; lower to use less VRAM.
+    /// Valid range: 2048..=131072.
+    pub num_ctx: u32,
 }
 
 impl Default for InferenceSection {
@@ -48,6 +54,7 @@ impl Default for InferenceSection {
         Self {
             ollama_url: DEFAULT_OLLAMA_URL.to_string(),
             keep_warm_inactivity_minutes: DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+            num_ctx: DEFAULT_NUM_CTX,
         }
     }
 }

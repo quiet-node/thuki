@@ -307,6 +307,7 @@ pub async fn generate_title(
             messages: title_messages,
             think: false,
             keep_alive: None,
+            num_ctx: app_config.inference.num_ctx,
         },
         &client,
         cancel_token,

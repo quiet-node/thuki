@@ -14,8 +14,8 @@ use std::path::PathBuf;
 
 use super::defaults::{
     DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
-    DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
@@ -52,6 +52,7 @@ fn defaults_const_values_match_schema_defaults() {
         c.inference.keep_warm_inactivity_minutes,
         DEFAULT_KEEP_WARM_INACTIVITY_MINUTES
     );
+    assert_eq!(c.inference.num_ctx, DEFAULT_NUM_CTX);
     assert_eq!(c.prompt.system, "");
     assert_eq!(c.prompt.resolved_system, "");
     assert_eq!(c.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
@@ -428,6 +429,52 @@ fn inference_keep_warm_inactivity_roundtrips_through_toml() {
         reloaded.inference.keep_warm_inactivity_minutes,
         config.inference.keep_warm_inactivity_minutes,
     );
+}
+
+#[test]
+fn resolve_num_ctx_default_matches_const() {
+    let c = AppConfig::default();
+    assert_eq!(c.inference.num_ctx, DEFAULT_NUM_CTX);
+}
+
+#[test]
+fn resolve_num_ctx_below_lower_bound_falls_back_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[inference]\nnum_ctx = 1000\n").unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(config.inference.num_ctx, DEFAULT_NUM_CTX);
+}
+
+#[test]
+fn resolve_num_ctx_above_upper_bound_falls_back_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[inference]\nnum_ctx = 3000000\n").unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(config.inference.num_ctx, DEFAULT_NUM_CTX);
+}
+
+#[test]
+fn resolve_num_ctx_in_bounds_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[inference]\nnum_ctx = 32768\n").unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(config.inference.num_ctx, 32768);
+}
+
+#[test]
+fn num_ctx_roundtrips_through_toml() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[inference]\nnum_ctx = 32768\n").unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(config.inference.num_ctx, 32768);
+
+    atomic_write(&path, &config).unwrap();
+    let reloaded = load_from_path(&path).unwrap();
+    assert_eq!(reloaded.inference.num_ctx, config.inference.num_ctx);
 }
 
 #[test]

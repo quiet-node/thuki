@@ -263,6 +263,7 @@ async fn run_streaming_branch(
     warnings: Vec<SearchWarning>,
     metadata: Option<SearchMetadata>,
     on_event: &impl Fn(SearchEvent),
+    num_ctx: u32,
 ) {
     let saw_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let saw_done_for_callback = saw_done.clone();
@@ -273,6 +274,7 @@ async fn run_streaming_branch(
             messages,
             think: false,
             keep_alive: None,
+            num_ctx,
         },
         client,
         cancel_token,
@@ -394,6 +396,7 @@ pub struct DefaultRouterJudge {
     cancel: CancellationToken,
     today: String,
     router_timeout_secs: u64,
+    num_ctx: u32,
 }
 
 impl DefaultRouterJudge {
@@ -411,6 +414,7 @@ impl DefaultRouterJudge {
     ///   model is anchored to the real calendar date.
     /// - `router_timeout_secs`: per-call wall-clock limit from `AppConfig.search`.
     #[cfg_attr(coverage_nightly, coverage(off))]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         endpoint: String,
         model: String,
@@ -418,6 +422,7 @@ impl DefaultRouterJudge {
         cancel: CancellationToken,
         today: String,
         router_timeout_secs: u64,
+        num_ctx: u32,
     ) -> Self {
         Self {
             endpoint,
@@ -426,6 +431,7 @@ impl DefaultRouterJudge {
             cancel,
             today,
             router_timeout_secs,
+            num_ctx,
         }
     }
 }
@@ -447,6 +453,7 @@ impl RouterJudgeCaller for DefaultRouterJudge {
             &self.today,
             &self.cancel,
             self.router_timeout_secs,
+            self.num_ctx,
         )
         .await
     }
@@ -465,6 +472,7 @@ pub struct DefaultJudge {
     client: reqwest::Client,
     cancel: CancellationToken,
     judge_timeout_secs: u64,
+    num_ctx: u32,
 }
 
 impl DefaultJudge {
@@ -483,6 +491,7 @@ impl DefaultJudge {
         client: reqwest::Client,
         cancel: CancellationToken,
         judge_timeout_secs: u64,
+        num_ctx: u32,
     ) -> Self {
         Self {
             endpoint,
@@ -490,6 +499,7 @@ impl DefaultJudge {
             client,
             cancel,
             judge_timeout_secs,
+            num_ctx,
         }
     }
 }
@@ -510,6 +520,7 @@ impl JudgeCaller for DefaultJudge {
             sources,
             &self.cancel,
             self.judge_timeout_secs,
+            self.num_ctx,
         )
         .await
     }
@@ -557,6 +568,7 @@ struct SearchExecutionContext<'a> {
     today: &'a str,
     on_event: &'a (dyn Fn(SearchEvent) + Sync),
     runtime_config: &'a config::SearchRuntimeConfig,
+    num_ctx: u32,
 }
 
 /// Per-turn values reused across extracted search stages.
@@ -639,6 +651,7 @@ async fn stream_synthesis_from_sources(
         warnings,
         metadata,
         &shared.on_event,
+        shared.num_ctx,
     )
     .await;
 }
@@ -743,6 +756,7 @@ async fn run_history_answer_branch(
         Vec::new(),
         None,
         &shared.on_event,
+        shared.num_ctx,
     )
     .await;
 
@@ -1323,6 +1337,7 @@ pub async fn run_agentic(
     router: &dyn RouterJudgeCaller,
     judge: &dyn JudgeCaller,
     runtime_config: &config::SearchRuntimeConfig,
+    num_ctx: u32,
 ) -> Result<(), SearchError> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -1368,6 +1383,7 @@ pub async fn run_agentic(
         today,
         on_event,
         runtime_config,
+        num_ctx,
     };
 
     match output.action {
@@ -1682,6 +1698,7 @@ pub async fn run_agentic(
                         warnings,
                         Some(metadata),
                         &on_event,
+                        num_ctx,
                     )
                     .await;
                     return Ok(());
@@ -2088,6 +2105,7 @@ fn split_into_stream_pieces(s: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::commands::{OllamaError, OllamaErrorKind};
+    use crate::config::defaults::DEFAULT_NUM_CTX;
     use std::sync::{Arc, Mutex};
 
     fn collect_events() -> (Arc<Mutex<Vec<SearchEvent>>>, impl Fn(SearchEvent)) {
@@ -2281,6 +2299,7 @@ mod tests {
             Vec::new(),
             None,
             &cb,
+            DEFAULT_NUM_CTX,
         )
         .await;
 
@@ -2300,6 +2319,7 @@ mod tests {
             cancel,
             "2026-04-18".into(),
             crate::config::defaults::DEFAULT_ROUTER_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         );
     }
 
@@ -2312,6 +2332,7 @@ mod tests {
             reqwest::Client::new(),
             cancel,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
         );
     }
 
@@ -2339,6 +2360,7 @@ mod tests {
 #[cfg(test)]
 mod agentic_tests {
     use super::*;
+    use crate::config::defaults::DEFAULT_NUM_CTX;
 
     // ── mock implementations ────────────────────────────────────────────────
 
@@ -2558,6 +2580,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
@@ -2598,6 +2621,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
@@ -2639,6 +2663,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -2729,6 +2754,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -2796,6 +2822,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -2875,6 +2902,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -2962,6 +2990,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -3018,6 +3047,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -3095,6 +3125,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -3193,6 +3224,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -3269,6 +3301,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -3319,6 +3352,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
@@ -3389,6 +3423,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -3462,6 +3497,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -3506,6 +3542,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -3551,6 +3588,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
@@ -3582,6 +3620,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
@@ -3621,6 +3660,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
@@ -3677,6 +3717,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
@@ -3735,6 +3776,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -3808,6 +3850,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -3890,6 +3933,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -3993,6 +4037,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -4074,6 +4119,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -4181,6 +4227,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -4329,6 +4376,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -4448,6 +4496,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -4595,6 +4644,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -4709,6 +4759,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -4836,6 +4887,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -4948,6 +5000,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -5024,6 +5077,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -5135,6 +5189,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -5225,6 +5280,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap_err();
@@ -5311,6 +5367,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -5424,6 +5481,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -5557,6 +5615,7 @@ mod agentic_tests {
             &router,
             &gap_judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -5662,6 +5721,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -5780,6 +5840,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -5901,6 +5962,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -6022,6 +6084,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -6156,6 +6219,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -6279,6 +6343,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -6385,6 +6450,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -6476,6 +6542,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -6556,6 +6623,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -6703,6 +6771,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -6774,6 +6843,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -6891,6 +6961,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();
@@ -6988,6 +7059,7 @@ mod agentic_tests {
             &router,
             &judge,
             &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
         )
         .await
         .unwrap();

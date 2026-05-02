@@ -268,6 +268,7 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
                 warmup_config.inference.keep_warm_inactivity_minutes,
             ))
         };
+        let num_ctx = warmup_config.inference.num_ctx;
         let client = app_handle.state::<reqwest::Client>().inner().clone();
         app_handle.state::<warmup::WarmupState>().fire(
             endpoint,
@@ -275,6 +276,7 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
             system_prompt,
             client,
             keep_alive,
+            num_ctx,
         );
     }
 

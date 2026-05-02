@@ -6,7 +6,7 @@ use tauri::{Emitter, Manager};
 
 use crate::config::defaults::VRAM_POLL_INTERVAL_SECS;
 
-type InFlightSlot = Arc<Mutex<Option<(String, Option<String>, String)>>>;
+type InFlightSlot = Arc<Mutex<Option<(String, Option<String>, String, u32)>>>;
 type OnLoaded = Arc<dyn Fn(String) + Send + Sync + 'static>;
 
 pub struct WarmupState {
@@ -94,7 +94,7 @@ impl WarmupState {
     }
 
     /// Fire-and-forget model warm-up. Returns immediately.
-    /// No-op if model/endpoint empty or same (model, keep_alive, system_prompt) triple already in flight.
+    /// No-op if model/endpoint empty or same (model, keep_alive, system_prompt, num_ctx) 4-tuple already in flight.
     /// Any differing field supersedes the in-flight slot and fires a new request.
     /// `keep_alive` is forwarded to Ollama as-is; `None` omits the field so
     /// Ollama uses its server default (typically 5 minutes).
@@ -105,20 +105,25 @@ impl WarmupState {
         system_prompt: String,
         client: reqwest::Client,
         keep_alive: Option<String>,
+        num_ctx: u32,
     ) {
         if model.is_empty() || endpoint.is_empty() {
             return;
         }
         {
             let mut guard = self.in_flight.lock().unwrap();
-            if guard
-                .as_ref()
-                .map(|(m, k, s)| m == &model && k == &keep_alive && s == &system_prompt)
-                == Some(true)
+            if guard.as_ref().map(|(m, k, s, n)| {
+                m == &model && k == &keep_alive && s == &system_prompt && *n == num_ctx
+            }) == Some(true)
             {
                 return;
             }
-            *guard = Some((model.clone(), keep_alive.clone(), system_prompt.clone()));
+            *guard = Some((
+                model.clone(),
+                keep_alive.clone(),
+                system_prompt.clone(),
+                num_ctx,
+            ));
         }
         // A new warmup supersedes any prior eviction.
         self.evicted.store(false, Ordering::SeqCst);
@@ -132,6 +137,7 @@ impl WarmupState {
             client,
             in_flight,
             keep_alive,
+            num_ctx,
             on_loaded,
             evicted,
         ));
@@ -161,6 +167,7 @@ pub fn warm_up_model(
                 cfg.inference.keep_warm_inactivity_minutes,
             ))
         };
+        let num_ctx = cfg.inference.num_ctx;
         drop(cfg);
         warmup.fire(
             endpoint,
@@ -168,6 +175,7 @@ pub fn warm_up_model(
             system_prompt,
             client.inner().clone(),
             keep_alive,
+            num_ctx,
         );
     }
 }
@@ -347,23 +355,34 @@ async fn run_warmup(
     client: reqwest::Client,
     in_flight: InFlightSlot,
     keep_alive: Option<String>,
+    num_ctx: u32,
     on_loaded: OnLoaded,
     evicted: Arc<AtomicBool>,
 ) {
     // Use /api/chat with the resolved system prompt so Ollama primes the KV cache
-    // for the prefix the real chat will share. num_predict:0 prevents any token
-    // generation — the goal is prompt evaluation only.
+    // for the prefix the real chat will share. num_predict:1 generates exactly one
+    // token: enough to complete the prefill phase (which warms the KV cache and
+    // Metal shaders) while releasing the queue in ~200-400ms. num_predict:0 means
+    // infinite generation in Ollama's runner, which blocks the queue for seconds.
+    //
+    // num_ctx MUST match the value sent by real chat requests. The default Ollama
+    // context (4 096 tokens) is almost entirely consumed by the system prompt
+    // (~4 000 tokens), leaving no room for KV-cache prefix reuse. Using 16 384
+    // ensures the system prompt prefix is cached and reused on every subsequent
+    // turn. think:false matches the chat template rendered by real requests so
+    // Ollama sees the same formatted token sequence and reuses the same runner.
     let messages = serde_json::json!([
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": ""}
     ]);
-    let options = serde_json::json!({"num_predict": 0});
+    let options = serde_json::json!({"num_predict": 1, "num_ctx": num_ctx});
 
     let body = if let Some(ref ka) = keep_alive {
         serde_json::json!({
             "model": model,
             "messages": messages,
             "stream": false,
+            "think": false,
             "options": options,
             "keep_alive": ka
         })
@@ -372,6 +391,7 @@ async fn run_warmup(
             "model": model,
             "messages": messages,
             "stream": false,
+            "think": false,
             "options": options
         })
     };
@@ -382,18 +402,14 @@ async fn run_warmup(
                 (on_loaded)(model.clone());
             }
         }
-        Ok(resp) => {
-            eprintln!("thuki: [warmup] HTTP {} for model={}", resp.status(), model);
-        }
-        Err(e) => {
-            eprintln!("thuki: [warmup] request failed: {e}");
-        }
+        Ok(_) => {}
+        Err(_) => {}
     }
 
     let mut guard = in_flight.lock().unwrap();
     if guard
         .as_ref()
-        .map(|(m, k, s)| m == &model && k == &keep_alive && s == &system_prompt)
+        .map(|(m, k, s, n)| m == &model && k == &keep_alive && s == &system_prompt && *n == num_ctx)
         == Some(true)
     {
         *guard = None;
@@ -403,6 +419,7 @@ async fn run_warmup(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::defaults::DEFAULT_NUM_CTX;
     use mockito::Server;
     use std::time::{Duration, Instant};
 
@@ -437,6 +454,7 @@ mod tests {
             SYS.to_string(),
             reqwest::Client::new(),
             None,
+            DEFAULT_NUM_CTX,
         );
 
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
@@ -462,6 +480,7 @@ mod tests {
             SYS.to_string(),
             reqwest::Client::new(),
             None,
+            DEFAULT_NUM_CTX,
         );
 
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
@@ -479,6 +498,7 @@ mod tests {
             SYS.to_string(),
             reqwest::Client::new(),
             None,
+            DEFAULT_NUM_CTX,
         );
 
         wait_in_flight_clear(&in_flight, Duration::from_secs(10));
@@ -507,6 +527,7 @@ mod tests {
             SYS.to_string(),
             client.clone(),
             None,
+            DEFAULT_NUM_CTX,
         );
         state.fire(
             endpoint.clone(),
@@ -514,6 +535,7 @@ mod tests {
             SYS.to_string(),
             client.clone(),
             None,
+            DEFAULT_NUM_CTX,
         );
 
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
@@ -542,6 +564,7 @@ mod tests {
             SYS.to_string(),
             client.clone(),
             None,
+            DEFAULT_NUM_CTX,
         );
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
         state.fire(
@@ -550,6 +573,7 @@ mod tests {
             SYS.to_string(),
             client.clone(),
             None,
+            DEFAULT_NUM_CTX,
         );
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
 
@@ -570,7 +594,8 @@ mod tests {
 
         let state = WarmupState::new();
         // Manually mark model A as in flight.
-        *state.in_flight.lock().unwrap() = Some(("llama3".to_string(), None, SYS.to_string()));
+        *state.in_flight.lock().unwrap() =
+            Some(("llama3".to_string(), None, SYS.to_string(), DEFAULT_NUM_CTX));
 
         let in_flight = Arc::clone(&state.in_flight);
         state.fire(
@@ -579,6 +604,7 @@ mod tests {
             SYS.to_string(),
             reqwest::Client::new(),
             None,
+            DEFAULT_NUM_CTX,
         );
 
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
@@ -594,6 +620,7 @@ mod tests {
             "llama3".to_string(),
             None,
             SYS.to_string(),
+            DEFAULT_NUM_CTX,
         ))));
 
         // Reuse the no-op callback from WarmupState::new() to share its Fn implementation
@@ -608,6 +635,7 @@ mod tests {
             reqwest::Client::new(),
             Arc::clone(&in_flight),
             None,
+            DEFAULT_NUM_CTX,
             noop,
             not_evicted,
         )
@@ -618,7 +646,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .as_ref()
-                .map(|(m, _, _)| m.as_str()),
+                .map(|(m, _, _, _)| m.as_str()),
             Some("llama3"),
             "phi3 task must not clear slot held by llama3"
         );
@@ -640,6 +668,7 @@ mod tests {
             SYS.to_string(),
             reqwest::Client::new(),
             None,
+            DEFAULT_NUM_CTX,
         );
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -662,6 +691,7 @@ mod tests {
             SYS.to_string(),
             reqwest::Client::new(),
             None,
+            DEFAULT_NUM_CTX,
         );
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -674,7 +704,7 @@ mod tests {
         let mock = server
             .mock("POST", "/api/chat")
             .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"model":"llama3","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":""}],"stream":false,"options":{"num_predict":0}}"#.to_string(),
+                r#"{"model":"llama3","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":""}],"stream":false,"options":{"num_predict":1}}"#.to_string(),
             ))
             .with_status(200)
             .with_body("{}")
@@ -689,6 +719,7 @@ mod tests {
             SYS.to_string(),
             reqwest::Client::new(),
             None,
+            DEFAULT_NUM_CTX,
         );
 
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
@@ -701,7 +732,7 @@ mod tests {
         let mock = server
             .mock("POST", "/api/chat")
             .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"model":"llama3","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":""}],"stream":false,"options":{"num_predict":0},"keep_alive":"30m"}"#.to_string(),
+                r#"{"model":"llama3","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":""}],"stream":false,"options":{"num_predict":1},"keep_alive":"30m"}"#.to_string(),
             ))
             .with_status(200)
             .with_body("{}")
@@ -716,6 +747,36 @@ mod tests {
             SYS.to_string(),
             reqwest::Client::new(),
             Some("30m".to_string()),
+            DEFAULT_NUM_CTX,
+        );
+
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn request_body_includes_num_ctx_and_think_false() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(format!(
+                r#"{{"think":false,"options":{{"num_predict":1,"num_ctx":{}}}}}"#,
+                DEFAULT_NUM_CTX
+            )))
+            .with_status(200)
+            .with_body("{}")
+            .create_async()
+            .await;
+
+        let state = WarmupState::new();
+        let in_flight = Arc::clone(&state.in_flight);
+        state.fire(
+            format!("{}/api/chat", server.url()),
+            "llama3".to_string(),
+            SYS.to_string(),
+            reqwest::Client::new(),
+            None,
+            DEFAULT_NUM_CTX,
         );
 
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
@@ -744,6 +805,7 @@ mod tests {
             SYS.to_string(),
             client.clone(),
             None,
+            DEFAULT_NUM_CTX,
         );
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
         state.fire(
@@ -752,6 +814,7 @@ mod tests {
             SYS.to_string(),
             client.clone(),
             Some("30m".to_string()),
+            DEFAULT_NUM_CTX,
         );
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
 
@@ -780,6 +843,7 @@ mod tests {
             "prompt A".to_string(),
             client.clone(),
             None,
+            DEFAULT_NUM_CTX,
         );
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
         state.fire(
@@ -788,6 +852,45 @@ mod tests {
             "prompt B".to_string(),
             client.clone(),
             None,
+            DEFAULT_NUM_CTX,
+        );
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn same_model_different_num_ctx_fires_new_request() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(200)
+            .with_body("{}")
+            .expect(2)
+            .create_async()
+            .await;
+
+        let state = WarmupState::new();
+        let in_flight = Arc::clone(&state.in_flight);
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/chat", server.url());
+
+        state.fire(
+            endpoint.clone(),
+            "llama3".to_string(),
+            SYS.to_string(),
+            client.clone(),
+            None,
+            DEFAULT_NUM_CTX,
+        );
+        wait_in_flight_clear(&in_flight, Duration::from_secs(5));
+        state.fire(
+            endpoint.clone(),
+            "llama3".to_string(),
+            SYS.to_string(),
+            client.clone(),
+            None,
+            DEFAULT_NUM_CTX * 2,
         );
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
 
@@ -1075,6 +1178,7 @@ mod tests {
             SYS.to_string(),
             reqwest::Client::new(),
             None,
+            DEFAULT_NUM_CTX,
         );
 
         wait_in_flight_clear(&in_flight, Duration::from_secs(5));
@@ -1112,6 +1216,7 @@ mod tests {
             "llama3.2:3b".to_string(),
             None,
             SYS.to_string(),
+            DEFAULT_NUM_CTX,
         ))));
         let evicted = Arc::new(AtomicBool::new(true));
 
@@ -1122,6 +1227,7 @@ mod tests {
             reqwest::Client::new(),
             Arc::clone(&in_flight),
             None,
+            DEFAULT_NUM_CTX,
             on_loaded,
             evicted,
         )
