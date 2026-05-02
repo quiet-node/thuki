@@ -273,6 +273,33 @@ describe('SettingsWindow', () => {
     expect(__mockWindow.startDragging).not.toHaveBeenCalled();
   });
 
+  it('mousedown on a text-bearing element does NOT trigger drag (so users can highlight + copy)', async () => {
+    const marker: CorruptMarker = { path: '/tmp/config.toml.corrupt-9', ts: 9 };
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_corrupt_marker') return marker;
+      return defaultInvoke(cmd);
+    });
+    render(<SettingsWindow />);
+    // Banner renders <code>config.toml</code> directly inside the
+    // banner text — a text-bearing leaf. Mousedown on it must NOT drag.
+    const banner = await screen.findByRole('alert');
+    const codeEl = banner.querySelector('code')!;
+    __mockWindow.startDragging.mockClear();
+    fireEvent.mouseDown(codeEl, { target: codeEl, button: 0 });
+    expect(__mockWindow.startDragging).not.toHaveBeenCalled();
+  });
+
+  it('mousedown with a non-primary button is ignored (no drag, lets context menus through)', async () => {
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    __mockWindow.startDragging.mockClear();
+    const root = screen
+      .getByRole('tab', { name: /AI/ })
+      .closest('[role="tablist"]')!.parentElement!;
+    fireEvent.mouseDown(root, { target: root, button: 2 });
+    expect(__mockWindow.startDragging).not.toHaveBeenCalled();
+  });
+
   it('basename helper handles paths without a slash by rendering them verbatim', async () => {
     const marker: CorruptMarker = { path: 'config.toml.corrupt-7', ts: 7 };
     invokeMock.mockImplementation(async (cmd: string) => {
