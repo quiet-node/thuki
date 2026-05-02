@@ -208,16 +208,28 @@ export function SettingsWindow() {
   }, []);
 
   /**
-   * Native window drag from any non-interactive surface — mirrors the
-   * chat overlay's `handleDragStart` in App.tsx. Walks up the DOM from
-   * the click target and bails if it hits a form control or button so
-   * those keep working; otherwise calls `startDragging()`. We do this
-   * via JS instead of `data-tauri-drag-region` because the attribute
-   * only initiates drag from the element it's set on (and form
-   * children inside the body block the attribute from working there).
+   * Native window drag from non-interactive, non-text surfaces. Walks
+   * up the DOM and bails on:
+   *   1. Interactive tags (form controls, buttons, links, SVGs) so
+   *      clicks on them still register as clicks, not drags.
+   *   2. Text-bearing leaves — any element that directly contains a
+   *      non-empty text node. This lets users click-drag to highlight
+   *      labels, values, and descriptions inside the body, then Cmd+C
+   *      to copy. Without this check the whole window would slide
+   *      under the cursor and the selection would never start.
+   *
+   * We do this via JS instead of `data-tauri-drag-region` because the
+   * attribute only initiates drag from the element it's set on, and
+   * form children inside the body block it from working at the root.
+   *
+   * Only the primary mouse button initiates a drag; secondary/middle
+   * clicks pass through so context menus and middle-click behaviors
+   * are unaffected.
    */
   const handleDragStart = useCallback((e: React.MouseEvent) => {
-    const el = e.target as HTMLElement | null;
+    if (e.button !== 0) return;
+    const el = e.target as HTMLElement;
+
     const INTERACTIVE_TAGS = new Set([
       'TEXTAREA',
       'INPUT',
@@ -228,11 +240,24 @@ export function SettingsWindow() {
       'SVG',
       'LABEL',
     ]);
-    let current = el;
+    let current: HTMLElement | null = el;
     while (current) {
       if (INTERACTIVE_TAGS.has(current.tagName.toUpperCase())) return;
       current = current.parentElement;
     }
+
+    // Bail if the click landed directly on a text node. Layout
+    // wrappers (DIV/SECTION) without their own text still drag.
+    for (const node of Array.from(el.childNodes)) {
+      if (
+        node.nodeType === Node.TEXT_NODE &&
+        node.textContent &&
+        node.textContent.trim().length > 0
+      ) {
+        return;
+      }
+    }
+
     e.preventDefault();
     void getCurrentWindow().startDragging();
   }, []);

@@ -86,6 +86,10 @@
   font-size: 12.5px;
   color: var(--color-text-primary);
   flex-shrink: 0;
+  /* Banner content (corrupt-config path, file name) must be selectable
+   * so users can copy the path. The window-wide `user-select: none` on
+   * `.window` is overridden here. */
+  user-select: text;
   box-shadow:
     0 2px 8px -2px rgba(0, 0, 0, 0.3),
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -181,6 +185,13 @@
   position: relative;
   padding: 18px 22px 24px;
   min-width: 0;
+  /* Body content (labels, descriptions, values) must be selectable so
+   * users can highlight + Cmd+C. Window chrome stays unselectable via
+   * the `user-select: none` on `.window`. The drag handler in
+   * `SettingsWindow.tsx` is the matching half: it bails out when the
+   * mousedown target carries a direct text node, so dragging from text
+   * runs the selection instead of moving the window. */
+  user-select: text;
 }
 .bodyScrollable {
   overflow-y: auto;
