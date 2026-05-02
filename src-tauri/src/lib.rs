@@ -861,7 +861,7 @@ pub fn run() {
                 .icon_as_template(false)
                 .tooltip("Thuki")
                 .menu(&tray_menu)
-                .show_menu_on_left_click(true)
+                .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         show_overlay(app, crate::context::ActivationContext::empty());
@@ -877,12 +877,12 @@ pub fn run() {
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
-                        button: MouseButton::Right,
+                        button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         ..
                     } = event
                     {
-                        toggle_overlay(
+                        show_overlay(
                             tray.app_handle(),
                             crate::context::ActivationContext::empty(),
                         );
