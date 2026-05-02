@@ -28,6 +28,9 @@ interface ModelTabProps {
 
 const PROMPT_MAX_CHARS = 8000;
 const EJECT_RESET_MS = 2500;
+/// Approximate tokens per chat turn used for the "~N turns of context" hint.
+/// 400 tokens ≈ a typical user question + assistant reply pair on this app.
+const TOKENS_PER_TURN_ESTIMATE = 400;
 
 const KEEP_WARM_TOOLTIP =
   'Keep Warm holds your active model loaded in VRAM after each use. ' +
@@ -159,7 +162,7 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
       .catch(() => setEjecting(false));
   }
 
-  const ctxTurns = Math.round(numCtx / 400);
+  const ctxTurns = Math.round(numCtx / TOKENS_PER_TURN_ESTIMATE);
   const fillPct = `${ctxPos / 10}%`;
 
   return (
@@ -302,12 +305,15 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
                 className={styles.ctxChipInput}
                 value={ctxChip}
                 min={CTX_MIN}
+                max={CTX_MAX}
                 aria-label="Context window tokens"
                 onChange={(e) => setCtxChip(e.target.value)}
                 onBlur={() => {
                   const n = parseInt(ctxChip, 10);
                   if (!Number.isNaN(n) && n >= CTX_MIN) {
-                    commitCtx(n);
+                    // Clamp upper bound so the UI mirrors the backend
+                    // BOUNDS_NUM_CTX cap and the slider stays in sync.
+                    commitCtx(Math.min(n, CTX_MAX));
                   } else {
                     setCtxChip(String(numCtx));
                   }

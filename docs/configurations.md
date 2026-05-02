@@ -38,7 +38,7 @@ keep_warm_inactivity_minutes = 0
 # Context window size in tokens sent to Ollama with every request.
 # Warmup and chat share this value so Ollama reuses the same runner and its
 # cached KV prefix for the system prompt. Raise to fit longer conversations;
-# lower to reduce GPU memory use. Valid range: 2048–131072.
+# lower to reduce GPU memory use. Valid range: 2048–1048576.
 num_ctx = 16384
 
 [prompt]

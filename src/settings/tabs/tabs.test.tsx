@@ -435,6 +435,16 @@ describe('ModelTab', () => {
     expect(chip.value).toBe('16384');
   });
 
+  it('typing a value above CTX_MAX and blurring clamps to CTX_MAX', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const chip = screen.getByRole('spinbutton', {
+      name: 'Context window tokens',
+    }) as HTMLInputElement;
+    fireEvent.change(chip, { target: { value: '99999999' } });
+    fireEvent.blur(chip);
+    expect(chip.value).toBe('1048576');
+  });
+
   it('Enter key in chip commits by blurring', () => {
     render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     const chip = screen.getByRole('spinbutton', {
