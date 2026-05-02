@@ -374,7 +374,7 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
           <div className={styles.ctxHelper}>
             ~{ctxTurns.toLocaleString()} turns of context
             {' · '}
-            Ollama clamps to model max
+            Ollama clamps to model max so it's safe to push this up.
           </div>
 
           <div className={styles.ctxVramNote}>
