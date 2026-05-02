@@ -394,7 +394,7 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
                   });
                 }}
               >
-                How to tune Context Window →
+                Learn how to tune Context Window in 5 minute ↗
               </button>
             </span>
           </div>
