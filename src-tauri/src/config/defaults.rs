@@ -242,6 +242,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("search", "reader_batch_timeout_s"),
     ("search", "judge_timeout_s"),
     ("search", "router_timeout_s"),
+    ("search", "pipeline_wall_clock_budget_s"),
 ];
 
 /// Authoritative allowlist of section names accepted by `reset_config`.

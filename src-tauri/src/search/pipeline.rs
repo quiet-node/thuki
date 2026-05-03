@@ -790,6 +790,27 @@ fn judge_sources_to_results(sources: &[JudgeSource]) -> Vec<SearxResult> {
         .collect()
 }
 
+fn best_fallback_sources(
+    accumulated_chunks: &[chunker::Chunk],
+    query: &str,
+    snippet_sources: &[JudgeSource],
+) -> Vec<JudgeSource> {
+    let fallback_chunks: Vec<chunker::Chunk> = rerank::rerank_chunks(
+        accumulated_chunks,
+        query,
+        crate::config::defaults::DEFAULT_TOP_K_CHUNKS,
+    )
+    .into_iter()
+    .cloned()
+    .collect();
+
+    if fallback_chunks.is_empty() {
+        snippet_sources.to_vec()
+    } else {
+        chunks_to_judge_sources(&fallback_chunks)
+    }
+}
+
 /// Emits the final source list, compose trace step, and synthesis stream for a
 /// chosen set of evidence sources.
 async fn stream_synthesis_from_sources(
@@ -997,13 +1018,13 @@ async fn run_gap_refinement_loop(
             // Re-emit as BudgetExhausted: wall-clock and input-budget share
             // the same warning surface. The warning has already been pushed.
             return Ok(GapLoopDisposition::Fallback {
-                sources: snippet_sources.clone(),
+                sources: best_fallback_sources(&accumulated_chunks, query, &snippet_sources),
                 hit_iteration_cap: false,
             });
         }
         if is_cancelled_emit(shared.cancel_token, &shared.on_event) {
             return Ok(GapLoopDisposition::Fallback {
-                sources: snippet_sources.clone(),
+                sources: best_fallback_sources(&accumulated_chunks, query, &snippet_sources),
                 hit_iteration_cap: false,
             });
         }
@@ -1052,7 +1073,7 @@ async fn run_gap_refinement_loop(
             _ = shared.cancel_token.cancelled() => {
                 (shared.on_event)(SearchEvent::Cancelled);
                 return Ok(GapLoopDisposition::Fallback {
-                    sources: snippet_sources.clone(),
+                    sources: best_fallback_sources(&accumulated_chunks, query, &snippet_sources),
                     hit_iteration_cap: false,
                 });
             }
@@ -1173,7 +1194,7 @@ async fn run_gap_refinement_loop(
 
         if is_cancelled_emit(shared.cancel_token, &shared.on_event) {
             return Ok(GapLoopDisposition::Fallback {
-                sources: snippet_sources.clone(),
+                sources: best_fallback_sources(&accumulated_chunks, query, &snippet_sources),
                 hit_iteration_cap: false,
             });
         }
@@ -1241,7 +1262,7 @@ async fn run_gap_refinement_loop(
             Err(reader::ReaderError::Cancelled) => {
                 (shared.on_event)(SearchEvent::Cancelled);
                 return Ok(GapLoopDisposition::Fallback {
-                    sources: snippet_sources.clone(),
+                    sources: best_fallback_sources(&accumulated_chunks, query, &snippet_sources),
                     hit_iteration_cap: false,
                 });
             }
@@ -1423,7 +1444,7 @@ async fn run_gap_refinement_loop(
         if let Some(reason) = guard.record_judge_input(&round_judge_sources) {
             emit_gap_exit_warning(reason, warnings, shared.on_event);
             return Ok(GapLoopDisposition::Fallback {
-                sources: snippet_sources.clone(),
+                sources: best_fallback_sources(&accumulated_chunks, query, &snippet_sources),
                 hit_iteration_cap: false,
             });
         }
@@ -1509,7 +1530,7 @@ async fn run_gap_refinement_loop(
         if dedup.every_query_was_a_repeat {
             emit_gap_exit_warning(GapExitReason::NoProgress, warnings, shared.on_event);
             return Ok(GapLoopDisposition::Fallback {
-                sources: snippet_sources.clone(),
+                sources: best_fallback_sources(&accumulated_chunks, query, &snippet_sources),
                 hit_iteration_cap: false,
             });
         }
@@ -1518,23 +1539,8 @@ async fn run_gap_refinement_loop(
             attempt == shared.runtime_config.max_iterations as u32 && !current_queries.is_empty();
     }
 
-    let fallback_chunks: Vec<chunker::Chunk> = rerank::rerank_chunks(
-        &accumulated_chunks,
-        query,
-        crate::config::defaults::DEFAULT_TOP_K_CHUNKS,
-    )
-    .into_iter()
-    .cloned()
-    .collect();
-
-    let fallback_sources = if fallback_chunks.is_empty() {
-        snippet_sources
-    } else {
-        chunks_to_judge_sources(&fallback_chunks)
-    };
-
     Ok(GapLoopDisposition::Fallback {
-        sources: fallback_sources,
+        sources: best_fallback_sources(&accumulated_chunks, query, &snippet_sources),
         hit_iteration_cap,
     })
 }
@@ -4194,6 +4200,131 @@ mod agentic_tests {
         assert_eq!(
             no_progress_count, 1,
             "expected exactly one NoProgress warning when LLM repeats gap queries in: {evs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_progress_fallback_uses_accumulated_chunk_sources() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "result-a",
+                "markdown": "page content from a",
+                "status": "ok"
+            })))
+            .up_to_n_times(1)
+            .mount(&reader_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/b",
+                "title": "result-b",
+                "markdown": "page content from b with newer evidence",
+                "status": "ok"
+            })))
+            .up_to_n_times(1)
+            .mount(&reader_server)
+            .await;
+
+        let mut ollama = mockito::Server::new_async().await;
+        ollama
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"stream":true}"#.to_string(),
+            ))
+            .with_body(stream_line_token("fallback"))
+            .create_async()
+            .await;
+
+        let searx_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/b")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                partial_verdict(),
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "need more".into(),
+                    gap_queries: vec!["q1".into()],
+                    parse_failure: false,
+                },
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "still missing".into(),
+                    gap_queries: vec!["q1".into()],
+                    parse_failure: false,
+                },
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama.url()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+            &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        let final_sources = evs
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                SearchEvent::Sources { results } => Some(results),
+                _ => None,
+            })
+            .expect("expected final sources event");
+
+        let urls: Vec<_> = final_sources
+            .iter()
+            .map(|result| result.url.as_str())
+            .collect();
+        assert!(
+            urls.contains(&"https://example.com/b"),
+            "expected fallback synthesis to keep newer chunk-backed source in final sources, got: {urls:?}"
         );
     }
 
