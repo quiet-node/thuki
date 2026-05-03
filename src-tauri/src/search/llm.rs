@@ -225,6 +225,7 @@ async fn request_json(
     cancel_token: &CancellationToken,
     timeout_secs: u64,
     num_ctx: u32,
+    num_predict: i32,
 ) -> Result<String, SearchError> {
     let body = OllamaJsonRequest {
         model: model.to_string(),
@@ -235,7 +236,7 @@ async fn request_json(
             temperature: 0.0,
             top_p: 1.0,
             top_k: 1,
-            num_predict: ROUTER_MAX_TOKENS,
+            num_predict,
             num_ctx,
         },
     };
@@ -316,6 +317,7 @@ pub async fn call_router_merged(
         cancel_token,
         timeout_secs,
         num_ctx,
+        ROUTER_MAX_TOKENS,
     )
     .await?;
     if let Some(output) = try_parse_router_output(&raw) {
@@ -339,6 +341,7 @@ pub async fn call_router_merged(
         cancel_token,
         timeout_secs,
         num_ctx,
+        ROUTER_MAX_TOKENS,
     )
     .await?;
     if let Some(output) = try_parse_router_output(&retry_raw) {
@@ -501,6 +504,7 @@ pub async fn call_judge(
         cancel_token,
         timeout_secs,
         num_ctx,
+        crate::config::defaults::JUDGE_MAX_TOKENS,
     )
     .await?;
     if let Ok(mut verdict) = crate::search::judge::parse_verdict(&raw) {
@@ -539,6 +543,7 @@ pub async fn call_judge(
         cancel_token,
         timeout_secs,
         num_ctx,
+        crate::config::defaults::JUDGE_MAX_TOKENS,
     )
     .await?;
     if let Ok(mut verdict) = crate::search::judge::parse_verdict(&retry_raw) {
@@ -570,21 +575,25 @@ pub async fn call_judge(
 
 /// Builds the user-turn message for a judge call. Formats the question and
 /// numbered source list so the model can assess coverage without seeing any
-/// system metadata.
+/// system metadata. Sources with empty text are skipped: their URL fragment
+/// alone can cause the model to hallucinate content (e.g. inferring topic
+/// from a URL slug when the page body failed to extract).
 fn build_judge_user_message(query: &str, sources: &[JudgeSource]) -> String {
     let text_len: usize = sources.iter().map(|s| s.text.len()).sum();
     let mut s = String::with_capacity(256 + text_len);
     s.push_str("QUESTION:\n");
     s.push_str(query);
     s.push_str("\n\nSOURCES:\n");
-    for (i, src) in sources.iter().enumerate() {
+    let mut idx = 1usize;
+    for src in sources {
+        if src.text.trim().is_empty() {
+            continue;
+        }
         s.push_str(&format!(
             "[{}] {} ({})\n{}\n\n",
-            i + 1,
-            src.title,
-            src.url,
-            src.text
+            idx, src.title, src.url, src.text
         ));
+        idx += 1;
     }
     s
 }
@@ -988,6 +997,35 @@ mod router_judge_tests {
         assert!(msg.contains("SOURCES:"));
         // No numbered entries.
         assert!(!msg.contains("[1]"));
+    }
+
+    #[test]
+    fn build_judge_user_message_skips_empty_text_sources_and_renumbers() {
+        let sources = vec![
+            JudgeSource {
+                title: "Empty".into(),
+                url: "https://empty".into(),
+                text: "".into(),
+            },
+            JudgeSource {
+                title: "WhitespaceOnly".into(),
+                url: "https://ws".into(),
+                text: "   ".into(),
+            },
+            JudgeSource {
+                title: "HasContent".into(),
+                url: "https://real".into(),
+                text: "actual body".into(),
+            },
+        ];
+        let msg = build_judge_user_message("q", &sources);
+        // Empty and whitespace-only sources must not appear.
+        assert!(!msg.contains("https://empty"));
+        assert!(!msg.contains("https://ws"));
+        // The content source is renumbered to [1], not [3].
+        assert!(msg.contains("[1] HasContent (https://real)"));
+        assert!(msg.contains("actual body"));
+        assert!(!msg.contains("[2]"));
     }
 
     // ── build_router_messages ────────────────────────────────────────────────

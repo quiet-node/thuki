@@ -113,6 +113,14 @@ pub const DEFAULT_MAX_QUERY_CHARS: usize = 500;
 /// Gap-filling queries generated per iteration round. Drives the judge
 /// normalization cap in `search::judge::normalize_verdict`.
 pub const DEFAULT_GAP_QUERIES_PER_ROUND: usize = 3;
+/// Maximum tokens the sufficiency judge can generate per call. Larger than
+/// ROUTER_MAX_TOKENS because thinking-capable models spend internal tokens on
+/// chain-of-thought before emitting JSON content; 512 exhausts the budget on
+/// thinking and leaves nothing for the JSON output, causing a parse failure
+/// and a synthetic-partial fallback. 2048 gives headroom for ~1500 thinking
+/// tokens plus ~200 JSON tokens. Not user-tunable: changing this value alters
+/// the parse-success rate (a quality property), not just latency.
+pub const JUDGE_MAX_TOKENS: i32 = 2048;
 /// Approximate token budget for each retrieved page chunk. Drives the
 /// chunker split heuristic; downstream prompts assume this exact size.
 pub const DEFAULT_CHUNK_TOKEN_SIZE: usize = 500;
