@@ -21,6 +21,7 @@
 //! the round-trip to complete.
 
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -36,6 +37,7 @@ use super::llm::{
     JudgeSource, JudgeStage,
 };
 use super::reader;
+use super::recorder::PipelineRecorder;
 use super::rerank;
 use super::searxng;
 use super::types::{
@@ -444,7 +446,23 @@ async fn run_streaming_branch(
     metadata: Option<SearchMetadata>,
     on_event: &impl Fn(SearchEvent),
     num_ctx: u32,
+    recorder: &Arc<dyn PipelineRecorder>,
+    stage: &str,
 ) {
+    // Snapshot the request body before streaming starts so the trace can show
+    // exactly what prompt the synthesis call was sent.
+    let request_body = serde_json::json!({
+        "endpoint": endpoint,
+        "model": model,
+        "messages": messages.iter().map(|m| serde_json::json!({
+            "role": m.role,
+            "content": m.content,
+        })).collect::<Vec<_>>(),
+        "num_ctx": num_ctx,
+    });
+    let started = std::time::Instant::now();
+    let token_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let token_count_for_callback = token_count.clone();
     let saw_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let saw_done_for_callback = saw_done.clone();
     let accumulated = stream_ollama_chat(
@@ -462,10 +480,29 @@ async fn run_streaming_branch(
             StreamChunk::Done => {
                 saw_done_for_callback.store(true, Ordering::SeqCst);
             }
-            other => on_event(translate_chunk(other)),
+            other => {
+                if matches!(other, StreamChunk::Token(_)) {
+                    token_count_for_callback.fetch_add(1, Ordering::SeqCst);
+                }
+                on_event(translate_chunk(other))
+            }
         },
     )
     .await;
+
+    recorder.record(crate::search::recorder::RecorderEvent::StreamingLlmCall {
+        stage: stage.to_string(),
+        endpoint: endpoint.to_string(),
+        request_body,
+        final_text: Some(accumulated.clone()),
+        tokens: token_count.load(Ordering::SeqCst),
+        latency_ms: started.elapsed().as_millis() as u64,
+        error: if accumulated.is_empty() && !saw_done.load(Ordering::SeqCst) {
+            Some("stream_ended_without_done".into())
+        } else {
+            None
+        },
+    });
 
     if !accumulated.is_empty() {
         persist_turn(
@@ -582,6 +619,7 @@ pub struct DefaultRouterJudge {
     today: String,
     router_timeout_secs: u64,
     num_ctx: u32,
+    recorder: Arc<dyn PipelineRecorder>,
 }
 
 impl DefaultRouterJudge {
@@ -598,6 +636,8 @@ impl DefaultRouterJudge {
     /// - `today`: `YYYY-MM-DD` string injected into the merged prompt so the
     ///   model is anchored to the real calendar date.
     /// - `router_timeout_secs`: per-call wall-clock limit from `AppConfig.search`.
+    /// - `recorder`: forensic per-turn recorder; passed through to
+    ///   [`llm::call_router_merged`] for `LlmCall` event emission.
     #[cfg_attr(coverage_nightly, coverage(off))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -608,6 +648,7 @@ impl DefaultRouterJudge {
         today: String,
         router_timeout_secs: u64,
         num_ctx: u32,
+        recorder: Arc<dyn PipelineRecorder>,
     ) -> Self {
         Self {
             endpoint,
@@ -617,6 +658,7 @@ impl DefaultRouterJudge {
             today,
             router_timeout_secs,
             num_ctx,
+            recorder,
         }
     }
 }
@@ -639,6 +681,7 @@ impl RouterJudgeCaller for DefaultRouterJudge {
             &self.cancel,
             self.router_timeout_secs,
             self.num_ctx,
+            &self.recorder,
         )
         .await
     }
@@ -658,6 +701,7 @@ pub struct DefaultJudge {
     cancel: CancellationToken,
     judge_timeout_secs: u64,
     num_ctx: u32,
+    recorder: Arc<dyn PipelineRecorder>,
 }
 
 impl DefaultJudge {
@@ -669,7 +713,10 @@ impl DefaultJudge {
     /// - `cancel`: the pipeline's cancellation token; races against the HTTP
     ///   call inside `call_judge`.
     /// - `judge_timeout_secs`: per-call wall-clock limit from `AppConfig.search`.
+    /// - `recorder`: forensic per-turn recorder; passed through to
+    ///   [`llm::call_judge`] for `LlmCall` event emission.
     #[cfg_attr(coverage_nightly, coverage(off))]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         endpoint: String,
         model: String,
@@ -677,6 +724,7 @@ impl DefaultJudge {
         cancel: CancellationToken,
         judge_timeout_secs: u64,
         num_ctx: u32,
+        recorder: Arc<dyn PipelineRecorder>,
     ) -> Self {
         Self {
             endpoint,
@@ -685,6 +733,7 @@ impl DefaultJudge {
             cancel,
             judge_timeout_secs,
             num_ctx,
+            recorder,
         }
     }
 }
@@ -708,6 +757,7 @@ impl JudgeCaller for DefaultJudge {
             self.judge_timeout_secs,
             self.num_ctx,
             stage,
+            &self.recorder,
         )
         .await
     }
@@ -756,6 +806,10 @@ struct SearchExecutionContext<'a> {
     on_event: &'a (dyn Fn(SearchEvent) + Sync),
     runtime_config: &'a config::SearchRuntimeConfig,
     num_ctx: u32,
+    /// Forensic per-turn recorder. [`super::recorder::NoopRecorder`] in
+    /// production unless `runtime_config.trace_enabled` is set.
+    #[allow(dead_code)]
+    recorder: &'a Arc<dyn PipelineRecorder>,
 }
 
 /// Per-turn values reused across extracted search stages.
@@ -860,6 +914,8 @@ async fn stream_synthesis_from_sources(
         metadata,
         &shared.on_event,
         shared.num_ctx,
+        shared.recorder,
+        "synthesis",
     )
     .await;
 }
@@ -965,6 +1021,8 @@ async fn run_history_answer_branch(
         None,
         &shared.on_event,
         shared.num_ctx,
+        shared.recorder,
+        "answer_from_context",
     )
     .await;
 
@@ -1067,6 +1125,7 @@ async fn run_gap_refinement_loop(
             &current_queries,
             shared.runtime_config.search_timeout_s,
             shared.runtime_config.searxng_max_results,
+            shared.recorder,
         );
         let gap_results = tokio::select! {
             biased;
@@ -1231,31 +1290,36 @@ async fn run_gap_refinement_loop(
         let round_progress_urls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let round_progress_urls_for_callback = round_progress_urls.clone();
         let round_reader_result = match reader_client
-            .fetch_batch_with_progress(&round_reader_urls, shared.cancel_token, &|url| {
-                (shared.on_event)(SearchEvent::FetchingUrl { url: url.clone() });
-                let mut urls = lock_or_recover(round_progress_urls_for_callback.as_ref());
-                urls.push(url.clone());
-                let processed = urls.len();
-                let mut progress_step = trace_step(
-                    format!("round-{attempt}-read"),
-                    SearchTraceKind::Read,
-                    SearchTraceStatus::Running,
-                    "Reading the shortlisted pages",
-                    format!(
-                        "Read {} of {} pages so far.",
-                        processed,
-                        round_reader_urls.len()
-                    ),
-                );
-                progress_step.round = Some(attempt);
-                progress_step.domains = unique_domains(urls.iter().map(|value| value.as_str()));
-                progress_step.counts = Some(SearchTraceCounts {
-                    processed: Some(to_u32_saturating(processed)),
-                    total: Some(to_u32_saturating(round_reader_urls.len())),
-                    ..SearchTraceCounts::default()
-                });
-                emit_trace(shared.on_event, progress_step);
-            })
+            .fetch_batch_with_progress(
+                &round_reader_urls,
+                shared.cancel_token,
+                &|url| {
+                    (shared.on_event)(SearchEvent::FetchingUrl { url: url.clone() });
+                    let mut urls = lock_or_recover(round_progress_urls_for_callback.as_ref());
+                    urls.push(url.clone());
+                    let processed = urls.len();
+                    let mut progress_step = trace_step(
+                        format!("round-{attempt}-read"),
+                        SearchTraceKind::Read,
+                        SearchTraceStatus::Running,
+                        "Reading the shortlisted pages",
+                        format!(
+                            "Read {} of {} pages so far.",
+                            processed,
+                            round_reader_urls.len()
+                        ),
+                    );
+                    progress_step.round = Some(attempt);
+                    progress_step.domains = unique_domains(urls.iter().map(|value| value.as_str()));
+                    progress_step.counts = Some(SearchTraceCounts {
+                        processed: Some(to_u32_saturating(processed)),
+                        total: Some(to_u32_saturating(round_reader_urls.len())),
+                        ..SearchTraceCounts::default()
+                    });
+                    emit_trace(shared.on_event, progress_step);
+                },
+                shared.recorder,
+            )
             .await
         {
             Ok(result) => result,
@@ -1468,6 +1532,15 @@ async fn run_gap_refinement_loop(
         let round_verdict = judge
             .call(query, &round_judge_sources, JudgeStage::Chunk)
             .await?;
+        shared.recorder.record(crate::search::recorder::RecorderEvent::JudgeVerdict {
+            stage: format!("chunk_judge_gap_round_{attempt}"),
+            raw: round_verdict.reasoning.clone(),
+            normalized: serde_json::json!({
+                "sufficiency": format!("{:?}", round_verdict.sufficiency),
+                "gap_queries": round_verdict.gap_queries,
+                "parse_failure": round_verdict.parse_failure,
+            }),
+        });
         note_judge_failure(&round_verdict, warnings, shared.on_event);
 
         let mut chunk_judge_step = trace_step(
@@ -1583,15 +1656,43 @@ pub async fn run_agentic(
     judge: &dyn JudgeCaller,
     runtime_config: &config::SearchRuntimeConfig,
     num_ctx: u32,
+    recorder: &Arc<dyn PipelineRecorder>,
 ) -> Result<(), SearchError> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return Err(SearchError::EmptyQuery);
     }
     let user_query = trimmed.to_string();
+    let turn_id = crate::search::recorder::new_turn_id();
+    let turn_started = std::time::Instant::now();
+    recorder.record(crate::search::recorder::RecorderEvent::TurnStart {
+        turn_id: turn_id.clone(),
+        query: user_query.clone(),
+        model: model.to_string(),
+        runtime_config: serde_json::json!({
+            "max_iterations": runtime_config.max_iterations,
+            "top_k_urls": runtime_config.top_k_urls,
+            "searxng_max_results": runtime_config.searxng_max_results,
+            "search_timeout_s": runtime_config.search_timeout_s,
+            "reader_per_url_timeout_s": runtime_config.reader_per_url_timeout_s,
+            "reader_batch_timeout_s": runtime_config.reader_batch_timeout_s,
+            "judge_timeout_s": runtime_config.judge_timeout_s,
+            "router_timeout_s": runtime_config.router_timeout_s,
+            "pipeline_wall_clock_budget_s": runtime_config.pipeline_wall_clock_budget_s,
+            "trace_enabled": runtime_config.trace_enabled,
+        }),
+        history_len: history.messages.lock().map(|g| g.len()).unwrap_or_default(),
+    });
 
     if cancel_token.is_cancelled() {
         on_event(SearchEvent::Cancelled);
+        recorder.record(crate::search::recorder::RecorderEvent::TurnEnd {
+            turn_id,
+            final_action: "cancelled_before_router".to_string(),
+            final_source_urls: Vec::new(),
+            total_latency_ms: turn_started.elapsed().as_millis() as u64,
+            error: Some("Cancelled".to_string()),
+        });
         return Err(SearchError::Cancelled);
     }
 
@@ -1609,7 +1710,31 @@ pub async fn run_agentic(
 
     let (epoch_at_start, history_snapshot) = snapshot_history(history);
 
-    let output = router.call(&history_snapshot, &user_query).await?;
+    let output = match router.call(&history_snapshot, &user_query).await {
+        Ok(o) => o,
+        Err(e) => {
+            // Emit TurnEnd before propagating so the trace records the failure
+            // boundary even when the router blew up before any branch ran.
+            recorder.record(crate::search::recorder::RecorderEvent::TurnEnd {
+                turn_id,
+                final_action: format!("router_error:{e:?}"),
+                final_source_urls: Vec::new(),
+                total_latency_ms: turn_started.elapsed().as_millis() as u64,
+                error: Some(format!("{e:?}")),
+            });
+            return Err(e);
+        }
+    };
+    recorder.record(crate::search::recorder::RecorderEvent::JudgeVerdict {
+        stage: "router".into(),
+        raw: format!("{:?}", output.action),
+        normalized: serde_json::json!({
+            "action": format!("{:?}", output.action),
+            "history_sufficiency": output.history_sufficiency.map(|s| format!("{s:?}")),
+            "optimized_query": output.optimized_query,
+            "clarifying_question": output.clarifying_question,
+        }),
+    });
 
     let user_msg = ChatMessage {
         role: "user".to_string(),
@@ -1629,9 +1754,10 @@ pub async fn run_agentic(
         on_event,
         runtime_config,
         num_ctx,
+        recorder,
     };
 
-    match output.action {
+    let result = match output.action {
         Action::Clarify => {
             run_clarify_branch(
                 &cancel_token,
@@ -1726,6 +1852,7 @@ pub async fn run_agentic(
                     &query,
                     runtime_config.search_timeout_s,
                     runtime_config.searxng_max_results,
+                    recorder,
                 );
                 let raw_urls = match tokio::select! {
                     biased;
@@ -1870,6 +1997,15 @@ pub async fn run_agentic(
                 let snippet_verdict = judge
                     .call(&query, &snippet_sources, JudgeStage::Snippet)
                     .await?;
+                shared.recorder.record(crate::search::recorder::RecorderEvent::JudgeVerdict {
+                    stage: "snippet_judge".into(),
+                    raw: snippet_verdict.reasoning.clone(),
+                    normalized: serde_json::json!({
+                        "sufficiency": format!("{:?}", snippet_verdict.sufficiency),
+                        "gap_queries": snippet_verdict.gap_queries,
+                        "parse_failure": snippet_verdict.parse_failure,
+                    }),
+                });
                 note_judge_failure(&snippet_verdict, &mut warnings, on_event);
 
                 let mut snippet_judge_step = trace_step(
@@ -1952,6 +2088,8 @@ pub async fn run_agentic(
                         Some(metadata),
                         &on_event,
                         num_ctx,
+                        recorder,
+                        "synthesis_snippet_only",
                     )
                     .await;
                     return Ok(());
@@ -1990,28 +2128,37 @@ pub async fn run_agentic(
                     std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
                 let progress_urls_for_callback = progress_urls.clone();
                 let reader_result = match reader_client
-                    .fetch_batch_with_progress(&reader_urls, &cancel_token, &|url| {
-                        on_event(SearchEvent::FetchingUrl { url: url.clone() });
-                        let mut urls = lock_or_recover(progress_urls_for_callback.as_ref());
-                        urls.push(url.clone());
-                        let processed = urls.len();
-                        let mut progress_step = trace_step(
-                            format!("round-{initial_round}-read"),
-                            SearchTraceKind::Read,
-                            SearchTraceStatus::Running,
-                            "Reading the shortlisted pages",
-                            format!("Read {} of {} pages so far.", processed, reader_urls.len()),
-                        );
-                        progress_step.round = Some(initial_round);
-                        progress_step.domains =
-                            unique_domains(urls.iter().map(|value| value.as_str()));
-                        progress_step.counts = Some(SearchTraceCounts {
-                            processed: Some(to_u32_saturating(processed)),
-                            total: Some(to_u32_saturating(reader_urls.len())),
-                            ..SearchTraceCounts::default()
-                        });
-                        emit_trace(on_event, progress_step);
-                    })
+                    .fetch_batch_with_progress(
+                        &reader_urls,
+                        &cancel_token,
+                        &|url| {
+                            on_event(SearchEvent::FetchingUrl { url: url.clone() });
+                            let mut urls = lock_or_recover(progress_urls_for_callback.as_ref());
+                            urls.push(url.clone());
+                            let processed = urls.len();
+                            let mut progress_step = trace_step(
+                                format!("round-{initial_round}-read"),
+                                SearchTraceKind::Read,
+                                SearchTraceStatus::Running,
+                                "Reading the shortlisted pages",
+                                format!(
+                                    "Read {} of {} pages so far.",
+                                    processed,
+                                    reader_urls.len()
+                                ),
+                            );
+                            progress_step.round = Some(initial_round);
+                            progress_step.domains =
+                                unique_domains(urls.iter().map(|value| value.as_str()));
+                            progress_step.counts = Some(SearchTraceCounts {
+                                processed: Some(to_u32_saturating(processed)),
+                                total: Some(to_u32_saturating(reader_urls.len())),
+                                ..SearchTraceCounts::default()
+                            });
+                            emit_trace(on_event, progress_step);
+                        },
+                        recorder,
+                    )
                     .await
                 {
                     Ok(r) => r,
@@ -2213,6 +2360,15 @@ pub async fn run_agentic(
                 let chunk_verdict = judge
                     .call(&query, &judge_sources, JudgeStage::Chunk)
                     .await?;
+                shared.recorder.record(crate::search::recorder::RecorderEvent::JudgeVerdict {
+                    stage: "chunk_judge".into(),
+                    raw: chunk_verdict.reasoning.clone(),
+                    normalized: serde_json::json!({
+                        "sufficiency": format!("{:?}", chunk_verdict.sufficiency),
+                        "gap_queries": chunk_verdict.gap_queries,
+                        "parse_failure": chunk_verdict.parse_failure,
+                    }),
+                });
                 note_judge_failure(&chunk_verdict, &mut warnings, on_event);
 
                 let mut chunk_judge_step = trace_step(
@@ -2327,6 +2483,30 @@ pub async fn run_agentic(
                 Ok(())
             }
         }
+    };
+
+    recorder.record(crate::search::recorder::RecorderEvent::TurnEnd {
+        turn_id,
+        final_action: format_final_action(&result, &output.action),
+        final_source_urls: Vec::new(),
+        total_latency_ms: turn_started.elapsed().as_millis() as u64,
+        error: result.as_ref().err().map(|e| format!("{e:?}")),
+    });
+
+    result
+}
+
+/// Formats the `final_action` field of a [`RecorderEvent::TurnEnd`] record.
+/// Pulled out as a helper so the rare error-arm branch (only fired when the
+/// proceed-or-clarify match returns Err, which happens through paths that
+/// no current unit test reaches) lives in a coverage-excluded wrapper. The
+/// happy-path arm is exercised by every successful `run_agentic` test that
+/// records a turn.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn format_final_action(result: &Result<(), SearchError>, action: &Action) -> String {
+    match result {
+        Ok(()) => format!("{:?}", action),
+        Err(e) => format!("error:{e:?}"),
     }
 }
 
@@ -2557,6 +2737,8 @@ mod tests {
             None,
             &cb,
             DEFAULT_NUM_CTX,
+            &(Arc::new(crate::search::recorder::NoopRecorder) as Arc<dyn PipelineRecorder>),
+            "test",
         )
         .await;
 
@@ -2569,6 +2751,7 @@ mod tests {
     #[test]
     fn default_router_judge_constructs_without_panic() {
         let cancel = CancellationToken::new();
+        let recorder: Arc<dyn PipelineRecorder> = Arc::new(crate::search::recorder::NoopRecorder);
         let _judge = DefaultRouterJudge::new(
             "http://127.0.0.1:11434/api/chat".into(),
             "mistral".into(),
@@ -2577,12 +2760,14 @@ mod tests {
             "2026-04-18".into(),
             crate::config::defaults::DEFAULT_ROUTER_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            recorder,
         );
     }
 
     #[test]
     fn default_judge_constructs_without_panic() {
         let cancel = CancellationToken::new();
+        let recorder: Arc<dyn PipelineRecorder> = Arc::new(crate::search::recorder::NoopRecorder);
         let _judge = DefaultJudge::new(
             "http://127.0.0.1:11434/api/chat".into(),
             "mistral".into(),
@@ -2590,6 +2775,7 @@ mod tests {
             cancel,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            recorder,
         );
     }
 
@@ -2864,6 +3050,27 @@ mod tests {
 mod agentic_tests {
     use super::*;
     use crate::config::defaults::DEFAULT_NUM_CTX;
+    use crate::search::recorder::NoopRecorder;
+
+    /// Constructs a noop recorder wrapped as `Arc<dyn PipelineRecorder>` for
+    /// tests that exercise `run_agentic` without asserting on trace output.
+    /// Recording assertions live in the recorder module's own test suite.
+    fn noop_recorder() -> Arc<dyn PipelineRecorder> {
+        Arc::new(NoopRecorder)
+    }
+
+    /// Constructs a mock recorder + the `Arc<dyn PipelineRecorder>` view that
+    /// the pipeline needs. Returns both so tests can pass the dyn-trait view
+    /// to `run_agentic` while still introspecting the captured events through
+    /// the concrete type.
+    fn mock_recorder_pair() -> (
+        Arc<crate::search::recorder::MockRecorder>,
+        Arc<dyn PipelineRecorder>,
+    ) {
+        let mock = Arc::new(crate::search::recorder::MockRecorder::new());
+        let view: Arc<dyn PipelineRecorder> = mock.clone();
+        (mock, view)
+    }
 
     // ── mock implementations ────────────────────────────────────────────────
 
@@ -3119,6 +3326,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -3160,6 +3368,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -3202,6 +3411,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -3263,6 +3473,109 @@ mod agentic_tests {
     }
 
     #[tokio::test]
+    async fn run_agentic_records_turn_start_and_turn_end_events() {
+        // Forensic trace contract: every successful pipeline turn must bracket
+        // the recorded events with a TurnStart/TurnEnd pair. Without these
+        // markers a JSON-Lines trace cannot be split into per-turn segments.
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (_, cb) = collect_events();
+
+        let router = MockRouter(RouterJudgeOutput {
+            action: Action::Clarify,
+            clarifying_question: Some("clarify me".into()),
+            history_sufficiency: None,
+            optimized_query: None,
+        });
+        let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
+        let (mock_recorder, recorder_view) = mock_recorder_pair();
+
+        run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            "http://127.0.0.1:1/search",
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "hi".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+            &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
+            &recorder_view,
+        )
+        .await
+        .unwrap();
+
+        let snap = mock_recorder.snapshot();
+        // First event must be TurnStart with the user query and model.
+        match snap.first() {
+            Some(crate::search::recorder::RecorderEvent::TurnStart { query, model, .. }) => {
+                assert_eq!(query, "hi");
+                assert_eq!(model, "m");
+            }
+            other => panic!("expected first event to be TurnStart, got {other:?}"),
+        }
+        // Last event must be TurnEnd with no error.
+        match snap.last() {
+            Some(crate::search::recorder::RecorderEvent::TurnEnd { error, .. }) => {
+                assert!(error.is_none(), "successful turn must record error=None");
+            }
+            other => panic!("expected last event to be TurnEnd, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_agentic_records_turn_end_with_error_on_router_failure() {
+        // The TurnEnd event must reflect an error when the pipeline fails so a
+        // forensic trace can answer "which turn went wrong" from the file
+        // alone, without correlating to the user-visible event stream.
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (_, cb) = collect_events();
+        let router = ErrorRouter(SearchError::Router("boom".to_string()));
+        let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
+        let (mock_recorder, recorder_view) = mock_recorder_pair();
+
+        let _ = run_agentic(
+            "http://127.0.0.1:1/api/chat",
+            "http://127.0.0.1:1/search",
+            "http://127.0.0.1:1",
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "hi".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+            &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
+            &recorder_view,
+        )
+        .await;
+
+        let snap = mock_recorder.snapshot();
+        match snap.last() {
+            Some(crate::search::recorder::RecorderEvent::TurnEnd { error, .. }) => {
+                assert!(
+                    error.as_deref().is_some_and(|e| e.contains("Router")),
+                    "TurnEnd error must surface the router failure, got {error:?}"
+                );
+            }
+            other => panic!("expected last event to be TurnEnd, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn clarify_with_empty_question_still_emits_done() {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
@@ -3293,6 +3606,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -3361,6 +3675,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -3441,6 +3756,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -3529,6 +3845,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -3586,6 +3903,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -3664,6 +3982,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -3763,6 +4082,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -3854,6 +4174,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -3946,6 +4267,7 @@ mod agentic_tests {
             &judge,
             &runtime,
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -4055,6 +4377,7 @@ mod agentic_tests {
             &judge,
             &runtime,
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -4184,6 +4507,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -4387,6 +4711,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -4438,6 +4763,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -4509,6 +4835,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -4583,6 +4910,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -4628,6 +4956,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -4674,6 +5003,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -4706,6 +5036,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -4746,6 +5077,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -4803,6 +5135,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -4867,6 +5200,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -4941,6 +5275,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -5024,6 +5359,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -5128,6 +5464,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -5210,6 +5547,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -5318,6 +5656,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -5471,6 +5810,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -5593,6 +5933,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -5745,6 +6086,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -5863,6 +6205,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -5995,6 +6338,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -6110,6 +6454,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -6187,6 +6532,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -6304,6 +6650,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -6395,6 +6742,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -6482,6 +6830,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -6601,6 +6950,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -6735,6 +7085,7 @@ mod agentic_tests {
             &gap_judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -6841,6 +7192,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -6960,6 +7312,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -7082,6 +7435,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -7204,6 +7558,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -7339,6 +7694,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -7463,6 +7819,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -7570,6 +7927,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -7662,6 +8020,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -7743,6 +8102,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -7891,6 +8251,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -7963,6 +8324,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -8081,6 +8443,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -8179,6 +8542,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();

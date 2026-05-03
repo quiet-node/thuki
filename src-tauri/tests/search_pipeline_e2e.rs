@@ -18,10 +18,24 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use thuki_agent_lib::commands::ConversationHistory;
 use thuki_agent_lib::config::defaults::DEFAULT_NUM_CTX;
+use thuki_agent_lib::search::recorder::{FileRecorder, NoopRecorder, PipelineRecorder};
 use thuki_agent_lib::search::{
     run_agentic, Action, JudgeCaller, JudgeSource, JudgeVerdict, RouterJudgeCaller,
     RouterJudgeOutput, SearchError, SearchEvent, SearchMetadata, SearchWarning, Sufficiency,
 };
+
+/// Returns a recorder that writes `<label>.jsonl` under `THUKI_TRACE_DIR` when
+/// that env var is set, otherwise a noop. Lets smoke tests dump full traces
+/// for judge-behaviour analysis without changing the default test outcome.
+///
+/// Usage: `THUKI_TRACE_DIR=/tmp/thuki-traces cargo test --test search_pipeline_e2e`
+fn opt_trace_recorder(label: &str) -> Arc<dyn PipelineRecorder> {
+    if let Ok(dir) = std::env::var("THUKI_TRACE_DIR") {
+        Arc::new(FileRecorder::new(&dir, label))
+    } else {
+        Arc::new(NoopRecorder)
+    }
+}
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -234,6 +248,7 @@ async fn happy_path_snippets_sufficient_streams_answer() {
         &judge,
         &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
         DEFAULT_NUM_CTX,
+        &opt_trace_recorder("happy_path_snippets_sufficient"),
     )
     .await
     .unwrap();
@@ -370,6 +385,7 @@ async fn reader_escalation_with_chunks_sufficient() {
         &judge,
         &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
         DEFAULT_NUM_CTX,
+        &opt_trace_recorder("reader_escalation_chunks_sufficient"),
     )
     .await
     .unwrap();
@@ -454,6 +470,7 @@ async fn reader_unavailable_degrades_to_snippets_and_warns() {
         &judge,
         &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
         DEFAULT_NUM_CTX,
+        &opt_trace_recorder("reader_unavailable_degrades_to_snippets"),
     )
     .await
     .unwrap();
@@ -556,6 +573,7 @@ async fn exhausted_gap_loop_warns_iteration_cap_and_streams_fallback() {
         &judge,
         &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
         DEFAULT_NUM_CTX,
+        &opt_trace_recorder("exhausted_gap_loop_warns_iteration_cap"),
     )
     .await
     .unwrap();
@@ -651,6 +669,7 @@ async fn cancel_midloop_does_not_persist_and_emits_cancelled() {
         &judge,
         &thuki_agent_lib::search::config::SearchRuntimeConfig::default(),
         DEFAULT_NUM_CTX,
+        &opt_trace_recorder("cancel_midloop_does_not_persist"),
     )
     .await
     .unwrap();

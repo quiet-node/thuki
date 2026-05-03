@@ -46,3 +46,8 @@ docs/superpowers/
 # Superpowers brainstorming visual-companion working files
 .superpowers/
 *.profraw
+
+# Forensic per-turn search-pipeline traces (dev only, opt-in via [debug] in
+# config.toml). Never commit; intended for local quality investigation only.
+traces/
+**/traces/

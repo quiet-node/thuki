@@ -168,6 +168,24 @@ pub const PIPELINE_INPUT_CHAR_BUDGET: usize = 200_000;
 /// slow service.
 pub const BOUNDS_TIMEOUT_S: (u64, u64) = (1, 300);
 
+/// Whether the `/search` pipeline writes a forensic per-turn trace file.
+///
+/// Off by default. Intended for local quality investigation only: when on,
+/// the pipeline records every LLM request/response, every SearXNG query and
+/// raw response body, every reader batch (per-URL latency, raw body, full
+/// extracted text), and every judge verdict to a JSON-Lines file under
+/// `trace_dir`. Not exposed via the Settings GUI; flip in `config.toml`
+/// directly. Disabled in shipped builds.
+pub const DEFAULT_DEBUG_SEARCH_TRACE_ENABLED: bool = false;
+
+/// Directory the trace file is written under when
+/// `DEFAULT_DEBUG_SEARCH_TRACE_ENABLED` is on. Resolved against the process
+/// working directory, which is the repo root in `bun run dev`. The directory
+/// is `.gitignore`d so traces never leave the developer machine. In a
+/// packaged build cwd is unspecified, but trace recording is off by default
+/// in shipped builds, so the cwd-relative path only applies to dev runs.
+pub const DEFAULT_DEBUG_TRACE_DIR: &str = "./traces";
+
 // Ollama API baked-in limits: not exposed in config.toml because they bound
 // attacker-controlled data (response bodies from the local Ollama daemon) and
 // keep the UI responsive when the daemon is hung. Changing either timeout

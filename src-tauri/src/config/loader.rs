@@ -26,7 +26,7 @@ use super::defaults::{
     BOUNDS_MAX_ITERATIONS, BOUNDS_NUM_CTX, BOUNDS_OVERLAY_WIDTH,
     BOUNDS_PIPELINE_WALL_CLOCK_BUDGET_S, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
     BOUNDS_QUOTE_MAX_DISPLAY_CHARS, BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_SEARXNG_MAX_RESULTS,
-    BOUNDS_TIMEOUT_S, BOUNDS_TOP_K_URLS, DEFAULT_JUDGE_TIMEOUT_S,
+    BOUNDS_TIMEOUT_S, BOUNDS_TOP_K_URLS, DEFAULT_DEBUG_TRACE_DIR, DEFAULT_JUDGE_TIMEOUT_S,
     DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
     DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
     DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
@@ -275,6 +275,12 @@ pub(crate) fn resolve(config: &mut AppConfig) {
             config.search.reader_batch_timeout_s, config.search.reader_per_url_timeout_s,
         );
         config.search.reader_batch_timeout_s = corrected;
+    }
+
+    // Debug section: empty trace_dir falls back to compiled default. The
+    // boolean flag has no resolution step (any value is valid).
+    if config.debug.trace_dir.trim().is_empty() {
+        config.debug.trace_dir = DEFAULT_DEBUG_TRACE_DIR.to_string();
     }
 }
 

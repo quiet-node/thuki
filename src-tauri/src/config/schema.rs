@@ -14,9 +14,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{
-    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
-    DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_DEBUG_SEARCH_TRACE_ENABLED, DEFAULT_DEBUG_TRACE_DIR, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
     DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
     DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
     DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
@@ -194,6 +195,34 @@ impl Default for SearchSection {
     }
 }
 
+/// Developer-only debugging knobs.
+///
+/// Not exposed via the Settings GUI: these fields are intentionally absent
+/// from `defaults::ALLOWED_FIELDS` and `defaults::ALLOWED_SECTIONS`, so the
+/// `set_config_field` Tauri command rejects any GUI write attempt. Flip them
+/// in `config.toml` directly. Off in shipped builds.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DebugSection {
+    /// When on, the `/search` pipeline writes a forensic JSON-Lines trace
+    /// file per turn under `trace_dir`. Local-only diagnostic; never enable
+    /// in shipped builds.
+    pub search_trace_enabled: bool,
+    /// Directory the trace file is written under. Resolved against the
+    /// process working directory. Defaults to `./traces`, which is
+    /// `.gitignore`d.
+    pub trace_dir: String,
+}
+
+impl Default for DebugSection {
+    fn default() -> Self {
+        Self {
+            search_trace_enabled: DEFAULT_DEBUG_SEARCH_TRACE_ENABLED,
+            trace_dir: DEFAULT_DEBUG_TRACE_DIR.to_string(),
+        }
+    }
+}
+
 /// Top-level application configuration. Managed Tauri state; every subsystem
 /// reads from `State<RwLock<AppConfig>>` and nowhere else. The loader resolves all
 /// empty strings and out-of-bounds numerics to compiled defaults before the
@@ -206,4 +235,5 @@ pub struct AppConfig {
     pub window: WindowSection,
     pub quote: QuoteSection,
     pub search: SearchSection,
+    pub debug: DebugSection,
 }

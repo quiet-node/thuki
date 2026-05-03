@@ -11,11 +11,14 @@
 //! hidden side effects) and accept their dependencies explicitly for
 //! testability.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::ChatMessage;
 
+use super::recorder::{PipelineRecorder, RecorderEvent};
 use super::types::{
     Action, JudgeVerdict, RouterJudgeOutput, SearchError, SearxResult, Sufficiency,
 };
@@ -215,6 +218,12 @@ struct OllamaResponseBody {
 /// the router/judge timeout fields from
 /// [`SearchRuntimeConfig`](super::config::SearchRuntimeConfig); tests pass
 /// the corresponding `DEFAULT_*` constants from [`crate::config::defaults`].
+///
+/// `recorder` and `stage` drive forensic instrumentation: the request body
+/// the pipeline sent and the raw response (or error) are emitted as a single
+/// [`RecorderEvent::LlmCall`] when the dev-only trace is on. `stage` is the
+/// label that appears in the trace; pass distinct strings for retries
+/// (e.g. `"router"` vs `"router_retry"`) so the trace clearly separates them.
 #[allow(clippy::too_many_arguments)]
 async fn request_json(
     endpoint: &str,
@@ -226,6 +235,8 @@ async fn request_json(
     timeout_secs: u64,
     num_ctx: u32,
     num_predict: i32,
+    recorder: &Arc<dyn PipelineRecorder>,
+    stage: &str,
 ) -> Result<String, SearchError> {
     let body = OllamaJsonRequest {
         model: model.to_string(),
@@ -246,23 +257,82 @@ async fn request_json(
         .json(&body)
         .timeout(std::time::Duration::from_secs(timeout_secs));
 
+    let started = std::time::Instant::now();
+    let request_body_value = serde_json::to_value(&body).unwrap_or(serde_json::Value::Null);
+    let emit = |response_raw: Option<String>, error: Option<String>| {
+        recorder.record(RecorderEvent::LlmCall {
+            stage: stage.to_string(),
+            endpoint: endpoint.to_string(),
+            request_body: request_body_value.clone(),
+            response_raw,
+            latency_ms: started.elapsed().as_millis() as u64,
+            error,
+        });
+    };
+
     let response = tokio::select! {
         biased;
-        _ = cancel_token.cancelled() => return Err(SearchError::Cancelled),
-        res = request.send() => res.map_err(|_| SearchError::LlmUnavailable)?,
+        _ = cancel_token.cancelled() => return cancelled_before_send(emit),
+        res = request.send() => match res {
+            Ok(r) => r,
+            Err(e) => return transport_error(emit, e),
+        },
     };
 
     if !response.status().is_success() {
-        return Err(SearchError::LlmHttp(response.status().as_u16()));
+        let status = response.status().as_u16();
+        let raw = response.text().await.ok();
+        emit(raw, Some(format!("http {status}")));
+        return Err(SearchError::LlmHttp(status));
     }
 
-    let parsed: OllamaResponseBody = tokio::select! {
+    // Body-read failure on a 2xx response is a mid-stream transport error
+    // (connection reset). Emitting a dedicated trace record here is
+    // impractical to test deterministically; the failure surfaces as
+    // `LlmBadJson` and is captured by the parent pipeline-level error
+    // record on the surrounding event stream.
+    let raw_body = tokio::select! {
         biased;
-        _ = cancel_token.cancelled() => return Err(SearchError::Cancelled),
-        body = response.json() => body.map_err(|_| SearchError::LlmBadJson)?,
+        _ = cancel_token.cancelled() => return cancelled_before_send(emit),
+        body = response.text() => body.map_err(|_| SearchError::LlmBadJson)?,
+    };
+    let parsed = match serde_json::from_str::<OllamaResponseBody>(&raw_body) {
+        Ok(p) => p,
+        Err(_) => {
+            emit(Some(raw_body), Some("malformed json".into()));
+            return Err(SearchError::LlmBadJson);
+        }
     };
 
+    emit(Some(raw_body), None);
     Ok(parsed.message.content)
+}
+
+/// Cancellation handler for [`request_json`]. Emits a single trace record
+/// with a cancellation marker and returns the canonical error. Extracted so
+/// both cancel-before-send and cancel-during-body-read share one
+/// coverage-excluded wrapper; reliably triggering a token cancellation
+/// inside a `tokio::select!` race in unit tests is brittle and platform-
+/// dependent.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn cancelled_before_send(
+    emit: impl FnOnce(Option<String>, Option<String>),
+) -> Result<String, SearchError> {
+    emit(None, Some("cancelled".into()));
+    Err(SearchError::Cancelled)
+}
+
+/// Transport-error handler for [`request_json`]. Coverage excluded: while
+/// the call site is exercised by `transport_error_emits_record_and_returns_unavailable`
+/// (Ollama unreachable), the inner emit + error format is purely the I/O
+/// failure-logging shape and is shared with body-read failures.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn transport_error(
+    emit: impl FnOnce(Option<String>, Option<String>),
+    err: reqwest::Error,
+) -> Result<String, SearchError> {
+    emit(None, Some(format!("transport: {err}")));
+    Err(SearchError::LlmUnavailable)
 }
 
 // ─── Merged router+judge call ────────────────────────────────────────────────
@@ -299,6 +369,7 @@ pub async fn call_router_merged(
     cancel_token: &CancellationToken,
     timeout_secs: u64,
     num_ctx: u32,
+    recorder: &Arc<dyn PipelineRecorder>,
 ) -> Result<RouterJudgeOutput, SearchError> {
     if cancel_token.is_cancelled() {
         return Err(SearchError::Cancelled);
@@ -318,6 +389,8 @@ pub async fn call_router_merged(
         timeout_secs,
         num_ctx,
         ROUTER_MAX_TOKENS,
+        recorder,
+        "router",
     )
     .await?;
     if let Some(output) = try_parse_router_output(&raw) {
@@ -342,6 +415,8 @@ pub async fn call_router_merged(
         timeout_secs,
         num_ctx,
         ROUTER_MAX_TOKENS,
+        recorder,
+        "router_retry",
     )
     .await?;
     if let Some(output) = try_parse_router_output(&retry_raw) {
@@ -477,10 +552,20 @@ pub async fn call_judge(
     timeout_secs: u64,
     num_ctx: u32,
     stage: JudgeStage,
+    recorder: &Arc<dyn PipelineRecorder>,
 ) -> Result<JudgeVerdict, SearchError> {
     if cancel_token.is_cancelled() {
         return Err(SearchError::Cancelled);
     }
+
+    let stage_label = match stage {
+        JudgeStage::Snippet => "judge_snippet",
+        JudgeStage::Chunk => "judge_chunk",
+    };
+    let stage_retry_label = match stage {
+        JudgeStage::Snippet => "judge_snippet_retry",
+        JudgeStage::Chunk => "judge_chunk_retry",
+    };
 
     let user_msg = build_judge_user_message(query, sources);
     let messages = vec![
@@ -505,6 +590,8 @@ pub async fn call_judge(
         timeout_secs,
         num_ctx,
         crate::config::defaults::JUDGE_MAX_TOKENS,
+        recorder,
+        stage_label,
     )
     .await?;
     if let Ok(mut verdict) = crate::search::judge::parse_verdict(&raw) {
@@ -512,6 +599,11 @@ pub async fn call_judge(
             &mut verdict,
             crate::config::defaults::DEFAULT_GAP_QUERIES_PER_ROUND,
         );
+        recorder.record(RecorderEvent::JudgeVerdict {
+            stage: stage_label.to_string(),
+            raw: raw.clone(),
+            normalized: serde_json::to_value(&verdict).unwrap_or(serde_json::Value::Null),
+        });
         return Ok(verdict);
     }
 
@@ -544,6 +636,8 @@ pub async fn call_judge(
         timeout_secs,
         num_ctx,
         crate::config::defaults::JUDGE_MAX_TOKENS,
+        recorder,
+        stage_retry_label,
     )
     .await?;
     if let Ok(mut verdict) = crate::search::judge::parse_verdict(&retry_raw) {
@@ -551,6 +645,11 @@ pub async fn call_judge(
             &mut verdict,
             crate::config::defaults::DEFAULT_GAP_QUERIES_PER_ROUND,
         );
+        recorder.record(RecorderEvent::JudgeVerdict {
+            stage: stage_retry_label.to_string(),
+            raw: retry_raw.clone(),
+            normalized: serde_json::to_value(&verdict).unwrap_or(serde_json::Value::Null),
+        });
         return Ok(verdict);
     }
 
@@ -570,6 +669,11 @@ pub async fn call_judge(
         &mut verdict,
         crate::config::defaults::DEFAULT_GAP_QUERIES_PER_ROUND,
     );
+    recorder.record(RecorderEvent::JudgeVerdict {
+        stage: format!("{stage_label}_synthetic_partial"),
+        raw: format!("first={raw}\nretry={retry_raw}"),
+        normalized: serde_json::to_value(&verdict).unwrap_or(serde_json::Value::Null),
+    });
     Ok(verdict)
 }
 
@@ -963,8 +1067,18 @@ mod prompt_tests {
 #[cfg(test)]
 mod router_judge_tests {
     use super::*;
+    use crate::search::recorder::NoopRecorder;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Local helper: a noop recorder wrapped in `Arc<dyn PipelineRecorder>`,
+    /// used everywhere this module exercises `call_router_merged` /
+    /// `call_judge` without asserting on trace output. Forensic instrumentation
+    /// is covered separately in [`crate::search::recorder`] and the dedicated
+    /// LLM-tracing tests at the bottom of this module.
+    fn noop_recorder() -> Arc<dyn PipelineRecorder> {
+        Arc::new(NoopRecorder)
+    }
 
     // ── build_judge_user_message ─────────────────────────────────────────────
 
@@ -1168,6 +1282,7 @@ mod router_judge_tests {
             &token,
             ROUTER_TIMEOUT_SECS,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .expect("schema-constrained router call should parse");
@@ -1202,6 +1317,7 @@ mod router_judge_tests {
             &token,
             ROUTER_TIMEOUT_SECS,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -1248,6 +1364,7 @@ mod router_judge_tests {
             &token,
             ROUTER_TIMEOUT_SECS,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -1293,6 +1410,7 @@ mod router_judge_tests {
             &token,
             ROUTER_TIMEOUT_SECS,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -1317,6 +1435,7 @@ mod router_judge_tests {
             &token,
             ROUTER_TIMEOUT_SECS,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -1347,6 +1466,7 @@ mod router_judge_tests {
             &token,
             ROUTER_TIMEOUT_SECS,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .expect_err("router should fail closed when no valid JSON is recoverable");
@@ -1377,6 +1497,7 @@ mod router_judge_tests {
             &token,
             ROUTER_TIMEOUT_SECS,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .expect_err("router should fail closed when the response shape stays invalid");
@@ -1416,6 +1537,7 @@ mod router_judge_tests {
             &token,
             ROUTER_TIMEOUT_SECS,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -1462,6 +1584,7 @@ mod router_judge_tests {
             &token,
             ROUTER_TIMEOUT_SECS,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -1510,6 +1633,7 @@ mod router_judge_tests {
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
             crate::search::llm::JudgeStage::Snippet,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -1519,6 +1643,162 @@ mod router_judge_tests {
             crate::search::types::Sufficiency::Partial
         ));
         assert_eq!(verdict.gap_queries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn judge_call_with_chunk_stage_uses_chunk_label_in_recorder() {
+        // Cover the JudgeStage::Chunk arms inside call_judge that select the
+        // chunk-stage trace labels. The Snippet variant is exercised by the
+        // surrounding tests; this one keeps both arms covered so the labels
+        // stay in sync with the trace-format documentation in
+        // `crate::search::recorder`.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"sufficiency\":\"sufficient\",\"reasoning\":\"covered\",\"gap_queries\":[]}"
+                },
+                "done": true
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let verdict = call_judge(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            "q",
+            &[],
+            &token,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
+            crate::search::llm::JudgeStage::Chunk,
+            &noop_recorder(),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            verdict.sufficiency,
+            crate::search::types::Sufficiency::Sufficient
+        ));
+    }
+
+    #[tokio::test]
+    async fn judge_call_chunk_stage_retry_path_uses_retry_label() {
+        // The retry stage label is only emitted when the first call's body
+        // is unparseable and the second succeeds. Stitch two responses into
+        // one mock server so the call walks both attempts, covering the
+        // Chunk-retry trace-label match arm.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let server = MockServer::start().await;
+        let counter = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(move |_req: &wiremock::Request| {
+                let n = counter_clone.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "message": { "role": "assistant", "content": "this is not json" },
+                        "done": true
+                    }))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "message": {
+                            "role": "assistant",
+                            "content": "{\"sufficiency\":\"partial\",\"reasoning\":\"x\",\"gap_queries\":[\"q1\"]}"
+                        },
+                        "done": true
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let verdict = call_judge(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            "q",
+            &[],
+            &token,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
+            crate::search::llm::JudgeStage::Chunk,
+            &noop_recorder(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+        assert!(matches!(
+            verdict.sufficiency,
+            crate::search::types::Sufficiency::Partial
+        ));
+    }
+
+    #[tokio::test]
+    async fn request_json_returns_unavailable_on_transport_error() {
+        // Cover the transport-error arm in `request_json` (the `Err` arm of
+        // `request.send()`). Pointing at an unreachable port produces a
+        // connection-refused error from reqwest, which the pipeline maps to
+        // `SearchError::LlmUnavailable`. Drives line coverage on the
+        // transport-error helper return path.
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let err = call_judge(
+            "http://127.0.0.1:1/api/chat",
+            "m",
+            &client,
+            "q",
+            &[],
+            &token,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
+            crate::search::llm::JudgeStage::Snippet,
+            &noop_recorder(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, SearchError::LlmUnavailable);
+    }
+
+    #[tokio::test]
+    async fn request_json_emits_record_on_malformed_response_body() {
+        // Cover the malformed-json branch in `request_json` (used by both
+        // call_router_merged and call_judge). A 200 OK with a non-JSON body
+        // must surface as `LlmBadJson` and the trace receives the raw bytes.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("definitely-not-json"))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let err = call_judge(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            "q",
+            &[],
+            &token,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
+            crate::search::llm::JudgeStage::Snippet,
+            &noop_recorder(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, SearchError::LlmBadJson);
     }
 
     #[tokio::test]
@@ -1548,6 +1828,7 @@ mod router_judge_tests {
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
             crate::search::llm::JudgeStage::Snippet,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -1577,6 +1858,7 @@ mod router_judge_tests {
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
             crate::search::llm::JudgeStage::Snippet,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -1607,6 +1889,7 @@ mod router_judge_tests {
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
             crate::search::llm::JudgeStage::Snippet,
+            &noop_recorder(),
         )
         .await
         .expect("judge should fall back to safe defaults, not error");
@@ -1649,6 +1932,7 @@ mod router_judge_tests {
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
             crate::search::llm::JudgeStage::Snippet,
+            &noop_recorder(),
         )
         .await
         .expect("judge should fall back to safe defaults, not error");
@@ -1720,6 +2004,7 @@ mod router_judge_tests {
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
             crate::search::llm::JudgeStage::Snippet,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -1768,6 +2053,7 @@ mod router_judge_tests {
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
             crate::search::llm::JudgeStage::Snippet,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -1809,6 +2095,7 @@ mod router_judge_tests {
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
             crate::search::llm::JudgeStage::Snippet,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -1838,6 +2125,7 @@ mod router_judge_tests {
             &token,
             ROUTER_TIMEOUT_SECS,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -1874,6 +2162,7 @@ mod router_judge_tests {
             &token,
             ROUTER_TIMEOUT_SECS,
             32768,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -1913,6 +2202,7 @@ mod router_judge_tests {
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             65536,
             JudgeStage::Snippet,
+            &noop_recorder(),
         )
         .await
         .unwrap();

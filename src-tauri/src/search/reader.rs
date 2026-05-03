@@ -19,7 +19,7 @@
 //!   `ServiceUnavailable` so the pipeline can emit a warning and fall back.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::future::join_all;
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -31,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::defaults::DEFAULT_READER_RETRY_DELAY_MS;
 use crate::search::chunker::Page;
 use crate::search::errors::{is_transient_connect_error, retry_once};
+use crate::search::recorder::{PipelineRecorder, ReaderUrlOutcome, RecorderEvent};
 
 /// Errors callers must handle.
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -183,11 +184,17 @@ impl ReaderClient {
     ///
     /// The callback is taken as `&dyn Fn` (dynamic dispatch) to produce a single
     /// monomorphization, ensuring all code paths are counted once by coverage tools.
+    ///
+    /// `recorder` receives a single [`RecorderEvent::ReaderBatch`] when the
+    /// batch finishes (successfully or via error), capturing per-URL outcomes
+    /// and extracted text. Pass [`crate::search::recorder::NoopRecorder`]
+    /// when tracing is off; the noop is a constant-time call.
     pub async fn fetch_batch_with_progress(
         &self,
         urls: &[String],
         cancel: &CancellationToken,
         on_url_fetched: &(dyn Fn(String) + Send + Sync),
+        recorder: &Arc<dyn PipelineRecorder>,
     ) -> Result<ReaderBatchResult, ReaderError> {
         if urls.is_empty() {
             return Ok(ReaderBatchResult::default());
@@ -205,10 +212,12 @@ impl ReaderClient {
                 let url = u.clone();
                 async move {
                     let _permit = sem.acquire_owned().await.ok();
-                    tokio::select! {
+                    let started = Instant::now();
+                    let outcome = tokio::select! {
                         _ = cancel.cancelled() => FetchOutcome::Cancelled,
                         res = fetch_one(&client, &base, &url) => res,
-                    }
+                    };
+                    (outcome, started.elapsed().as_millis() as u64)
                 }
             })
             .collect();
@@ -217,29 +226,81 @@ impl ReaderClient {
         let mut result = ReaderBatchResult::default();
         let mut any_succeeded = false;
         let mut service_unavailable_count = 0usize;
+        let mut per_url: Vec<ReaderUrlOutcome> = Vec::with_capacity(total);
+        let batch_started = Instant::now();
+
+        let emit = |result: &ReaderBatchResult,
+                    per_url: &Vec<ReaderUrlOutcome>,
+                    batch_error: Option<String>| {
+            let _ = result; // result is the same shape as the per-URL list; kept for clarity
+            recorder.record(RecorderEvent::ReaderBatch {
+                urls: urls.to_vec(),
+                per_url: per_url.clone(),
+                batch_latency_ms: batch_started.elapsed().as_millis() as u64,
+                batch_error,
+            });
+        };
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(self.batch_timeout_s);
         loop {
             match tokio::time::timeout_at(deadline, futures.next()).await {
-                Err(_elapsed) => return Err(ReaderError::BatchTimeout),
+                Err(_elapsed) => {
+                    emit(&result, &per_url, Some("batch_timeout".into()));
+                    return Err(ReaderError::BatchTimeout);
+                }
                 Ok(None) => break,
-                Ok(Some(outcome)) => match outcome {
-                    FetchOutcome::Cancelled => return Err(ReaderError::Cancelled),
+                Ok(Some((outcome, latency_ms))) => match outcome {
+                    FetchOutcome::Cancelled => {
+                        emit(&result, &per_url, Some("cancelled".into()));
+                        return Err(ReaderError::Cancelled);
+                    }
                     FetchOutcome::Page(p) => {
                         any_succeeded = true;
                         on_url_fetched(p.url.clone());
+                        per_url.push(ReaderUrlOutcome {
+                            url: p.url.clone(),
+                            status: Some(200),
+                            latency_ms,
+                            raw_body: None,
+                            extracted_text: Some(p.markdown.clone()),
+                            error: None,
+                        });
                         result.pages.push(p);
                     }
                     FetchOutcome::Empty(url) => {
                         any_succeeded = true;
                         on_url_fetched(url.clone());
+                        per_url.push(ReaderUrlOutcome {
+                            url: url.clone(),
+                            status: Some(200),
+                            latency_ms,
+                            raw_body: None,
+                            extracted_text: Some(String::new()),
+                            error: Some("empty".into()),
+                        });
                         result.empty_urls.push(url);
                     }
                     FetchOutcome::Failed(url) => {
+                        per_url.push(ReaderUrlOutcome {
+                            url: url.clone(),
+                            status: None,
+                            latency_ms,
+                            raw_body: None,
+                            extracted_text: None,
+                            error: Some("failed".into()),
+                        });
                         result.failed_urls.push(url);
                     }
                     FetchOutcome::ServiceUnavailable(url) => {
                         service_unavailable_count += 1;
+                        per_url.push(ReaderUrlOutcome {
+                            url: url.clone(),
+                            status: None,
+                            latency_ms,
+                            raw_body: None,
+                            extracted_text: None,
+                            error: Some("service_unavailable".into()),
+                        });
                         result.failed_urls.push(url);
                     }
                 },
@@ -247,9 +308,11 @@ impl ReaderClient {
         }
 
         if !any_succeeded && service_unavailable_count == total {
+            emit(&result, &per_url, Some("service_unavailable".into()));
             return Err(ReaderError::ServiceUnavailable);
         }
 
+        emit(&result, &per_url, None);
         Ok(result)
     }
 }
@@ -312,8 +375,16 @@ mod tests {
     use super::*;
     use crate::config::defaults::DEFAULT_READER_PER_URL_TIMEOUT_S;
     use crate::search::config::TEST_READER_BATCH_TIMEOUT_S;
+    use crate::search::recorder::NoopRecorder;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Local helper: a noop recorder wrapped in `Arc<dyn PipelineRecorder>`,
+    /// used everywhere this module exercises `fetch_batch_with_progress`
+    /// without asserting on trace output.
+    fn noop_recorder() -> Arc<dyn PipelineRecorder> {
+        Arc::new(NoopRecorder)
+    }
 
     async fn client_for(server: &MockServer) -> ReaderClient {
         ReaderClient::new_with_base(
@@ -522,7 +593,12 @@ mod tests {
             TEST_READER_BATCH_TIMEOUT_S,
         );
         let result = client
-            .fetch_batch_with_progress(&[], &CancellationToken::new(), &never_called)
+            .fetch_batch_with_progress(
+                &[],
+                &CancellationToken::new(),
+                &never_called,
+                &noop_recorder(),
+            )
             .await
             .unwrap();
         assert!(result.pages.is_empty());
@@ -552,6 +628,7 @@ mod tests {
                 &["https://a.com/1".to_string()],
                 &CancellationToken::new(),
                 &cb,
+                &noop_recorder(),
             )
             .await
             .unwrap();
@@ -581,6 +658,7 @@ mod tests {
                 &["https://a.com/2".to_string()],
                 &CancellationToken::new(),
                 &cb,
+                &noop_recorder(),
             )
             .await
             .unwrap();
@@ -603,6 +681,7 @@ mod tests {
                 &["https://a.com/x".to_string()],
                 &CancellationToken::new(),
                 &never_called,
+                &noop_recorder(),
             )
             .await
             .unwrap();
@@ -622,6 +701,7 @@ mod tests {
                 &["https://a.com/1".to_string()],
                 &CancellationToken::new(),
                 &never_called,
+                &noop_recorder(),
             )
             .await;
         assert_eq!(res, Err(ReaderError::ServiceUnavailable));
@@ -650,7 +730,12 @@ mod tests {
             cancel_handle.cancel();
         });
         let res = client
-            .fetch_batch_with_progress(&["https://a.com/slow".to_string()], &cancel, &never_called)
+            .fetch_batch_with_progress(
+                &["https://a.com/slow".to_string()],
+                &cancel,
+                &never_called,
+                &noop_recorder(),
+            )
             .await;
         assert_eq!(res, Err(ReaderError::Cancelled));
     }
@@ -677,6 +762,7 @@ mod tests {
                 &["https://ok.com/1".to_string()],
                 &CancellationToken::new(),
                 &cb,
+                &noop_recorder(),
             )
             .await
             .unwrap();
