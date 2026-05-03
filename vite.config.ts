@@ -11,7 +11,7 @@ export default defineConfig(async () => ({
   plugins: [tailwindcss(), react()],
   clearScreen: false,
   build: {
-    chunkSizeWarningLimit: 950,
+    chunkSizeWarningLimit: 1000,
     rolldownOptions: {
       checks: {
         pluginTimings: false,

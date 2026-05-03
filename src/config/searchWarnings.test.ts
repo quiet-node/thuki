@@ -8,6 +8,9 @@ const ALL: SearchWarning[] = [
   'no_results_initial',
   'iteration_cap_exhausted',
   'router_failure',
+  'judge_failure',
+  'budget_exhausted',
+  'no_progress',
   'synthesis_interrupted',
 ];
 
@@ -36,5 +39,8 @@ describe('searchWarnings', () => {
     expect(SEARCH_WARNING_SEVERITY.reader_unavailable).toBe('warn');
     expect(SEARCH_WARNING_SEVERITY.reader_partial_failure).toBe('warn');
     expect(SEARCH_WARNING_SEVERITY.iteration_cap_exhausted).toBe('warn');
+    expect(SEARCH_WARNING_SEVERITY.judge_failure).toBe('warn');
+    expect(SEARCH_WARNING_SEVERITY.budget_exhausted).toBe('warn');
+    expect(SEARCH_WARNING_SEVERITY.no_progress).toBe('warn');
   });
 });

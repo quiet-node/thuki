@@ -18,6 +18,12 @@ export const SEARCH_WARNING_COPY: Record<SearchWarning, string> = {
     'Answer based on limited information. Try a more specific question for better results.',
   router_failure:
     'Something went wrong while analyzing your question. Try again.',
+  judge_failure:
+    'Evidence check had a hiccup. Answer is based on whatever Thuki gathered so far.',
+  budget_exhausted:
+    'Search ran out of time. Answer is based on the evidence gathered before the budget hit.',
+  no_progress:
+    'Search stopped early because follow-up rounds were not surfacing new information.',
   synthesis_interrupted: 'Answer was cut off. Try again.',
 };
 
@@ -28,5 +34,8 @@ export const SEARCH_WARNING_SEVERITY: Record<SearchWarning, 'warn' | 'error'> =
     no_results_initial: 'error',
     iteration_cap_exhausted: 'warn',
     router_failure: 'error',
+    judge_failure: 'warn',
+    budget_exhausted: 'warn',
+    no_progress: 'warn',
     synthesis_interrupted: 'error',
   };

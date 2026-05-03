@@ -88,6 +88,14 @@ pub const DEFAULT_MAX_ITERATIONS: u32 = 3;
 pub const DEFAULT_TOP_K_URLS: u32 = 10;
 pub const DEFAULT_SEARXNG_MAX_RESULTS: u32 = 10;
 
+/// Wall-clock budget for an entire `/search` pipeline turn (seconds). When
+/// exceeded, the gap-refinement loop exits early and the pipeline force-
+/// synthesizes on whatever evidence has been gathered so far, emitting a
+/// `BudgetExhausted` warning. Bounds the worst-case latency a user can
+/// observe regardless of how often the LLM produces fresh gap queries.
+/// Raise for deeper research turns; lower for snappier interactive use.
+pub const DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S: u64 = 90;
+
 /// Defense-in-depth caps on data flowing in/out of SearXNG. These are NOT
 /// exposed in config.toml: `MAX_QUERY_CHARS` bounds outgoing queries to the
 /// external engines (so a malformed prompt cannot DOS them), and
@@ -105,6 +113,14 @@ pub const DEFAULT_MAX_QUERY_CHARS: usize = 500;
 /// Gap-filling queries generated per iteration round. Drives the judge
 /// normalization cap in `search::judge::normalize_verdict`.
 pub const DEFAULT_GAP_QUERIES_PER_ROUND: usize = 3;
+/// Maximum tokens the sufficiency judge can generate per call. Larger than
+/// ROUTER_MAX_TOKENS because thinking-capable models spend internal tokens on
+/// chain-of-thought before emitting JSON content; 512 exhausts the budget on
+/// thinking and leaves nothing for the JSON output, causing a parse failure
+/// and a synthetic-partial fallback. 2048 gives headroom for ~1500 thinking
+/// tokens plus ~200 JSON tokens. Not user-tunable: changing this value alters
+/// the parse-success rate (a quality property), not just latency.
+pub const JUDGE_MAX_TOKENS: i32 = 2048;
 /// Approximate token budget for each retrieved page chunk. Drives the
 /// chunker split heuristic; downstream prompts assume this exact size.
 pub const DEFAULT_CHUNK_TOKEN_SIZE: usize = 500;
@@ -130,6 +146,22 @@ pub const DEFAULT_ROUTER_TIMEOUT_S: u64 = 45;
 pub const BOUNDS_MAX_ITERATIONS: (u32, u32) = (1, 10);
 pub const BOUNDS_TOP_K_URLS: (u32, u32) = (1, 20);
 pub const BOUNDS_SEARXNG_MAX_RESULTS: (u32, u32) = (1, 20);
+
+/// Accepted range for the pipeline wall-clock budget (seconds). 15 s is the
+/// floor: anything tighter would force budget exhaustion on every gap-loop
+/// turn that needs more than one reader fetch. 600 s (10 min) is the ceiling:
+/// a single user search should never tie up the daemon longer than that.
+pub const BOUNDS_PIPELINE_WALL_CLOCK_BUDGET_S: (u64, u64) = (15, 600);
+
+/// Cumulative cap on bytes of judge user-message input across all judge calls
+/// in a single pipeline turn. Tracked as bytes (not tokens) because the byte
+/// length of the source list is the cheapest reliable upper bound on prompt
+/// size; chars-to-tokens varies per tokenizer. 200 KB ~ 50k tokens which is
+/// well above what any reasonable agentic search consumes. Defense-in-depth
+/// against a runaway loop that keeps fetching huge pages. Not user-tunable
+/// because it bounds attacker-influenced data (page content from the reader)
+/// and the wall-clock budget is the user-facing knob.
+pub const PIPELINE_INPUT_CHAR_BUDGET: usize = 200_000;
 
 /// Bounds for all search timeout fields (seconds). 300 s (5 min) is the
 /// ceiling: a timeout longer than that indicates a misconfiguration, not a
@@ -210,6 +242,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("search", "reader_batch_timeout_s"),
     ("search", "judge_timeout_s"),
     ("search", "router_timeout_s"),
+    ("search", "pipeline_wall_clock_budget_s"),
 ];
 
 /// Authoritative allowlist of section names accepted by `reset_config`.

@@ -31,7 +31,7 @@ mod rerank;
 mod searxng;
 mod types;
 
-pub use llm::JudgeSource;
+pub use llm::{JudgeSource, JudgeStage};
 pub use pipeline::{run_agentic, JudgeCaller, RouterJudgeCaller};
 pub use probe::probe;
 pub use types::{

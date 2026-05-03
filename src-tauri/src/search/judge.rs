@@ -42,21 +42,50 @@ pub fn extract_json_object_public(s: &str) -> Option<&str> {
 }
 
 fn extract_json_object(s: &str) -> Option<&str> {
-    let start = s.find('{')?;
+    let mut search_from = 0usize;
+    while let Some(relative_start) = s[search_from..].find('{') {
+        let start = search_from + relative_start;
+        if let Some(end) = extract_json_object_end(&s[start..]) {
+            return Some(&s[start..start + end]);
+        }
+        search_from = start + 1;
+    }
+    None
+}
+
+fn extract_json_object_end(candidate: &str) -> Option<usize> {
+    let bytes = candidate.as_bytes();
     let mut depth = 0usize;
-    let bytes = s.as_bytes();
-    for i in start..bytes.len() {
-        match bytes[i] {
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match byte {
+            b'"' => in_string = true,
             b'{' => depth += 1,
             b'}' => {
                 depth = depth.checked_sub(1)?;
                 if depth == 0 {
-                    return Some(&s[start..=i]);
+                    return Some(index + 1);
                 }
             }
             _ => {}
         }
     }
+
     None
 }
 
@@ -135,6 +164,7 @@ mod tests {
                 "q4".to_string(),
                 "q5".to_string(),
             ],
+            parse_failure: false,
         };
         normalize_verdict(&mut v, 3);
         assert_eq!(
@@ -149,6 +179,7 @@ mod tests {
             sufficiency: Sufficiency::Sufficient,
             reasoning: "x".to_string(),
             gap_queries: vec!["q1".to_string()],
+            parse_failure: false,
         };
         normalize_verdict(&mut v, 3);
         assert!(v.gap_queries.is_empty());
@@ -171,5 +202,59 @@ mod tests {
             parse_verdict("{ unbalanced"),
             Err(JudgeParseError::NoJson)
         ));
+    }
+
+    #[test]
+    fn parse_accepts_unmatched_open_brace_inside_reasoning_string() {
+        let verdict = parse_verdict(
+            r#"{"sufficiency":"partial","reasoning":"needs { more context","gap_queries":["q1"]}"#,
+        )
+        .expect("valid JSON with brace in string should parse");
+
+        assert_eq!(verdict.sufficiency, Sufficiency::Partial);
+        assert_eq!(verdict.reasoning, "needs { more context");
+        assert_eq!(verdict.gap_queries, vec!["q1"]);
+    }
+
+    #[test]
+    fn extract_json_object_ignores_closing_brace_inside_string() {
+        let raw =
+            r#"prefix {"sufficiency":"partial","reasoning":"saw } token","gap_queries":[]} suffix"#;
+
+        assert_eq!(
+            extract_json_object_public(raw),
+            Some(r#"{"sufficiency":"partial","reasoning":"saw } token","gap_queries":[]}"#)
+        );
+    }
+
+    #[test]
+    fn parse_accepts_escaped_quotes_and_braces_inside_reasoning_string() {
+        let verdict = parse_verdict(
+            r#"{"sufficiency":"partial","reasoning":"saw \"quoted\" text with } and {","gap_queries":["q1"]}"#,
+        )
+        .expect("escaped quotes inside JSON strings should not break extraction");
+
+        assert_eq!(verdict.reasoning, r#"saw "quoted" text with } and {"#);
+    }
+
+    #[test]
+    fn parse_accepts_escaped_backslashes_inside_reasoning_string() {
+        let verdict = parse_verdict(
+            r#"{"sufficiency":"partial","reasoning":"path C:\\temp\\{cache}","gap_queries":[]}"#,
+        )
+        .expect("escaped backslashes inside JSON strings should not break extraction");
+
+        assert_eq!(verdict.reasoning, r#"path C:\temp\{cache}"#);
+    }
+
+    #[test]
+    fn parse_accepts_nested_object_members_while_finding_outer_boundary() {
+        let verdict = parse_verdict(
+            r#"noise {"sufficiency":"partial","reasoning":"x","gap_queries":[],"meta":{"source":"judge"}} trailing"#,
+        )
+        .expect("nested objects should not terminate extraction early");
+
+        assert_eq!(verdict.sufficiency, Sufficiency::Partial);
+        assert_eq!(verdict.reasoning, "x");
     }
 }

@@ -70,10 +70,13 @@ describe('search types', () => {
       'no_results_initial',
       'iteration_cap_exhausted',
       'router_failure',
+      'judge_failure',
+      'budget_exhausted',
+      'no_progress',
       'synthesis_interrupted',
     ];
 
-    expect(variants).toHaveLength(6);
+    expect(variants).toHaveLength(9);
   });
 
   it('legacy IterationComplete payloads still type-check for compatibility', () => {

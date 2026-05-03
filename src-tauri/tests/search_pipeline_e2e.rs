@@ -98,6 +98,7 @@ impl JudgeCaller for QueueJudge {
         &self,
         _query: &str,
         _sources: &[JudgeSource],
+        _stage: thuki_agent_lib::search::JudgeStage,
     ) -> Result<JudgeVerdict, SearchError> {
         self.0
             .lock()
@@ -112,6 +113,7 @@ fn verdict_sufficient() -> JudgeVerdict {
         sufficiency: Sufficiency::Sufficient,
         reasoning: "ok".into(),
         gap_queries: vec![],
+        parse_failure: false,
     }
 }
 
@@ -120,6 +122,7 @@ fn verdict_partial(gap_queries: Vec<String>) -> JudgeVerdict {
         sufficiency: Sufficiency::Partial,
         reasoning: "partial".into(),
         gap_queries,
+        parse_failure: false,
     }
 }
 
@@ -128,6 +131,7 @@ fn verdict_insufficient(gap_queries: Vec<String>) -> JudgeVerdict {
         sufficiency: Sufficiency::Insufficient,
         reasoning: "not enough".into(),
         gap_queries,
+        parse_failure: false,
     }
 }
 

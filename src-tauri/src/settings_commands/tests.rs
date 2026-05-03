@@ -60,15 +60,15 @@ fn parse_sample() -> DocumentMut {
 
 #[test]
 fn allowed_fields_count_matches_schema_field_count() {
-    // Hand-counted from `AppConfig`: inference(2) + prompt(1) + window(3) + quote(3)
-    // + search(10) = 19 tunable fields. The active model slug lives in the
+    // Hand-counted from `AppConfig`: inference(3) + prompt(1) + window(3) + quote(3)
+    // + search(11) = 21 tunable fields. The active model slug lives in the
     // SQLite app_config table via ActiveModelState, not in TOML. The collapsed
     // bar height and hide-commit delay are baked into the frontend (see
     // `WindowSection` doc) because they have no perceptible effect across
     // their usable range. If this assertion fails, the schema has drifted
     // from the allowlist and someone added a field without extending
     // ALLOWED_FIELDS.
-    assert_eq!(ALLOWED_FIELDS.len(), 20);
+    assert_eq!(ALLOWED_FIELDS.len(), 21);
 }
 
 #[test]
@@ -83,6 +83,7 @@ fn allowed_sections_match_app_config_top_level_keys() {
 fn is_allowed_field_accepts_known_pair() {
     assert!(is_allowed_field("inference", "ollama_url"));
     assert!(is_allowed_field("search", "router_timeout_s"));
+    assert!(is_allowed_field("search", "pipeline_wall_clock_budget_s"));
 }
 
 #[test]
@@ -516,6 +517,20 @@ fn write_field_to_disk_persists_and_returns_resolved_config() {
 
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(on_disk.contains("http://10.0.0.1:11434"));
+}
+
+#[test]
+fn write_field_to_disk_accepts_search_pipeline_wall_clock_budget() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    let resolved =
+        write_field_to_disk(&path, "search", "pipeline_wall_clock_budget_s", json!(90)).unwrap();
+    assert_eq!(resolved.search.pipeline_wall_clock_budget_s, 90);
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("pipeline_wall_clock_budget_s = 90"));
 }
 
 #[test]
