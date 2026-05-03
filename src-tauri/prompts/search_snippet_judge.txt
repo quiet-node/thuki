@@ -48,6 +48,10 @@ Field rules:
   Bad: user asked "Who is Elon Musk?" -> gap queries ["Elon Musk biography", "who is Elon Musk"] — these just restate the question.
   Good: user asked "Who is Elon Musk?" but snippets lack his founding timeline -> gap query ["SpaceX founding history Elon Musk"] — targets the specific gap.
 
+  For time-sensitive gaps (missing version number, price, release date, current status): generate queries that search for the VALUE ITSELF, not for instructions on how to find it. CLI commands and "how to check X" queries are never valid — a search engine cannot run a terminal command. Use words like "latest", "current", or "stable" unless the user explicitly asked about a specific date or version, in which case use that exact value.
+  Bad: gap = current Bun version -> ["bun --version", "how to check Bun version", "Bun release schedule"] — CLI command, meta-query, process query.
+  Good: gap = current Bun version -> ["Bun latest stable release", "oven-sh/bun releases", "Bun runtime changelog"] — searches for the value directly.
+
 Output rules:
 
 - Reply with the JSON object only.
