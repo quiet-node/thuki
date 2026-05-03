@@ -4327,7 +4327,6 @@ mod agentic_tests {
             "expected fallback synthesis to keep newer chunk-backed source in final sources, got: {urls:?}"
         );
     }
-
     // Test: initial round returns insufficient with no gap queries; gap loop
     // exits immediately on the empty-queries guard, so IterationCapExhausted
     // must NOT fire.
