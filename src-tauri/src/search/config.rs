@@ -53,6 +53,17 @@ pub struct SearchRuntimeConfig {
     pub judge_timeout_s: u64,
     /// Seconds before the router LLM call is abandoned.
     pub router_timeout_s: u64,
+    /// Wall-clock budget for the whole pipeline turn (seconds). Enforced by
+    /// `pipeline::PipelineBudget`; exhaustion drops the gap loop into the
+    /// fallback synthesis path with a `BudgetExhausted` warning.
+    pub pipeline_wall_clock_budget_s: u64,
+    /// Cumulative cap on bytes of judge user-message input across all chunk-
+    /// stage judge calls in a single pipeline turn. Defense-in-depth against
+    /// runaway loops that keep fetching huge pages. Not exposed via TOML; the
+    /// production default sources from `defaults::PIPELINE_INPUT_CHAR_BUDGET`.
+    /// Tests dial this down to exercise the early-exit path without
+    /// allocating hundreds of KB of source text.
+    pub pipeline_input_char_budget: usize,
 }
 
 impl SearchRuntimeConfig {
@@ -73,6 +84,8 @@ impl SearchRuntimeConfig {
             reader_batch_timeout_s: cfg.search.reader_batch_timeout_s,
             judge_timeout_s: cfg.search.judge_timeout_s,
             router_timeout_s: cfg.search.router_timeout_s,
+            pipeline_wall_clock_budget_s: cfg.search.pipeline_wall_clock_budget_s,
+            pipeline_input_char_budget: defaults::PIPELINE_INPUT_CHAR_BUDGET,
         }
     }
 
@@ -106,6 +119,8 @@ impl Default for SearchRuntimeConfig {
             reader_batch_timeout_s: TEST_READER_BATCH_TIMEOUT_S,
             judge_timeout_s: defaults::DEFAULT_JUDGE_TIMEOUT_S,
             router_timeout_s: defaults::DEFAULT_ROUTER_TIMEOUT_S,
+            pipeline_wall_clock_budget_s: defaults::DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S,
+            pipeline_input_char_budget: defaults::PIPELINE_INPUT_CHAR_BUDGET,
         }
     }
 }
@@ -145,6 +160,10 @@ mod tests {
         );
         assert_eq!(cfg.judge_timeout_s, defaults::DEFAULT_JUDGE_TIMEOUT_S);
         assert_eq!(cfg.router_timeout_s, defaults::DEFAULT_ROUTER_TIMEOUT_S);
+        assert_eq!(
+            cfg.pipeline_wall_clock_budget_s,
+            defaults::DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S
+        );
         // Test-only override: production value is DEFAULT_READER_BATCH_TIMEOUT_S.
         assert_eq!(cfg.reader_batch_timeout_s, TEST_READER_BATCH_TIMEOUT_S);
     }
@@ -162,6 +181,7 @@ mod tests {
         app.search.reader_batch_timeout_s = 60;
         app.search.judge_timeout_s = 13;
         app.search.router_timeout_s = 14;
+        app.search.pipeline_wall_clock_budget_s = 120;
 
         let cfg = SearchRuntimeConfig::from_app_config(&app);
         assert_eq!(cfg.searxng_url, "http://10.0.0.1:9000");
@@ -174,6 +194,7 @@ mod tests {
         assert_eq!(cfg.reader_batch_timeout_s, 60);
         assert_eq!(cfg.judge_timeout_s, 13);
         assert_eq!(cfg.router_timeout_s, 14);
+        assert_eq!(cfg.pipeline_wall_clock_budget_s, 120);
     }
 
     #[test]

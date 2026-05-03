@@ -33,7 +33,7 @@ use super::chunker;
 use super::config;
 use super::llm::{
     build_answer_from_context_messages, build_synthesis_messages, call_judge, call_router_merged,
-    JudgeSource,
+    JudgeSource, JudgeStage,
 };
 use super::reader;
 use super::rerank;
@@ -186,6 +186,186 @@ fn snippet_judge_detail(verdict: Sufficiency, reasoning: &str) -> Option<String>
         Sufficiency::Partial => format!("So far, the results suggest: {reasoning}"),
         Sufficiency::Insufficient => format!("What still seems unclear is: {reasoning}"),
     })
+}
+
+/// Pipeline-level wall-clock budget. Owns the start instant and the deadline
+/// derived from the user-tunable `pipeline_wall_clock_budget_s`. Checked at
+/// the top of every gap-round iteration; when exhausted, the loop bails out
+/// into the fallback synthesis path with a `BudgetExhausted` warning.
+///
+/// The wall-clock check is the single user-facing budget control. Token /
+/// input-byte enforcement is layered on top via `GapLoopGuard` which tracks
+/// cumulative judge-input bytes against the baked-in
+/// `defaults::PIPELINE_INPUT_CHAR_BUDGET`. Both budgets share the same
+/// exhaustion behavior so the pipeline never hangs past the deadline.
+#[derive(Debug, Clone, Copy)]
+struct PipelineBudget {
+    deadline: std::time::Instant,
+}
+
+impl PipelineBudget {
+    fn new(started_at: std::time::Instant, wall_clock_budget_s: u64) -> Self {
+        Self {
+            deadline: started_at + std::time::Duration::from_secs(wall_clock_budget_s),
+        }
+    }
+
+    fn is_exhausted(&self) -> bool {
+        std::time::Instant::now() >= self.deadline
+    }
+}
+
+/// In-loop guard for the gap-refinement loop. Tracks two concerns the loop
+/// would otherwise have to handle inline:
+///
+/// 1. **Cumulative input bytes.** Sums the byte length of every judge-source
+///    text passed to a chunk-judge call this turn. When the running total
+///    crosses `PIPELINE_INPUT_CHAR_BUDGET`, the loop exits with
+///    `BudgetExhausted`.
+///
+/// 2. **Gap-query history dedup + no-progress detection.** Tracks every gap
+///    query the LLM has issued in this turn (lowercased, trimmed). New gap
+///    queries are filtered against the history before they hit SearXNG. If
+///    every emitted gap query is a repeat of an earlier round, that is the
+///    genuine no-progress signal: the model is stuck regenerating the same
+///    searches and another iteration will not surface fresh evidence. The
+///    loop exits with `NoProgress`.
+///
+/// Both are independent of the wall-clock budget; any source of exhaustion
+/// drops the loop into the fallback synthesis path.
+#[derive(Debug)]
+struct GapLoopGuard {
+    cumulative_input_chars: usize,
+    input_char_budget: usize,
+    seen_queries: std::collections::HashSet<String>,
+}
+
+/// Why the gap loop chose to exit early. Used to drive the warning emitted on
+/// the way out of `run_gap_refinement_loop`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GapExitReason {
+    /// Cumulative judge-input bytes exceeded `PIPELINE_INPUT_CHAR_BUDGET`.
+    InputBudgetExhausted,
+    /// Same fingerprint repeated `repeat_limit` times in a row.
+    NoProgress,
+}
+
+impl GapLoopGuard {
+    fn new(input_char_budget: usize) -> Self {
+        Self {
+            cumulative_input_chars: 0,
+            input_char_budget,
+            seen_queries: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Adds the byte length of every source text in `sources` to the running
+    /// total and returns `Some(InputBudgetExhausted)` if the budget is now
+    /// exceeded. Called immediately before each chunk-judge call.
+    fn record_judge_input(&mut self, sources: &[JudgeSource]) -> Option<GapExitReason> {
+        for src in sources {
+            self.cumulative_input_chars =
+                self.cumulative_input_chars.saturating_add(src.text.len());
+        }
+        if self.cumulative_input_chars > self.input_char_budget {
+            return Some(GapExitReason::InputBudgetExhausted);
+        }
+        None
+    }
+
+    /// Filters `gap_queries` against the cumulative history of queries
+    /// already issued in this turn and records every retained query as seen.
+    /// Returns the surviving queries (preserving caller order) plus a flag
+    /// indicating whether the round produced any genuinely new query.
+    ///
+    /// `every_query_was_a_repeat` is set when the input list was non-empty
+    /// but every entry was a duplicate. That is the canonical no-progress
+    /// signal: the LLM still thinks more searching is needed but is stuck
+    /// regenerating the same queries. Callers exit the gap loop with
+    /// `NoProgress` in this case rather than running another iteration that
+    /// will not produce fresh evidence.
+    fn dedup_and_record(&mut self, gap_queries: Vec<String>) -> DedupOutcome {
+        let input_was_empty = gap_queries.is_empty();
+        let mut surviving = Vec::with_capacity(gap_queries.len());
+        for q in gap_queries {
+            let key = q.trim().to_ascii_lowercase();
+            if key.is_empty() {
+                continue;
+            }
+            if self.seen_queries.insert(key) {
+                surviving.push(q);
+            }
+        }
+        DedupOutcome {
+            every_query_was_a_repeat: !input_was_empty && surviving.is_empty(),
+            surviving,
+        }
+    }
+}
+
+/// Result of feeding a round's emitted gap queries through the dedup history.
+#[derive(Debug, PartialEq, Eq)]
+struct DedupOutcome {
+    /// Queries that survived dedup, in the order the LLM emitted them.
+    surviving: Vec<String>,
+    /// True when the input was non-empty but every entry was already in the
+    /// seen-history. Treated as a no-progress signal by the gap loop.
+    every_query_was_a_repeat: bool,
+}
+
+/// Emits the right `SearchWarning` for a gap-loop early exit and pushes it
+/// onto the warnings vec. Dedups so a previously-emitted warning of the same
+/// kind does not double up.
+fn emit_gap_exit_warning(
+    reason: GapExitReason,
+    warnings: &mut Vec<SearchWarning>,
+    on_event: &(dyn Fn(SearchEvent) + Sync),
+) {
+    let warning = match reason {
+        GapExitReason::InputBudgetExhausted => SearchWarning::BudgetExhausted,
+        GapExitReason::NoProgress => SearchWarning::NoProgress,
+    };
+    if warnings.contains(&warning) {
+        return;
+    }
+    warnings.push(warning);
+    on_event(SearchEvent::Warning { warning });
+}
+
+/// Emits a single `JudgeFailure` warning when a judge call fell back to a
+/// synthetic verdict because the model output could not be parsed. Dedups so
+/// repeated parse failures across snippet/chunk/gap-round judge calls only
+/// surface one indicator to the user.
+fn note_judge_failure(
+    verdict: &JudgeVerdict,
+    warnings: &mut Vec<SearchWarning>,
+    on_event: &(dyn Fn(SearchEvent) + Sync),
+) {
+    if !verdict.parse_failure {
+        return;
+    }
+    if warnings.contains(&SearchWarning::JudgeFailure) {
+        return;
+    }
+    warnings.push(SearchWarning::JudgeFailure);
+    on_event(SearchEvent::Warning {
+        warning: SearchWarning::JudgeFailure,
+    });
+}
+
+/// Returns the chunk-judge trace `detail` text. Synthetic fallback verdicts
+/// (parse failures) carry an empty `reasoning` and must not surface diagnostic
+/// strings to the user, so they collapse to `None`. Real verdicts with non-
+/// empty reasoning pass through verbatim.
+fn chunk_judge_detail(verdict: &JudgeVerdict) -> Option<String> {
+    if verdict.parse_failure {
+        return None;
+    }
+    let trimmed = verdict.reasoning.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(verdict.reasoning.clone())
 }
 
 fn compose_title() -> &'static str {
@@ -375,9 +555,14 @@ pub trait RouterJudgeCaller: Send + Sync {
 /// a predetermined sequence of [`JudgeVerdict`]s.
 #[async_trait]
 pub trait JudgeCaller: Send + Sync {
-    /// Judges how well the given sources answer the query.
-    async fn call(&self, query: &str, sources: &[JudgeSource])
-        -> Result<JudgeVerdict, SearchError>;
+    /// Judges how well the given sources answer the query. `stage` selects
+    /// which stage-specific system prompt to use (snippet vs chunk).
+    async fn call(
+        &self,
+        query: &str,
+        sources: &[JudgeSource],
+        stage: JudgeStage,
+    ) -> Result<JudgeVerdict, SearchError>;
 }
 
 /// Production [`RouterJudgeCaller`] implementation.
@@ -511,6 +696,7 @@ impl JudgeCaller for DefaultJudge {
         &self,
         query: &str,
         sources: &[JudgeSource],
+        stage: JudgeStage,
     ) -> Result<JudgeVerdict, SearchError> {
         call_judge(
             &self.endpoint,
@@ -521,6 +707,7 @@ impl JudgeCaller for DefaultJudge {
             &self.cancel,
             self.judge_timeout_secs,
             self.num_ctx,
+            stage,
         )
         .await
     }
@@ -782,13 +969,37 @@ async fn run_gap_refinement_loop(
     mut accumulated_urls: std::collections::HashSet<String>,
     mut current_queries: Vec<String>,
     started_at: std::time::Instant,
+    pipeline_budget: PipelineBudget,
 ) -> Result<GapLoopDisposition, SearchError> {
     let gap_round_total = (shared.runtime_config.max_iterations as u32).saturating_sub(1);
     let mut hit_iteration_cap = false;
+    let mut guard = GapLoopGuard::new(shared.runtime_config.pipeline_input_char_budget);
+
+    // Seed the dedup history with whatever queries the snippet/chunk-initial
+    // path already issued so the first gap round cannot trivially rerun them.
+    for q in &current_queries {
+        let key = q.trim().to_ascii_lowercase();
+        if !key.is_empty() {
+            guard.seen_queries.insert(key);
+        }
+    }
 
     for attempt in 2..=(shared.runtime_config.max_iterations as u32) {
         if current_queries.is_empty() {
             break;
+        }
+        if pipeline_budget.is_exhausted() {
+            emit_gap_exit_warning(
+                GapExitReason::InputBudgetExhausted,
+                warnings,
+                shared.on_event,
+            );
+            // Re-emit as BudgetExhausted: wall-clock and input-budget share
+            // the same warning surface. The warning has already been pushed.
+            return Ok(GapLoopDisposition::Fallback {
+                sources: snippet_sources.clone(),
+                hit_iteration_cap: false,
+            });
         }
         if is_cancelled_emit(shared.cancel_token, &shared.on_event) {
             return Ok(GapLoopDisposition::Fallback {
@@ -1206,6 +1417,17 @@ async fn run_gap_refinement_loop(
             chunks_to_judge_sources(&round_top_chunks)
         };
 
+        // Cumulative judge-input budget: count THIS round's source bytes
+        // before issuing the judge call. If this round would push us past
+        // the budget, exit early on whatever we already have.
+        if let Some(reason) = guard.record_judge_input(&round_judge_sources) {
+            emit_gap_exit_warning(reason, warnings, shared.on_event);
+            return Ok(GapLoopDisposition::Fallback {
+                sources: snippet_sources.clone(),
+                hit_iteration_cap: false,
+            });
+        }
+
         let mut chunk_judge_step = trace_step(
             format!("round-{attempt}-chunk-judge"),
             SearchTraceKind::ChunkJudge,
@@ -1222,7 +1444,10 @@ async fn run_gap_refinement_loop(
         });
         emit_trace(shared.on_event, chunk_judge_step);
 
-        let round_verdict = judge.call(query, &round_judge_sources).await?;
+        let round_verdict = judge
+            .call(query, &round_judge_sources, JudgeStage::Chunk)
+            .await?;
+        note_judge_failure(&round_verdict, warnings, shared.on_event);
 
         let mut chunk_judge_step = trace_step(
             format!("round-{attempt}-chunk-judge"),
@@ -1235,7 +1460,7 @@ async fn run_gap_refinement_loop(
         chunk_judge_step.domains =
             unique_domains(round_judge_sources.iter().map(|source| source.url.as_str()));
         chunk_judge_step.verdict = Some(round_verdict.sufficiency);
-        chunk_judge_step.detail = Some(round_verdict.reasoning.clone());
+        chunk_judge_step.detail = chunk_judge_detail(&round_verdict);
         chunk_judge_step.counts = Some(SearchTraceCounts {
             sources: Some(to_u32_saturating(round_judge_sources.len())),
             ..SearchTraceCounts::default()
@@ -1274,7 +1499,21 @@ async fn run_gap_refinement_loop(
             return Ok(GapLoopDisposition::Streamed);
         }
 
-        current_queries = round_verdict.gap_queries.clone();
+        // Drop any gap query the LLM has already issued in a prior round so
+        // SearXNG never sees the same query twice. If the verdict's
+        // gap_queries were ALL duplicates, that is the no-progress signal:
+        // the model is stuck on the same searches. Exit the loop early
+        // rather than running another iteration that cannot surface fresh
+        // evidence.
+        let dedup = guard.dedup_and_record(round_verdict.gap_queries.clone());
+        if dedup.every_query_was_a_repeat {
+            emit_gap_exit_warning(GapExitReason::NoProgress, warnings, shared.on_event);
+            return Ok(GapLoopDisposition::Fallback {
+                sources: snippet_sources.clone(),
+                hit_iteration_cap: false,
+            });
+        }
+        current_queries = dedup.surviving;
         hit_iteration_cap =
             attempt == shared.runtime_config.max_iterations as u32 && !current_queries.is_empty();
     }
@@ -1453,6 +1692,8 @@ pub async fn run_agentic(
                 let mut accumulated_chunks: Vec<chunker::Chunk> = Vec::new();
 
                 let iter_start = std::time::Instant::now();
+                let pipeline_budget =
+                    PipelineBudget::new(iter_start, runtime_config.pipeline_wall_clock_budget_s);
                 let initial_round = 1_u32;
 
                 // Stage 1: SearXNG initial round.
@@ -1620,7 +1861,10 @@ pub async fn run_agentic(
                 });
                 emit_trace(on_event, snippet_judge_step);
 
-                let snippet_verdict = judge.call(&query, &snippet_sources).await?;
+                let snippet_verdict = judge
+                    .call(&query, &snippet_sources, JudgeStage::Snippet)
+                    .await?;
+                note_judge_failure(&snippet_verdict, &mut warnings, on_event);
 
                 let mut snippet_judge_step = trace_step(
                     format!("round-{initial_round}-snippet-judge"),
@@ -1633,8 +1877,11 @@ pub async fn run_agentic(
                 snippet_judge_step.domains =
                     unique_domains(top_urls.iter().map(|r| r.url.as_str()));
                 snippet_judge_step.verdict = Some(snippet_verdict.sufficiency);
-                snippet_judge_step.detail =
-                    snippet_judge_detail(snippet_verdict.sufficiency, &snippet_verdict.reasoning);
+                snippet_judge_step.detail = if snippet_verdict.parse_failure {
+                    None
+                } else {
+                    snippet_judge_detail(snippet_verdict.sufficiency, &snippet_verdict.reasoning)
+                };
                 snippet_judge_step.counts = Some(SearchTraceCounts {
                     sources: Some(to_u32_saturating(snippet_sources.len())),
                     ..SearchTraceCounts::default()
@@ -1957,7 +2204,10 @@ pub async fn run_agentic(
                 });
                 emit_trace(on_event, chunk_judge_step);
 
-                let chunk_verdict = judge.call(&query, &judge_sources).await?;
+                let chunk_verdict = judge
+                    .call(&query, &judge_sources, JudgeStage::Chunk)
+                    .await?;
+                note_judge_failure(&chunk_verdict, &mut warnings, on_event);
 
                 let mut chunk_judge_step = trace_step(
                     format!("round-{initial_round}-chunk-judge"),
@@ -1970,7 +2220,7 @@ pub async fn run_agentic(
                 chunk_judge_step.domains =
                     unique_domains(judge_sources.iter().map(|source| source.url.as_str()));
                 chunk_judge_step.verdict = Some(chunk_verdict.sufficiency);
-                chunk_judge_step.detail = Some(chunk_verdict.reasoning.clone());
+                chunk_judge_step.detail = chunk_judge_detail(&chunk_verdict);
                 chunk_judge_step.counts = Some(SearchTraceCounts {
                     sources: Some(to_u32_saturating(judge_sources.len())),
                     ..SearchTraceCounts::default()
@@ -2030,6 +2280,7 @@ pub async fn run_agentic(
                     top_urls.iter().map(|result| result.url.clone()).collect(),
                     chunk_verdict.gap_queries.clone(),
                     iter_start,
+                    pipeline_budget,
                 )
                 .await?;
 
@@ -2353,6 +2604,252 @@ mod tests {
             "expected 'missing' in partial summary: {s}"
         );
     }
+
+    // ── chunk_judge_detail ───────────────────────────────────────────────────
+
+    #[test]
+    fn chunk_judge_detail_returns_none_when_parse_failure_set() {
+        let v = JudgeVerdict {
+            sufficiency: Sufficiency::Partial,
+            reasoning: "anything".into(),
+            gap_queries: vec![],
+            parse_failure: true,
+        };
+        assert!(chunk_judge_detail(&v).is_none());
+    }
+
+    #[test]
+    fn chunk_judge_detail_returns_none_when_reasoning_blank() {
+        let v = JudgeVerdict {
+            sufficiency: Sufficiency::Partial,
+            reasoning: "   ".into(),
+            gap_queries: vec![],
+            parse_failure: false,
+        };
+        assert!(chunk_judge_detail(&v).is_none());
+    }
+
+    #[test]
+    fn chunk_judge_detail_returns_reasoning_for_real_verdict() {
+        let v = JudgeVerdict {
+            sufficiency: Sufficiency::Insufficient,
+            reasoning: "missing dates".into(),
+            gap_queries: vec!["q1".into()],
+            parse_failure: false,
+        };
+        assert_eq!(chunk_judge_detail(&v), Some("missing dates".into()));
+    }
+
+    // ── note_judge_failure ───────────────────────────────────────────────────
+
+    #[test]
+    fn note_judge_failure_skips_when_verdict_is_real() {
+        let real = JudgeVerdict {
+            sufficiency: Sufficiency::Sufficient,
+            reasoning: "ok".into(),
+            gap_queries: vec![],
+            parse_failure: false,
+        };
+        let synthetic = JudgeVerdict {
+            sufficiency: Sufficiency::Partial,
+            reasoning: String::new(),
+            gap_queries: vec![],
+            parse_failure: true,
+        };
+        let mut warnings: Vec<SearchWarning> = Vec::new();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let on_event = move |e: SearchEvent| events_clone.lock().unwrap().push(e);
+
+        // First call with a real verdict must not warn or emit anything.
+        note_judge_failure(&real, &mut warnings, &on_event);
+        assert!(warnings.is_empty());
+        assert!(events.lock().unwrap().is_empty());
+
+        // Follow up with a synthetic verdict so the closure body is actually
+        // exercised and the path that does emit is reachable from this test.
+        note_judge_failure(&synthetic, &mut warnings, &on_event);
+        assert_eq!(warnings, vec![SearchWarning::JudgeFailure]);
+        assert_eq!(events.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn note_judge_failure_emits_warning_when_parse_failure_set() {
+        let v = JudgeVerdict {
+            sufficiency: Sufficiency::Partial,
+            reasoning: String::new(),
+            gap_queries: vec![],
+            parse_failure: true,
+        };
+        let mut warnings: Vec<SearchWarning> = Vec::new();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let on_event = move |e: SearchEvent| events_clone.lock().unwrap().push(e);
+        note_judge_failure(&v, &mut warnings, &on_event);
+        assert_eq!(warnings, vec![SearchWarning::JudgeFailure]);
+        let evs = events.lock().unwrap();
+        assert_eq!(
+            evs.as_slice(),
+            &[SearchEvent::Warning {
+                warning: SearchWarning::JudgeFailure
+            }]
+        );
+    }
+
+    #[test]
+    fn note_judge_failure_dedups_across_repeated_calls() {
+        let v = JudgeVerdict {
+            sufficiency: Sufficiency::Partial,
+            reasoning: String::new(),
+            gap_queries: vec![],
+            parse_failure: true,
+        };
+        let mut warnings: Vec<SearchWarning> = Vec::new();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let on_event = move |e: SearchEvent| events_clone.lock().unwrap().push(e);
+        note_judge_failure(&v, &mut warnings, &on_event);
+        note_judge_failure(&v, &mut warnings, &on_event);
+        note_judge_failure(&v, &mut warnings, &on_event);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(events.lock().unwrap().len(), 1);
+    }
+
+    // ── PipelineBudget ───────────────────────────────────────────────────────
+
+    #[test]
+    fn pipeline_budget_not_exhausted_immediately_after_construction() {
+        let now = std::time::Instant::now();
+        let budget = PipelineBudget::new(now, 60);
+        assert!(!budget.is_exhausted());
+    }
+
+    #[test]
+    fn pipeline_budget_is_exhausted_when_started_in_the_past() {
+        // Construct a deadline that has already passed by giving zero seconds
+        // of budget on a now-Instant. is_exhausted compares the current clock
+        // to deadline, so this fires immediately.
+        let now = std::time::Instant::now();
+        let budget = PipelineBudget::new(now, 0);
+        // Force at least one nanosecond of progress so wall-clock advanced
+        // past the deadline.
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        assert!(budget.is_exhausted());
+    }
+
+    // ── GapLoopGuard ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn gap_loop_guard_records_judge_input_under_budget() {
+        let mut g = GapLoopGuard::new(crate::config::defaults::PIPELINE_INPUT_CHAR_BUDGET);
+        let sources = vec![JudgeSource {
+            title: "t".into(),
+            url: "u".into(),
+            text: "x".repeat(100),
+        }];
+        assert!(g.record_judge_input(&sources).is_none());
+        assert_eq!(g.cumulative_input_chars, 100);
+    }
+
+    #[test]
+    fn gap_loop_guard_signals_input_budget_exhausted_when_over() {
+        // Tighten the budget for the test so we do not need to allocate
+        // hundreds of KB to trip it.
+        let mut g = GapLoopGuard::new(50);
+        let sources = vec![JudgeSource {
+            title: "t".into(),
+            url: "u".into(),
+            text: "x".repeat(75),
+        }];
+        assert_eq!(
+            g.record_judge_input(&sources),
+            Some(GapExitReason::InputBudgetExhausted)
+        );
+    }
+
+    #[test]
+    fn gap_loop_guard_dedup_drops_repeats_and_blanks() {
+        let mut g = GapLoopGuard::new(crate::config::defaults::PIPELINE_INPUT_CHAR_BUDGET);
+        let outcome = g.dedup_and_record(vec![
+            "Latest Bun version".into(),
+            "  ".into(),
+            "latest bun version".into(), // case-insensitive dup of #1
+            "Bun release date".into(),
+        ]);
+        assert_eq!(
+            outcome.surviving,
+            vec!["Latest Bun version".to_string(), "Bun release date".into()]
+        );
+        assert!(!outcome.every_query_was_a_repeat);
+        // Re-issuing any of those again returns nothing AND flags repeat.
+        let again = g.dedup_and_record(vec!["bun release date".into()]);
+        assert!(again.surviving.is_empty());
+        assert!(
+            again.every_query_was_a_repeat,
+            "non-empty input that fully dedup'd must signal no-progress"
+        );
+    }
+
+    #[test]
+    fn gap_loop_guard_dedup_empty_input_does_not_signal_no_progress() {
+        // An empty gap_queries list (e.g. judge already returned Sufficient)
+        // is NOT a no-progress signal; the loop terminates via the
+        // empty-current_queries branch instead.
+        let mut g = GapLoopGuard::new(crate::config::defaults::PIPELINE_INPUT_CHAR_BUDGET);
+        let outcome = g.dedup_and_record(vec![]);
+        assert!(outcome.surviving.is_empty());
+        assert!(!outcome.every_query_was_a_repeat);
+    }
+
+    // ── emit_gap_exit_warning ────────────────────────────────────────────────
+
+    #[test]
+    fn emit_gap_exit_warning_pushes_budget_exhausted_for_input_budget() {
+        let mut warnings: Vec<SearchWarning> = Vec::new();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let on_event = move |e: SearchEvent| events_clone.lock().unwrap().push(e);
+        emit_gap_exit_warning(
+            GapExitReason::InputBudgetExhausted,
+            &mut warnings,
+            &on_event,
+        );
+        assert_eq!(warnings, vec![SearchWarning::BudgetExhausted]);
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            &[SearchEvent::Warning {
+                warning: SearchWarning::BudgetExhausted
+            }]
+        );
+    }
+
+    #[test]
+    fn emit_gap_exit_warning_pushes_no_progress_for_no_progress_reason() {
+        let mut warnings: Vec<SearchWarning> = Vec::new();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let on_event = move |e: SearchEvent| events_clone.lock().unwrap().push(e);
+        emit_gap_exit_warning(GapExitReason::NoProgress, &mut warnings, &on_event);
+        assert_eq!(warnings, vec![SearchWarning::NoProgress]);
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            &[SearchEvent::Warning {
+                warning: SearchWarning::NoProgress
+            }]
+        );
+    }
+
+    #[test]
+    fn emit_gap_exit_warning_dedups_within_a_turn() {
+        let mut warnings: Vec<SearchWarning> = Vec::new();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let on_event = move |e: SearchEvent| events_clone.lock().unwrap().push(e);
+        emit_gap_exit_warning(GapExitReason::NoProgress, &mut warnings, &on_event);
+        emit_gap_exit_warning(GapExitReason::NoProgress, &mut warnings, &on_event);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(events.lock().unwrap().len(), 1);
+    }
 }
 
 // ── Agentic pipeline tests ─────────────────────────────────────────────────
@@ -2494,7 +2991,12 @@ mod agentic_tests {
 
     #[async_trait]
     impl JudgeCaller for QueueJudge {
-        async fn call(&self, _q: &str, _s: &[JudgeSource]) -> Result<JudgeVerdict, SearchError> {
+        async fn call(
+            &self,
+            _q: &str,
+            _s: &[JudgeSource],
+            _stage: JudgeStage,
+        ) -> Result<JudgeVerdict, SearchError> {
             self.0
                 .lock()
                 .unwrap()
@@ -2508,13 +3010,14 @@ mod agentic_tests {
             sufficiency: Sufficiency::Sufficient,
             reasoning: "ok".into(),
             gap_queries: vec![],
+            parse_failure: false,
         }
     }
 
     #[tokio::test]
     async fn queue_judge_returns_internal_error_when_empty() {
         let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
-        let err = judge.call("q", &[]).await.unwrap_err();
+        let err = judge.call("q", &[], JudgeStage::Snippet).await.unwrap_err();
         assert_eq!(
             std::mem::discriminant(&err),
             std::mem::discriminant(&SearchError::Internal(String::new())),
@@ -2527,6 +3030,7 @@ mod agentic_tests {
             sufficiency: Sufficiency::Insufficient,
             reasoning: "not enough".into(),
             gap_queries: vec!["q1".into()],
+            parse_failure: false,
         }
     }
 
@@ -2538,6 +3042,7 @@ mod agentic_tests {
             sufficiency: Sufficiency::Insufficient,
             reasoning: "not enough".into(),
             gap_queries: vec![],
+            parse_failure: false,
         }
     }
 
@@ -2546,6 +3051,33 @@ mod agentic_tests {
             sufficiency: Sufficiency::Partial,
             reasoning: "partial".into(),
             gap_queries: vec!["q1".into()],
+            parse_failure: false,
+        }
+    }
+
+    /// Synthetic verdict mirroring what `call_judge` returns when both parse
+    /// attempts fail: Partial sufficiency, empty reasoning, no gap queries,
+    /// and the `parse_failure` flag set so the pipeline can dedup the
+    /// `JudgeFailure` warning.
+    fn parse_failure_partial_verdict() -> JudgeVerdict {
+        JudgeVerdict {
+            sufficiency: Sufficiency::Partial,
+            reasoning: String::new(),
+            gap_queries: vec![],
+            parse_failure: true,
+        }
+    }
+
+    /// Synthetic Sufficient verdict flagged as a parse failure. Used to verify
+    /// that even when a chunk-judge fallback claims Sufficient, the pipeline
+    /// still surfaces a `JudgeFailure` warning rather than treating the
+    /// synthesis as fully validated.
+    fn parse_failure_sufficient_verdict() -> JudgeVerdict {
+        JudgeVerdict {
+            sufficiency: Sufficiency::Sufficient,
+            reasoning: String::new(),
+            gap_queries: vec![],
+            parse_failure: true,
         }
     }
 
@@ -3242,6 +3774,429 @@ mod agentic_tests {
         assert_done_iterations(&evs, 1);
     }
 
+    // Test: when both snippet and chunk judge calls fall back to synthetic
+    // verdicts (parse_failure=true), the pipeline emits exactly one
+    // JudgeFailure warning (dedup across the two judge sites) and never
+    // surfaces the empty diagnostic reasoning into trace details.
+    #[tokio::test]
+    async fn parse_failure_emits_single_dedup_judge_failure_warning() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "result",
+                "markdown": "full page content about rust async",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let mut ollama = mockito::Server::new_async().await;
+        let mut searx = mockito::Server::new_async().await;
+
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_one_result("https://example.com/a"))
+            .create_async()
+            .await;
+
+        let stream = stream_line_token("final");
+        let _stream_mock = ollama
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"stream":true}"#.to_string(),
+            ))
+            .with_body(stream)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("test query");
+
+        // Snippet judge falls back (Partial+parse_failure) → reader runs;
+        // chunk judge also falls back (Sufficient+parse_failure) → synthesis.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                parse_failure_partial_verdict(),
+                parse_failure_sufficient_verdict(),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama.url()),
+            &format!("{}/search", searx.url()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "test query".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+            &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        let judge_failure_count = evs
+            .iter()
+            .filter(|e| {
+                **e == SearchEvent::Warning {
+                    warning: SearchWarning::JudgeFailure,
+                }
+            })
+            .count();
+        assert_eq!(
+            judge_failure_count, 1,
+            "expected exactly one JudgeFailure warning across two parse-failed judge calls in: {evs:?}"
+        );
+    }
+
+    // Test: wall-clock budget exhausted on the way into the first gap iter
+    // emits BudgetExhausted and force-synthesizes on what we already have.
+    #[tokio::test]
+    async fn wall_clock_budget_exhausted_emits_budget_warning_and_synthesizes_fallback() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "result",
+                "markdown": "full page content about rust async",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let mut ollama = mockito::Server::new_async().await;
+        let mut searx = mockito::Server::new_async().await;
+
+        let _searx_mock = searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_one_result("https://example.com/a"))
+            .create_async()
+            .await;
+
+        let stream = stream_line_token("fallback");
+        let _stream_mock = ollama
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"stream":true}"#.to_string(),
+            ))
+            .with_body(stream)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("test query");
+
+        // Snippet judge: partial -> reader. Chunk judge: insufficient with
+        // gap_queries to force the gap loop to enter, where the wall-clock
+        // check fires immediately because the budget is zero seconds.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict(), insufficient_verdict()]
+                .into_iter()
+                .collect(),
+        ));
+
+        let mut runtime = config::SearchRuntimeConfig::default();
+        runtime.pipeline_wall_clock_budget_s = 0;
+
+        run_agentic(
+            &format!("{}/api/chat", ollama.url()),
+            &format!("{}/search", searx.url()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "test query".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+            &runtime,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        let budget_warnings = evs
+            .iter()
+            .filter(|e| {
+                **e == SearchEvent::Warning {
+                    warning: SearchWarning::BudgetExhausted,
+                }
+            })
+            .count();
+        assert_eq!(
+            budget_warnings, 1,
+            "expected exactly one BudgetExhausted warning when wall-clock budget is zero in: {evs:?}"
+        );
+    }
+
+    // Test: input-byte budget exhausted on the way into a gap-round chunk-
+    // judge call emits BudgetExhausted and force-synthesizes. The initial
+    // chunk-judge runs first because the gap-loop budget tracking starts
+    // fresh on entry; the second chunk-judge (gap round 2) trips the budget
+    // because cumulative source bytes have crossed the test threshold.
+    #[tokio::test]
+    async fn input_byte_budget_exhausted_emits_budget_warning_and_synthesizes_fallback() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/b",
+                "title": "second",
+                "markdown": "x".repeat(1000),
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let mut ollama = mockito::Server::new_async().await;
+        let searx_server = MockServer::start().await;
+        // Initial query returns URL `a`; gap query `q1` returns URL `b` so
+        // the gap round genuinely fetches a NEW page that chunks into the
+        // judge sources for round 2's record_judge_input check.
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/b")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        ollama
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"stream":true}"#.to_string(),
+            ))
+            .with_body(stream_line_token("fallback"))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // Three judge calls expected before exit: snippet (partial -> reader),
+        // initial chunk (insufficient with q1 -> gap loop), gap-round 2 chunk
+        // is NEVER reached because record_judge_input trips the budget first.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![partial_verdict(), insufficient_verdict()]
+                .into_iter()
+                .collect(),
+        ));
+
+        let mut runtime = config::SearchRuntimeConfig::default();
+        // Tighten the budget low enough that any judge-source text trips it.
+        runtime.pipeline_input_char_budget = 10;
+
+        run_agentic(
+            &format!("{}/api/chat", ollama.url()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+            &runtime,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        let budget_warnings = evs
+            .iter()
+            .filter(|e| {
+                **e == SearchEvent::Warning {
+                    warning: SearchWarning::BudgetExhausted,
+                }
+            })
+            .count();
+        assert_eq!(
+            budget_warnings, 1,
+            "expected exactly one BudgetExhausted warning when input budget is tight in: {evs:?}"
+        );
+    }
+
+    // Test: judge keeps emitting gap queries that are all duplicates of
+    // queries already issued in earlier rounds. The dedup-driven no-progress
+    // guard exits with a NoProgress warning instead of looping pointlessly.
+    #[tokio::test]
+    async fn no_progress_dedup_exhaustion_exits_loop_with_warning() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let reader_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/extract"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "url": "https://example.com/a",
+                "title": "result",
+                "markdown": "page content",
+                "status": "ok"
+            })))
+            .mount(&reader_server)
+            .await;
+
+        let mut ollama = mockito::Server::new_async().await;
+        let mut searx = mockito::Server::new_async().await;
+
+        // Every SearXNG query (initial and gap) returns the same single URL.
+        searx
+            .mock("GET", "/search")
+            .match_query(mockito::Matcher::Any)
+            .with_body(searx_body_one_result("https://example.com/a"))
+            .create_async()
+            .await;
+        ollama
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"stream":true}"#.to_string(),
+            ))
+            .with_body(stream_line_token("fallback"))
+            .create_async()
+            .await;
+
+        // Replace the wildcard searx mock with two distinct mocks: initial
+        // query "q" -> URL a; gap query "q1" -> URL b. The initial chunk
+        // verdict and the gap-round verdict both emit gap_queries=["q1"], so
+        // the second round's dedup against history fires NoProgress.
+        drop(searx);
+        use wiremock::matchers::query_param;
+        let searx_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/a")),
+            )
+            .mount(&searx_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "q1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(searx_body_one_result("https://example.com/b")),
+            )
+            .mount(&searx_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let router = proceed_search_router("q");
+
+        // Snippet partial -> reader. Initial chunk insufficient with
+        // gap_queries=["q1"]. Gap round 2 chunk insufficient with the SAME
+        // ["q1"] -> dedup catches every-was-a-repeat -> NoProgress fires.
+        let judge = QueueJudge(std::sync::Mutex::new(
+            vec![
+                partial_verdict(),
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "need more".into(),
+                    gap_queries: vec!["q1".into()],
+                    parse_failure: false,
+                },
+                JudgeVerdict {
+                    sufficiency: Sufficiency::Insufficient,
+                    reasoning: "still missing".into(),
+                    gap_queries: vec!["q1".into()],
+                    parse_failure: false,
+                },
+            ]
+            .into_iter()
+            .collect(),
+        ));
+
+        run_agentic(
+            &format!("{}/api/chat", ollama.url()),
+            &format!("{}/search", searx_server.uri()),
+            &reader_server.uri(),
+            "m",
+            &client,
+            token,
+            "chat",
+            &h,
+            "q".into(),
+            "2026-04-18",
+            &cb,
+            &router,
+            &judge,
+            &config::SearchRuntimeConfig::default(),
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+
+        let evs = events.lock().unwrap();
+        let no_progress_count = evs
+            .iter()
+            .filter(|e| {
+                **e == SearchEvent::Warning {
+                    warning: SearchWarning::NoProgress,
+                }
+            })
+            .count();
+        assert_eq!(
+            no_progress_count, 1,
+            "expected exactly one NoProgress warning when LLM repeats gap queries in: {evs:?}"
+        );
+    }
+
     // Test: initial round returns insufficient with no gap queries; gap loop
     // exits immediately on the empty-queries guard, so IterationCapExhausted
     // must NOT fire.
@@ -3734,7 +4689,12 @@ mod agentic_tests {
 
     #[async_trait]
     impl JudgeCaller for CancelsOnJudgeCall {
-        async fn call(&self, _q: &str, _s: &[JudgeSource]) -> Result<JudgeVerdict, SearchError> {
+        async fn call(
+            &self,
+            _q: &str,
+            _s: &[JudgeSource],
+            _stage: JudgeStage,
+        ) -> Result<JudgeVerdict, SearchError> {
             self.token.cancel();
             Ok(self.verdict.clone())
         }
@@ -4337,24 +5297,28 @@ mod agentic_tests {
                     sufficiency: Sufficiency::Partial,
                     reasoning: "partial".into(),
                     gap_queries: vec!["gap2".into()],
+                    parse_failure: false,
                 },
                 // initial chunks: insufficient -> gap round 2
                 JudgeVerdict {
                     sufficiency: Sufficiency::Insufficient,
                     reasoning: "not enough".into(),
                     gap_queries: vec!["gap2".into()],
+                    parse_failure: false,
                 },
                 // gap round 2 chunks: insufficient -> gap round 3
                 JudgeVerdict {
                     sufficiency: Sufficiency::Insufficient,
                     reasoning: "still not enough".into(),
                     gap_queries: vec!["gap3".into()],
+                    parse_failure: false,
                 },
                 // gap round 3 chunks: insufficient -> loop exhausted
                 JudgeVerdict {
                     sufficiency: Sufficiency::Insufficient,
                     reasoning: "exhausted".into(),
                     gap_queries: vec!["gap4".into()],
+                    parse_failure: false,
                 },
             ]
             .into_iter()
@@ -4468,11 +5432,13 @@ mod agentic_tests {
                     sufficiency: Sufficiency::Partial,
                     reasoning: "partial".into(),
                     gap_queries: vec!["q1".into(), "q2".into(), "q3".into()],
+                    parse_failure: false,
                 },
                 JudgeVerdict {
                     sufficiency: Sufficiency::Insufficient,
                     reasoning: "not enough".into(),
                     gap_queries: vec!["q1".into(), "q2".into(), "q3".into()],
+                    parse_failure: false,
                 },
                 // No third verdict needed: empty SearXNG means no judge call
                 // for the gap round beyond the trace push.
@@ -4608,21 +5574,25 @@ mod agentic_tests {
                     sufficiency: Sufficiency::Partial,
                     reasoning: "partial".into(),
                     gap_queries: vec!["q1".into()],
+                    parse_failure: false,
                 },
                 JudgeVerdict {
                     sufficiency: Sufficiency::Insufficient,
                     reasoning: "need more".into(),
                     gap_queries: vec!["q1".into()],
+                    parse_failure: false,
                 },
                 JudgeVerdict {
                     sufficiency: Sufficiency::Insufficient,
                     reasoning: "still insufficient".into(),
                     gap_queries: vec!["q2".into()],
+                    parse_failure: false,
                 },
                 JudgeVerdict {
                     sufficiency: Sufficiency::Insufficient,
                     reasoning: "exhausted".into(),
                     gap_queries: vec![],
+                    parse_failure: false,
                 },
             ]
             .into_iter()
@@ -4728,16 +5698,19 @@ mod agentic_tests {
                     sufficiency: Sufficiency::Partial,
                     reasoning: "partial".into(),
                     gap_queries: vec!["q1".into()],
+                    parse_failure: false,
                 },
                 JudgeVerdict {
                     sufficiency: Sufficiency::Insufficient,
                     reasoning: "need more".into(),
                     gap_queries: vec!["q1".into()],
+                    parse_failure: false,
                 },
                 JudgeVerdict {
                     sufficiency: Sufficiency::Sufficient,
                     reasoning: "done".into(),
                     gap_queries: vec![],
+                    parse_failure: false,
                 },
             ]
             .into_iter()
@@ -4851,21 +5824,25 @@ mod agentic_tests {
                     sufficiency: Sufficiency::Partial,
                     reasoning: "partial".into(),
                     gap_queries: vec!["q1".into()],
+                    parse_failure: false,
                 },
                 JudgeVerdict {
                     sufficiency: Sufficiency::Insufficient,
                     reasoning: "need more".into(),
                     gap_queries: vec!["q1".into()],
+                    parse_failure: false,
                 },
                 JudgeVerdict {
                     sufficiency: Sufficiency::Insufficient,
                     reasoning: "still need more".into(),
                     gap_queries: vec!["q2".into()],
+                    parse_failure: false,
                 },
                 JudgeVerdict {
                     sufficiency: Sufficiency::Sufficient,
                     reasoning: "done".into(),
                     gap_queries: vec![],
+                    parse_failure: false,
                 },
             ]
             .into_iter()
@@ -4971,12 +5948,14 @@ mod agentic_tests {
                     sufficiency: Sufficiency::Partial,
                     reasoning: "partial".into(),
                     gap_queries: vec!["gap2".into()],
+                    parse_failure: false,
                 },
                 // chunks judge after initial reader failure: insufficient
                 JudgeVerdict {
                     sufficiency: Sufficiency::Insufficient,
                     reasoning: "not enough".into(),
                     gap_queries: vec!["gap2".into()],
+                    parse_failure: false,
                 },
                 // gap round 2 chunks judge: insufficient, no more queries
                 insufficient_verdict_no_gaps(),
@@ -5112,7 +6091,12 @@ mod agentic_tests {
 
     #[async_trait]
     impl JudgeCaller for CancelsOnNthJudgeCall {
-        async fn call(&self, _q: &str, _s: &[JudgeSource]) -> Result<JudgeVerdict, SearchError> {
+        async fn call(
+            &self,
+            _q: &str,
+            _s: &[JudgeSource],
+            _stage: JudgeStage,
+        ) -> Result<JudgeVerdict, SearchError> {
             let mut count = self.call_count.lock().unwrap();
             *count += 1;
             let n = *count;
@@ -5391,7 +6375,12 @@ mod agentic_tests {
 
     #[async_trait]
     impl JudgeCaller for CancelsAfterGapSearxng {
-        async fn call(&self, _q: &str, _s: &[JudgeSource]) -> Result<JudgeVerdict, SearchError> {
+        async fn call(
+            &self,
+            _q: &str,
+            _s: &[JudgeSource],
+            _stage: JudgeStage,
+        ) -> Result<JudgeVerdict, SearchError> {
             let verdict = self
                 .verdicts
                 .lock()

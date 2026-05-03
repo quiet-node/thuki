@@ -24,9 +24,34 @@ use super::types::{
 /// avoid meta-commentary over the reference material.
 pub const SYNTHESIS_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_synthesis.txt");
 
-/// System prompt for the universal sufficiency judge. Used by the pre-synthesis
-/// judge call over snippets and over reader chunks.
-pub const JUDGE_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_judge.txt");
+/// Stage-specific judge prompts. The snippet stage sees short SearXNG
+/// excerpts (small payload, fast triage rubric); the chunk stage sees full
+/// reader-extracted passages (large payload, evidence-grading rubric with
+/// worked examples). Splitting them improves verdict quality without growing
+/// snippet-stage cost. Both prompts are written for reasoning-before-verdict
+/// emission; the schema in `judge_output_schema` enforces the property order.
+pub const SNIPPET_JUDGE_SYSTEM_PROMPT: &str =
+    include_str!("../../prompts/search_snippet_judge.txt");
+pub const CHUNK_JUDGE_SYSTEM_PROMPT: &str = include_str!("../../prompts/search_chunk_judge.txt");
+
+/// Identifies which retrieval stage a judge call is judging. Selects the
+/// stage-specific system prompt inside `call_judge`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JudgeStage {
+    /// SearXNG snippets (short). Uses `SNIPPET_JUDGE_SYSTEM_PROMPT`.
+    Snippet,
+    /// Reader-extracted chunks (long). Uses `CHUNK_JUDGE_SYSTEM_PROMPT`.
+    Chunk,
+}
+
+impl JudgeStage {
+    fn system_prompt(self) -> &'static str {
+        match self {
+            JudgeStage::Snippet => SNIPPET_JUDGE_SYSTEM_PROMPT,
+            JudgeStage::Chunk => CHUNK_JUDGE_SYSTEM_PROMPT,
+        }
+    }
+}
 
 /// Merged router+judge prompt. Instructs the model to emit a single JSON
 /// object covering both routing classification and history-sufficiency
@@ -84,6 +109,40 @@ fn router_output_schema() -> serde_json::Value {
             "history_sufficiency",
             "optimized_query"
         ],
+        "additionalProperties": false
+    })
+}
+
+/// JSON schema for the sufficiency judge response. Passed to Ollama via the
+/// `format` field so the model is constrained to emit a JSON object that
+/// matches `JudgeVerdict` exactly. Without this, small local models often
+/// emit shape variations (`partial` instead of `Partial`, missing
+/// `gap_queries`, prose wrappers) that defeat the parser even with JSON
+/// mode enabled.
+fn judge_output_schema() -> serde_json::Value {
+    // Property order is reasoning -> sufficiency -> gap_queries. Constrained
+    // decoders that respect schema property order (Ollama with llama.cpp grammar
+    // backend) emit fields in that sequence, which forces the model to write
+    // its analysis BEFORE committing to a label. Empirical work on LLM-as-
+    // judge consistently shows reasoning-first emission improves human-judge
+    // agreement vs verdict-first emission. See Arize / MT-Bench / EMNLP 2025
+    // design-choices studies. The `required` array is also reasoning-first so
+    // serde_json deserialization order matches the wire-emitted order even on
+    // backends that lexicographically reorder properties.
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "reasoning": { "type": "string" },
+            "sufficiency": {
+                "type": "string",
+                "enum": ["sufficient", "partial", "insufficient"]
+            },
+            "gap_queries": {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        },
+        "required": ["reasoning", "sufficiency", "gap_queries"],
         "additionalProperties": false
     })
 }
@@ -414,6 +473,7 @@ pub async fn call_judge(
     cancel_token: &CancellationToken,
     timeout_secs: u64,
     num_ctx: u32,
+    stage: JudgeStage,
 ) -> Result<JudgeVerdict, SearchError> {
     if cancel_token.is_cancelled() {
         return Err(SearchError::Cancelled);
@@ -423,7 +483,7 @@ pub async fn call_judge(
     let messages = vec![
         ChatMessage {
             role: "system".to_string(),
-            content: JUDGE_SYSTEM_PROMPT.to_string(),
+            content: stage.system_prompt().to_string(),
             images: None,
         },
         ChatMessage {
@@ -437,7 +497,7 @@ pub async fn call_judge(
         model,
         client,
         messages,
-        serde_json::json!("json"),
+        judge_output_schema(),
         cancel_token,
         timeout_secs,
         num_ctx,
@@ -461,7 +521,7 @@ pub async fn call_judge(
     let retry_messages = vec![
         ChatMessage {
             role: "system".to_string(),
-            content: JUDGE_SYSTEM_PROMPT.to_string(),
+            content: stage.system_prompt().to_string(),
             images: None,
         },
         ChatMessage {
@@ -475,7 +535,7 @@ pub async fn call_judge(
         model,
         client,
         retry_messages,
-        serde_json::json!("json"),
+        judge_output_schema(),
         cancel_token,
         timeout_secs,
         num_ctx,
@@ -492,11 +552,14 @@ pub async fn call_judge(
     // Both attempts produced unparseable output. Fall back to a safe default
     // so the pipeline still produces a result. Partial with no gap queries
     // lets the pipeline proceed to synthesis on whatever evidence it already
-    // holds rather than aborting with a cryptic error.
+    // holds rather than aborting with a cryptic error. `parse_failure` flags
+    // the verdict as synthetic so the pipeline can emit a `JudgeFailure`
+    // warning and skip the empty `reasoning` from user-facing trace details.
     let mut verdict = JudgeVerdict {
         sufficiency: crate::search::types::Sufficiency::Partial,
-        reasoning: "judge response could not be parsed".to_string(),
+        reasoning: String::new(),
         gap_queries: vec![],
+        parse_failure: true,
     };
     crate::search::judge::normalize_verdict(
         &mut verdict,
@@ -802,14 +865,58 @@ mod prompt_tests {
     use super::*;
 
     #[test]
-    fn judge_prompt_declares_verdict_schema() {
-        let p = JUDGE_SYSTEM_PROMPT;
+    fn snippet_judge_prompt_declares_verdict_schema() {
+        let p = SNIPPET_JUDGE_SYSTEM_PROMPT;
         assert!(p.contains("sufficiency"));
         assert!(p.contains("reasoning"));
         assert!(p.contains("gap_queries"));
         assert!(p.contains("sufficient"));
         assert!(p.contains("partial"));
         assert!(p.contains("insufficient"));
+    }
+
+    #[test]
+    fn chunk_judge_prompt_declares_verdict_schema() {
+        let p = CHUNK_JUDGE_SYSTEM_PROMPT;
+        assert!(p.contains("sufficiency"));
+        assert!(p.contains("reasoning"));
+        assert!(p.contains("gap_queries"));
+        assert!(p.contains("sufficient"));
+        assert!(p.contains("partial"));
+        assert!(p.contains("insufficient"));
+    }
+
+    #[test]
+    fn judge_prompts_emit_reasoning_before_sufficiency() {
+        // Reasoning-first emission is the whole point of the schema reorder.
+        // Both prompts must explicitly tell the model to write reasoning then
+        // sufficiency; otherwise small local models produce verdict-first.
+        for p in [SNIPPET_JUDGE_SYSTEM_PROMPT, CHUNK_JUDGE_SYSTEM_PROMPT] {
+            let r_idx = p
+                .find("\"reasoning\"")
+                .expect("prompt should reference reasoning property");
+            let s_idx = p
+                .find("\"sufficiency\"")
+                .expect("prompt should reference sufficiency property");
+            assert!(
+                r_idx < s_idx,
+                "prompt must demonstrate reasoning before sufficiency"
+            );
+        }
+    }
+
+    #[test]
+    fn judge_stage_system_prompt_routes_correctly() {
+        assert_eq!(
+            JudgeStage::Snippet.system_prompt(),
+            SNIPPET_JUDGE_SYSTEM_PROMPT
+        );
+        assert_eq!(JudgeStage::Chunk.system_prompt(), CHUNK_JUDGE_SYSTEM_PROMPT);
+        assert_ne!(
+            JudgeStage::Snippet.system_prompt(),
+            JudgeStage::Chunk.system_prompt(),
+            "snippet and chunk prompts must differ"
+        );
     }
 
     #[test]
@@ -830,7 +937,17 @@ mod prompt_tests {
         assert!(p.contains("proceed"));
         assert!(p.contains("history_sufficiency"));
         assert!(p.contains("optimized_query"));
-        assert!(p.contains("referent can be named"));
+        // The router prompt MUST default to proceed and treat clarify as the
+        // exception. Regression guard: previous versions defaulted the other
+        // way and over-clarified on grounded named-entity queries.
+        assert!(
+            p.contains("Default to \"proceed\"") || p.contains("DEFAULT decision is \"proceed\""),
+            "router prompt must declare proceed as the default action"
+        );
+        assert!(
+            p.contains("Clarification is the exception"),
+            "router prompt must call out clarification as the exception"
+        );
     }
 }
 
@@ -1335,6 +1452,7 @@ mod router_judge_tests {
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            crate::search::llm::JudgeStage::Snippet,
         )
         .await
         .unwrap();
@@ -1372,6 +1490,7 @@ mod router_judge_tests {
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            crate::search::llm::JudgeStage::Snippet,
         )
         .await
         .unwrap();
@@ -1400,6 +1519,7 @@ mod router_judge_tests {
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            crate::search::llm::JudgeStage::Snippet,
         )
         .await
         .unwrap_err();
@@ -1429,6 +1549,7 @@ mod router_judge_tests {
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            crate::search::llm::JudgeStage::Snippet,
         )
         .await
         .expect("judge should fall back to safe defaults, not error");
@@ -1437,7 +1558,14 @@ mod router_judge_tests {
             crate::search::types::Sufficiency::Partial
         ));
         assert!(verdict.gap_queries.is_empty());
-        assert!(verdict.reasoning.contains("could not be parsed"));
+        assert!(
+            verdict.parse_failure,
+            "fallback verdict must be flagged as a parse failure so the pipeline can emit JudgeFailure"
+        );
+        assert!(
+            verdict.reasoning.is_empty(),
+            "fallback reasoning must be empty so diagnostic strings do not leak into user-facing trace details"
+        );
     }
 
     #[tokio::test]
@@ -1463,6 +1591,7 @@ mod router_judge_tests {
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            crate::search::llm::JudgeStage::Snippet,
         )
         .await
         .expect("judge should fall back to safe defaults, not error");
@@ -1471,6 +1600,75 @@ mod router_judge_tests {
             crate::search::types::Sufficiency::Partial
         ));
         assert!(verdict.gap_queries.is_empty());
+        assert!(verdict.parse_failure);
+        assert!(verdict.reasoning.is_empty());
+    }
+
+    #[tokio::test]
+    async fn judge_output_schema_constrains_verdict_shape() {
+        // The schema must enumerate the exact sufficiency values the parser
+        // accepts and require the three fields the verdict normalizer reads.
+        // If a refactor drifts the schema, small local models start emitting
+        // shape variations that defeat parsing.
+        let schema = judge_output_schema();
+        let suff_enum = &schema["properties"]["sufficiency"]["enum"];
+        assert_eq!(
+            suff_enum,
+            &serde_json::json!(["sufficient", "partial", "insufficient"])
+        );
+        // Required order MUST be reasoning-first so constrained decoders that
+        // honor schema property order force the model to write its analysis
+        // before committing to a verdict.
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["reasoning", "sufficiency", "gap_queries"])
+        );
+        assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+    }
+
+    #[tokio::test]
+    async fn judge_call_requests_schema_constrained_format() {
+        // Asserts the judge request sets `format` to the schema, not the bare
+        // `"json"` string. Without the schema, Ollama JSON mode allows any
+        // valid JSON shape and small models drift away from JudgeVerdict.
+        let server = MockServer::start().await;
+        let captured: std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured_clone = captured.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(move |req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                *captured_clone.lock().unwrap() = Some(body["format"].clone());
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "message": {
+                        "role": "assistant",
+                        "content": "{\"sufficiency\":\"sufficient\",\"reasoning\":\"r\",\"gap_queries\":[]}"
+                    },
+                    "done": true
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        call_judge(
+            &format!("{}/api/chat", server.uri()),
+            "m",
+            &client,
+            "q",
+            &[],
+            &token,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
+            crate::search::llm::JudgeStage::Snippet,
+        )
+        .await
+        .unwrap();
+
+        let format = captured.lock().unwrap().clone().expect("format captured");
+        assert_eq!(format, judge_output_schema());
     }
 
     #[tokio::test]
@@ -1512,6 +1710,7 @@ mod router_judge_tests {
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            crate::search::llm::JudgeStage::Snippet,
         )
         .await
         .unwrap();
@@ -1552,6 +1751,7 @@ mod router_judge_tests {
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             crate::config::defaults::DEFAULT_NUM_CTX,
+            crate::search::llm::JudgeStage::Snippet,
         )
         .await
         .unwrap_err();
@@ -1655,6 +1855,7 @@ mod router_judge_tests {
             &token,
             crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
             65536,
+            JudgeStage::Snippet,
         )
         .await
         .unwrap();

@@ -16,10 +16,11 @@ use serde::{Deserialize, Serialize};
 use super::defaults::{
     DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
     DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
-    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
-    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
-    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
+    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
+    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
+    DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
 };
 
 /// Static, user-tunable inference daemon configuration.
@@ -167,6 +168,12 @@ pub struct SearchSection {
     pub judge_timeout_s: u64,
     /// Seconds before the router LLM call is abandoned.
     pub router_timeout_s: u64,
+    /// Wall-clock budget for the full `/search` pipeline turn (seconds).
+    /// When exceeded, the gap-refinement loop bails out early and the
+    /// pipeline force-synthesizes on whatever evidence it has gathered,
+    /// surfacing a `BudgetExhausted` warning. Raise for deeper research;
+    /// lower for snappier interactive use.
+    pub pipeline_wall_clock_budget_s: u64,
 }
 
 impl Default for SearchSection {
@@ -182,6 +189,7 @@ impl Default for SearchSection {
             reader_batch_timeout_s: DEFAULT_READER_BATCH_TIMEOUT_S,
             judge_timeout_s: DEFAULT_JUDGE_TIMEOUT_S,
             router_timeout_s: DEFAULT_ROUTER_TIMEOUT_S,
+            pipeline_wall_clock_budget_s: DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S,
         }
     }
 }

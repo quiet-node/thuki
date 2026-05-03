@@ -135,6 +135,7 @@ mod tests {
                 "q4".to_string(),
                 "q5".to_string(),
             ],
+            parse_failure: false,
         };
         normalize_verdict(&mut v, 3);
         assert_eq!(
@@ -149,6 +150,7 @@ mod tests {
             sufficiency: Sufficiency::Sufficient,
             reasoning: "x".to_string(),
             gap_queries: vec!["q1".to_string()],
+            parse_failure: false,
         };
         normalize_verdict(&mut v, 3);
         assert!(v.gap_queries.is_empty());

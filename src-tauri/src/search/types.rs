@@ -234,6 +234,12 @@ pub struct JudgeVerdict {
     /// `Sufficient`.
     #[serde(default)]
     pub gap_queries: Vec<String>,
+    /// Set when the verdict is a synthetic fallback because the model
+    /// returned output that could not be parsed even after a stricter retry.
+    /// The pipeline uses this to emit a `JudgeFailure` warning and to suppress
+    /// the diagnostic `reasoning` from user-facing trace details.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub parse_failure: bool,
 }
 
 /// Non-fatal conditions the pipeline can encounter. Emitted via
@@ -255,6 +261,23 @@ pub enum SearchWarning {
     /// The router/judge LLM call failed or returned unparseable JSON; the
     /// pipeline fell back to a default branch.
     RouterFailure,
+    /// A sufficiency judge call returned output that could not be parsed even
+    /// after a stricter retry; the pipeline fell back to a safe default
+    /// verdict (`Partial` with no gap queries) so synthesis still proceeds.
+    /// Distinct from `RouterFailure` so frontends and telemetry can tell the
+    /// two LLM gates apart.
+    JudgeFailure,
+    /// The wall-clock or input-bytes pipeline budget was hit before the gap
+    /// loop converged on a `Sufficient` verdict. The pipeline force-
+    /// synthesizes on whatever evidence has been gathered. The frontend can
+    /// surface this as "answered with available evidence in time".
+    BudgetExhausted,
+    /// The gap-refinement loop produced two consecutive rounds with the same
+    /// fingerprint (same queries, same new-URL count). The pipeline exited
+    /// early instead of looping until the iteration cap. Indicates the model
+    /// is regenerating the same gap queries; running more rounds would not
+    /// surface new evidence.
+    NoProgress,
     /// The synthesis LLM stream was interrupted (e.g., timeout) before
     /// completion; the response may be truncated.
     SynthesisInterrupted,

@@ -101,6 +101,9 @@ export type SearchWarning =
   | 'no_results_initial'
   | 'iteration_cap_exhausted'
   | 'router_failure'
+  | 'judge_failure'
+  | 'budget_exhausted'
+  | 'no_progress'
   | 'synthesis_interrupted';
 
 export type SearchEvent =
