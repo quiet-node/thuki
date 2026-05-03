@@ -1097,6 +1097,25 @@ mod router_judge_tests {
     }
 
     #[test]
+    fn try_parse_router_output_accepts_braces_inside_string_fields() {
+        let output = try_parse_router_output(
+            r#"{"action":"clarify","clarifying_question":"what does {id} mean?","history_sufficiency":"partial","optimized_query":"rust format string } escape"}"#,
+        )
+        .expect("valid JSON with braces in strings should parse");
+
+        assert_eq!(output.action, Action::Clarify);
+        assert_eq!(
+            output.clarifying_question.as_deref(),
+            Some("what does {id} mean?")
+        );
+        assert_eq!(output.history_sufficiency, Some(Sufficiency::Partial));
+        assert_eq!(
+            output.optimized_query.as_deref(),
+            Some("rust format string } escape")
+        );
+    }
+
+    #[test]
     fn normalize_router_output_treats_blank_clarifying_question_as_none() {
         let output = normalize_router_output(
             r#"{"action":"clarify","clarifying_question":"   ","history_sufficiency":null,"optimized_query":null}"#,
