@@ -174,17 +174,10 @@ pub const BOUNDS_TIMEOUT_S: (u64, u64) = (1, 300);
 /// the pipeline records every LLM request/response, every SearXNG query and
 /// raw response body, every reader batch (per-URL latency, raw body, full
 /// extracted text), and every judge verdict to a JSON-Lines file under
-/// `trace_dir`. Not exposed via the Settings GUI; flip in `config.toml`
-/// directly. Disabled in shipped builds.
+/// `~/Library/Application Support/com.quietnode.thuki/traces/`. Toggleable
+/// from the Settings panel (Web tab, Diagnostics section). Off in shipped
+/// builds by default.
 pub const DEFAULT_DEBUG_SEARCH_TRACE_ENABLED: bool = false;
-
-/// Directory the trace file is written under when
-/// `DEFAULT_DEBUG_SEARCH_TRACE_ENABLED` is on. Resolved against the process
-/// working directory, which is the repo root in `bun run dev`. The directory
-/// is `.gitignore`d so traces never leave the developer machine. In a
-/// packaged build cwd is unspecified, but trace recording is off by default
-/// in shipped builds, so the cwd-relative path only applies to dev runs.
-pub const DEFAULT_DEBUG_TRACE_DIR: &str = "./traces";
 
 // Ollama API baked-in limits: not exposed in config.toml because they bound
 // attacker-controlled data (response bodies from the local Ollama daemon) and
@@ -261,11 +254,14 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("search", "judge_timeout_s"),
     ("search", "router_timeout_s"),
     ("search", "pipeline_wall_clock_budget_s"),
+    // [debug]
+    ("debug", "search_trace_enabled"),
 ];
 
 /// Authoritative allowlist of section names accepted by `reset_config`.
 /// Mirrors the top-level structure of `AppConfig`.
-pub const ALLOWED_SECTIONS: &[&str] = &["inference", "prompt", "window", "quote", "search"];
+pub const ALLOWED_SECTIONS: &[&str] =
+    &["inference", "prompt", "window", "quote", "search", "debug"];
 
 /// Special turn-boundary tokens used by the major Ollama-served model families.
 /// Ollama normally parses these out of `/api/chat` responses, but some fine-tunes

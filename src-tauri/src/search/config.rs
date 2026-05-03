@@ -65,14 +65,9 @@ pub struct SearchRuntimeConfig {
     /// allocating hundreds of KB of source text.
     pub pipeline_input_char_budget: usize,
     /// Whether the forensic per-turn search trace recorder is on. Off in
-    /// shipped builds; flipped via `[debug] search_trace_enabled` in
-    /// `config.toml` for local quality investigation. See
-    /// [`crate::search::recorder`] for the file format.
+    /// shipped builds; toggled from the Settings panel (Web tab, Diagnostics
+    /// section). See [`crate::search::recorder`] for the file format.
     pub trace_enabled: bool,
-    /// Directory the trace file is written under when `trace_enabled` is on.
-    /// Resolved against the process working directory. Defaults to
-    /// `./traces` (gitignored).
-    pub trace_dir: String,
 }
 
 impl SearchRuntimeConfig {
@@ -96,7 +91,6 @@ impl SearchRuntimeConfig {
             pipeline_wall_clock_budget_s: cfg.search.pipeline_wall_clock_budget_s,
             pipeline_input_char_budget: defaults::PIPELINE_INPUT_CHAR_BUDGET,
             trace_enabled: cfg.debug.search_trace_enabled,
-            trace_dir: cfg.debug.trace_dir.clone(),
         }
     }
 
@@ -133,7 +127,6 @@ impl Default for SearchRuntimeConfig {
             pipeline_wall_clock_budget_s: defaults::DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S,
             pipeline_input_char_budget: defaults::PIPELINE_INPUT_CHAR_BUDGET,
             trace_enabled: defaults::DEFAULT_DEBUG_SEARCH_TRACE_ENABLED,
-            trace_dir: defaults::DEFAULT_DEBUG_TRACE_DIR.to_string(),
         }
     }
 }
@@ -183,7 +176,6 @@ mod tests {
             cfg.trace_enabled,
             defaults::DEFAULT_DEBUG_SEARCH_TRACE_ENABLED
         );
-        assert_eq!(cfg.trace_dir, defaults::DEFAULT_DEBUG_TRACE_DIR);
     }
 
     #[test]
@@ -201,7 +193,6 @@ mod tests {
         app.search.router_timeout_s = 14;
         app.search.pipeline_wall_clock_budget_s = 120;
         app.debug.search_trace_enabled = true;
-        app.debug.trace_dir = "/tmp/thuki-traces".to_string();
 
         let cfg = SearchRuntimeConfig::from_app_config(&app);
         assert_eq!(cfg.searxng_url, "http://10.0.0.1:9000");
@@ -216,7 +207,6 @@ mod tests {
         assert_eq!(cfg.router_timeout_s, 14);
         assert_eq!(cfg.pipeline_wall_clock_budget_s, 120);
         assert!(cfg.trace_enabled);
-        assert_eq!(cfg.trace_dir, "/tmp/thuki-traces");
     }
 
     #[test]

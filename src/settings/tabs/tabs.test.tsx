@@ -61,6 +61,9 @@ const CONFIG: RawAppConfig = {
     judge_timeout_s: 30,
     router_timeout_s: 45,
   },
+  debug: {
+    search_trace_enabled: false,
+  },
 };
 
 beforeEach(() => {
@@ -600,13 +603,32 @@ describe('DisplayTab', () => {
 });
 
 describe('SearchTab', () => {
-  it('renders Services, Pipeline, and Timeouts sections', () => {
+  it('renders Services, Pipeline, Timeouts, and Diagnostics sections', () => {
     render(<SearchTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     expect(screen.getByText('Services')).toBeInTheDocument();
     expect(screen.getByText('Pipeline')).toBeInTheDocument();
     expect(screen.getByText('Timeouts')).toBeInTheDocument();
+    expect(screen.getByText('Diagnostics')).toBeInTheDocument();
     expect(screen.getByText('SearXNG URL')).toBeInTheDocument();
     expect(screen.getByText('Router timeout')).toBeInTheDocument();
+    expect(screen.getByText('Search trace')).toBeInTheDocument();
+  });
+
+  it('renders the search trace toggle in the off state by default', () => {
+    render(<SearchTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const toggle = screen.getByRole('switch', { name: 'Enable search trace' });
+    expect(toggle).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('renders the search trace toggle in the on state when config is true', () => {
+    const configOn: RawAppConfig = {
+      ...CONFIG,
+      debug: { search_trace_enabled: true },
+    };
+    render(<SearchTab config={configOn} resyncToken={0} onSaved={() => {}} />);
+    const toggle = screen.getByRole('switch', { name: 'Enable search trace' });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
   });
 });
 

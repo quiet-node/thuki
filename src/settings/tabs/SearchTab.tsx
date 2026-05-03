@@ -7,7 +7,7 @@
  * in the About tab to keep this surface focused on tuning.
  */
 
-import { Section, NumberSlider, NumberStepper, TextField } from '../components';
+import { Section, NumberSlider, NumberStepper, TextField, Toggle } from '../components';
 import { SaveField } from '../components/SaveField';
 import { configHelp } from '../configHelpers';
 import type { RawAppConfig } from '../types';
@@ -210,6 +210,25 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
               unit="s"
               onChange={setValue}
               ariaLabel="Router timeout"
+            />
+          )}
+        />
+      </Section>
+
+      <Section heading="Diagnostics">
+        <SaveField
+          section="debug"
+          fieldKey="search_trace_enabled"
+          label="Search trace"
+          helper={configHelp('debug', 'search_trace_enabled')}
+          initialValue={config.debug.search_trace_enabled}
+          resyncToken={resyncToken}
+          onSaved={onSaved}
+          render={(value, setValue) => (
+            <Toggle
+              checked={value}
+              onChange={setValue}
+              ariaLabel="Enable search trace"
             />
           )}
         />

@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use tauri::{ipc::Channel, State};
+use tauri::{ipc::Channel, Manager, State};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::{ConversationHistory, GenerationState};
@@ -65,6 +65,7 @@ pub async fn search_pipeline(
     history: State<'_, ConversationHistory>,
     app_config: State<'_, parking_lot::RwLock<AppConfig>>,
     active_model_state: State<'_, ActiveModelState>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Snapshot the config once so the entire pipeline sees a consistent view
     // even if the user edits Settings while a search is in flight.
@@ -121,8 +122,13 @@ pub async fn search_pipeline(
     // pipeline step records into a single JSON-Lines file under
     // `runtime_config.trace_dir`.
     let turn_id = recorder::new_turn_id();
+    let trace_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("./traces"))
+        .join("traces");
     let recorder: Arc<dyn PipelineRecorder> = if runtime_config.trace_enabled {
-        Arc::new(FileRecorder::new(&runtime_config.trace_dir, &turn_id))
+        Arc::new(FileRecorder::new(&trace_dir, &turn_id))
     } else {
         Arc::new(NoopRecorder)
     };

@@ -61,21 +61,21 @@ fn parse_sample() -> DocumentMut {
 #[test]
 fn allowed_fields_count_matches_schema_field_count() {
     // Hand-counted from `AppConfig`: inference(3) + prompt(1) + window(3) + quote(3)
-    // + search(11) = 21 tunable fields. The active model slug lives in the
+    // + search(11) + debug(1) = 22 tunable fields. The active model slug lives in the
     // SQLite app_config table via ActiveModelState, not in TOML. The collapsed
     // bar height and hide-commit delay are baked into the frontend (see
     // `WindowSection` doc) because they have no perceptible effect across
     // their usable range. If this assertion fails, the schema has drifted
     // from the allowlist and someone added a field without extending
     // ALLOWED_FIELDS.
-    assert_eq!(ALLOWED_FIELDS.len(), 21);
+    assert_eq!(ALLOWED_FIELDS.len(), 22);
 }
 
 #[test]
 fn allowed_sections_match_app_config_top_level_keys() {
     assert_eq!(
         ALLOWED_SECTIONS,
-        &["inference", "prompt", "window", "quote", "search"]
+        &["inference", "prompt", "window", "quote", "search", "debug"]
     );
 }
 

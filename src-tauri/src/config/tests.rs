@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    DEFAULT_DEBUG_SEARCH_TRACE_ENABLED, DEFAULT_DEBUG_TRACE_DIR, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_DEBUG_SEARCH_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
     DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
     DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
     DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
@@ -1050,7 +1050,6 @@ fn config_error_io_error_serializes_io_source_as_display_string() {
 fn debug_section_default_matches_compiled_defaults() {
     let d = DebugSection::default();
     assert_eq!(d.search_trace_enabled, DEFAULT_DEBUG_SEARCH_TRACE_ENABLED);
-    assert_eq!(d.trace_dir, DEFAULT_DEBUG_TRACE_DIR);
 }
 
 #[test]
@@ -1060,47 +1059,15 @@ fn app_config_default_includes_debug_section_with_compiled_defaults() {
         c.debug.search_trace_enabled,
         DEFAULT_DEBUG_SEARCH_TRACE_ENABLED
     );
-    assert_eq!(c.debug.trace_dir, DEFAULT_DEBUG_TRACE_DIR);
 }
 
 #[test]
-fn debug_empty_trace_dir_falls_back_to_default() {
+fn debug_search_trace_enabled_round_trips_through_load() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        "[debug]\nsearch_trace_enabled = true\ntrace_dir = \"\"\n",
-    )
-    .unwrap();
+    std::fs::write(&path, "[debug]\nsearch_trace_enabled = true\n").unwrap();
     let loaded = load_from_path(&path).unwrap();
     assert!(loaded.debug.search_trace_enabled);
-    assert_eq!(
-        loaded.debug.trace_dir, DEFAULT_DEBUG_TRACE_DIR,
-        "empty trace_dir must resolve to compiled default"
-    );
-}
-
-#[test]
-fn debug_whitespace_trace_dir_falls_back_to_default() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(&path, "[debug]\ntrace_dir = \"   \"\n").unwrap();
-    let loaded = load_from_path(&path).unwrap();
-    assert_eq!(loaded.debug.trace_dir, DEFAULT_DEBUG_TRACE_DIR);
-}
-
-#[test]
-fn debug_explicit_values_round_trip_through_load() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        "[debug]\nsearch_trace_enabled = true\ntrace_dir = \"/tmp/thuki-traces\"\n",
-    )
-    .unwrap();
-    let loaded = load_from_path(&path).unwrap();
-    assert!(loaded.debug.search_trace_enabled);
-    assert_eq!(loaded.debug.trace_dir, "/tmp/thuki-traces");
 }
 
 #[test]
@@ -1116,19 +1083,5 @@ fn toml_without_debug_section_deserializes_to_defaults() {
     assert_eq!(
         loaded.debug.search_trace_enabled, DEFAULT_DEBUG_SEARCH_TRACE_ENABLED,
         "missing [debug] section must deserialize to defaults via #[serde(default)]"
-    );
-    assert_eq!(loaded.debug.trace_dir, DEFAULT_DEBUG_TRACE_DIR);
-}
-
-#[test]
-fn toml_partial_debug_section_fills_missing_fields_from_defaults() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(&path, "[debug]\nsearch_trace_enabled = true\n").unwrap();
-    let loaded = load_from_path(&path).unwrap();
-    assert!(loaded.debug.search_trace_enabled);
-    assert_eq!(
-        loaded.debug.trace_dir, DEFAULT_DEBUG_TRACE_DIR,
-        "unset field in partial [debug] must fall back to default"
     );
 }

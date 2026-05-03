@@ -44,6 +44,9 @@ const SAMPLE: RawAppConfig = {
     judge_timeout_s: 30,
     router_timeout_s: 45,
   },
+  debug: {
+    search_trace_enabled: false,
+  },
 };
 
 function defaultInvoke(cmd: string): unknown {

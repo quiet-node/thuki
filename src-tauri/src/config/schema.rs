@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{
-    DEFAULT_DEBUG_SEARCH_TRACE_ENABLED, DEFAULT_DEBUG_TRACE_DIR, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_DEBUG_SEARCH_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
     DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
     DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
     DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
@@ -195,30 +195,24 @@ impl Default for SearchSection {
     }
 }
 
-/// Developer-only debugging knobs.
+/// Developer and power-user debugging knobs.
 ///
-/// Not exposed via the Settings GUI: these fields are intentionally absent
-/// from `defaults::ALLOWED_FIELDS` and `defaults::ALLOWED_SECTIONS`, so the
-/// `set_config_field` Tauri command rejects any GUI write attempt. Flip them
-/// in `config.toml` directly. Off in shipped builds.
+/// `search_trace_enabled` is exposed in the Settings GUI (Web tab, Diagnostics
+/// section) so users can toggle it without editing `config.toml`. Off in
+/// shipped builds by default.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DebugSection {
     /// When on, the `/search` pipeline writes a forensic JSON-Lines trace
-    /// file per turn under `trace_dir`. Local-only diagnostic; never enable
-    /// in shipped builds.
+    /// file per turn under `~/Library/Application Support/com.quietnode.thuki/traces/`.
+    /// Toggleable from the Settings panel. Off by default.
     pub search_trace_enabled: bool,
-    /// Directory the trace file is written under. Resolved against the
-    /// process working directory. Defaults to `./traces`, which is
-    /// `.gitignore`d.
-    pub trace_dir: String,
 }
 
 impl Default for DebugSection {
     fn default() -> Self {
         Self {
             search_trace_enabled: DEFAULT_DEBUG_SEARCH_TRACE_ENABLED,
-            trace_dir: DEFAULT_DEBUG_TRACE_DIR.to_string(),
         }
     }
 }
