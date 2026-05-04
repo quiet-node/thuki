@@ -806,7 +806,6 @@ struct SearchExecutionContext<'a> {
     num_ctx: u32,
     /// Forensic per-turn recorder. [`super::recorder::NoopRecorder`] in
     /// production unless `runtime_config.trace_enabled` is set.
-    #[allow(dead_code)]
     recorder: &'a Arc<dyn PipelineRecorder>,
 }
 

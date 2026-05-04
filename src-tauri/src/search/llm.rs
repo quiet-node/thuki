@@ -258,7 +258,8 @@ async fn request_json(
         .timeout(std::time::Duration::from_secs(timeout_secs));
 
     let started = std::time::Instant::now();
-    let request_body_value = serde_json::to_value(&body).unwrap_or(serde_json::Value::Null);
+    let request_body_value =
+        serde_json::to_value(&body).unwrap_or(serde_json::json!({"_serialize_error": true}));
     let emit = |response_raw: Option<String>, error: Option<String>| {
         recorder.record(RecorderEvent::LlmCall {
             stage: stage.to_string(),
@@ -602,7 +603,8 @@ pub async fn call_judge(
         recorder.record(RecorderEvent::JudgeVerdict {
             stage: stage_label.to_string(),
             raw: raw.clone(),
-            normalized: serde_json::to_value(&verdict).unwrap_or(serde_json::Value::Null),
+            normalized: serde_json::to_value(&verdict)
+                .unwrap_or(serde_json::json!({"_serialize_error": true})),
         });
         return Ok(verdict);
     }
@@ -648,7 +650,8 @@ pub async fn call_judge(
         recorder.record(RecorderEvent::JudgeVerdict {
             stage: stage_retry_label.to_string(),
             raw: retry_raw.clone(),
-            normalized: serde_json::to_value(&verdict).unwrap_or(serde_json::Value::Null),
+            normalized: serde_json::to_value(&verdict)
+                .unwrap_or(serde_json::json!({"_serialize_error": true})),
         });
         return Ok(verdict);
     }
@@ -672,7 +675,8 @@ pub async fn call_judge(
     recorder.record(RecorderEvent::JudgeVerdict {
         stage: format!("{stage_label}_synthetic_partial"),
         raw: format!("first={raw}\nretry={retry_raw}"),
-        normalized: serde_json::to_value(&verdict).unwrap_or(serde_json::Value::Null),
+        normalized: serde_json::to_value(&verdict)
+            .unwrap_or(serde_json::json!({"_serialize_error": true})),
     });
     Ok(verdict)
 }

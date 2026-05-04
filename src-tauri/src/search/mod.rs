@@ -121,12 +121,12 @@ pub async fn search_pipeline(
     // Build the per-turn forensic recorder. When the dev-only debug flag is
     // off (production default) this is a zero-cost noop. When on, every
     // pipeline step records into a single JSON-Lines file under
-    // `runtime_config.trace_dir`.
+    // `app_data_dir()/traces/`.
     let turn_id = recorder::new_turn_id();
     let trace_dir = app
         .path()
         .app_data_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("./traces"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("thuki"))
         .join("traces");
     let recorder: Arc<dyn PipelineRecorder> = if runtime_config.trace_enabled {
         Arc::new(FileRecorder::new(&trace_dir, &turn_id))

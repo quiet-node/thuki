@@ -4,7 +4,7 @@
 //! the pipeline records every LLM request/response, every SearXNG query and
 //! raw response, every reader batch (per-URL latency + raw body + full
 //! extracted text), every chunker/rerank step, and every judge verdict to a
-//! single JSON-Lines file under [`DebugSection::trace_dir`]. One file per
+//! single JSON-Lines file under `app_data_dir()/traces/`. One file per
 //! pipeline turn.
 //!
 //! Off in shipped builds. Intended for local quality investigation: open a
