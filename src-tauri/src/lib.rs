@@ -357,31 +357,17 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
     }
 }
 
-/// Shows (or focuses, if already visible) the Settings window.
-///
-/// The settings window is converted to a ThukiSettingsPanel NSPanel subclass
-/// (done once in `init_settings_panel` during setup). Using NSPanel with
-/// `can_become_key_window: true` allows the window to receive keyboard focus
-/// without switching the app's ActivationPolicy to Regular. Switching to
-/// Regular is what causes the Dock icon to appear; restoring it back to
-/// Accessory is unreliable when the app is frontmost. Staying in Accessory
-/// mode permanently avoids both problems.
-///
-/// Idempotent: invoking while Settings is already visible re-focuses without
-/// double-mounting the React tree (close handler hides instead of destroying).
-///
-/// Falls back to raw WebviewWindow show/focus if the panel handle is
-/// unavailable (e.g., if init_settings_panel failed at startup).
 /// Centers the settings window horizontally on its monitor and places it
 /// below the macOS menu bar with a comfortable gap. Called every time the
 /// settings window is shown so the position is always correct regardless of
-/// OS-default spawn position or previous moves.
+/// the OS-default spawn position or previous moves.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn position_settings_window(window: &tauri::WebviewWindow) {
     const SETTINGS_WIDTH: f64 = 580.0;
-    // macOS menu bar is ~24 px logical; notched MacBooks push it to ~37 px.
-    // 44 px clears both and leaves a visible gap.
-    const TOP_MARGIN: f64 = 44.0;
+    // macOS menu bar is ~24 px logical on standard displays; notched MacBooks
+    // push it to ~37 px. 72 px gives a comfortable ~35-48 px visual gap below
+    // the menu bar on all hardware.
+    const TOP_MARGIN: f64 = 72.0;
 
     let monitor = window
         .current_monitor()
@@ -407,6 +393,21 @@ fn position_settings_window(window: &tauri::WebviewWindow) {
     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
 }
 
+/// Shows (or focuses, if already visible) the Settings window.
+///
+/// The settings window is converted to a ThukiSettingsPanel NSPanel subclass
+/// (done once in `init_settings_panel` during setup). Using NSPanel with
+/// `can_become_key_window: true` allows the window to receive keyboard focus
+/// without switching the app's ActivationPolicy to Regular. Switching to
+/// Regular is what causes the Dock icon to appear; restoring it back to
+/// Accessory is unreliable when the app is frontmost. Staying in Accessory
+/// mode permanently avoids both problems.
+///
+/// Idempotent: invoking while Settings is already visible re-focuses without
+/// double-mounting the React tree (close handler hides instead of destroying).
+///
+/// Falls back to raw WebviewWindow show/focus if the panel handle is
+/// unavailable (e.g., if init_settings_panel failed at startup).
 fn show_settings_window(app_handle: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
