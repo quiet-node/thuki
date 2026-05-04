@@ -12,6 +12,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Renamed the `[model]` section in `config.toml` to `[inference]`. The section still contains a single field, `ollama_url`, but the name now reflects what it actually configures (the inference daemon endpoint, not a model). There is no backward-compatibility shim: if you had a custom `[model]` section, rename it to `[inference]` after upgrading.
 - Active model selection is now strictly Option-typed end to end. Ollama's `/api/tags` is the single source of truth: when nothing is installed and nothing is persisted, Thuki refuses to dispatch requests and surfaces a "Pick a model" prompt instead of falling back to a hardcoded slug. The previous `DEFAULT_MODEL_NAME` constant has been removed.
 
+## [0.7.0](https://github.com/quiet-node/thuki/compare/v0.6.1...v0.7.0) (2026-05-04)
+
+
+### Features
+
+* add utility slash commands ([#93](https://github.com/quiet-node/thuki/issues/93)) ([98a3a19](https://github.com/quiet-node/thuki/commit/98a3a196710edfbd99c9860753fea5cbfaf9c28b))
+* **ci:** add floating nightly release workflow ([#109](https://github.com/quiet-node/thuki/issues/109)) ([c213235](https://github.com/quiet-node/thuki/commit/c2132358da02428d77b43a4e288f4dc987782ca2))
+* **config:** make max_images user-tunable with a cap of 20 ([#121](https://github.com/quiet-node/thuki/issues/121)) ([4e1b3af](https://github.com/quiet-node/thuki/commit/4e1b3afbbf3c2caa116e84bfdedd5cec941709a6))
+* **config:** migrate runtime configuration from env vars to TOML ([#102](https://github.com/quiet-node/thuki/issues/102)) ([20abeb0](https://github.com/quiet-node/thuki/commit/20abeb025655159f9ad5bcc4287ea8f76eda6026))
+* **config:** user-tunable context window with log-scale slider ([#120](https://github.com/quiet-node/thuki/issues/120)) ([1c18ddf](https://github.com/quiet-node/thuki/commit/1c18ddf56ea50607fe034945f38d79edd123d885))
+* **continuity:** cross-model history sanitization and capability-aware filtering ([#107](https://github.com/quiet-node/thuki/issues/107)) ([c976d63](https://github.com/quiet-node/thuki/commit/c976d63a6b8b1f9ac171fd988ec54260dba3beae))
+* in-app model picker with hardened selection pipeline ([#103](https://github.com/quiet-node/thuki/issues/103)) ([d6cf4fb](https://github.com/quiet-node/thuki/commit/d6cf4fb576e72029834d53c12a844fed6a41a975))
+* introduce agentic search pipeline with live trace streaming ([#100](https://github.com/quiet-node/thuki/issues/100)) ([445534f](https://github.com/quiet-node/thuki/commit/445534f0835ebe8b2e60e8d6a6f741b052534215))
+* **model-picker:** add larger-models nudge hint ([#118](https://github.com/quiet-node/thuki/issues/118)) ([6c0df18](https://github.com/quiet-node/thuki/commit/6c0df189450ac1eb21dfe2d8d571c1ec9e48b8af))
+* **search:** add forensic trace recorder ([#126](https://github.com/quiet-node/thuki/issues/126)) ([e1d5997](https://github.com/quiet-node/thuki/commit/e1d5997572150b1b8a77c1c0b4a50943656dddb1))
+* sync slash command docs and prompt metadata ([#101](https://github.com/quiet-node/thuki/issues/101)) ([7501d60](https://github.com/quiet-node/thuki/commit/7501d601d5fe83e33778737a68a84b9fcb968e03))
+* **tray:** left-click opens Thuki, right-click shows menu ([#123](https://github.com/quiet-node/thuki/issues/123)) ([81f133e](https://github.com/quiet-node/thuki/commit/81f133e1f2a8c04a151caefbaf8f673a53969284))
+* **ui:** add tip bar with contextual usage tips ([#119](https://github.com/quiet-node/thuki/issues/119)) ([ed9b250](https://github.com/quiet-node/thuki/commit/ed9b2504c98fd95a90395c4fe398367872c8f15d))
+
+
+### Bug Fixes
+
+* **chat:** prevent source-row clicks from opening URL twice ([#104](https://github.com/quiet-node/thuki/issues/104)) ([e1d2cdf](https://github.com/quiet-node/thuki/commit/e1d2cdf85c2f81219784536779cd7048340df2fa))
+* **ci:** set VITE_GIT_COMMIT_SHA on tauri build step not frontend step ([#111](https://github.com/quiet-node/thuki/issues/111)) ([ed80d15](https://github.com/quiet-node/thuki/commit/ed80d151f907313c44be6d92cf2017be3c78d802))
+* **search:** correct Setup Guide anchor in sandbox-offline card ([#112](https://github.com/quiet-node/thuki/issues/112)) ([29f2c1f](https://github.com/quiet-node/thuki/commit/29f2c1f2af7e2c8631e40d336b8735e5c8acbdcd))
+* **search:** harden judge fallback and config allowlist ([#125](https://github.com/quiet-node/thuki/issues/125)) ([cf82a95](https://github.com/quiet-node/thuki/commit/cf82a95f722573cd282a2ffec3c2e94e84e9ec12))
+* **settings:** allow text selection in settings panel ([#122](https://github.com/quiet-node/thuki/issues/122)) ([5c552cb](https://github.com/quiet-node/thuki/commit/5c552cb9782636b359b0ee7d1c95de5b5bc83350))
+* **settings:** eliminate Dock icon by converting settings window to NSPanel ([#117](https://github.com/quiet-node/thuki/issues/117)) ([217fa00](https://github.com/quiet-node/thuki/commit/217fa00ef4b570cadda33d44d44e2c3ef65fcedd))
+
 ## [0.6.1](https://github.com/quiet-node/thuki/compare/v0.6.0...v0.6.1) (2026-04-14)
 
 
