@@ -73,6 +73,12 @@ reader_per_url_timeout_s = 10
 reader_batch_timeout_s = 30
 judge_timeout_s = 30
 router_timeout_s = 45
+
+[debug]
+# When true, writes a forensic JSON-Lines trace file for every /search turn to
+# ~/Library/Application Support/com.quietnode.thuki/traces/.
+# Also toggleable from the Settings panel (Web tab, Diagnostics section).
+search_trace_enabled = false
 ```
 
 ## Reading the reference tables
@@ -171,6 +177,14 @@ For security, both URLs default to your local machine (`127.0.0.1`) and should s
 | `DEFAULT_READER_RETRY_DELAY_MS` | `500`                      | No       | Balances pressure on the sandbox reader against perceived responsiveness; no user signal that it needs to vary.                              | —             | If a page fetch fails, this is how long (in milliseconds) Thuki waits before trying again, so the reader service does not get hammered with retries.                                                                                                                                                                                  |
 | `DEFAULT_MAX_QUERY_CHARS`       | `500`                      | No       | Defense-in-depth bound on outgoing queries to external engines; exposing it lets a malformed prompt DOS upstream services.                   | —             | The longest a search query can be (in characters) before Thuki trims it. A safety cap on what gets sent to the search engine; the AI's queries are normally well under this.                                                                                                                                                          |
 | `DEFAULT_MAX_SNIPPET_CHARS`     | `500`                      | No       | Defense-in-depth bound on incoming text from external engines; exposing it lets a malicious result flood the rerank prompt.                  | —             | The longest each search-result snippet (the title and short blurb under each link) can be before Thuki trims it. A safety cap to keep an oversized result from blowing up the AI's prompt.                                                                                                                                            |
+
+### `[debug]`
+
+Diagnostics toggles. `search_trace_enabled` is exposed in the Settings panel (Web tab, Diagnostics section) so you can flip it without editing `config.toml`.
+
+| Field                  | Default | Tunable? | Why not tunable | Bounds | Description |
+| :--------------------- | :------ | :------- | :-------------- | :----- | :---------- |
+| `search_trace_enabled` | `false` | Yes      | —               | —      | When on, Thuki writes a forensic JSON-Lines trace file for every `/search` turn to `~/Library/Application Support/com.quietnode.thuki/traces/`. Each file records every query sent to SearXNG, every page the reader fetched, and every AI decision in that turn. Useful for diagnosing why a search went wrong; leave off for normal use. |
 
 ### `[activation]` (not in TOML)
 

@@ -342,7 +342,7 @@ pub struct SearxResponse {
 
 /// A single SearXNG result. The `content` field is the engine-provided snippet;
 /// HTML entity decoding and length-capping happen in the client layer.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SearxResult {
     #[serde(default)]
     pub title: String,

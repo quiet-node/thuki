@@ -64,6 +64,10 @@ pub struct SearchRuntimeConfig {
     /// Tests dial this down to exercise the early-exit path without
     /// allocating hundreds of KB of source text.
     pub pipeline_input_char_budget: usize,
+    /// Whether the forensic per-turn search trace recorder is on. Off in
+    /// shipped builds; toggled from the Settings panel (Web tab, Diagnostics
+    /// section). See [`crate::search::recorder`] for the file format.
+    pub trace_enabled: bool,
 }
 
 impl SearchRuntimeConfig {
@@ -86,6 +90,7 @@ impl SearchRuntimeConfig {
             router_timeout_s: cfg.search.router_timeout_s,
             pipeline_wall_clock_budget_s: cfg.search.pipeline_wall_clock_budget_s,
             pipeline_input_char_budget: defaults::PIPELINE_INPUT_CHAR_BUDGET,
+            trace_enabled: cfg.debug.search_trace_enabled,
         }
     }
 
@@ -121,6 +126,7 @@ impl Default for SearchRuntimeConfig {
             router_timeout_s: defaults::DEFAULT_ROUTER_TIMEOUT_S,
             pipeline_wall_clock_budget_s: defaults::DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S,
             pipeline_input_char_budget: defaults::PIPELINE_INPUT_CHAR_BUDGET,
+            trace_enabled: defaults::DEFAULT_DEBUG_SEARCH_TRACE_ENABLED,
         }
     }
 }
@@ -166,6 +172,10 @@ mod tests {
         );
         // Test-only override: production value is DEFAULT_READER_BATCH_TIMEOUT_S.
         assert_eq!(cfg.reader_batch_timeout_s, TEST_READER_BATCH_TIMEOUT_S);
+        assert_eq!(
+            cfg.trace_enabled,
+            defaults::DEFAULT_DEBUG_SEARCH_TRACE_ENABLED
+        );
     }
 
     #[test]
@@ -182,6 +192,7 @@ mod tests {
         app.search.judge_timeout_s = 13;
         app.search.router_timeout_s = 14;
         app.search.pipeline_wall_clock_budget_s = 120;
+        app.debug.search_trace_enabled = true;
 
         let cfg = SearchRuntimeConfig::from_app_config(&app);
         assert_eq!(cfg.searxng_url, "http://10.0.0.1:9000");
@@ -195,6 +206,7 @@ mod tests {
         assert_eq!(cfg.judge_timeout_s, 13);
         assert_eq!(cfg.router_timeout_s, 14);
         assert_eq!(cfg.pipeline_wall_clock_budget_s, 120);
+        assert!(cfg.trace_enabled);
     }
 
     #[test]

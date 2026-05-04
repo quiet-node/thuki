@@ -4106,15 +4106,13 @@ describe('App', () => {
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
-      });
-
-      // Wait for the image to be processed (filePath resolved).
-      await vi.waitFor(() => {
-        expect(invoke).toHaveBeenCalledWith(
-          'save_image_command',
-          expect.anything(),
-        );
-        expect(screen.getAllByRole('listitem')).toHaveLength(1);
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+          expect(screen.getAllByRole('listitem')).toHaveLength(1);
+        });
       });
 
       // Now type /screen and submit.
@@ -4144,6 +4142,9 @@ describe('App', () => {
           getLastChannel()?.simulateMessage({ type: 'Done' });
           await Promise.resolve();
           await Promise.resolve();
+        });
+        await vi.waitFor(() => {
+          expect(screen.getByText('done')).toBeInTheDocument();
         });
       } finally {
         vi.useRealTimers();

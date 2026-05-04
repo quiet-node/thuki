@@ -10,10 +10,12 @@
 //! before being exposed to the caller; the caller composes plain-text prompts,
 //! so no XML escaping is applied.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::defaults::{DEFAULT_MAX_QUERY_CHARS, DEFAULT_MAX_SNIPPET_CHARS};
 
+use super::recorder::{PipelineRecorder, RecorderEvent};
 use super::types::{SearchError, SearxResponse, SearxResult};
 
 /// Maximum character length retained per snippet/title. Uses character count
@@ -46,12 +48,14 @@ const MAX_QUERY_CHARS: usize = DEFAULT_MAX_QUERY_CHARS;
 /// - [`SearchError::SearxUnavailable`] when the response body cannot be decoded as JSON.
 /// - [`SearchError::SearxHttp`] when the response status is not 2xx.
 /// - [`SearchError::NoResults`] when SearXNG returns an empty result set.
+#[allow(clippy::too_many_arguments)]
 pub async fn search(
     client: &reqwest::Client,
     endpoint: &str,
     query: &str,
     timeout_s: u64,
     max_results: usize,
+    recorder: &Arc<dyn PipelineRecorder>,
 ) -> Result<Vec<SearxResult>, SearchError> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -60,24 +64,76 @@ pub async fn search(
     let bounded = truncate_chars(trimmed, MAX_QUERY_CHARS);
 
     let url = format!("{}?q={}&format=json", endpoint, url_encode(&bounded));
-    let response = client
+    let started = std::time::Instant::now();
+    let emit = |status: Option<u16>,
+                response_raw: Option<String>,
+                normalized_results: serde_json::Value,
+                error: Option<String>| {
+        recorder.record(RecorderEvent::SearxngQuery {
+            query: bounded.clone(),
+            url: url.clone(),
+            status,
+            response_raw,
+            normalized_results,
+            latency_ms: started.elapsed().as_millis() as u64,
+            error,
+        });
+    };
+
+    let response = match client
         .get(&url)
         .timeout(Duration::from_secs(timeout_s))
         .send()
         .await
-        // Any transport failure on the send (connection refused, DNS, timeout)
-        // means the sandbox containers are not running. Map the whole class to
-        // SandboxUnavailable so the frontend renders the setup-error bubble.
-        .map_err(|_| SearchError::SandboxUnavailable)?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // Any transport failure on the send (connection refused, DNS, timeout)
+            // means the sandbox containers are not running. Map the whole class to
+            // SandboxUnavailable so the frontend renders the setup-error bubble.
+            emit(
+                None,
+                None,
+                serde_json::Value::Null,
+                Some(format!("transport: {e}")),
+            );
+            return Err(SearchError::SandboxUnavailable);
+        }
+    };
 
+    let status_code = response.status().as_u16();
     if !response.status().is_success() {
-        return Err(SearchError::SearxHttp(response.status().as_u16()));
+        let raw = response.text().await.ok();
+        emit(
+            Some(status_code),
+            raw,
+            serde_json::Value::Null,
+            Some(format!("http {status_code}")),
+        );
+        return Err(SearchError::SearxHttp(status_code));
     }
 
-    let body: SearxResponse = response
-        .json()
+    // Body-read failure on a 2xx is a tail-end transport error (connection
+    // reset mid-body). The trace will surface it via the parse-failure
+    // branch below if the truncated buffer is nonempty, or via the parent
+    // pipeline-level error event if not; emitting a separate trace record
+    // here is impractical to test deterministically across CI runners.
+    let raw_body = response
+        .text()
         .await
         .map_err(|_| SearchError::SearxUnavailable)?;
+    let body: SearxResponse = match serde_json::from_str(&raw_body) {
+        Ok(b) => b,
+        Err(_) => {
+            emit(
+                Some(status_code),
+                Some(raw_body),
+                serde_json::Value::Null,
+                Some("malformed json".into()),
+            );
+            return Err(SearchError::SearxUnavailable);
+        }
+    };
 
     let results: Vec<SearxResult> = body
         .results
@@ -91,9 +147,18 @@ pub async fn search(
         })
         .collect();
 
+    let normalized = serde_json::to_value(&results).unwrap_or(serde_json::Value::Null);
+
     if results.is_empty() {
+        emit(
+            Some(status_code),
+            Some(raw_body),
+            normalized,
+            Some("no_results".into()),
+        );
         return Err(SearchError::NoResults);
     }
+    emit(Some(status_code), Some(raw_body), normalized, None);
     Ok(results)
 }
 
@@ -108,11 +173,13 @@ pub async fn search(
 ///
 /// Complexity: O(N) HTTP round-trips (parallelized). Dedup is O(R) over the
 /// total result count, bounded by the SearXNG per-query result cap.
+#[allow(clippy::too_many_arguments)]
 pub async fn search_all_with_endpoint(
     endpoint: &str,
     queries: &[String],
     timeout_s: u64,
     max_results: usize,
+    recorder: &Arc<dyn PipelineRecorder>,
 ) -> Result<Vec<SearxResult>, SearchError> {
     if queries.is_empty() {
         return Ok(Vec::new());
@@ -121,7 +188,7 @@ pub async fn search_all_with_endpoint(
     let client = reqwest::Client::new();
     let futures = queries
         .iter()
-        .map(|q| search(&client, endpoint, q, timeout_s, max_results));
+        .map(|q| search(&client, endpoint, q, timeout_s, max_results, recorder));
     let results = futures_util::future::join_all(futures).await;
 
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -155,11 +222,13 @@ pub async fn search_all_with_base(
     }
 
     let endpoint = format!("{}/search", base.trim_end_matches('/'));
+    let recorder: Arc<dyn PipelineRecorder> = Arc::new(super::recorder::NoopRecorder);
     search_all_with_endpoint(
         &endpoint,
         queries,
         crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
         crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
+        &recorder,
     )
     .await
 }
@@ -202,6 +271,14 @@ fn truncate_chars(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::recorder::NoopRecorder;
+
+    /// Local helper: a noop recorder wrapped in `Arc<dyn PipelineRecorder>`,
+    /// used everywhere this module exercises `search` /
+    /// `search_all_with_endpoint` without asserting on trace output.
+    fn noop_recorder() -> Arc<dyn PipelineRecorder> {
+        Arc::new(NoopRecorder)
+    }
 
     #[test]
     fn truncate_chars_returns_unchanged_when_short() {
@@ -253,6 +330,7 @@ mod tests {
             "   ",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
             crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -287,6 +365,7 @@ mod tests {
             "rust async",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
             crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -317,6 +396,7 @@ mod tests {
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
             crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -334,6 +414,7 @@ mod tests {
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
             crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -360,6 +441,7 @@ mod tests {
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
             crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -386,6 +468,7 @@ mod tests {
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
             crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
+            &noop_recorder(),
         )
         .await
         .unwrap_err();
@@ -419,6 +502,7 @@ mod tests {
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
             crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -453,6 +537,7 @@ mod tests {
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
             cap,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -486,6 +571,7 @@ mod tests {
             "hi",
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
             crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -515,6 +601,7 @@ mod tests {
             &long_query,
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
             crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -531,8 +618,13 @@ mod tests {
 #[cfg(test)]
 mod parallel_tests {
     use super::*;
+    use crate::search::recorder::NoopRecorder;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn noop_recorder() -> Arc<dyn PipelineRecorder> {
+        Arc::new(NoopRecorder)
+    }
 
     fn fixture(q: &str, url: &str) -> serde_json::Value {
         serde_json::json!({
@@ -648,6 +740,7 @@ mod parallel_tests {
             &[],
             crate::config::defaults::DEFAULT_SEARCH_TIMEOUT_S,
             crate::config::defaults::DEFAULT_SEARXNG_MAX_RESULTS as usize,
+            &noop_recorder(),
         )
         .await
         .unwrap();

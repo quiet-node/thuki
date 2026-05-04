@@ -41,6 +41,9 @@ const CONFIG_A: RawAppConfig = {
     judge_timeout_s: 30,
     router_timeout_s: 45,
   },
+  debug: {
+    search_trace_enabled: false,
+  },
 };
 
 const CONFIG_B: RawAppConfig = {

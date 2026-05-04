@@ -7,7 +7,10 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
-    setupFiles: ['src/testUtils/setup.ts'],
+    setupFiles: [
+      'src/testUtils/webStorageShim.ts',
+      'src/testUtils/setup.ts',
+    ],
     include: ['src/**/*.test.{ts,tsx}'],
     coverage: {
       provider: 'v8',

@@ -357,6 +357,42 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
     }
 }
 
+/// Centers the settings window horizontally on its monitor and places it
+/// below the macOS menu bar with a comfortable gap. Called every time the
+/// settings window is shown so the position is always correct regardless of
+/// the OS-default spawn position or previous moves.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn position_settings_window(window: &tauri::WebviewWindow) {
+    const SETTINGS_WIDTH: f64 = 580.0;
+    // macOS menu bar is ~24 px logical on standard displays; notched MacBooks
+    // push it to ~37 px. 72 px gives a comfortable ~35-48 px visual gap below
+    // the menu bar on all hardware.
+    const TOP_MARGIN: f64 = 72.0;
+
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+
+    let (x, y) = if let Some(mon) = monitor {
+        let scale = mon.scale_factor();
+        let pos = mon.position();
+        let size = mon.size();
+        let logical_w = size.width as f64 / scale;
+        let mon_x = pos.x as f64 / scale;
+        let mon_y = pos.y as f64 / scale;
+        (
+            mon_x + (logical_w - SETTINGS_WIDTH) / 2.0,
+            mon_y + TOP_MARGIN,
+        )
+    } else {
+        (100.0, TOP_MARGIN)
+    };
+
+    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+}
+
 /// Shows (or focuses, if already visible) the Settings window.
 ///
 /// The settings window is converted to a ThukiSettingsPanel NSPanel subclass
@@ -375,6 +411,7 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 fn show_settings_window(app_handle: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
+        let window = app_handle.get_webview_window("settings");
         match app_handle.get_webview_panel("settings") {
             Ok(panel) => {
                 // Activate the app so macOS knows which Space is "current".
@@ -386,6 +423,9 @@ fn show_settings_window(app_handle: &tauri::AppHandle) {
                         let ns_app = NSApplication::sharedApplication(mtm);
                         #[allow(deprecated)]
                         ns_app.activateIgnoringOtherApps(true);
+                    }
+                    if let Some(win) = window {
+                        position_settings_window(&win);
                     }
                     panel.show_and_make_key();
                 });
@@ -400,6 +440,7 @@ fn show_settings_window(app_handle: &tauri::AppHandle) {
         eprintln!("thuki: [settings] window 'settings' not found in app config");
         return;
     };
+    position_settings_window(&window);
     let _ = window.show();
     let _ = window.set_focus();
 }

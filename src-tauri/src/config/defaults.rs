@@ -168,6 +168,17 @@ pub const PIPELINE_INPUT_CHAR_BUDGET: usize = 200_000;
 /// slow service.
 pub const BOUNDS_TIMEOUT_S: (u64, u64) = (1, 300);
 
+/// Whether the `/search` pipeline writes a forensic per-turn trace file.
+///
+/// Off by default. Intended for local quality investigation only: when on,
+/// the pipeline records every LLM request/response, every SearXNG query and
+/// raw response body, every reader batch (per-URL latency, raw body, full
+/// extracted text), and every judge verdict to a JSON-Lines file under
+/// `~/Library/Application Support/com.quietnode.thuki/traces/`. Toggleable
+/// from the Settings panel (Web tab, Diagnostics section). Off in shipped
+/// builds by default.
+pub const DEFAULT_DEBUG_SEARCH_TRACE_ENABLED: bool = false;
+
 // Ollama API baked-in limits: not exposed in config.toml because they bound
 // attacker-controlled data (response bodies from the local Ollama daemon) and
 // keep the UI responsive when the daemon is hung. Changing either timeout
@@ -243,11 +254,14 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("search", "judge_timeout_s"),
     ("search", "router_timeout_s"),
     ("search", "pipeline_wall_clock_budget_s"),
+    // [debug]
+    ("debug", "search_trace_enabled"),
 ];
 
 /// Authoritative allowlist of section names accepted by `reset_config`.
 /// Mirrors the top-level structure of `AppConfig`.
-pub const ALLOWED_SECTIONS: &[&str] = &["inference", "prompt", "window", "quote", "search"];
+pub const ALLOWED_SECTIONS: &[&str] =
+    &["inference", "prompt", "window", "quote", "search", "debug"];
 
 /// Special turn-boundary tokens used by the major Ollama-served model families.
 /// Ollama normally parses these out of `/api/chat` responses, but some fine-tunes

@@ -43,6 +43,9 @@ export interface RawAppConfig {
     judge_timeout_s: number;
     router_timeout_s: number;
   };
+  debug: {
+    search_trace_enabled: boolean;
+  };
 }
 
 /** Tagged union returned by the Rust `set_config_field` command on failure. */

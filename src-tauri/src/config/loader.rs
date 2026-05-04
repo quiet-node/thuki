@@ -276,6 +276,8 @@ pub(crate) fn resolve(config: &mut AppConfig) {
         );
         config.search.reader_batch_timeout_s = corrected;
     }
+
+    // Debug section: boolean flag has no resolution step (any value is valid).
 }
 
 /// Composes the user-editable base prompt with the generated slash-command

@@ -12,12 +12,15 @@
 //! subsequent user messages see the full conversational state regardless of
 //! whether they went through `/search` or the normal chat command.
 
-use tauri::{ipc::Channel, State};
+use std::sync::Arc;
+
+use tauri::{ipc::Channel, Manager, State};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::{ConversationHistory, GenerationState};
 use crate::config::AppConfig;
 use crate::models::ActiveModelState;
+use recorder::{FileRecorder, NoopRecorder, PipelineRecorder};
 
 pub mod chunker;
 pub mod config;
@@ -27,6 +30,7 @@ mod llm;
 pub mod pipeline;
 pub mod probe;
 pub mod reader;
+pub mod recorder;
 mod rerank;
 mod searxng;
 mod types;
@@ -53,6 +57,7 @@ pub use types::{
 /// and [`pipeline::DefaultJudge`] as the production LLM callers.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn search_pipeline(
     message: String,
     on_event: Channel<SearchEvent>,
@@ -61,6 +66,7 @@ pub async fn search_pipeline(
     history: State<'_, ConversationHistory>,
     app_config: State<'_, parking_lot::RwLock<AppConfig>>,
     active_model_state: State<'_, ActiveModelState>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Snapshot the config once so the entire pipeline sees a consistent view
     // even if the user edits Settings while a search is in flight.
@@ -112,6 +118,22 @@ pub async fn search_pipeline(
 
     let today = pipeline::today_iso();
 
+    // Build the per-turn forensic recorder. When the dev-only debug flag is
+    // off (production default) this is a zero-cost noop. When on, every
+    // pipeline step records into a single JSON-Lines file under
+    // `app_data_dir()/traces/`.
+    let turn_id = recorder::new_turn_id();
+    let trace_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("thuki"))
+        .join("traces");
+    let recorder: Arc<dyn PipelineRecorder> = if runtime_config.trace_enabled {
+        Arc::new(FileRecorder::new(&trace_dir, &turn_id))
+    } else {
+        Arc::new(NoopRecorder)
+    };
+
     let router = pipeline::DefaultRouterJudge::new(
         ollama_endpoint.clone(),
         model_name.clone(),
@@ -120,6 +142,7 @@ pub async fn search_pipeline(
         today.clone(),
         runtime_config.router_timeout_s,
         app_config.inference.num_ctx,
+        Arc::clone(&recorder),
     );
     let judge = pipeline::DefaultJudge::new(
         ollama_endpoint.clone(),
@@ -128,6 +151,7 @@ pub async fn search_pipeline(
         cancel_token.clone(),
         runtime_config.judge_timeout_s,
         app_config.inference.num_ctx,
+        Arc::clone(&recorder),
     );
 
     let result = pipeline::run_agentic(
@@ -148,6 +172,7 @@ pub async fn search_pipeline(
         &judge,
         &runtime_config,
         app_config.inference.num_ctx,
+        &recorder,
     )
     .await;
 

@@ -13,9 +13,10 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
-    DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_DEBUG_SEARCH_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
@@ -24,7 +25,8 @@ use super::defaults::{
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path};
 use super::schema::{
-    AppConfig, InferenceSection, PromptSection, QuoteSection, SearchSection, WindowSection,
+    AppConfig, DebugSection, InferenceSection, PromptSection, QuoteSection, SearchSection,
+    WindowSection,
 };
 use super::writer::atomic_write;
 
@@ -1040,4 +1042,46 @@ fn config_error_io_error_serializes_io_source_as_display_string() {
     assert_eq!(json["kind"], "io_error");
     assert_eq!(json["path"], "/tmp/nope.toml");
     assert_eq!(json["source"], "denied here");
+}
+
+// ── debug section ───────────────────────────────────────────────────────────
+
+#[test]
+fn debug_section_default_matches_compiled_defaults() {
+    let d = DebugSection::default();
+    assert_eq!(d.search_trace_enabled, DEFAULT_DEBUG_SEARCH_TRACE_ENABLED);
+}
+
+#[test]
+fn app_config_default_includes_debug_section_with_compiled_defaults() {
+    let c = AppConfig::default();
+    assert_eq!(
+        c.debug.search_trace_enabled,
+        DEFAULT_DEBUG_SEARCH_TRACE_ENABLED
+    );
+}
+
+#[test]
+fn debug_search_trace_enabled_round_trips_through_load() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[debug]\nsearch_trace_enabled = true\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert!(loaded.debug.search_trace_enabled);
+}
+
+#[test]
+fn toml_without_debug_section_deserializes_to_defaults() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        "[inference]\nollama_url = \"http://127.0.0.1:11434\"\n",
+    )
+    .unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.debug.search_trace_enabled, DEFAULT_DEBUG_SEARCH_TRACE_ENABLED,
+        "missing [debug] section must deserialize to defaults via #[serde(default)]"
+    );
 }

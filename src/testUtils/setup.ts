@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup } from '@testing-library/react';
+import { act, cleanup } from '@testing-library/react';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, vi } from 'vitest';
 import { handlers } from './mocks/handlers';
@@ -17,7 +17,11 @@ beforeAll(() => {
   server.listen({ onUnhandledRequest: 'error' });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
   server.resetHandlers();
   cleanup();
   clearEventHandlers();

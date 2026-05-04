@@ -42,6 +42,8 @@ export function SettingRow({
   helper,
   error,
   vertical = false,
+  tooltipPlacement = 'bottom',
+  rightAlign = false,
   children,
 }: {
   label: string;
@@ -49,6 +51,10 @@ export function SettingRow({
   helper?: string;
   error?: ConfigError | null;
   vertical?: boolean;
+  /** Tooltip placement for the `?` info button. Default `'bottom'`; use `'top'` near the bottom of the window to avoid clipping. */
+  tooltipPlacement?: 'top' | 'bottom';
+  /** When true, aligns the control to the far right of its container. */
+  rightAlign?: boolean;
   children: ReactNode;
 }) {
   const labelId = useId();
@@ -63,7 +69,7 @@ export function SettingRow({
           {label}
         </label>
         {helper ? (
-          <Tooltip label={helper} multiline>
+          <Tooltip label={helper} multiline placement={tooltipPlacement}>
             <button
               type="button"
               className={styles.infoBtn}
@@ -74,7 +80,13 @@ export function SettingRow({
           </Tooltip>
         ) : null}
       </div>
-      <div className={styles.rowControl}>
+      <div
+        className={
+          rightAlign
+            ? `${styles.rowControl} ${styles.rowControlRight}`
+            : styles.rowControl
+        }
+      >
         {children}
         {error ? (
           <div className={styles.rowError} role="alert">

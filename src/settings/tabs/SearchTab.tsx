@@ -7,9 +7,18 @@
  * in the About tab to keep this surface focused on tuning.
  */
 
-import { Section, NumberSlider, NumberStepper, TextField } from '../components';
+import { useState } from 'react';
+
+import {
+  Section,
+  NumberSlider,
+  NumberStepper,
+  TextField,
+  Toggle,
+} from '../components';
 import { SaveField } from '../components/SaveField';
 import { configHelp } from '../configHelpers';
+import styles from '../../styles/settings.module.css';
 import type { RawAppConfig } from '../types';
 
 interface SearchTabProps {
@@ -19,6 +28,7 @@ interface SearchTabProps {
 }
 
 export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
+  const [devOpen, setDevOpen] = useState(false);
   return (
     <>
       <Section heading="Services">
@@ -214,6 +224,56 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
           )}
         />
       </Section>
+
+      <div className={styles.devSection}>
+        <button
+          type="button"
+          className={styles.devTrigger}
+          aria-expanded={devOpen}
+          aria-controls="dev-diagnostics"
+          onClick={() => setDevOpen((o) => !o)}
+        >
+          <span className={styles.devTriggerLabel}>Diagnostics</span>
+          <span className={styles.devTag}>DEV</span>
+          <svg
+            className={`${styles.devChevron} ${devOpen ? styles.devChevronOpen : ''}`}
+            viewBox="0 0 10 10"
+            fill="currentColor"
+            aria-hidden
+          >
+            <path
+              d="M3 2l4 3-4 3"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill="none"
+            />
+          </svg>
+        </button>
+        {devOpen && (
+          <div id="dev-diagnostics">
+            <SaveField
+              section="debug"
+              fieldKey="search_trace_enabled"
+              label="Search trace"
+              helper={configHelp('debug', 'search_trace_enabled')}
+              initialValue={config.debug.search_trace_enabled}
+              resyncToken={resyncToken}
+              onSaved={onSaved}
+              tooltipPlacement="top"
+              rightAlign
+              render={(value, setValue) => (
+                <Toggle
+                  checked={value}
+                  onChange={setValue}
+                  ariaLabel="Enable search trace"
+                />
+              )}
+            />
+          </div>
+        )}
+      </div>
     </>
   );
 }
