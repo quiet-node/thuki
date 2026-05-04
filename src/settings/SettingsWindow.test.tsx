@@ -155,7 +155,11 @@ describe('SettingsWindow', () => {
     await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
 
     const modelTab = screen.getByRole('tab', { name: /AI/ });
-    fireEvent.keyDown(modelTab, { key: 'ArrowLeft' });
+    await act(async () => {
+      fireEvent.keyDown(modelTab, { key: 'ArrowLeft' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     expect(screen.getByRole('tab', { name: /About/ })).toHaveAttribute(
       'aria-selected',
       'true',

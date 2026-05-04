@@ -57,6 +57,7 @@ pub use types::{
 /// and [`pipeline::DefaultJudge`] as the production LLM callers.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn search_pipeline(
     message: String,
     on_event: Channel<SearchEvent>,

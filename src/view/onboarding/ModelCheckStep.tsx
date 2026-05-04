@@ -704,7 +704,7 @@ function SlugLink({ slug }: { slug: string }) {
         fontSize: 12.5,
         fontWeight: 500,
         color: hover ? '#ff8d5c' : '#f0f0f2',
-        textDecoration: hover ? 'underline' : 'none',
+        textDecorationLine: hover ? 'underline' : 'none',
         textDecorationColor: 'rgba(255,141,92,0.5)',
         textUnderlineOffset: 3,
         cursor: 'pointer',

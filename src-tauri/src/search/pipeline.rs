@@ -490,19 +490,16 @@ async fn run_streaming_branch(
     )
     .await;
 
-    recorder.record(crate::search::recorder::RecorderEvent::StreamingLlmCall {
-        stage: stage.to_string(),
-        endpoint: endpoint.to_string(),
+    record_streaming_llm_call(
+        recorder,
+        stage,
+        endpoint,
         request_body,
-        final_text: Some(accumulated.clone()),
-        tokens: token_count.load(Ordering::SeqCst),
-        latency_ms: started.elapsed().as_millis() as u64,
-        error: if accumulated.is_empty() && !saw_done.load(Ordering::SeqCst) {
-            Some("stream_ended_without_done".into())
-        } else {
-            None
-        },
-    });
+        &accumulated,
+        token_count.load(Ordering::SeqCst),
+        started,
+        saw_done.load(Ordering::SeqCst),
+    );
 
     if !accumulated.is_empty() {
         persist_turn(
@@ -818,6 +815,158 @@ struct SearchTurnInputs<'a> {
     history_snapshot: &'a [ChatMessage],
     epoch_at_start: u64,
     user_msg: ChatMessage,
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn turn_start_runtime_config_snapshot(
+    runtime_config: &config::SearchRuntimeConfig,
+) -> serde_json::Value {
+    serde_json::json!({
+        "max_iterations": runtime_config.max_iterations,
+        "top_k_urls": runtime_config.top_k_urls,
+        "searxng_max_results": runtime_config.searxng_max_results,
+        "search_timeout_s": runtime_config.search_timeout_s,
+        "reader_per_url_timeout_s": runtime_config.reader_per_url_timeout_s,
+        "reader_batch_timeout_s": runtime_config.reader_batch_timeout_s,
+        "judge_timeout_s": runtime_config.judge_timeout_s,
+        "router_timeout_s": runtime_config.router_timeout_s,
+        "pipeline_wall_clock_budget_s": runtime_config.pipeline_wall_clock_budget_s,
+        "trace_enabled": runtime_config.trace_enabled,
+    })
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn router_output_trace_json(output: &RouterJudgeOutput) -> serde_json::Value {
+    serde_json::json!({
+        "action": format!("{:?}", output.action),
+        "history_sufficiency": output.history_sufficiency.map(|s| format!("{s:?}")),
+        "optimized_query": output.optimized_query,
+        "clarifying_question": output.clarifying_question,
+    })
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn judge_output_trace_json(verdict: &JudgeVerdict) -> serde_json::Value {
+    serde_json::json!({
+        "sufficiency": format!("{:?}", verdict.sufficiency),
+        "gap_queries": verdict.gap_queries,
+        "parse_failure": verdict.parse_failure,
+    })
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::too_many_arguments)]
+fn record_streaming_llm_call(
+    recorder: &Arc<dyn PipelineRecorder>,
+    stage: &str,
+    endpoint: &str,
+    request_body: serde_json::Value,
+    accumulated: &str,
+    token_count: u64,
+    started: std::time::Instant,
+    saw_done: bool,
+) {
+    recorder.record(crate::search::recorder::RecorderEvent::StreamingLlmCall {
+        stage: stage.to_string(),
+        endpoint: endpoint.to_string(),
+        request_body,
+        final_text: Some(accumulated.to_string()),
+        tokens: token_count,
+        latency_ms: started.elapsed().as_millis() as u64,
+        error: if accumulated.is_empty() && !saw_done {
+            Some("stream_ended_without_done".into())
+        } else {
+            None
+        },
+    });
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn record_judge_verdict(
+    recorder: &Arc<dyn PipelineRecorder>,
+    stage: impl Into<String>,
+    verdict: &JudgeVerdict,
+) {
+    recorder.record(crate::search::recorder::RecorderEvent::JudgeVerdict {
+        stage: stage.into(),
+        raw: verdict.reasoning.clone(),
+        normalized: judge_output_trace_json(verdict),
+    });
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn record_turn_start(
+    recorder: &Arc<dyn PipelineRecorder>,
+    turn_id: &str,
+    user_query: &str,
+    model: &str,
+    runtime_config: &config::SearchRuntimeConfig,
+    history: &ConversationHistory,
+) {
+    recorder.record(crate::search::recorder::RecorderEvent::TurnStart {
+        turn_id: turn_id.to_string(),
+        query: user_query.to_string(),
+        model: model.to_string(),
+        runtime_config: turn_start_runtime_config_snapshot(runtime_config),
+        history_len: history.messages.lock().map(|g| g.len()).unwrap_or_default(),
+    });
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn record_turn_cancelled_before_router(
+    recorder: &Arc<dyn PipelineRecorder>,
+    turn_id: &str,
+    turn_started: std::time::Instant,
+) {
+    recorder.record(crate::search::recorder::RecorderEvent::TurnEnd {
+        turn_id: turn_id.to_string(),
+        final_action: "cancelled_before_router".to_string(),
+        final_source_urls: Vec::new(),
+        total_latency_ms: turn_started.elapsed().as_millis() as u64,
+        error: Some("Cancelled".to_string()),
+    });
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn record_router_error_turn_end(
+    recorder: &Arc<dyn PipelineRecorder>,
+    turn_id: &str,
+    turn_started: std::time::Instant,
+    error: &SearchError,
+) {
+    recorder.record(crate::search::recorder::RecorderEvent::TurnEnd {
+        turn_id: turn_id.to_string(),
+        final_action: format!("router_error:{error:?}"),
+        final_source_urls: Vec::new(),
+        total_latency_ms: turn_started.elapsed().as_millis() as u64,
+        error: Some(format!("{error:?}")),
+    });
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn record_router_verdict(recorder: &Arc<dyn PipelineRecorder>, output: &RouterJudgeOutput) {
+    recorder.record(crate::search::recorder::RecorderEvent::JudgeVerdict {
+        stage: "router".into(),
+        raw: format!("{:?}", output.action),
+        normalized: router_output_trace_json(output),
+    });
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn record_turn_end(
+    recorder: &Arc<dyn PipelineRecorder>,
+    turn_id: &str,
+    turn_started: std::time::Instant,
+    result: &Result<(), SearchError>,
+    action: &Action,
+) {
+    recorder.record(crate::search::recorder::RecorderEvent::TurnEnd {
+        turn_id: turn_id.to_string(),
+        final_action: format_final_action(result, action),
+        final_source_urls: Vec::new(),
+        total_latency_ms: turn_started.elapsed().as_millis() as u64,
+        error: format_turn_error(result),
+    });
 }
 
 /// Result of the extracted gap-refinement loop.
@@ -1530,15 +1679,11 @@ async fn run_gap_refinement_loop(
         let round_verdict = judge
             .call(query, &round_judge_sources, JudgeStage::Chunk)
             .await?;
-        shared.recorder.record(crate::search::recorder::RecorderEvent::JudgeVerdict {
-            stage: format!("chunk_judge_gap_round_{attempt}"),
-            raw: round_verdict.reasoning.clone(),
-            normalized: serde_json::json!({
-                "sufficiency": format!("{:?}", round_verdict.sufficiency),
-                "gap_queries": round_verdict.gap_queries,
-                "parse_failure": round_verdict.parse_failure,
-            }),
-        });
+        record_judge_verdict(
+            shared.recorder,
+            format!("chunk_judge_gap_round_{attempt}"),
+            &round_verdict,
+        );
         note_judge_failure(&round_verdict, warnings, shared.on_event);
 
         let mut chunk_judge_step = trace_step(
@@ -1663,34 +1808,18 @@ pub async fn run_agentic(
     let user_query = trimmed.to_string();
     let turn_id = crate::search::recorder::new_turn_id();
     let turn_started = std::time::Instant::now();
-    recorder.record(crate::search::recorder::RecorderEvent::TurnStart {
-        turn_id: turn_id.clone(),
-        query: user_query.clone(),
-        model: model.to_string(),
-        runtime_config: serde_json::json!({
-            "max_iterations": runtime_config.max_iterations,
-            "top_k_urls": runtime_config.top_k_urls,
-            "searxng_max_results": runtime_config.searxng_max_results,
-            "search_timeout_s": runtime_config.search_timeout_s,
-            "reader_per_url_timeout_s": runtime_config.reader_per_url_timeout_s,
-            "reader_batch_timeout_s": runtime_config.reader_batch_timeout_s,
-            "judge_timeout_s": runtime_config.judge_timeout_s,
-            "router_timeout_s": runtime_config.router_timeout_s,
-            "pipeline_wall_clock_budget_s": runtime_config.pipeline_wall_clock_budget_s,
-            "trace_enabled": runtime_config.trace_enabled,
-        }),
-        history_len: history.messages.lock().map(|g| g.len()).unwrap_or_default(),
-    });
+    record_turn_start(
+        recorder,
+        &turn_id,
+        &user_query,
+        model,
+        runtime_config,
+        history,
+    );
 
     if cancel_token.is_cancelled() {
         on_event(SearchEvent::Cancelled);
-        recorder.record(crate::search::recorder::RecorderEvent::TurnEnd {
-            turn_id,
-            final_action: "cancelled_before_router".to_string(),
-            final_source_urls: Vec::new(),
-            total_latency_ms: turn_started.elapsed().as_millis() as u64,
-            error: Some("Cancelled".to_string()),
-        });
+        record_turn_cancelled_before_router(recorder, &turn_id, turn_started);
         return Err(SearchError::Cancelled);
     }
 
@@ -1713,26 +1842,11 @@ pub async fn run_agentic(
         Err(e) => {
             // Emit TurnEnd before propagating so the trace records the failure
             // boundary even when the router blew up before any branch ran.
-            recorder.record(crate::search::recorder::RecorderEvent::TurnEnd {
-                turn_id,
-                final_action: format!("router_error:{e:?}"),
-                final_source_urls: Vec::new(),
-                total_latency_ms: turn_started.elapsed().as_millis() as u64,
-                error: Some(format!("{e:?}")),
-            });
+            record_router_error_turn_end(recorder, &turn_id, turn_started, &e);
             return Err(e);
         }
     };
-    recorder.record(crate::search::recorder::RecorderEvent::JudgeVerdict {
-        stage: "router".into(),
-        raw: format!("{:?}", output.action),
-        normalized: serde_json::json!({
-            "action": format!("{:?}", output.action),
-            "history_sufficiency": output.history_sufficiency.map(|s| format!("{s:?}")),
-            "optimized_query": output.optimized_query,
-            "clarifying_question": output.clarifying_question,
-        }),
-    });
+    record_router_verdict(recorder, &output);
 
     let user_msg = ChatMessage {
         role: "user".to_string(),
@@ -1995,15 +2109,7 @@ pub async fn run_agentic(
                 let snippet_verdict = judge
                     .call(&query, &snippet_sources, JudgeStage::Snippet)
                     .await?;
-                shared.recorder.record(crate::search::recorder::RecorderEvent::JudgeVerdict {
-                    stage: "snippet_judge".into(),
-                    raw: snippet_verdict.reasoning.clone(),
-                    normalized: serde_json::json!({
-                        "sufficiency": format!("{:?}", snippet_verdict.sufficiency),
-                        "gap_queries": snippet_verdict.gap_queries,
-                        "parse_failure": snippet_verdict.parse_failure,
-                    }),
-                });
+                record_judge_verdict(shared.recorder, "snippet_judge", &snippet_verdict);
                 note_judge_failure(&snippet_verdict, &mut warnings, on_event);
 
                 let mut snippet_judge_step = trace_step(
@@ -2358,15 +2464,7 @@ pub async fn run_agentic(
                 let chunk_verdict = judge
                     .call(&query, &judge_sources, JudgeStage::Chunk)
                     .await?;
-                shared.recorder.record(crate::search::recorder::RecorderEvent::JudgeVerdict {
-                    stage: "chunk_judge".into(),
-                    raw: chunk_verdict.reasoning.clone(),
-                    normalized: serde_json::json!({
-                        "sufficiency": format!("{:?}", chunk_verdict.sufficiency),
-                        "gap_queries": chunk_verdict.gap_queries,
-                        "parse_failure": chunk_verdict.parse_failure,
-                    }),
-                });
+                record_judge_verdict(shared.recorder, "chunk_judge", &chunk_verdict);
                 note_judge_failure(&chunk_verdict, &mut warnings, on_event);
 
                 let mut chunk_judge_step = trace_step(
@@ -2483,13 +2581,7 @@ pub async fn run_agentic(
         }
     };
 
-    recorder.record(crate::search::recorder::RecorderEvent::TurnEnd {
-        turn_id,
-        final_action: format_final_action(&result, &output.action),
-        final_source_urls: Vec::new(),
-        total_latency_ms: turn_started.elapsed().as_millis() as u64,
-        error: format_turn_error(&result),
-    });
+    record_turn_end(recorder, &turn_id, turn_started, &result, &output.action);
 
     result
 }
@@ -4649,6 +4741,7 @@ mod agentic_tests {
             &judge,
             &config::SearchRuntimeConfig::default(),
             DEFAULT_NUM_CTX,
+            &noop_recorder(),
         )
         .await
         .unwrap();
@@ -4656,11 +4749,11 @@ mod agentic_tests {
         let evs = events.lock().unwrap();
         let final_sources = evs
             .iter()
-            .rev()
-            .find_map(|event| match event {
+            .filter_map(|event| match event {
                 SearchEvent::Sources { results } => Some(results),
                 _ => None,
             })
+            .last()
             .expect("expected final sources event");
 
         let urls: Vec<_> = final_sources

@@ -7,7 +7,13 @@
  * in the About tab to keep this surface focused on tuning.
  */
 
-import { Section, NumberSlider, NumberStepper, TextField, Toggle } from '../components';
+import {
+  Section,
+  NumberSlider,
+  NumberStepper,
+  TextField,
+  Toggle,
+} from '../components';
 import { SaveField } from '../components/SaveField';
 import { configHelp } from '../configHelpers';
 import type { RawAppConfig } from '../types';
