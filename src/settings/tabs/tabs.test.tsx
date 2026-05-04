@@ -256,6 +256,16 @@ describe('ModelTab', () => {
     expect((input as HTMLInputElement).value).toBe('0');
   });
 
+  it('blur with a valid inactivity value does not reset the field', async () => {
+    await renderModelTab();
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    fireEvent.change(input, { target: { value: '60' } });
+    fireEvent.blur(input);
+    expect((input as HTMLInputElement).value).toBe('60');
+  });
+
   it('clamps below-range inactivity input to -1 immediately', async () => {
     await renderModelTab();
     const input = screen.getByRole('spinbutton', {

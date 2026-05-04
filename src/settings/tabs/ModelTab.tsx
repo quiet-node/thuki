@@ -142,11 +142,11 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
 
   if (prevTokenRef.current !== resyncToken) {
     prevTokenRef.current = resyncToken;
-    setInactivityMin(config.inference.keep_warm_inactivity_minutes);
     if (!minFocusedRef.current) {
+      setInactivityMin(config.inference.keep_warm_inactivity_minutes);
       setRawMin(String(config.inference.keep_warm_inactivity_minutes));
+      resetMin(config.inference.keep_warm_inactivity_minutes);
     }
-    resetMin(config.inference.keep_warm_inactivity_minutes);
     const nextCtx = config.inference.num_ctx;
     setNumCtx(nextCtx);
     setCtxPos(ctxToPos(nextCtx));
