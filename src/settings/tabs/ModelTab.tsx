@@ -74,6 +74,10 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
   const [inactivityMin, setInactivityMin] = useState(
     config.inference.keep_warm_inactivity_minutes,
   );
+  const [rawMin, setRawMin] = useState(
+    String(config.inference.keep_warm_inactivity_minutes),
+  );
+  const minFocusedRef = useRef(false);
   const [ejecting, setEjecting] = useState(false);
   const [loadedModel, setLoadedModel] = useState<string | null>(null);
 
@@ -138,8 +142,11 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
 
   if (prevTokenRef.current !== resyncToken) {
     prevTokenRef.current = resyncToken;
-    setInactivityMin(config.inference.keep_warm_inactivity_minutes);
-    resetMin(config.inference.keep_warm_inactivity_minutes);
+    if (!minFocusedRef.current) {
+      setInactivityMin(config.inference.keep_warm_inactivity_minutes);
+      setRawMin(String(config.inference.keep_warm_inactivity_minutes));
+      resetMin(config.inference.keep_warm_inactivity_minutes);
+    }
     const nextCtx = config.inference.num_ctx;
     setNumCtx(nextCtx);
     setCtxPos(ctxToPos(nextCtx));
@@ -210,16 +217,28 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
             <input
               type="number"
               className={styles.keepWarmNumberInput}
-              value={inactivityMin}
+              value={rawMin}
               min={-1}
               max={1440}
               aria-label="Release after N minutes"
+              onFocus={() => {
+                minFocusedRef.current = true;
+              }}
               onChange={(e) => {
                 const n = parseInt(e.target.value, 10);
-                if (!Number.isNaN(n)) {
-                  // Clamp to BOUNDS_KEEP_WARM_INACTIVITY_MINUTES so the UI
-                  // mirrors the backend cap and never desyncs after a save.
-                  setInactivityMin(Math.max(-1, Math.min(1440, n)));
+                if (Number.isNaN(n)) {
+                  setRawMin(e.target.value);
+                } else {
+                  const clamped = Math.max(-1, Math.min(1440, n));
+                  setRawMin(String(clamped));
+                  setInactivityMin(clamped);
+                }
+              }}
+              onBlur={() => {
+                minFocusedRef.current = false;
+                if (Number.isNaN(parseInt(rawMin, 10))) {
+                  setRawMin('0');
+                  setInactivityMin(0);
                 }
               }}
             />

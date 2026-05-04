@@ -245,16 +245,28 @@ describe('ModelTab', () => {
     expect((input as HTMLInputElement).value).toBe('60');
   });
 
-  it('non-numeric inactivity input is ignored', async () => {
+  it('allows empty inactivity input mid-edit; blur defaults to 0', async () => {
     await renderModelTab();
     const input = screen.getByRole('spinbutton', {
       name: 'Release after N minutes',
     });
     fireEvent.change(input, { target: { value: '' } });
+    expect((input as HTMLInputElement).value).toBe('');
+    fireEvent.blur(input);
     expect((input as HTMLInputElement).value).toBe('0');
   });
 
-  it('clamps below-range inactivity input to -1', async () => {
+  it('blur with a valid inactivity value does not reset the field', async () => {
+    await renderModelTab();
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    fireEvent.change(input, { target: { value: '60' } });
+    fireEvent.blur(input);
+    expect((input as HTMLInputElement).value).toBe('60');
+  });
+
+  it('clamps below-range inactivity input to -1 immediately', async () => {
     await renderModelTab();
     const input = screen.getByRole('spinbutton', {
       name: 'Release after N minutes',
@@ -263,7 +275,7 @@ describe('ModelTab', () => {
     expect((input as HTMLInputElement).value).toBe('-1');
   });
 
-  it('clamps above-range inactivity input to 1440', async () => {
+  it('clamps above-range inactivity input to 1440 immediately', async () => {
     await renderModelTab();
     const input = screen.getByRole('spinbutton', {
       name: 'Release after N minutes',
@@ -369,6 +381,25 @@ describe('ModelTab', () => {
       <ModelTab config={updatedConfig} resyncToken={1} onSaved={() => {}} />,
     );
     expect((input as HTMLInputElement).value).toBe('60');
+  });
+
+  it('resync does not overwrite rawMin while input is focused', async () => {
+    const { rerender } = await renderModelTab();
+    const input = screen.getByRole('spinbutton', {
+      name: 'Release after N minutes',
+    });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '' } });
+    expect((input as HTMLInputElement).value).toBe('');
+
+    const updatedConfig: RawAppConfig = {
+      ...CONFIG,
+      inference: { ...CONFIG.inference, keep_warm_inactivity_minutes: 60 },
+    };
+    rerender(
+      <ModelTab config={updatedConfig} resyncToken={1} onSaved={() => {}} />,
+    );
+    expect((input as HTMLInputElement).value).toBe('');
   });
 
   it('renders Context Window section with label, slider, chip, tick marks, and VRAM note', async () => {
