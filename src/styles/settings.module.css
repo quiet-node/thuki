@@ -292,6 +292,9 @@
   gap: 6px;
   min-width: 0;
 }
+.rowControlRight {
+  align-items: flex-end;
+}
 .charCounter {
   font-size: 11px;
   color: var(--color-text-secondary);
@@ -1268,6 +1271,86 @@
 
 /* ─── Reduced motion ────────────────────────────────────────────────────── */
 
+/* ─── Dev-only collapsible section (Search → Diagnostics) ──────────────── */
+
+.devSection {
+  border-top: 1px solid rgba(255, 255, 255, 0.045);
+  padding-top: 20px;
+  margin-bottom: 8px;
+}
+
+.devTrigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0 0 8px;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+}
+
+.devTriggerLabel {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(138, 138, 142, 0.5);
+  transition: color 150ms ease;
+}
+
+.devTrigger:hover .devTriggerLabel {
+  color: var(--color-text-secondary);
+}
+
+.devTrigger:focus-visible {
+  outline: none;
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.32);
+}
+
+.devTag {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(138, 138, 142, 0.4);
+  border: 1px solid rgba(138, 138, 142, 0.18);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
+}
+
+.devTrigger:hover .devTag {
+  color: rgba(138, 138, 142, 0.7);
+  border-color: rgba(138, 138, 142, 0.3);
+}
+
+.devChevron {
+  width: 10px;
+  height: 10px;
+  margin-left: auto;
+  color: rgba(138, 138, 142, 0.3);
+  transition:
+    transform 180ms ease,
+    color 150ms ease;
+  flex-shrink: 0;
+}
+
+.devTrigger:hover .devChevron {
+  color: rgba(138, 138, 142, 0.55);
+}
+
+.devChevronOpen {
+  transform: rotate(90deg);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tab,
   .tabIcon,
@@ -1280,7 +1363,8 @@
   .iconBtn,
   .keepWarmCircleAnim,
   .keepWarmCheckAnim,
-  .keepWarmVramDot {
+  .keepWarmVramDot,
+  .devChevron {
     transition: none !important;
     animation: none !important;
   }

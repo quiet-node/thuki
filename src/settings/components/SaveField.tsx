@@ -28,6 +28,10 @@ interface SaveFieldProps<TValue extends Primitive> {
   /** Long-form description shown in the `?` tooltip next to the label. */
   helper?: string;
   vertical?: boolean;
+  /** Tooltip placement for the `?` info button. Default `'bottom'`; use `'top'` near the bottom of the window to avoid clipping. */
+  tooltipPlacement?: 'top' | 'bottom';
+  /** When true, aligns the control to the far right of its container. */
+  rightAlign?: boolean;
   /** Value snapshot from the parent's resolved config. */
   initialValue: TValue;
   /** Bumps when the parent reloaded from disk; resets the local form value. */
@@ -48,6 +52,8 @@ export function SaveField<TValue extends Primitive>({
   label,
   helper,
   vertical,
+  tooltipPlacement,
+  rightAlign,
   initialValue,
   resyncToken,
   onSaved,
@@ -71,7 +77,14 @@ export function SaveField<TValue extends Primitive>({
   }
 
   return (
-    <SettingRow label={label} helper={helper} vertical={vertical} error={error}>
+    <SettingRow
+      label={label}
+      helper={helper}
+      vertical={vertical}
+      tooltipPlacement={tooltipPlacement}
+      rightAlign={rightAlign}
+      error={error}
+    >
       {render(value, setValue, error !== null)}
     </SettingRow>
   );

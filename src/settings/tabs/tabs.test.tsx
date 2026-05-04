@@ -566,19 +566,29 @@ describe('DisplayTab', () => {
 });
 
 describe('SearchTab', () => {
-  it('renders Services, Pipeline, Timeouts, and Diagnostics sections', () => {
+  it('renders Services, Pipeline, Timeouts sections and the collapsed Diagnostics trigger', () => {
     render(<SearchTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     expect(screen.getByText('Services')).toBeInTheDocument();
     expect(screen.getByText('Pipeline')).toBeInTheDocument();
     expect(screen.getByText('Timeouts')).toBeInTheDocument();
-    expect(screen.getByText('Diagnostics')).toBeInTheDocument();
     expect(screen.getByText('SearXNG URL')).toBeInTheDocument();
     expect(screen.getByText('Router timeout')).toBeInTheDocument();
+    // Diagnostics trigger is visible but content is collapsed by default.
+    expect(
+      screen.getByRole('button', { name: /Diagnostics/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Search trace')).not.toBeInTheDocument();
+  });
+
+  it('expands the Diagnostics section when the trigger is clicked', () => {
+    render(<SearchTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/i }));
     expect(screen.getByText('Search trace')).toBeInTheDocument();
   });
 
-  it('renders the search trace toggle in the off state by default', () => {
+  it('renders the search trace toggle in the off state after expanding', () => {
     render(<SearchTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/i }));
     const toggle = screen.getByRole('switch', { name: 'Enable search trace' });
     expect(toggle).toBeInTheDocument();
     expect(toggle).toHaveAttribute('aria-checked', 'false');
@@ -590,6 +600,7 @@ describe('SearchTab', () => {
       debug: { search_trace_enabled: true },
     };
     render(<SearchTab config={configOn} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/i }));
     const toggle = screen.getByRole('switch', { name: 'Enable search trace' });
     expect(toggle).toHaveAttribute('aria-checked', 'true');
   });
