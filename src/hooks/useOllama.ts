@@ -672,24 +672,29 @@ export function useOllama(
 
   /** Resets all conversation state for a fresh session.
    *
-   * Closes the outgoing trace (`ConversationEnd { reason: "user_reset" }`),
-   * mints a fresh trace conversation id, and resets the first-turn flag
-   * so the next `ask()` / `askSearch()` emits `ConversationStart` again.
-   * `record_conversation_end` is fire-and-forget; trace failures must
-   * never block the user-visible reset.
+   * Closes the outgoing trace (`ConversationEnd { reason: "user_reset" }`)
+   * IFF at least one chat turn has already fired against the current
+   * trace conversation id (otherwise there is no `ConversationStart`
+   * to pair with and emitting an end would produce an empty file).
+   * Then drops the current id back to `null` so the next `ask()` /
+   * `askSearch()` lazily mints a fresh one. `record_conversation_end`
+   * is fire-and-forget; trace failures must never block the
+   * user-visible reset.
    */
   const reset = useCallback(() => {
     abortActiveGeneration();
     setMessages([]);
-    const outgoingId = ensureTraceConversationId();
-    void invoke('record_conversation_end', {
-      conversationId: outgoingId,
-      reason: 'user_reset',
-    }).catch(ignoreTraceIpcError);
-    traceConversationIdRef.current = crypto.randomUUID();
+    const outgoingId = traceConversationIdRef.current;
+    if (outgoingId !== null && !isFirstTurnRef.current) {
+      void invoke('record_conversation_end', {
+        conversationId: outgoingId,
+        reason: 'user_reset',
+      }).catch(ignoreTraceIpcError);
+    }
+    traceConversationIdRef.current = null;
     isFirstTurnRef.current = true;
     void invoke('reset_conversation');
-  }, [abortActiveGeneration, ensureTraceConversationId]);
+  }, [abortActiveGeneration]);
 
   /** Replaces the current message list with a previously loaded set of messages.
    *
@@ -702,16 +707,18 @@ export function useOllama(
   const loadMessages = useCallback(
     (msgs: Message[]) => {
       abortActiveGeneration();
-      const outgoingId = ensureTraceConversationId();
-      void invoke('record_conversation_end', {
-        conversationId: outgoingId,
-        reason: 'history_load',
-      }).catch(ignoreTraceIpcError);
-      traceConversationIdRef.current = crypto.randomUUID();
+      const outgoingId = traceConversationIdRef.current;
+      if (outgoingId !== null && !isFirstTurnRef.current) {
+        void invoke('record_conversation_end', {
+          conversationId: outgoingId,
+          reason: 'history_load',
+        }).catch(ignoreTraceIpcError);
+      }
+      traceConversationIdRef.current = null;
       isFirstTurnRef.current = true;
       setMessages(msgs);
     },
-    [abortActiveGeneration, ensureTraceConversationId],
+    [abortActiveGeneration],
   );
 
   /**
