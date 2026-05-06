@@ -60,6 +60,8 @@ pub use types::{
 pub async fn search_pipeline(
     message: String,
     conversation_id: String,
+    is_first_turn: bool,
+    displayed_content: Option<String>,
     on_event: Channel<SearchEvent>,
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
@@ -135,6 +137,36 @@ pub async fn search_pipeline(
     let live_inner: Arc<dyn TraceRecorder> = live;
     let recorder = Arc::new(BoundRecorder::new(live_inner, conv_id));
 
+    // Mirror the user-perceived turn into the chat-domain trace so the
+    // `traces/chat/<conversation_id>.jsonl` file is the canonical
+    // user-facing timeline regardless of whether a turn used `/search`
+    // or hit `ask_ollama` directly. Symmetric with what
+    // `commands::ask_ollama` records at its hook sites; the deep
+    // search-pipeline internals (LLM calls, judge verdicts, SearXNG
+    // queries) stay in the search-domain file via the same conv id.
+    if is_first_turn {
+        recorder.record(crate::trace::RecorderEvent::ConversationStart {
+            model: model_name.clone(),
+            system_prompt: app_config.prompt.resolved_system.clone(),
+        });
+    }
+    // `displayed_content` is what the user actually typed on screen
+    // (e.g. "/search who is Elon Musk?"); `message` is the stripped
+    // query the search engine receives. The chat file uses the
+    // displayed text for symmetry with non-search turns, where
+    // `user_message.content` is the literal user input.
+    let user_visible_content = displayed_content.as_deref().unwrap_or(&message).to_owned();
+    recorder.record(crate::trace::RecorderEvent::UserMessage {
+        content: user_visible_content,
+        attached_images: Vec::new(),
+        slash_command: Some("/search".to_owned()),
+    });
+    let stream_started_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let token_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     let router = pipeline::DefaultRouterJudge::new(
         ollama_endpoint.clone(),
         model_name.clone(),
@@ -155,6 +187,8 @@ pub async fn search_pipeline(
         Arc::clone(&recorder),
     );
 
+    let recorder_for_pump = Arc::clone(&recorder);
+    let token_count_for_pump = Arc::clone(&token_count);
     let result = pipeline::run_agentic(
         &ollama_endpoint,
         &searxng_endpoint,
@@ -167,6 +201,20 @@ pub async fn search_pipeline(
         message,
         &today,
         &|event| {
+            // Mirror synthesized-answer tokens into the chat-domain
+            // trace so the chat file's `assistant_tokens` stream
+            // matches what the user reads on screen, exactly like a
+            // non-search turn. Other `SearchEvent` variants (status
+            // pills, source URLs, warnings) stay in the search-domain
+            // file; they were intentionally dropped from the chat
+            // mirror to keep chat turns shape-symmetric across normal
+            // and `/search` paths.
+            if let SearchEvent::Token { content } = &event {
+                token_count_for_pump.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                recorder_for_pump.record(crate::trace::RecorderEvent::AssistantTokens {
+                    chunk: content.clone(),
+                });
+            }
             let _ = on_event.send(event);
         },
         &router,
@@ -192,6 +240,20 @@ pub async fn search_pipeline(
             }
         }
     }
+
+    // Close the chat-domain user-perceived turn even on error paths so
+    // the chat file's `assistant_complete` always pairs with the
+    // earlier `user_message`. `total_tokens` reflects the synthesized
+    // tokens streamed to the user (zero on early-bail paths like
+    // `SandboxUnavailable`).
+    let stream_ended_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    recorder.record(crate::trace::RecorderEvent::AssistantComplete {
+        total_tokens: token_count.load(std::sync::atomic::Ordering::Relaxed),
+        latency_ms: stream_ended_ms.saturating_sub(stream_started_ms),
+    });
 
     generation.clear_token();
     Ok(())

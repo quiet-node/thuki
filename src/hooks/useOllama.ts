@@ -623,10 +623,19 @@ export function useOllama(
         };
 
         const searchConversationId = ensureTraceConversationId();
+        const searchIsFirstTurn = isFirstTurnRef.current;
         isFirstTurnRef.current = false;
         invoke('search_pipeline', {
           message: trimmed,
           conversationId: searchConversationId,
+          isFirstTurn: searchIsFirstTurn,
+          // `displayContent` is the literal text the user typed (with
+          // the `/search ` prefix preserved), used by the backend to
+          // populate the chat-domain `user_message.content` so the
+          // chat trace file shows exactly what the user submitted.
+          // `message` (the stripped query) is what the search engine
+          // receives.
+          displayedContent: displayContent ?? trimmed,
           onEvent: channel,
         }).catch(() => {
           if (!isActiveGeneration(generationId) || errored || cancelled) return;
