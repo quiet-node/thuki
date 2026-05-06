@@ -66,7 +66,7 @@ pub struct SearchRuntimeConfig {
     pub pipeline_input_char_budget: usize,
     /// Whether the forensic per-turn search trace recorder is on. Off in
     /// shipped builds; toggled from the Settings panel (Web tab, Diagnostics
-    /// section). See [`crate::search::recorder`] for the file format.
+    /// section). See [`crate::trace::recorder`] for the file format.
     pub trace_enabled: bool,
 }
 

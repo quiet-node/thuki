@@ -804,7 +804,7 @@ struct SearchExecutionContext<'a> {
     on_event: &'a (dyn Fn(SearchEvent) + Sync),
     runtime_config: &'a config::SearchRuntimeConfig,
     num_ctx: u32,
-    /// Forensic per-turn recorder. [`super::recorder::NoopRecorder`] in
+    /// Forensic per-turn recorder. Wraps a [`crate::trace::NoopRecorder`] in
     /// production unless `runtime_config.trace_enabled` is set.
     recorder: &'a Arc<BoundRecorder>,
 }
