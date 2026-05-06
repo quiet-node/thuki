@@ -2,6 +2,10 @@
 @source "../node_modules/streamdown/dist";
 @import 'streamdown/styles.css';
 
+/* Source Serif 4 reading face for AI prose. Chrome stays Inter. */
+@import '@fontsource/source-serif-4/400.css';
+@import '@fontsource/source-serif-4/400-italic.css';
+
 @theme {
   --font-sans:
     'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
@@ -183,6 +187,18 @@ body {
 }
 .askbar-textarea::-webkit-scrollbar {
   display: none;
+}
+
+/* AI prose reading face: serif body, warm cream, looser leading. Scoped to
+ * .markdown-body so UI chrome (labels, buttons, search trace) stays Inter.
+ * User bubble renders via renderUserContent, not MarkdownRenderer.
+ */
+.markdown-body {
+  font-family: 'Source Serif 4', Charter, 'Iowan Old Style', Georgia, serif;
+  color: #ede4d3;
+  font-size: 16px;
+  line-height: 1.65;
+  letter-spacing: 0.3px;
 }
 
 /* ─── Markdown Body: Prose Defaults ───
