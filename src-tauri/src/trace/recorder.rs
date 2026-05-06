@@ -486,8 +486,8 @@ impl FileRecorder {
 }
 
 impl TraceRecorder for FileRecorder {
-    /// Filesystem-I/O wrapper: orchestrates [`serialize_event`] (covered)
-    /// and [`ensure_open`] (covered via integration tests). The body
+    /// Filesystem-I/O wrapper: orchestrates [`serialize_event()`] (covered)
+    /// and [`Self::ensure_open()`] (covered via integration tests). The body
     /// itself is plumbing around `std::io::Write` that cannot be
     /// exercised reliably for every error branch on every CI runner.
     #[cfg_attr(coverage_nightly, coverage(off))]
