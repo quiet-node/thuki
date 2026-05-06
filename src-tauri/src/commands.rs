@@ -492,7 +492,7 @@ pub async fn ask_ollama(
     config: State<'_, parking_lot::RwLock<AppConfig>>,
     active_model: State<'_, crate::models::ActiveModelState>,
     capabilities_cache: State<'_, ModelCapabilitiesCache>,
-    trace_recorder: State<'_, std::sync::Arc<dyn crate::trace::TraceRecorder>>,
+    trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<(), String> {
     // Snapshot the config once so all downstream reads (endpoint, prompt, model)
     // see a consistent view even if the user edits Settings mid-stream.
@@ -524,8 +524,11 @@ pub async fn ask_ollama(
     // each `record()` is a constant-time noop. The bound recorder is
     // cheap to clone and is captured by the streaming-pump closure so
     // per-token emits skip the registry lookup on the hot path.
+    let live: std::sync::Arc<crate::trace::LiveTraceRecorder> =
+        std::sync::Arc::clone(trace_recorder.inner());
+    let live_inner: std::sync::Arc<dyn crate::trace::TraceRecorder> = live;
     let bound_recorder = std::sync::Arc::new(crate::trace::BoundRecorder::new(
-        std::sync::Arc::clone(trace_recorder.inner()),
+        live_inner,
         crate::trace::ConversationId::new(conversation_id),
     ));
 
@@ -754,8 +757,9 @@ pub fn reset_conversation(history: State<'_, ConversationHistory>) {
 pub fn record_conversation_end(
     conversation_id: String,
     reason: String,
-    trace_recorder: State<'_, std::sync::Arc<dyn crate::trace::TraceRecorder>>,
+    trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) {
+    use crate::trace::TraceRecorder;
     trace_recorder.record(
         &crate::trace::ConversationId::new(conversation_id),
         crate::trace::RecorderEvent::ConversationEnd { reason },

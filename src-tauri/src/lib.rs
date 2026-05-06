@@ -846,6 +846,43 @@ fn spawn_periodic_image_cleanup(app_handle: tauri::AppHandle) {
     });
 }
 
+// ─── Trace recorder bootstrap helpers ────────────────────────────────────────
+
+/// Builds the inner recorder for the live trace wrapper based on the
+/// current `[debug] trace_enabled` value.
+///
+/// Returns a `NoopRecorder` when off (zero-cost path), a
+/// `RegistryRecorder` rooted at `app_data_dir()/traces/` when on. The
+/// caller is responsible for installing the result either as the
+/// initial state of a `LiveTraceRecorder` (at startup) or replacing
+/// the live recorder's inner (on Settings save).
+///
+/// Emits a one-line stderr warning when transitioning to the on state
+/// so a developer running `bun run dev` can see at a glance that
+/// tracing is active and where the files are landing.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn build_trace_inner(
+    app_handle: &tauri::AppHandle,
+    enabled: bool,
+) -> Arc<dyn trace::TraceRecorder> {
+    if !enabled {
+        return Arc::new(trace::NoopRecorder);
+    }
+    let traces_root = app_handle
+        .path()
+        .app_data_dir()
+        .map(|d| d.join("traces"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("thuki").join("traces"));
+    eprintln!(
+        "thuki: [trace] trace_enabled = ON. Writing forensic JSONL to {}.",
+        traces_root.display()
+    );
+    eprintln!(
+        "thuki: [trace] Files may contain sensitive text. Disable in config.toml when not actively debugging."
+    );
+    Arc::new(trace::RegistryRecorder::new(traces_root))
+}
+
 // ─── Application entry point ─────────────────────────────────────────────────
 
 /// Initialises and runs the Tauri application.
@@ -998,33 +1035,24 @@ pub fn run() {
 
             // ── Unified trace recorder ─────────────────────────────
             // Off by default: when `[debug] trace_enabled = false` in
-            // config.toml the production recorder is a noop and every
-            // chat / search / screenshot event is a constant-time call.
-            // When on, the registry routes events to per-conversation
-            // JSONL files under `app_data_dir()/traces/{chat,search}/`.
-            // See `trace::recorder` module docs for the file schema and
-            // late-event tolerance contract.
+            // config.toml the live recorder wraps a `NoopRecorder` and
+            // every chat / search / screenshot event is a constant-time
+            // call. When on, it wraps a `RegistryRecorder` that routes
+            // events to per-conversation JSONL files under
+            // `app_data_dir()/traces/{chat,search}/`.
+            //
+            // Wrapped in a `LiveTraceRecorder` so toggling
+            // `[debug] trace_enabled` from the Settings panel hot-swaps
+            // the inner without requiring an app restart. See
+            // `trace::live` for the swap contract and
+            // `settings_commands::set_config_field` for the hook site.
             let trace_enabled = app
                 .state::<parking_lot::RwLock<crate::config::AppConfig>>()
                 .read()
                 .debug
                 .trace_enabled;
-            let trace_recorder: Arc<dyn trace::TraceRecorder> = if trace_enabled {
-                let traces_root = app
-                    .path()
-                    .app_data_dir()
-                    .map(|d| d.join("traces"))
-                    .unwrap_or_else(|_| std::env::temp_dir().join("thuki").join("traces"));
-                eprintln!(
-                    "thuki: [trace] trace_enabled = ON. Writing forensic JSONL to {}.",
-                    traces_root.display()
-                );
-                eprintln!("thuki: [trace] Files may contain sensitive text. Disable in config.toml when not actively debugging.");
-                Arc::new(trace::RegistryRecorder::new(traces_root))
-            } else {
-                Arc::new(trace::NoopRecorder)
-            };
-            app.manage(trace_recorder);
+            let initial_inner = build_trace_inner(app.handle(), trace_enabled);
+            app.manage(Arc::new(trace::LiveTraceRecorder::new(initial_inner)));
 
             // ── SQLite database for conversation history ──────────
             let app_data_dir = app

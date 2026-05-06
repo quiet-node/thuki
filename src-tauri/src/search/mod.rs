@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use crate::commands::{ConversationHistory, GenerationState};
 use crate::config::AppConfig;
 use crate::models::ActiveModelState;
-use crate::trace::{BoundRecorder, ConversationId, TraceRecorder};
+use crate::trace::{BoundRecorder, ConversationId, LiveTraceRecorder, TraceRecorder};
 
 pub mod chunker;
 pub mod config;
@@ -66,7 +66,7 @@ pub async fn search_pipeline(
     history: State<'_, ConversationHistory>,
     app_config: State<'_, parking_lot::RwLock<AppConfig>>,
     active_model_state: State<'_, ActiveModelState>,
-    trace_recorder: State<'_, Arc<dyn TraceRecorder>>,
+    trace_recorder: State<'_, Arc<LiveTraceRecorder>>,
 ) -> Result<(), String> {
     // Snapshot the config once so the entire pipeline sees a consistent view
     // even if the user edits Settings while a search is in flight.
@@ -126,10 +126,14 @@ pub async fn search_pipeline(
     // `traces/search/<conversation_id>.jsonl` file via the registry's
     // lazy-insert path.
     let conv_id = ConversationId::new(conversation_id);
-    let recorder = Arc::new(BoundRecorder::new(
-        Arc::clone(trace_recorder.inner()),
-        conv_id,
-    ));
+    let live: Arc<LiveTraceRecorder> = Arc::clone(trace_recorder.inner());
+    // Coerce the concrete `Arc<LiveTraceRecorder>` to the
+    // `Arc<dyn TraceRecorder>` shape `BoundRecorder` expects. The
+    // coercion happens at the binding site; calling `record()` on
+    // the bound recorder still goes through the live wrapper, so a
+    // mid-stream trace toggle takes effect on the next event.
+    let live_inner: Arc<dyn TraceRecorder> = live;
+    let recorder = Arc::new(BoundRecorder::new(live_inner, conv_id));
 
     let router = pipeline::DefaultRouterJudge::new(
         ollama_endpoint.clone(),

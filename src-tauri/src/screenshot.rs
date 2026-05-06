@@ -403,8 +403,9 @@ fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
 pub async fn capture_full_screen_command(
     app_handle: tauri::AppHandle,
     conversation_id: String,
-    trace_recorder: tauri::State<'_, std::sync::Arc<dyn crate::trace::TraceRecorder>>,
+    trace_recorder: tauri::State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<String, String> {
+    use crate::trace::TraceRecorder;
     let base_dir = app_handle
         .path()
         .app_data_dir()

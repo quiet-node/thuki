@@ -20,10 +20,12 @@
 use std::sync::Arc;
 
 pub mod ids;
+pub mod live;
 pub mod recorder;
 pub mod registry;
 
 pub use ids::{new_turn_id, ConversationId};
+pub use live::LiveTraceRecorder;
 pub use recorder::{
     FileRecorder, NoopRecorder, ReaderUrlOutcome, RecorderEvent, RerankedChunk, TraceDomain,
     TraceRecorder, TRACE_SCHEMA_VERSION,

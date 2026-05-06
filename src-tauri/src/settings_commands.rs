@@ -120,14 +120,30 @@ pub fn set_config_field(
     value: JsonValue,
     app: AppHandle,
     state: State<'_, RwLock<AppConfig>>,
+    trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
+    let prior_trace_enabled = state.read().debug.trace_enabled;
     let resolved = {
         let mut guard = state.write();
         let resolved = write_field_to_disk(&path, &section, &key, value)?;
         *guard = resolved.clone();
         resolved
     };
+    // Hot-swap the live trace recorder on `[debug] trace_enabled` flips
+    // so the user does not need to restart Thuki for the toggle to
+    // take effect. Off → On installs a fresh `RegistryRecorder` rooted
+    // at `app_data_dir()/traces/`; On → Off installs a `NoopRecorder`,
+    // which lets in-flight streaming tasks finish writing through their
+    // cached `Arc<FileRecorder>` clones (via `Arc` semantics) while new
+    // events fall through to noop.
+    if section == "debug"
+        && key == "trace_enabled"
+        && resolved.debug.trace_enabled != prior_trace_enabled
+    {
+        let new_inner = crate::build_trace_inner(&app, resolved.debug.trace_enabled);
+        trace_recorder.replace(new_inner);
+    }
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -183,14 +199,24 @@ pub fn reset_config(
     section: Option<String>,
     app: AppHandle,
     state: State<'_, RwLock<AppConfig>>,
+    trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
+    let prior_trace_enabled = state.read().debug.trace_enabled;
     let resolved = {
         let mut guard = state.write();
         let resolved = reset_section_on_disk(&path, section.as_deref())?;
         *guard = resolved.clone();
         resolved
     };
+    // Hot-swap the live trace recorder if `reset_config` flipped the
+    // `[debug] trace_enabled` value (resetting the whole file or just
+    // the `[debug]` section both restore the compiled default of
+    // `false`, so an On → Off transition is the realistic case).
+    if resolved.debug.trace_enabled != prior_trace_enabled {
+        let new_inner = crate::build_trace_inner(&app, resolved.debug.trace_enabled);
+        trace_recorder.replace(new_inner);
+    }
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -254,14 +280,23 @@ pub(crate) fn reset_section_on_disk(
 pub fn reload_config_from_disk(
     app: AppHandle,
     state: State<'_, RwLock<AppConfig>>,
+    trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
+    let prior_trace_enabled = state.read().debug.trace_enabled;
     let resolved = {
         let mut guard = state.write();
         let resolved = config::load_from_path(&path)?;
         *guard = resolved.clone();
         resolved
     };
+    // Hot-swap the live trace recorder if a manual edit to config.toml
+    // flipped `[debug] trace_enabled` and the user clicked "Refresh
+    // from disk" to pick it up.
+    if resolved.debug.trace_enabled != prior_trace_enabled {
+        let new_inner = crate::build_trace_inner(&app, resolved.debug.trace_enabled);
+        trace_recorder.replace(new_inner);
+    }
     emit_config_updated(&app);
     Ok(resolved)
 }
