@@ -62,7 +62,7 @@ const CONFIG: RawAppConfig = {
     router_timeout_s: 45,
   },
   debug: {
-    search_trace_enabled: false,
+    trace_enabled: false,
   },
 };
 
@@ -614,25 +614,29 @@ describe('SearchTab', () => {
   it('expands the Diagnostics section when the trigger is clicked', () => {
     render(<SearchTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: /Diagnostics/i }));
-    expect(screen.getByText('Search trace')).toBeInTheDocument();
+    expect(screen.getByText('Trace recording')).toBeInTheDocument();
   });
 
-  it('renders the search trace toggle in the off state after expanding', () => {
+  it('renders the trace recording toggle in the off state after expanding', () => {
     render(<SearchTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: /Diagnostics/i }));
-    const toggle = screen.getByRole('switch', { name: 'Enable search trace' });
+    const toggle = screen.getByRole('switch', {
+      name: 'Enable trace recording',
+    });
     expect(toggle).toBeInTheDocument();
     expect(toggle).toHaveAttribute('aria-checked', 'false');
   });
 
-  it('renders the search trace toggle in the on state when config is true', () => {
+  it('renders the trace recording toggle in the on state when config is true', () => {
     const configOn: RawAppConfig = {
       ...CONFIG,
-      debug: { search_trace_enabled: true },
+      debug: { trace_enabled: true },
     };
     render(<SearchTab config={configOn} resyncToken={0} onSaved={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: /Diagnostics/i }));
-    const toggle = screen.getByRole('switch', { name: 'Enable search trace' });
+    const toggle = screen.getByRole('switch', {
+      name: 'Enable trace recording',
+    });
     expect(toggle).toHaveAttribute('aria-checked', 'true');
   });
 });

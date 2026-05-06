@@ -14,14 +14,13 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{
-    DEFAULT_DEBUG_SEARCH_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
-    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
-    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
-    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
-    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
-    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
-    DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
+    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX,
+    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S,
+    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
+    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
+    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
 };
 
 /// Static, user-tunable inference daemon configuration.
@@ -197,22 +196,33 @@ impl Default for SearchSection {
 
 /// Developer and power-user debugging knobs.
 ///
-/// `search_trace_enabled` is exposed in the Settings GUI (Web tab, Diagnostics
+/// `trace_enabled` is exposed in the Settings GUI (Web tab, Diagnostics
 /// section) so users can toggle it without editing `config.toml`. Off in
 /// shipped builds by default.
+///
+/// The field accepts the legacy `search_trace_enabled` name via
+/// `serde(alias)` so existing user configs from before the chat-domain
+/// extension keep working without manual edits. The first launch on the
+/// new build silently rewrites the field name to `trace_enabled` if the
+/// loader ever serializes the resolved config back to disk; users with
+/// dotfile-tracked configs will see the rename in their next git diff.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DebugSection {
-    /// When on, the `/search` pipeline writes a forensic JSON-Lines trace
-    /// file per turn under `~/Library/Application Support/com.quietnode.thuki/traces/`.
-    /// Toggleable from the Settings panel. Off by default.
-    pub search_trace_enabled: bool,
+    /// When on, the unified trace recorder writes forensic JSON-Lines
+    /// trace files for the chat layer AND the `/search` pipeline under
+    /// `~/Library/Application Support/com.quietnode.thuki/traces/`,
+    /// grouped by domain (`traces/chat/<conversation_id>.jsonl` and
+    /// `traces/search/<conversation_id>.jsonl`). Toggleable from the
+    /// Settings panel. Off by default.
+    #[serde(alias = "search_trace_enabled")]
+    pub trace_enabled: bool,
 }
 
 impl Default for DebugSection {
     fn default() -> Self {
         Self {
-            search_trace_enabled: DEFAULT_DEBUG_SEARCH_TRACE_ENABLED,
+            trace_enabled: DEFAULT_DEBUG_TRACE_ENABLED,
         }
     }
 }

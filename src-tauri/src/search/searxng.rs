@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use crate::config::defaults::{DEFAULT_MAX_QUERY_CHARS, DEFAULT_MAX_SNIPPET_CHARS};
 
-use super::recorder::{PipelineRecorder, RecorderEvent};
 use super::types::{SearchError, SearxResponse, SearxResult};
+use crate::trace::{BoundRecorder, RecorderEvent};
 
 /// Maximum character length retained per snippet/title. Uses character count
 /// (not bytes) so multi-byte text is not mid-codepoint-truncated. Re-exported
@@ -55,7 +55,7 @@ pub async fn search(
     query: &str,
     timeout_s: u64,
     max_results: usize,
-    recorder: &Arc<dyn PipelineRecorder>,
+    recorder: &Arc<BoundRecorder>,
 ) -> Result<Vec<SearxResult>, SearchError> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -179,7 +179,7 @@ pub async fn search_all_with_endpoint(
     queries: &[String],
     timeout_s: u64,
     max_results: usize,
-    recorder: &Arc<dyn PipelineRecorder>,
+    recorder: &Arc<BoundRecorder>,
 ) -> Result<Vec<SearxResult>, SearchError> {
     if queries.is_empty() {
         return Ok(Vec::new());
@@ -222,7 +222,9 @@ pub async fn search_all_with_base(
     }
 
     let endpoint = format!("{}/search", base.trim_end_matches('/'));
-    let recorder: Arc<dyn PipelineRecorder> = Arc::new(super::recorder::NoopRecorder);
+    let recorder: Arc<BoundRecorder> = Arc::new(BoundRecorder::noop_for(
+        crate::trace::ConversationId::new("searxng-search-all"),
+    ));
     search_all_with_endpoint(
         &endpoint,
         queries,
@@ -271,13 +273,15 @@ fn truncate_chars(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::recorder::NoopRecorder;
+    use crate::trace::ConversationId;
 
-    /// Local helper: a noop recorder wrapped in `Arc<dyn PipelineRecorder>`,
+    /// Local helper: a noop recorder bound to a sentinel conversation id,
     /// used everywhere this module exercises `search` /
     /// `search_all_with_endpoint` without asserting on trace output.
-    fn noop_recorder() -> Arc<dyn PipelineRecorder> {
-        Arc::new(NoopRecorder)
+    fn noop_recorder() -> Arc<BoundRecorder> {
+        Arc::new(BoundRecorder::noop_for(ConversationId::new(
+            "test-conv-searxng",
+        )))
     }
 
     #[test]
@@ -618,12 +622,14 @@ mod tests {
 #[cfg(test)]
 mod parallel_tests {
     use super::*;
-    use crate::search::recorder::NoopRecorder;
+    use crate::trace::ConversationId;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn noop_recorder() -> Arc<dyn PipelineRecorder> {
-        Arc::new(NoopRecorder)
+    fn noop_recorder() -> Arc<BoundRecorder> {
+        Arc::new(BoundRecorder::noop_for(ConversationId::new(
+            "test-conv-searxng-parallel",
+        )))
     }
 
     fn fixture(q: &str, url: &str) -> serde_json::Value {

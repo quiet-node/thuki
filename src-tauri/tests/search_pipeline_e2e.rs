@@ -18,23 +18,32 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use thuki_agent_lib::commands::ConversationHistory;
 use thuki_agent_lib::config::defaults::DEFAULT_NUM_CTX;
-use thuki_agent_lib::search::recorder::{FileRecorder, NoopRecorder, PipelineRecorder};
 use thuki_agent_lib::search::{
     run_agentic, Action, JudgeCaller, JudgeSource, JudgeVerdict, RouterJudgeCaller,
     RouterJudgeOutput, SearchError, SearchEvent, SearchMetadata, SearchWarning, Sufficiency,
 };
+use thuki_agent_lib::trace::{
+    BoundRecorder, ConversationId, FileRecorder, NoopRecorder, TraceDomain, TraceRecorder,
+};
 
-/// Returns a recorder that writes `<label>.jsonl` under `THUKI_TRACE_DIR` when
-/// that env var is set, otherwise a noop. Lets smoke tests dump full traces
-/// for judge-behaviour analysis without changing the default test outcome.
+/// Returns a recorder that writes `traces/search/<label>.jsonl` under
+/// `THUKI_TRACE_DIR` when that env var is set, otherwise a noop. Lets
+/// smoke tests dump full traces for judge-behaviour analysis without
+/// changing the default test outcome.
 ///
 /// Usage: `THUKI_TRACE_DIR=/tmp/thuki-traces cargo test --test search_pipeline_e2e`
-fn opt_trace_recorder(label: &str) -> Arc<dyn PipelineRecorder> {
-    if let Ok(dir) = std::env::var("THUKI_TRACE_DIR") {
-        Arc::new(FileRecorder::new(&dir, label))
+fn opt_trace_recorder(label: &str) -> Arc<BoundRecorder> {
+    let conv_id = ConversationId::new(label);
+    let inner: Arc<dyn TraceRecorder> = if let Ok(dir) = std::env::var("THUKI_TRACE_DIR") {
+        Arc::new(FileRecorder::for_conversation(
+            dir,
+            TraceDomain::Search,
+            &conv_id,
+        ))
     } else {
         Arc::new(NoopRecorder)
-    }
+    };
+    Arc::new(BoundRecorder::new(inner, conv_id))
 }
 
 // ── fixtures ──────────────────────────────────────────────────────────────────

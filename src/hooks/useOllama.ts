@@ -72,6 +72,19 @@ type StreamChunk =
   | { type: 'Cancelled' }
   | { type: 'Error'; error: { kind: OllamaErrorKind; message: string } };
 
+/**
+ * Shared swallow-all handler for fire-and-forget trace IPC calls.
+ * `record_conversation_end` is a best-effort signal; backend failures
+ * (recorder mid-flush, IPC closed during teardown, etc.) must never
+ * block a user-visible reset or history-load. Hoisted to module scope
+ * so coverage counts the function exactly once.
+ *
+ * Exported so the unit tests can call it directly when verifying the
+ * handler is wired up; production code should never need to reference
+ * it by name.
+ */
+export const ignoreTraceIpcError = (): void => {};
+
 function normalizeStreamChunk(chunk: RawStreamChunk): StreamChunk {
   switch (chunk.type) {
     case 'Token':
@@ -148,6 +161,40 @@ export function useOllama(
   const activeGenerationRef = useRef<ActiveGeneration | null>(null);
   const nextGenerationIdRef = useRef(0);
   const pendingCancelRef = useRef<Promise<void> | null>(null);
+
+  /**
+   * Stable trace conversation id for the current in-memory chat session.
+   * Lazily initialized on first read by `ensureTraceConversationId`;
+   * `useRef(null)` keeps render pure, the lazy init in a callback keeps
+   * `crypto.randomUUID()` out of the render path (per
+   * `@eslint-react/purity`). Independent of the SQLite "saved
+   * conversation" id (which is null until `useConversationHistory.save()`
+   * runs); the trace recorder uses this id to route every event for the
+   * session into one `traces/chat/<id>.jsonl` and `traces/search/<id>.jsonl`
+   * pair. Refreshed on `reset()` and `loadMessages()`, both of which
+   * fire `record_conversation_end` for the outgoing id so the chat-domain
+   * file gets a clean closing line.
+   */
+  const traceConversationIdRef = useRef<string | null>(null);
+  /**
+   * True until the first `ask()` / `askSearch()` for the current trace
+   * conversation id has fired. Read by the backend to decide whether to
+   * emit `ConversationStart`. Reset to true on `reset()` /
+   * `loadMessages()`.
+   */
+  const isFirstTurnRef = useRef(true);
+
+  /**
+   * Returns the active trace conversation id, lazily creating it on
+   * first call. Stable for the lifetime of the session; rotated by
+   * `reset()` and `loadMessages()`.
+   */
+  const ensureTraceConversationId = useCallback((): string => {
+    if (traceConversationIdRef.current === null) {
+      traceConversationIdRef.current = crypto.randomUUID();
+    }
+    return traceConversationIdRef.current;
+  }, []);
 
   const beginGeneration = (
     assistantId: string,
@@ -326,12 +373,18 @@ export function useOllama(
         setSearchStage(null);
       };
 
+      const conversationId = ensureTraceConversationId();
+      const isFirstTurn = isFirstTurnRef.current;
+      isFirstTurnRef.current = false;
       try {
         await invoke('ask_ollama', {
           message: promptOverride ?? displayContent,
           quotedText: quotedText ?? null,
           imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : null,
           think: think ?? false,
+          conversationId,
+          isFirstTurn,
+          slashCommand: think ? '/think' : null,
           onEvent: channel,
         });
       } catch {
@@ -354,7 +407,7 @@ export function useOllama(
         setSearchStage(null);
       }
     },
-    [onTurnComplete, activeModel],
+    [onTurnComplete, activeModel, ensureTraceConversationId],
   );
 
   /**
@@ -569,8 +622,11 @@ export function useOllama(
           }
         };
 
+        const searchConversationId = ensureTraceConversationId();
+        isFirstTurnRef.current = false;
         invoke('search_pipeline', {
           message: trimmed,
+          conversationId: searchConversationId,
           onEvent: channel,
         }).catch(() => {
           if (!isActiveGeneration(generationId) || errored || cancelled) return;
@@ -583,7 +639,7 @@ export function useOllama(
         });
       });
     },
-    [onTurnComplete, activeModel],
+    [onTurnComplete, activeModel, ensureTraceConversationId],
   );
 
   /** Cancels the currently active generation. */
@@ -614,21 +670,57 @@ export function useOllama(
     await pendingCancelRef.current;
   }, [abortActiveGeneration, isGenerating]);
 
-  /** Resets all conversation state for a fresh session. */
+  /** Resets all conversation state for a fresh session.
+   *
+   * Closes the outgoing trace (`ConversationEnd { reason: "user_reset" }`),
+   * mints a fresh trace conversation id, and resets the first-turn flag
+   * so the next `ask()` / `askSearch()` emits `ConversationStart` again.
+   * `record_conversation_end` is fire-and-forget; trace failures must
+   * never block the user-visible reset.
+   */
   const reset = useCallback(() => {
     abortActiveGeneration();
     setMessages([]);
+    const outgoingId = ensureTraceConversationId();
+    void invoke('record_conversation_end', {
+      conversationId: outgoingId,
+      reason: 'user_reset',
+    }).catch(ignoreTraceIpcError);
+    traceConversationIdRef.current = crypto.randomUUID();
+    isFirstTurnRef.current = true;
     void invoke('reset_conversation');
-  }, [abortActiveGeneration]);
+  }, [abortActiveGeneration, ensureTraceConversationId]);
 
-  /** Replaces the current message list with a previously loaded set of messages. */
+  /** Replaces the current message list with a previously loaded set of messages.
+   *
+   * Loading a different conversation from the history panel is also a
+   * trace-conversation boundary: the outgoing trace is closed with
+   * reason `"history_load"` and a fresh id is minted for the loaded
+   * messages. Without this the loaded conversation's first ask() would
+   * append to the outgoing trace's file, mixing two unrelated chats.
+   */
   const loadMessages = useCallback(
     (msgs: Message[]) => {
       abortActiveGeneration();
+      const outgoingId = ensureTraceConversationId();
+      void invoke('record_conversation_end', {
+        conversationId: outgoingId,
+        reason: 'history_load',
+      }).catch(ignoreTraceIpcError);
+      traceConversationIdRef.current = crypto.randomUUID();
+      isFirstTurnRef.current = true;
       setMessages(msgs);
     },
-    [abortActiveGeneration],
+    [abortActiveGeneration, ensureTraceConversationId],
   );
+
+  /**
+   * Active trace conversation id for the current session. Exposed so
+   * sibling commands invoked from `App.tsx` (notably
+   * `capture_full_screen_command` for `/screen`) can route their
+   * trace events to the same per-conversation file.
+   */
+  const getTraceConversationId = ensureTraceConversationId;
 
   return {
     messages,
@@ -639,5 +731,6 @@ export function useOllama(
     searchStage,
     reset,
     loadMessages,
+    getTraceConversationId,
   };
 }

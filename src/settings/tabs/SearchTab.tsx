@@ -255,10 +255,10 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
           <div id="dev-diagnostics">
             <SaveField
               section="debug"
-              fieldKey="search_trace_enabled"
-              label="Search trace"
-              helper={configHelp('debug', 'search_trace_enabled')}
-              initialValue={config.debug.search_trace_enabled}
+              fieldKey="trace_enabled"
+              label="Trace recording"
+              helper={configHelp('debug', 'trace_enabled')}
+              initialValue={config.debug.trace_enabled}
               resyncToken={resyncToken}
               onSaved={onSaved}
               tooltipPlacement="top"
@@ -267,7 +267,7 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
                 <Toggle
                   checked={value}
                   onChange={setValue}
-                  ariaLabel="Enable search trace"
+                  ariaLabel="Enable trace recording"
                 />
               )}
             />

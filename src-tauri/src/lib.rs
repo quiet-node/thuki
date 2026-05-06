@@ -25,6 +25,7 @@ pub mod onboarding;
 pub mod screenshot;
 pub mod search;
 pub mod settings_commands;
+pub mod trace;
 pub mod warmup;
 
 #[cfg(target_os = "macos")]
@@ -995,6 +996,36 @@ pub fn run() {
             app.manage(commands::GenerationState::new());
             app.manage(commands::ConversationHistory::new());
 
+            // ── Unified trace recorder ─────────────────────────────
+            // Off by default: when `[debug] trace_enabled = false` in
+            // config.toml the production recorder is a noop and every
+            // chat / search / screenshot event is a constant-time call.
+            // When on, the registry routes events to per-conversation
+            // JSONL files under `app_data_dir()/traces/{chat,search}/`.
+            // See `trace::recorder` module docs for the file schema and
+            // late-event tolerance contract.
+            let trace_enabled = app
+                .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                .read()
+                .debug
+                .trace_enabled;
+            let trace_recorder: Arc<dyn trace::TraceRecorder> = if trace_enabled {
+                let traces_root = app
+                    .path()
+                    .app_data_dir()
+                    .map(|d| d.join("traces"))
+                    .unwrap_or_else(|_| std::env::temp_dir().join("thuki").join("traces"));
+                eprintln!(
+                    "thuki: [trace] trace_enabled = ON. Writing forensic JSONL to {}.",
+                    traces_root.display()
+                );
+                eprintln!("thuki: [trace] Files may contain sensitive text. Disable in config.toml when not actively debugging.");
+                Arc::new(trace::RegistryRecorder::new(traces_root))
+            } else {
+                Arc::new(trace::NoopRecorder)
+            };
+            app.manage(trace_recorder);
+
             // ── SQLite database for conversation history ──────────
             let app_data_dir = app
                 .path()
@@ -1045,6 +1076,8 @@ pub fn run() {
             search::search_pipeline,
             #[cfg(not(coverage))]
             commands::reset_conversation,
+            #[cfg(not(coverage))]
+            commands::record_conversation_end,
             settings_commands::get_config,
             settings_commands::set_config_field,
             settings_commands::reset_config,

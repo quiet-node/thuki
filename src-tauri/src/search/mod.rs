@@ -14,13 +14,13 @@
 
 use std::sync::Arc;
 
-use tauri::{ipc::Channel, Manager, State};
+use tauri::{ipc::Channel, State};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::{ConversationHistory, GenerationState};
 use crate::config::AppConfig;
 use crate::models::ActiveModelState;
-use recorder::{FileRecorder, NoopRecorder, PipelineRecorder};
+use crate::trace::{BoundRecorder, ConversationId, TraceRecorder};
 
 pub mod chunker;
 pub mod config;
@@ -30,7 +30,6 @@ mod llm;
 pub mod pipeline;
 pub mod probe;
 pub mod reader;
-pub mod recorder;
 mod rerank;
 mod searxng;
 mod types;
@@ -60,13 +59,14 @@ pub use types::{
 #[allow(clippy::too_many_arguments)]
 pub async fn search_pipeline(
     message: String,
+    conversation_id: String,
     on_event: Channel<SearchEvent>,
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
     history: State<'_, ConversationHistory>,
     app_config: State<'_, parking_lot::RwLock<AppConfig>>,
     active_model_state: State<'_, ActiveModelState>,
-    app: tauri::AppHandle,
+    trace_recorder: State<'_, Arc<dyn TraceRecorder>>,
 ) -> Result<(), String> {
     // Snapshot the config once so the entire pipeline sees a consistent view
     // even if the user edits Settings while a search is in flight.
@@ -118,21 +118,18 @@ pub async fn search_pipeline(
 
     let today = pipeline::today_iso();
 
-    // Build the per-turn forensic recorder. When the dev-only debug flag is
-    // off (production default) this is a zero-cost noop. When on, every
-    // pipeline step records into a single JSON-Lines file under
-    // `app_data_dir()/traces/`.
-    let turn_id = recorder::new_turn_id();
-    let trace_dir = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir().join("thuki"))
-        .join("traces");
-    let recorder: Arc<dyn PipelineRecorder> = if runtime_config.trace_enabled {
-        Arc::new(FileRecorder::new(&trace_dir, &turn_id))
-    } else {
-        Arc::new(NoopRecorder)
-    };
+    // Pull the per-conversation forensic recorder from the global
+    // trace registry. When the dev-only `[debug] trace_enabled` flag is
+    // off (production default) the registry is a `NoopRecorder` so this
+    // resolves to a zero-cost noop wrapped in `BoundRecorder`. When on,
+    // every pipeline step records into the conversation's
+    // `traces/search/<conversation_id>.jsonl` file via the registry's
+    // lazy-insert path.
+    let conv_id = ConversationId::new(conversation_id);
+    let recorder = Arc::new(BoundRecorder::new(
+        Arc::clone(trace_recorder.inner()),
+        conv_id,
+    ));
 
     let router = pipeline::DefaultRouterJudge::new(
         ollama_endpoint.clone(),

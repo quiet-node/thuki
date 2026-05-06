@@ -1,6 +1,6 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { useOllama } from '../useOllama';
+import { ignoreTraceIpcError, useOllama } from '../useOllama';
 import {
   invoke,
   enableChannelCapture,
@@ -13,6 +13,18 @@ import {
 function getChannel() {
   return getLastChannel();
 }
+
+describe('ignoreTraceIpcError', () => {
+  it('returns void without throwing when invoked as a Promise.catch handler', () => {
+    // Shared handler used for fire-and-forget record_conversation_end
+    // IPC calls. Production calls
+    // invoke('record_conversation_end').catch(ignoreTraceIpcError); the
+    // unit-test path here exercises the swallow contract directly so
+    // coverage hits the handler exactly once.
+    expect(() => ignoreTraceIpcError()).not.toThrow();
+    expect(ignoreTraceIpcError()).toBeUndefined();
+  });
+});
 
 describe('useOllama', () => {
   beforeEach(() => {

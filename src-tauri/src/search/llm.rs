@@ -18,10 +18,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::ChatMessage;
 
-use super::recorder::{PipelineRecorder, RecorderEvent};
 use super::types::{
     Action, JudgeVerdict, RouterJudgeOutput, SearchError, SearxResult, Sufficiency,
 };
+use crate::trace::{BoundRecorder, RecorderEvent};
 
 /// Synthesis system prompt: instructs the answering LLM to cite sources and
 /// avoid meta-commentary over the reference material.
@@ -235,7 +235,7 @@ async fn request_json(
     timeout_secs: u64,
     num_ctx: u32,
     num_predict: i32,
-    recorder: &Arc<dyn PipelineRecorder>,
+    recorder: &Arc<BoundRecorder>,
     stage: &str,
 ) -> Result<String, SearchError> {
     let body = OllamaJsonRequest {
@@ -370,7 +370,7 @@ pub async fn call_router_merged(
     cancel_token: &CancellationToken,
     timeout_secs: u64,
     num_ctx: u32,
-    recorder: &Arc<dyn PipelineRecorder>,
+    recorder: &Arc<BoundRecorder>,
 ) -> Result<RouterJudgeOutput, SearchError> {
     if cancel_token.is_cancelled() {
         return Err(SearchError::Cancelled);
@@ -553,7 +553,7 @@ pub async fn call_judge(
     timeout_secs: u64,
     num_ctx: u32,
     stage: JudgeStage,
-    recorder: &Arc<dyn PipelineRecorder>,
+    recorder: &Arc<BoundRecorder>,
 ) -> Result<JudgeVerdict, SearchError> {
     if cancel_token.is_cancelled() {
         return Err(SearchError::Cancelled);
@@ -1071,17 +1071,19 @@ mod prompt_tests {
 #[cfg(test)]
 mod router_judge_tests {
     use super::*;
-    use crate::search::recorder::NoopRecorder;
+    use crate::trace::ConversationId;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// Local helper: a noop recorder wrapped in `Arc<dyn PipelineRecorder>`,
+    /// Local helper: a noop recorder bound to a sentinel conversation id,
     /// used everywhere this module exercises `call_router_merged` /
-    /// `call_judge` without asserting on trace output. Forensic instrumentation
-    /// is covered separately in [`crate::search::recorder`] and the dedicated
-    /// LLM-tracing tests at the bottom of this module.
-    fn noop_recorder() -> Arc<dyn PipelineRecorder> {
-        Arc::new(NoopRecorder)
+    /// `call_judge` without asserting on trace output. Forensic
+    /// instrumentation is covered separately in [`crate::trace::recorder`]
+    /// and the dedicated LLM-tracing tests at the bottom of this module.
+    fn noop_recorder() -> Arc<BoundRecorder> {
+        Arc::new(BoundRecorder::noop_for(ConversationId::new(
+            "test-conv-llm",
+        )))
     }
 
     // ── build_judge_user_message ─────────────────────────────────────────────
@@ -1655,7 +1657,7 @@ mod router_judge_tests {
         // chunk-stage trace labels. The Snippet variant is exercised by the
         // surrounding tests; this one keeps both arms covered so the labels
         // stay in sync with the trace-format documentation in
-        // `crate::search::recorder`.
+        // `crate::trace::recorder`.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))

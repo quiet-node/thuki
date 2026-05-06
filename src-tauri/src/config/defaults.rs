@@ -168,16 +168,21 @@ pub const PIPELINE_INPUT_CHAR_BUDGET: usize = 200_000;
 /// slow service.
 pub const BOUNDS_TIMEOUT_S: (u64, u64) = (1, 300);
 
-/// Whether the `/search` pipeline writes a forensic per-turn trace file.
+/// Whether the unified trace recorder writes forensic per-conversation
+/// trace files for the chat layer AND the `/search` pipeline.
 ///
 /// Off by default. Intended for local quality investigation only: when on,
-/// the pipeline records every LLM request/response, every SearXNG query and
-/// raw response body, every reader batch (per-URL latency, raw body, full
-/// extracted text), and every judge verdict to a JSON-Lines file under
-/// `~/Library/Application Support/com.quietnode.thuki/traces/`. Toggleable
-/// from the Settings panel (Web tab, Diagnostics section). Off in shipped
-/// builds by default.
-pub const DEFAULT_DEBUG_SEARCH_TRACE_ENABLED: bool = false;
+/// the recorder writes every chat turn (user message, assistant streaming
+/// tokens, screen captures, conversation lifecycle) AND every search-pipeline
+/// step (LLM requests/responses, SearXNG queries, reader batches, judge
+/// verdicts) to JSON-Lines files under
+/// `~/Library/Application Support/com.quietnode.thuki/traces/`. Files are
+/// grouped by domain (`traces/chat/<conversation_id>.jsonl` and
+/// `traces/search/<conversation_id>.jsonl`) so an analysis agent can be
+/// pointed at exactly the slice it cares about. Toggleable from the
+/// Settings panel (Web tab, Diagnostics section). Off in shipped builds
+/// by default.
+pub const DEFAULT_DEBUG_TRACE_ENABLED: bool = false;
 
 // Ollama API baked-in limits: not exposed in config.toml because they bound
 // attacker-controlled data (response bodies from the local Ollama daemon) and
@@ -255,7 +260,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("search", "router_timeout_s"),
     ("search", "pipeline_wall_clock_budget_s"),
     // [debug]
-    ("debug", "search_trace_enabled"),
+    ("debug", "trace_enabled"),
 ];
 
 /// Authoritative allowlist of section names accepted by `reset_config`.

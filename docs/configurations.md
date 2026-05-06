@@ -75,10 +75,12 @@ judge_timeout_s = 30
 router_timeout_s = 45
 
 [debug]
-# When true, writes a forensic JSON-Lines trace file for every /search turn to
-# ~/Library/Application Support/com.quietnode.thuki/traces/.
+# When true, writes forensic JSON-Lines trace files for both your conversations
+# AND every /search turn to ~/Library/Application Support/com.quietnode.thuki/traces/,
+# grouped by domain (traces/chat/<conversation_id>.jsonl + traces/search/<conversation_id>.jsonl).
 # Also toggleable from the Settings panel (Web tab, Diagnostics section).
-search_trace_enabled = false
+# Legacy field name `search_trace_enabled` is still accepted via serde alias.
+trace_enabled = false
 ```
 
 ## Reading the reference tables
@@ -180,11 +182,29 @@ For security, both URLs default to your local machine (`127.0.0.1`) and should s
 
 ### `[debug]`
 
-Diagnostics toggles. `search_trace_enabled` is exposed in the Settings panel (Web tab, Diagnostics section) so you can flip it without editing `config.toml`.
+Diagnostics toggles. `trace_enabled` is exposed in the Settings panel (Web tab, Diagnostics section) so you can flip it without editing `config.toml`.
 
-| Field                  | Default | Tunable? | Why not tunable | Bounds | Description |
-| :--------------------- | :------ | :------- | :-------------- | :----- | :---------- |
-| `search_trace_enabled` | `false` | Yes      | —               | —      | When on, Thuki writes a forensic JSON-Lines trace file for every `/search` turn to `~/Library/Application Support/com.quietnode.thuki/traces/`. Each file records every query sent to SearXNG, every page the reader fetched, and every AI decision in that turn. Useful for diagnosing why a search went wrong; leave off for normal use. |
+**File layout when on:**
+
+```
+~/Library/Application Support/com.quietnode.thuki/traces/
+├── chat/
+│   └── conv-<conversation_id>.jsonl    one file per conversation, all chat events
+└── search/
+    └── conv-<conversation_id>.jsonl    one file per conversation, all search-pipeline turns appended
+```
+
+The two folders share the same `<conversation_id>` filename so an analysis agent (Claude Code, jq, a Python notebook) can correlate chat and search events for the same conversation by joining on the filename. Schema version is `2` (search-only files produced by older builds were `v1`; consumers that hardcoded the v1 shape must update).
+
+**Late-event tolerance.** Each file is opened in append mode. If a stray event arrives after the conversation's `conversation_end` line (e.g. a cancelled stream's final `assistant_tokens` arriving after the frontend signals end), it lands as a benign trailing line in the existing file. **Consumers MUST tolerate post-end lines: the canonical end of a conversation is the LAST `kind: "conversation_end"` line, not the first.**
+
+**Privacy implications.** Trace files contain user message content, assistant output, system prompt, and any `/screen` capture image paths. They are never uploaded anywhere; they live entirely on disk under `app_data_dir()/traces/`. Disable the toggle when you are done debugging.
+
+**Migration.** The legacy field name `search_trace_enabled` is accepted via `serde(alias)` so existing configs keep working. The first launch on the new build silently rewrites the field name to `trace_enabled` if anything causes the loader to serialize the resolved config back to disk. Users with dotfile-tracked configs may notice the rename in their next `git diff`.
+
+| Field           | Default | Tunable? | Why not tunable | Bounds | Description |
+| :-------------- | :------ | :------- | :-------------- | :----- | :---------- |
+| `trace_enabled` | `false` | Yes      | —               | —      | When on, Thuki writes forensic JSON-Lines trace files for both your conversations AND every `/search` turn to `~/Library/Application Support/com.quietnode.thuki/traces/{chat,search}/<conversation_id>.jsonl`. Each line records one event with `domain`, `seq`, `ts_ms`, `conversation_id`, `kind`, plus the variant-specific payload. Useful for analyzing how you use Thuki, debugging why a search went wrong, and improving the system prompt; leave off for normal use. Legacy name `search_trace_enabled` still accepted via alias. |
 
 ### `[activation]` (not in TOML)
 

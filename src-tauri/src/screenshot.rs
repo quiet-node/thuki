@@ -400,8 +400,11 @@ fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
 /// happen on a blocking thread to avoid stalling the UI.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub async fn capture_full_screen_command(app_handle: tauri::AppHandle) -> Result<String, String> {
-    use tauri::Manager;
+pub async fn capture_full_screen_command(
+    app_handle: tauri::AppHandle,
+    conversation_id: String,
+    trace_recorder: tauri::State<'_, std::sync::Arc<dyn crate::trace::TraceRecorder>>,
+) -> Result<String, String> {
     let base_dir = app_handle
         .path()
         .app_data_dir()
@@ -422,7 +425,7 @@ pub async fn capture_full_screen_command(app_handle: tauri::AppHandle) -> Result
 
     // Phase 2: Encode to PNG and save via the images pipeline on a blocking
     // thread so the main thread stays responsive.
-    tokio::task::spawn_blocking(move || {
+    let saved_path = tokio::task::spawn_blocking(move || {
         let buf =
             image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(width, height, rgba_bytes)
                 .ok_or_else(|| "Failed to create image buffer from captured pixels.".to_string())?;
@@ -436,7 +439,20 @@ pub async fn capture_full_screen_command(app_handle: tauri::AppHandle) -> Result
         crate::images::save_image(&base_dir, &png)
     })
     .await
-    .map_err(|e| format!("image encoding task failed: {e}"))?
+    .map_err(|e| format!("image encoding task failed: {e}"))??;
+
+    // Mirror the capture into the unified trace recorder. Records the
+    // saved-file path (paths only, never image bytes) and the displays
+    // count (currently always 1 because `capture_full_screen_pixels`
+    // returns a merged image; future multi-monitor work can refine).
+    trace_recorder.record(
+        &crate::trace::ConversationId::new(conversation_id),
+        crate::trace::RecorderEvent::ScreenCaptured {
+            image_path: saved_path.clone(),
+            displays: 1,
+        },
+    );
+    Ok(saved_path)
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
