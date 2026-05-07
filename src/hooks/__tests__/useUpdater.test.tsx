@@ -134,4 +134,59 @@ describe('useUpdater', () => {
     );
     expect(() => unmount()).not.toThrow();
   });
+
+  it('fills notes_url fallback when server returns null', async () => {
+    invokeMock.mockResolvedValueOnce(SNAPSHOT_WITH_UPDATE);
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() =>
+      expect(result.current.state.update?.notes_url).toBe(
+        'https://github.com/quiet-node/thuki/releases/tag/v0.8.0',
+      ),
+    );
+  });
+
+  it('preserves notes_url when server already supplies it', async () => {
+    invokeMock.mockResolvedValueOnce({
+      ...SNAPSHOT_WITH_UPDATE,
+      update: { version: '0.8.0', notes_url: 'https://example.com/notes' },
+    });
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() =>
+      expect(result.current.state.update?.notes_url).toBe(
+        'https://example.com/notes',
+      ),
+    );
+  });
+
+  it('fills notes_url fallback when update-available event has null notes_url', async () => {
+    invokeMock.mockResolvedValue(SNAPSHOT_NO_UPDATE);
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('get_updater_state'),
+    );
+    act(() => {
+      emitTauriEvent('update-available', SNAPSHOT_WITH_UPDATE);
+    });
+    await waitFor(() =>
+      expect(result.current.state.update?.notes_url).toBe(
+        'https://github.com/quiet-node/thuki/releases/tag/v0.8.0',
+      ),
+    );
+  });
+
+  it('fills notes_url fallback when checkNow returns null notes_url', async () => {
+    invokeMock
+      .mockResolvedValueOnce(SNAPSHOT_NO_UPDATE)
+      .mockResolvedValueOnce(SNAPSHOT_WITH_UPDATE);
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('get_updater_state'),
+    );
+    await act(async () => {
+      await result.current.checkNow();
+    });
+    expect(result.current.state.update?.notes_url).toBe(
+      'https://github.com/quiet-node/thuki/releases/tag/v0.8.0',
+    );
+  });
 });

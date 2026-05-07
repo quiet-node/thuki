@@ -16,12 +16,23 @@ const EMPTY: UpdaterState = {
   chat_snoozed_until: null,
 };
 
+function withFallbackNotes(s: UpdaterState): UpdaterState {
+  if (!s.update || s.update.notes_url) return s;
+  return {
+    ...s,
+    update: {
+      ...s.update,
+      notes_url: `https://github.com/quiet-node/thuki/releases/tag/v${s.update.version}`,
+    },
+  };
+}
+
 export function useUpdater() {
   const [state, setState] = useState<UpdaterState>(EMPTY);
 
   const refresh = useCallback(async () => {
     const next = await invoke<UpdaterState>('get_updater_state');
-    if (next) setState(next);
+    if (next) setState(withFallbackNotes(next));
   }, []);
 
   useEffect(() => {
@@ -29,7 +40,7 @@ export function useUpdater() {
     const unlistenPromise = listen<UpdaterState>(
       'update-available',
       (event) => {
-        setState(event.payload);
+        setState(withFallbackNotes(event.payload));
       },
     );
     return () => {
@@ -39,7 +50,7 @@ export function useUpdater() {
 
   const checkNow = useCallback(async () => {
     const next = await invoke<UpdaterState>('check_for_update');
-    if (next) setState(next);
+    if (next) setState(withFallbackNotes(next));
   }, []);
 
   const install = useCallback(async () => {
