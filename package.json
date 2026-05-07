@@ -38,7 +38,8 @@
     "validate-build": "bun run lint && bun run format:check && bun run typecheck && bun run build:all"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.10.1",
+    "@fontsource/source-serif-4": "^5.2.9",
+    "@tauri-apps/api": "^2.11.0",
     "framer-motion": "^12.38.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
