@@ -23,6 +23,9 @@ impl SnoozeSidecar {
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        // SnoozeSidecar holds two Option<u64> fields, so serde_json::to_string
+        // is provably infallible here. expect() documents the invariant; if a
+        // future field ever changes that, the panic surface is loud and local.
         let s = serde_json::to_string(self).expect("SnoozeSidecar serializes");
         std::fs::write(path, s)
     }

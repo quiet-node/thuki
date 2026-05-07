@@ -1086,7 +1086,7 @@ pub fn run() {
                 let updater_state = updater::UpdaterState::default();
 
                 if let Ok(dir) = app.path().app_config_dir() {
-                    let path = dir.join("updater_state.json");
+                    let path = dir.join(crate::config::defaults::DEFAULT_UPDATER_STATE_FILENAME);
                     if let Ok(s) = updater::SnoozeSidecar::load(&path) {
                         updater_state.set_settings_snooze(s.settings_snoozed_until);
                         updater_state.set_chat_snooze(s.chat_snoozed_until);

@@ -1,11 +1,10 @@
+use crate::config::defaults::{DEFAULT_UPDATER_STATE_FILENAME, MAX_UPDATER_SNOOZE_HOURS};
 use crate::updater::poller;
 use crate::updater::state::{UpdaterSnapshot, UpdaterState};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
-
-const SIDECAR_FILENAME: &str = "updater_state.json";
 
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[tauri::command]
@@ -42,7 +41,7 @@ pub fn snooze_update_chat(
     app: AppHandle,
     hours: u64,
 ) -> Result<(), String> {
-    let until = unix_now() + hours * 3600;
+    let until = snooze_deadline(unix_now(), hours);
     state.set_chat_snooze(Some(until));
     persist_sidecar(&state, &app)
 }
@@ -54,9 +53,18 @@ pub fn snooze_update_settings(
     app: AppHandle,
     hours: u64,
 ) -> Result<(), String> {
-    let until = unix_now() + hours * 3600;
+    let until = snooze_deadline(unix_now(), hours);
     state.set_settings_snooze(Some(until));
     persist_sidecar(&state, &app)
+}
+
+/// Computes the absolute Unix-second deadline for a snooze request crossing
+/// the IPC trust boundary. Clamps `hours` to `MAX_UPDATER_SNOOZE_HOURS` and
+/// uses saturating arithmetic so a hostile or buggy caller cannot wrap the
+/// `u64` math and produce a deadline in the past.
+pub fn snooze_deadline(now_unix: u64, hours: u64) -> u64 {
+    let clamped = hours.min(MAX_UPDATER_SNOOZE_HOURS);
+    now_unix.saturating_add(clamped.saturating_mul(3600))
 }
 
 /// Returns the current Unix timestamp in seconds. Returns 0 if the system
@@ -79,7 +87,7 @@ fn persist_sidecar(state: &UpdaterState, app: &AppHandle) -> Result<(), String> 
 fn sidecar_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join(SIDECAR_FILENAME))
+    Ok(dir.join(DEFAULT_UPDATER_STATE_FILENAME))
 }
 
 #[cfg(test)]
@@ -91,5 +99,32 @@ mod tests {
         let now = unix_now();
         // Sanity: > 2023-01-01
         assert!(now > 1_700_000_000);
+    }
+
+    #[test]
+    fn snooze_deadline_handles_normal_input() {
+        // 24 h from epoch landmark: 1_700_000_000 + 86_400.
+        assert_eq!(snooze_deadline(1_700_000_000, 24), 1_700_086_400);
+    }
+
+    #[test]
+    fn snooze_deadline_clamps_to_max_hours() {
+        // Anything beyond MAX is treated as MAX.
+        let capped = snooze_deadline(0, MAX_UPDATER_SNOOZE_HOURS + 1);
+        let at_cap = snooze_deadline(0, MAX_UPDATER_SNOOZE_HOURS);
+        assert_eq!(capped, at_cap);
+    }
+
+    #[test]
+    fn snooze_deadline_saturates_on_extreme_input() {
+        // Even uncapped, saturating arithmetic must never wrap to a small
+        // value. Pass the maximum possible u64 to confirm the saturation.
+        let result = snooze_deadline(u64::MAX, u64::MAX);
+        assert_eq!(result, u64::MAX);
+    }
+
+    #[test]
+    fn snooze_deadline_zero_hours_is_now() {
+        assert_eq!(snooze_deadline(1_700_000_000, 0), 1_700_000_000);
     }
 }
