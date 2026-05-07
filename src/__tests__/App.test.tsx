@@ -5472,6 +5472,54 @@ describe('App', () => {
       expect(screen.queryByTestId('tip-bar')).not.toBeInTheDocument();
     });
 
+    it('keeps the UpdateFooterBar visible after entering chat mode', async () => {
+      (useTips as ReturnType<typeof vi.fn>).mockReturnValue({
+        tip: 'test tip',
+        tipKey: 0,
+        isVisible: true,
+      });
+      enableChannelCaptureWithResponses({
+        get_updater_state: {
+          last_check_at_unix: 100,
+          update: { version: '0.8.1', notes_url: null },
+          settings_snoozed_until: null,
+          chat_snoozed_until: null,
+        },
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b'],
+          ollamaReachable: true,
+        },
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+      // Visible in ask-bar mode first.
+      await waitFor(() =>
+        expect(screen.getByTestId('update-footer-bar')).toBeInTheDocument(),
+      );
+
+      // Send a message to flip into chat mode.
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hi' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'hello' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      // Critical: the update footer must still render in chat mode.
+      expect(screen.getByTestId('update-footer-bar')).toBeInTheDocument();
+      expect(screen.queryByTestId('tip-bar')).not.toBeInTheDocument();
+    });
+
     it('shows TipBar normally when no update is available', async () => {
       (useTips as ReturnType<typeof vi.fn>).mockReturnValue({
         tip: 'test tip',

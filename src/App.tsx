@@ -1918,34 +1918,57 @@ function App() {
                   maxImages={config.window.maxImages}
                   onFirstKeystroke={() => void invoke('warm_up_model')}
                 />
-                {/* Tip bar: ask-bar mode only. The !isChatMode gate lives
-                    OUTSIDE AnimatePresence for the same reason as the history
-                    panel above: prevents two simultaneous ResizeObserver
-                    setSize() calls (jitter) when isChatMode transitions. */}
-                {!isChatMode && (
+                {/* Footer slot.
+                 *
+                 * UpdateFooterBar takes priority and renders in BOTH modes
+                 * (ask bar + chat) so a pending update is visible no matter
+                 * what the user is doing. The TipBar stays scoped to
+                 * ask-bar mode: tips are noise mid-conversation, but an
+                 * update is signal worth showing.
+                 *
+                 * The mode gate lives OUTSIDE AnimatePresence (same reason
+                 * as the history panel above): prevents two simultaneous
+                 * ResizeObserver setSize() calls (jitter) when isChatMode
+                 * transitions.
+                 */}
+                {showUpdate ? (
                   <AnimatePresence>
-                    {isTipVisible && (
-                      <motion.div
-                        key="tip-bar"
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                        style={{ overflow: 'hidden' }}
-                      >
-                        {showUpdate ? (
-                          <UpdateFooterBar
-                            version={updater.state.update!.version}
-                            notesUrl={updater.state.update!.notes_url}
-                            onInstall={() => void updater.install()}
-                            onLater={() => void updater.snoozeChat(24)}
-                          />
-                        ) : (
-                          <TipBar tip={activeTip} tipKey={tipKey} />
-                        )}
-                      </motion.div>
-                    )}
+                    <motion.div
+                      key="update-footer"
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                      style={{ overflow: 'hidden' }}
+                    >
+                      <UpdateFooterBar
+                        version={updater.state.update!.version}
+                        notesUrl={updater.state.update!.notes_url}
+                        onInstall={() => void updater.install()}
+                        onLater={() => void updater.snoozeChat(24)}
+                      />
+                    </motion.div>
                   </AnimatePresence>
+                ) : (
+                  !isChatMode && (
+                    <AnimatePresence>
+                      {isTipVisible && (
+                        <motion.div
+                          key="tip-bar"
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{
+                            duration: 0.25,
+                            ease: [0.16, 1, 0.3, 1],
+                          }}
+                          style={{ overflow: 'hidden' }}
+                        >
+                          <TipBar tip={activeTip} tipKey={tipKey} />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  )
                 )}
               </div>
 
