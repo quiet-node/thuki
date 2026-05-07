@@ -59,6 +59,13 @@ function defaultInvoke(cmd: string): unknown {
       return true;
     case 'check_screen_recording_permission':
       return true;
+    case 'get_updater_state':
+      return {
+        last_check_at_unix: null,
+        update: null,
+        settings_snoozed_until: null,
+        chat_snoozed_until: null,
+      };
     default:
       return undefined;
   }
@@ -418,5 +425,88 @@ describe('SettingsWindow', () => {
       vi.advanceTimersByTime(2000);
       await Promise.resolve();
     });
+  });
+
+  it('renders UpdateBanner when an update is available and not snoozed', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_updater_state') {
+        return {
+          last_check_at_unix: 100,
+          update: { version: '0.8.0', notes_url: null },
+          settings_snoozed_until: null,
+          chat_snoozed_until: null,
+        };
+      }
+      return defaultInvoke(cmd);
+    });
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() =>
+      expect(screen.getByText(/0\.8\.0 is ready/)).toBeInTheDocument(),
+    );
+  });
+
+  it('calls install_update when Install button clicked on UpdateBanner', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_updater_state') {
+        return {
+          last_check_at_unix: 100,
+          update: { version: '0.8.0', notes_url: null },
+          settings_snoozed_until: null,
+          chat_snoozed_until: null,
+        };
+      }
+      return defaultInvoke(cmd);
+    });
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByText(/0\.8\.0 is ready/));
+    fireEvent.click(screen.getByRole('button', { name: /install & restart/i }));
+    expect(invokeMock).toHaveBeenCalledWith('install_update');
+  });
+
+  it('calls snooze_update_settings when Later button clicked on UpdateBanner', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_updater_state') {
+        return {
+          last_check_at_unix: 100,
+          update: { version: '0.8.0', notes_url: null },
+          settings_snoozed_until: null,
+          chat_snoozed_until: null,
+        };
+      }
+      return defaultInvoke(cmd);
+    });
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByText(/0\.8\.0 is ready/));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^later$/i }));
+      await Promise.resolve();
+    });
+    expect(invokeMock).toHaveBeenCalledWith('snooze_update_settings', {
+      hours: 24,
+    });
+  });
+
+  it('hides UpdateBanner when settings_snoozed_until is in the future', async () => {
+    const futureUnix = Math.floor(Date.now() / 1000) + 3600;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_updater_state') {
+        return {
+          last_check_at_unix: 100,
+          update: { version: '0.8.0', notes_url: null },
+          settings_snoozed_until: futureUnix,
+          chat_snoozed_until: null,
+        };
+      }
+      return defaultInvoke(cmd);
+    });
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    // Allow time for updater state to load
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByText(/0\.8\.0 is ready/)).not.toBeInTheDocument();
   });
 });
