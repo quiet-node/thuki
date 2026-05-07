@@ -22,13 +22,51 @@ use serde::{Deserialize, Serialize};
 /// silently accept a turn id, message id, or arbitrary user input. The
 /// conversion to/from `String` is explicit at every boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+// `into` + `from` make every (de)serialization detour through
+// `From<String>` / `From<ConversationId> for String`, which forces
+// sanitization on the deserialize path. Wire shape remains a bare string,
+// matching the prior `serde(transparent)` contract.
+#[serde(into = "String", from = "String")]
 pub struct ConversationId(String);
 
+/// Sentinel returned by [`ConversationId::new`] when sanitization strips the
+/// input down to nothing (empty IPC payload, all-`/` traversal, etc.). All
+/// such inputs collide on the same on-disk file, which is the safe outcome:
+/// no traversal, no info leak, attacker-controlled input still gets a stable
+/// per-process bucket.
+pub const SANITIZED_FALLBACK: &str = "invalid-conversation-id";
+
+/// Replaces every path-traversal vector with a safe character. Defense in
+/// depth: production callers route `crypto.randomUUID()` through this
+/// constructor, but the IPC boundary accepts arbitrary strings, so the
+/// recorder must never let an attacker steer the path that `FileRecorder`
+/// joins onto `app_data_dir/traces/{chat,search}/`.
+fn sanitize(raw: String) -> String {
+    // Step 1: collapse the path separators and NUL into a benign filler.
+    let separator_safe: String = raw
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | '\0' => '_',
+            c => c,
+        })
+        .collect();
+    // Step 2: rewrite `..` so `Path::join` cannot climb out of the trace
+    // directory even if the caller stitched `..` segments around the
+    // already-replaced separators.
+    let traversal_safe = separator_safe.replace("..", "__");
+    if traversal_safe.is_empty() {
+        SANITIZED_FALLBACK.to_string()
+    } else {
+        traversal_safe
+    }
+}
+
 impl ConversationId {
-    /// Constructs a `ConversationId` from any owned-or-borrowed string.
+    /// Constructs a `ConversationId`, sanitizing the input so it can be
+    /// joined onto a filesystem path without escaping the trace directory.
+    /// See [`sanitize`] for the exact rewrite rules.
     pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+        Self(sanitize(s.into()))
     }
 
     /// Returns the underlying string slice. Useful for logging, display,
@@ -47,13 +85,19 @@ impl std::fmt::Display for ConversationId {
 
 impl From<String> for ConversationId {
     fn from(s: String) -> Self {
-        Self(s)
+        Self::new(s)
     }
 }
 
 impl From<&str> for ConversationId {
     fn from(s: &str) -> Self {
-        Self(s.to_owned())
+        Self::new(s)
+    }
+}
+
+impl From<ConversationId> for String {
+    fn from(id: ConversationId) -> String {
+        id.0
     }
 }
 
@@ -93,7 +137,7 @@ mod tests {
     fn conversation_id_serializes_as_bare_string() {
         let id = ConversationId::new("conv-y");
         let json = serde_json::to_string(&id).unwrap();
-        // `serde(transparent)` keeps the wire shape as a bare string,
+        // `serde(into = "String")` keeps the wire shape as a bare string,
         // so consumers reading JSONL never see a `{ "0": "..." }` wrapper.
         assert_eq!(json, "\"conv-y\"");
     }
@@ -102,6 +146,79 @@ mod tests {
     fn conversation_id_deserializes_from_bare_string() {
         let id: ConversationId = serde_json::from_str("\"conv-z\"").unwrap();
         assert_eq!(id.as_str(), "conv-z");
+    }
+
+    #[test]
+    fn sanitize_strips_forward_slash_path_traversal() {
+        // Joining `../etc/passwd` onto `traces/chat/` would resolve to
+        // `traces/etc/passwd`, escaping the trace directory. Sanitize
+        // collapses every separator into `_` so the join stays inside.
+        let id = ConversationId::new("../etc/passwd");
+        assert!(!id.as_str().contains('/'), "id leaked separator: {id}");
+        assert!(!id.as_str().contains(".."), "id leaked traversal: {id}");
+    }
+
+    #[test]
+    fn sanitize_strips_backslash_traversal() {
+        let id = ConversationId::new("..\\..\\Windows\\System32");
+        assert!(!id.as_str().contains('\\'));
+        assert!(!id.as_str().contains(".."));
+    }
+
+    #[test]
+    fn sanitize_strips_nul_byte() {
+        let id = ConversationId::new("conv\0evil");
+        assert!(!id.as_str().contains('\0'));
+    }
+
+    #[test]
+    fn sanitize_collapses_chained_dot_dot() {
+        // `....` must collapse fully so no `..` segment survives a single
+        // sweep. `str::replace` is non-overlapping so we verify the output.
+        let id = ConversationId::new("....");
+        assert_eq!(id.as_str(), "____");
+    }
+
+    #[test]
+    fn sanitize_empty_input_falls_back_to_sentinel() {
+        let id = ConversationId::new("");
+        assert_eq!(id.as_str(), SANITIZED_FALLBACK);
+    }
+
+    #[test]
+    fn sanitize_preserves_uuid_shape() {
+        // Production input is `crypto.randomUUID()`; this must round-trip
+        // bit-for-bit so trace files keep their canonical filenames.
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let id = ConversationId::new(uuid);
+        assert_eq!(id.as_str(), uuid);
+    }
+
+    #[test]
+    fn from_str_and_from_string_route_through_sanitize() {
+        let a = ConversationId::from("../evil".to_string());
+        let b = ConversationId::from("../evil");
+        assert_eq!(a, b);
+        assert!(!a.as_str().contains(".."));
+        assert!(!a.as_str().contains('/'));
+    }
+
+    #[test]
+    fn deserialize_routes_through_sanitize() {
+        // A trace file whose `conversation_id` somehow contained a
+        // traversal payload must NOT be able to weaponize a re-read.
+        let id: ConversationId = serde_json::from_str("\"../etc\"").unwrap();
+        assert!(!id.as_str().contains(".."));
+        assert!(!id.as_str().contains('/'));
+    }
+
+    #[test]
+    fn into_string_returns_sanitized_payload() {
+        // `serde(into = "String")` relies on this conversion; the
+        // returned string must equal the in-memory storage.
+        let id = ConversationId::new("../foo");
+        let s: String = id.clone().into();
+        assert_eq!(s, id.as_str());
     }
 
     #[test]
