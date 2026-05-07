@@ -2461,6 +2461,50 @@ describe('useOllama', () => {
       expect(secondCall?.[1]).toMatchObject({ isFirstTurn: true });
     });
 
+    it('search TurnAccepted retires the flag even after cancel clears active generation', async () => {
+      // Search-side parity for the chat cancel-mid-first-turn race:
+      // backend already opened the trace and emitted TurnAccepted, the
+      // user cancels before any token arrives, and a stale Cancelled
+      // event lands after activeGenerationRef is cleared. The flag
+      // must still retire so the next /search does not duplicate
+      // ConversationStart.
+      const { result } = renderHook(() => useOllama(''));
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('first');
+      });
+      const channel1 = getChannel();
+      act(() => {
+        channel1!.simulateMessage({ type: 'TurnAccepted' });
+      });
+      await act(async () => {
+        await result.current.cancel();
+      });
+      act(() => {
+        channel1!.simulateMessage({ type: 'Cancelled' });
+      });
+      await act(async () => {
+        await pending;
+      });
+
+      invoke.mockClear();
+      let pending2!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending2 = result.current.askSearch('second');
+      });
+      const channel2 = getChannel();
+      act(() => {
+        channel2!.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {
+        await pending2;
+      });
+      const secondCall = invoke.mock.calls.find(
+        ([cmd]) => cmd === 'search_pipeline',
+      );
+      expect(secondCall?.[1]).toMatchObject({ isFirstTurn: false });
+    });
+
     it('search TurnAccepted retires the flag for a follow-up chat turn (cross-domain)', async () => {
       // The flag is shared across chat and search; once /search opens
       // the trace, a subsequent chat ask() must see is_first_turn=false.
