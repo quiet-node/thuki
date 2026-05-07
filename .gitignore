@@ -47,3 +47,6 @@ docs/superpowers/
 .superpowers/
 *.profraw
 
+# SearXNG container dumps upstream defaults here on each start
+sandbox/search-box/searxng/settings.yml.new
+
