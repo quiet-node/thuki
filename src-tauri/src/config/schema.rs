@@ -21,6 +21,7 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
+    DEFAULT_UPDATER_AUTO_CHECK, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
 };
 
 /// Static, user-tunable inference daemon configuration.
@@ -212,6 +213,45 @@ impl Default for DebugSection {
     }
 }
 
+/// Auto-update configuration. Determines whether and how often Thuki polls
+/// for new releases via the bundled tauri-plugin-updater.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct UpdaterSection {
+    /// Poll for updates automatically at startup and every
+    /// `check_interval_hours` hours while running.
+    #[serde(default = "default_updater_auto_check")]
+    pub auto_check: bool,
+
+    /// Hours between automatic background checks. Bound to 1..168.
+    #[serde(default = "default_updater_check_interval_hours")]
+    pub check_interval_hours: u64,
+
+    /// URL to fetch the update manifest from.
+    #[serde(default = "default_updater_manifest_url")]
+    pub manifest_url: String,
+}
+
+fn default_updater_auto_check() -> bool {
+    DEFAULT_UPDATER_AUTO_CHECK
+}
+fn default_updater_check_interval_hours() -> u64 {
+    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS
+}
+fn default_updater_manifest_url() -> String {
+    DEFAULT_UPDATER_MANIFEST_URL.to_string()
+}
+
+impl Default for UpdaterSection {
+    fn default() -> Self {
+        Self {
+            auto_check: DEFAULT_UPDATER_AUTO_CHECK,
+            check_interval_hours: DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
+            manifest_url: DEFAULT_UPDATER_MANIFEST_URL.to_string(),
+        }
+    }
+}
+
 /// Top-level application configuration. Managed Tauri state; every subsystem
 /// reads from `State<RwLock<AppConfig>>` and nowhere else. The loader resolves all
 /// empty strings and out-of-bounds numerics to compiled defaults before the
@@ -225,4 +265,6 @@ pub struct AppConfig {
     pub quote: QuoteSection,
     pub search: SearchSection,
     pub debug: DebugSection,
+    #[serde(default)]
+    pub updater: UpdaterSection,
 }

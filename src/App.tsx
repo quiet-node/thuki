@@ -30,7 +30,9 @@ import { HistoryPanel } from './components/HistoryPanel';
 import { ModelPickerPanel } from './components/ModelPickerPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import { TipBar } from './components/TipBar';
+import { UpdateFooterBar } from './components/UpdateFooterBar';
 import { useTips } from './hooks/useTips';
+import { useUpdater } from './hooks/useUpdater';
 import type { AttachedImage } from './types/image';
 import { MAX_IMAGE_SIZE_BYTES } from './types/image';
 import { useConfig } from './contexts/ConfigContext';
@@ -307,6 +309,13 @@ function App() {
     tipKey,
     isVisible: isTipVisible,
   } = useTips(shouldRenderOverlay);
+
+  const updater = useUpdater();
+  const chatSnoozed = useMemo(
+    () => (updater.state.chat_snoozed_until ?? 0) * 1000 > Date.now(),
+    [updater.state.chat_snoozed_until],
+  );
+  const showUpdate = !!updater.state.update && !chatSnoozed;
 
   /**
    * Reference stored for ResizeObserver cleanup.
@@ -1924,7 +1933,16 @@ function App() {
                         transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
                         style={{ overflow: 'hidden' }}
                       >
-                        <TipBar tip={activeTip} tipKey={tipKey} />
+                        {showUpdate ? (
+                          <UpdateFooterBar
+                            version={updater.state.update!.version}
+                            notesUrl={updater.state.update!.notes_url}
+                            onInstall={() => void updater.install()}
+                            onLater={() => void updater.snoozeChat(24)}
+                          />
+                        ) : (
+                          <TipBar tip={activeTip} tipKey={tipKey} />
+                        )}
                       </motion.div>
                     )}
                   </AnimatePresence>

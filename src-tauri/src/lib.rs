@@ -26,6 +26,7 @@ pub mod screenshot;
 pub mod search;
 pub mod settings_commands;
 pub mod trace;
+pub mod updater;
 pub mod warmup;
 
 #[cfg(target_os = "macos")]
@@ -39,9 +40,8 @@ use std::sync::{
 };
 
 use tauri::{
-    menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, RunEvent, WebviewWindow,
+    Emitter, Listener, Manager, RunEvent, WebviewWindow,
 };
 
 #[cfg(target_os = "macos")]
@@ -883,6 +883,60 @@ pub fn build_trace_inner(
     Arc::new(trace::RegistryRecorder::new(traces_root))
 }
 
+// ─── Tray helpers ────────────────────────────────────────────────────────────
+
+/// Builds the system-tray menu. When `update_version` is `Some`, an
+/// "Update Thuki to vX.Y.Z" item is injected between the separator and Quit.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn build_tray_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    update_version: Option<&str>,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+
+    let show = MenuItem::with_id(app, "show", "Open Thuki", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("Cmd+,"))?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Thuki", true, Some("Cmd+Q"))?;
+
+    if let Some(version) = update_version {
+        let label = format!("Update Thuki to v{version}");
+        let update = MenuItem::with_id(app, "update", &label, true, None::<&str>)?;
+        let sep2 = PredefinedMenuItem::separator(app)?;
+        Menu::with_items(app, &[&show, &settings, &sep1, &update, &sep2, &quit])
+    } else {
+        Menu::with_items(app, &[&show, &settings, &sep1, &quit])
+    }
+}
+
+/// Re-reads `UpdaterState` and atomically swaps the tray icon and menu to
+/// reflect whether an update is available.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn refresh_tray(app: &tauri::AppHandle) {
+    let state: tauri::State<updater::state::UpdaterState> = app.state();
+    let snap = state.snapshot();
+    let version = snap.update.as_ref().map(|u| u.version.clone());
+
+    let Some(tray) = app.tray_by_id("main") else {
+        return;
+    };
+
+    // Swap icon
+    let bytes: &[u8] = if version.is_some() {
+        include_bytes!("../icons/tray-update.png")
+    } else {
+        include_bytes!("../icons/128x128.png")
+    };
+    if let Ok(img) = tauri::image::Image::from_bytes(bytes) {
+        let _ = tray.set_icon(Some(img));
+    }
+
+    // Swap menu
+    if let Ok(menu) = build_tray_menu(app, version.as_deref()) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
 // ─── Application entry point ─────────────────────────────────────────────────
 
 /// Initialises and runs the Tauri application.
@@ -907,6 +961,7 @@ pub fn run() {
     }
 
     builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
@@ -924,18 +979,12 @@ pub fn run() {
             // separator, then Quit at the bottom. The "Reveal app data"
             // affordance lives inside the Settings → About tab so the tray
             // stays focused on session-level actions.
-            let show_item = MenuItem::with_id(app, "show", "Open Thuki", true, None::<&str>)?;
-            let settings_item =
-                MenuItem::with_id(app, "settings", "Settings…", true, Some("Cmd+,"))?;
-            let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit Thuki", true, Some("Cmd+Q"))?;
-            let tray_menu =
-                Menu::with_items(app, &[&show_item, &settings_item, &separator, &quit_item])?;
+            let tray_menu = build_tray_menu(app.handle(), None)?;
 
             let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))
                 .expect("Failed to load tray icon");
 
-            let _tray = TrayIconBuilder::new()
+            let _tray = TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
                 .icon_as_template(false)
                 .tooltip("Thuki")
@@ -946,6 +995,9 @@ pub fn run() {
                         show_overlay(app, crate::context::ActivationContext::empty());
                     }
                     "settings" => {
+                        show_settings_window(app);
+                    }
+                    "update" => {
                         show_settings_window(app);
                     }
                     "quit" => {
@@ -1028,6 +1080,39 @@ pub fn run() {
             // `state.read().clone()`. Parking_lot avoids std::sync poisoning
             // on writer panic. See design doc P10.
             app.manage(parking_lot::RwLock::new(app_config));
+
+            // ── Updater state + optional background poller ────────────
+            {
+                let updater_state = updater::UpdaterState::default();
+
+                if let Ok(dir) = app.path().app_config_dir() {
+                    let path = dir.join(crate::config::defaults::DEFAULT_UPDATER_STATE_FILENAME);
+                    if let Ok(s) = updater::SnoozeSidecar::load(&path) {
+                        updater_state.set_settings_snooze(s.settings_snoozed_until);
+                        updater_state.set_chat_snooze(s.chat_snoozed_until);
+                    }
+                }
+
+                let (interval, auto_check) = {
+                    let cfg = app.state::<parking_lot::RwLock<crate::config::AppConfig>>();
+                    let g = cfg.read();
+                    (g.updater.check_interval_hours, g.updater.auto_check)
+                };
+
+                app.manage(updater_state);
+
+                // Refresh the tray icon and menu whenever the poller finds a
+                // new update. The listener must be registered after manage() so
+                // refresh_tray can read UpdaterState from managed state.
+                let tray_refresh_handle = app.handle().clone();
+                app.listen("update-available", move |_event| {
+                    refresh_tray(&tray_refresh_handle);
+                });
+
+                if auto_check {
+                    updater::poller::spawn(app.handle().clone(), interval);
+                }
+            }
 
             // ── Generation + conversation state ─────────────────────
             app.manage(commands::GenerationState::new());
@@ -1167,7 +1252,16 @@ pub fn run() {
             #[cfg(not(coverage))]
             warmup::evict_model,
             #[cfg(not(coverage))]
-            warmup::get_loaded_model
+            warmup::get_loaded_model,
+            updater::commands::get_updater_state,
+            #[cfg(not(coverage))]
+            updater::commands::check_for_update,
+            #[cfg(not(coverage))]
+            updater::commands::install_update,
+            #[cfg(not(coverage))]
+            updater::commands::snooze_update_chat,
+            #[cfg(not(coverage))]
+            updater::commands::snooze_update_settings
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

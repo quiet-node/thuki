@@ -14,6 +14,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -30,6 +31,8 @@ import { DisplayTab } from './tabs/DisplayTab';
 import { AboutTab } from './tabs/AboutTab';
 import { SavedPill } from './components';
 import { WindowControls } from '../components/WindowControls';
+import { UpdateBanner } from '../components/UpdateBanner';
+import { useUpdater } from '../hooks/useUpdater';
 import styles from '../styles/settings.module.css';
 import type { CorruptMarker, RawAppConfig, SettingsTabId } from './types';
 
@@ -134,6 +137,11 @@ const BANNER_HEIGHT = 56;
 
 export function SettingsWindow() {
   const { config, reload, setConfig } = useConfigSync();
+  const updater = useUpdater();
+  const settingsSnoozed = useMemo(
+    () => (updater.state.settings_snoozed_until ?? 0) * 1000 > Date.now(),
+    [updater.state.settings_snoozed_until],
+  );
   const [activeTab, setActiveTab] = useState<SettingsTabId>('general');
   const [savedVisible, setSavedVisible] = useState(false);
   const [marker, setMarker] = useState<CorruptMarker | null>(null);
@@ -299,6 +307,15 @@ export function SettingsWindow() {
             </button>
           </span>
         </div>
+      ) : null}
+
+      {updater.state.update && !settingsSnoozed ? (
+        <UpdateBanner
+          version={updater.state.update.version}
+          notesUrl={updater.state.update.notes_url}
+          onInstall={() => void updater.install()}
+          onLater={() => void updater.snoozeSettings(24)}
+        />
       ) : null}
 
       <div

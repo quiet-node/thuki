@@ -261,12 +261,45 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("search", "pipeline_wall_clock_budget_s"),
     // [debug]
     ("debug", "trace_enabled"),
+    // [updater]
+    ("updater", "auto_check"),
+    ("updater", "check_interval_hours"),
+    ("updater", "manifest_url"),
 ];
 
 /// Authoritative allowlist of section names accepted by `reset_config`.
 /// Mirrors the top-level structure of `AppConfig`.
-pub const ALLOWED_SECTIONS: &[&str] =
-    &["inference", "prompt", "window", "quote", "search", "debug"];
+pub const ALLOWED_SECTIONS: &[&str] = &[
+    "inference",
+    "prompt",
+    "window",
+    "quote",
+    "search",
+    "debug",
+    "updater",
+];
+
+// Updater
+/// Whether Thuki polls for new releases automatically at startup and periodically.
+pub const DEFAULT_UPDATER_AUTO_CHECK: bool = true;
+/// Hours between automatic background update checks. Bound to 1..168 (one week).
+pub const DEFAULT_UPDATER_CHECK_INTERVAL_HOURS: u64 = 24;
+/// Accepted range for `check_interval_hours`. 1 h minimum keeps checks meaningful;
+/// 168 h (one week) is the practical ceiling for a desktop update poller.
+pub const BOUNDS_UPDATER_CHECK_INTERVAL_HOURS: (u64, u64) = (1, 168);
+/// URL of the Tauri updater JSON manifest. Points to the latest GitHub release asset.
+pub const DEFAULT_UPDATER_MANIFEST_URL: &str =
+    "https://github.com/quiet-node/thuki/releases/latest/download/latest.json";
+/// Filename of the JSON sidecar that persists snooze deadlines across restarts.
+/// Lives next to `config.toml` in `app_config_dir`. Single source of truth so
+/// the writer (commands.rs) and the loader (lib.rs) cannot drift.
+pub const DEFAULT_UPDATER_STATE_FILENAME: &str = "updater_state.json";
+/// Defense-in-depth upper bound on snooze duration accepted from the frontend
+/// IPC boundary (in hours). One year is far longer than any UI-driven snooze
+/// the app exposes today, but small enough that `hours * 3600` cannot overflow
+/// `u64` even when added to a future Unix timestamp. Saturating arithmetic in
+/// the command handlers makes this defensive rather than load-bearing.
+pub const MAX_UPDATER_SNOOZE_HOURS: u64 = 8760;
 
 /// Special turn-boundary tokens used by the major Ollama-served model families.
 /// Ollama normally parses these out of `/api/chat` responses, but some fine-tunes

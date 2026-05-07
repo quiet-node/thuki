@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Thuki",
-  "version": "0.1.0",
+  "version": "0.7.1",
   "identifier": "com.quietnode.thuki",
   "build": {
     "beforeDevCommand": "bun run frontend:dev",
@@ -56,6 +56,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -64,5 +65,17 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/quiet-node/thuki/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUwQjZFQTM0M0I3Q0E1QzEKUldUQnBYdzdOT3EyVUdxMEFQTEhVdjFWbEZZbi84LzJZMVZheXB2WUs3eTBEMUhsdUR5SUVXVy8K",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
