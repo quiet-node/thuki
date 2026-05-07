@@ -318,6 +318,15 @@ impl RecorderEvent {
     pub fn is_conversation_end(&self) -> bool {
         matches!(self, RecorderEvent::ConversationEnd { .. })
     }
+
+    /// Returns true if this event terminates a turn in the search domain.
+    /// Used by the registry to evict the search-domain file handle from
+    /// its per-conversation cache so long-running sessions with many
+    /// `/search` turns do not accumulate one file handle per turn until
+    /// the process exits.
+    pub fn is_turn_end(&self) -> bool {
+        matches!(self, RecorderEvent::TurnEnd { .. })
+    }
 }
 
 /// Per-URL outcome inside a [`RecorderEvent::ReaderBatch`].
@@ -947,6 +956,20 @@ mod tests {
             payload: json!({}),
         }
         .is_conversation_end());
+    }
+
+    #[test]
+    fn is_turn_end_only_true_for_turn_end_variant() {
+        assert!(RecorderEvent::TurnEnd {
+            turn_id: "t".into(),
+            final_action: "answered".into(),
+            final_source_urls: vec![],
+            total_latency_ms: 0,
+            error: None,
+        }
+        .is_turn_end());
+        assert!(!RecorderEvent::ConversationEnd { reason: "x".into() }.is_turn_end());
+        assert!(!RecorderEvent::AssistantTokens { chunk: "x".into() }.is_turn_end());
     }
 
     #[test]
