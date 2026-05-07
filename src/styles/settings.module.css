@@ -1443,13 +1443,102 @@
   cursor: pointer;
 }
 
-.checkNowBtn {
-  margin-left: auto;
-  padding: 6px 12px;
-  font-size: 11.5px;
-  border-radius: 6px;
+/* ─── About tab: Updates hero card ──────────────────────────────────────── */
+
+.updateHero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  padding: 16px 14px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.updateHero[data-state='available'] {
+  border-color: rgba(230, 156, 5, 0.32);
+  background: rgba(230, 156, 5, 0.04);
+}
+
+.updateHeroStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.updateHeroStatus[data-state='available'] {
+  color: var(--color-tertiary);
+}
+
+.updateHeroCheckMark {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(94, 201, 138, 0.18);
+  color: #5ec98a;
+  display: grid;
+  place-items: center;
+}
+
+.updateHeroPulse {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(230, 156, 5, 0.18);
+}
+.updateHeroPulse::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--color-tertiary);
+  box-shadow: 0 0 8px rgba(230, 156, 5, 0.6);
+}
+
+.updateHeroMeta {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.updateHeroBtn {
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 8px;
   border: 1px solid rgba(255, 141, 92, 0.3);
-  background: rgba(255, 141, 92, 0.08);
+  background: rgba(255, 141, 92, 0.12);
   color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
   cursor: pointer;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+  white-space: nowrap;
+}
+.updateHeroBtn:hover:not(:disabled) {
+  background: rgba(255, 141, 92, 0.18);
+  border-color: rgba(255, 141, 92, 0.42);
+}
+.updateHeroBtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.32);
+}
+.updateHeroBtn:disabled {
+  cursor: default;
+}
+/* Checking state: green to match the circle/checkmark animation, mirroring
+ * the Unload-now button in the AI tab. */
+.updateHeroBtn[data-checking='true']:disabled {
+  color: #5ec98a;
+  border-color: rgba(94, 201, 138, 0.25);
+  background: rgba(94, 201, 138, 0.06);
 }

@@ -8,7 +8,7 @@
  * targeted at the on-disk snapshot rather than a live editor field.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { invoke } from '@tauri-apps/api/core';
 
@@ -20,6 +20,14 @@ import { useUpdater } from '../../hooks/useUpdater';
 import { formatRelative } from '../../utils/relativeTime';
 import styles from '../../styles/settings.module.css';
 import type { RawAppConfig } from '../types';
+
+/**
+ * How long the success animation stays visible after `check_for_update`
+ * resolves. Mirrors the pattern in ModelTab's "Unload now" button: 550 ms
+ * for the circle draw + 300 ms for the checkmark draw + a small breath so
+ * the user can register the success before the button reverts.
+ */
+const CHECK_ANIMATION_HOLD_MS = 1100;
 
 interface AboutTabProps {
   onSaved: (next: RawAppConfig) => void;
@@ -47,6 +55,36 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
     screenRecording: false,
   });
   const updater = useUpdater();
+  const [checking, setChecking] = useState(false);
+  const checkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (checkTimerRef.current !== null) {
+        clearTimeout(checkTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleCheckForUpdates = async () => {
+    setChecking(true);
+    try {
+      await updater.checkNow();
+    } finally {
+      // Hold the success animation visible for the full circle + checkmark
+      // draw before reverting to the idle button. Matches ModelTab's
+      // "Unload now" pattern.
+      checkTimerRef.current = setTimeout(() => {
+        setChecking(false);
+        checkTimerRef.current = null;
+      }, CHECK_ANIMATION_HOLD_MS);
+    }
+  };
+
+  const updateAvailable = updater.state.update !== null;
+  const lastCheckedLabel = updater.state.last_check_at_unix
+    ? `Last checked ${formatRelative(updater.state.last_check_at_unix)}`
+    : 'Never checked for updates';
 
   // Refresh permissions on mount and on every window focus.
   useEffect(() => {
@@ -146,31 +184,95 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
       </div>
 
       <Section heading="Updates">
-        <div className={styles.row}>
-          <div className={styles.rowLabelGroup}>
-            <span className={styles.rowLabel}>Current version</span>
-          </div>
-          <div className={styles.rowControl}>
-            <span>{APP_VERSION}</span>
-          </div>
-        </div>
-        <div className={styles.row}>
-          <div className={styles.rowLabelGroup}>
-            <span className={styles.rowLabel}>Last checked</span>
-          </div>
-          <div className={styles.rowControl}>
+        <div
+          className={styles.updateHero}
+          data-state={updateAvailable ? 'available' : 'up-to-date'}
+        >
+          <div
+            className={styles.updateHeroStatus}
+            data-state={updateAvailable ? 'available' : 'up-to-date'}
+          >
+            {updateAvailable ? (
+              <span className={styles.updateHeroPulse} aria-hidden="true" />
+            ) : (
+              <span className={styles.updateHeroCheckMark} aria-hidden="true">
+                <svg
+                  viewBox="0 0 16 16"
+                  width="10"
+                  height="10"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M3.5 8.5L6.5 11.5L12.5 5"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+            )}
             <span>
-              {updater.state.last_check_at_unix
-                ? formatRelative(updater.state.last_check_at_unix)
-                : 'Never'}
+              {updateAvailable
+                ? `Thuki ${updater.state.update?.version} is ready`
+                : 'Thuki is up to date'}
             </span>
           </div>
+          <div className={styles.updateHeroMeta}>{lastCheckedLabel}</div>
           <button
             type="button"
-            className={styles.checkNowBtn}
-            onClick={() => void updater.checkNow()}
+            className={styles.updateHeroBtn}
+            onClick={() => void handleCheckForUpdates()}
+            disabled={checking}
+            data-checking={checking}
+            aria-label="Check for updates"
           >
-            Check now
+            {checking ? (
+              <svg
+                viewBox="0 0 16 16"
+                width="11"
+                height="11"
+                fill="none"
+                aria-hidden="true"
+              >
+                <circle
+                  cx="8"
+                  cy="8"
+                  r="7"
+                  stroke="#5ec98a"
+                  strokeWidth="1.6"
+                  className={styles.keepWarmCircleAnim}
+                  transform="rotate(-90 8 8)"
+                />
+                <path
+                  d="M4.5 8.5L7 11L12 5.5"
+                  stroke="#5ec98a"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className={styles.keepWarmCheckAnim}
+                />
+              </svg>
+            ) : (
+              <svg
+                viewBox="0 0 24 24"
+                width="11"
+                height="11"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 12a9 9 0 0 1 15.5-6.3L21 8" />
+                <path d="M21 3v5h-5" />
+                <path d="M21 12a9 9 0 0 1-15.5 6.3L3 16" />
+                <path d="M3 21v-5h5" />
+              </svg>
+            )}
+            {checking ? 'Checking…' : 'Check for updates'}
           </button>
         </div>
       </Section>

@@ -745,7 +745,7 @@ describe('AboutTab', () => {
   it('version button links to the nightly release and shows build metadata when VITE_GIT_COMMIT_SHA is set', async () => {
     vi.stubEnv('VITE_GIT_COMMIT_SHA', 'abc1234def');
     await renderAbout();
-    // Both the hero version and the Current version row contain "nightly"
+    // The header version contains "nightly"
     await waitFor(() =>
       expect(screen.getAllByText(/nightly/).length).toBeGreaterThan(0),
     );
