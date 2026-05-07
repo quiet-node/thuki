@@ -77,6 +77,14 @@ router_timeout_s = 45
 [debug]
 # Records every chat conversation and /search session to disk for later inspection.
 trace_enabled = false
+
+[updater]
+# Poll for new Thuki releases at startup and on a recurring interval.
+auto_check = true
+# Hours between background checks. Bound to 1..168.
+check_interval_hours = 24
+# URL of the signed update manifest. Override only when mirroring releases.
+manifest_url = "https://github.com/quiet-node/thuki/releases/latest/download/latest.json"
 ```
 
 ## Reading the reference tables
@@ -183,6 +191,16 @@ Records every chat conversation and `/search` session as JSON-Lines under `app_d
 | Field           | Default | Tunable? | Why not tunable | Bounds | Description                                                                  |
 | :-------------- | :------ | :------- | :-------------- | :----- | :--------------------------------------------------------------------------- |
 | `trace_enabled` | `false` | Yes      | —               | —      | Records every chat conversation and `/search` session to disk for debugging. |
+
+### `[updater]`
+
+Controls how Thuki polls for new releases. The actual download, signature verification, and binary swap are handled by the bundled Tauri updater plugin against a signed manifest hosted on GitHub Releases. The manifest is verified against an ed25519 public key compiled into the app, so a hijacked release cannot push a malicious binary to existing installs.
+
+| Field                  | Default                                                                              | Tunable? | Why not tunable | Bounds   | Description                                                                                                                                                                                  |
+| :--------------------- | :----------------------------------------------------------------------------------- | :------- | :-------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auto_check`           | `true`                                                                               | Yes      | —               | —        | Whether Thuki polls for updates automatically. When false, only the "Check now" button in Settings triggers a check. The tray badge and Settings banner still appear if a check finds an update. |
+| `check_interval_hours` | `24`                                                                                 | Yes      | —               | `1..168` | Hours between automatic background checks. Lower for impatient testers; higher for stability. The interval also gates the startup check after a freshly resumed session.                  |
+| `manifest_url`         | GitHub releases default                                                              | Yes      | —               | —        | URL of the signed update manifest. Override only when mirroring releases (for example, an internal release feed). Empty values fall back to the default URL.                                |
 
 ### `[activation]` (not in TOML)
 
