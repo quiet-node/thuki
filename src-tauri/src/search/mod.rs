@@ -91,9 +91,11 @@ pub async fn search_pipeline(
         // model. The frontend strip already steers the user to the picker
         // before this point, so this branch is defense-in-depth for the
         // race where the user's last installed model was removed mid-run.
-        let _ = on_event.send(SearchEvent::Error {
-            message: "No model selected. Pick a model in the picker.".to_string(),
-        });
+        // Emit a dedicated typed event (not a generic Error) so the frontend
+        // can keep `is_first_turn` armed: this bail returns before
+        // `ConversationStart` is recorded, so the next attempt must still
+        // open the trace as a first turn.
+        let _ = on_event.send(SearchEvent::NoModelSelected);
         return Ok(());
     };
 

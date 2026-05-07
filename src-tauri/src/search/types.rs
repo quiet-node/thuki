@@ -165,6 +165,11 @@ pub enum SearchEvent {
     /// running. The frontend renders a static setup-guidance card instead of a
     /// generic error bubble.
     SandboxUnavailable,
+    /// No active model is selected. Mirrors the chat-side
+    /// `OllamaErrorKind::NoModelSelected` bail so the frontend can keep its
+    /// `is_first_turn` flag pristine when the backend bails before
+    /// `ConversationStart` fires.
+    NoModelSelected,
     /// Emitted after each retrieval iteration completes (after the judge
     /// verdict is received). Allows the frontend to stream trace rows live
     /// as the pipeline progresses rather than receiving all traces at once.

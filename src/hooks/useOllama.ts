@@ -302,6 +302,16 @@ export function useOllama(
 
         const chunk = normalizeStreamChunk(rawChunk);
 
+        // Backend bails BEFORE recording `ConversationStart` only when no
+        // model is selected. Every other event (Token, Done, Cancelled,
+        // and post-`ConversationStart` Errors) means the trace was opened,
+        // so the flag must be retired. Keeping the flag armed only on the
+        // pre-`ConversationStart` bail preserves trace integrity across a
+        // failed-then-retried first turn.
+        if (chunk.type !== 'Error' || chunk.error.kind !== 'NoModelSelected') {
+          isFirstTurnRef.current = false;
+        }
+
         if (chunk.type === 'ThinkingToken') {
           currentThinkingContent += chunk.content;
           if (chunk.content) {
@@ -375,7 +385,10 @@ export function useOllama(
 
       const conversationId = ensureTraceConversationId();
       const isFirstTurn = isFirstTurnRef.current;
-      isFirstTurnRef.current = false;
+      // The ref is flipped inside `channel.onmessage` once the backend
+      // confirms it accepted the turn. Flipping here would burn the flag
+      // on no-model bails that return before `ConversationStart` fires,
+      // leaving the next attempt without an opening trace event.
       try {
         await invoke('ask_ollama', {
           message: promptOverride ?? displayContent,
@@ -515,6 +528,19 @@ export function useOllama(
             return;
           }
 
+          // Backend bails BEFORE recording `ConversationStart` on the
+          // pre-pipeline `NoModelSelected` and `SandboxUnavailable` paths.
+          // Every other event proves the trace was opened, so the flag
+          // must be retired then. Keeping the flag armed across these
+          // bails preserves trace integrity across a failed-then-retried
+          // first /search turn.
+          if (
+            event.type !== 'NoModelSelected' &&
+            event.type !== 'SandboxUnavailable'
+          ) {
+            isFirstTurnRef.current = false;
+          }
+
           switch (event.type) {
             case 'Trace': {
               pendingTraces = upsertSearchTraceStep(pendingTraces, event.step);
@@ -619,12 +645,28 @@ export function useOllama(
               finish(true);
               break;
             }
+            case 'NoModelSelected': {
+              errored = true;
+              // Mirror the chat path's `OllamaErrorKind::NoModelSelected`
+              // bubble copy verbatim so the user sees a single canonical
+              // call-to-action regardless of which command tripped the gate.
+              updateAssistant({
+                content: 'No model selected\nPick a model in the picker.',
+                errorKind: 'NoModelSelected',
+              });
+              finish(true);
+              break;
+            }
           }
         };
 
         const searchConversationId = ensureTraceConversationId();
         const searchIsFirstTurn = isFirstTurnRef.current;
-        isFirstTurnRef.current = false;
+        // The ref is flipped inside `channel.onmessage` once the backend
+        // emits anything other than the pre-`ConversationStart` bail
+        // signals (`NoModelSelected`, `SandboxUnavailable`). Flipping here
+        // would burn the flag on those bails and leave the next attempt
+        // without an opening trace event.
         invoke('search_pipeline', {
           message: trimmed,
           conversationId: searchConversationId,
