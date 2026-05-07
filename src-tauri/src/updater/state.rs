@@ -25,6 +25,13 @@ pub struct SnoozeSidecar {
     /// treated as "no upgrade detected, do nothing."
     #[serde(default)]
     pub last_launched_version: Option<String>,
+    /// SemVer string of the most recent available update the manifest
+    /// poller surfaced. Used to invalidate snooze deadlines when a new
+    /// version arrives: a "Later" click against v0.8.2 should not silently
+    /// suppress the banner once v0.8.3 ships. Tracked in the sidecar (not
+    /// just in memory) so the comparison survives an app restart.
+    #[serde(default)]
+    pub last_seen_update_version: Option<String>,
 }
 
 impl SnoozeSidecar {
@@ -78,6 +85,23 @@ impl UpdaterState {
 
     pub fn set_update(&self, update: Option<AvailableUpdate>) {
         let mut inner = self.inner.lock().expect("updater state mutex");
+
+        // Clear snoozes when a different available version arrives. A
+        // "Later" click against v0.8.2 must not silently suppress the
+        // banner once v0.8.3 ships. We compare against the
+        // `last_seen_update_version` recorded in the sidecar (not just
+        // `inner.update`, which is wiped on every app restart) so the
+        // distinction between "same version, snooze still applies" and
+        // "new version, snooze invalidated" survives across launches.
+        let next_version = update.as_ref().map(|u| u.version.clone());
+        if next_version.is_some()
+            && next_version.as_deref() != inner.snooze.last_seen_update_version.as_deref()
+        {
+            inner.snooze.settings_snoozed_until = None;
+            inner.snooze.chat_snoozed_until = None;
+            inner.snooze.last_seen_update_version = next_version;
+        }
+
         inner.update = update;
         inner.last_check_at = Some(SystemTime::now());
     }
@@ -100,6 +124,15 @@ impl UpdaterState {
     pub fn set_settings_snooze(&self, until_unix: Option<u64>) {
         let mut inner = self.inner.lock().expect("updater state mutex");
         inner.snooze.settings_snoozed_until = until_unix;
+    }
+
+    /// Restore the previously-seen available version from a sidecar load.
+    /// Called at app boot before the poller fires, so the first
+    /// `set_update` call can correctly distinguish "same version, snooze
+    /// still applies" from "new version, snooze invalidated."
+    pub fn set_last_seen_update_version(&self, version: Option<String>) {
+        let mut inner = self.inner.lock().expect("updater state mutex");
+        inner.snooze.last_seen_update_version = version;
     }
 
     pub fn snooze_clone(&self) -> SnoozeSidecar {
@@ -145,6 +178,7 @@ mod tests {
             settings_snoozed_until: Some(1_700_000_000),
             chat_snoozed_until: Some(1_700_001_000),
             last_launched_version: None,
+            last_seen_update_version: None,
         };
         original.save(&path).unwrap();
 
@@ -170,6 +204,7 @@ mod tests {
             settings_snoozed_until: None,
             chat_snoozed_until: None,
             last_launched_version: Some("0.8.1".to_string()),
+            last_seen_update_version: None,
         };
         original.save(&path).unwrap();
 
@@ -204,6 +239,102 @@ mod tests {
 
         let loaded = SnoozeSidecar::load(&path).unwrap();
         assert_eq!(loaded, SnoozeSidecar::default());
+    }
+
+    #[test]
+    fn set_update_clears_snoozes_when_new_version_arrives() {
+        let state = UpdaterState::default();
+        // User previously saw v0.8.2 and clicked Later on both surfaces.
+        state.set_last_seen_update_version(Some("0.8.2".to_string()));
+        state.set_settings_snooze(Some(1_700_000_000));
+        state.set_chat_snooze(Some(1_700_000_000));
+
+        // Manifest now reports v0.8.3.
+        state.set_update(Some(AvailableUpdate {
+            version: "0.8.3".to_string(),
+            notes_url: None,
+        }));
+
+        let snap = state.snapshot();
+        assert!(
+            snap.settings_snoozed_until.is_none(),
+            "settings snooze should clear when version changes"
+        );
+        assert!(
+            snap.chat_snoozed_until.is_none(),
+            "chat snooze should clear when version changes"
+        );
+        assert_eq!(snap.update.as_ref().unwrap().version, "0.8.3");
+    }
+
+    #[test]
+    fn set_update_preserves_snoozes_when_same_version_repeats() {
+        let state = UpdaterState::default();
+        // User saw v0.8.2 and snoozed both surfaces.
+        state.set_last_seen_update_version(Some("0.8.2".to_string()));
+        state.set_settings_snooze(Some(1_700_000_000));
+        state.set_chat_snooze(Some(1_700_000_001));
+
+        // Poll runs again, manifest still reports v0.8.2.
+        state.set_update(Some(AvailableUpdate {
+            version: "0.8.2".to_string(),
+            notes_url: None,
+        }));
+
+        let snap = state.snapshot();
+        assert_eq!(
+            snap.settings_snoozed_until,
+            Some(1_700_000_000),
+            "settings snooze must persist across same-version polls"
+        );
+        assert_eq!(
+            snap.chat_snoozed_until,
+            Some(1_700_000_001),
+            "chat snooze must persist across same-version polls"
+        );
+    }
+
+    #[test]
+    fn set_update_records_last_seen_for_first_ever_seen_version() {
+        let state = UpdaterState::default();
+        // Fresh state: no snooze, no recorded last-seen version.
+        state.set_update(Some(AvailableUpdate {
+            version: "0.8.3".to_string(),
+            notes_url: None,
+        }));
+
+        // Now seeing v0.8.3 a second time should be a no-op for snoozes.
+        state.set_settings_snooze(Some(1_700_000_000));
+        state.set_update(Some(AvailableUpdate {
+            version: "0.8.3".to_string(),
+            notes_url: None,
+        }));
+
+        let snap = state.snapshot();
+        assert_eq!(
+            snap.settings_snoozed_until,
+            Some(1_700_000_000),
+            "subsequent same-version polls must preserve user snooze"
+        );
+    }
+
+    #[test]
+    fn set_update_with_none_does_not_touch_snoozes() {
+        let state = UpdaterState::default();
+        // Manually arrange: user has a snooze and a recorded last-seen
+        // version (carried over from a previous session via the sidecar).
+        state.set_last_seen_update_version(Some("0.8.2".to_string()));
+        state.set_settings_snooze(Some(1_700_000_000));
+
+        // Manifest reports no update available (caught up).
+        state.set_update(None);
+
+        let snap = state.snapshot();
+        assert_eq!(
+            snap.settings_snoozed_until,
+            Some(1_700_000_000),
+            "snooze must not be cleared when manifest says no update"
+        );
     }
 
     #[test]

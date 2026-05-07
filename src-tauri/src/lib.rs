@@ -1126,6 +1126,14 @@ pub fn run() {
                 // Restore persisted snooze flags into the live state.
                 updater_state.set_settings_snooze(sidecar.settings_snoozed_until);
                 updater_state.set_chat_snooze(sidecar.chat_snoozed_until);
+                // Seed the previously-seen available version so the first
+                // poll after launch can correctly distinguish "user already
+                // snoozed this version" from "new version arrived, clear
+                // snooze." Without this, every cold start would see
+                // None vs Some(v) and unconditionally clear the user's
+                // snooze.
+                updater_state
+                    .set_last_seen_update_version(sidecar.last_seen_update_version.clone());
 
                 // Record the running version so the next launch can
                 // detect another upgrade. Best-effort; failure to write

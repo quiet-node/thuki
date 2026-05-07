@@ -90,8 +90,11 @@ pub fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// Writes the current in-memory snooze sidecar to disk. Pub so the
+/// poller can also persist (e.g., after a manifest poll cleared snoozes
+/// in response to a new version arriving).
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn persist_sidecar(state: &UpdaterState, app: &AppHandle) -> Result<(), String> {
+pub fn persist_sidecar(state: &UpdaterState, app: &AppHandle) -> Result<(), String> {
     let path = sidecar_path(app)?;
     let snooze = state.snooze_clone();
     snooze.save(&path).map_err(|e| e.to_string())

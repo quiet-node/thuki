@@ -46,6 +46,11 @@ pub async fn check_once(app: AppHandle) {
                     version: remote_version,
                     notes_url: None,
                 }));
+                // set_update may have cleared snooze deadlines if this is
+                // a new available version. Persist so the cleared state
+                // survives an app restart; otherwise the next launch
+                // would restore the old snooze from sidecar.
+                let _ = crate::updater::commands::persist_sidecar(&state, &app);
                 let _ = app.emit("update-available", state.snapshot());
                 return;
             }
