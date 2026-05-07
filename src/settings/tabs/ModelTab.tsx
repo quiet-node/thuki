@@ -16,6 +16,7 @@ import { Section, TextField, Textarea, Toggle } from '../components';
 import { SaveField } from '../components/SaveField';
 import { useDebouncedSave } from '../hooks/useDebouncedSave';
 import { configHelp } from '../configHelpers';
+import { DrawCheckIcon } from '../../components/DrawCheckIcon';
 import { Tooltip } from '../../components/Tooltip';
 import styles from '../../styles/settings.module.css';
 import type { RawAppConfig } from '../types';
@@ -282,31 +283,7 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
             onClick={handleEject}
           >
             {ejecting ? (
-              <svg
-                viewBox="0 0 16 16"
-                width="11"
-                height="11"
-                fill="none"
-                aria-hidden="true"
-              >
-                <circle
-                  cx="8"
-                  cy="8"
-                  r="7"
-                  stroke="#5ec98a"
-                  strokeWidth="1.6"
-                  className={styles.keepWarmCircleAnim}
-                  transform="rotate(-90 8 8)"
-                />
-                <path
-                  d="M4.5 8.5L7 11L12 5.5"
-                  stroke="#5ec98a"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className={styles.keepWarmCheckAnim}
-                />
-              </svg>
+              <DrawCheckIcon />
             ) : (
               <svg
                 viewBox="0 0 16 16"
