@@ -42,7 +42,7 @@ const CONFIG_A: RawAppConfig = {
     router_timeout_s: 45,
   },
   debug: {
-    search_trace_enabled: false,
+    trace_enabled: false,
   },
 };
 

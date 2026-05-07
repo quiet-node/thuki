@@ -3869,7 +3869,10 @@ describe('App', () => {
 
       await act(async () => {});
 
-      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+      expect(invoke).toHaveBeenCalledWith(
+        'capture_full_screen_command',
+        expect.objectContaining({ conversationId: expect.any(String) }),
+      );
       expect(invoke).toHaveBeenCalledWith(
         'ask_ollama',
         expect.objectContaining({
@@ -3932,7 +3935,10 @@ describe('App', () => {
 
       await act(async () => {});
 
-      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+      expect(invoke).toHaveBeenCalledWith(
+        'capture_full_screen_command',
+        expect.objectContaining({ conversationId: expect.any(String) }),
+      );
       expect(invoke).toHaveBeenCalledWith(
         'ask_ollama',
         expect.objectContaining({
@@ -3972,7 +3978,10 @@ describe('App', () => {
 
       await act(async () => {});
 
-      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+      expect(invoke).toHaveBeenCalledWith(
+        'capture_full_screen_command',
+        expect.objectContaining({ conversationId: expect.any(String) }),
+      );
       expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
       // The actual Rust error message is surfaced directly.
       expect(screen.getByText('Permission denied')).toBeInTheDocument();
@@ -4128,7 +4137,10 @@ describe('App', () => {
           await Promise.resolve();
         });
 
-        expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+        expect(invoke).toHaveBeenCalledWith(
+          'capture_full_screen_command',
+          expect.objectContaining({ conversationId: expect.any(String) }),
+        );
         expect(invoke).toHaveBeenCalledWith(
           'ask_ollama',
           expect.objectContaining({
@@ -4290,7 +4302,10 @@ describe('App', () => {
 
       // Capture succeeded; ask_ollama called with only the screenshot
       // (the attached image never resolved its filePath)
-      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+      expect(invoke).toHaveBeenCalledWith(
+        'capture_full_screen_command',
+        expect.objectContaining({ conversationId: expect.any(String) }),
+      );
       expect(invoke).toHaveBeenCalledWith(
         'ask_ollama',
         expect.objectContaining({
@@ -4540,7 +4555,10 @@ describe('App', () => {
 
       await act(async () => {});
 
-      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+      expect(invoke).toHaveBeenCalledWith(
+        'capture_full_screen_command',
+        expect.objectContaining({ conversationId: expect.any(String) }),
+      );
       expect(invoke).toHaveBeenCalledWith(
         'ask_ollama',
         expect.objectContaining({
@@ -4573,7 +4591,10 @@ describe('App', () => {
 
       await act(async () => {});
 
-      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+      expect(invoke).toHaveBeenCalledWith(
+        'capture_full_screen_command',
+        expect.objectContaining({ conversationId: expect.any(String) }),
+      );
       expect(invoke).toHaveBeenCalledWith(
         'ask_ollama',
         expect.objectContaining({
@@ -5295,7 +5316,10 @@ describe('App', () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
       await act(async () => {});
-      expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
+      expect(invoke).toHaveBeenCalledWith(
+        'capture_full_screen_command',
+        expect.objectContaining({ conversationId: expect.any(String) }),
+      );
     });
   });
 

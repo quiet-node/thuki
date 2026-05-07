@@ -63,8 +63,8 @@ const HELPERS = {
       'How long (in seconds) Thuki waits for the AI to decide whether your question even needs a web search and to plan the first queries. Raise this if your local AI model is slow on your hardware. Lowering it only causes the planning step to give up early.',
   },
   debug: {
-    search_trace_enabled:
-      'When on, Thuki writes a detailed trace file for every /search turn to ~/Library/Application Support/com.quietnode.thuki/traces/. Each file is a JSON-Lines record of every query, every page fetched, and every AI decision in that turn. Useful for diagnosing why a search went wrong; leave off for normal use.',
+    trace_enabled:
+      'When on, Thuki saves a JSONL trace of every chat and search session to ~/Library/Application Support/com.quietnode.thuki/traces/. Useful for debugging and refining your prompts. Off by default.',
   },
 } as const;
 

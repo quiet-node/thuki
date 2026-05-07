@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- **Unified trace recorder.** Records every chat conversation and `/search` session as JSON-Lines under `app_data_dir/traces/{chat,search}/<conversation_id>.jsonl`. Off by default; toggle from Settings or set `[debug] trace_enabled = true` in `config.toml`.
+
 ### Changed
 
+- **BREAKING**: Renamed `[debug] search_trace_enabled` to `trace_enabled` (now covers both chat and search). Rename the field in your `config.toml` after upgrading. Trace file layout also changed to `traces/{chat,search}/<conversation_id>.jsonl`.
+- The `ask_ollama`, `search_pipeline`, and `capture_full_screen_command` Tauri commands now require a `conversationId: String` argument (and `ask_ollama` additionally requires `isFirstTurn: bool` and `slashCommand: Option<String>`). The frontend's `useOllama` hook generates a stable trace id per session and threads it transparently. External callers that invoked these commands directly must update their `invoke()` calls. A new fire-and-forget `record_conversation_end` command lets the frontend signal end-of-conversation (used by `useOllama.reset()` and `useOllama.loadMessages()`) so the chat-domain trace file gets a clean closing line.
 - **BREAKING**: Renamed the `[model]` section in `config.toml` to `[inference]`. The section still contains a single field, `ollama_url`, but the name now reflects what it actually configures (the inference daemon endpoint, not a model). There is no backward-compatibility shim: if you had a custom `[model]` section, rename it to `[inference]` after upgrading.
 - Active model selection is now strictly Option-typed end to end. Ollama's `/api/tags` is the single source of truth: when nothing is installed and nothing is persisted, Thuki refuses to dispatch requests and surfaces a "Pick a model" prompt instead of falling back to a hardcoded slug. The previous `DEFAULT_MODEL_NAME` constant has been removed.
 

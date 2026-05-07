@@ -123,6 +123,15 @@ export type SearchEvent =
   /** Pre-flight sandbox probe failed: the SearXNG or reader container is not
    * running. The frontend renders a static setup-guidance card. */
   | { type: 'SandboxUnavailable' }
+  /** No active model is selected. Mirror of the chat path's
+   * `Error { kind: 'NoModelSelected' }`; emitted instead of a generic Error so
+   * the hook can keep `isFirstTurnRef` armed across a bail-and-retry. */
+  | { type: 'NoModelSelected' }
+  /** Backend confirmed it cleared every pre-`ConversationStart` gate and
+   * opened the trace. Hook-only signal: retires `isFirstTurnRef` before
+   * any token can arrive, so cancel-before-first-token cannot leave the
+   * flag set and produce a duplicate `ConversationStart` next turn. */
+  | { type: 'TurnAccepted' }
   /** Emitted after each retrieval iteration completes. Allows the frontend to
    * accumulate and render trace rows live as the pipeline progresses. */
   | { type: 'IterationComplete'; trace: IterationTrace };

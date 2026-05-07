@@ -165,6 +165,18 @@ pub enum SearchEvent {
     /// running. The frontend renders a static setup-guidance card instead of a
     /// generic error bubble.
     SandboxUnavailable,
+    /// No active model is selected. Mirrors the chat-side
+    /// `OllamaErrorKind::NoModelSelected` bail so the frontend can keep its
+    /// `is_first_turn` flag pristine when the backend bails before
+    /// `ConversationStart` fires.
+    NoModelSelected,
+    /// Emitted exactly once per turn, after the search backend has cleared
+    /// every pre-`ConversationStart` gate (no-model bail, sandbox probe)
+    /// and committed to opening the trace. Frontend uses it to retire
+    /// `is_first_turn` independently of token-arrival ordering, so a
+    /// cancel-before-first-token does not leave the flag in a state that
+    /// would emit a duplicate `ConversationStart` on the next turn.
+    TurnAccepted,
     /// Emitted after each retrieval iteration completes (after the judge
     /// verdict is received). Allows the frontend to stream trace rows live
     /// as the pipeline progresses rather than receiving all traces at once.

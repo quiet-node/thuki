@@ -75,10 +75,8 @@ judge_timeout_s = 30
 router_timeout_s = 45
 
 [debug]
-# When true, writes a forensic JSON-Lines trace file for every /search turn to
-# ~/Library/Application Support/com.quietnode.thuki/traces/.
-# Also toggleable from the Settings panel (Web tab, Diagnostics section).
-search_trace_enabled = false
+# Records every chat conversation and /search session to disk for later inspection.
+trace_enabled = false
 ```
 
 ## Reading the reference tables
@@ -180,11 +178,11 @@ For security, both URLs default to your local machine (`127.0.0.1`) and should s
 
 ### `[debug]`
 
-Diagnostics toggles. `search_trace_enabled` is exposed in the Settings panel (Web tab, Diagnostics section) so you can flip it without editing `config.toml`.
+Records every chat conversation and `/search` session as JSON-Lines under `app_data_dir/traces/{chat,search}/<conversation_id>.jsonl`. Off by default; toggleable from Settings. Trace files stay on your disk and are never uploaded.
 
-| Field                  | Default | Tunable? | Why not tunable | Bounds | Description |
-| :--------------------- | :------ | :------- | :-------------- | :----- | :---------- |
-| `search_trace_enabled` | `false` | Yes      | —               | —      | When on, Thuki writes a forensic JSON-Lines trace file for every `/search` turn to `~/Library/Application Support/com.quietnode.thuki/traces/`. Each file records every query sent to SearXNG, every page the reader fetched, and every AI decision in that turn. Useful for diagnosing why a search went wrong; leave off for normal use. |
+| Field           | Default | Tunable? | Why not tunable | Bounds | Description                                                                  |
+| :-------------- | :------ | :------- | :-------------- | :----- | :--------------------------------------------------------------------------- |
+| `trace_enabled` | `false` | Yes      | —               | —      | Records every chat conversation and `/search` session to disk for debugging. |
 
 ### `[activation]` (not in TOML)
 

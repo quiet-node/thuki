@@ -1271,7 +1271,7 @@
 
 /* ─── Reduced motion ────────────────────────────────────────────────────── */
 
-/* ─── Dev-only collapsible section (Search → Diagnostics) ──────────────── */
+/* ─── Dev-only collapsible section (AI tab → Diagnostics) ──────────────── */
 
 .devSection {
   border-top: 1px solid rgba(255, 255, 255, 0.045);

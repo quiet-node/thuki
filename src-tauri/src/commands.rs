@@ -209,6 +209,13 @@ pub enum StreamChunk {
     Cancelled,
     /// A structured, user-friendly error occurred during processing.
     Error(OllamaError),
+    /// Emitted exactly once per turn, after the backend has cleared every
+    /// pre-`ConversationStart` gate (no-model bail, model lookup, etc.) and
+    /// committed to opening the trace for this `conversation_id`. Carries
+    /// no payload; the frontend uses it as the unambiguous signal to
+    /// retire its `is_first_turn` flag without relying on token-arrival
+    /// ordering. Does not appear in the trace itself.
+    TurnAccepted,
 }
 
 /// A single message in the Ollama `/api/chat` conversation format.
@@ -463,10 +470,65 @@ pub async fn stream_ollama_chat(
     accumulated
 }
 
+/// Mirrors a streaming chunk into the chat-domain trace recorder. Pulled out
+/// of [`ask_ollama`] so the per-token routing logic and the token-count
+/// increment are exercised by the unit-test suite rather than the
+/// coverage-off Tauri command body. `Done`, `Cancelled`, and `Error` chunks
+/// are intentionally noops here: those terminal events are summarized by
+/// `AssistantComplete` after the stream returns.
+pub(crate) fn record_chunk_to_trace(
+    chunk: &StreamChunk,
+    recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
+    token_count: &AtomicU64,
+) {
+    match chunk {
+        StreamChunk::Token(text) => {
+            token_count.fetch_add(1, Ordering::Relaxed);
+            recorder.record(crate::trace::RecorderEvent::AssistantTokens {
+                chunk: text.clone(),
+            });
+        }
+        StreamChunk::ThinkingToken(text) => {
+            recorder.record(crate::trace::RecorderEvent::AssistantThinking {
+                chunk: text.clone(),
+            });
+        }
+        StreamChunk::Done
+        | StreamChunk::Cancelled
+        | StreamChunk::Error(_)
+        | StreamChunk::TurnAccepted => {}
+    }
+}
+
+/// Emits `ConversationStart` to the trace recorder iff this is the first
+/// turn of the conversation. Pulled out of [`ask_ollama`] and the search
+/// pipeline so the gate is covered by tests instead of the coverage-off
+/// Tauri command body.
+pub(crate) fn record_conversation_start_if_first_turn(
+    recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
+    is_first_turn: bool,
+    model: String,
+    system_prompt: String,
+) {
+    if is_first_turn {
+        recorder.record(crate::trace::RecorderEvent::ConversationStart {
+            model,
+            system_prompt,
+        });
+    }
+}
+
 /// Streams a chat response from the local Ollama backend. Appends the user
 /// message and assistant response to conversation history after completion
 /// or cancellation (retaining context for follow-up requests). Uses an epoch
 /// counter to prevent stale writes after a reset.
+///
+/// `conversation_id` flows from the frontend (`useConversationHistory.ts`).
+/// `is_first_turn` lets the frontend tell the backend "emit
+/// `ConversationStart` before this turn's `UserMessage`" without the backend
+/// needing to track per-conversation state. Both feed the unified trace
+/// recorder when `[debug] trace_enabled = true`; off by default they collapse
+/// to noop calls.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 #[allow(clippy::too_many_arguments)]
@@ -475,6 +537,9 @@ pub async fn ask_ollama(
     quoted_text: Option<String>,
     image_paths: Option<Vec<String>>,
     think: bool,
+    conversation_id: String,
+    is_first_turn: bool,
+    slash_command: Option<String>,
     on_event: Channel<StreamChunk>,
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
@@ -482,6 +547,7 @@ pub async fn ask_ollama(
     config: State<'_, parking_lot::RwLock<AppConfig>>,
     active_model: State<'_, crate::models::ActiveModelState>,
     capabilities_cache: State<'_, ModelCapabilitiesCache>,
+    trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<(), String> {
     // Snapshot the config once so all downstream reads (endpoint, prompt, model)
     // see a consistent view even if the user edits Settings mid-stream.
@@ -507,6 +573,35 @@ pub async fn ask_ollama(
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());
 
+    // Bind the trace recorder to this conversation. When tracing is on,
+    // every event for this turn flows to
+    // `traces/chat/<conversation_id>.jsonl` via the registry. When off,
+    // each `record()` is a constant-time noop. The bound recorder is
+    // cheap to clone and is captured by the streaming-pump closure so
+    // per-token emits skip the registry lookup on the hot path.
+    let live: std::sync::Arc<crate::trace::LiveTraceRecorder> =
+        std::sync::Arc::clone(trace_recorder.inner());
+    let live_inner: std::sync::Arc<dyn crate::trace::TraceRecorder> = live;
+    let bound_recorder = std::sync::Arc::new(crate::trace::BoundRecorder::new(
+        live_inner,
+        crate::trace::ConversationId::new(conversation_id),
+    ));
+
+    // Emit ConversationStart at the moment we know the model + resolved
+    // system prompt. The frontend's `is_first_turn` flag prevents this
+    // event from firing on subsequent turns of the same conversation.
+    record_conversation_start_if_first_turn(
+        &bound_recorder,
+        is_first_turn,
+        model_name.clone(),
+        config.prompt.resolved_system.clone(),
+    );
+    // Tell the frontend the trace was opened for this conversation_id.
+    // Sent unconditionally (regardless of `is_first_turn`) so the hook
+    // can retire its flag the moment ANY turn lands, even if a previous
+    // first-turn attempt was cancelled before any token arrived.
+    let _ = on_event.send(StreamChunk::TurnAccepted);
+
     // Build user message content.  When quoted text is present, label it
     // explicitly so the model knows the highlighted text is the primary
     // subject and any attached images provide surrounding context.
@@ -516,6 +611,16 @@ pub async fn ask_ollama(
         }
         _ => message,
     };
+
+    // Emit UserMessage before any image base64 work, so the trace
+    // captures the user's intent even if encoding fails. Image paths
+    // are recorded as strings (matching the IPC contract); image bytes
+    // never enter the JSONL.
+    bound_recorder.record(crate::trace::RecorderEvent::UserMessage {
+        content: content.clone(),
+        attached_images: image_paths.clone().unwrap_or_default(),
+        slash_command: slash_command.clone(),
+    });
 
     // Base64-encode attached images for the Ollama multimodal API.
     let images = match image_paths {
@@ -580,6 +685,14 @@ pub async fn ask_ollama(
         ))
     };
 
+    let stream_started_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let token_count_atomic = std::sync::Arc::new(AtomicU64::new(0));
+    let token_count_for_pump = std::sync::Arc::clone(&token_count_atomic);
+    let recorder_for_pump = std::sync::Arc::clone(&bound_recorder);
+
     let accumulated = stream_ollama_chat(
         OllamaChatParams {
             endpoint,
@@ -592,10 +705,24 @@ pub async fn ask_ollama(
         &client,
         cancel_token.clone(),
         |chunk| {
+            // Mirror the user-visible chunk into the trace before
+            // forwarding it to the frontend. Token / ThinkingToken
+            // chunks land as discrete trace events; terminal chunks are
+            // summarized below by `AssistantComplete`.
+            record_chunk_to_trace(&chunk, &recorder_for_pump, &token_count_for_pump);
             let _ = on_event.send(chunk);
         },
     )
     .await;
+
+    let stream_ended_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    bound_recorder.record(crate::trace::RecorderEvent::AssistantComplete {
+        total_tokens: token_count_atomic.load(Ordering::Relaxed),
+        latency_ms: stream_ended_ms.saturating_sub(stream_started_ms),
+    });
 
     // Persist user + assistant messages to in-memory history when the epoch
     // has not changed (no reset during streaming) and we received content.
@@ -656,6 +783,34 @@ pub async fn cancel_generation(generation: State<'_, GenerationState>) -> Result
 pub fn reset_conversation(history: State<'_, ConversationHistory>) {
     history.epoch.fetch_add(1, Ordering::SeqCst);
     history.messages.lock().unwrap().clear();
+}
+
+/// Frontend-driven `ConversationEnd` emission.
+///
+/// The chat-domain trace lifecycle is owned by the frontend because
+/// Thuki's window-close intercept hides instead of quits, and the same
+/// conversation can resume on the next hotkey activation. Emitting
+/// `ConversationEnd` from the backend on window-hide would falsely mark
+/// every still-open conversation ended on every dismiss. The frontend
+/// invokes this command exactly when the user-perceived conversation
+/// terminates: clicking "New conversation", loading a different
+/// conversation from history, or quitting from the tray.
+///
+/// The command is a thin trace-only signal; it does NOT mutate
+/// `ConversationHistory` (that is `reset_conversation`'s job) and does
+/// NOT touch the SQLite-backed history UI.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn record_conversation_end(
+    conversation_id: String,
+    reason: String,
+    trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
+) {
+    use crate::trace::TraceRecorder;
+    trace_recorder.record(
+        &crate::trace::ConversationId::new(conversation_id),
+        crate::trace::RecorderEvent::ConversationEnd { reason },
+    );
 }
 
 #[cfg(test)]
@@ -2121,5 +2276,111 @@ mod tests {
         let err = classify_http_error(404, "vision-model", "image required");
         assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
         assert!(!err.message.contains("picker chip"));
+    }
+
+    // ─── Trace orchestration helpers ────────────────────────────────────────
+
+    /// Builds a `BoundRecorder` over a `MockRecorder` so each helper test
+    /// can inspect what got recorded without going through the file system.
+    fn mock_bound_recorder(
+        conv_id: &str,
+    ) -> (
+        Arc<crate::trace::BoundRecorder>,
+        Arc<crate::trace::recorder::MockRecorder>,
+    ) {
+        let mock = Arc::new(crate::trace::recorder::MockRecorder::new());
+        let inner: Arc<dyn crate::trace::TraceRecorder> = mock.clone();
+        let bound = Arc::new(crate::trace::BoundRecorder::new(
+            inner,
+            crate::trace::ConversationId::new(conv_id),
+        ));
+        (bound, mock)
+    }
+
+    #[test]
+    fn record_chunk_to_trace_emits_assistant_tokens_and_increments_count() {
+        let (bound, mock) = mock_bound_recorder("conv-token");
+        let counter = AtomicU64::new(0);
+        record_chunk_to_trace(&StreamChunk::Token("hi".to_string()), &bound, &counter);
+        record_chunk_to_trace(&StreamChunk::Token(" there".to_string()), &bound, &counter);
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
+        let snapshot = mock.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        for (id, _) in &snapshot {
+            assert_eq!(id.as_str(), "conv-token");
+        }
+        assert!(matches!(
+            snapshot[0].1,
+            crate::trace::RecorderEvent::AssistantTokens { ref chunk } if chunk == "hi"
+        ));
+        assert!(matches!(
+            snapshot[1].1,
+            crate::trace::RecorderEvent::AssistantTokens { ref chunk } if chunk == " there"
+        ));
+    }
+
+    #[test]
+    fn record_chunk_to_trace_emits_assistant_thinking_without_increment() {
+        let (bound, mock) = mock_bound_recorder("conv-think");
+        let counter = AtomicU64::new(0);
+        record_chunk_to_trace(
+            &StreamChunk::ThinkingToken("planning".to_string()),
+            &bound,
+            &counter,
+        );
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        let snapshot = mock.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert!(matches!(
+            snapshot[0].1,
+            crate::trace::RecorderEvent::AssistantThinking { ref chunk } if chunk == "planning"
+        ));
+    }
+
+    #[test]
+    fn record_chunk_to_trace_skips_terminal_chunks() {
+        let (bound, mock) = mock_bound_recorder("conv-term");
+        let counter = AtomicU64::new(0);
+        record_chunk_to_trace(&StreamChunk::Done, &bound, &counter);
+        record_chunk_to_trace(&StreamChunk::Cancelled, &bound, &counter);
+        record_chunk_to_trace(
+            &StreamChunk::Error(no_model_selected_error()),
+            &bound,
+            &counter,
+        );
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        assert_eq!(mock.snapshot().len(), 0);
+    }
+
+    #[test]
+    fn record_conversation_start_if_first_turn_emits_when_true() {
+        let (bound, mock) = mock_bound_recorder("conv-start");
+        record_conversation_start_if_first_turn(
+            &bound,
+            true,
+            "model-a".to_string(),
+            "you are helpful".to_string(),
+        );
+        let snapshot = mock.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert!(matches!(
+            snapshot[0].1,
+            crate::trace::RecorderEvent::ConversationStart {
+                ref model,
+                ref system_prompt,
+            } if model == "model-a" && system_prompt == "you are helpful"
+        ));
+    }
+
+    #[test]
+    fn record_conversation_start_if_first_turn_skips_when_false() {
+        let (bound, mock) = mock_bound_recorder("conv-skip");
+        record_conversation_start_if_first_turn(
+            &bound,
+            false,
+            "model-a".to_string(),
+            "ignored".to_string(),
+        );
+        assert_eq!(mock.snapshot().len(), 0);
     }
 }

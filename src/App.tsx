@@ -207,6 +207,7 @@ function App() {
     searchStage,
     reset,
     loadMessages,
+    getTraceConversationId,
   } = useOllama(activeModel, handleTurnComplete);
 
   /**
@@ -1065,7 +1066,9 @@ function App() {
 
       let screenshotPath: string;
       try {
-        screenshotPath = await invoke<string>('capture_full_screen_command');
+        screenshotPath = await invoke<string>('capture_full_screen_command', {
+          conversationId: getTraceConversationId(),
+        });
       } catch (e) {
         screenCapturePendingRef.current = false;
         screenCaptureInputSnapshotRef.current = null;
@@ -1114,6 +1117,7 @@ function App() {
       selectedContext,
       attachedImages,
       ask,
+      getTraceConversationId,
       setSelectedContext,
       setCaptureError,
       quote.maxContextLength,

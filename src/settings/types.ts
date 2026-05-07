@@ -44,7 +44,7 @@ export interface RawAppConfig {
     router_timeout_s: number;
   };
   debug: {
-    search_trace_enabled: boolean;
+    trace_enabled: boolean;
   };
 }
 
