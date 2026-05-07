@@ -195,27 +195,12 @@ impl Default for SearchSection {
 }
 
 /// Developer and power-user debugging knobs.
-///
-/// `trace_enabled` is exposed in the Settings GUI (Web tab, Diagnostics
-/// section) so users can toggle it without editing `config.toml`. Off in
-/// shipped builds by default.
-///
-/// The field accepts the legacy `search_trace_enabled` name via
-/// `serde(alias)` so existing user configs from before the chat-domain
-/// extension keep working without manual edits. The first launch on the
-/// new build silently rewrites the field name to `trace_enabled` if the
-/// loader ever serializes the resolved config back to disk; users with
-/// dotfile-tracked configs will see the rename in their next git diff.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DebugSection {
-    /// When on, the unified trace recorder writes forensic JSON-Lines
-    /// trace files for the chat layer AND the `/search` pipeline under
-    /// `~/Library/Application Support/com.quietnode.thuki/traces/`,
-    /// grouped by domain (`traces/chat/<conversation_id>.jsonl` and
-    /// `traces/search/<conversation_id>.jsonl`). Toggleable from the
-    /// Settings panel. Off by default.
-    #[serde(alias = "search_trace_enabled")]
+    /// Records every chat conversation and `/search` session to JSON-Lines
+    /// files under `app_data_dir/traces/{chat,search}/<conversation_id>.jsonl`.
+    /// Off by default; toggleable from Settings.
     pub trace_enabled: bool,
 }
 

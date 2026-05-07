@@ -1068,21 +1068,6 @@ fn debug_trace_enabled_round_trips_through_load() {
 }
 
 #[test]
-fn debug_legacy_search_trace_enabled_field_name_still_loads_via_serde_alias() {
-    // Backwards-compat: existing user configs from before the chat-domain
-    // extension keep working. The loader accepts either field name and
-    // resolves both into the same `trace_enabled` in-memory field.
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(&path, "[debug]\nsearch_trace_enabled = true\n").unwrap();
-    let loaded = load_from_path(&path).unwrap();
-    assert!(
-        loaded.debug.trace_enabled,
-        "serde(alias = \"search_trace_enabled\") must accept the legacy field name"
-    );
-}
-
-#[test]
 fn toml_without_debug_section_deserializes_to_defaults() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
