@@ -1,4 +1,10 @@
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  act,
+  waitFor,
+} from '@testing-library/react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import App from '../App';
 import { DEFAULT_CONFIG } from '../contexts/ConfigContext';
@@ -5435,6 +5441,106 @@ describe('App', () => {
       });
       await act(async () => {});
       expect(screen.queryByTestId('tip-text')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('UpdateFooterBar integration', () => {
+    it('shows UpdateFooterBar instead of TipBar when an update is available', async () => {
+      (useTips as ReturnType<typeof vi.fn>).mockReturnValue({
+        tip: 'test tip',
+        tipKey: 0,
+        isVisible: true,
+      });
+      enableChannelCaptureWithResponses({
+        get_updater_state: {
+          last_check_at_unix: 100,
+          update: { version: '0.8.0', notes_url: null },
+          settings_snoozed_until: null,
+          chat_snoozed_until: null,
+        },
+      });
+
+      render(<App />);
+      await act(async () => {});
+
+      // Show the overlay so TipBar area is rendered
+      await showOverlay();
+
+      await waitFor(() =>
+        expect(screen.getByTestId('update-footer-bar')).toBeInTheDocument(),
+      );
+      expect(screen.queryByTestId('tip-bar')).not.toBeInTheDocument();
+    });
+
+    it('shows TipBar normally when no update is available', async () => {
+      (useTips as ReturnType<typeof vi.fn>).mockReturnValue({
+        tip: 'test tip',
+        tipKey: 0,
+        isVisible: true,
+      });
+      // Default enableChannelCapture returns no update
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await waitFor(() =>
+        expect(screen.getByTestId('tip-bar')).toBeInTheDocument(),
+      );
+      expect(screen.queryByTestId('update-footer-bar')).not.toBeInTheDocument();
+    });
+
+    it('calls install_update when install link clicked on UpdateFooterBar', async () => {
+      (useTips as ReturnType<typeof vi.fn>).mockReturnValue({
+        tip: 'test tip',
+        tipKey: 0,
+        isVisible: true,
+      });
+      enableChannelCaptureWithResponses({
+        get_updater_state: {
+          last_check_at_unix: 100,
+          update: { version: '0.8.0', notes_url: null },
+          settings_snoozed_until: null,
+          chat_snoozed_until: null,
+        },
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await waitFor(() => screen.getByTestId('update-footer-bar'));
+      await act(async () => {
+        fireEvent.click(screen.getByText(/install & restart/i));
+        await Promise.resolve();
+      });
+      expect(invoke).toHaveBeenCalledWith('install_update');
+    });
+
+    it('calls snooze_update_chat when later link clicked on UpdateFooterBar', async () => {
+      (useTips as ReturnType<typeof vi.fn>).mockReturnValue({
+        tip: 'test tip',
+        tipKey: 0,
+        isVisible: true,
+      });
+      enableChannelCaptureWithResponses({
+        get_updater_state: {
+          last_check_at_unix: 100,
+          update: { version: '0.8.0', notes_url: null },
+          settings_snoozed_until: null,
+          chat_snoozed_until: null,
+        },
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await waitFor(() => screen.getByTestId('update-footer-bar'));
+      await act(async () => {
+        fireEvent.click(screen.getByText('later'));
+        await Promise.resolve();
+      });
+      expect(invoke).toHaveBeenCalledWith('snooze_update_chat', { hours: 24 });
     });
   });
 });
