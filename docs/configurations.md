@@ -42,10 +42,11 @@ keep_warm_inactivity_minutes = 0
 num_ctx = 16384
 
 [prompt]
-# Leave empty to use the built-in secretary persona.
-# Thuki always appends the generated slash-command appendix at runtime,
-# whether or not this field is set, so slash commands keep working.
-system = ""
+# The full secretary persona prompt. Seeded on first run so this file is the
+# single source of truth: edit it to tune behavior. Clearing it sends only
+# the slash-command appendix, which Thuki always appends at runtime so slash
+# commands keep working.
+system = "..."
 
 [window]
 overlay_width = 600
@@ -123,8 +124,8 @@ Controls the personality and instructions Thuki gives to the AI at the start of 
 
 | Constant                        | Default                                | Tunable? | Why not tunable                                                                                                                                       | Bounds     | Description                                                                                                                                                                                                                                            |
 | :------------------------------ | :------------------------------------- | :------- | :---------------------------------------------------------------------------------------------------------------------------------------------------- | :--------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `system`                        | `""`                                   | Yes      | —                                                                                                                                                     | any string | Your custom personality or instructions for the AI (for example, "You are a terse Rust expert"). Leave this empty to use Thuki's built-in secretary personality. The list of slash commands is always added on top, so `/search` etc. work either way. |
-| `DEFAULT_SYSTEM_PROMPT_BASE`    | `prompts/system_prompt.txt`            | No       | This is the fallback used when `system` is empty. To customize, set `system` instead, edit it in your `config.toml` rather than this file.            | —          | The built-in secretary personality Thuki uses when you have not set a custom `system` prompt.                                                                                                                                                          |
+| `system`                        | full built-in body (~17 KB)            | Yes      | —                                                                                                                                                     | any string | The full secretary personality prompt. Seeded into your `config.toml` on first run so the file is the single source of truth: edit, tweak, or replace it. Clearing the field sends no persona at all. The slash-command appendix is always added on top, so `/search` etc. work either way. |
+| `DEFAULT_SYSTEM_PROMPT_BASE`    | `prompts/system_prompt.txt`            | No       | The shipped seed for `system` on first run. Once your `config.toml` exists, only the file matters; this constant is no longer consulted at runtime. | —          | Source-of-truth file used to seed `system` on first run.                                                                                                                                                                                                                                  |
 | `SLASH_COMMAND_PROMPT_APPENDIX` | `prompts/generated/slash_commands.txt` | No       | Auto-generated from the slash-command registry at build time. Editing by hand would desync the AI's understanding of the commands from the real ones. | —          | The list of slash commands (`/search`, `/screen`, etc.) Thuki tells the AI about so it knows what each one does. Always added on top of your `system` prompt.                                                                                          |
 
 ### `[window]`

@@ -20,7 +20,8 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
-    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS,
+    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
+    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
 };
 
 /// Static, user-tunable inference daemon configuration.
@@ -60,23 +61,30 @@ impl Default for InferenceSection {
     }
 }
 
-/// Prompt configuration. `system` holds only the user-editable base text.
-/// The slash-command appendix is composed at load time into `resolved_system`
-/// and is never written back to the file. `resolved_system` is computed, not
-/// serialized.
-///
-/// Note: `#[derive(Default)]` is correct here because both fields genuinely
-/// start empty: `system` empty means "use the built-in persona", and
-/// `resolved_system` is populated by the loader before any consumer reads it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Prompt configuration. `system` holds the user-editable persona prompt; on
+/// first run it is seeded with the full built-in body so the file is the
+/// single source of truth. The slash-command appendix is composed at load
+/// time into `resolved_system` and is never written back to the file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct PromptSection {
-    /// User-editable persona prompt. Empty means "use the built-in default".
+    /// User-editable persona prompt. Seeded with the built-in body and
+    /// freely editable thereafter. If the user clears it, no persona is
+    /// sent (only the slash-command appendix).
     pub system: String,
     /// Composed runtime value (base prompt plus slash-command appendix).
     /// Not serialized; computed by the loader.
     #[serde(skip)]
     pub resolved_system: String,
+}
+
+impl Default for PromptSection {
+    fn default() -> Self {
+        Self {
+            system: DEFAULT_SYSTEM_PROMPT_BASE.to_string(),
+            resolved_system: String::new(),
+        }
+    }
 }
 
 /// Overlay UI configuration. Holds window geometry and input attachment

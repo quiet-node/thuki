@@ -100,7 +100,44 @@ describe('ModelTab', () => {
 
   it('renders the live char counter for the prompt textarea', async () => {
     await renderModelTab();
-    expect(screen.getByText(/5 \/ 8000/)).toBeInTheDocument();
+    expect(screen.getByText(/5 \/ 32000/)).toBeInTheDocument();
+  });
+
+  it('renders the prompt textarea with the configured persona text and a tall default size', async () => {
+    await renderModelTab();
+    const ta = screen.getByRole('textbox', {
+      name: 'System prompt',
+    }) as HTMLTextAreaElement;
+    expect(ta.value).toBe('hello');
+    // Default rows must be larger than the generic 4-row Textarea so the
+    // seeded built-in prompt body is visible without manual resizing.
+    expect(ta.rows).toBeGreaterThanOrEqual(8);
+  });
+
+  it('typing into the prompt textarea schedules a save with the typed text', async () => {
+    vi.useFakeTimers();
+    let savedValue: unknown = undefined;
+    invokeMock.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'set_config_field') {
+        savedValue = (args as { value: unknown }).value;
+        return Promise.resolve(CONFIG);
+      }
+      return Promise.resolve(CONFIG);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const ta = screen.getByRole('textbox', {
+      name: 'System prompt',
+    }) as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: 'new prompt body' } });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+    expect(savedValue).toBe('new prompt body');
   });
 
   it('renders the Keep Warm section with Release after input and Unload now button', async () => {
