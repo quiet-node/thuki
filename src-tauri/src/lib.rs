@@ -1097,12 +1097,43 @@ pub fn run() {
             // ── Updater state + optional background poller ────────────
             {
                 let updater_state = updater::UpdaterState::default();
+                let running_version = app.package_info().version.to_string();
 
-                if let Ok(dir) = app.path().app_config_dir() {
-                    let path = dir.join(crate::config::defaults::DEFAULT_UPDATER_STATE_FILENAME);
-                    if let Ok(s) = updater::SnoozeSidecar::load(&path) {
-                        updater_state.set_settings_snooze(s.settings_snoozed_until);
-                        updater_state.set_chat_snooze(s.chat_snoozed_until);
+                let sidecar_path = app
+                    .path()
+                    .app_config_dir()
+                    .ok()
+                    .map(|d| d.join(crate::config::defaults::DEFAULT_UPDATER_STATE_FILENAME));
+
+                let mut sidecar = updater::SnoozeSidecar::default();
+                if let Some(path) = sidecar_path.as_ref() {
+                    if let Ok(loaded) = updater::SnoozeSidecar::load(path) {
+                        sidecar = loaded;
+                    }
+                }
+
+                // Detect a fresh upgrade and clear the stale TCC grants
+                // macOS keeps for the previous binary's code signature.
+                // Without this, System Settings shows the toggle on but
+                // the new binary cannot actually use the permission.
+                if updater::tcc_reset::should_reset_for_upgrade(
+                    sidecar.last_launched_version.as_deref(),
+                    &running_version,
+                ) {
+                    updater::tcc_reset::tccutil_reset(&app.config().identifier);
+                }
+
+                // Restore persisted snooze flags into the live state.
+                updater_state.set_settings_snooze(sidecar.settings_snoozed_until);
+                updater_state.set_chat_snooze(sidecar.chat_snoozed_until);
+
+                // Record the running version so the next launch can
+                // detect another upgrade. Best-effort; failure to write
+                // the sidecar is logged inside SnoozeSidecar::save.
+                sidecar.last_launched_version = Some(running_version);
+                if let Some(path) = sidecar_path.as_ref() {
+                    if let Err(e) = sidecar.save(path) {
+                        eprintln!("thuki: [updater] failed to persist sidecar: {e}");
                     }
                 }
 

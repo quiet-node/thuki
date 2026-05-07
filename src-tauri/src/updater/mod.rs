@@ -7,5 +7,6 @@
 pub mod commands;
 pub mod poller;
 pub mod state;
+pub mod tcc_reset;
 
 pub use state::{AvailableUpdate, SnoozeSidecar, UpdaterSnapshot, UpdaterState};

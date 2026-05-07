@@ -3,14 +3,28 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Snoozes that survive across app restarts. Stored as a JSON sidecar
-/// (not in the user-editable TOML) because they are state-machine flags,
-/// not preferences.
+/// Updater state that survives across app restarts. Stored as a JSON
+/// sidecar (not in the user-editable TOML) because these are state-machine
+/// flags, not preferences. Holds: per-surface snooze deadlines (so "Later"
+/// persists across launches) and the last-launched binary version (so the
+/// startup sequence can detect a fresh upgrade and reset stale TCC grants).
+///
+/// Kept named `SnoozeSidecar` for back-compat with existing sidecar files
+/// on user disks. Renaming would orphan their snooze state.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SnoozeSidecar {
     /// Unix seconds. `None` means not snoozed.
+    #[serde(default)]
     pub settings_snoozed_until: Option<u64>,
+    #[serde(default)]
     pub chat_snoozed_until: Option<u64>,
+    /// SemVer string of the binary that wrote this sidecar last. Used to
+    /// detect upgrades on startup so we can reset the stale TCC grants
+    /// macOS keeps for the previous code signature. Absent on first ever
+    /// launch and on sidecars written by pre-0.8.2 builds; both cases are
+    /// treated as "no upgrade detected, do nothing."
+    #[serde(default)]
+    pub last_launched_version: Option<String>,
 }
 
 impl SnoozeSidecar {
@@ -23,9 +37,10 @@ impl SnoozeSidecar {
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        // SnoozeSidecar holds two Option<u64> fields, so serde_json::to_string
-        // is provably infallible here. expect() documents the invariant; if a
-        // future field ever changes that, the panic surface is loud and local.
+        // The struct holds plain Option<u64>/Option<String> fields, so
+        // serde_json::to_string is provably infallible here. expect()
+        // documents the invariant; if a future field ever changes that,
+        // the panic surface is loud and local.
         let s = serde_json::to_string(self).expect("SnoozeSidecar serializes");
         std::fs::write(path, s)
     }
@@ -129,6 +144,7 @@ mod tests {
         let original = SnoozeSidecar {
             settings_snoozed_until: Some(1_700_000_000),
             chat_snoozed_until: Some(1_700_001_000),
+            last_launched_version: None,
         };
         original.save(&path).unwrap();
 
@@ -143,6 +159,41 @@ mod tests {
 
         let loaded = SnoozeSidecar::load(&path).unwrap();
         assert_eq!(loaded, SnoozeSidecar::default());
+    }
+
+    #[test]
+    fn snooze_sidecar_round_trips_last_launched_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updater_state.json");
+
+        let original = SnoozeSidecar {
+            settings_snoozed_until: None,
+            chat_snoozed_until: None,
+            last_launched_version: Some("0.8.1".to_string()),
+        };
+        original.save(&path).unwrap();
+
+        let loaded = SnoozeSidecar::load(&path).unwrap();
+        assert_eq!(loaded, original);
+    }
+
+    #[test]
+    fn snooze_sidecar_back_compat_old_file_without_version_field() {
+        // Old (pre-0.8.2) sidecar files were written without the
+        // `last_launched_version` field. Loading must default it to None
+        // rather than fail, otherwise existing snooze state would be lost.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updater_state.json");
+        std::fs::write(
+            &path,
+            r#"{"settings_snoozed_until":1700000000,"chat_snoozed_until":null}"#,
+        )
+        .unwrap();
+
+        let loaded = SnoozeSidecar::load(&path).unwrap();
+        assert_eq!(loaded.settings_snoozed_until, Some(1_700_000_000));
+        assert!(loaded.chat_snoozed_until.is_none());
+        assert!(loaded.last_launched_version.is_none());
     }
 
     #[test]
