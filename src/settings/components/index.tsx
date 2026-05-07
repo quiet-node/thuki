@@ -187,7 +187,6 @@ export function NumberSlider({
     // Sync external value into local state only when the user is not
     // actively dragging; otherwise the prop update would clobber the
     // in-progress drag position.
-    // eslint-disable-next-line @eslint-react/set-state-in-effect
     if (!draggingRef.current) setLocal(value);
   }, [value]);
 
