@@ -1,6 +1,6 @@
 [package]
 name = "thuki"
-version = "0.7.1"
+version = "0.8.0"
 description = "Thuki: The context-aware floating secretary"
 authors = ["Logan Nguyen"]
 license = "Apache-2.0"
