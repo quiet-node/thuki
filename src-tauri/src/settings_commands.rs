@@ -94,6 +94,14 @@ fn is_allowed_section(section: &str) -> bool {
     ALLOWED_SECTIONS.contains(&section)
 }
 
+/// Returns true when the post-write `AppConfig` flips `[debug] trace_enabled`
+/// relative to the pre-write snapshot. Pulled out so the predicate is
+/// covered by tests instead of riding inside the coverage-off Tauri command
+/// bodies that own the hot-swap.
+pub(crate) fn trace_enabled_changed(prior_enabled: bool, resolved: &AppConfig) -> bool {
+    resolved.debug.trace_enabled != prior_enabled
+}
+
 // ─── Tauri command surface ──────────────────────────────────────────────────
 
 /// Returns the current resolved `AppConfig` snapshot.
@@ -137,10 +145,7 @@ pub fn set_config_field(
     // which lets in-flight streaming tasks finish writing through their
     // cached `Arc<FileRecorder>` clones (via `Arc` semantics) while new
     // events fall through to noop.
-    if section == "debug"
-        && key == "trace_enabled"
-        && resolved.debug.trace_enabled != prior_trace_enabled
-    {
+    if trace_enabled_changed(prior_trace_enabled, &resolved) {
         let new_inner = crate::build_trace_inner(&app, resolved.debug.trace_enabled);
         trace_recorder.replace(new_inner);
     }
@@ -213,7 +218,7 @@ pub fn reset_config(
     // `[debug] trace_enabled` value (resetting the whole file or just
     // the `[debug]` section both restore the compiled default of
     // `false`, so an On → Off transition is the realistic case).
-    if resolved.debug.trace_enabled != prior_trace_enabled {
+    if trace_enabled_changed(prior_trace_enabled, &resolved) {
         let new_inner = crate::build_trace_inner(&app, resolved.debug.trace_enabled);
         trace_recorder.replace(new_inner);
     }
@@ -293,7 +298,7 @@ pub fn reload_config_from_disk(
     // Hot-swap the live trace recorder if a manual edit to config.toml
     // flipped `[debug] trace_enabled` and the user clicked "Refresh
     // from disk" to pick it up.
-    if resolved.debug.trace_enabled != prior_trace_enabled {
+    if trace_enabled_changed(prior_trace_enabled, &resolved) {
         let new_inner = crate::build_trace_inner(&app, resolved.debug.trace_enabled);
         trace_recorder.replace(new_inner);
     }

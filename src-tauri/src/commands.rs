@@ -463,6 +463,51 @@ pub async fn stream_ollama_chat(
     accumulated
 }
 
+/// Mirrors a streaming chunk into the chat-domain trace recorder. Pulled out
+/// of [`ask_ollama`] so the per-token routing logic and the token-count
+/// increment are exercised by the unit-test suite rather than the
+/// coverage-off Tauri command body. `Done`, `Cancelled`, and `Error` chunks
+/// are intentionally noops here: those terminal events are summarized by
+/// `AssistantComplete` after the stream returns.
+pub(crate) fn record_chunk_to_trace(
+    chunk: &StreamChunk,
+    recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
+    token_count: &AtomicU64,
+) {
+    match chunk {
+        StreamChunk::Token(text) => {
+            token_count.fetch_add(1, Ordering::Relaxed);
+            recorder.record(crate::trace::RecorderEvent::AssistantTokens {
+                chunk: text.clone(),
+            });
+        }
+        StreamChunk::ThinkingToken(text) => {
+            recorder.record(crate::trace::RecorderEvent::AssistantThinking {
+                chunk: text.clone(),
+            });
+        }
+        StreamChunk::Done | StreamChunk::Cancelled | StreamChunk::Error(_) => {}
+    }
+}
+
+/// Emits `ConversationStart` to the trace recorder iff this is the first
+/// turn of the conversation. Pulled out of [`ask_ollama`] and the search
+/// pipeline so the gate is covered by tests instead of the coverage-off
+/// Tauri command body.
+pub(crate) fn record_conversation_start_if_first_turn(
+    recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
+    is_first_turn: bool,
+    model: String,
+    system_prompt: String,
+) {
+    if is_first_turn {
+        recorder.record(crate::trace::RecorderEvent::ConversationStart {
+            model,
+            system_prompt,
+        });
+    }
+}
+
 /// Streams a chat response from the local Ollama backend. Appends the user
 /// message and assistant response to conversation history after completion
 /// or cancellation (retaining context for follow-up requests). Uses an epoch
@@ -535,12 +580,12 @@ pub async fn ask_ollama(
     // Emit ConversationStart at the moment we know the model + resolved
     // system prompt. The frontend's `is_first_turn` flag prevents this
     // event from firing on subsequent turns of the same conversation.
-    if is_first_turn {
-        bound_recorder.record(crate::trace::RecorderEvent::ConversationStart {
-            model: model_name.clone(),
-            system_prompt: config.prompt.resolved_system.clone(),
-        });
-    }
+    record_conversation_start_if_first_turn(
+        &bound_recorder,
+        is_first_turn,
+        model_name.clone(),
+        config.prompt.resolved_system.clone(),
+    );
 
     // Build user message content.  When quoted text is present, label it
     // explicitly so the model knows the highlighted text is the primary
@@ -647,22 +692,9 @@ pub async fn ask_ollama(
         |chunk| {
             // Mirror the user-visible chunk into the trace before
             // forwarding it to the frontend. Token / ThinkingToken
-            // chunks land as discrete trace events; Done / Cancelled /
-            // Error are summarized below by `AssistantComplete`.
-            match &chunk {
-                StreamChunk::Token(text) => {
-                    token_count_for_pump.fetch_add(1, Ordering::Relaxed);
-                    recorder_for_pump.record(crate::trace::RecorderEvent::AssistantTokens {
-                        chunk: text.clone(),
-                    });
-                }
-                StreamChunk::ThinkingToken(text) => {
-                    recorder_for_pump.record(crate::trace::RecorderEvent::AssistantThinking {
-                        chunk: text.clone(),
-                    });
-                }
-                _ => {}
-            }
+            // chunks land as discrete trace events; terminal chunks are
+            // summarized below by `AssistantComplete`.
+            record_chunk_to_trace(&chunk, &recorder_for_pump, &token_count_for_pump);
             let _ = on_event.send(chunk);
         },
     )
@@ -2229,5 +2261,111 @@ mod tests {
         let err = classify_http_error(404, "vision-model", "image required");
         assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
         assert!(!err.message.contains("picker chip"));
+    }
+
+    // ─── Trace orchestration helpers ────────────────────────────────────────
+
+    /// Builds a `BoundRecorder` over a `MockRecorder` so each helper test
+    /// can inspect what got recorded without going through the file system.
+    fn mock_bound_recorder(
+        conv_id: &str,
+    ) -> (
+        Arc<crate::trace::BoundRecorder>,
+        Arc<crate::trace::recorder::MockRecorder>,
+    ) {
+        let mock = Arc::new(crate::trace::recorder::MockRecorder::new());
+        let inner: Arc<dyn crate::trace::TraceRecorder> = mock.clone();
+        let bound = Arc::new(crate::trace::BoundRecorder::new(
+            inner,
+            crate::trace::ConversationId::new(conv_id),
+        ));
+        (bound, mock)
+    }
+
+    #[test]
+    fn record_chunk_to_trace_emits_assistant_tokens_and_increments_count() {
+        let (bound, mock) = mock_bound_recorder("conv-token");
+        let counter = AtomicU64::new(0);
+        record_chunk_to_trace(&StreamChunk::Token("hi".to_string()), &bound, &counter);
+        record_chunk_to_trace(&StreamChunk::Token(" there".to_string()), &bound, &counter);
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
+        let snapshot = mock.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        for (id, _) in &snapshot {
+            assert_eq!(id.as_str(), "conv-token");
+        }
+        assert!(matches!(
+            snapshot[0].1,
+            crate::trace::RecorderEvent::AssistantTokens { ref chunk } if chunk == "hi"
+        ));
+        assert!(matches!(
+            snapshot[1].1,
+            crate::trace::RecorderEvent::AssistantTokens { ref chunk } if chunk == " there"
+        ));
+    }
+
+    #[test]
+    fn record_chunk_to_trace_emits_assistant_thinking_without_increment() {
+        let (bound, mock) = mock_bound_recorder("conv-think");
+        let counter = AtomicU64::new(0);
+        record_chunk_to_trace(
+            &StreamChunk::ThinkingToken("planning".to_string()),
+            &bound,
+            &counter,
+        );
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        let snapshot = mock.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert!(matches!(
+            snapshot[0].1,
+            crate::trace::RecorderEvent::AssistantThinking { ref chunk } if chunk == "planning"
+        ));
+    }
+
+    #[test]
+    fn record_chunk_to_trace_skips_terminal_chunks() {
+        let (bound, mock) = mock_bound_recorder("conv-term");
+        let counter = AtomicU64::new(0);
+        record_chunk_to_trace(&StreamChunk::Done, &bound, &counter);
+        record_chunk_to_trace(&StreamChunk::Cancelled, &bound, &counter);
+        record_chunk_to_trace(
+            &StreamChunk::Error(no_model_selected_error()),
+            &bound,
+            &counter,
+        );
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        assert_eq!(mock.snapshot().len(), 0);
+    }
+
+    #[test]
+    fn record_conversation_start_if_first_turn_emits_when_true() {
+        let (bound, mock) = mock_bound_recorder("conv-start");
+        record_conversation_start_if_first_turn(
+            &bound,
+            true,
+            "model-a".to_string(),
+            "you are helpful".to_string(),
+        );
+        let snapshot = mock.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert!(matches!(
+            snapshot[0].1,
+            crate::trace::RecorderEvent::ConversationStart {
+                ref model,
+                ref system_prompt,
+            } if model == "model-a" && system_prompt == "you are helpful"
+        ));
+    }
+
+    #[test]
+    fn record_conversation_start_if_first_turn_skips_when_false() {
+        let (bound, mock) = mock_bound_recorder("conv-skip");
+        record_conversation_start_if_first_turn(
+            &bound,
+            false,
+            "model-a".to_string(),
+            "ignored".to_string(),
+        );
+        assert_eq!(mock.snapshot().len(), 0);
     }
 }

@@ -146,12 +146,12 @@ pub async fn search_pipeline(
     // `commands::ask_ollama` records at its hook sites; the deep
     // search-pipeline internals (LLM calls, judge verdicts, SearXNG
     // queries) stay in the search-domain file via the same conv id.
-    if is_first_turn {
-        recorder.record(crate::trace::RecorderEvent::ConversationStart {
-            model: model_name.clone(),
-            system_prompt: app_config.prompt.resolved_system.clone(),
-        });
-    }
+    crate::commands::record_conversation_start_if_first_turn(
+        &recorder,
+        is_first_turn,
+        model_name.clone(),
+        app_config.prompt.resolved_system.clone(),
+    );
     // `displayed_content` is what the user actually typed on screen
     // (e.g. "/search who is Elon Musk?"); `message` is the stripped
     // query the search engine receives. The chat file uses the
