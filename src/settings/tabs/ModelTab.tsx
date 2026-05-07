@@ -26,7 +26,12 @@ interface ModelTabProps {
   onSaved: (next: RawAppConfig) => void;
 }
 
-const PROMPT_MAX_CHARS = 8000;
+/// Built-in prompt body is ~17 KB; cap roomy so users can edit without truncation.
+const PROMPT_MAX_CHARS = 32000;
+/// Default textarea height for the system prompt — large enough to show a
+/// meaningful slice of the seeded built-in body without forcing the user to
+/// drag the resize grip on first open.
+const PROMPT_TEXTAREA_ROWS = 16;
 const EJECT_RESET_MS = 2500;
 /// Approximate tokens per chat turn used for the "~N turns of context" hint.
 /// 400 tokens ≈ a typical user question + assistant reply pair on this app.
@@ -441,9 +446,10 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
               <Textarea
                 value={value}
                 onChange={setValue}
-                placeholder="Use built-in secretary persona…"
+                placeholder="Persona prompt…"
                 maxLength={PROMPT_MAX_CHARS}
                 ariaLabel="System prompt"
+                rows={PROMPT_TEXTAREA_ROWS}
               />
               <div className={styles.charCounter}>
                 {value.length} / {PROMPT_MAX_CHARS}
