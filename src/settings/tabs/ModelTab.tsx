@@ -28,7 +28,7 @@ interface ModelTabProps {
 
 /// Built-in prompt body is ~17 KB; cap roomy so users can edit without truncation.
 const PROMPT_MAX_CHARS = 32000;
-/// Default textarea height for the system prompt — large enough to show a
+/// Default textarea height for the system prompt: large enough to show a
 /// meaningful slice of the seeded built-in body without forcing the user to
 /// drag the resize grip on first open.
 const PROMPT_TEXTAREA_ROWS = 16;
