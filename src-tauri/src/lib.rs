@@ -1116,10 +1116,11 @@ pub fn run() {
                 // macOS keeps for the previous binary's code signature.
                 // Without this, System Settings shows the toggle on but
                 // the new binary cannot actually use the permission.
-                if updater::tcc_reset::should_reset_for_upgrade(
+                let did_upgrade = updater::tcc_reset::should_reset_for_upgrade(
                     sidecar.last_launched_version.as_deref(),
                     &running_version,
-                ) {
+                );
+                if did_upgrade {
                     updater::tcc_reset::tccutil_reset(&app.config().identifier);
                 }
 
@@ -1135,14 +1136,39 @@ pub fn run() {
                 updater_state
                     .set_last_seen_update_version(sidecar.last_seen_update_version.clone());
 
-                // Record the running version so the next launch can
-                // detect another upgrade. Best-effort; failure to write
-                // the sidecar is logged inside SnoozeSidecar::save.
+                // Record the running version BEFORE any potential restart
+                // so the post-restart launch reads a sidecar where the
+                // recorded version matches the running version. Without
+                // this, the next launch would see another "upgrade" and
+                // restart-loop forever.
                 sidecar.last_launched_version = Some(running_version);
                 if let Some(path) = sidecar_path.as_ref() {
                     if let Err(e) = sidecar.save(path) {
                         eprintln!("thuki: [updater] failed to persist sidecar: {e}");
                     }
+                }
+
+                // After `tccutil reset` clears the TCC.db entry for Thuki,
+                // the running process retains stale per-PID tracking inside
+                // macOS's `tccd` daemon. Subsequent `AXIsProcessTrusted`
+                // calls from THIS process do not register the new csreq, so
+                // Thuki is missing from System Settings → Privacy &
+                // Security → Accessibility and the user has no in-app path
+                // to grant. Empirically (user-reproduced) the only fix is
+                // a fresh process: `tccd` sees a brand new PID and
+                // registers it normally on the first AX call from
+                // onboarding. The restart is deferred so Tauri finishes
+                // wiring up the rest of `setup` before we tear it down.
+                if did_upgrade {
+                    let app_handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                        eprintln!(
+                            "thuki: [updater] relaunching after TCC reset \
+                             to refresh tccd PID tracking"
+                        );
+                        app_handle.restart();
+                    });
                 }
 
                 let (interval, auto_check) = {
