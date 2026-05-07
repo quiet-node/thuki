@@ -20,13 +20,14 @@ use super::defaults::{
     DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
     DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
     DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
+    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
     SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path};
 use super::schema::{
     AppConfig, DebugSection, InferenceSection, PromptSection, QuoteSection, SearchSection,
-    WindowSection,
+    UpdaterSection, WindowSection,
 };
 use super::writer::atomic_write;
 
@@ -1081,4 +1082,71 @@ fn toml_without_debug_section_deserializes_to_defaults() {
         loaded.debug.trace_enabled, DEFAULT_DEBUG_TRACE_ENABLED,
         "missing [debug] section must deserialize to defaults via #[serde(default)]"
     );
+}
+
+// ── updater section ──────────────────────────────────────────────────────────
+
+#[test]
+fn default_updater_section_matches_constants() {
+    let s = UpdaterSection::default();
+    assert!(s.auto_check);
+    assert_eq!(s.check_interval_hours, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS);
+    assert_eq!(s.manifest_url, DEFAULT_UPDATER_MANIFEST_URL);
+}
+
+#[test]
+fn updater_interval_too_small_resets_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[updater]\ncheck_interval_hours = 0\n").unwrap();
+    let cfg = load_from_path(&path).unwrap();
+    assert_eq!(
+        cfg.updater.check_interval_hours,
+        DEFAULT_UPDATER_CHECK_INTERVAL_HOURS
+    );
+}
+
+#[test]
+fn updater_interval_too_large_resets_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[updater]\ncheck_interval_hours = 999\n").unwrap();
+    let cfg = load_from_path(&path).unwrap();
+    assert_eq!(
+        cfg.updater.check_interval_hours,
+        DEFAULT_UPDATER_CHECK_INTERVAL_HOURS
+    );
+}
+
+#[test]
+fn updater_interval_in_bounds_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[updater]\ncheck_interval_hours = 6\n").unwrap();
+    let cfg = load_from_path(&path).unwrap();
+    assert_eq!(cfg.updater.check_interval_hours, 6);
+}
+
+#[test]
+fn updater_empty_manifest_url_falls_back_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[updater]\nmanifest_url = \"   \"\n").unwrap();
+    let cfg = load_from_path(&path).unwrap();
+    assert_eq!(cfg.updater.manifest_url, DEFAULT_UPDATER_MANIFEST_URL);
+}
+
+#[test]
+fn updater_toml_roundtrip_preserves_fields() {
+    let original = AppConfig {
+        updater: UpdaterSection {
+            auto_check: false,
+            check_interval_hours: 12,
+            manifest_url: "https://example.com/m.json".to_string(),
+        },
+        ..AppConfig::default()
+    };
+    let serialized = toml::to_string(&original).unwrap();
+    let roundtripped: AppConfig = toml::from_str(&serialized).unwrap();
+    assert_eq!(roundtripped.updater, original.updater);
 }
