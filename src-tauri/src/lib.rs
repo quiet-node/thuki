@@ -25,6 +25,7 @@ pub mod onboarding;
 pub mod screenshot;
 pub mod search;
 pub mod settings_commands;
+pub mod updater;
 pub mod warmup;
 
 #[cfg(target_os = "macos")]
@@ -992,6 +993,31 @@ pub fn run() {
             // on writer panic. See design doc P10.
             app.manage(parking_lot::RwLock::new(app_config));
 
+            // ── Updater state + optional background poller ────────────
+            {
+                let updater_state = updater::UpdaterState::default();
+
+                if let Ok(dir) = app.path().app_config_dir() {
+                    let path = dir.join("updater_state.json");
+                    if let Ok(s) = updater::SnoozeSidecar::load(&path) {
+                        updater_state.set_settings_snooze(s.settings_snoozed_until);
+                        updater_state.set_chat_snooze(s.chat_snoozed_until);
+                    }
+                }
+
+                let (interval, auto_check) = {
+                    let cfg = app.state::<parking_lot::RwLock<crate::config::AppConfig>>();
+                    let g = cfg.read();
+                    (g.updater.check_interval_hours, g.updater.auto_check)
+                };
+
+                app.manage(updater_state);
+
+                if auto_check {
+                    updater::poller::spawn(app.handle().clone(), interval);
+                }
+            }
+
             // ── Generation + conversation state ─────────────────────
             app.manage(commands::GenerationState::new());
             app.manage(commands::ConversationHistory::new());
@@ -1107,7 +1133,16 @@ pub fn run() {
             #[cfg(not(coverage))]
             warmup::evict_model,
             #[cfg(not(coverage))]
-            warmup::get_loaded_model
+            warmup::get_loaded_model,
+            updater::commands::get_updater_state,
+            #[cfg(not(coverage))]
+            updater::commands::check_for_update,
+            #[cfg(not(coverage))]
+            updater::commands::install_update,
+            #[cfg(not(coverage))]
+            updater::commands::snooze_update_chat,
+            #[cfg(not(coverage))]
+            updater::commands::snooze_update_settings
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
