@@ -64,7 +64,7 @@ const HELPERS = {
   },
   debug: {
     trace_enabled:
-      'When on, Thuki writes detailed trace files for both your conversations AND every /search turn to ~/Library/Application Support/com.quietnode.thuki/traces/, grouped by domain (traces/chat/<conversation_id>.jsonl + traces/search/<conversation_id>.jsonl). Each file is a JSON-Lines record of every user message, every assistant token, every web query, and every AI decision. Useful for analyzing how you use Thuki and improving the system prompt; leave off for normal use.',
+      'When on, Thuki saves a JSONL trace of every chat and search session to ~/Library/Application Support/com.quietnode.thuki/traces/. Useful for debugging and refining your prompts. Off by default.',
   },
 } as const;
 

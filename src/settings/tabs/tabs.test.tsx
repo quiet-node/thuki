@@ -584,6 +584,37 @@ describe('ModelTab', () => {
     );
     expect(chip.value).toBe('65536');
   });
+
+  it('renders the collapsed Diagnostics trigger and hides its content by default', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(
+      screen.getByRole('button', { name: /Diagnostics/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Trace recording')).not.toBeInTheDocument();
+  });
+
+  it('expands the Diagnostics section and reveals the trace toggle when clicked', () => {
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/i }));
+    expect(screen.getByText('Trace recording')).toBeInTheDocument();
+    const toggle = screen.getByRole('switch', {
+      name: 'Enable trace recording',
+    });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('reflects trace_enabled=true from config when the section is expanded', () => {
+    const configOn: RawAppConfig = {
+      ...CONFIG,
+      debug: { trace_enabled: true },
+    };
+    render(<ModelTab config={configOn} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/i }));
+    const toggle = screen.getByRole('switch', {
+      name: 'Enable trace recording',
+    });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+  });
 });
 
 describe('DisplayTab', () => {
@@ -597,47 +628,21 @@ describe('DisplayTab', () => {
 });
 
 describe('SearchTab', () => {
-  it('renders Services, Pipeline, Timeouts sections and the collapsed Diagnostics trigger', () => {
+  it('renders Services, Pipeline, and Timeouts sections', () => {
     render(<SearchTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     expect(screen.getByText('Services')).toBeInTheDocument();
     expect(screen.getByText('Pipeline')).toBeInTheDocument();
     expect(screen.getByText('Timeouts')).toBeInTheDocument();
     expect(screen.getByText('SearXNG URL')).toBeInTheDocument();
+    expect(screen.getByText('Per-URL timeout')).toBeInTheDocument();
+    expect(screen.getByText('Batch timeout')).toBeInTheDocument();
     expect(screen.getByText('Router timeout')).toBeInTheDocument();
-    // Diagnostics trigger is visible but content is collapsed by default.
-    expect(
-      screen.getByRole('button', { name: /Diagnostics/i }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('Search trace')).not.toBeInTheDocument();
   });
 
-  it('expands the Diagnostics section when the trigger is clicked', () => {
+  it('does not render any Diagnostics affordance', () => {
     render(<SearchTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/i }));
-    expect(screen.getByText('Trace recording')).toBeInTheDocument();
-  });
-
-  it('renders the trace recording toggle in the off state after expanding', () => {
-    render(<SearchTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/i }));
-    const toggle = screen.getByRole('switch', {
-      name: 'Enable trace recording',
-    });
-    expect(toggle).toBeInTheDocument();
-    expect(toggle).toHaveAttribute('aria-checked', 'false');
-  });
-
-  it('renders the trace recording toggle in the on state when config is true', () => {
-    const configOn: RawAppConfig = {
-      ...CONFIG,
-      debug: { trace_enabled: true },
-    };
-    render(<SearchTab config={configOn} resyncToken={0} onSaved={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/i }));
-    const toggle = screen.getByRole('switch', {
-      name: 'Enable trace recording',
-    });
-    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByText(/Diagnostics/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Trace recording')).not.toBeInTheDocument();
   });
 });
 
