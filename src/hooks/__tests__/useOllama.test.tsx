@@ -852,6 +852,28 @@ describe('useOllama', () => {
       // Should also reset backend conversation history
       expect(invoke).toHaveBeenCalledWith('reset_conversation');
     });
+
+    it('fires record_conversation_end with user_reset when a turn was accepted', async () => {
+      const { result } = renderHook(() => useOllama(''));
+      await act(async () => {
+        await result.current.ask('hello');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'TurnAccepted' });
+        channel!.simulateMessage({ type: 'Token', data: 'Hi' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      invoke.mockClear();
+      act(() => {
+        result.current.reset();
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        'record_conversation_end',
+        expect.objectContaining({ reason: 'user_reset' }),
+      );
+    });
   });
 
   // ─── onTurnComplete callback ─────────────────────────────────────────────────
@@ -1052,6 +1074,29 @@ describe('useOllama', () => {
       });
 
       expect(result.current.isGenerating).toBe(false);
+    });
+
+    it('fires record_conversation_end with history_load when a turn was accepted', async () => {
+      const { result } = renderHook(() => useOllama(''));
+      await act(async () => {
+        await result.current.ask('original');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'TurnAccepted' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      invoke.mockClear();
+      act(() => {
+        result.current.loadMessages([
+          { id: 'l1', role: 'user', content: 'loaded' },
+        ]);
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        'record_conversation_end',
+        expect.objectContaining({ reason: 'history_load' }),
+      );
     });
   });
 
@@ -2290,15 +2335,50 @@ describe('useOllama', () => {
       expect(secondCall?.[1]).toMatchObject({ isFirstTurn: true });
     });
 
-    it('chat post-ConversationStart Token retires the flag', async () => {
+    it('chat TurnAccepted retires the flag for the next turn', async () => {
       const { result } = renderHook(() => useOllama(''));
       await act(async () => {
         await result.current.ask('first');
       });
       const channel1 = getChannel();
       act(() => {
+        channel1!.simulateMessage({ type: 'TurnAccepted' });
         channel1!.simulateMessage({ type: 'Token', data: 'hi' });
         channel1!.simulateMessage({ type: 'Done' });
+      });
+
+      invoke.mockClear();
+      await act(async () => {
+        await result.current.ask('second');
+      });
+      const secondCall = invoke.mock.calls.find(
+        ([cmd]) => cmd === 'ask_ollama',
+      );
+      expect(secondCall?.[1]).toMatchObject({ isFirstTurn: false });
+    });
+
+    it('chat TurnAccepted retires the flag even after cancel clears active generation', async () => {
+      // Reproduces the cancel-mid-first-turn race: the backend has
+      // already recorded `ConversationStart` (and emitted
+      // `TurnAccepted`), the user cancels before any token arrives,
+      // and a stale `Cancelled` chunk lands after `activeGenerationRef`
+      // is cleared. The flag must still retire so the next turn does
+      // NOT trigger a duplicate `ConversationStart`.
+      const { result } = renderHook(() => useOllama(''));
+      await act(async () => {
+        await result.current.ask('first');
+      });
+      const channel1 = getChannel();
+      act(() => {
+        channel1!.simulateMessage({ type: 'TurnAccepted' });
+      });
+      // Cancel BEFORE any token arrives: clears activeGenerationRef.
+      await act(async () => {
+        await result.current.cancel();
+      });
+      // Stale Cancelled chunk arrives after the cancel cleared state.
+      act(() => {
+        channel1!.simulateMessage({ type: 'Cancelled' });
       });
 
       invoke.mockClear();
@@ -2336,6 +2416,7 @@ describe('useOllama', () => {
       });
       const channel2 = getChannel();
       act(() => {
+        channel2!.simulateMessage({ type: 'TurnAccepted' });
         channel2!.simulateMessage({ type: 'Token', content: 'ok' });
         channel2!.simulateMessage({ type: 'Done' });
       });
@@ -2380,9 +2461,9 @@ describe('useOllama', () => {
       expect(secondCall?.[1]).toMatchObject({ isFirstTurn: true });
     });
 
-    it('search post-bail Trace event still retires the flag (cross-domain)', async () => {
-      // Once the search pipeline emits any non-bail event, the trace was
-      // opened. A subsequent chat ask() must therefore see is_first_turn=false.
+    it('search TurnAccepted retires the flag for a follow-up chat turn (cross-domain)', async () => {
+      // The flag is shared across chat and search; once /search opens
+      // the trace, a subsequent chat ask() must see is_first_turn=false.
       const { result } = renderHook(() => useOllama(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
@@ -2390,6 +2471,7 @@ describe('useOllama', () => {
       });
       const channel = getChannel();
       act(() => {
+        channel!.simulateMessage({ type: 'TurnAccepted' });
         channel!.simulateMessage({ type: 'AnalyzingQuery' });
         channel!.simulateMessage({ type: 'Done' });
       });

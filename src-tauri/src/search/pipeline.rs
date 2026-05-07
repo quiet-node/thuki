@@ -534,6 +534,13 @@ pub(super) fn translate_chunk(chunk: StreamChunk) -> SearchEvent {
         StreamChunk::Done => SearchEvent::Done { metadata: None },
         StreamChunk::Cancelled => SearchEvent::Cancelled,
         StreamChunk::Error(e) => SearchEvent::Error { message: e.message },
+        // `TurnAccepted` is a top-level handshake emitted by `commands::
+        // ask_ollama` and `search::search_pipeline` themselves; the
+        // synthesis-pump path that feeds `translate_chunk` only ever
+        // receives the streaming variants above. Forward it as the
+        // matching pipeline event so the type stays exhaustive without
+        // smuggling the chunk into a Token.
+        StreamChunk::TurnAccepted => SearchEvent::TurnAccepted,
     }
 }
 
@@ -2731,6 +2738,17 @@ mod tests {
             SearchEvent::Error {
                 message: "boom".into()
             }
+        );
+    }
+
+    #[test]
+    fn translate_chunk_turn_accepted_maps_to_turn_accepted_event() {
+        // Defensive: the synthesis-pump path that feeds `translate_chunk`
+        // does not emit `TurnAccepted` in production, but the match must
+        // stay exhaustive without smuggling the chunk into a Token.
+        assert_eq!(
+            translate_chunk(StreamChunk::TurnAccepted),
+            SearchEvent::TurnAccepted,
         );
     }
 

@@ -152,6 +152,10 @@ pub async fn search_pipeline(
         model_name.clone(),
         app_config.prompt.resolved_system.clone(),
     );
+    // Tell the frontend the trace was opened. Sent unconditionally so
+    // the hook can retire its `is_first_turn` flag even if a previous
+    // first-turn attempt was cancelled before any token arrived.
+    let _ = on_event.send(SearchEvent::TurnAccepted);
     // `displayed_content` is what the user actually typed on screen
     // (e.g. "/search who is Elon Musk?"); `message` is the stripped
     // query the search engine receives. The chat file uses the

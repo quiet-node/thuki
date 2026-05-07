@@ -209,6 +209,13 @@ pub enum StreamChunk {
     Cancelled,
     /// A structured, user-friendly error occurred during processing.
     Error(OllamaError),
+    /// Emitted exactly once per turn, after the backend has cleared every
+    /// pre-`ConversationStart` gate (no-model bail, model lookup, etc.) and
+    /// committed to opening the trace for this `conversation_id`. Carries
+    /// no payload; the frontend uses it as the unambiguous signal to
+    /// retire its `is_first_turn` flag without relying on token-arrival
+    /// ordering. Does not appear in the trace itself.
+    TurnAccepted,
 }
 
 /// A single message in the Ollama `/api/chat` conversation format.
@@ -486,7 +493,10 @@ pub(crate) fn record_chunk_to_trace(
                 chunk: text.clone(),
             });
         }
-        StreamChunk::Done | StreamChunk::Cancelled | StreamChunk::Error(_) => {}
+        StreamChunk::Done
+        | StreamChunk::Cancelled
+        | StreamChunk::Error(_)
+        | StreamChunk::TurnAccepted => {}
     }
 }
 
@@ -586,6 +596,11 @@ pub async fn ask_ollama(
         model_name.clone(),
         config.prompt.resolved_system.clone(),
     );
+    // Tell the frontend the trace was opened for this conversation_id.
+    // Sent unconditionally (regardless of `is_first_turn`) so the hook
+    // can retire its flag the moment ANY turn lands, even if a previous
+    // first-turn attempt was cancelled before any token arrived.
+    let _ = on_event.send(StreamChunk::TurnAccepted);
 
     // Build user message content.  When quoted text is present, label it
     // explicitly so the model knows the highlighted text is the primary

@@ -56,7 +56,8 @@ type RawStreamChunk =
   | { type: 'ThinkingToken'; data: string }
   | { type: 'Done' }
   | { type: 'Cancelled' }
-  | { type: 'Error'; data: { kind: OllamaErrorKind; message: string } };
+  | { type: 'Error'; data: { kind: OllamaErrorKind; message: string } }
+  | { type: 'TurnAccepted' };
 
 /**
  * Normalized chat-stream chunk used inside the hook.
@@ -70,7 +71,8 @@ type StreamChunk =
   | { type: 'ThinkingToken'; content: string }
   | { type: 'Done' }
   | { type: 'Cancelled' }
-  | { type: 'Error'; error: { kind: OllamaErrorKind; message: string } };
+  | { type: 'Error'; error: { kind: OllamaErrorKind; message: string } }
+  | { type: 'TurnAccepted' };
 
 /**
  * Shared swallow-all handler for fire-and-forget trace IPC calls.
@@ -97,6 +99,8 @@ function normalizeStreamChunk(chunk: RawStreamChunk): StreamChunk {
       return chunk;
     case 'Error':
       return { type: 'Error', error: chunk.data };
+    case 'TurnAccepted':
+      return chunk;
   }
 }
 
@@ -296,20 +300,22 @@ export function useOllama(
       let currentThinkingContent = '';
 
       channel.onmessage = (rawChunk) => {
-        if (!isActiveGeneration(generationId)) {
+        const chunk = normalizeStreamChunk(rawChunk);
+
+        // `TurnAccepted` is the backend's authoritative signal that the
+        // trace was opened for this conversation_id. Retire the flag
+        // BEFORE the active-generation guard so a cancel-mid-first-turn
+        // (which clears `activeGenerationRef`) cannot leave the flag
+        // armed and cause the next turn to record a duplicate
+        // `ConversationStart`. The chunk is hook-internal: it never
+        // reaches the UI.
+        if (chunk.type === 'TurnAccepted') {
+          isFirstTurnRef.current = false;
           return;
         }
 
-        const chunk = normalizeStreamChunk(rawChunk);
-
-        // Backend bails BEFORE recording `ConversationStart` only when no
-        // model is selected. Every other event (Token, Done, Cancelled,
-        // and post-`ConversationStart` Errors) means the trace was opened,
-        // so the flag must be retired. Keeping the flag armed only on the
-        // pre-`ConversationStart` bail preserves trace integrity across a
-        // failed-then-retried first turn.
-        if (chunk.type !== 'Error' || chunk.error.kind !== 'NoModelSelected') {
-          isFirstTurnRef.current = false;
+        if (!isActiveGeneration(generationId)) {
+          return;
         }
 
         if (chunk.type === 'ThinkingToken') {
@@ -524,21 +530,18 @@ export function useOllama(
         let inGapRound = false;
 
         channel.onmessage = (event) => {
-          if (!isActiveGeneration(generationId)) {
+          // `TurnAccepted` is the backend's authoritative signal that
+          // the trace was opened for this conversation_id. Retire the
+          // flag BEFORE the active-generation guard so a
+          // cancel-mid-first-turn cannot leave the flag armed. The
+          // event is hook-internal and never reaches the UI.
+          if (event.type === 'TurnAccepted') {
+            isFirstTurnRef.current = false;
             return;
           }
 
-          // Backend bails BEFORE recording `ConversationStart` on the
-          // pre-pipeline `NoModelSelected` and `SandboxUnavailable` paths.
-          // Every other event proves the trace was opened, so the flag
-          // must be retired then. Keeping the flag armed across these
-          // bails preserves trace integrity across a failed-then-retried
-          // first /search turn.
-          if (
-            event.type !== 'NoModelSelected' &&
-            event.type !== 'SandboxUnavailable'
-          ) {
-            isFirstTurnRef.current = false;
+          if (!isActiveGeneration(generationId)) {
+            return;
           }
 
           switch (event.type) {
