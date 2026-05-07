@@ -30,6 +30,10 @@ pub async fn check_once(app: AppHandle) {
         Ok(u) => u,
         Err(e) => {
             eprintln!("updater builder failed: {e}");
+            // Even when the updater client cannot be built, the user clicked
+            // Check now and deserves to see "Last checked just now" instead
+            // of "Never". Mark the attempt without touching `update`.
+            state.mark_check_attempted();
             return;
         }
     };
@@ -52,6 +56,11 @@ pub async fn check_once(app: AppHandle) {
         }
         Err(e) => {
             eprintln!("updater check failed: {e}");
+            // Network/HTTP/manifest errors are transient. Record that we
+            // tried so the UI shows "Last checked X seconds ago" instead of
+            // "Never". Do not clear `update`: a previously known available
+            // version should survive a flaky check.
+            state.mark_check_attempted();
         }
     }
 }

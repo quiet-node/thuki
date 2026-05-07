@@ -67,6 +67,16 @@ impl UpdaterState {
         inner.last_check_at = Some(SystemTime::now());
     }
 
+    /// Records that a check was attempted at the current wall clock without
+    /// touching `update`. Use this on transient failures (network errors,
+    /// 4xx/5xx, malformed manifest) so the UI can show "Last checked X
+    /// seconds ago" instead of "Never". Preserves any previously known
+    /// available update so a flaky network does not erase real signal.
+    pub fn mark_check_attempted(&self) {
+        let mut inner = self.inner.lock().expect("updater state mutex");
+        inner.last_check_at = Some(SystemTime::now());
+    }
+
     pub fn set_chat_snooze(&self, until_unix: Option<u64>) {
         let mut inner = self.inner.lock().expect("updater state mutex");
         inner.snooze.chat_snoozed_until = until_unix;
@@ -155,6 +165,39 @@ mod tests {
         let snap = state.snapshot();
         assert!(snap.last_check_at_unix.is_some());
         assert_eq!(snap.update.as_ref().unwrap().version, "0.8.0");
+    }
+
+    #[test]
+    fn mark_check_attempted_updates_timestamp_without_touching_update() {
+        let state = UpdaterState::default();
+        // No update yet, no last_check_at.
+        assert!(state.snapshot().last_check_at_unix.is_none());
+
+        state.mark_check_attempted();
+        let snap = state.snapshot();
+        assert!(snap.last_check_at_unix.is_some());
+        assert!(snap.update.is_none());
+    }
+
+    #[test]
+    fn mark_check_attempted_preserves_existing_update() {
+        let state = UpdaterState::default();
+        state.set_update(Some(AvailableUpdate {
+            version: "0.9.0".to_string(),
+            notes_url: None,
+        }));
+        let before = state.snapshot();
+        let prior_ts = before.last_check_at_unix.unwrap();
+
+        // Sleep a tick so the new timestamp differs.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        state.mark_check_attempted();
+        let after = state.snapshot();
+
+        // Update info preserved across the failed attempt.
+        assert_eq!(after.update.as_ref().unwrap().version, "0.9.0");
+        // Timestamp moved forward.
+        assert!(after.last_check_at_unix.unwrap() > prior_ts);
     }
 
     #[test]
