@@ -135,12 +135,14 @@ export function Textarea({
   placeholder,
   maxLength,
   ariaLabel,
+  rows = 4,
 }: {
   value: string;
   onChange: (next: string) => void;
   placeholder?: string;
   maxLength?: number;
   ariaLabel?: string;
+  rows?: number;
 }) {
   return (
     <textarea
@@ -152,7 +154,7 @@ export function Textarea({
       placeholder={placeholder}
       maxLength={maxLength}
       aria-label={ariaLabel}
-      rows={4}
+      rows={rows}
       spellCheck={false}
     />
   );

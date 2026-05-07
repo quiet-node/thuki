@@ -121,7 +121,7 @@ The loader is forgiving and never crashes the app on user config:
 
 - Missing file → defaults seeded and written. (Only fatal failure path is the seed write itself.)
 - Missing fields/sections → `#[serde(default)]` fills from compiled defaults.
-- Empty/whitespace strings → replaced with compiled defaults.
+- Empty/whitespace strings → replaced with compiled defaults. Exception: `prompt.system` is a deliberate user override; an empty value is preserved and means "send no persona" (only the slash-command appendix is composed into `resolved_system`).
 - Out-of-bounds numerics → reset to default with a stderr warning.
 - Unparseable TOML → file renamed `config.toml.corrupt-<unix_ts>` and a fresh defaults file written.
 
