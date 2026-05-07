@@ -77,6 +77,14 @@ router_timeout_s = 45
 [debug]
 # Records every chat conversation and /search session to disk for later inspection.
 trace_enabled = false
+
+[updater]
+# Poll for new Thuki releases at startup and on a recurring interval.
+auto_check = true
+# Hours between background checks. Bound to 1..168.
+check_interval_hours = 24
+# URL of the signed update manifest. Override only when mirroring releases.
+manifest_url = "https://github.com/quiet-node/thuki/releases/latest/download/latest.json"
 ```
 
 ## Reading the reference tables
@@ -183,6 +191,18 @@ Records every chat conversation and `/search` session as JSON-Lines under `app_d
 | Field           | Default | Tunable? | Why not tunable | Bounds | Description                                                                  |
 | :-------------- | :------ | :------- | :-------------- | :----- | :--------------------------------------------------------------------------- |
 | `trace_enabled` | `false` | Yes      | —               | —      | Records every chat conversation and `/search` session to disk for debugging. |
+
+### `[updater]`
+
+Controls how Thuki polls for new releases. The actual download, signature verification, and binary swap are handled by the bundled Tauri updater plugin against a signed manifest hosted on GitHub Releases. The manifest is verified against an ed25519 public key compiled into the app, so a hijacked release cannot push a malicious binary to existing installs.
+
+| Field                  | Default                                                                              | Tunable? | Why not tunable | Bounds   | Description                                                                                                                                                                                  |
+| :--------------------- | :----------------------------------------------------------------------------------- | :------- | :-------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auto_check`           | `true`                                                                               | Yes      | n/a             | n/a      | Whether Thuki polls for updates automatically. When false, only the "Check now" button in Settings triggers a check. The tray badge and Settings banner still appear if a check finds an update. |
+| `check_interval_hours` | `24`                                                                                 | Yes      | n/a             | `1..168` | Hours between automatic background checks. Raise to spend less bandwidth on update polling; lower to surface new releases sooner. The interval also gates the startup check after a freshly resumed session. |
+| `manifest_url`         | GitHub releases default                                                              | Yes      | n/a             | n/a      | URL of the signed update manifest. Override only when mirroring releases (for example, an internal release feed). Empty values fall back to the default URL.                                |
+| `MAX_UPDATER_SNOOZE_HOURS` | `8760`                                                                           | No       | Defense-in-depth bound on `hours` arriving from the frontend IPC; prevents `u64` arithmetic in the snooze handlers from wrapping if a hostile or buggy caller supplies an extreme value. | n/a      | Maximum number of hours a "snooze update" request can defer the next nag. Caps at one year so the deadline math cannot overflow even in the worst case.                                     |
+| `DEFAULT_UPDATER_STATE_FILENAME` | `"updater_state.json"`                                                     | No       | Internal sidecar filename used for snooze persistence next to `config.toml`; not meaningful to expose and easy to break by typo. | n/a      | Filename of the JSON sidecar that records snooze deadlines so they survive app restarts. Lives in the same directory as `config.toml`.                                                      |
 
 ### `[activation]` (not in TOML)
 

@@ -15,6 +15,7 @@
     "generate:commands": "bun scripts/generate-commands.ts",
     "build:frontend": "tsc && vite build",
     "build:backend": "tauri build --bundles app",
+    "build:release": "tauri build --bundles app -c \"{\\\"bundle\\\":{\\\"createUpdaterArtifacts\\\":true}}\"",
     "build:all": "bun run build:frontend && bun run build:backend",
     "preview": "vite preview",
     "tauri": "tauri",

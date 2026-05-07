@@ -16,6 +16,8 @@ import thukiLogo from '../../../src-tauri/icons/128x128.png';
 import pkg from '../../../package.json';
 import { Section, ConfirmDialog } from '../components';
 import { Tooltip } from '../../components/Tooltip';
+import { useUpdater } from '../../hooks/useUpdater';
+import { formatRelative } from '../../utils/relativeTime';
 import styles from '../../styles/settings.module.css';
 import type { RawAppConfig } from '../types';
 
@@ -44,6 +46,7 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
     accessibility: false,
     screenRecording: false,
   });
+  const updater = useUpdater();
 
   // Refresh permissions on mount and on every window focus.
   useEffect(() => {
@@ -141,6 +144,36 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
           </Tooltip>
         </div>
       </div>
+
+      <Section heading="Updates">
+        <div className={styles.row}>
+          <div className={styles.rowLabelGroup}>
+            <span className={styles.rowLabel}>Current version</span>
+          </div>
+          <div className={styles.rowControl}>
+            <span>{APP_VERSION}</span>
+          </div>
+        </div>
+        <div className={styles.row}>
+          <div className={styles.rowLabelGroup}>
+            <span className={styles.rowLabel}>Last checked</span>
+          </div>
+          <div className={styles.rowControl}>
+            <span>
+              {updater.state.last_check_at_unix
+                ? formatRelative(updater.state.last_check_at_unix)
+                : 'Never'}
+            </span>
+          </div>
+          <button
+            type="button"
+            className={styles.checkNowBtn}
+            onClick={() => void updater.checkNow()}
+          >
+            Check now
+          </button>
+        </div>
+      </Section>
 
       <Section heading="Permissions">
         <div className={styles.row}>

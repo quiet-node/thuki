@@ -97,4 +97,9 @@ describe('TipBar', () => {
       'Click here to learn how to tune Context Window',
     );
   });
+
+  it('renders nothing when suppressed', () => {
+    const { container } = render(<TipBar tip="hello" tipKey={0} suppressed />);
+    expect(container.firstChild).toBeNull();
+  });
 });

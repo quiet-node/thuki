@@ -70,6 +70,14 @@ beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === 'get_loaded_model') return Promise.resolve(null);
+    if (cmd === 'get_updater_state') {
+      return Promise.resolve({
+        last_check_at_unix: null,
+        update: null,
+        settings_snoozed_until: null,
+        chat_snoozed_until: null,
+      });
+    }
     return Promise.resolve(CONFIG);
   });
 });
@@ -651,6 +659,14 @@ describe('AboutTab', () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === 'check_accessibility_permission') return true;
       if (cmd === 'check_screen_recording_permission') return true;
+      if (cmd === 'get_updater_state') {
+        return {
+          last_check_at_unix: null,
+          update: null,
+          settings_snoozed_until: null,
+          chat_snoozed_until: null,
+        };
+      }
       return CONFIG;
     });
     const view = render(
@@ -692,7 +708,10 @@ describe('AboutTab', () => {
   it('version button links to the nightly release and shows build metadata when VITE_GIT_COMMIT_SHA is set', async () => {
     vi.stubEnv('VITE_GIT_COMMIT_SHA', 'abc1234def');
     await renderAbout();
-    await waitFor(() => screen.getByText(/nightly/));
+    // Both the hero version and the Current version row contain "nightly"
+    await waitFor(() =>
+      expect(screen.getAllByText(/nightly/).length).toBeGreaterThan(0),
+    );
     fireEvent.click(
       screen.getByRole('button', { name: /release notes on GitHub/ }),
     );

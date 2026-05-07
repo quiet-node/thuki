@@ -63,6 +63,17 @@ const DEFAULT_MODEL_PICKER_STATE = {
 } as const;
 
 /**
+ * Default updater snapshot returned when tests do not configure a specific
+ * updater state. Represents "no update available, never checked."
+ */
+export const DEFAULT_UPDATER_STATE = {
+  last_check_at_unix: null,
+  update: null,
+  settings_snoozed_until: null,
+  chat_snoozed_until: null,
+} as const;
+
+/**
  * Enable channel capture: when invoke() is called with an onEvent argument,
  * that Channel will be stored in lastChannel for test use.
  *
@@ -82,6 +93,9 @@ export function enableChannelCapture() {
       }
       if (cmd === 'get_model_picker_state') {
         return DEFAULT_MODEL_PICKER_STATE;
+      }
+      if (cmd === 'get_updater_state') {
+        return DEFAULT_UPDATER_STATE;
       }
     },
   );
@@ -119,6 +133,9 @@ export function enableChannelCaptureWithResponses(
       // non-null active model so the capability strip does not block submits.
       if (cmd === 'get_model_picker_state') {
         return DEFAULT_MODEL_PICKER_STATE;
+      }
+      if (cmd === 'get_updater_state') {
+        return DEFAULT_UPDATER_STATE;
       }
     },
   );

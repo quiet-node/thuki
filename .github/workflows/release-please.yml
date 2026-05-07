@@ -103,6 +103,43 @@ jobs:
           codesign --deep --force --sign - src-tauri/target/release/bundle/macos/Thuki.app
           codesign --verify --verbose src-tauri/target/release/bundle/macos/Thuki.app
 
+      - name: Pack and sign updater payload
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        working-directory: src-tauri/target/release/bundle/macos
+        run: |
+          VERSION="${TAG#v}"
+          PAYLOAD="Thuki_${VERSION}_aarch64.app.tar.gz"
+          tar czf "$PAYLOAD" Thuki.app
+          # Sign the payload with the project ed25519 key. The CLI reads the
+          # key + password from TAURI_SIGNING_PRIVATE_KEY[_PASSWORD] env vars.
+          bunx --bun @tauri-apps/cli signer sign "$PAYLOAD"
+
+      - name: Generate updater manifest
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        working-directory: src-tauri/target/release/bundle/macos
+        run: |
+          VERSION="${TAG#v}"
+          PAYLOAD="Thuki_${VERSION}_aarch64.app.tar.gz"
+          SIG="$(cat "${PAYLOAD}.sig")"
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cat > latest.json <<EOF
+          {
+            "version": "${VERSION}",
+            "notes": "https://github.com/quiet-node/thuki/releases/tag/${TAG}",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${SIG}",
+                "url": "https://github.com/quiet-node/thuki/releases/download/${TAG}/${PAYLOAD}"
+              }
+            }
+          }
+          EOF
+
       - name: Install create-dmg
         run: brew install create-dmg
 
@@ -128,9 +165,16 @@ jobs:
 
           rm -rf /tmp/thuki-dmg-src
 
-      - name: Upload release asset
+      - name: Upload release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        working-directory: src-tauri/target/release/bundle
         run: |
-          gh release upload ${{ needs.release-please.outputs.tag_name }} \
-            src-tauri/target/release/bundle/dmg/Thuki.dmg
+          VERSION="${TAG#v}"
+          PAYLOAD="Thuki_${VERSION}_aarch64.app.tar.gz"
+          gh release upload "$TAG" \
+            "dmg/Thuki.dmg" \
+            "macos/${PAYLOAD}" \
+            "macos/${PAYLOAD}.sig" \
+            "macos/latest.json"

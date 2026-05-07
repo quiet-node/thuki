@@ -27,9 +27,10 @@ function tipUrl(tip: Tip): string | null {
 interface TipBarProps {
   tip: Tip;
   tipKey: number;
+  suppressed?: boolean;
 }
 
-export function TipBar({ tip, tipKey }: TipBarProps) {
+export function TipBar({ tip, tipKey, suppressed }: TipBarProps) {
   const text = tipText(tip);
   const url = tipUrl(tip);
   const spanRef = useRef<HTMLSpanElement>(null);
@@ -113,6 +114,8 @@ export function TipBar({ tip, tipKey }: TipBarProps) {
       timersRef.current = [];
     };
   }, [text, tipKey]);
+
+  if (suppressed) return null;
 
   if (url) {
     return (
