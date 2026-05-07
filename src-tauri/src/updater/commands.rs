@@ -22,6 +22,20 @@ pub async fn check_for_update(app: AppHandle) -> Result<UpdaterSnapshot, String>
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    install_update_inner(app).await
+}
+
+/// Shared install-and-restart routine. Re-checks the manifest (rather than
+/// trusting the in-memory `UpdaterState`), downloads the signed payload,
+/// verifies the ed25519 signature against the public key compiled into the
+/// app, swaps the running `.app`, and relaunches.
+///
+/// Exposed to the tray click handler so clicking "Update Thuki to vX.Y.Z"
+/// triggers the install directly without forcing the user to detour through
+/// the Settings banner. The Settings banner button calls the
+/// `install_update` Tauri command, which delegates here.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn install_update_inner(app: AppHandle) -> Result<(), String> {
     let updater = app.updater().map_err(|e| e.to_string())?;
     let update = updater.check().await.map_err(|e| e.to_string())?;
     let Some(update) = update else {

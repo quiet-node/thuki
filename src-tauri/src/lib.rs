@@ -998,7 +998,20 @@ pub fn run() {
                         show_settings_window(app);
                     }
                     "update" => {
-                        show_settings_window(app);
+                        // Trigger Install & restart directly from the tray.
+                        // The Settings banner button calls the same shared
+                        // routine through the `install_update` Tauri
+                        // command. Spawn rather than block: tray click
+                        // handlers run synchronously, but the install
+                        // performs network IO and signature verification.
+                        let app_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) =
+                                crate::updater::commands::install_update_inner(app_handle).await
+                            {
+                                eprintln!("tray-triggered install failed: {e}");
+                            }
+                        });
                     }
                     "quit" => {
                         app.state::<crate::commands::GenerationState>().cancel();
