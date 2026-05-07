@@ -33,8 +33,7 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
     DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
     DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
-    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
-    SLASH_COMMAND_PROMPT_APPENDIX,
+    DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS, SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::schema::AppConfig;
@@ -152,13 +151,12 @@ pub(crate) fn resolve(config: &mut AppConfig) {
         "inference.num_ctx",
     );
 
-    // Prompt section: empty base -> built-in. Compose resolved_system.
-    let base = if config.prompt.system.trim().is_empty() {
-        DEFAULT_SYSTEM_PROMPT_BASE
-    } else {
-        &config.prompt.system
-    };
-    config.prompt.resolved_system = compose_system_prompt(base, SLASH_COMMAND_PROMPT_APPENDIX);
+    // Prompt section: compose the user's persona with the slash-command
+    // appendix into the runtime-only `resolved_system`. The on-disk `system`
+    // string is the single source of truth; if the user has cleared it, no
+    // persona is sent (only the appendix).
+    config.prompt.resolved_system =
+        compose_system_prompt(&config.prompt.system, SLASH_COMMAND_PROMPT_APPENDIX);
 
     // Window section.
     clamp_f64(
@@ -288,6 +286,8 @@ pub fn compose_system_prompt(base: &str, appendix: &str) -> String {
     let appendix = appendix.trim();
     if appendix.is_empty() {
         base.to_string()
+    } else if base.is_empty() {
+        appendix.to_string()
     } else {
         format!("{base}\n\n{appendix}")
     }

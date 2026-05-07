@@ -55,7 +55,7 @@ fn defaults_const_values_match_schema_defaults() {
         DEFAULT_KEEP_WARM_INACTIVITY_MINUTES
     );
     assert_eq!(c.inference.num_ctx, DEFAULT_NUM_CTX);
-    assert_eq!(c.prompt.system, "");
+    assert_eq!(c.prompt.system, DEFAULT_SYSTEM_PROMPT_BASE);
     assert_eq!(c.prompt.resolved_system, "");
     assert_eq!(c.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
     assert_eq!(c.window.max_chat_height, DEFAULT_MAX_CHAT_HEIGHT);
@@ -95,7 +95,7 @@ fn section_defaults_are_sensible() {
     assert_eq!(m.ollama_url, DEFAULT_OLLAMA_URL);
 
     let p = PromptSection::default();
-    assert!(p.system.is_empty());
+    assert_eq!(p.system, DEFAULT_SYSTEM_PROMPT_BASE);
 
     let w = WindowSection::default();
     assert_eq!(w.overlay_width, DEFAULT_OVERLAY_WIDTH);
@@ -158,6 +158,18 @@ fn compose_system_prompt_skips_appendix_when_empty() {
 fn compose_system_prompt_skips_appendix_when_totally_empty() {
     let got = compose_system_prompt("hello", "");
     assert_eq!(got, "hello");
+}
+
+#[test]
+fn compose_system_prompt_returns_appendix_only_when_base_empty() {
+    let got = compose_system_prompt("", "world");
+    assert_eq!(got, "world");
+}
+
+#[test]
+fn compose_system_prompt_returns_appendix_only_when_base_whitespace() {
+    let got = compose_system_prompt("   \n\t", "world");
+    assert_eq!(got, "world");
 }
 
 // ── loader: first run (file missing) ────────────────────────────────────────
@@ -496,26 +508,29 @@ fn resolve_empty_ollama_url_falls_back() {
 }
 
 #[test]
-fn resolve_empty_system_prompt_uses_built_in_base_plus_appendix() {
+fn resolve_empty_system_prompt_keeps_only_appendix() {
+    // The user has explicitly cleared their persona; resolved_system contains
+    // the slash-command appendix only. Built-in persona is no longer auto
+    // re-injected, so the on-disk file remains the single source of truth.
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
     std::fs::write(
         &path,
         r#"
             [prompt]
-            system = "   "
+            system = ""
         "#,
     )
     .unwrap();
     let config = load_from_path(&path).unwrap();
-    assert!(config
+    assert_eq!(
+        config.prompt.resolved_system,
+        SLASH_COMMAND_PROMPT_APPENDIX.trim()
+    );
+    assert!(!config
         .prompt
         .resolved_system
         .contains(DEFAULT_SYSTEM_PROMPT_BASE.trim()));
-    assert!(config
-        .prompt
-        .resolved_system
-        .contains(SLASH_COMMAND_PROMPT_APPENDIX.trim()));
 }
 
 #[test]
