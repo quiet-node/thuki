@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Thuki",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "identifier": "com.quietnode.thuki",
   "build": {
     "beforeDevCommand": "bun run frontend:dev",
@@ -48,9 +48,13 @@
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: asset: https://asset.localhost;",
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/images/**"]
+        "scope": [
+          "$APPDATA/images/**"
+        ]
       },
-      "capabilities": ["default"]
+      "capabilities": [
+        "default"
+      ]
     },
     "macOSPrivateApi": true
   },
