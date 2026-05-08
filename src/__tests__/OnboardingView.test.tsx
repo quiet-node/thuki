@@ -15,11 +15,14 @@ describe('OnboardingView', () => {
 
   function setupPermissions(accessibility: boolean, screenRecording = false) {
     invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'consume_pending_grant_resume') return null;
+      if (cmd === 'reset_and_relaunch_for_grant') return false;
       if (cmd === 'check_accessibility_permission') return accessibility;
       if (cmd === 'check_screen_recording_permission') return screenRecording;
       if (cmd === 'check_screen_recording_tcc_granted') return false;
       if (cmd === 'request_screen_recording_access') return;
       if (cmd === 'open_screen_recording_settings') return;
+      if (cmd === 'open_accessibility_settings') return;
     });
   }
 
@@ -66,7 +69,95 @@ describe('OnboardingView', () => {
       );
     });
 
+    expect(invoke).toHaveBeenCalledWith('reset_and_relaunch_for_grant', {
+      service: 'Accessibility',
+    });
     expect(invoke).toHaveBeenCalledWith('open_accessibility_settings');
+  });
+
+  it('clicking grant accessibility skips inline flow when backend signals relaunch', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'consume_pending_grant_resume') return null;
+      if (cmd === 'reset_and_relaunch_for_grant') return true;
+      if (cmd === 'check_accessibility_permission') return false;
+      if (cmd === 'check_screen_recording_permission') return false;
+      if (cmd === 'open_accessibility_settings') return;
+    });
+
+    render(<PermissionsStep />);
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /grant accessibility/i }),
+      );
+    });
+
+    // Backend reports a relaunch is in flight, so the frontend must not
+    // open System Settings or start polling: the relaunched process owns
+    // both responsibilities via the consume_pending_grant_resume marker.
+    expect(invoke).not.toHaveBeenCalledWith('open_accessibility_settings');
+  });
+
+  it('auto-resumes the accessibility flow when consume returns Accessibility', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'consume_pending_grant_resume') return 'Accessibility';
+      if (cmd === 'reset_and_relaunch_for_grant') return false;
+      if (cmd === 'check_accessibility_permission') return false;
+      if (cmd === 'check_screen_recording_permission') return false;
+      if (cmd === 'open_accessibility_settings') return;
+    });
+
+    render(<PermissionsStep />);
+    // Drain the two sequential awaits inside the mount IIFE.
+    await act(async () => {});
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith('consume_pending_grant_resume');
+    expect(invoke).toHaveBeenCalledWith('open_accessibility_settings');
+    // Click button shows "Checking..." because the resume kicked the flow
+    // into the requesting state without a click.
+    expect(
+      screen.getByRole('button', { name: /checking/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('auto-resumes the screen recording flow when consume returns ScreenCapture', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'consume_pending_grant_resume') return 'ScreenCapture';
+      if (cmd === 'reset_and_relaunch_for_grant') return false;
+      if (cmd === 'check_accessibility_permission') return true;
+      if (cmd === 'check_screen_recording_permission') return false;
+      if (cmd === 'check_screen_recording_tcc_granted') return false;
+      if (cmd === 'request_screen_recording_access') return;
+      if (cmd === 'open_screen_recording_settings') return;
+    });
+
+    render(<PermissionsStep />);
+    await act(async () => {});
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith('request_screen_recording_access');
+    expect(invoke).toHaveBeenCalledWith('open_screen_recording_settings');
+  });
+
+  it('does not auto-resume screen recording when accessibility is not yet granted', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'consume_pending_grant_resume') return 'ScreenCapture';
+      if (cmd === 'reset_and_relaunch_for_grant') return false;
+      if (cmd === 'check_accessibility_permission') return false;
+      if (cmd === 'check_screen_recording_permission') return false;
+      if (cmd === 'request_screen_recording_access') return;
+      if (cmd === 'open_screen_recording_settings') return;
+    });
+
+    render(<PermissionsStep />);
+    await act(async () => {});
+    await act(async () => {});
+
+    // ScreenCapture resume only kicks in when AX is already granted; here it
+    // must NOT have triggered the request_screen_recording_access path.
+    expect(invoke).not.toHaveBeenCalledWith('request_screen_recording_access');
   });
 
   it('shows spinner while polling after grant request', async () => {
@@ -194,9 +285,37 @@ describe('OnboardingView', () => {
       );
     });
 
-    // Registers Thuki in TCC (so it appears in the list) then opens Settings
+    // First clears any stale ScreenCapture grant left from a previous
+    // binary, then registers Thuki in TCC + opens Settings.
+    expect(invoke).toHaveBeenCalledWith('reset_and_relaunch_for_grant', {
+      service: 'ScreenCapture',
+    });
     expect(invoke).toHaveBeenCalledWith('request_screen_recording_access');
     expect(invoke).toHaveBeenCalledWith('open_screen_recording_settings');
+  });
+
+  it('clicking screen recording skips inline flow when backend signals relaunch', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'consume_pending_grant_resume') return null;
+      if (cmd === 'reset_and_relaunch_for_grant') return true;
+      if (cmd === 'check_accessibility_permission') return true;
+      if (cmd === 'check_screen_recording_permission') return false;
+      if (cmd === 'request_screen_recording_access') return;
+      if (cmd === 'open_screen_recording_settings') return;
+    });
+
+    render(<PermissionsStep />);
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /open screen recording settings/i }),
+      );
+    });
+
+    // Relaunch is in flight; inline flow must not register/open settings.
+    expect(invoke).not.toHaveBeenCalledWith('request_screen_recording_access');
+    expect(invoke).not.toHaveBeenCalledWith('open_screen_recording_settings');
   });
 
   it('shows spinner while polling after opening screen recording settings', async () => {
@@ -440,10 +559,36 @@ describe('OnboardingView', () => {
   // synchronously; here we use deferred promises to keep invocations in-flight
   // long enough to trigger each guard.
 
+  it('ignores resume marker when component unmounts before mount-effect resolves', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let resolveResume!: (v: string | null) => void;
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'consume_pending_grant_resume')
+        return new Promise((r) => {
+          resolveResume = r;
+        });
+      return Promise.resolve();
+    });
+
+    const { unmount } = render(<PermissionsStep />);
+    // The mount IIFE awaits consume_pending_grant_resume first; it is
+    // suspended waiting for `resolveResume`.
+
+    act(() => unmount()); // mountedRef → false
+
+    await act(async () => {
+      resolveResume(null); // first guard fires; IIFE returns early
+    });
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
   it('ignores initial accessibility check result when component unmounts mid-flight', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     let resolveInitial!: (v: boolean) => void;
     invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'consume_pending_grant_resume') return Promise.resolve(null);
       if (cmd === 'check_accessibility_permission')
         return new Promise((r) => {
           resolveInitial = r;
@@ -452,12 +597,14 @@ describe('OnboardingView', () => {
     });
 
     const { unmount } = render(<PermissionsStep />);
-    // useEffect has fired; initial invoke is in-flight (resolveInitial is set).
+    // Drain the consume await so the IIFE advances to the
+    // check_accessibility_permission await and exposes resolveInitial.
+    await act(async () => {});
 
     act(() => unmount()); // mountedRef → false
 
     await act(async () => {
-      resolveInitial(true); // then-handler fires; guard returns early
+      resolveInitial(true); // post-AX guard fires; IIFE returns early
     });
 
     expect(errorSpy).not.toHaveBeenCalled();
@@ -539,6 +686,44 @@ describe('OnboardingView', () => {
     // Resolving the promise must not trigger a React state update.
     await act(async () => {
       resolvePoll(true);
+    });
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('ignores accessibility handler when component unmounts during open-settings call', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let resolveOpen!: (v?: unknown) => void;
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'consume_pending_grant_resume') return Promise.resolve(null);
+      if (cmd === 'reset_and_relaunch_for_grant') return Promise.resolve(false);
+      if (cmd === 'check_accessibility_permission')
+        return Promise.resolve(false);
+      if (cmd === 'check_screen_recording_permission')
+        return Promise.resolve(false);
+      if (cmd === 'open_accessibility_settings')
+        return new Promise((r) => {
+          resolveOpen = r;
+        });
+      return Promise.resolve();
+    });
+
+    const { unmount } = render(<PermissionsStep />);
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /grant accessibility/i }),
+      );
+    });
+
+    // The click handler is now suspended inside startAccessibilityFlow on
+    // open_accessibility_settings; resolveOpen is set.
+    act(() => unmount());
+
+    await act(async () => {
+      resolveOpen(); // post-open mountedRef guard at PermissionsStep.tsx:192 fires
     });
 
     expect(errorSpy).not.toHaveBeenCalled();

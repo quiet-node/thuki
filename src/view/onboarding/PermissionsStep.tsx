@@ -180,27 +180,16 @@ export function PermissionsStep() {
     }
   }, []);
 
-  // On mount: check whether Accessibility is already granted so we can skip
-  // step 1 and show step 2 immediately.
-  useEffect(() => {
-    // Reset on every mount so that a remount after unmount gets a fresh guard.
-    mountedRef.current = true;
-    void invoke<boolean>('check_accessibility_permission').then((granted) => {
-      if (!mountedRef.current) return;
-      if (granted) {
-        setAccessibilityStatus('granted');
-      }
-    });
-    return () => {
-      mountedRef.current = false;
-      stopAxPolling();
-      stopScreenPolling();
-    };
-  }, [stopAxPolling, stopScreenPolling]);
-
-  const handleGrantAccessibility = useCallback(async () => {
+  // Inline grant flow used both by a fresh click (when the backend reports
+  // no relaunch needed) and by the post-restart resume path. Opens System
+  // Settings directly and polls AXIsProcessTrusted until the user toggles
+  // the permission on. The first AXIsProcessTrusted call from a fresh PID
+  // is what registers Thuki in the System Settings list, so polling does
+  // double duty here.
+  const startAccessibilityFlow = useCallback(async () => {
     setAccessibilityStatus('requesting');
     await invoke('open_accessibility_settings');
+    if (!mountedRef.current) return;
     axPollRef.current = setInterval(async () => {
       if (axInFlightRef.current) return;
       axInFlightRef.current = true;
@@ -217,10 +206,10 @@ export function PermissionsStep() {
     }, POLL_INTERVAL_MS);
   }, [stopAxPolling]);
 
-  const handleOpenScreenRecording = useCallback(async () => {
-    // Register Thuki in TCC (adds it to the Screen Recording list) then open
-    // System Settings directly so the user can toggle it on without hunting.
-    // The registration call may briefly show a macOS system prompt on first use.
+  const startScreenRecordingFlow = useCallback(async () => {
+    // CGRequestScreenCaptureAccess is the call that adds Thuki to the
+    // Screen Recording list AND surfaces the macOS allow dialog. Without
+    // it the entry never appears, so the user has nothing to toggle.
     await invoke('request_screen_recording_access');
     await invoke('open_screen_recording_settings');
     if (!mountedRef.current) return;
@@ -242,6 +231,71 @@ export function PermissionsStep() {
       }
     }, POLL_INTERVAL_MS);
   }, [stopScreenPolling]);
+
+  // On mount: drain any pending click-time resume marker the previous
+  // process wrote before relaunching, then check whether Accessibility is
+  // already granted so we can skip step 1 and show step 2 immediately.
+  // Order matters: the resume handler may auto-start a flow whose state
+  // would otherwise be clobbered by the granted-check setter.
+  useEffect(() => {
+    // Reset on every mount so that a remount after unmount gets a fresh guard.
+    mountedRef.current = true;
+
+    void (async () => {
+      const resume = await invoke<string | null>(
+        'consume_pending_grant_resume',
+      );
+      if (!mountedRef.current) return;
+
+      const accessibilityGranted = await invoke<boolean>(
+        'check_accessibility_permission',
+      );
+      if (!mountedRef.current) return;
+      if (accessibilityGranted) setAccessibilityStatus('granted');
+
+      if (resume === 'Accessibility') {
+        // Previous process did the TCC reset+restart for Accessibility.
+        // Resume the open-Settings + polling step so the user does not
+        // have to click Grant a second time.
+        void startAccessibilityFlow();
+      } else if (resume === 'ScreenCapture' && accessibilityGranted) {
+        void startScreenRecordingFlow();
+      }
+    })();
+
+    return () => {
+      mountedRef.current = false;
+      stopAxPolling();
+      stopScreenPolling();
+    };
+  }, [
+    startAccessibilityFlow,
+    startScreenRecordingFlow,
+    stopAxPolling,
+    stopScreenPolling,
+  ]);
+
+  const handleGrantAccessibility = useCallback(async () => {
+    setAccessibilityStatus('requesting');
+    // Backend clears any stale TCC.Accessibility entry left over from a
+    // previous binary's code requirement and relaunches so tccd registers
+    // the new csreq cleanly. When the startup path already did the reset
+    // (true on a fresh install or a detected upgrade) the backend returns
+    // false and we run the open-Settings flow inline without a relaunch.
+    const restarting = await invoke<boolean>('reset_and_relaunch_for_grant', {
+      service: 'Accessibility',
+    });
+    if (!mountedRef.current || restarting) return;
+    await startAccessibilityFlow();
+  }, [startAccessibilityFlow]);
+
+  const handleOpenScreenRecording = useCallback(async () => {
+    const restarting = await invoke<boolean>('reset_and_relaunch_for_grant', {
+      service: 'ScreenCapture',
+    });
+    if (!mountedRef.current || restarting) return;
+    await startScreenRecordingFlow();
+  }, [startScreenRecordingFlow]);
 
   const handleQuitAndRelaunch = useCallback(async () => {
     await invoke('quit_and_relaunch');

@@ -32,6 +32,22 @@ pub struct SnoozeSidecar {
     /// just in memory) so the comparison survives an app restart.
     #[serde(default)]
     pub last_seen_update_version: Option<String>,
+    /// TCC service the user just clicked "Grant" for, persisted across the
+    /// reset+relaunch cycle so the post-restart launch knows to resume the
+    /// grant flow (open System Settings, trigger a new csreq registration)
+    /// instead of waiting for another click. Cleared on consumption.
+    #[serde(default)]
+    pub pending_reregister: Option<String>,
+    /// SemVer string of the binary the startup path most recently ran a
+    /// `tccutil reset` for. The click-time grant flow consults this to
+    /// decide whether ANOTHER reset+relaunch is necessary: if it matches
+    /// the running version, the running binary's csreq already owns the
+    /// only TCC entries on disk (or there are none), so a click does not
+    /// need a redundant restart. Persisted (rather than held in memory)
+    /// because A's reset+restart drops any in-process flag before the
+    /// user can ever click.
+    #[serde(default)]
+    pub last_reset_for_version: Option<String>,
 }
 
 impl SnoozeSidecar {
@@ -135,12 +151,30 @@ impl UpdaterState {
         inner.snooze.last_seen_update_version = version;
     }
 
+    /// Mirror the on-disk `pending_reregister` field into the live state
+    /// so a crash before the next sidecar save still leaves the in-memory
+    /// view consistent with what was persisted.
+    pub fn set_pending_reregister(&self, value: Option<String>) {
+        let mut inner = self.inner.lock().expect("updater state mutex");
+        inner.snooze.pending_reregister = value;
+    }
+
     pub fn snooze_clone(&self) -> SnoozeSidecar {
         self.inner
             .lock()
             .expect("updater state mutex")
             .snooze
             .clone()
+    }
+
+    /// Mirrors the persisted `last_reset_for_version` from the sidecar
+    /// into live state. Called both at startup (when seeding from disk)
+    /// and immediately after a successful startup-time `tccutil reset`
+    /// (so the click-time grant flow sees the new value without re-reading
+    /// the sidecar).
+    pub fn set_last_reset_for_version(&self, version: Option<String>) {
+        let mut inner = self.inner.lock().expect("updater state mutex");
+        inner.snooze.last_reset_for_version = version;
     }
 }
 
@@ -179,6 +213,8 @@ mod tests {
             chat_snoozed_until: Some(1_700_001_000),
             last_launched_version: None,
             last_seen_update_version: None,
+            pending_reregister: None,
+            last_reset_for_version: Some("0.8.5".to_string()),
         };
         original.save(&path).unwrap();
 
@@ -205,11 +241,51 @@ mod tests {
             chat_snoozed_until: None,
             last_launched_version: Some("0.8.1".to_string()),
             last_seen_update_version: None,
+            pending_reregister: None,
+            last_reset_for_version: None,
         };
         original.save(&path).unwrap();
 
         let loaded = SnoozeSidecar::load(&path).unwrap();
         assert_eq!(loaded, original);
+    }
+
+    #[test]
+    fn snooze_sidecar_round_trips_pending_reregister() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updater_state.json");
+
+        let original = SnoozeSidecar {
+            settings_snoozed_until: None,
+            chat_snoozed_until: None,
+            last_launched_version: Some("0.8.5".to_string()),
+            last_seen_update_version: None,
+            pending_reregister: Some("Accessibility".to_string()),
+            last_reset_for_version: Some("0.8.5".to_string()),
+        };
+        original.save(&path).unwrap();
+
+        let loaded = SnoozeSidecar::load(&path).unwrap();
+        assert_eq!(loaded, original);
+    }
+
+    #[test]
+    fn snooze_sidecar_back_compat_old_file_without_pending_reregister() {
+        // Sidecars written before the click-time grant flow shipped lack
+        // the field. Loading must default it to None so existing snooze /
+        // version state is preserved across the upgrade.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updater_state.json");
+        std::fs::write(
+            &path,
+            r#"{"settings_snoozed_until":null,"chat_snoozed_until":null,
+                "last_launched_version":"0.8.4","last_seen_update_version":null}"#,
+        )
+        .unwrap();
+
+        let loaded = SnoozeSidecar::load(&path).unwrap();
+        assert_eq!(loaded.last_launched_version.as_deref(), Some("0.8.4"));
+        assert!(loaded.pending_reregister.is_none());
     }
 
     #[test]
@@ -404,6 +480,30 @@ mod tests {
         let snap = state.snooze_clone();
         assert_eq!(snap.chat_snoozed_until, Some(1));
         assert_eq!(snap.settings_snoozed_until, Some(2));
+    }
+
+    #[test]
+    fn set_last_reset_for_version_round_trips_through_snooze_clone() {
+        let state = UpdaterState::default();
+        state.set_last_reset_for_version(Some("0.8.5".to_string()));
+        assert_eq!(
+            state.snooze_clone().last_reset_for_version.as_deref(),
+            Some("0.8.5"),
+        );
+        state.set_last_reset_for_version(None);
+        assert!(state.snooze_clone().last_reset_for_version.is_none());
+    }
+
+    #[test]
+    fn set_pending_reregister_round_trips_through_snooze_clone() {
+        let state = UpdaterState::default();
+        state.set_pending_reregister(Some("Accessibility".to_string()));
+        assert_eq!(
+            state.snooze_clone().pending_reregister.as_deref(),
+            Some("Accessibility"),
+        );
+        state.set_pending_reregister(None);
+        assert!(state.snooze_clone().pending_reregister.is_none());
     }
 
     #[test]

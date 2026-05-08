@@ -1122,6 +1122,16 @@ pub fn run() {
                 );
                 if did_upgrade {
                     updater::tcc_reset::tccutil_reset(&app.config().identifier);
+                    // Persist that the running version's csreq is what
+                    // owns any TCC entries on disk now (or there are no
+                    // entries, which is also fine). The click-time grant
+                    // flow consults this so the user's first grant click
+                    // after an upgrade does not trigger a second
+                    // reset+relaunch on top of the one we are about to
+                    // schedule below. Held in the sidecar (not memory)
+                    // because the relaunch wipes any in-process state
+                    // before the user could ever click.
+                    sidecar.last_reset_for_version = Some(running_version.clone());
                 }
 
                 // Restore persisted snooze flags into the live state.
@@ -1135,6 +1145,9 @@ pub fn run() {
                 // snooze.
                 updater_state
                     .set_last_seen_update_version(sidecar.last_seen_update_version.clone());
+                // Mirror the on-disk reset marker so click-time decisions
+                // don't have to re-read the sidecar.
+                updater_state.set_last_reset_for_version(sidecar.last_reset_for_version.clone());
 
                 // Record the running version BEFORE any potential restart
                 // so the post-restart launch reads a sidecar where the
@@ -1339,7 +1352,11 @@ pub fn run() {
             #[cfg(not(coverage))]
             updater::commands::snooze_update_chat,
             #[cfg(not(coverage))]
-            updater::commands::snooze_update_settings
+            updater::commands::snooze_update_settings,
+            #[cfg(not(coverage))]
+            updater::commands::reset_and_relaunch_for_grant,
+            #[cfg(not(coverage))]
+            updater::commands::consume_pending_grant_resume
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
