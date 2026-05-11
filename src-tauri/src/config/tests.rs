@@ -509,10 +509,11 @@ fn resolve_empty_ollama_url_falls_back() {
 }
 
 #[test]
-fn resolve_empty_system_prompt_keeps_only_appendix() {
-    // The user has explicitly cleared their persona; resolved_system contains
-    // the slash-command appendix only. Built-in persona is no longer auto
-    // re-injected, so the on-disk file remains the single source of truth.
+fn resolve_empty_system_prompt_without_customized_flag_uses_built_in_default() {
+    // Upgrade migration path: old configs have system="" because that was the
+    // compiled default before the Settings UI existed. Without system_customized,
+    // the loader restores the built-in persona so upgraded users are not silently
+    // left with no system prompt.
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
     std::fs::write(
@@ -524,6 +525,35 @@ fn resolve_empty_system_prompt_keeps_only_appendix() {
     )
     .unwrap();
     let config = load_from_path(&path).unwrap();
+    assert_eq!(config.prompt.system, DEFAULT_SYSTEM_PROMPT_BASE);
+    assert!(config
+        .prompt
+        .resolved_system
+        .contains(DEFAULT_SYSTEM_PROMPT_BASE.trim()));
+    assert!(config
+        .prompt
+        .resolved_system
+        .contains(SLASH_COMMAND_PROMPT_APPENDIX.trim()));
+}
+
+#[test]
+fn resolve_empty_system_prompt_with_customized_flag_keeps_only_appendix() {
+    // Intentional clear: user opened Settings, cleared the prompt, and saved.
+    // set_config_field co-writes system_customized=true so the loader respects
+    // the deliberate empty and does not restore the built-in default.
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [prompt]
+            system = ""
+            system_customized = true
+        "#,
+    )
+    .unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(config.prompt.system, "");
     assert_eq!(
         config.prompt.resolved_system,
         SLASH_COMMAND_PROMPT_APPENDIX.trim()

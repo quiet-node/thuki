@@ -44,6 +44,12 @@ pub const DEFAULT_SYSTEM_PROMPT_BASE: &str = include_str!("../../prompts/system_
 pub const SLASH_COMMAND_PROMPT_APPENDIX: &str =
     include_str!("../../prompts/generated/slash_commands.txt");
 
+/// Whether the user has explicitly saved a system prompt via Settings. Starts
+/// `false` so the upgrade-migration path in the loader can distinguish old
+/// configs (where `system = ""` was the compiled default) from a deliberate
+/// clear made through the Settings UI.
+pub const DEFAULT_SYSTEM_CUSTOMIZED: bool = false;
+
 /// Window defaults (logical pixels and counts). Only the user-tunable knobs
 /// live here; the collapsed-bar height and the close-animation deadline are
 /// baked into `App.tsx` because their effective range is invisible to users

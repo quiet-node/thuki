@@ -33,8 +33,9 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
     DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
     DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
-    DEFAULT_SEARXNG_URL, DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
-    DEFAULT_UPDATER_MANIFEST_URL, SLASH_COMMAND_PROMPT_APPENDIX,
+    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
+    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
+    SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::schema::AppConfig;
@@ -152,10 +153,15 @@ pub(crate) fn resolve(config: &mut AppConfig) {
         "inference.num_ctx",
     );
 
-    // Prompt section: compose the user's persona with the slash-command
-    // appendix into the runtime-only `resolved_system`. The on-disk `system`
-    // string is the single source of truth; if the user has cleared it, no
-    // persona is sent (only the appendix).
+    // Prompt section: if the user has never explicitly saved a system prompt
+    // (system_customized is false) and the on-disk value is empty, restore
+    // the built-in default. This heals configs from before the Settings UI
+    // existed, where system="" was the old compiled default rather than an
+    // intentional clear. Once the user saves via Settings, system_customized
+    // is set to true and an explicit empty is respected.
+    if !config.prompt.system_customized && config.prompt.system.trim().is_empty() {
+        config.prompt.system = DEFAULT_SYSTEM_PROMPT_BASE.to_string();
+    }
     config.prompt.resolved_system =
         compose_system_prompt(&config.prompt.system, SLASH_COMMAND_PROMPT_APPENDIX);
 

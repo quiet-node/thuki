@@ -65,9 +65,11 @@ fn allowed_fields_count_matches_schema_field_count() {
     // lives in the SQLite app_config table via ActiveModelState, not in TOML. The
     // collapsed bar height and hide-commit delay are baked into the frontend (see
     // `WindowSection` doc) because they have no perceptible effect across
-    // their usable range. If this assertion fails, the schema has drifted
-    // from the allowlist and someone added a field without extending
-    // ALLOWED_FIELDS.
+    // their usable range. `prompt.system_customized` is an internal migration flag
+    // co-written by set_config_field when prompt.system is saved; it is not
+    // directly user-tunable and is intentionally absent from ALLOWED_FIELDS.
+    // If this assertion fails, the schema has drifted from the allowlist and
+    // someone added a field without extending ALLOWED_FIELDS.
     assert_eq!(ALLOWED_FIELDS.len(), 25);
 }
 
@@ -539,6 +541,35 @@ fn write_field_to_disk_accepts_search_pipeline_wall_clock_budget() {
 
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(on_disk.contains("pipeline_wall_clock_budget_s = 90"));
+}
+
+#[test]
+fn write_field_to_disk_writing_prompt_system_co_writes_customized_flag() {
+    // Saving prompt.system must atomically set system_customized=true so a
+    // subsequent boot does not mistake an intentional clear for the legacy
+    // empty-default and restore the built-in persona.
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    let resolved = write_field_to_disk(&path, "prompt", "system", json!("")).unwrap();
+    assert!(resolved.prompt.system_customized);
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("system_customized = true"));
+}
+
+#[test]
+fn write_field_to_disk_writing_prompt_system_preserves_customized_flag_for_non_empty() {
+    // Saving a non-empty system prompt also sets system_customized=true.
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    let resolved =
+        write_field_to_disk(&path, "prompt", "system", json!("You are a custom AI.")).unwrap();
+    assert!(resolved.prompt.system_customized);
+    assert_eq!(resolved.prompt.system, "You are a custom AI.");
 }
 
 #[test]

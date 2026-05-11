@@ -177,6 +177,14 @@ pub(crate) fn write_field_to_disk(
 
     let mut doc = read_document(path)?;
     patch_document(&mut doc, section, key, value)?;
+    // When the user saves the system prompt, mark it as explicitly customized
+    // so the upgrade-migration path in the loader (empty + !customized →
+    // restore default) does not overwrite a deliberate clear on next boot.
+    if section == "prompt" && key == "system" {
+        if let Some(table) = doc.get_mut("prompt").and_then(Item::as_table_mut) {
+            table.insert("system_customized", toml_value(true));
+        }
+    }
 
     config::atomic_write_bytes(path, doc.to_string().as_bytes()).map_err(|source| {
         ConfigError::IoError {
