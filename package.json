@@ -42,8 +42,11 @@
     "@fontsource/source-serif-4": "^5.2.9",
     "@tauri-apps/api": "^2.11.0",
     "framer-motion": "^12.38.0",
+    "katex": "^0.16.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "rehype-katex": "^7.0.1",
+    "remark-math": "^6.0.0",
     "streamdown": "^2.5.0"
   },
   "overrides": {

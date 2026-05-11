@@ -1,5 +1,7 @@
 import React, { memo } from 'react';
-import { Streamdown } from 'streamdown';
+import { Streamdown, type MathPlugin } from 'streamdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 
 interface MarkdownRendererProps {
   content: string;
@@ -7,6 +9,13 @@ interface MarkdownRendererProps {
   /** Whether this content is actively being streamed from the LLM. */
   isStreaming?: boolean;
 }
+
+const mathPlugin: MathPlugin = {
+  name: 'katex',
+  type: 'math',
+  remarkPlugin: remarkMath,
+  rehypePlugin: rehypeKatex,
+};
 
 /**
  * Renders markdown content using Streamdown, a streaming-aware markdown
@@ -22,6 +31,10 @@ interface MarkdownRendererProps {
  * then sanitized, stripping script tags, event handlers, iframes, and
  * javascript: URLs. Link safety is disabled so links render as native
  * anchor elements with target="_blank" and rel="noopener noreferrer".
+ * KaTeX is appended after rehype-sanitize in Streamdown's pipeline and
+ * is therefore not covered by the allowlist. XSS safety for math content
+ * relies on KaTeX's own output escaping and the default trust:false setting,
+ * which blocks arbitrary-HTML LaTeX macros such as \href and \htmlClass.
  *
  * Memoized to skip re-renders when props are unchanged, which matters
  * during LLM token streaming where sibling bubbles would otherwise
@@ -47,6 +60,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(
              In a Tauri app the webview opens external links in the system
              browser, making the modal unnecessary friction. */
           linkSafety={{ enabled: false }}
+          plugins={{ math: mathPlugin }}
         >
           {content}
         </Streamdown>

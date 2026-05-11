@@ -190,6 +190,68 @@ describe('MarkdownRenderer', () => {
     });
   });
 
+  describe('Math rendering', () => {
+    it('renders display math blocks via KaTeX', () => {
+      const { container } = render(
+        <MarkdownRenderer content={'$$x = \\frac{-b}{2a}$$'} />,
+      );
+      expect(container.querySelector('.katex')).not.toBeNull();
+      expect(container.textContent).not.toContain('$$');
+    });
+
+    it('renders inline math via KaTeX', () => {
+      const { container } = render(
+        <MarkdownRenderer content={'Energy is $E = mc^2$ at rest'} />,
+      );
+      expect(container.querySelector('.katex')).not.toBeNull();
+      expect(container.textContent).not.toContain('$E = mc^2$');
+    });
+
+    it('does not render raw LaTeX source as plain text', () => {
+      const { container } = render(
+        <MarkdownRenderer content={'$$\\sum_{i=0}^{n} i$$'} />,
+      );
+      expect(container.querySelector('.katex')).not.toBeNull();
+      // MathML <annotation> always contains the raw LaTeX source for
+      // accessibility; check only the visible katex-html portion.
+      const katexHtml = container.querySelector('.katex-html');
+      expect(katexHtml).not.toBeNull();
+      expect(katexHtml!.textContent).not.toContain('\\sum');
+    });
+
+    it('preserves XSS protection alongside math rendering', () => {
+      const { container } = render(
+        <MarkdownRenderer
+          content={'$E = mc^2$\n\n<script>alert("xss")</script>'}
+        />,
+      );
+      expect(container.querySelector('.katex')).not.toBeNull();
+      expect(container.querySelector('script')).toBeNull();
+      expect(container.innerHTML).not.toContain('<script');
+    });
+
+    it('blocks javascript: URLs in LaTeX \\href via trust:false', () => {
+      const { container } = render(
+        <MarkdownRenderer content={'$\\href{javascript:alert(1)}{click}$'} />,
+      );
+      // trust:false renders \href as a red error span, not a clickable link.
+      // MathML <annotation> contains raw source as non-executable text;
+      // check only the visible katex-html portion for any live href.
+      const katexHtml = container.querySelector('.katex-html');
+      expect(katexHtml).not.toBeNull();
+      expect(katexHtml!.innerHTML).not.toMatch(/javascript:/i);
+      expect(container.querySelector('a[href]')).toBeNull();
+    });
+
+    it('renders math in streaming mode without leaking raw LaTeX', () => {
+      const { container } = render(
+        <MarkdownRenderer content={'$$E = mc^2$$'} isStreaming={true} />,
+      );
+      expect(container.querySelector('.katex')).not.toBeNull();
+      expect(container.textContent).not.toContain('$$');
+    });
+  });
+
   describe('Edge cases', () => {
     it('handles empty string', () => {
       const { container } = render(<MarkdownRenderer content="" />);

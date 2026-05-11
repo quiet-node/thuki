@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 @source "../node_modules/streamdown/dist";
 @import 'streamdown/styles.css';
+@import 'katex/dist/katex.min.css';
 
 /* Source Serif 4 reading face for AI prose. Chrome stays Inter. */
 @import '@fontsource/source-serif-4/400.css';
