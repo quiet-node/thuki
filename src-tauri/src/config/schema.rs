@@ -21,8 +21,8 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
-    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_AUTO_CHECK,
-    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
+    DEFAULT_SYSTEM_CUSTOMIZED, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
+    DEFAULT_UPDATER_AUTO_CHECK, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
 };
 
 /// Static, user-tunable inference daemon configuration.
@@ -70,9 +70,18 @@ impl Default for InferenceSection {
 #[serde(default)]
 pub struct PromptSection {
     /// User-editable persona prompt. Seeded with the built-in body and
-    /// freely editable thereafter. If the user clears it, no persona is
-    /// sent (only the slash-command appendix).
+    /// freely editable thereafter. If the user clears it (with
+    /// `system_customized` set), no persona is sent (only the
+    /// slash-command appendix).
     pub system: String,
+    /// Set to `true` the first time the user explicitly saves the system
+    /// prompt via Settings. Guards upgrade migration: configs from before
+    /// the Settings UI was added have `system = ""` because that was the
+    /// old compiled default, not an intentional clear. The loader resets
+    /// an empty `system` to the built-in default when this flag is
+    /// `false`, preserving the intentional-clear semantic for users who
+    /// actively cleared the field in the new UI.
+    pub system_customized: bool,
     /// Composed runtime value (base prompt plus slash-command appendix).
     /// Not serialized; computed by the loader.
     #[serde(skip)]
@@ -83,6 +92,7 @@ impl Default for PromptSection {
     fn default() -> Self {
         Self {
             system: DEFAULT_SYSTEM_PROMPT_BASE.to_string(),
+            system_customized: DEFAULT_SYSTEM_CUSTOMIZED,
             resolved_system: String::new(),
         }
     }
