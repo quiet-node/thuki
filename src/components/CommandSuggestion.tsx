@@ -279,6 +279,27 @@ const ACTION_ICON = (
   </svg>
 );
 
+/** Info-circle icon for /explain command. */
+const EXPLAIN_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" />
+    <path
+      d="M8 7v4"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    />
+    <circle cx="8" cy="4.5" r="0.75" fill="currentColor" />
+  </svg>
+);
+
 /** Returns the icon for a given command trigger. */
 function iconForTrigger(trigger: string): React.ReactNode {
   switch (trigger) {
@@ -300,6 +321,8 @@ function iconForTrigger(trigger: string): React.ReactNode {
       return BULLETS_ICON;
     case '/todos':
       return ACTION_ICON;
+    case '/explain':
+      return EXPLAIN_ICON;
     default:
       return SCREEN_ICON;
   }

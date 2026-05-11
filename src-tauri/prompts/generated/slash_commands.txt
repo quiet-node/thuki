@@ -1,6 +1,6 @@
 # Supported slash commands
 
-These are Thuki's only built-in slash commands: /search, /screen, /think, /translate, /rewrite, /tldr, /refine, /bullets, /todos.
+These are Thuki's only built-in slash commands: /search, /screen, /think, /translate, /rewrite, /tldr, /refine, /bullets, /explain, /todos.
 
 If the user asks what slash commands are available, what built-in commands exist, or how to use them, answer with the slash-command list below. Do not answer about generic tools, tool availability, or function calling.
 
@@ -19,5 +19,7 @@ If the user asks what slash commands are available, what built-in commands exist
 /refine: fix grammar, spelling, punctuation, and rough phrasing while preserving tone.
 
 /bullets: extract key points as markdown bullets.
+
+/explain: explain a concept or code snippet in plain language with a concrete example.
 
 /todos: summarize context and extract tasks as markdown checkboxes.

@@ -4357,6 +4357,175 @@ describe('App', () => {
       // ask_ollama must NOT be called since the user cancelled
       expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
     });
+
+    it('/screen combined with utility command applies the prompt template', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/screen.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /explain ' } });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        // Prompt template fired: explain template contains this phrase
+        expect(args.message).toContain('Explain the following in plain');
+        // Synthetic fallback input used since no text was typed
+        expect(args.message).toContain('the screenshot');
+        expect(args.imagePaths).toEqual(['/tmp/screen.jpg']);
+      });
+    });
+
+    it('/screen combined with utility command and typed text uses text as input', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/screen.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/screen /explain this error message' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        expect(args.message).toContain('Explain the following in plain');
+        expect(args.message).toContain('this error message');
+        expect(args.imagePaths).toEqual(['/tmp/screen.jpg']);
+      });
+    });
+
+    it('/screen without utility command sends raw message without template', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/screen.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/screen what is this?' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        // No template applied: raw message sent
+        expect(args.message).toBe('/screen what is this?');
+        expect(args.imagePaths).toEqual(['/tmp/screen.jpg']);
+      });
+    });
+
+    it('/screen with utility command uses selected context as $INPUT when available', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/screen.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay('my highlighted code');
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /explain ' } });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        // Selected context used as $INPUT (not the screenshot fallback)
+        expect(args.message).toContain('Explain the following in plain');
+        expect(args.message).toContain('my highlighted code');
+        expect(args.imagePaths).toEqual(['/tmp/screen.jpg']);
+      });
+    });
+
+    it('/screen with /translate does not apply a prompt template (no language provided)', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/screen.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/screen /translate ' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        // /translate skipped image fallback; raw message sent to model
+        expect(args.message).toBe('/screen /translate');
+        expect(args.imagePaths).toEqual(['/tmp/screen.jpg']);
+      });
+    });
   });
 
   // ─── /think command ─────────────────────────────────────────────────────────
@@ -4725,6 +4894,101 @@ describe('App', () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
 
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+    });
+
+    it('utility command with attached image and no text uses synthetic image fallback as $INPUT', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/explain.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Attach an image
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'shot.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      invoke.mockClear();
+      enableChannelCapture();
+
+      // Submit just the command with no text: image fallback should fire
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/explain' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        // Fallback input fills the template
+        expect(args.message).toContain('Explain the following in plain');
+        expect(args.message).toContain('the attached image');
+        expect(args.imagePaths).toEqual(['/tmp/staged/explain.jpg']);
+      });
+    });
+
+    it('/translate with only an image and no text does not call ask_ollama', async () => {
+      // /translate needs a language code from typed text; image fallback is skipped for it.
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      invoke.mockClear();
+      enableChannelCapture();
+
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/translate' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
       await act(async () => {});
 
       expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());

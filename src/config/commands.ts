@@ -239,6 +239,32 @@ export const COMMANDS: readonly Command[] = [
       'Extract the key points from the following text as a bulleted list. Each item must begin with "- " (a hyphen followed by a space). Do not use numbered lists, plain paragraphs, headers, or any other formatting. Output only the bulleted list, nothing else.\n\nExample output format:\n- First key point\n- Second key point\n- Third key point\n\nEach bullet should be a concise, self-contained statement. Order by importance or logical sequence. Leave out filler and repetition.\n\nText: $INPUT',
   },
   {
+    trigger: '/explain',
+    label: '/explain',
+    description:
+      'Explain a concept or code snippet in plain language with examples',
+    docs: {
+      summary:
+        'Explains any concept, term, or code snippet in plain language, always with a concrete example.',
+      usage: '/explain [text] or /explain with highlighted text',
+      examples: [
+        '`/explain` with highlighted code: explains what the code does and why',
+        '`/explain what is a closure?`: explains the concept with a concrete example',
+        '`/explain JWT`: breaks down the term with a real-world analogy and example',
+      ],
+      behavior:
+        'Outputs a brief explanation followed by at least one concrete example. Assumes no background knowledge. Skips jargon or defines it when unavoidable. No intro or sign-off.',
+    },
+    promptHelp: {
+      summary:
+        'explain a concept or code snippet in plain language with a concrete example.',
+      whenToSuggest:
+        'Mention this when the user wants to understand something unfamiliar: a term, a code snippet, an acronym, or a concept they have not seen before.',
+    },
+    promptTemplate:
+      'Explain the following in plain, simple language. Assume the reader is smart but has no background in the topic: avoid jargon and use analogies where helpful. Structure your answer in two parts: a brief explanation of the concept, followed by at least one concrete example that makes it tangible. Be concise. Output only the explanation, no introduction or sign-off.\n\nText: $INPUT',
+  },
+  {
     trigger: '/todos',
     label: '/todos',
     description: 'Extract to-do items as a checkbox list',

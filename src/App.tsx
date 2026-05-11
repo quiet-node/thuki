@@ -44,6 +44,9 @@ import {
 import './App.css';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
+
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
 const ONBOARDING_EVENT = 'thuki://onboarding';
 
 /** Total transparent padding around the morphing container: pt-2(8) + pb-6(24) + motion py-2(16). */
@@ -1034,9 +1037,7 @@ function App() {
    * images and calls ask(). On error, restores the query so no input is lost.
    */
   const handleScreenSubmit = useCallback(
-    async (fullQuery: string, think?: boolean) => {
-      // eslint-disable-next-line no-control-regex
-      const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
+    async (fullQuery: string, think?: boolean, promptOverride?: string) => {
       const sanitized = selectedContext
         ?.replace(CONTROL_CHARS, '')
         .slice(0, quote.maxContextLength);
@@ -1116,7 +1117,7 @@ function App() {
         .map((img) => img.filePath as string);
       readyPaths.push(screenshotPath);
 
-      ask(fullQuery, context, readyPaths, think);
+      ask(fullQuery, context, readyPaths, think, promptOverride);
       for (const img of attachedImages) {
         URL.revokeObjectURL(img.blobUrl);
       }
@@ -1279,8 +1280,6 @@ function App() {
       if (!searchQuery) return;
       // Sanitize externally-sourced context before moving it into the user
       // bubble so host-app control characters cannot leak into the UI.
-      // eslint-disable-next-line no-control-regex
-      const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
       const sanitized = selectedContext
         ?.replace(CONTROL_CHARS, '')
         .slice(0, quote.maxContextLength);
@@ -1318,26 +1317,36 @@ function App() {
       return;
 
     if (hasScreen) {
-      // Fire-and-forget: the async path handles cleanup and ask() invocation.
-      void handleScreenSubmit(trimmedQuery, hasThink);
+      let screenPromptOverride: string | undefined;
+      if (utilityTrigger) {
+        const sanitized = selectedContext
+          ?.replace(CONTROL_CHARS, '')
+          .slice(0, quote.maxContextLength);
+        const ctx = sanitized?.trim() ? sanitized : undefined;
+        const syntheticInput =
+          utilityTrigger !== '/translate' ? 'the screenshot' : '';
+        screenPromptOverride =
+          buildPrompt(utilityTrigger, strippedMessage, ctx) ??
+          buildPrompt(utilityTrigger, syntheticInput, ctx) ??
+          undefined;
+      }
+      void handleScreenSubmit(trimmedQuery, hasThink, screenPromptOverride);
       return;
     }
 
     if (utilityTrigger) {
       // Sanitize selectedContext before passing to buildPrompt so that control
       // characters from a hostile host-app selection cannot reach the model prompt.
-      // eslint-disable-next-line no-control-regex
-      const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
       const sanitized = selectedContext
         ?.replace(CONTROL_CHARS, '')
         .slice(0, quote.maxContextLength);
       const context = sanitized?.trim() ? sanitized : undefined;
 
-      const composedPrompt = buildPrompt(
-        utilityTrigger,
-        strippedMessage,
-        context,
-      );
+      const composedPrompt =
+        buildPrompt(utilityTrigger, strippedMessage, context) ??
+        (attachedImages.length > 0 && utilityTrigger !== '/translate'
+          ? buildPrompt(utilityTrigger, 'the attached image', context)
+          : null);
       if (!composedPrompt) return; // No input text available.
 
       // Show the full original query (including command trigger) in the chat
@@ -1394,8 +1403,6 @@ function App() {
 
     // Sanitize externally-sourced context: strip control characters and enforce
     // a length cap to limit prompt-injection surface from host-app selections.
-    // eslint-disable-next-line no-control-regex
-    const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
     const sanitized = selectedContext
       ?.replace(CONTROL_CHARS, '')
       .slice(0, quote.maxContextLength);

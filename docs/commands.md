@@ -141,6 +141,21 @@ Extracts key points from text as a markdown bullet list.
 
 ---
 
+## /explain
+
+Explains any concept, term, or code snippet in plain language, always with a concrete example.
+
+**Usage:** `/explain [text] or /explain with highlighted text`
+
+**Examples:**
+- `/explain` with highlighted code: explains what the code does and why
+- `/explain what is a closure?`: explains the concept with a concrete example
+- `/explain JWT`: breaks down the term with a real-world analogy and example
+
+**Behavior:** Outputs a brief explanation followed by at least one concrete example. Assumes no background knowledge. Skips jargon or defines it when unavoidable. No intro or sign-off.
+
+---
+
 ## /todos
 
 Summarizes what a piece of text is about, then extracts every task, action item, and commitment as a markdown checkbox list.
