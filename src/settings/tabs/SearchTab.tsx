@@ -34,7 +34,7 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
             <TextField
               value={value}
               onChange={setValue}
-              placeholder="http://127.0.0.1:25017"
+              placeholder={config.search.searxng_url}
               errored={errored}
               ariaLabel="SearXNG URL"
             />
@@ -52,7 +52,7 @@ export function SearchTab({ config, resyncToken, onSaved }: SearchTabProps) {
             <TextField
               value={value}
               onChange={setValue}
-              placeholder="http://127.0.0.1:25018"
+              placeholder={config.search.reader_url}
               errored={errored}
               ariaLabel="Reader URL"
             />
