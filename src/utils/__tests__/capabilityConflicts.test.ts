@@ -86,8 +86,9 @@ describe('getCapabilityConflict', () => {
       imageCount: 1,
     });
     expect(result).toEqual({
-      text: 'llama3 reads text only. Use an OCR-supported command, or switch to a vision model for images.',
-      url: OCR_COMMANDS_DOC_URL,
+      before: 'llama3 reads text only. Use an ',
+      link: { text: 'OCR-supported command', url: OCR_COMMANDS_DOC_URL },
+      after: ', or switch to a vision model for images.',
     });
   });
 
@@ -98,7 +99,7 @@ describe('getCapabilityConflict', () => {
     });
     expect(result).not.toBeNull();
     expect(typeof result).toBe('object');
-    expect((result as { text: string }).text).toContain('reads text only');
+    expect((result as { before: string }).before).toContain('reads text only');
   });
 
   it('returns null when modelName is empty so the env-state helper can take over', () => {
@@ -244,8 +245,9 @@ describe('getCapabilityConflict', () => {
       hasThinkCommand: true,
     });
     expect(result).toEqual({
-      text: 'llama3 reads text only. Use an OCR-supported command, or switch to a vision model for images.',
-      url: OCR_COMMANDS_DOC_URL,
+      before: 'llama3 reads text only. Use an ',
+      link: { text: 'OCR-supported command', url: OCR_COMMANDS_DOC_URL },
+      after: ', or switch to a vision model for images.',
     });
   });
 
@@ -300,8 +302,9 @@ describe('getCapabilityConflict', () => {
       HISTORY_HAS_IMAGES,
     );
     expect(result).toEqual({
-      text: 'llama3 reads text only. Continue using OCR-supported commands, or switch to a vision model to send images directly.',
-      url: OCR_COMMANDS_DOC_URL,
+      before: 'llama3 reads text only. Continue using ',
+      link: { text: 'OCR-supported commands', url: OCR_COMMANDS_DOC_URL },
+      after: ', or switch to a vision model to send images directly.',
     });
   });
 
@@ -345,9 +348,7 @@ describe('getCapabilityConflict', () => {
       EMPTY,
       HISTORY_HAS_BOTH,
     );
-    expect((result as { text: string }).text).toContain(
-      'Continue using OCR-supported commands',
-    );
+    expect((result as { before: string }).before).toContain('Continue using');
   });
 
   it('compose conflict wins over history conflict when both apply', () => {
@@ -360,8 +361,9 @@ describe('getCapabilityConflict', () => {
       HISTORY_HAS_IMAGES,
     );
     expect(result).toEqual({
-      text: 'llama3 reads text only. Use an OCR-supported command, or switch to a vision model for images.',
-      url: OCR_COMMANDS_DOC_URL,
+      before: 'llama3 reads text only. Use an ',
+      link: { text: 'OCR-supported command', url: OCR_COMMANDS_DOC_URL },
+      after: ', or switch to a vision model for images.',
     });
   });
 
@@ -390,8 +392,9 @@ describe('getCapabilityConflict', () => {
       EMPTY,
       HISTORY_HAS_IMAGES,
     );
-    expect((result as { text: string }).text).toContain(
-      'Continue using OCR-supported commands',
+    expect((result as { before: string }).before).toContain('Continue using');
+    expect((result as { link: { text: string } }).link.text).toBe(
+      'OCR-supported commands',
     );
   });
 
@@ -442,7 +445,7 @@ describe('getCapabilityConflict', () => {
       EMPTY,
       HISTORY_HAS_TWO_IMAGES,
     );
-    expect((result as { text: string }).text).toContain('reads text only');
+    expect((result as { before: string }).before).toContain('reads text only');
   });
 
   it('ignores history-cap warning when vision model has no max-images cap', () => {

@@ -13,10 +13,16 @@ export const OCR_COMMANDS_DOC_URL =
 /**
  * Discriminated message shape consumed by `CapabilityMismatchStrip`. Most
  * branches return a plain string; the vision-conflict branches return a
- * `{ text, url }` pair so the strip becomes clickable and points users at
- * the OCR-supported-commands doc.
+ * three-part shape that embeds an inline link (the OCR-supported-commands
+ * doc) inside the message so only the link text is clickable.
  */
-export type CapabilityConflictMessage = string | { text: string; url: string };
+export type CapabilityConflictMessage =
+  | string
+  | {
+      before: string;
+      link: { text: string; url: string };
+      after: string;
+    };
 
 /**
  * Compose-state inputs the gate inspects. `imageCount` covers manually
@@ -169,8 +175,9 @@ export function getCapabilityConflict(
   if (needsVision) {
     if (!capabilities.vision) {
       return {
-        text: `${name} reads text only. Use an OCR-supported command, or switch to a vision model for images.`,
-        url: OCR_COMMANDS_DOC_URL,
+        before: `${name} reads text only. Use an `,
+        link: { text: 'OCR-supported command', url: OCR_COMMANDS_DOC_URL },
+        after: ', or switch to a vision model for images.',
       };
     }
     // Vision model, but it may cap the number of images per request
@@ -202,8 +209,9 @@ export function getCapabilityConflict(
   // the thread, and how to recover (switch back to a capable model).
   if (history.historyHasImages && !capabilities.vision) {
     return {
-      text: `${name} reads text only. Continue using OCR-supported commands, or switch to a vision model to send images directly.`,
-      url: OCR_COMMANDS_DOC_URL,
+      before: `${name} reads text only. Continue using `,
+      link: { text: 'OCR-supported commands', url: OCR_COMMANDS_DOC_URL },
+      after: ', or switch to a vision model to send images directly.',
     };
   }
   // Vision-capable but with a per-message image cap that earlier turns
