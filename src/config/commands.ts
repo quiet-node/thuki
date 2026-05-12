@@ -80,6 +80,34 @@ export const COMMANDS: readonly Command[] = [
     },
   },
   {
+    trigger: '/extract',
+    label: '/extract',
+    description: 'Extract all text from screenshots or attached images',
+    docs: {
+      summary:
+        'Extracts all visible text from screenshots or attached images using macOS Vision OCR.',
+      usage: '/extract [optional message]',
+      examples: [
+        '`/extract` with an attached image: extracts all text from the image',
+        '`/screen /extract`: captures the screen and extracts all visible text',
+      ],
+      behavior:
+        'Text is extracted using the macOS Vision framework and returned verbatim in a code block. No prose or explanation is added. When multiple images are provided, each result is separated by a horizontal rule. Returns "[No text detected]" when no readable text is found.',
+      composability:
+        '`/extract` can combine with `/screen` to capture then extract in one step.',
+      permission:
+        'Uses the same Screen Recording permission as `/screen` when combined with it.',
+    },
+    promptHelp: {
+      summary:
+        'extract all visible text from attached images or a screenshot using Vision OCR.',
+      whenToSuggest:
+        'Suggest when the user wants to copy text from a screenshot, get text from an image, or read text that appears on screen.',
+      limit:
+        'Returns raw extracted text only, never a description or interpretation of the image.',
+    },
+  },
+  {
     trigger: '/screen',
     label: '/screen',
     description: 'Capture your screen and include it as context',

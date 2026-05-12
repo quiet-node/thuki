@@ -213,6 +213,7 @@ function App() {
     reset,
     loadMessages,
     getTraceConversationId,
+    addOcrTurn,
   } = useOllama(activeModel, handleTurnComplete);
 
   /**
@@ -1135,6 +1136,155 @@ function App() {
   );
 
   /**
+   * Async handler for the `/extract` command path. Runs Vision OCR on all
+   * attached images (and a fresh `/screen` capture if requested), then inserts
+   * the result directly as an assistant message without calling Ollama.
+   *
+   * On Vision failure, falls back to Ollama if the active model supports vision;
+   * otherwise surfaces a descriptive error via `captureError`.
+   */
+  const handleExtractSubmit = useCallback(
+    async (fullQuery: string, hasScreen: boolean) => {
+      // eslint-disable-next-line no-control-regex
+      const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
+      const sanitized = selectedContext
+        ?.replace(CONTROL_CHARS, '')
+        .slice(0, quote.maxContextLength);
+      const context = sanitized?.trim() ? sanitized : undefined;
+
+      // Snapshot display paths for the pending user bubble.
+      const existingDisplayPaths = attachedImages.map(
+        (img) => img.filePath ?? img.blobUrl,
+      );
+      const imagePlaceholders = hasScreen
+        ? [...existingDisplayPaths, SCREEN_CAPTURE_PLACEHOLDER]
+        : existingDisplayPaths;
+
+      // Show the pending user bubble and lock out further submits.
+      if (hasScreen) {
+        screenCapturePendingRef.current = true;
+        screenCaptureInputSnapshotRef.current = { query: fullQuery, context };
+      }
+      setIsSubmitPending(true);
+      setPendingUserMessage({
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: fullQuery,
+        quotedText: context,
+        /* v8 ignore start -- imagePlaceholders always non-empty given the hasContent guard above */
+        imagePaths:
+          imagePlaceholders.length > 0 ? imagePlaceholders : undefined,
+        /* v8 ignore stop */
+      });
+      setQuery('');
+      setSelectedContext(null);
+      /* v8 ignore start -- inputRef always set when overlay is visible */
+      if (inputRef.current) inputRef.current.style.height = 'auto';
+      /* v8 ignore stop */
+
+      // Capture screen if /screen is present.
+      let screenshotPath: string | undefined;
+      if (hasScreen) {
+        try {
+          screenshotPath = await invoke<string>('capture_full_screen_command', {
+            conversationId: getTraceConversationId(),
+          });
+        } catch (e) {
+          screenCapturePendingRef.current = false;
+          screenCaptureInputSnapshotRef.current = null;
+          setIsSubmitPending(false);
+          setPendingUserMessage(null);
+          setQuery(fullQuery);
+          setSelectedContext(context ?? null);
+          setCaptureError(
+            typeof e === 'string'
+              ? e
+              : e instanceof Error
+                ? e.message
+                : String(e),
+          );
+          return;
+        }
+
+        const wasCancelled = !screenCapturePendingRef.current;
+        screenCapturePendingRef.current = false;
+        screenCaptureInputSnapshotRef.current = null;
+        if (wasCancelled) return;
+      }
+
+      // Collect resolved image paths.
+      const readyPaths = attachedImages
+        .filter((img) => img.filePath !== null)
+        .map((img) => img.filePath as string);
+      if (screenshotPath) readyPaths.push(screenshotPath);
+
+      // Clean up attached images.
+      for (const img of attachedImages) URL.revokeObjectURL(img.blobUrl);
+      setAttachedImages([]);
+
+      // Resolve display paths for the real user bubble.
+      const displayPaths = readyPaths.length > 0 ? readyPaths : undefined;
+
+      // Run Vision OCR.
+      setCaptureError(null);
+      let ocrText: string;
+      try {
+        ocrText = await invoke<string>('extract_text_command', {
+          imagePaths: readyPaths,
+        });
+      } catch (e) {
+        // Vision failed: try Ollama if the active model supports vision.
+        const hasVision = activeModelCapabilities?.vision ?? false;
+        setIsSubmitPending(false);
+        setPendingUserMessage(null);
+        if (hasVision && readyPaths.length > 0) {
+          ask(
+            fullQuery,
+            context,
+            readyPaths,
+            undefined,
+            'Extract all text visible in this image verbatim. Output only the extracted text with no commentary, preamble, or formatting.',
+          );
+        } else {
+          setQuery(fullQuery);
+          setSelectedContext(context ?? null);
+          setCaptureError(
+            `OCR failed${
+              typeof e === 'string'
+                ? `: ${e}`
+                : e instanceof Error
+                  ? `: ${e.message}`
+                  : ''
+            }. Switch to a vision-capable model to try via Ollama.`,
+          );
+        }
+        return;
+      }
+
+      // Success: insert the turn directly without an Ollama call.
+      setIsSubmitPending(false);
+      setPendingUserMessage(null);
+      addOcrTurn(
+        fullQuery,
+        context,
+        displayPaths,
+        `\`\`\`\n${ocrText}\n\`\`\``,
+      );
+    },
+    [
+      selectedContext,
+      attachedImages,
+      ask,
+      addOcrTurn,
+      getTraceConversationId,
+      setSelectedContext,
+      setCaptureError,
+      quote.maxContextLength,
+      activeModelCapabilities,
+    ],
+  );
+
+  /**
    * Live strip message for the current environment + compose state. Drives
    * the inline `CapabilityMismatchStrip` so the user sees the right cue as
    * soon as content lands in compose, not only at submit time. The strip
@@ -1178,10 +1328,13 @@ function App() {
   const composeCapabilityState = useMemo(() => {
     const trimmed = query.trim();
     const { found } = parseCommands(trimmed);
+    const hasExtractCommand = found.has('/extract');
     return {
       hasScreenCommand: found.has('/screen'),
       hasThinkCommand: found.has('/think'),
-      imageCount: attachedImages.length,
+      // /extract consumes images via Vision OCR; suppress count so the
+      // vision-model capability gate does not block the submit.
+      imageCount: hasExtractCommand ? 0 : attachedImages.length,
     };
   }, [query, attachedImages]);
 
@@ -1239,7 +1392,8 @@ function App() {
   const handleSubmit = useCallback(() => {
     if (
       (query.trim().length === 0 && attachedImages.length === 0) ||
-      isGenerating
+      isGenerating ||
+      isSubmitPending
     )
       return;
 
@@ -1252,6 +1406,20 @@ function App() {
     const hasScreen = found.has('/screen');
     const hasThink = found.has('/think');
     const hasSearch = found.has('/search');
+    const hasExtract = found.has('/extract');
+
+    // /extract bypasses the Ollama environment gate: Vision OCR runs locally
+    // and never needs Ollama. Shake when there is nothing to extract from.
+    if (hasExtract) {
+      const hasContent = attachedImages.length > 0 || hasScreen;
+      if (!hasContent) {
+        setCaptureError('Attach an image or add /screen to extract text from.');
+        setShakeAskBar(true);
+        return;
+      }
+      void handleExtractSubmit(trimmedQuery, hasScreen);
+      return;
+    }
 
     // Submit-time capability gate. Refuses messages whose attached content
     // the active model cannot handle (images on a text-only model) and
@@ -1443,8 +1611,10 @@ function App() {
   }, [
     query,
     isGenerating,
+    isSubmitPending,
     executeSubmit,
     handleScreenSubmit,
+    handleExtractSubmit,
     selectedContext,
     setSelectedContext,
     attachedImages,

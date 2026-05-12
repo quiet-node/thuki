@@ -21,6 +21,7 @@ pub mod database;
 pub mod history;
 pub mod images;
 pub mod models;
+pub mod ocr;
 pub mod onboarding;
 pub mod screenshot;
 pub mod search;
@@ -1319,6 +1320,8 @@ pub fn run() {
             screenshot::capture_screenshot_command,
             #[cfg(not(coverage))]
             screenshot::capture_full_screen_command,
+            #[cfg(not(coverage))]
+            ocr::extract_text_command,
             notify_overlay_hidden,
             notify_frontend_ready,
             set_window_frame,

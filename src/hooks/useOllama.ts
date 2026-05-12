@@ -783,6 +783,37 @@ export function useOllama(
    */
   const getTraceConversationId = ensureTraceConversationId;
 
+  /**
+   * Inserts a completed user/assistant turn directly, bypassing the Ollama
+   * streaming pipeline. Used by the `/extract` command path, where OCR
+   * produces the assistant content locally via the Vision framework.
+   * Calls `onTurnComplete` so the turn is persisted to history.
+   */
+  const addOcrTurn = useCallback(
+    (
+      userContent: string,
+      userQuotedText: string | undefined,
+      userImagePaths: string[] | undefined,
+      assistantContent: string,
+    ) => {
+      const userMsg: Message = {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: userContent,
+        quotedText: userQuotedText,
+        imagePaths: userImagePaths,
+      };
+      const assistantMsg: Message = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: assistantContent,
+      };
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      onTurnComplete?.(userMsg, assistantMsg);
+    },
+    [onTurnComplete],
+  );
+
   return {
     messages,
     ask,
@@ -793,5 +824,6 @@ export function useOllama(
     reset,
     loadMessages,
     getTraceConversationId,
+    addOcrTurn,
   };
 }

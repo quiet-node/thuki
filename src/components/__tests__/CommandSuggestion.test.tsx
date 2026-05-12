@@ -67,6 +67,11 @@ const ACTION_CMD = makeCommand(
   'dummy $INPUT',
 );
 
+const EXTRACT_CMD = makeCommand(
+  '/extract',
+  'Extract text from screenshots using macOS Vision OCR',
+);
+
 describe('CommandSuggestion', () => {
   it('shows "No commands found" when commands list is empty', () => {
     render(
@@ -208,6 +213,7 @@ describe('CommandSuggestion', () => {
       REFINE_CMD,
       BULLETS_CMD,
       ACTION_CMD,
+      EXTRACT_CMD,
     ];
     const { container } = render(
       <CommandSuggestion
@@ -218,6 +224,26 @@ describe('CommandSuggestion', () => {
     );
     const svgs = container.querySelectorAll('svg');
     expect(svgs.length).toBe(allCmds.length);
+  });
+
+  it('renders a distinct icon for /extract (not the screen monitor icon)', () => {
+    const { container: extractContainer } = render(
+      <CommandSuggestion
+        commands={[EXTRACT_CMD]}
+        highlightedIndex={-1}
+        onSelect={vi.fn()}
+      />,
+    );
+    const { container: screenContainer } = render(
+      <CommandSuggestion
+        commands={[SCREEN_CMD]}
+        highlightedIndex={-1}
+        onSelect={vi.fn()}
+      />,
+    );
+    const extractSvg = extractContainer.querySelector('svg');
+    const screenSvg = screenContainer.querySelector('svg');
+    expect(extractSvg?.innerHTML).not.toBe(screenSvg?.innerHTML);
   });
 
   it('renders a distinct icon for /search (not the screen monitor icon)', () => {

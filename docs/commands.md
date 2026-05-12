@@ -30,6 +30,24 @@ Runs agentic web search and answers from live sources with citations.
 
 ---
 
+## /extract
+
+Extracts all visible text from screenshots or attached images using macOS Vision OCR.
+
+**Usage:** `/extract [optional message]`
+
+**Examples:**
+- `/extract` with an attached image: extracts all text from the image
+- `/screen /extract`: captures the screen and extracts all visible text
+
+**Behavior:** Text is extracted using the macOS Vision framework and returned verbatim in a code block. No prose or explanation is added. When multiple images are provided, each result is separated by a horizontal rule. Returns "[No text detected]" when no readable text is found.
+
+**Composable:** `/extract` can combine with `/screen` to capture then extract in one step.
+
+**Permission:** Uses the same Screen Recording permission as `/screen` when combined with it.
+
+---
+
 ## /screen
 
 Captures your screen and attaches it as context for the current message.

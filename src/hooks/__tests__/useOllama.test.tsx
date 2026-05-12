@@ -2531,4 +2531,59 @@ describe('useOllama', () => {
       expect(chatCall?.[1]).toMatchObject({ isFirstTurn: false });
     });
   });
+
+  // ─── addOcrTurn ──────────────────────────────────────────────────────────────
+
+  describe('addOcrTurn', () => {
+    it('appends user and assistant messages to the conversation', async () => {
+      const { result } = renderHook(() => useOllama(''));
+
+      act(() => {
+        result.current.addOcrTurn(
+          '/extract',
+          undefined,
+          ['/tmp/img.jpg'],
+          '```\nhello world\n```',
+        );
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.messages[0]).toMatchObject({
+        role: 'user',
+        content: '/extract',
+        quotedText: undefined,
+        imagePaths: ['/tmp/img.jpg'],
+      });
+      expect(result.current.messages[1]).toMatchObject({
+        role: 'assistant',
+        content: '```\nhello world\n```',
+      });
+    });
+
+    it('calls onTurnComplete with the user and assistant messages', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useOllama('', onTurnComplete));
+
+      act(() => {
+        result.current.addOcrTurn(
+          '/extract',
+          'selected text',
+          undefined,
+          'extracted',
+        );
+      });
+
+      expect(onTurnComplete).toHaveBeenCalledOnce();
+      const [userMsg, assistantMsg] = onTurnComplete.mock.calls[0];
+      expect(userMsg).toMatchObject({
+        role: 'user',
+        content: '/extract',
+        quotedText: 'selected text',
+      });
+      expect(assistantMsg).toMatchObject({
+        role: 'assistant',
+        content: 'extracted',
+      });
+    });
+  });
 });
