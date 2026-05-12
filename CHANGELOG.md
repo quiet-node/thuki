@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Renamed the `[model]` section in `config.toml` to `[inference]`. The section still contains a single field, `ollama_url`, but the name now reflects what it actually configures (the inference daemon endpoint, not a model). There is no backward-compatibility shim: if you had a custom `[model]` section, rename it to `[inference]` after upgrading.
 - Active model selection is now strictly Option-typed end to end. Ollama's `/api/tags` is the single source of truth: when nothing is installed and nothing is persisted, Thuki refuses to dispatch requests and surfaces a "Pick a model" prompt instead of falling back to a hardcoded slug. The previous `DEFAULT_MODEL_NAME` constant has been removed.
 
+## [0.9.0](https://github.com/quiet-node/thuki/compare/v0.8.5...v0.9.0) (2026-05-12)
+
+
+### Features
+
+* **commands:** add /explain slash command with /screen and image support ([#159](https://github.com/quiet-node/thuki/issues/159)) ([b78e9b3](https://github.com/quiet-node/thuki/commit/b78e9b3664cf8f8d1031f7b84778f9c563ed1c3f))
+* **commands:** add /extract slash command with Vision OCR text extraction ([#160](https://github.com/quiet-node/thuki/issues/160)) ([aafe2fc](https://github.com/quiet-node/thuki/commit/aafe2fc2054615639a7a88803b18c6947d749edd))
+* **commands:** unified slash command dispatch + OCR utility commands ([#164](https://github.com/quiet-node/thuki/issues/164)) ([22fc98f](https://github.com/quiet-node/thuki/commit/22fc98fb021fafec64182882eed3b7a8133e73e5))
+* **markdown:** add KaTeX math rendering via Streamdown plugin API ([#156](https://github.com/quiet-node/thuki/issues/156)) ([579a93b](https://github.com/quiet-node/thuki/commit/579a93bef0c7d513adf8550cb1d8a1ff41b580c3))
+
+
+### Bug Fixes
+
+* **config:** restore default system prompt on upgrade for uncustomized configs ([#158](https://github.com/quiet-node/thuki/issues/158)) ([43e0386](https://github.com/quiet-node/thuki/commit/43e03863082cc59c4340ab9cd2d313aaeefe4f62))
+
 ## [0.8.5](https://github.com/quiet-node/thuki/compare/v0.8.4...v0.8.5) (2026-05-08)
 
 
