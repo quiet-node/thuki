@@ -133,7 +133,7 @@ export function TipBar({ tip, tipKey, suppressed }: TipBarProps) {
         </span>
         <span
           ref={spanRef}
-          className="text-[10px] underline decoration-dotted underline-offset-2 decoration-[#ff8d5c]/40"
+          className="text-[10px] underline decoration-dotted underline-offset-2 decoration-[#ff8d5c]/40 min-w-0 overflow-hidden"
           style={{ color: '#8a8a8e' }}
           data-testid="tip-text"
         />
@@ -151,7 +151,7 @@ export function TipBar({ tip, tipKey, suppressed }: TipBarProps) {
       </span>
       <span
         ref={spanRef}
-        className="text-[10px]"
+        className="text-[10px] min-w-0 overflow-hidden"
         style={{ color: '#8a8a8e' }}
         data-testid="tip-text"
       />

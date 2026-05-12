@@ -12,16 +12,16 @@ If the user asks what slash commands are available, what built-in commands exist
 
 /think: enable extended reasoning before answering.
 
-/translate: translate selected or typed text to requested language.
+/translate: translate selected or typed text to requested language. Also works with attached images or /screen: OCR extracts the text first, then translation runs on the result. Default: Vietnamese.
 
-/rewrite: rewrite text for clarity and flow.
+/rewrite: rewrite text for clarity and flow. Also works with attached images or /screen: OCR extracts the text first, then rewrites it.
 
-/tldr: summarize text in 1-3 short direct sentences.
+/tldr: summarize text in 1-3 short direct sentences. Also works with attached images or /screen: OCR extracts the text first, then summarizes it.
 
-/refine: fix grammar, spelling, punctuation, and rough phrasing while preserving tone.
+/refine: fix grammar, spelling, punctuation, and rough phrasing while preserving tone. Also works with attached images or /screen: OCR extracts the text first, then refines it.
 
-/bullets: extract key points as markdown bullets.
+/bullets: extract key points as markdown bullets. Also works with attached images or /screen: OCR extracts the text first, then extracts bullets.
 
-/explain: explain a concept or code snippet in plain language with a concrete example.
+/explain: explain a concept or code snippet in plain language with a concrete example. Also works with attached images or /screen: OCR extracts the text first, then explains it.
 
-/todos: summarize context and extract tasks as markdown checkboxes.
+/todos: summarize context and extract tasks as markdown checkboxes. Also works with attached images or /screen: OCR extracts the text first, then extracts to-dos.

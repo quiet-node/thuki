@@ -249,6 +249,10 @@ function App() {
     context: string | undefined;
     think: boolean;
     promptOverride?: string;
+    /** Set when the deferred submit is for a utility OCR command. */
+    utilityTrigger?: string;
+    strippedMessage?: string;
+    hasScreen?: boolean;
   } | null>(null);
   /** True while waiting for images to finish processing before a deferred
    *  submit. Drives the "waiting" UI state in the ask bar. */
@@ -393,7 +397,16 @@ function App() {
    */
   const setContainerRef = useCallback((node: HTMLDivElement | null) => {
     morphingContainerNodeRef.current = node;
+  }, []);
 
+  /**
+   * Callback ref for the layout wrapper that surrounds both the morphing
+   * container and the footer slot. Attaches the ResizeObserver so the native
+   * window tracks the combined height: container + footer. The footer sits
+   * outside the inner overflow-hidden container so it is never clipped when
+   * chat is at max height, and the wrapper's natural height grows to include it.
+   */
+  const setLayoutWrapperRef = useCallback((node: HTMLDivElement | null) => {
     if (observerRef.current) {
       observerRef.current.disconnect();
       observerRef.current = null;
@@ -1285,6 +1298,170 @@ function App() {
   );
 
   /**
+   * Async handler for utility commands (`/tldr`, `/translate`, etc.) when the
+   * user has attached images or added `/screen`. Runs Vision OCR to extract
+   * text, builds the prompt template with the OCR result as `$INPUT`, then
+   * calls `ask()` without sending any image bytes to the model.
+   */
+  const handleUtilityOcrSubmit = useCallback(
+    async (
+      fullQuery: string,
+      trigger: string,
+      strippedMessage: string,
+      hasScreen: boolean,
+      hasThink: boolean,
+    ) => {
+      // eslint-disable-next-line no-control-regex
+      const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
+      const sanitized = selectedContext
+        ?.replace(CONTROL_CHARS, '')
+        .slice(0, quote.maxContextLength);
+      const context = sanitized?.trim() ? sanitized : undefined;
+
+      // Snapshot display paths for the pending user bubble.
+      const existingDisplayPaths = attachedImages.map(
+        /* v8 ignore next -- dispatch guard ensures filePath is set; blobUrl fallback is defensive */
+        (img) => img.filePath ?? img.blobUrl,
+      );
+      const imagePlaceholders = hasScreen
+        ? [...existingDisplayPaths, SCREEN_CAPTURE_PLACEHOLDER]
+        : existingDisplayPaths;
+
+      // Show the pending user bubble and lock out further submits.
+      if (hasScreen) {
+        screenCapturePendingRef.current = true;
+        screenCaptureInputSnapshotRef.current = { query: fullQuery, context };
+      }
+      setIsSubmitPending(true);
+      setPendingUserMessage({
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: fullQuery,
+        quotedText: context,
+        /* v8 ignore start -- imagePlaceholders always non-empty given the dispatch guard above */
+        imagePaths:
+          imagePlaceholders.length > 0 ? imagePlaceholders : undefined,
+        /* v8 ignore stop */
+      });
+      setQuery('');
+      setSelectedContext(null);
+      /* v8 ignore start -- inputRef always set when overlay is visible */
+      if (inputRef.current) inputRef.current.style.height = 'auto';
+      /* v8 ignore stop */
+
+      // Capture screen if /screen is present.
+      let screenshotPath: string | undefined;
+      if (hasScreen) {
+        try {
+          screenshotPath = await invoke<string>('capture_full_screen_command', {
+            conversationId: getTraceConversationId(),
+          });
+        } catch (e) {
+          screenCapturePendingRef.current = false;
+          screenCaptureInputSnapshotRef.current = null;
+          setIsSubmitPending(false);
+          setPendingUserMessage(null);
+          setQuery(fullQuery);
+          setSelectedContext(context ?? null);
+          /* v8 ignore start -- Tauri always rejects with string or Error */
+          setCaptureError(
+            typeof e === 'string'
+              ? e
+              : e instanceof Error
+                ? e.message
+                : String(e),
+          );
+          /* v8 ignore stop */
+          return;
+        }
+
+        const wasCancelled = !screenCapturePendingRef.current;
+        screenCapturePendingRef.current = false;
+        screenCaptureInputSnapshotRef.current = null;
+        if (wasCancelled) return;
+      }
+
+      // Collect resolved image paths (in-flight images with filePath=null are filtered out).
+      const readyPaths = attachedImages
+        .filter((img) => img.filePath !== null)
+        .map((img) => img.filePath as string);
+      if (screenshotPath) readyPaths.push(screenshotPath);
+
+      // Clean up attached images.
+      for (const img of attachedImages) URL.revokeObjectURL(img.blobUrl);
+      setAttachedImages([]);
+
+      // Run Vision OCR.
+      let ocrText: string;
+      try {
+        ocrText = await invoke<string>('extract_text_command', {
+          imagePaths: readyPaths,
+        });
+      } catch (e) {
+        setIsSubmitPending(false);
+        setPendingUserMessage(null);
+        setQuery(fullQuery);
+        setSelectedContext(context ?? null);
+        /* v8 ignore start -- Tauri always rejects with string or Error */
+        setCaptureError(
+          `OCR failed${
+            typeof e === 'string'
+              ? `: ${e}`
+              : e instanceof Error
+                ? `: ${e.message}`
+                : ''
+          }`,
+        );
+        /* v8 ignore stop */
+        return;
+      }
+
+      if (ocrText === '[No text detected]') {
+        setIsSubmitPending(false);
+        setPendingUserMessage(null);
+        setQuery(fullQuery);
+        setSelectedContext(context ?? null);
+        setCaptureError('No readable text found in the image.');
+        return;
+      }
+
+      // Build the prompt with OCR text as $INPUT.
+      const composedPrompt = buildPrompt(trigger, strippedMessage, ocrText);
+      /* v8 ignore next 6 */
+      if (!composedPrompt) {
+        setIsSubmitPending(false);
+        setPendingUserMessage(null);
+        setQuery(fullQuery);
+        setSelectedContext(context ?? null);
+        return;
+      }
+
+      // Fire the ask — no image bytes reach the model, but display paths
+      // flow to the user bubble so the thumbnail is visible in the conversation.
+      setIsSubmitPending(false);
+      setPendingUserMessage(null);
+      ask(
+        fullQuery,
+        context,
+        undefined,
+        hasThink || undefined,
+        composedPrompt,
+        /* v8 ignore next -- dispatch guard ensures at least one image source; empty path is defensive */
+        readyPaths.length > 0 ? readyPaths : undefined,
+      );
+    },
+    [
+      selectedContext,
+      attachedImages,
+      ask,
+      getTraceConversationId,
+      setSelectedContext,
+      setCaptureError,
+      quote.maxContextLength,
+    ],
+  );
+
+  /**
    * Live strip message for the current environment + compose state. Drives
    * the inline `CapabilityMismatchStrip` so the user sees the right cue as
    * soon as content lands in compose, not only at submit time. The strip
@@ -1329,12 +1506,20 @@ function App() {
     const trimmed = query.trim();
     const { found } = parseCommands(trimmed);
     const hasExtractCommand = found.has('/extract');
+    const hasScreenCommand = found.has('/screen');
+    const hasUtilityCommand = Array.from(found).some((t) => {
+      const cmd = COMMANDS.find((c) => c.trigger === t);
+      return !!cmd?.promptTemplate;
+    });
+    // /extract and utility+image/screen route through Vision OCR; suppress
+    // image and screen counts so the capability gate does not block the submit.
+    const ocrPath =
+      hasExtractCommand ||
+      (hasUtilityCommand && (attachedImages.length > 0 || hasScreenCommand));
     return {
-      hasScreenCommand: found.has('/screen'),
+      hasScreenCommand: ocrPath ? false : hasScreenCommand,
       hasThinkCommand: found.has('/think'),
-      // /extract consumes images via Vision OCR; suppress count so the
-      // vision-model capability gate does not block the submit.
-      imageCount: hasExtractCommand ? 0 : attachedImages.length,
+      imageCount: ocrPath ? 0 : attachedImages.length,
     };
   }, [query, attachedImages]);
 
@@ -1421,6 +1606,58 @@ function App() {
       return;
     }
 
+    // Check for utility commands with prompt templates.
+    const utilityTrigger = Array.from(found).find((t) => {
+      const cmd = COMMANDS.find((c) => c.trigger === t);
+      return !!cmd?.promptTemplate;
+    });
+
+    // Utility commands with images or /screen: OCR path — bypasses the
+    // Ollama capability gate because no image bytes reach the model.
+    if (utilityTrigger && (hasScreen || attachedImages.length > 0)) {
+      // If images are still uploading, defer: show the pending bubble and wait
+      // for all filePaths to resolve before running OCR. Submitting immediately
+      // would filter out still-pending images and OCR an empty list, producing
+      // the "No readable text found" error the user sees with a fast submit.
+      const hasPendingImages = attachedImages.some(
+        (img) => img.filePath === null,
+      );
+      if (hasPendingImages) {
+        const sanitized = selectedContext
+          ?.replace(CONTROL_CHARS, '')
+          .slice(0, quote.maxContextLength);
+        const deferredContext = sanitized?.trim() ? sanitized : undefined;
+        setIsSubmitPending(true);
+        setPendingUserMessage({
+          id: crypto.randomUUID(),
+          role: 'user',
+          content: trimmedQuery,
+          quotedText: deferredContext,
+          imagePaths: attachedImages.map((img) => img.filePath ?? img.blobUrl),
+        });
+        setQuery('');
+        /* v8 ignore next */
+        if (inputRef.current) inputRef.current.style.height = 'auto';
+        pendingSubmitRef.current = {
+          query: trimmedQuery,
+          context: deferredContext,
+          think: hasThink,
+          utilityTrigger,
+          strippedMessage,
+          hasScreen,
+        };
+        return;
+      }
+      void handleUtilityOcrSubmit(
+        trimmedQuery,
+        utilityTrigger,
+        strippedMessage,
+        hasScreen,
+        hasThink,
+      );
+      return;
+    }
+
     // Submit-time capability gate. Refuses messages whose attached content
     // the active model cannot handle (images on a text-only model) and
     // environment-state failures (Ollama unreachable, no model selected).
@@ -1467,103 +1704,54 @@ function App() {
       return;
     }
 
-    // Check for utility commands with prompt templates.
-    const utilityTrigger = Array.from(found).find((t) => {
-      const cmd = COMMANDS.find((c) => c.trigger === t);
-      return !!cmd?.promptTemplate;
-    });
-
     // Nothing to send if the message is only commands with no content or images.
-    // Exception: a utility command or /think with pre-filled selected context is
-    // valid even if no additional text was typed after the trigger.
+    // Utility triggers are excluded: they fall through to their own block below
+    // which shakes + shows an error when no input is found.
+    // Exception: /think with pre-filled selected context is valid.
     if (
       !strippedMessage &&
       attachedImages.length === 0 &&
       !hasScreen &&
-      !((utilityTrigger || hasThink) && selectedContext?.trim())
+      !utilityTrigger &&
+      !(hasThink && selectedContext?.trim())
     )
       return;
 
     if (hasScreen) {
-      let screenPromptOverride: string | undefined;
-      if (utilityTrigger) {
-        const sanitized = selectedContext
-          ?.replace(CONTROL_CHARS, '')
-          .slice(0, quote.maxContextLength);
-        const ctx = sanitized?.trim() ? sanitized : undefined;
-        const syntheticInput =
-          utilityTrigger !== '/translate' ? 'the screenshot' : '';
-        screenPromptOverride =
-          buildPrompt(utilityTrigger, strippedMessage, ctx) ??
-          buildPrompt(utilityTrigger, syntheticInput, ctx) ??
-          undefined;
-      }
-      void handleScreenSubmit(trimmedQuery, hasThink, screenPromptOverride);
+      void handleScreenSubmit(trimmedQuery, hasThink, undefined);
       return;
     }
 
     if (utilityTrigger) {
-      // Sanitize selectedContext before passing to buildPrompt so that control
-      // characters from a hostile host-app selection cannot reach the model prompt.
+      // OCR dispatch above already handled utilityTrigger + images/screen cases,
+      // so this branch only runs for text-only utility commands (no attachments).
       const sanitized = selectedContext
         ?.replace(CONTROL_CHARS, '')
         .slice(0, quote.maxContextLength);
       const context = sanitized?.trim() ? sanitized : undefined;
 
-      const composedPrompt =
-        buildPrompt(utilityTrigger, strippedMessage, context) ??
-        (attachedImages.length > 0 && utilityTrigger !== '/translate'
-          ? buildPrompt(utilityTrigger, 'the attached image', context)
-          : null);
-      if (!composedPrompt) return; // No input text available.
-
-      // Show the full original query (including command trigger) in the chat
-      // bubble, matching the behaviour of /screen and the normal submit path.
-      const displayText = trimmedQuery;
-
-      const hasPendingImages = attachedImages.some(
-        (img) => img.filePath === null,
+      const composedPrompt = buildPrompt(
+        utilityTrigger,
+        strippedMessage,
+        context,
       );
-      if (!hasPendingImages) {
-        const readyPaths = attachedImages
-          .filter((img) => img.filePath !== null)
-          .map((img) => img.filePath as string);
-        const images = readyPaths.length > 0 ? readyPaths : undefined;
-        ask(
-          displayText,
-          context,
-          images,
-          hasThink || undefined,
-          composedPrompt,
+      if (!composedPrompt) {
+        setCaptureError(
+          `Provide text or attach an image to use ${utilityTrigger}.`,
         );
-        setSelectedContext(null);
-        setQuery('');
-        for (const img of attachedImages) {
-          URL.revokeObjectURL(img.blobUrl);
-        }
-        setAttachedImages([]);
-        /* v8 ignore next */
-        inputRef.current!.style.height = 'auto';
+        setShakeAskBar(true);
         return;
       }
 
-      // Images still processing: store intent for deferred submit.
-      pendingSubmitRef.current = {
-        query: displayText,
+      ask(
+        trimmedQuery,
         context,
-        think: hasThink,
-        promptOverride: composedPrompt,
-      };
-      setIsSubmitPending(true);
-      setPendingUserMessage({
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: displayText,
-        quotedText: context,
-        imagePaths: attachedImages.map((img) => img.filePath ?? img.blobUrl),
-      });
-      setQuery('');
+        undefined,
+        hasThink || undefined,
+        composedPrompt,
+      );
       setSelectedContext(null);
+      setQuery('');
       /* v8 ignore next */
       inputRef.current!.style.height = 'auto';
       return;
@@ -1615,6 +1803,7 @@ function App() {
     executeSubmit,
     handleScreenSubmit,
     handleExtractSubmit,
+    handleUtilityOcrSubmit,
     selectedContext,
     setSelectedContext,
     attachedImages,
@@ -1654,8 +1843,32 @@ function App() {
       context,
       think,
       promptOverride,
+      utilityTrigger,
+      strippedMessage,
+      hasScreen,
     } = pendingSubmitRef.current;
     pendingSubmitRef.current = null;
+
+    if (utilityTrigger) {
+      // Utility OCR deferred path: images are now fully resolved.
+      // Clear the loading-spinner bubble; handleUtilityOcrSubmit will set a
+      // fresh one with resolved paths and then run OCR. isSubmitPending stays
+      // true across the transition because handleUtilityOcrSubmit sets it
+      // synchronously before its first await, so React batches the two
+      // state updates and the UI never sees a false intermediate.
+      setPendingUserMessage(null);
+      void handleUtilityOcrSubmit(
+        pendingQuery,
+        utilityTrigger,
+        /* v8 ignore next -- strippedMessage is always set when utilityTrigger is set */
+        strippedMessage ?? '',
+        /* v8 ignore next -- hasScreen is always set when utilityTrigger is set */
+        hasScreen ?? false,
+        think,
+      );
+      return;
+    }
+
     setIsSubmitPending(false);
     // Clear the preview message - ask() will add the real one with file paths.
     setPendingUserMessage(null);
@@ -1669,7 +1882,7 @@ function App() {
       URL.revokeObjectURL(img.blobUrl);
     }
     setAttachedImages([]);
-  }, [attachedImages, ask, setSelectedContext]);
+  }, [attachedImages, ask, handleUtilityOcrSubmit, setSelectedContext]);
   /* eslint-enable @eslint-react/set-state-in-effect */
 
   /**
@@ -1933,91 +2146,99 @@ function App() {
             transition={{ type: 'spring', stiffness: 260, damping: 24 }}
             className="w-full px-4 py-2 overflow-visible"
           >
-            {/* Relative wrapper - serves as the positioning context for the
-                chat-mode history dropdown so it can sit outside the morphing
-                container's overflow-hidden boundary without being clipped. */}
+            {/* Relative wrapper - positioning context for absolute-positioned
+                dropdowns (history, model picker) so they can float above the
+                chat without being clipped. */}
             <div className="relative">
-              {/* Morphing Container - flex column ensures the input bar
-                  always sticks to the bottom without spring animation lag.
-                  A CSS `transition: min-height` drives smooth window growth
-                  when the chat-mode history dropdown is open; the existing
-                  ResizeObserver fires per-frame and calls setSize() so the
-                  native window tracks the animation. The dropdown is a sibling
-                  (not a child) so overflow-hidden never clips it. */}
+              {/* Layout wrapper: provides visual appearance (background, border,
+                  border-radius, shadow) and is observed by ResizeObserver so the
+                  native window tracks the combined height of the chat area and the
+                  footer slot. The inner morphing container clips content during the
+                  morph animation; the footer slot sits outside it so it is never
+                  clipped by overflow-hidden when chat is at max height. */}
               <div
-                ref={setContainerRef}
-                style={{
-                  transition:
-                    'height 0.25s cubic-bezier(0.16, 1, 0.3, 1), min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
-                  maxHeight: `${config.window.maxChatHeight}px`,
-                }}
-                className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border overflow-hidden ${
+                ref={setLayoutWrapperRef}
+                className={`bg-surface-base backdrop-blur-2xl border border-surface-border ${
                   isChatMode
-                    ? `rounded-lg shadow-chat`
+                    ? 'rounded-lg shadow-chat'
                     : 'rounded-2xl shadow-bar'
                 }`}
               >
-                {/* Chat Messages Area - morphs in when in chat mode. */}
-                <AnimatePresence>
-                  {isChatMode ? (
-                    <ConversationView
-                      messages={
-                        pendingUserMessage
-                          ? [...messages, pendingUserMessage]
-                          : messages
-                      }
-                      isGenerating={isGenerating || isSubmitPending}
-                      onClose={handleCloseOverlay}
-                      onSave={handleSave}
-                      isSaved={isSaved}
-                      canSave={canSave}
-                      onNewConversation={handleNewConversation}
-                      onHistoryOpen={handleHistoryToggle}
-                      onImagePreview={handleChatImagePreview}
-                      searchStage={searchStage}
-                      activeModel={activeModel}
-                      onModelPickerToggle={
-                        ollamaReachable ? handleModelPickerToggle : undefined
-                      }
-                      isModelPickerOpen={isModelPickerOpen}
-                    />
-                  ) : null}
-                </AnimatePresence>
-
-                {/* Ask-bar mode model picker drawer - above the input bar.
-                    In chat mode the trigger and drawer move to the header area above. */}
-                {!isChatMode && (
+                {/* Morphing Container - flex column ensures the input bar
+                    always sticks to the bottom. overflow-hidden clips chat
+                    content during the morph animation. Visual styling lives on
+                    the outer layout wrapper so the footer extends the window
+                    without being clipped. */}
+                <div
+                  ref={setContainerRef}
+                  style={{
+                    transition:
+                      'height 0.25s cubic-bezier(0.16, 1, 0.3, 1), min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+                    maxHeight: `${config.window.maxChatHeight}px`,
+                  }}
+                  className="morphing-container relative flex flex-col overflow-hidden"
+                >
+                  {/* Chat Messages Area - morphs in when in chat mode. */}
                   <AnimatePresence>
-                    {isModelPickerOpen && ollamaReachable ? (
-                      <motion.div
-                        ref={modelPickerAskBarRef}
-                        key="model-picker-askbar"
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{
-                          height: {
-                            duration: 0.3,
-                            ease: [0.33, 1, 0.68, 1],
-                          },
-                          opacity: { duration: 0.2, delay: 0.08 },
-                        }}
-                        style={{ overflow: 'hidden' }}
-                        className="border-t border-surface-border"
-                      >
-                        <ModelPickerPanel
-                          models={availableModels}
-                          activeModel={activeModel}
-                          onSelect={handleModelSelect}
-                          onClose={handleModelPickerClose}
-                          capabilities={modelCapabilities}
-                        />
-                      </motion.div>
+                    {isChatMode ? (
+                      <ConversationView
+                        messages={
+                          pendingUserMessage
+                            ? [...messages, pendingUserMessage]
+                            : messages
+                        }
+                        isGenerating={isGenerating || isSubmitPending}
+                        onClose={handleCloseOverlay}
+                        onSave={handleSave}
+                        isSaved={isSaved}
+                        canSave={canSave}
+                        onNewConversation={handleNewConversation}
+                        onHistoryOpen={handleHistoryToggle}
+                        onImagePreview={handleChatImagePreview}
+                        searchStage={searchStage}
+                        activeModel={activeModel}
+                        onModelPickerToggle={
+                          ollamaReachable ? handleModelPickerToggle : undefined
+                        }
+                        isModelPickerOpen={isModelPickerOpen}
+                      />
                     ) : null}
                   </AnimatePresence>
-                )}
 
-                {/* Ask-bar mode history panel - inline below the input bar.
+                  {/* Ask-bar mode model picker drawer - above the input bar.
+                    In chat mode the trigger and drawer move to the header area above. */}
+                  {!isChatMode && (
+                    <AnimatePresence>
+                      {isModelPickerOpen && ollamaReachable ? (
+                        <motion.div
+                          ref={modelPickerAskBarRef}
+                          key="model-picker-askbar"
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{
+                            height: {
+                              duration: 0.3,
+                              ease: [0.33, 1, 0.68, 1],
+                            },
+                            opacity: { duration: 0.2, delay: 0.08 },
+                          }}
+                          style={{ overflow: 'hidden' }}
+                          className="border-t border-surface-border"
+                        >
+                          <ModelPickerPanel
+                            models={availableModels}
+                            activeModel={activeModel}
+                            onSelect={handleModelSelect}
+                            onClose={handleModelPickerClose}
+                            capabilities={modelCapabilities}
+                          />
+                        </motion.div>
+                      ) : null}
+                    </AnimatePresence>
+                  )}
+
+                  {/* Ask-bar mode history panel - inline below the input bar.
                     The !isChatMode gate lives OUTSIDE AnimatePresence so that when
                     a conversation is loaded (isChatMode → true) the panel unmounts
                     instantly - no exit animation runs alongside ConversationView
@@ -2026,88 +2247,82 @@ function App() {
                     causing two rapid ResizeObserver → setSize() calls (jitter).
                     AnimatePresence is still used for the manual toggle (isHistoryOpen)
                     so the drawer height-animates smoothly open and closed. */}
-                {!isChatMode && (
-                  <AnimatePresence>
-                    {isHistoryOpen ? (
-                      <motion.div
-                        key="ask-bar-history"
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{
-                          height: {
-                            duration: 0.3,
-                            ease: [0.33, 1, 0.68, 1],
-                          },
-                          opacity: { duration: 0.2, delay: 0.08 },
-                        }}
-                        style={{ overflow: 'hidden' }}
-                        className="border-t border-surface-border"
-                      >
-                        <HistoryPanel
-                          listConversations={listConversations}
-                          onLoadConversation={handleLoadConversation}
-                          onSaveAndLoad={handleSaveAndLoad}
-                          onDeleteConversation={handleDeleteConversation}
-                          hasCurrentMessages={false}
-                          showNewConversation={false}
-                          currentConversationId={conversationId}
-                        />
-                      </motion.div>
-                    ) : null}
-                  </AnimatePresence>
-                )}
+                  {!isChatMode && (
+                    <AnimatePresence>
+                      {isHistoryOpen ? (
+                        <motion.div
+                          key="ask-bar-history"
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{
+                            height: {
+                              duration: 0.3,
+                              ease: [0.33, 1, 0.68, 1],
+                            },
+                            opacity: { duration: 0.2, delay: 0.08 },
+                          }}
+                          style={{ overflow: 'hidden' }}
+                          className="border-t border-surface-border"
+                        >
+                          <HistoryPanel
+                            listConversations={listConversations}
+                            onLoadConversation={handleLoadConversation}
+                            onSaveAndLoad={handleSaveAndLoad}
+                            onDeleteConversation={handleDeleteConversation}
+                            hasCurrentMessages={false}
+                            showNewConversation={false}
+                            currentConversationId={conversationId}
+                          />
+                        </motion.div>
+                      ) : null}
+                    </AnimatePresence>
+                  )}
 
-                {/* Capture error banner: shown when /screen capture fails so
+                  {/* Capture error banner: shown when /screen capture fails so
                     the user knows why the message was not sent. */}
-                {captureError && (
-                  <div className="px-4 py-2 border-t border-red-900/30">
-                    <p className="text-red-400 text-xs leading-relaxed">
-                      {captureError}
-                    </p>
-                  </div>
-                )}
+                  {captureError && (
+                    <div className="px-4 py-2 border-t border-red-900/30">
+                      <p className="text-red-400 text-xs leading-relaxed">
+                        {captureError}
+                      </p>
+                    </div>
+                  )}
 
-                {/* Input Bar - always pinned to the bottom */}
-                <AskBarView
-                  query={query}
-                  setQuery={setQuery}
-                  isChatMode={isChatMode}
-                  isGenerating={isGenerating}
-                  isSubmitPending={isSubmitPending}
-                  onSubmit={handleSubmit}
-                  onCancel={handleCancel}
-                  inputRef={inputRef}
-                  selectedText={selectedContext ?? undefined}
-                  onHistoryOpen={handleHistoryToggle}
-                  attachedImages={isSubmitPending ? [] : attachedImages}
-                  onImagesAttached={handleImagesAttached}
-                  onImageRemove={handleImageRemove}
-                  onImagePreview={handleAskBarImagePreview}
-                  onScreenshot={handleScreenshot}
-                  isDragOver={isDragOver ?? undefined}
-                  onModelPickerToggle={
-                    ollamaReachable ? handleModelPickerToggle : undefined
-                  }
-                  isModelPickerOpen={isModelPickerOpen}
-                  capabilityConflictMessage={liveCapabilityConflictMessage}
-                  shake={shakeAskBar}
-                  maxImages={config.window.maxImages}
-                  onFirstKeystroke={() => void invoke('warm_up_model')}
-                />
-                {/* Footer slot.
-                 *
-                 * UpdateFooterBar takes priority and renders in BOTH modes
-                 * (ask bar + chat) so a pending update is visible no matter
-                 * what the user is doing. The TipBar stays scoped to
-                 * ask-bar mode: tips are noise mid-conversation, but an
-                 * update is signal worth showing.
-                 *
-                 * The mode gate lives OUTSIDE AnimatePresence (same reason
-                 * as the history panel above): prevents two simultaneous
-                 * ResizeObserver setSize() calls (jitter) when isChatMode
-                 * transitions.
-                 */}
+                  {/* Input Bar - always pinned to the bottom */}
+                  <AskBarView
+                    query={query}
+                    setQuery={setQuery}
+                    isChatMode={isChatMode}
+                    isGenerating={isGenerating}
+                    isSubmitPending={isSubmitPending}
+                    onSubmit={handleSubmit}
+                    onCancel={handleCancel}
+                    inputRef={inputRef}
+                    selectedText={selectedContext ?? undefined}
+                    onHistoryOpen={handleHistoryToggle}
+                    attachedImages={isSubmitPending ? [] : attachedImages}
+                    onImagesAttached={handleImagesAttached}
+                    onImageRemove={handleImageRemove}
+                    onImagePreview={handleAskBarImagePreview}
+                    onScreenshot={handleScreenshot}
+                    isDragOver={isDragOver ?? undefined}
+                    onModelPickerToggle={
+                      ollamaReachable ? handleModelPickerToggle : undefined
+                    }
+                    isModelPickerOpen={isModelPickerOpen}
+                    capabilityConflictMessage={liveCapabilityConflictMessage}
+                    shake={shakeAskBar}
+                    maxImages={config.window.maxImages}
+                    onFirstKeystroke={() => void invoke('warm_up_model')}
+                  />
+                </div>
+
+                {/* Footer slot — outside the morphing container so overflow-hidden
+                    never clips it when chat is at max height. The layout wrapper
+                    provides the matching background, so both UpdateFooterBar and
+                    TipBar render seamlessly below the conversation area.
+                    UpdateFooterBar takes priority and renders in BOTH modes. */}
                 {showUpdate ? (
                   <AnimatePresence>
                     <motion.div
@@ -2127,25 +2342,23 @@ function App() {
                     </motion.div>
                   </AnimatePresence>
                 ) : (
-                  !isChatMode && (
-                    <AnimatePresence>
-                      {isTipVisible && (
-                        <motion.div
-                          key="tip-bar"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{
-                            duration: 0.25,
-                            ease: [0.16, 1, 0.3, 1],
-                          }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <TipBar tip={activeTip} tipKey={tipKey} />
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  )
+                  <AnimatePresence>
+                    {isTipVisible && (
+                      <motion.div
+                        key="tip-bar"
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{
+                          duration: 0.25,
+                          ease: [0.16, 1, 0.3, 1],
+                        }}
+                        style={{ overflow: 'hidden' }}
+                      >
+                        <TipBar tip={activeTip} tipKey={tipKey} />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 )}
               </div>
 

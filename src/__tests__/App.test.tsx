@@ -4358,9 +4358,10 @@ describe('App', () => {
       expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
     });
 
-    it('/screen combined with utility command applies the prompt template', async () => {
+    it('/screen combined with utility command applies the prompt template via OCR', async () => {
       enableChannelCaptureWithResponses({
         capture_full_screen_command: '/tmp/screen.jpg',
+        extract_text_command: 'OCR screen content here',
       });
 
       render(<App />);
@@ -4378,23 +4379,26 @@ describe('App', () => {
 
       await act(async () => {});
 
+      expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+        imagePaths: ['/tmp/screen.jpg'],
+      });
+
       await vi.waitFor(() => {
         const askCall = vi
           .mocked(invoke)
           .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
-        // Prompt template fired: explain template contains this phrase
         expect(args.message).toContain('Explain the following in plain');
-        // Synthetic fallback input used since no text was typed
-        expect(args.message).toContain('the screenshot');
-        expect(args.imagePaths).toEqual(['/tmp/screen.jpg']);
+        // OCR text used as $INPUT; no image bytes sent to model
+        expect(args.message).toContain('OCR screen content here');
       });
     });
 
-    it('/screen combined with utility command and typed text uses text as input', async () => {
+    it('/screen combined with utility command and typed text: OCR as $INPUT, typed text as instruction', async () => {
       enableChannelCaptureWithResponses({
         capture_full_screen_command: '/tmp/screen.jpg',
+        extract_text_command: 'screen OCR content',
       });
 
       render(<App />);
@@ -4414,6 +4418,10 @@ describe('App', () => {
 
       await act(async () => {});
 
+      expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+        imagePaths: ['/tmp/screen.jpg'],
+      });
+
       await vi.waitFor(() => {
         const askCall = vi
           .mocked(invoke)
@@ -4421,8 +4429,9 @@ describe('App', () => {
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
         expect(args.message).toContain('Explain the following in plain');
+        // OCR text is $INPUT; typed text appended as additional instruction
+        expect(args.message).toContain('screen OCR content');
         expect(args.message).toContain('this error message');
-        expect(args.imagePaths).toEqual(['/tmp/screen.jpg']);
       });
     });
 
@@ -4460,9 +4469,10 @@ describe('App', () => {
       });
     });
 
-    it('/screen with utility command uses selected context as $INPUT when available', async () => {
+    it('/screen with utility command uses OCR text as $INPUT and selected context as quotedText', async () => {
       enableChannelCaptureWithResponses({
         capture_full_screen_command: '/tmp/screen.jpg',
+        extract_text_command: 'OCR extracted content',
       });
 
       render(<App />);
@@ -4480,22 +4490,26 @@ describe('App', () => {
 
       await act(async () => {});
 
+      expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+        imagePaths: ['/tmp/screen.jpg'],
+      });
+
       await vi.waitFor(() => {
         const askCall = vi
           .mocked(invoke)
           .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
-        // Selected context used as $INPUT (not the screenshot fallback)
         expect(args.message).toContain('Explain the following in plain');
-        expect(args.message).toContain('my highlighted code');
-        expect(args.imagePaths).toEqual(['/tmp/screen.jpg']);
+        // OCR text is the $INPUT; no image bytes sent to model
+        expect(args.message).toContain('OCR extracted content');
       });
     });
 
-    it('/screen with /translate does not apply a prompt template (no language provided)', async () => {
+    it('/screen /translate with no language defaults to Vietnamese', async () => {
       enableChannelCaptureWithResponses({
         capture_full_screen_command: '/tmp/screen.jpg',
+        extract_text_command: 'Bonjour le monde',
       });
 
       render(<App />);
@@ -4521,9 +4535,8 @@ describe('App', () => {
           .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
-        // /translate skipped image fallback; raw message sent to model
-        expect(args.message).toBe('/screen /translate');
-        expect(args.imagePaths).toEqual(['/tmp/screen.jpg']);
+        expect(args.message).toContain('Target language: Vietnamese');
+        expect(args.message).toContain('Bonjour le monde');
       });
     });
   });
@@ -5428,7 +5441,7 @@ describe('App', () => {
           .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
-        expect(args.message).toContain('Please help rewrite the text below');
+        expect(args.message).toContain('Lightly polish the text below');
         expect(args.message).toContain('fix this text');
       });
     });
@@ -5496,7 +5509,7 @@ describe('App', () => {
       });
     });
 
-    it('utility command with no input text does not call ask_ollama', async () => {
+    it('utility command with no input shakes and shows error instead of silently no-oping', async () => {
       enableChannelCapture();
 
       render(<App />);
@@ -5515,9 +5528,14 @@ describe('App', () => {
       await act(async () => {});
 
       expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+      await vi.waitFor(() => {
+        expect(
+          screen.getByText('Provide text or attach an image to use /rewrite.'),
+        ).toBeInTheDocument();
+      });
     });
 
-    it('utility command with attached image and no text uses synthetic image fallback as $INPUT', async () => {
+    it('utility command with attached image and no text: OCR extracts text as $INPUT', async () => {
       enableChannelCaptureWithResponses({
         save_image_command: '/tmp/staged/explain.jpg',
       });
@@ -5546,9 +5564,11 @@ describe('App', () => {
       });
 
       invoke.mockClear();
-      enableChannelCapture();
+      enableChannelCaptureWithResponses({
+        extract_text_command: 'OCR text from image',
+      });
 
-      // Submit just the command with no text: image fallback should fire
+      // Submit just the command with no text: OCR path fires
       act(() => {
         fireEvent.change(textarea, { target: { value: '/explain' } });
       });
@@ -5557,16 +5577,19 @@ describe('App', () => {
       });
       await act(async () => {});
 
+      expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+        imagePaths: ['/tmp/staged/explain.jpg'],
+      });
+
       await vi.waitFor(() => {
         const askCall = vi
           .mocked(invoke)
           .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
-        // Fallback input fills the template
         expect(args.message).toContain('Explain the following in plain');
-        expect(args.message).toContain('the attached image');
-        expect(args.imagePaths).toEqual(['/tmp/staged/explain.jpg']);
+        // OCR text is $INPUT; no image bytes sent to model
+        expect(args.message).toContain('OCR text from image');
       });
     });
 
@@ -5612,10 +5635,9 @@ describe('App', () => {
       expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
     });
 
-    it('utility command returns null composedPrompt when no usable input is found', async () => {
-      // /translate with only a language code (no text to translate) makes buildPrompt return null.
-      // strippedMessage = 'jpn' (non-empty, bypasses the early guard) but buildPrompt gets
-      // lang='jpn', typedRemainder='', selected='', so returns null.
+    it('utility command with only a language code (no text) shakes and shows error', async () => {
+      // /translate with only a language code makes buildPrompt return null:
+      // lang='jpn', typedRemainder='', selected='' → null.
       enableChannelCapture();
 
       render(<App />);
@@ -5634,6 +5656,13 @@ describe('App', () => {
       await act(async () => {});
 
       expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+      await vi.waitFor(() => {
+        expect(
+          screen.getByText(
+            'Provide text or attach an image to use /translate.',
+          ),
+        ).toBeInTheDocument();
+      });
     });
 
     it('utility command uses selected context when available', async () => {
@@ -5665,7 +5694,7 @@ describe('App', () => {
           .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
-        expect(args.message).toContain('Please help rewrite the text below');
+        expect(args.message).toContain('Lightly polish the text below');
         expect(args.message).toContain('original selected text');
         expect(args.quotedText).toBe('original selected text');
       });
@@ -5702,7 +5731,9 @@ describe('App', () => {
       });
 
       invoke.mockClear();
-      enableChannelCapture();
+      enableChannelCaptureWithResponses({
+        extract_text_command: 'OCR text from image',
+      });
 
       // Submit just the command trigger (strippedMessage will be '')
       act(() => {
@@ -5714,13 +5745,17 @@ describe('App', () => {
       await act(async () => {});
 
       await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+          imagePaths: ['/tmp/staged/ctx.jpg'],
+        });
         const askCall = vi
           .mocked(invoke)
           .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
-        // The prompt should use selectedContext as $INPUT
-        expect(args.message).toContain('my selected text');
+        // OCR text is $INPUT; selectedContext used as quotedText display
+        expect(args.message).toContain('OCR text from image');
+        expect(args.quotedText).toBe('my selected text');
       });
     });
 
@@ -5782,7 +5817,9 @@ describe('App', () => {
       });
 
       invoke.mockClear();
-      enableChannelCapture();
+      enableChannelCaptureWithResponses({
+        extract_text_command: 'OCR extracted prose text',
+      });
 
       // Type /rewrite command and submit
       act(() => {
@@ -5796,13 +5833,105 @@ describe('App', () => {
       await act(async () => {});
 
       await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+          imagePaths: ['/tmp/staged/img1.jpg'],
+        });
         const askCall = vi
           .mocked(invoke)
           .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
-        expect(args.message).toContain('Please help rewrite the text below');
-        expect(args.imagePaths).toEqual(['/tmp/staged/img1.jpg']);
+        expect(args.message).toContain('Lightly polish the text below');
+        expect(args.message).toContain('OCR extracted prose text');
+        expect(args.imagePaths).toBeNull();
+      });
+    });
+
+    it('utility OCR command with image-only submitted while image is pending defers and waits for full resolution before running OCR', async () => {
+      // Regression: submitting /translate with only an image before it finishes
+      // uploading caused readyPaths to be empty, OCR to run with no paths, and
+      // the "No readable text found" error to surface. The fix defers the OCR
+      // until the image is fully resolved.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+
+      let resolveSave: ((path: string) => void) | null = null;
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'get_model_picker_state')
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
+          if (args && 'onEvent' in args) {
+            // Accept channel for ask_ollama
+          }
+          if (cmd === 'save_image_command') {
+            return new Promise<string>((resolve) => {
+              resolveSave = resolve;
+            });
+          }
+          if (cmd === 'extract_text_command') {
+            // Verify OCR is called with the resolved path, not an empty array.
+            const paths = (args as Record<string, unknown>)
+              .imagePaths as string[];
+            expect(paths).toHaveLength(1);
+            expect(paths[0]).toBe('/tmp/staged/ocr-deferred.jpg');
+            return 'Deferred OCR text';
+          }
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['data'], 'img.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+
+      // Wait for save_image_command to be invoked (image still unresolved).
+      await act(async () => {
+        await vi.waitFor(() => expect(resolveSave).not.toBeNull());
+      });
+
+      // Submit /translate with image-only (no text) while image still loading.
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/translate' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Pending state active — submit locked.
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+      // OCR must NOT have been called yet.
+      expect(invoke).not.toHaveBeenCalledWith(
+        'extract_text_command',
+        expect.anything(),
+      );
+
+      // Resolve the image — triggers deferred OCR chain.
+      resolveSave!('/tmp/staged/ocr-deferred.jpg');
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      // OCR ran (assertions inside the extract_text_command mock above).
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith(
+          'extract_text_command',
+          expect.anything(),
+        );
       });
     });
 
@@ -5879,6 +6008,633 @@ describe('App', () => {
       // renderUserContent splits command triggers into separate spans.
       // Check body textContent to confirm the full original query appears.
       expect(document.body.textContent).toContain('/rewrite make it clearer');
+    });
+  });
+
+  // ─── Utility commands with images (OCR path) ───────────────────────────────
+
+  describe('Utility commands with images (OCR path)', () => {
+    async function pasteImageForUtility() {
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['fake-img-data'], 'photo.png', {
+        type: 'image/png',
+      });
+      const clipboardData = {
+        items: [{ type: 'image/png', getAsFile: () => file }],
+      };
+      await act(async () => {
+        fireEvent.paste(textarea, { clipboardData });
+      });
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+    }
+
+    it('/tldr with attached image: OCR then ask_ollama with tldr prompt and no image paths', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+        extract_text_command: 'Some article text here',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImageForUtility();
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+      });
+
+      invoke.mockClear();
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+        imagePaths: ['/tmp/staged/img1.jpg'],
+      });
+
+      await vi.waitFor(() => {
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        expect(args.message).toContain('Summarize the following text');
+        expect(args.message).toContain('Some article text here');
+        expect(args.imagePaths).toBeNull();
+      });
+    });
+
+    it('/translate french with image: OCR text becomes $INPUT, french becomes $LANG', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+        extract_text_command: 'Hello world from image',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImageForUtility();
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/translate french ' } });
+      });
+
+      invoke.mockClear();
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        expect(args.message).toContain('Target language: french');
+        expect(args.message).toContain('Hello world from image');
+        expect(args.imagePaths).toBeNull();
+      });
+    });
+
+    it('/screen /tldr: capture then OCR then ask_ollama with no image paths', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/screen.jpg',
+        extract_text_command: 'Screen article text',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /tldr ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith(
+        'capture_full_screen_command',
+        expect.objectContaining({ conversationId: expect.any(String) }),
+      );
+      expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+        imagePaths: ['/tmp/screen.jpg'],
+      });
+
+      await vi.waitFor(() => {
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        expect(args.message).toContain('Summarize the following text');
+        expect(args.message).toContain('Screen article text');
+        expect(args.imagePaths).toBeNull();
+      });
+    });
+
+    it('shows captureError and does not call ask_ollama when OCR returns [No text detected]', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+        extract_text_command: '[No text detected]',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImageForUtility();
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+      });
+
+      invoke.mockClear();
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+      await vi.waitFor(() => {
+        expect(
+          screen.getByText('No readable text found in the image.'),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('restores input and shows captureError when OCR throws', async () => {
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            /* channel capture - no-op */
+          }
+          if (cmd === 'get_model_picker_state')
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
+          if (cmd === 'get_model_capabilities')
+            return { 'gemma4:e2b': { vision: false, thinking: false } };
+          if (cmd === 'save_image_command') return '/tmp/staged/img1.jpg';
+          if (cmd === 'extract_text_command')
+            return Promise.reject('OCR engine failed');
+          if (cmd === 'get_updater_state')
+            return {
+              last_check_at_unix: null,
+              update: null,
+              settings_snoozed_until: null,
+              chat_snoozed_until: null,
+            };
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImageForUtility();
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+      });
+
+      invoke.mockClear();
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+      await vi.waitFor(() => {
+        expect(
+          screen.getByText('OCR failed: OCR engine failed'),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('defers utility OCR submit when image is still in-flight and waits for resolution', async () => {
+      // Regression guard: submitting a utility command while the attached image
+      // has filePath=null used to call OCR immediately with an empty paths list,
+      // producing "No readable text found". The fix defers until all images resolve.
+      let resolveSave!: (path: string) => void;
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            /* channel capture - no-op */
+          }
+          if (cmd === 'get_model_picker_state')
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
+          if (cmd === 'get_model_capabilities')
+            return { 'gemma4:e2b': { vision: false, thinking: false } };
+          if (cmd === 'save_image_command')
+            return new Promise<string>((res) => {
+              resolveSave = res;
+            });
+          if (cmd === 'extract_text_command') return 'summarize this';
+          if (cmd === 'get_updater_state')
+            return {
+              last_check_at_unix: null,
+              update: null,
+              settings_snoozed_until: null,
+              chat_snoozed_until: null,
+            };
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImageForUtility();
+      // Do NOT resolve save_image_command yet — image stays in-flight (filePath=null).
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // Submit is deferred — pending state active, OCR NOT called yet.
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+      expect(invoke).not.toHaveBeenCalledWith(
+        'extract_text_command',
+        expect.anything(),
+      );
+
+      // Resolve the image — deferred OCR chain fires.
+      act(() => {
+        resolveSave('/tmp/staged/img1.jpg');
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      // OCR now called with the resolved path, not an empty list.
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+          imagePaths: ['/tmp/staged/img1.jpg'],
+        });
+      });
+    });
+
+    it('cancelling during /screen capture in /screen /tldr restores input and skips OCR', async () => {
+      let resolveCapture!: (path: string) => void;
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: new Promise<string>((res) => {
+          resolveCapture = res;
+        }),
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /tldr ' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Cancel while capture is in-flight.
+      const stopButton = screen.getByRole('button', { name: /stop|cancel/i });
+      act(() => {
+        fireEvent.click(stopButton);
+      });
+
+      await act(async () => {
+        resolveCapture('/tmp/screen.jpg');
+      });
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith(
+        'extract_text_command',
+        expect.anything(),
+      );
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+    });
+
+    it('/screen /tldr shows captureError and restores input when capture_full_screen_command throws', async () => {
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'get_model_picker_state')
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
+          if (cmd === 'get_model_capabilities')
+            return { 'gemma4:e2b': { vision: false, thinking: false } };
+          if (cmd === 'get_config') return null;
+          if (cmd === 'capture_full_screen_command')
+            throw new Error('Screen capture denied');
+          if (args && 'onEvent' in args) return undefined;
+          return undefined;
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /tldr ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith(
+        'extract_text_command',
+        expect.anything(),
+      );
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+      await vi.waitFor(() => {
+        expect(screen.getByText('Screen capture denied')).toBeInTheDocument();
+      });
+    });
+
+    it('/translate with image and no language defaults to Vietnamese', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+        extract_text_command: 'Bonjour le monde',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImageForUtility();
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/translate ' } });
+      });
+
+      invoke.mockClear();
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        expect(args.message).toContain('Target language: Vietnamese');
+        expect(args.message).toContain('Bonjour le monde');
+      });
+    });
+
+    it('existing text-only utility path still works after OCR dispatch (regression)', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, {
+          target: { value: '/tldr some long text' },
+        });
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith(
+        'extract_text_command',
+        expect.anything(),
+      );
+      await vi.waitFor(() => {
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_ollama');
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        expect(args.message).toContain('Summarize the following text');
+        expect(args.message).toContain('some long text');
+      });
+    });
+
+    it('suppresses vision capability mismatch strip when utility command typed with an attached image', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'llama3',
+          all: ['llama3'],
+          ollamaReachable: true,
+        },
+        get_model_capabilities: {
+          llama3: { vision: false, thinking: false },
+        },
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImageForUtility();
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+      });
+
+      expect(
+        screen.queryByTestId('capability-mismatch-strip'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('submits utility OCR immediately when image is already resolved before submit', async () => {
+      // Coverage: exercises the non-deferred path where hasPendingImages is false
+      // (img.filePath !== null for every image in the list).
+      // Uses the same flush pattern as the outer-describe test that verifies
+      // hasPendingImages=false: immediate save mock + vi.waitFor ensures filePath
+      // is set in state before the utility command is submitted.
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/pre-resolved.jpg',
+        extract_text_command: 'Pre-resolved OCR text',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImageForUtility();
+      // Wait for save_image_command to have been called AND its promise to
+      // resolve + React state to update with filePath (mirrors the "utility
+      // command with bare trigger" test pattern in the outer describe).
+      await act(async () => {
+        await vi.waitFor(() =>
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          ),
+        );
+      });
+
+      // Submit utility command — image is resolved, non-deferred path taken.
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+      });
+      invoke.mockClear();
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // OCR called with the already-resolved path (non-deferred path).
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+          imagePaths: ['/tmp/staged/pre-resolved.jpg'],
+        });
+      });
+    });
+
+    it('deferred utility OCR preserves selected context in the pending bubble', async () => {
+      // Coverage: exercises the truthy branch of
+      // `sanitized?.trim() ? sanitized : undefined` when selectedContext is
+      // non-empty at the time of a deferred utility OCR submit.
+      let resolveSave!: (path: string) => void;
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'get_model_picker_state')
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
+          if (cmd === 'get_model_capabilities')
+            return { 'gemma4:e2b': { vision: false, thinking: false } };
+          if (cmd === 'get_updater_state')
+            return {
+              last_check_at_unix: null,
+              update: null,
+              settings_snoozed_until: null,
+              chat_snoozed_until: null,
+            };
+          if (cmd === 'save_image_command')
+            return new Promise<string>((res) => {
+              resolveSave = res;
+            });
+          if (cmd === 'extract_text_command') return 'OCR with context';
+          if (args && 'onEvent' in args) return undefined;
+          return undefined;
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay('quoted context text');
+
+      await pasteImageForUtility();
+      await act(async () => {
+        await vi.waitFor(() => expect(resolveSave).toBeDefined());
+      });
+
+      // Submit /tldr while image is still pending and context is present.
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // Deferred state active.
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+
+      // Resolve the image — deferred OCR chain fires with context preserved.
+      act(() => {
+        resolveSave('/tmp/staged/ctx-deferred.jpg');
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+          imagePaths: ['/tmp/staged/ctx-deferred.jpg'],
+        });
+      });
     });
   });
 
@@ -6294,7 +7050,7 @@ describe('App', () => {
       expect(screen.queryByTestId('tip-text')).not.toBeInTheDocument();
     });
 
-    it('hides TipBar in chat mode even when isVisible=true', async () => {
+    it('keeps TipBar visible when entering chat mode', async () => {
       vi.mocked(useTips).mockReturnValue({
         tip: 'Test tip',
         tipKey: 1,
@@ -6309,6 +7065,8 @@ describe('App', () => {
       });
       render(<App />);
       await showOverlay();
+      // Tip visible in ask-bar mode.
+      expect(screen.getByTestId('tip-text')).toBeInTheDocument();
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       act(() => {
         fireEvent.change(textarea, { target: { value: 'hello' } });
@@ -6322,7 +7080,8 @@ describe('App', () => {
         getLastChannel()?.simulateMessage({ type: 'Done' });
       });
       await act(async () => {});
-      expect(screen.queryByTestId('tip-text')).not.toBeInTheDocument();
+      // Tip stays visible in chat mode (isTipVisible drives visibility, not mode).
+      expect(screen.getByTestId('tip-text')).toBeInTheDocument();
     });
   });
 

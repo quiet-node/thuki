@@ -261,6 +261,7 @@ export function useOllama(
       imagePaths?: string[],
       think?: boolean,
       promptOverride?: string,
+      displayImagePaths?: string[],
     ) => {
       if (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) {
         return;
@@ -273,13 +274,14 @@ export function useOllama(
       }
       if (activeGenerationRef.current) return;
 
+      const bubbleImages = displayImagePaths ?? imagePaths;
       const userMsg: Message = {
         id: crypto.randomUUID(),
         role: 'user',
         content: displayContent,
         quotedText,
         imagePaths:
-          imagePaths && imagePaths.length > 0 ? imagePaths : undefined,
+          bubbleImages && bubbleImages.length > 0 ? bubbleImages : undefined,
       };
 
       const assistantId = crypto.randomUUID();

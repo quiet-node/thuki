@@ -36,6 +36,8 @@ export const TIPS: readonly Tip[] = [
   '/todos scans highlighted text or notes and pulls out every action item as a checkbox list',
   'Type / in the ask bar to see all available commands and pick one with Tab',
   'Commands can combine in one message: try /screen /think to capture your screen and reason through it',
+  'Paste an image and type /tldr to summarize its text using Vision OCR; no vision model needed',
+  'Type /translate french with an attached image to translate printed text via Vision OCR, no vision model needed',
   'Everything runs locally through Ollama; your conversations never leave your machine',
   'Attach images to your messages for visual context; visit Settings to adjust the limit',
   'Turn on Keep Warm in Settings to skip the cold-load wait so your first reply is near-instant every time',

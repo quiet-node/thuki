@@ -183,9 +183,9 @@ describe('buildPrompt', () => {
     expect(result).toContain('Text: selected text here');
   });
 
-  it('/translate with no language and selected text leaves $LANG empty', () => {
+  it('/translate with no language and selected text defaults to Vietnamese', () => {
     const result = buildPrompt('/translate', '', 'translate me');
-    expect(result).toContain('Target language: ');
+    expect(result).toContain('Target language: Vietnamese');
     expect(result).toContain('Text: translate me');
     expect(result).not.toContain('$LANG');
   });

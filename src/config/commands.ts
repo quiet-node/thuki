@@ -174,15 +174,17 @@ export const COMMANDS: readonly Command[] = [
       languageFormat:
         'The target language can be a full name (`French`), ISO code (`fr`, `fra`), or common shorthand.',
       defaultBehavior:
-        'If no language is specified, non-English input translates to English and English input translates to Vietnamese.',
+        'If no language is specified, the text is translated to Vietnamese.',
+      composability:
+        '`/translate` works with attached images or `/screen`. Vision OCR extracts the text first; translation runs on the result. Omitting a target language defaults to Vietnamese.',
     },
     promptHelp: {
-      summary: 'translate selected or typed text to requested language.',
-      limit:
-        'If no language is given, non-English input goes to English and English input goes to Vietnamese.',
+      summary:
+        'translate selected or typed text to requested language. Also works with attached images or /screen: OCR extracts the text first, then translation runs on the result. Default: Vietnamese.',
+      limit: 'If no language is given, translate to Vietnamese.',
     },
     promptTemplate:
-      'You are a translation assistant. Translate the following text to the specified target language. The user may specify the target language by its full name (e.g., "Vietnamese"), ISO code (e.g., "vi", "vie"), abbreviation, or informal shorthand. Interpret the language identifier flexibly and use your best judgment. If no target language is specified: translate to English if the text is non-English, or to Vietnamese if it is already in English. Output only the translation with no commentary or explanation.\n\nTarget language: $LANG\n\nText: $INPUT',
+      'You are a translation assistant. Translate the following text to the specified target language. The user may specify the target language by its full name (e.g., "Vietnamese"), ISO code (e.g., "vi", "vie"), abbreviation, or informal shorthand. Interpret the language identifier flexibly and use your best judgment. If no target language is specified, translate to Vietnamese. Output only the translation with no commentary or explanation.\n\nTarget language: $LANG\n\nText: $INPUT',
   },
   {
     trigger: '/rewrite',
@@ -197,12 +199,15 @@ export const COMMANDS: readonly Command[] = [
       ],
       behavior:
         'Preserves the original meaning while improving flow and readability. Outputs only the rewritten text.',
+      composability:
+        '`/rewrite` works with attached images or `/screen`. Vision OCR extracts the text first, then rewrites it.',
     },
     promptHelp: {
-      summary: 'rewrite text for clarity and flow.',
+      summary:
+        'rewrite text for clarity and flow. Also works with attached images or /screen: OCR extracts the text first, then rewrites it.',
     },
     promptTemplate:
-      'Please help rewrite the text below so it reads naturally and smoothly. Make it clear, easy to understand, and easy to follow. No icons, no em dashes. Please output only the rewritten text.\n\nText: $INPUT',
+      'Lightly polish the text below so it reads naturally and smoothly. Improve clarity and flow with minimal changes. Preserve the original voice, tone, and meaning. Do not restructure, paraphrase extensively, or make it sound like a different writer. No icons and no em dashes. Output only the polished text.\n\nText: $INPUT',
   },
   {
     trigger: '/tldr',
@@ -217,9 +222,12 @@ export const COMMANDS: readonly Command[] = [
       ],
       behavior:
         'Captures the core message, key decision, or critical takeaway. Skips background detail and qualifications.',
+      composability:
+        '`/tldr` works with attached images or `/screen`. Vision OCR extracts the text first, then summarizes it.',
     },
     promptHelp: {
-      summary: 'summarize text in 1-3 short direct sentences.',
+      summary:
+        'summarize text in 1-3 short direct sentences. Also works with attached images or /screen: OCR extracts the text first, then summarizes it.',
     },
     promptTemplate:
       "Summarize the following text into a TL;DR. Capture the core message in 1-3 short, direct sentences. Focus on what matters most: the main point, the key decision, or the critical takeaway. Skip background details, qualifications, and anything that isn't essential to understanding the gist. Output only the summary.\n\nText: $INPUT",
@@ -238,10 +246,12 @@ export const COMMANDS: readonly Command[] = [
       ],
       behavior:
         'Corrects errors and smooths rough phrasing without restructuring or adding new ideas. Your original tone and meaning stay intact.',
+      composability:
+        '`/refine` works with attached images or `/screen`. Vision OCR extracts the text first, then refines it.',
     },
     promptHelp: {
       summary:
-        'fix grammar, spelling, punctuation, and rough phrasing while preserving tone.',
+        'fix grammar, spelling, punctuation, and rough phrasing while preserving tone. Also works with attached images or /screen: OCR extracts the text first, then refines it.',
     },
     promptTemplate:
       'Refine the following text by correcting grammar, spelling, punctuation, and awkward phrasing. Keep the original tone, voice, and meaning intact. Do not restructure paragraphs, add new ideas, or remove content. If a sentence is grammatically correct but stylistically rough, smooth it lightly without changing the intent. Output only the refined text.\n\nText: $INPUT',
@@ -259,9 +269,12 @@ export const COMMANDS: readonly Command[] = [
       ],
       behavior:
         'Each point is a concise, self-contained statement. Ordered by importance or logical sequence. Filler and repetition are removed. Output uses `- ` prefixed markdown bullets.',
+      composability:
+        '`/bullets` works with attached images or `/screen`. Vision OCR extracts the text first, then extracts key points.',
     },
     promptHelp: {
-      summary: 'extract key points as markdown bullets.',
+      summary:
+        'extract key points as markdown bullets. Also works with attached images or /screen: OCR extracts the text first, then extracts bullets.',
     },
     promptTemplate:
       'Extract the key points from the following text as a bulleted list. Each item must begin with "- " (a hyphen followed by a space). Do not use numbered lists, plain paragraphs, headers, or any other formatting. Output only the bulleted list, nothing else.\n\nExample output format:\n- First key point\n- Second key point\n- Third key point\n\nEach bullet should be a concise, self-contained statement. Order by importance or logical sequence. Leave out filler and repetition.\n\nText: $INPUT',
@@ -282,10 +295,12 @@ export const COMMANDS: readonly Command[] = [
       ],
       behavior:
         'Outputs a brief explanation followed by at least one concrete example. Assumes no background knowledge. Skips jargon or defines it when unavoidable. No intro or sign-off.',
+      composability:
+        '`/explain` works with attached images or `/screen`. Vision OCR extracts the text first, then explains it.',
     },
     promptHelp: {
       summary:
-        'explain a concept or code snippet in plain language with a concrete example.',
+        'explain a concept or code snippet in plain language with a concrete example. Also works with attached images or /screen: OCR extracts the text first, then explains it.',
       whenToSuggest:
         'Mention this when the user wants to understand something unfamiliar: a term, a code snippet, an acronym, or a concept they have not seen before.',
     },
@@ -306,9 +321,12 @@ export const COMMANDS: readonly Command[] = [
       ],
       behavior:
         'Responds in two parts: a short paragraph explaining the context and what is at stake, followed by a `- [ ]` checkbox list of all tasks. Each to-do includes who is responsible, plus any deadline or timeframe if mentioned.',
+      composability:
+        '`/todos` works with attached images or `/screen`. Vision OCR extracts the text first, then extracts to-dos.',
     },
     promptHelp: {
-      summary: 'summarize context and extract tasks as markdown checkboxes.',
+      summary:
+        'summarize context and extract tasks as markdown checkboxes. Also works with attached images or /screen: OCR extracts the text first, then extracts to-dos.',
     },
     promptTemplate:
       'Read the following text and respond in two parts:\n\n**Part 1: Summary.** Write a short paragraph (3-5 sentences) explaining what this text is about. Cover: what the situation or topic is, who is involved, what the current state is, and why it matters or what is at stake. This should give someone who has not read the original text a clear picture of the context.\n\n**Part 2: To-dos.** List every task, action item, commitment, and follow-up from the text as a markdown checkbox list. Every single item MUST begin with "- [ ] " (hyphen, space, open bracket, space, close bracket, space). Do not use numbered lists, plain bullets, headers, or any other format for the list items.\n\nSeparate the two parts with a blank line. Do not add any headings or labels like "Summary:" or "To-dos:"; just write the paragraph, then the list.\n\nExample output format:\nThis is a paragraph explaining what the text is about, who is involved, and what the situation is. It gives enough context to understand why the tasks matter. It is clear and direct.\n\n- [ ] First task to complete\n- [ ] Second task to complete\n- [ ] Third task to complete\n\nFor each to-do item, include who is responsible (if mentioned), what needs to be done, and any deadline or timeframe (if mentioned). Order by urgency or sequence when possible.\n\nText: $INPUT',
@@ -351,16 +369,19 @@ export function buildPrompt(
   let lang = '';
   let typedRemainder = typed;
 
-  if (trigger === '/translate' && typed) {
-    const spaceIdx = typed.indexOf(' ');
-    if (spaceIdx === -1) {
-      // Single word: treat as language code only.
-      lang = typed;
-      typedRemainder = '';
-    } else {
-      lang = typed.slice(0, spaceIdx);
-      typedRemainder = typed.slice(spaceIdx + 1).trim();
+  if (trigger === '/translate') {
+    if (typed) {
+      const spaceIdx = typed.indexOf(' ');
+      if (spaceIdx === -1) {
+        // Single word: treat as language code only.
+        lang = typed;
+        typedRemainder = '';
+      } else {
+        lang = typed.slice(0, spaceIdx);
+        typedRemainder = typed.slice(spaceIdx + 1).trim();
+      }
     }
+    if (!lang) lang = 'Vietnamese';
   }
 
   // Resolve $INPUT.

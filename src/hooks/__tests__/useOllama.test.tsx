@@ -394,6 +394,33 @@ describe('useOllama', () => {
         }),
       );
     });
+
+    it('displayImagePaths shows in bubble but imagePaths=undefined keeps null in backend call', async () => {
+      const { result } = renderHook(() => useOllama(''));
+
+      await act(async () => {
+        await result.current.ask(
+          'summarize this',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          ['/tmp/staged/img1.jpg'],
+        );
+      });
+
+      // Bubble should show the display image.
+      expect(result.current.messages[0].imagePaths).toEqual([
+        '/tmp/staged/img1.jpg',
+      ]);
+      // Backend must NOT receive image bytes (OCR path: model only sees text).
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          imagePaths: null,
+        }),
+      );
+    });
   });
 
   // ─── Error handling ──────────────────────────────────────────────────────────
