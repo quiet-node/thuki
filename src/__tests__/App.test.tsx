@@ -4528,6 +4528,624 @@ describe('App', () => {
     });
   });
 
+  // ─── /extract command ───────────────────────────────────────────────────────
+
+  describe('/extract command', () => {
+    async function pasteImageForExtract() {
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const file = new File(['fake-img-data'], 'photo.png', {
+        type: 'image/png',
+      });
+      const clipboardData = {
+        items: [{ type: 'image/png', getAsFile: () => file }],
+      };
+      await act(async () => {
+        fireEvent.paste(textarea, { clipboardData });
+      });
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+    }
+
+    it('shakes ask bar and shows warning when /extract is submitted with no image and no /screen', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/extract ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith(
+        'extract_text_command',
+        expect.anything(),
+      );
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+      expect(
+        screen.getByText(
+          'Attach an image or add /screen to extract text from.',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('invokes extract_text_command with attached image and shows extracted text', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/img1.jpg',
+        extract_text_command: 'Hello World',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImageForExtract();
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/extract ' } });
+      });
+
+      invoke.mockClear();
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+        imagePaths: ['/tmp/staged/img1.jpg'],
+      });
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+      await vi.waitFor(() => {
+        expect(screen.getByText(/Hello World/)).toBeInTheDocument();
+      });
+    });
+
+    it('invokes capture_full_screen_command then extract_text_command for /screen /extract', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/screen.jpg',
+        extract_text_command: 'Screen text',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith(
+        'capture_full_screen_command',
+        expect.objectContaining({ conversationId: expect.any(String) }),
+      );
+      expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+        imagePaths: ['/tmp/screen.jpg'],
+      });
+      await vi.waitFor(() => {
+        expect(screen.getByText(/Screen text/)).toBeInTheDocument();
+      });
+    });
+
+    it('falls back to ask via Ollama when OCR fails and the model supports vision', async () => {
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // channel capture - no-op; we only verify ask_ollama was called
+          }
+          if (cmd === 'get_model_picker_state')
+            return {
+              active: 'llama3.2-vision',
+              all: ['llama3.2-vision'],
+              ollamaReachable: true,
+            };
+          if (cmd === 'get_model_capabilities')
+            return { 'llama3.2-vision': { vision: true, thinking: false } };
+          if (cmd === 'capture_full_screen_command') return '/tmp/screen.jpg';
+          if (cmd === 'extract_text_command')
+            throw new Error('Vision OCR failed');
+          if (cmd === 'get_updater_state')
+            return {
+              last_check_at_unix: null,
+              update: null,
+              settings_snoozed_until: null,
+              chat_snoozed_until: null,
+            };
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_ollama',
+        expect.objectContaining({
+          message: expect.stringContaining('Extract all text'),
+          imagePaths: ['/tmp/screen.jpg'],
+        }),
+      );
+    });
+
+    it('shows error when OCR fails and the model does not support vision', async () => {
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            // channel capture - no-op
+          }
+          if (cmd === 'get_model_picker_state')
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
+          if (cmd === 'get_model_capabilities')
+            return { 'gemma4:e2b': { vision: false, thinking: false } };
+          if (cmd === 'capture_full_screen_command') return '/tmp/screen.jpg';
+          if (cmd === 'extract_text_command')
+            return Promise.reject('OCR error text');
+          if (cmd === 'get_updater_state')
+            return {
+              last_check_at_unix: null,
+              update: null,
+              settings_snoozed_until: null,
+              chat_snoozed_until: null,
+            };
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+      await vi.waitFor(() => {
+        expect(
+          screen.getByText(/OCR failed: OCR error text/),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('shows error when capture_full_screen_command throws during /screen /extract', async () => {
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
+        if (cmd === 'capture_full_screen_command')
+          throw new Error('Permission denied');
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith(
+        'extract_text_command',
+        expect.anything(),
+      );
+      expect(screen.getByText('Permission denied')).toBeInTheDocument();
+    });
+
+    it('suppresses vision capability mismatch strip when /extract is typed with an attached image', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'llama3',
+          all: ['llama3'],
+          ollamaReachable: true,
+        },
+        get_model_capabilities: {
+          llama3: { vision: false, thinking: false },
+        },
+        save_image_command: '/tmp/staged/img1.jpg',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImageForExtract();
+      await vi.waitFor(() => {
+        expect(
+          screen.getByRole('list', { name: /attached images/i }),
+        ).toBeInTheDocument();
+      });
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/extract ' } });
+      });
+
+      // The capability mismatch strip must not appear when /extract is present.
+      expect(
+        screen.queryByTestId('capability-mismatch-strip'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('handles /extract with selected context', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/screen.jpg',
+        extract_text_command: 'extracted text',
+      });
+
+      render(<App />);
+      await act(async () => {});
+      // Show overlay with selected text to exercise the context branch.
+      await showOverlay('Selected content here');
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        expect(screen.getByText(/extracted text/)).toBeInTheDocument();
+      });
+    });
+
+    it('uses blobUrl for in-flight images and calls OCR with empty paths', async () => {
+      let resolveSave!: (path: string) => void;
+      enableChannelCaptureWithResponses({
+        extract_text_command: '[No text detected]',
+      });
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            /* channel capture - no-op */
+          }
+          if (cmd === 'get_model_picker_state')
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
+          if (cmd === 'get_model_capabilities')
+            return { 'gemma4:e2b': { vision: false, thinking: false } };
+          if (cmd === 'save_image_command')
+            return new Promise<string>((res) => {
+              resolveSave = res;
+            });
+          if (cmd === 'extract_text_command') return '[No text detected]';
+          if (cmd === 'get_updater_state')
+            return {
+              last_check_at_unix: null,
+              update: null,
+              settings_snoozed_until: null,
+              chat_snoozed_until: null,
+            };
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await pasteImageForExtract();
+      // Do NOT wait for save_image_command to resolve; image stays in-flight (filePath=null).
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/extract ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // OCR called with empty paths (in-flight image has null filePath)
+      expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+        imagePaths: [],
+      });
+      await vi.waitFor(() => {
+        expect(screen.getByText(/No text detected/)).toBeInTheDocument();
+      });
+      // Resolve the save after so it doesn't leak into the next test.
+      act(() => {
+        resolveSave('/tmp/staged/img1.jpg');
+      });
+    });
+
+    it('cancelling during in-flight /screen /extract capture prevents OCR from running', async () => {
+      let resolveCapture!: (path: string) => void;
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: new Promise<string>((res) => {
+          resolveCapture = res;
+        }),
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      // Cancel while capture is in-flight.
+      const stopButton = screen.getByRole('button', { name: /stop|cancel/i });
+      act(() => {
+        fireEvent.click(stopButton);
+      });
+
+      await act(async () => {
+        resolveCapture('/tmp/screen.jpg');
+      });
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith(
+        'extract_text_command',
+        expect.anything(),
+      );
+    });
+
+    it('surfaces string screen-capture errors for /screen /extract', async () => {
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
+        if (cmd === 'capture_full_screen_command')
+          return Promise.reject('Screen Recording permission is required.');
+        if (cmd === 'get_updater_state')
+          return {
+            last_check_at_unix: null,
+            update: null,
+            settings_snoozed_until: null,
+            chat_snoozed_until: null,
+          };
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(
+        screen.getByText('Screen Recording permission is required.'),
+      ).toBeInTheDocument();
+    });
+
+    it('handles non-Error non-string screen-capture rejection for /screen /extract', async () => {
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'get_model_picker_state')
+          return {
+            active: 'gemma4:e2b',
+            all: ['gemma4:e2b'],
+            ollamaReachable: true,
+          };
+        if (cmd === 'capture_full_screen_command') return Promise.reject(42);
+        if (cmd === 'get_updater_state')
+          return {
+            last_check_at_unix: null,
+            update: null,
+            settings_snoozed_until: null,
+            chat_snoozed_until: null,
+          };
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(screen.getByText('42')).toBeInTheDocument();
+    });
+
+    it('shows error with Error message when OCR throws an Error object (no vision model)', async () => {
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            /* channel capture - no-op */
+          }
+          if (cmd === 'get_model_picker_state')
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
+          if (cmd === 'get_model_capabilities')
+            return { 'gemma4:e2b': { vision: false, thinking: false } };
+          if (cmd === 'capture_full_screen_command') return '/tmp/screen.jpg';
+          if (cmd === 'extract_text_command')
+            throw new Error('OCR engine error');
+          if (cmd === 'get_updater_state')
+            return {
+              last_check_at_unix: null,
+              update: null,
+              settings_snoozed_until: null,
+              chat_snoozed_until: null,
+            };
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByText(/OCR failed: OCR engine error/),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('shows error with empty suffix when OCR throws a non-Error non-string value (no vision model)', async () => {
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            /* channel capture - no-op */
+          }
+          if (cmd === 'get_model_picker_state')
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
+          if (cmd === 'get_model_capabilities')
+            return { 'gemma4:e2b': { vision: false, thinking: false } };
+          if (cmd === 'capture_full_screen_command') return '/tmp/screen.jpg';
+          if (cmd === 'extract_text_command') return Promise.reject(null);
+          if (cmd === 'get_updater_state')
+            return {
+              last_check_at_unix: null,
+              update: null,
+              settings_snoozed_until: null,
+              chat_snoozed_until: null,
+            };
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByText(/OCR failed\. Switch to a vision-capable model/),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('treats undefined activeModelCapabilities as non-vision when OCR fails', async () => {
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            /* channel capture - no-op */
+          }
+          if (cmd === 'get_model_picker_state')
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b'],
+              ollamaReachable: true,
+            };
+          // Empty capabilities map: activeModelCapabilities will be undefined.
+          if (cmd === 'get_model_capabilities') return {};
+          if (cmd === 'capture_full_screen_command') return '/tmp/screen.jpg';
+          if (cmd === 'extract_text_command')
+            return Promise.reject('OCR error');
+          if (cmd === 'get_updater_state')
+            return {
+              last_check_at_unix: null,
+              update: null,
+              settings_snoozed_until: null,
+              chat_snoozed_until: null,
+            };
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // No vision capability → shows error rather than falling back to Ollama.
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+      await vi.waitFor(() => {
+        expect(screen.getByText(/OCR failed/)).toBeInTheDocument();
+      });
+    });
+  });
+
   // ─── /think command ─────────────────────────────────────────────────────────
 
   describe('/think command', () => {

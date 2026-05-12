@@ -235,6 +235,38 @@ const BULLETS_ICON = (
   </svg>
 );
 
+/** Document with scan lines icon for /extract command (OCR text extraction). */
+const EXTRACT_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <path
+      d="M3 1h7l3 3v10a1 1 0 01-1 1H3a1 1 0 01-1-1V2a1 1 0 011-1z"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M10 1v3h3"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M5 7h6M5 10h4"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
 /** Checkbox icon for /todos command. */
 const ACTION_ICON = (
   <svg
@@ -323,6 +355,8 @@ function iconForTrigger(trigger: string): React.ReactNode {
       return ACTION_ICON;
     case '/explain':
       return EXPLAIN_ICON;
+    case '/extract':
+      return EXTRACT_ICON;
     default:
       return SCREEN_ICON;
   }
