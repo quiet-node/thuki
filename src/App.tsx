@@ -49,6 +49,108 @@ const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
 const ONBOARDING_EVENT = 'thuki://onboarding';
 
+/**
+ * Strips control characters and enforces a length cap on externally-sourced
+ * context (host-app text selections piped through the quote bar). Returns
+ * undefined when the trimmed result is empty so callers can treat "no
+ * context" uniformly.
+ */
+function sanitizeContext(
+  selectedContext: string | null,
+  maxContextLength: number,
+): string | undefined {
+  const sanitized = selectedContext
+    ?.replace(CONTROL_CHARS, '')
+    .slice(0, maxContextLength);
+  return sanitized?.trim() ? sanitized : undefined;
+}
+
+/**
+ * Builds the placeholder Message shown in the conversation while a submit is
+ * deferred (image still processing or /screen capture in flight). Each
+ * attached image renders as its resolved file path when available, falling
+ * back to a blob URL so the bubble still shows a thumbnail with a spinner.
+ * Adds a SCREEN_CAPTURE_PLACEHOLDER tile when /screen will run.
+ */
+function buildPendingBubble(params: {
+  query: string;
+  context: string | undefined;
+  attachedImages: AttachedImage[];
+  hasScreen: boolean;
+}): Message {
+  const displayPaths = params.attachedImages.map(
+    (img) => img.filePath ?? img.blobUrl,
+  );
+  const placeholders = params.hasScreen
+    ? [...displayPaths, SCREEN_CAPTURE_PLACEHOLDER]
+    : displayPaths;
+  return {
+    id: crypto.randomUUID(),
+    role: 'user',
+    content: params.query,
+    quotedText: params.context,
+    /* v8 ignore start -- callers always have at least one image source
+       (a resolved/pending image, /screen, or both); empty branch defensive */
+    imagePaths: placeholders.length > 0 ? placeholders : undefined,
+    /* v8 ignore stop */
+  };
+}
+
+/**
+ * Filters attached images down to those whose backend processing has
+ * resolved (filePath !== null) and appends an optional fresh screenshot
+ * path. Returned list is the source of truth for what gets sent to the
+ * model or to OCR.
+ */
+function resolveReadyPaths(
+  attachedImages: AttachedImage[],
+  screenshotPath?: string,
+): string[] {
+  const paths = attachedImages
+    .filter((img) => img.filePath !== null)
+    .map((img) => img.filePath as string);
+  if (screenshotPath) paths.push(screenshotPath);
+  return paths;
+}
+
+/**
+ * Submit intents that can be deferred while attached images finish
+ * processing. The `useEffect` watching `attachedImages` switches on
+ * `kind` to dispatch to the right stage-2 handler once every image
+ * has a resolved `filePath`.
+ *
+ * Every variant carries `query` and `context` so the cancel-restore
+ * path can read them uniformly.
+ */
+type PendingSubmit =
+  | {
+      kind: 'plain';
+      query: string;
+      context: string | undefined;
+      think: boolean;
+    }
+  | {
+      kind: 'utility-ocr';
+      query: string;
+      context: string | undefined;
+      think: boolean;
+      trigger: string;
+      strippedMessage: string;
+      hasScreen: boolean;
+    }
+  | {
+      kind: 'extract';
+      query: string;
+      context: string | undefined;
+      hasScreen: boolean;
+    }
+  | {
+      kind: 'screen';
+      query: string;
+      context: string | undefined;
+      think: boolean;
+    };
+
 /** Total transparent padding around the morphing container: pt-2(8) + pb-6(24) + motion py-2(16). */
 const CONTAINER_VERTICAL_PADDING = 48;
 
@@ -241,19 +343,10 @@ function App() {
 
   /** When the user submits while images are still processing, the submit
    *  intent is stored here. The effect below watches `attachedImages` and
-   *  fires the actual `ask()` once every image has a resolved `filePath`.
-   *  Also stores `promptOverride` when the deferred submit originates from
-   *  a utility command, and `context` for any quoted selected text. */
-  const pendingSubmitRef = useRef<{
-    query: string;
-    context: string | undefined;
-    think: boolean;
-    promptOverride?: string;
-    /** Set when the deferred submit is for a utility OCR command. */
-    utilityTrigger?: string;
-    strippedMessage?: string;
-    hasScreen?: boolean;
-  } | null>(null);
+   *  dispatches the matching stage-2 handler once every image has a
+   *  resolved `filePath`. The discriminated `kind` tells the resolver
+   *  which handler to run. */
+  const pendingSubmitRef = useRef<PendingSubmit | null>(null);
   /** True while waiting for images to finish processing before a deferred
    *  submit. Drives the "waiting" UI state in the ask bar. */
   const [isSubmitPending, setIsSubmitPending] = useState(false);
@@ -1052,16 +1145,7 @@ function App() {
    */
   const handleScreenSubmit = useCallback(
     async (fullQuery: string, think?: boolean, promptOverride?: string) => {
-      const sanitized = selectedContext
-        ?.replace(CONTROL_CHARS, '')
-        .slice(0, quote.maxContextLength);
-      const context = sanitized?.trim() ? sanitized : undefined;
-
-      // Snapshot display paths for the pending bubble: use resolved file paths
-      // for already-processed images, blob URLs for still-processing ones.
-      const existingDisplayPaths = attachedImages.map(
-        (img) => img.filePath ?? img.blobUrl,
-      );
+      const context = sanitizeContext(selectedContext, quote.maxContextLength);
 
       // Store the original input so handleCancel can restore it if the user
       // aborts the capture before it resolves.
@@ -1075,13 +1159,14 @@ function App() {
       // feedback that the capture is in progress.
       screenCapturePendingRef.current = true;
       setIsSubmitPending(true);
-      setPendingUserMessage({
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: fullQuery,
-        quotedText: context,
-        imagePaths: [...existingDisplayPaths, SCREEN_CAPTURE_PLACEHOLDER],
-      });
+      setPendingUserMessage(
+        buildPendingBubble({
+          query: fullQuery,
+          context,
+          attachedImages,
+          hasScreen: true,
+        }),
+      );
       setQuery('');
       setSelectedContext(null);
       /* v8 ignore start -- inputRef always set when overlay is visible */
@@ -1126,10 +1211,7 @@ function App() {
       setIsSubmitPending(false);
       setPendingUserMessage(null);
 
-      const readyPaths = attachedImages
-        .filter((img) => img.filePath !== null)
-        .map((img) => img.filePath as string);
-      readyPaths.push(screenshotPath);
+      const readyPaths = resolveReadyPaths(attachedImages, screenshotPath);
 
       ask(fullQuery, context, readyPaths, think, promptOverride);
       for (const img of attachedImages) {
@@ -1158,20 +1240,7 @@ function App() {
    */
   const handleExtractSubmit = useCallback(
     async (fullQuery: string, hasScreen: boolean) => {
-      // eslint-disable-next-line no-control-regex
-      const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
-      const sanitized = selectedContext
-        ?.replace(CONTROL_CHARS, '')
-        .slice(0, quote.maxContextLength);
-      const context = sanitized?.trim() ? sanitized : undefined;
-
-      // Snapshot display paths for the pending user bubble.
-      const existingDisplayPaths = attachedImages.map(
-        (img) => img.filePath ?? img.blobUrl,
-      );
-      const imagePlaceholders = hasScreen
-        ? [...existingDisplayPaths, SCREEN_CAPTURE_PLACEHOLDER]
-        : existingDisplayPaths;
+      const context = sanitizeContext(selectedContext, quote.maxContextLength);
 
       // Show the pending user bubble and lock out further submits.
       if (hasScreen) {
@@ -1179,16 +1248,14 @@ function App() {
         screenCaptureInputSnapshotRef.current = { query: fullQuery, context };
       }
       setIsSubmitPending(true);
-      setPendingUserMessage({
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: fullQuery,
-        quotedText: context,
-        /* v8 ignore start -- imagePlaceholders always non-empty given the hasContent guard above */
-        imagePaths:
-          imagePlaceholders.length > 0 ? imagePlaceholders : undefined,
-        /* v8 ignore stop */
-      });
+      setPendingUserMessage(
+        buildPendingBubble({
+          query: fullQuery,
+          context,
+          attachedImages,
+          hasScreen,
+        }),
+      );
       setQuery('');
       setSelectedContext(null);
       /* v8 ignore start -- inputRef always set when overlay is visible */
@@ -1226,16 +1293,17 @@ function App() {
       }
 
       // Collect resolved image paths.
-      const readyPaths = attachedImages
-        .filter((img) => img.filePath !== null)
-        .map((img) => img.filePath as string);
-      if (screenshotPath) readyPaths.push(screenshotPath);
+      const readyPaths = resolveReadyPaths(attachedImages, screenshotPath);
 
       // Clean up attached images.
       for (const img of attachedImages) URL.revokeObjectURL(img.blobUrl);
       setAttachedImages([]);
 
       // Resolve display paths for the real user bubble.
+      /* v8 ignore next -- handleSubmit only dispatches /extract when there is
+         either an attached image or /screen, and the pending-image gate makes
+         sure attached images are resolved before this point; so readyPaths
+         is always non-empty here. The empty fallback is defensive. */
       const displayPaths = readyPaths.length > 0 ? readyPaths : undefined;
 
       // Run Vision OCR.
@@ -1311,21 +1379,7 @@ function App() {
       hasScreen: boolean,
       hasThink: boolean,
     ) => {
-      // eslint-disable-next-line no-control-regex
-      const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
-      const sanitized = selectedContext
-        ?.replace(CONTROL_CHARS, '')
-        .slice(0, quote.maxContextLength);
-      const context = sanitized?.trim() ? sanitized : undefined;
-
-      // Snapshot display paths for the pending user bubble.
-      const existingDisplayPaths = attachedImages.map(
-        /* v8 ignore next -- dispatch guard ensures filePath is set; blobUrl fallback is defensive */
-        (img) => img.filePath ?? img.blobUrl,
-      );
-      const imagePlaceholders = hasScreen
-        ? [...existingDisplayPaths, SCREEN_CAPTURE_PLACEHOLDER]
-        : existingDisplayPaths;
+      const context = sanitizeContext(selectedContext, quote.maxContextLength);
 
       // Show the pending user bubble and lock out further submits.
       if (hasScreen) {
@@ -1333,16 +1387,14 @@ function App() {
         screenCaptureInputSnapshotRef.current = { query: fullQuery, context };
       }
       setIsSubmitPending(true);
-      setPendingUserMessage({
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: fullQuery,
-        quotedText: context,
-        /* v8 ignore start -- imagePlaceholders always non-empty given the dispatch guard above */
-        imagePaths:
-          imagePlaceholders.length > 0 ? imagePlaceholders : undefined,
-        /* v8 ignore stop */
-      });
+      setPendingUserMessage(
+        buildPendingBubble({
+          query: fullQuery,
+          context,
+          attachedImages,
+          hasScreen,
+        }),
+      );
       setQuery('');
       setSelectedContext(null);
       /* v8 ignore start -- inputRef always set when overlay is visible */
@@ -1381,11 +1433,9 @@ function App() {
         if (wasCancelled) return;
       }
 
-      // Collect resolved image paths (in-flight images with filePath=null are filtered out).
-      const readyPaths = attachedImages
-        .filter((img) => img.filePath !== null)
-        .map((img) => img.filePath as string);
-      if (screenshotPath) readyPaths.push(screenshotPath);
+      // Collect resolved image paths (dispatch guard already filtered out
+      // any still-pending images via the pre-flight gate).
+      const readyPaths = resolveReadyPaths(attachedImages, screenshotPath);
 
       // Clean up attached images.
       for (const img of attachedImages) URL.revokeObjectURL(img.blobUrl);
@@ -1592,103 +1642,53 @@ function App() {
     const hasThink = found.has('/think');
     const hasSearch = found.has('/search');
     const hasExtract = found.has('/extract');
-
-    // /extract bypasses the Ollama environment gate: Vision OCR runs locally
-    // and never needs Ollama. Shake when there is nothing to extract from.
-    if (hasExtract) {
-      const hasContent = attachedImages.length > 0 || hasScreen;
-      if (!hasContent) {
-        setCaptureError('Attach an image or add /screen to extract text from.');
-        setShakeAskBar(true);
-        return;
-      }
-      void handleExtractSubmit(trimmedQuery, hasScreen);
-      return;
-    }
-
-    // Check for utility commands with prompt templates.
     const utilityTrigger = Array.from(found).find((t) => {
       const cmd = COMMANDS.find((c) => c.trigger === t);
       return !!cmd?.promptTemplate;
     });
 
-    // Utility commands with images or /screen: OCR path — bypasses the
-    // Ollama capability gate because no image bytes reach the model.
-    if (utilityTrigger && (hasScreen || attachedImages.length > 0)) {
-      // If images are still uploading, defer: show the pending bubble and wait
-      // for all filePaths to resolve before running OCR. Submitting immediately
-      // would filter out still-pending images and OCR an empty list, producing
-      // the "No readable text found" error the user sees with a fast submit.
-      const hasPendingImages = attachedImages.some(
-        (img) => img.filePath === null,
-      );
-      if (hasPendingImages) {
-        const sanitized = selectedContext
-          ?.replace(CONTROL_CHARS, '')
-          .slice(0, quote.maxContextLength);
-        const deferredContext = sanitized?.trim() ? sanitized : undefined;
-        setIsSubmitPending(true);
-        setPendingUserMessage({
-          id: crypto.randomUUID(),
-          role: 'user',
-          content: trimmedQuery,
-          quotedText: deferredContext,
-          imagePaths: attachedImages.map((img) => img.filePath ?? img.blobUrl),
-        });
-        setQuery('');
-        /* v8 ignore next */
-        if (inputRef.current) inputRef.current.style.height = 'auto';
-        pendingSubmitRef.current = {
-          query: trimmedQuery,
-          context: deferredContext,
-          think: hasThink,
-          utilityTrigger,
-          strippedMessage,
-          hasScreen,
-        };
-        return;
-      }
-      void handleUtilityOcrSubmit(
-        trimmedQuery,
-        utilityTrigger,
-        strippedMessage,
-        hasScreen,
-        hasThink,
-      );
+    // /extract requires content to extract from. Shake before any other gate
+    // so the error message is the specific one.
+    if (hasExtract && attachedImages.length === 0 && !hasScreen) {
+      setCaptureError('Attach an image or add /screen to extract text from.');
+      setShakeAskBar(true);
       return;
     }
+
+    // OCR paths (/extract, utility commands with images or /screen) bypass
+    // the Ollama capability/environment gate: Vision OCR runs locally and
+    // utility OCR sends extracted text — never image bytes — to the model.
+    // The `composeCapabilityState` memo also suppresses image/screen counts
+    // for these paths, but we short-circuit here to make the intent explicit
+    // and to skip the env gate for /extract specifically.
+    const isOcrPath =
+      hasExtract ||
+      (utilityTrigger !== undefined &&
+        (hasScreen || attachedImages.length > 0));
 
     // Submit-time capability gate. Refuses messages whose attached content
     // the active model cannot handle (images on a text-only model) and
     // environment-state failures (Ollama unreachable, no model selected).
     // History-only mismatches do NOT shake: the backend filter strips
     // incompatible content from the per-request snapshot, so submit keeps
-    // working and the strip already explains what is happening. The gate
-    // is the only gate: input affordances stay live so the user can
-    // compose freely and recover via the model picker chip. When refused
-    // the ask bar shakes; the persistent capability strip already surfaces
-    // the reason so we do not duplicate it in a transient toast. Compose
-    // state is preserved so the user does not lose their typing.
-    if (hasBlockingConflict) {
+    // working and the strip already explains what is happening.
+    if (!isOcrPath && hasBlockingConflict) {
       setShakeAskBar(true);
       return;
     }
 
-    // `/search` entry point AND sticky follow-ups. Once a search turn is in
-    // flight, subsequent submits without an explicit slash command continue
-    // to route through the backend search pipeline so the LLM can clarify,
-    // re-answer from context, or fire a fresh SearXNG query as needed.
-    // An explicit `/screen` command takes precedence over search continuation
-    // so users can always attach a screenshot mid-conversation.
+    // `/search` entry point AND sticky follow-ups. Search ignores attached
+    // images entirely (the pipeline never sends image bytes), so it does
+    // NOT route through the pending-images gate below. An explicit /screen
+    // command takes precedence over search continuation so users can always
+    // attach a screenshot mid-conversation.
     if (hasSearch || (searchActive && !hasScreen && found.size === 0)) {
       const searchQuery = strippedMessage.trim();
       if (!searchQuery) return;
-      // Sanitize externally-sourced context before moving it into the user
-      // bubble so host-app control characters cannot leak into the UI.
-      const sanitized = selectedContext
-        ?.replace(CONTROL_CHARS, '')
-        .slice(0, quote.maxContextLength);
-      const context = sanitized?.trim() ? sanitized : undefined;
+      const searchContext = sanitizeContext(
+        selectedContext,
+        quote.maxContextLength,
+      );
       // Pass the full typed query (with `/search`) as bubble display content so
       // the user sees exactly what they typed; the backend receives only the
       // stripped query without the trigger prefix.
@@ -1698,9 +1698,11 @@ function App() {
       /* v8 ignore next */
       inputRef.current!.style.height = 'auto';
       setSearchActive(true);
-      void askSearch(searchQuery, searchDisplay, context).then(({ final }) => {
-        if (final) setSearchActive(false);
-      });
+      void askSearch(searchQuery, searchDisplay, searchContext).then(
+        ({ final }) => {
+          if (final) setSearchActive(false);
+        },
+      );
       return;
     }
 
@@ -1717,19 +1719,92 @@ function App() {
     )
       return;
 
+    const context = sanitizeContext(selectedContext, quote.maxContextLength);
+
+    // Unified pre-flight pending-images gate. Every command that needs
+    // resolved image paths waits here: /extract, /screen, utility-OCR, and
+    // plain submit. If any attached image is still processing, store the
+    // submit intent in `pendingSubmitRef` keyed by command kind; the effect
+    // below dispatches to the matching stage-2 handler once every image
+    // has a resolved `filePath`. Without this gate, handlers would filter
+    // pending images out and silently produce empty-input errors.
+    const hasPendingImages = attachedImages.some(
+      (img) => img.filePath === null,
+    );
+    if (hasPendingImages) {
+      setIsSubmitPending(true);
+      setPendingUserMessage(
+        buildPendingBubble({
+          query: trimmedQuery,
+          context,
+          attachedImages,
+          hasScreen,
+        }),
+      );
+      setQuery('');
+      /* v8 ignore next */
+      if (inputRef.current) inputRef.current.style.height = 'auto';
+
+      if (hasExtract) {
+        pendingSubmitRef.current = {
+          kind: 'extract',
+          query: trimmedQuery,
+          context,
+          hasScreen,
+        };
+      } else if (utilityTrigger) {
+        pendingSubmitRef.current = {
+          kind: 'utility-ocr',
+          query: trimmedQuery,
+          context,
+          think: hasThink,
+          trigger: utilityTrigger,
+          strippedMessage,
+          hasScreen,
+        };
+      } else if (hasScreen) {
+        pendingSubmitRef.current = {
+          kind: 'screen',
+          query: trimmedQuery,
+          context,
+          think: hasThink,
+        };
+      } else {
+        pendingSubmitRef.current = {
+          kind: 'plain',
+          query: trimmedQuery,
+          context,
+          think: hasThink,
+        };
+      }
+      return;
+    }
+
+    // Direct dispatch: all attached images (if any) are already resolved.
+
+    if (hasExtract) {
+      void handleExtractSubmit(trimmedQuery, hasScreen);
+      return;
+    }
+
+    if (utilityTrigger && (hasScreen || attachedImages.length > 0)) {
+      void handleUtilityOcrSubmit(
+        trimmedQuery,
+        utilityTrigger,
+        strippedMessage,
+        hasScreen,
+        hasThink,
+      );
+      return;
+    }
+
     if (hasScreen) {
       void handleScreenSubmit(trimmedQuery, hasThink, undefined);
       return;
     }
 
     if (utilityTrigger) {
-      // OCR dispatch above already handled utilityTrigger + images/screen cases,
-      // so this branch only runs for text-only utility commands (no attachments).
-      const sanitized = selectedContext
-        ?.replace(CONTROL_CHARS, '')
-        .slice(0, quote.maxContextLength);
-      const context = sanitized?.trim() ? sanitized : undefined;
-
+      // Text-only utility command (no images, no /screen).
       const composedPrompt = buildPrompt(
         utilityTrigger,
         strippedMessage,
@@ -1742,7 +1817,6 @@ function App() {
         setShakeAskBar(true);
         return;
       }
-
       ask(
         trimmedQuery,
         context,
@@ -1757,45 +1831,7 @@ function App() {
       return;
     }
 
-    // Sanitize externally-sourced context: strip control characters and enforce
-    // a length cap to limit prompt-injection surface from host-app selections.
-    const sanitized = selectedContext
-      ?.replace(CONTROL_CHARS, '')
-      .slice(0, quote.maxContextLength);
-    const context = sanitized?.trim() ? sanitized : undefined;
-
-    // If all images are ready (or there are none), submit immediately.
-    const hasPendingImages = attachedImages.some(
-      (img) => img.filePath === null,
-    );
-    if (!hasPendingImages) {
-      executeSubmit(trimmedQuery, context, hasThink || undefined);
-      return;
-    }
-
-    // Images are still processing - store the intent and wait. The effect
-    // below will fire the actual ask() once every image has resolved.
-    pendingSubmitRef.current = {
-      query: trimmedQuery,
-      context,
-      think: hasThink,
-    };
-    setIsSubmitPending(true);
-
-    // Show the user's message immediately in the chat view. Use file paths
-    // for already-processed images (no loading spinner) and blob URLs only
-    // for images still being processed (ChatBubble shows a spinner for blob: URLs).
-    setPendingUserMessage({
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: trimmedQuery,
-      quotedText: context,
-      imagePaths: attachedImages.map((img) => img.filePath ?? img.blobUrl),
-    });
-
-    setQuery('');
-    setSelectedContext(null);
-    inputRef.current!.style.height = 'auto';
+    executeSubmit(trimmedQuery, context, hasThink || undefined);
   }, [
     query,
     isGenerating,
@@ -1815,74 +1851,77 @@ function App() {
     hasBlockingConflict,
   ]);
 
-  // When a pending submit exists and all images finish processing, fire it.
-  // Reads `attachedImages` directly (not via `executeSubmit` closure) to
-  // guarantee the effect always sees the freshest file paths.
+  // When a pending submit exists and all images finish processing, dispatch
+  // to the matching stage-2 handler. Reads `attachedImages` directly (not
+  // through closure) to guarantee the effect always sees the freshest file
+  // paths. The switch on `pendingSubmitRef.current.kind` is the single
+  // place that maps a deferred command back to its handler — adding a new
+  // image-aware command means adding a `kind` variant and one branch here.
   /* eslint-disable @eslint-react/set-state-in-effect -- intentional: effect
      reacts to image processing completion and must synchronously transition
      state (pending → submitted) in the same tick to avoid stale renders. */
   useEffect(() => {
-    if (!pendingSubmitRef.current) return;
+    const ref = pendingSubmitRef.current;
+    if (!ref) return;
     if (attachedImages.length === 0) {
       // All images failed - restore the user's query so their text isn't lost.
-      const { query: savedQuery, context: savedContext } =
-        pendingSubmitRef.current;
       pendingSubmitRef.current = null;
       setIsSubmitPending(false);
       setPendingUserMessage(null);
-      setQuery(savedQuery);
-      setSelectedContext(savedContext ?? null);
+      setQuery(ref.query);
+      setSelectedContext(ref.context ?? null);
       return;
     }
     // Wait until every image has finished backend processing.
     const allReady = attachedImages.every((img) => img.filePath !== null);
     if (!allReady) return;
 
-    const {
-      query: pendingQuery,
-      context,
-      think,
-      promptOverride,
-      utilityTrigger,
-      strippedMessage,
-      hasScreen,
-    } = pendingSubmitRef.current;
     pendingSubmitRef.current = null;
 
-    if (utilityTrigger) {
-      // Utility OCR deferred path: images are now fully resolved.
-      // Clear the loading-spinner bubble; handleUtilityOcrSubmit will set a
-      // fresh one with resolved paths and then run OCR. isSubmitPending stays
-      // true across the transition because handleUtilityOcrSubmit sets it
-      // synchronously before its first await, so React batches the two
-      // state updates and the UI never sees a false intermediate.
-      setPendingUserMessage(null);
-      void handleUtilityOcrSubmit(
-        pendingQuery,
-        utilityTrigger,
-        /* v8 ignore next -- strippedMessage is always set when utilityTrigger is set */
-        strippedMessage ?? '',
-        /* v8 ignore next -- hasScreen is always set when utilityTrigger is set */
-        hasScreen ?? false,
-        think,
-      );
-      return;
+    switch (ref.kind) {
+      case 'extract':
+        // Clear the loading-spinner bubble; handleExtractSubmit re-sets a
+        // fresh pending bubble synchronously before its first await so
+        // React batches the two state updates with no visible flash.
+        setPendingUserMessage(null);
+        void handleExtractSubmit(ref.query, ref.hasScreen);
+        return;
+      case 'utility-ocr':
+        setPendingUserMessage(null);
+        void handleUtilityOcrSubmit(
+          ref.query,
+          ref.trigger,
+          ref.strippedMessage,
+          ref.hasScreen,
+          ref.think,
+        );
+        return;
+      case 'screen':
+        setPendingUserMessage(null);
+        void handleScreenSubmit(ref.query, ref.think, undefined);
+        return;
+      case 'plain': {
+        setIsSubmitPending(false);
+        // Clear the preview message - ask() will add the real one with file paths.
+        setPendingUserMessage(null);
+        const images = attachedImages.map((img) => img.filePath as string);
+        void ask(ref.query, ref.context, images, ref.think || undefined);
+        setSelectedContext(null);
+        for (const img of attachedImages) {
+          URL.revokeObjectURL(img.blobUrl);
+        }
+        setAttachedImages([]);
+        return;
+      }
     }
-
-    setIsSubmitPending(false);
-    // Clear the preview message - ask() will add the real one with file paths.
-    setPendingUserMessage(null);
-
-    const images = attachedImages.map((img) => img.filePath as string);
-    void ask(pendingQuery, context, images, think || undefined, promptOverride);
-    // Note: the display content in the pending bubble (set in handleSubmit)
-    // already includes command triggers for visibility in the chat.
-    setSelectedContext(null);
-    for (const img of attachedImages) {
-      URL.revokeObjectURL(img.blobUrl);
-    }
-    setAttachedImages([]);
-  }, [attachedImages, ask, handleUtilityOcrSubmit, setSelectedContext]);
+  }, [
+    attachedImages,
+    ask,
+    handleExtractSubmit,
+    handleUtilityOcrSubmit,
+    handleScreenSubmit,
+    setSelectedContext,
+  ]);
   /* eslint-enable @eslint-react/set-state-in-effect */
 
   /**

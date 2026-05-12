@@ -4273,12 +4273,17 @@ describe('App', () => {
       expect(screen.getByText('Screen capture timed out')).toBeInTheDocument();
     });
 
-    it('uses blobUrl for still-processing attached images in the pending bubble', async () => {
-      // save_image_command never resolves: image stays in null-filePath state.
-      // Use enableChannelCaptureWithResponses so channel capture (for ask_ollama)
-      // still works alongside the custom per-command responses.
+    it('defers /screen submit when an attached image is still processing and runs once it resolves', async () => {
+      // Regression guard: submitting /screen with a still-processing image
+      // used to drop the image silently and ask_ollama was called with only
+      // the screenshot. The unified pre-flight gate now defers the submit
+      // until every attached image has a resolved filePath, so both paths
+      // make it into the request.
+      let resolveSave!: (path: string) => void;
       enableChannelCaptureWithResponses({
-        save_image_command: new Promise<string>(() => {}),
+        save_image_command: new Promise<string>((res) => {
+          resolveSave = res;
+        }),
         capture_full_screen_command: '/tmp/screen.jpg',
       });
 
@@ -4286,7 +4291,7 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      // Paste an image; save_image_command hangs, so filePath stays null
+      // Paste an image; save_image_command hangs, so filePath stays null.
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       const file = new File(['img'], 'photo.png', { type: 'image/png' });
       await act(async () => {
@@ -4297,7 +4302,7 @@ describe('App', () => {
         });
       });
 
-      // Submit /screen immediately; image still processing (filePath === null)
+      // Submit /screen while image is still processing.
       act(() => {
         fireEvent.change(textarea, { target: { value: '/screen ' } });
       });
@@ -4306,18 +4311,35 @@ describe('App', () => {
       });
       await act(async () => {});
 
-      // Capture succeeded; ask_ollama called with only the screenshot
-      // (the attached image never resolved its filePath)
-      expect(invoke).toHaveBeenCalledWith(
+      // Deferred: neither the screen capture nor the model call have fired.
+      expect(invoke).not.toHaveBeenCalledWith(
         'capture_full_screen_command',
-        expect.objectContaining({ conversationId: expect.any(String) }),
+        expect.anything(),
       );
-      expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
-        expect.objectContaining({
-          imagePaths: ['/tmp/screen.jpg'],
-        }),
-      );
+      expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
+
+      // Resolve the image; the deferred /screen submit fires.
+      act(() => {
+        resolveSave('/tmp/staged/img1.jpg');
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith(
+          'capture_full_screen_command',
+          expect.objectContaining({ conversationId: expect.any(String) }),
+        );
+      });
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith(
+          'ask_ollama',
+          expect.objectContaining({
+            imagePaths: ['/tmp/staged/img1.jpg', '/tmp/screen.jpg'],
+          }),
+        );
+      });
     });
 
     it('cancelling during in-flight capture prevents ask from being called', async () => {
@@ -4848,11 +4870,12 @@ describe('App', () => {
       });
     });
 
-    it('uses blobUrl for in-flight images and calls OCR with empty paths', async () => {
+    it('defers /extract submit when an attached image is still processing and runs OCR once it resolves', async () => {
+      // Regression guard: submitting /extract with a still-processing image
+      // used to call OCR immediately with an empty paths list (producing
+      // "[No text detected]"). The unified pre-flight gate now defers the
+      // submit until every attached image has a resolved filePath.
       let resolveSave!: (path: string) => void;
-      enableChannelCaptureWithResponses({
-        extract_text_command: '[No text detected]',
-      });
       invoke.mockImplementation(
         async (cmd: string, args?: Record<string, unknown>) => {
           if (args && 'onEvent' in args) {
@@ -4870,7 +4893,7 @@ describe('App', () => {
             return new Promise<string>((res) => {
               resolveSave = res;
             });
-          if (cmd === 'extract_text_command') return '[No text detected]';
+          if (cmd === 'extract_text_command') return 'Hello from image';
           if (cmd === 'get_updater_state')
             return {
               last_check_at_unix: null,
@@ -4886,7 +4909,7 @@ describe('App', () => {
       await showOverlay();
 
       await pasteImageForExtract();
-      // Do NOT wait for save_image_command to resolve; image stays in-flight (filePath=null).
+      // Do NOT resolve save_image_command yet; image stays in-flight (filePath=null).
 
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       act(() => {
@@ -4897,16 +4920,28 @@ describe('App', () => {
       });
       await act(async () => {});
 
-      // OCR called with empty paths (in-flight image has null filePath)
-      expect(invoke).toHaveBeenCalledWith('extract_text_command', {
-        imagePaths: [],
-      });
-      await vi.waitFor(() => {
-        expect(screen.getByText(/No text detected/)).toBeInTheDocument();
-      });
-      // Resolve the save after so it doesn't leak into the next test.
+      // Deferred: OCR has NOT been called yet, pending bubble is visible.
+      expect(invoke).not.toHaveBeenCalledWith(
+        'extract_text_command',
+        expect.anything(),
+      );
+      expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+
+      // Resolve the image; the deferred /extract submit fires.
       act(() => {
         resolveSave('/tmp/staged/img1.jpg');
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('extract_text_command', {
+          imagePaths: ['/tmp/staged/img1.jpg'],
+        });
+      });
+      await vi.waitFor(() => {
+        expect(screen.getByText(/Hello from image/)).toBeInTheDocument();
       });
     });
 

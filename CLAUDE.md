@@ -60,6 +60,40 @@ The UI morphs between two states: a compact spotlight-style input bar → an exp
 - **`config/commands.ts`** — slash command registry: defines supported commands and the `SCREEN_CAPTURE_PLACEHOLDER` sentinel used to show a loading tile in chat while a `/screen` capture is in flight
 - **`components/CommandSuggestion.tsx`** — slash command autocomplete popover. Contains `iconForTrigger()`, a switch statement mapping trigger strings to inline SVG constants. **Every new slash command needs a dedicated case here.** Without it, the command falls through to the default, which returns `SCREEN_ICON` (the monitor icon). Steps: (1) add a hoisted `const FOO_ICON = (<svg .../>)` constant, (2) add `case '/foo': return FOO_ICON;` to `iconForTrigger()`.
 
+### Architecture: slash command flow
+
+Every slash command (`/screen`, `/extract`, `/think`, `/search`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`) routes through a single two-stage pipeline in `src/App.tsx`. The pipeline guarantees that every command sees fully-resolved inputs before any handler runs, so a new command cannot accidentally re-introduce the class of bug where a submit during an in-flight image upload silently drops the image.
+
+**Stage 1 — shared pre-flight in `handleSubmit`:**
+
+1. Empty-input + `isGenerating`/`isSubmitPending` guards return early.
+2. Parse the trimmed query for slash commands.
+3. `/extract` empty-content shake (no image, no `/screen`).
+4. Capability/environment gate. Skipped for OCR paths (`/extract`, utility-with-image, utility-with-`/screen`) because Vision OCR runs locally and utility OCR never sends image bytes to the model.
+5. `/search` runs without the pending-image gate: it does not consume images, so deferring would never finish.
+6. Nothing-to-send guard.
+7. **Pending-images gate.** If any attached image still has `filePath === null`, store a discriminated `PendingSubmit` in `pendingSubmitRef` (kind ∈ `'extract' | 'utility-ocr' | 'screen' | 'plain'`), show a placeholder bubble via `buildPendingBubble`, and return. The `useEffect` watching `attachedImages` fires once every image resolves, switches on `kind`, and dispatches the matching stage-2 handler.
+
+**Stage 2 — command-specific handlers (`handleExtractSubmit`, `handleUtilityOcrSubmit`, `handleScreenSubmit`, `executeSubmit`):** receive already-resolved inputs and do the command-specific work (OCR, screen capture, prompt templating, Ollama call).
+
+**Where the deferral logic lives:**
+
+- `PendingSubmit` discriminated union (top of `App.tsx`) defines the shape of each deferred intent.
+- `pendingSubmitRef` (a `useRef<PendingSubmit | null>` inside `App.tsx`) stores the intent across the deferral window.
+- The resolver `useEffect` watching `attachedImages` dispatches by `kind` once `attachedImages.every(img => img.filePath !== null)`.
+- `handleCancel` reads `pendingSubmitRef.current.query` and `.context` (both present on every variant) to restore compose state on cancel.
+
+**Adding a new image-aware slash command:**
+
+1. Add the trigger to `src/config/commands.ts`.
+2. Add an icon case in `src/components/CommandSuggestion.tsx`.
+3. Write a stage-2 handler (`handleFooSubmit`) that takes resolved inputs.
+4. Add a direct-dispatch branch in `handleSubmit` (after the pending-images gate).
+5. Add a `kind: 'foo'` variant to `PendingSubmit` plus a branch in `handleSubmit`'s gate (to store it) and in the resolver `useEffect` (to dispatch it).
+6. Cover the deferred path: pending-image submit → no immediate handler call → image resolves → handler runs with the right paths. Mirror the `defers /extract submit...` / `defers /screen submit...` tests in `src/__tests__/App.test.tsx`.
+
+Pre-flight helpers shared across handlers (also at the top of `App.tsx`): `sanitizeContext` (control-char strip + length cap on quoted text), `buildPendingBubble` (placeholder message construction), `resolveReadyPaths` (filter `attachedImages` to resolved paths and append an optional screenshot).
+
 ### Backend (`src-tauri/src/`)
 
 - **`lib.rs`** — app setup: loads `AppConfig` via `config::load`, converts window to NSPanel (fullscreen overlay), registers tray, spawns hotkey listener, intercepts close events (hides instead of quits)
