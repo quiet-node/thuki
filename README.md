@@ -71,9 +71,11 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **Isolated sandbox:** optionally run models in a hardened Docker container with capability dropping, read-only volumes, and localhost-only networking
 - **Image input:** paste or drag images and screenshots directly into the chat
 - **Screen capture:** type `/screen` to instantly capture your entire screen and attach it to your question as context
+- **OCR on text-only models:** `/extract`, `/explain`, `/tldr`, `/translate`, `/rewrite`, `/refine`, `/bullets`, and `/todos` read attached images via macOS Vision OCR, so they work even when the active model has no vision capability
 - **Agentic search:** type `/search` to run a fully local, multi-step search pipeline (SearXNG + Trafilatura reader) with a live trace of every query, fetch, and judgement step
-- **Slash commands:** built-in commands for live search and prompt shortcuts: `/search`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`. Highlight text anywhere, summon Thuki, type a command, and hit Enter
+- **Slash commands:** built-in commands for live search and prompt shortcuts: `/search`, `/extract`, `/explain`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`. Highlight text anywhere, summon Thuki, type a command, and hit Enter
 - **Extended reasoning:** type `/think` to have the model reason through a problem step by step before answering
+- **Math rendering:** LaTeX expressions in responses render as formatted equations via KaTeX
 - **In-app model picker:** browse the models installed in your local Ollama and switch the active model from the ask bar without ever opening a config file
 - **Cross-model continuity:** swap models mid-conversation and Thuki sanitizes history and filters capabilities (vision, thinking) to whatever the new model supports
 - **Settings panel:** a four-tab native window (⌘,) for inference, prompt, window, and search settings, including a log-scale context-window slider and a tunable image-attachment cap (up to 20)
@@ -83,8 +85,6 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 ## Getting Started
 
 ### Step 1: Set Up Your AI Engine
-
-> **Default model:** Thuki ships with [`gemma4:e2b`](https://ollama.com/library/gemma4) by default, an effective 2B parameter edge model from Google. It runs comfortably on most modern Macs with 8 GB of RAM and delivers strong performance on reasoning, coding, and vision tasks. The ask-bar model picker lists the models currently installed in your local Ollama and lets you switch the active model without leaving the overlay. To change the bootstrap default itself, edit `~/Library/Application Support/com.quietnode.thuki/config.toml` and reorder the `[model] available` list so your preferred model is first. See [Configurations](docs/configurations.md) for the full schema.
 
 Choose one of the two options below to set up your AI engine before installing Thuki.
 
@@ -106,7 +106,7 @@ Choose one of the two options below to set up your AI engine before installing T
    ollama pull gemma4:e2b
    ```
 
-   > **Note:** Model files are large (typically 2–8 GB). This step can take several minutes depending on your internet connection. You only need to do it once.
+   > **Note:** Model files are large (typically 2–8 GB). This step can take several minutes depending on your internet connection. You only need to do it once. Any model in the [Ollama library](https://ollama.com/library) works; `gemma4:e2b` is the recommended starting point. Pull additional models anytime and switch between them from Thuki's ask bar.
 
 3. **Verify the model is ready**
 
@@ -179,7 +179,7 @@ The `/search` command uses an agentic search pipeline that depends on two local 
 
 6. Open Thuki. It will appear in your menu bar.
 
-> **First launch:** macOS will ask for Accessibility permission. This is required for the global keyboard shortcut that lets you summon Thuki from any app. Grant it once; it persists across restarts.
+> **First launch:** macOS will ask for two permissions. **Accessibility** is required for the global keyboard shortcut that lets you summon Thuki from any app. **Screen Recording** is required for the `/screen` command and the screenshot button. Grant both once; they persist across restarts.
 
 #### Build from Source
 
@@ -256,7 +256,6 @@ Thuki is just getting started. Here's where it's headed:
 The big leap: from answering questions to taking action.
 
 - **Tool integrations via [MCP](https://modelcontextprotocol.io/):** connect Thuki to Gmail, Slack, Discord, Google Calendar, and any other MCP-compatible service; ask it to draft a reply, summarize a thread, or schedule a meeting without ever leaving your current app
-- **More slash commands:** more domain-specific commands on top of the existing `/search`, `/screen`, `/think`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, and `/todos`
 
 ### Better AI Control
 
@@ -271,7 +270,7 @@ Give Thuki more to work with.
 
 - **Voice input:** dictate your question instead of typing
 - **Auto-capture screen context:** activate Thuki and have it automatically read the active window or selected region as context (partial: `/screen` captures the full screen today; targeted region capture is next)
-- **File and document drop:** drag a PDF, image, or text file directly into Thuki as context for your question
+- **File and document drop:** drag a PDF or text file directly into Thuki as context for your question
 
 ---
 
