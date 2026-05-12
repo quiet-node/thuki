@@ -65,6 +65,10 @@ export function renderCommandsMarkdown(): string {
     '',
     'This means you can highlight text anywhere on screen, summon Thuki with double-tap Control, type a command, and hit Enter without retyping the selected content.',
     '',
+    '## Image input on text-only models',
+    '',
+    '`/extract`, `/tldr`, `/translate`, `/rewrite`, `/refine`, `/bullets`, `/todos`, and `/explain` read attached images locally via macOS Vision OCR, so they work even when the active model has no vision capability. Only plain submits and `/screen` alone require a vision model to read images. See [OCR-supported commands](./ocr-commands.md) for the full list and details.',
+    '',
     ...COMMANDS.flatMap((command, index) => {
       const section = renderDocsSection(command);
       return index === COMMANDS.length - 1

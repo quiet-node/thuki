@@ -9,16 +9,11 @@ export type Tip = string | { text: string; url: string };
 
 export const TIPS: readonly Tip[] = [
   'Use /screen to snap your display and attach it to the chat for visual context',
+  'Use /extract to extract any text from images or screenshots',
   {
-    text: '/extract reads all text from any image or screenshot using macOS Vision OCR; no LLM required ↗',
-    url: 'https://github.com/quiet-node/thuki/blob/main/docs/extract.md',
+    text: 'OCR-supported commands (/extract, /translate, etc.) read images locally: no vision model needed ↗',
+    url: 'https://github.com/quiet-node/thuki/blob/main/docs/ocr-commands.md',
   },
-  'Combine /screen and /extract in one message to capture your screen and pull out every word instantly',
-  {
-    text: '/extract uses native macOS OCR so it returns results in under a second, far faster than any vision model ↗',
-    url: 'https://github.com/quiet-node/thuki/blob/main/docs/extract.md',
-  },
-  'Paste an image and type /extract to copy terminal output, error messages, or any on-screen text as plain text',
   'Highlight text in any app before summoning Thuki to include it as context',
   '/think makes Thuki reason step by step before answering, great for hard questions',
   '/search pulls live web results into the chat so answers stay current',

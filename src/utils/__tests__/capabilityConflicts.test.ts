@@ -4,6 +4,7 @@ import {
   getEnvironmentMessage,
   isComposeCapabilityConflict,
   NO_MODELS_INSTALLED_MESSAGE,
+  OCR_COMMANDS_DOC_URL,
   OLLAMA_UNREACHABLE_MESSAGE,
 } from '../capabilityConflicts';
 import type { ModelCapabilities } from '../../types/model';
@@ -84,9 +85,10 @@ describe('getCapabilityConflict', () => {
       ...EMPTY,
       imageCount: 1,
     });
-    expect(result).toBe(
-      'llama3 reads text only. Try a vision model for images.',
-    );
+    expect(result).toEqual({
+      text: 'llama3 reads text only. Use an OCR-supported command, or switch to a vision model for images.',
+      url: OCR_COMMANDS_DOC_URL,
+    });
   });
 
   it('returns conflict when /screen is queued and model is text-only', () => {
@@ -94,7 +96,9 @@ describe('getCapabilityConflict', () => {
       ...EMPTY,
       hasScreenCommand: true,
     });
-    expect(result).toContain('reads text only');
+    expect(result).not.toBeNull();
+    expect(typeof result).toBe('object');
+    expect((result as { text: string }).text).toContain('reads text only');
   });
 
   it('returns null when modelName is empty so the env-state helper can take over', () => {
@@ -239,9 +243,10 @@ describe('getCapabilityConflict', () => {
       imageCount: 1,
       hasThinkCommand: true,
     });
-    expect(result).toBe(
-      'llama3 reads text only. Try a vision model for images.',
-    );
+    expect(result).toEqual({
+      text: 'llama3 reads text only. Use an OCR-supported command, or switch to a vision model for images.',
+      url: OCR_COMMANDS_DOC_URL,
+    });
   });
 
   it('still fires the /think gate when vision is satisfied but thinking is not', () => {
@@ -294,9 +299,10 @@ describe('getCapabilityConflict', () => {
       EMPTY,
       HISTORY_HAS_IMAGES,
     );
-    expect(result).toBe(
-      'Images from earlier turns are hidden from llama3 because it reads text only. Switch to a vision model to keep them.',
-    );
+    expect(result).toEqual({
+      text: 'llama3 reads text only. Continue using OCR-supported commands, or switch to a vision model to send images directly.',
+      url: OCR_COMMANDS_DOC_URL,
+    });
   });
 
   it('warns when history has thinking but active model does not emit it', () => {
@@ -339,7 +345,9 @@ describe('getCapabilityConflict', () => {
       EMPTY,
       HISTORY_HAS_BOTH,
     );
-    expect(result).toContain('Images from earlier turns are hidden');
+    expect((result as { text: string }).text).toContain(
+      'Continue using OCR-supported commands',
+    );
   });
 
   it('compose conflict wins over history conflict when both apply', () => {
@@ -351,9 +359,10 @@ describe('getCapabilityConflict', () => {
       { ...EMPTY, imageCount: 1 },
       HISTORY_HAS_IMAGES,
     );
-    expect(result).toBe(
-      'llama3 reads text only. Try a vision model for images.',
-    );
+    expect(result).toEqual({
+      text: 'llama3 reads text only. Use an OCR-supported command, or switch to a vision model for images.',
+      url: OCR_COMMANDS_DOC_URL,
+    });
   });
 
   it('defers history check when capabilities are unknown', () => {
@@ -381,7 +390,9 @@ describe('getCapabilityConflict', () => {
       EMPTY,
       HISTORY_HAS_IMAGES,
     );
-    expect(result).toContain('hidden from llama3');
+    expect((result as { text: string }).text).toContain(
+      'Continue using OCR-supported commands',
+    );
   });
 
   it('warns when history has more images per message than vision model accepts', () => {
@@ -431,7 +442,7 @@ describe('getCapabilityConflict', () => {
       EMPTY,
       HISTORY_HAS_TWO_IMAGES,
     );
-    expect(result).toContain('reads text only');
+    expect((result as { text: string }).text).toContain('reads text only');
   });
 
   it('ignores history-cap warning when vision model has no max-images cap', () => {

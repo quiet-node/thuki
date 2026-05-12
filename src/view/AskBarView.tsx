@@ -8,6 +8,7 @@ import { CommandSuggestion } from '../components/CommandSuggestion';
 import { ModelPicker } from '../components/ModelPicker';
 import { Tooltip } from '../components/Tooltip';
 import { CapabilityMismatchStrip } from '../components/CapabilityMismatchStrip';
+import type { CapabilityMismatchMessage } from '../components/CapabilityMismatchStrip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
 import { COMMANDS } from '../config/commands';
@@ -196,9 +197,11 @@ interface AskBarViewProps {
   /**
    * Capability mismatch message to render between the attachments row and
    * the input. `null` (or undefined) renders nothing. The host computes
-   * this string via `getCapabilityConflict` and passes it down.
+   * this via `getCapabilityConflict` and passes it down. The host may
+   * pass either a plain string (passive informational strip) or a
+   * `{ text, url }` pair (clickable strip that opens the URL).
    */
-  capabilityConflictMessage?: string | null;
+  capabilityConflictMessage?: CapabilityMismatchMessage | null;
   /**
    * When true, the input row plays a brief horizontal shake animation.
    * The host pulses this true / false to signal a refused submit.
