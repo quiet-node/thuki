@@ -239,6 +239,7 @@ Thuki is macOS-only, but the community has been busy bringing it to other platfo
 | Platform      | Repo                                               | Author                                       |
 | ------------- | -------------------------------------------------- | -------------------------------------------- |
 | Windows 10/11 | [ThukiWin](https://github.com/ayzekhdawy/thukiwin) | [@ayzekhdawy](https://github.com/ayzekhdawy) |
+| Windows 10/11 | [Mate](https://github.com/M31i55a/windowsMate-Thuki) | [@M31i55a](https://github.com/M31i55a) |
 
 > Each port is independently maintained by its author. For issues or questions about a specific port, head to that repo directly.
 
