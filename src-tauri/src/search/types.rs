@@ -437,8 +437,8 @@ impl SearchError {
             Self::SandboxUnavailable => {
                 "Thuki's search sandbox isn't running.\n\
                 The /search command needs two local containers (SearXNG and a Trafilatura reader) to be up. \
-                See the setup steps in the repo README:\n\
-                https://github.com/quiet-node/thuki/blob/main/README.md#setup-the-search-sandbox-optional-required-for-search"
+                See the setup guide:\n\
+                https://github.com/quiet-node/thuki/blob/main/docs/agentic-search.md#setup"
                     .to_string()
             }
         }

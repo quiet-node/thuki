@@ -138,30 +138,7 @@ bun run sandbox:stop
 
 For the full architecture and security philosophy behind the sandbox, see [`sandbox/README.md`](sandbox/README.md).
 
-### Step 2: Setup the search sandbox (Optional, required for /search)
-
-The `/search` command uses an agentic search pipeline that depends on two local Docker containers: a **SearXNG** meta-search engine and a **Trafilatura** reader. This setup ensures that your search queries and the content you read remain entirely local.
-
-**Prerequisite:** [Docker Desktop](https://www.docker.com/get-started) must be running.
-
-1. **Start the search services**
-
-   ```bash
-   bun run search-box:start
-   ```
-
-2. **Verify services (Optional)**
-
-   ```bash
-   # Search Engine check:
-   curl "http://127.0.0.1:25017/search?q=thuki&format=json"
-   ```
-
-   Without this service running, the `/search` command will be disabled in the chat, but all other features will remain available.
-
-   For more details on the agentic search pipeline, see [docs/agentic-search.md](docs/agentic-search.md).
-
-### Step 3: Install Thuki
+### Step 2: Install Thuki
 
 #### Download (Recommended)
 
@@ -196,6 +173,12 @@ bun run dev
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development setup guide.
+
+### Optional: Enable `/search`
+
+The `/search` command runs a fully local agentic search pipeline backed by two Docker services (SearXNG + a Trafilatura reader). It is **not bundled with the `.dmg`**: enabling it currently requires cloning this repository to run the local services. Every other Thuki feature works without it. First-class, out-of-box `/search` support is on the roadmap.
+
+See [docs/agentic-search.md#setup](docs/agentic-search.md#setup) for the setup steps.
 
 ## Architecture & Security
 
