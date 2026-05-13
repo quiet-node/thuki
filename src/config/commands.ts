@@ -69,7 +69,7 @@ export const COMMANDS: readonly Command[] = [
       behavior:
         "Routes the message through Thuki's local search pipeline instead of plain chat. Answers are grounded in retrieved web sources and typically include inline citations plus a Sources footer.",
       limit:
-        'Requires the search sandbox to be running. Use it for current, changing, or cutoff-sensitive information.',
+        'Requires the search sandbox to be running. See [agentic-search.md#setup](agentic-search.md#setup) for setup steps. Use it for current, changing, or cutoff-sensitive information.',
     },
     promptHelp: {
       summary: 'agentic web search for current or cutoff-sensitive questions.',

@@ -4,6 +4,43 @@ A deep dive into Thuki's agentic RAG search pipeline: how retrieval-augmented ge
 
 ---
 
+## Setup
+
+> **Roadmap:** First-class, out-of-box `/search` support (bundled native sidecars or pre-built container images shipped with the app) is planned. Today, enabling `/search` requires cloning this repository to run the local Docker services described below. Track progress and contribute in the project's [GitHub issues](https://github.com/quiet-node/thuki/issues).
+
+The `/search` command depends on two local Docker containers: a **SearXNG** meta-search engine and a **Trafilatura** reader. Both run on `127.0.0.1` only, so every query and every fetched page stays on your machine.
+
+**Prerequisites**
+
+- [Docker Desktop](https://www.docker.com/get-started) installed and running.
+- [Bun](https://bun.sh) installed (used to launch the Compose stack).
+- A local clone of the Thuki repository.
+
+**Start the services**
+
+```bash
+git clone https://github.com/quiet-node/thuki.git
+cd thuki
+bun install
+bun run search-box:start
+```
+
+**Verify (optional)**
+
+```bash
+curl "http://127.0.0.1:25017/search?q=thuki&format=json"
+```
+
+**Stop the services**
+
+```bash
+bun run search-box:stop
+```
+
+Without these services running, the `/search` command stays disabled in the chat; every other Thuki feature continues to work normally.
+
+---
+
 ## The Problem
 
 To understand why `/search` is built the way it is, it helps to understand what simpler approaches get wrong. There are three of them.
