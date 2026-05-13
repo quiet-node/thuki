@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Renamed the `[model]` section in `config.toml` to `[inference]`. The section still contains a single field, `ollama_url`, but the name now reflects what it actually configures (the inference daemon endpoint, not a model). There is no backward-compatibility shim: if you had a custom `[model]` section, rename it to `[inference]` after upgrading.
 - Active model selection is now strictly Option-typed end to end. Ollama's `/api/tags` is the single source of truth: when nothing is installed and nothing is persisted, Thuki refuses to dispatch requests and surfaces a "Pick a model" prompt instead of falling back to a hardcoded slug. The previous `DEFAULT_MODEL_NAME` constant has been removed.
 
+## [0.9.1](https://github.com/quiet-node/thuki/compare/v0.9.0...v0.9.1) (2026-05-13)
+
+
+### Bug Fixes
+
+* **ui:** replace Inter and Source Serif 4 with Nunito as sole typeface ([#167](https://github.com/quiet-node/thuki/issues/167)) ([fec2c49](https://github.com/quiet-node/thuki/commit/fec2c494ef893b29fe36692bb3f672b6b21574f7))
+
 ## [0.9.0](https://github.com/quiet-node/thuki/compare/v0.8.5...v0.9.0) (2026-05-12)
 
 
