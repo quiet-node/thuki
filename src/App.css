@@ -3,13 +3,15 @@
 @import 'streamdown/styles.css';
 @import 'katex/dist/katex.min.css';
 
-/* Source Serif 4 reading face for AI prose. Chrome stays Inter. */
-@import '@fontsource/source-serif-4/400.css';
-@import '@fontsource/source-serif-4/400-italic.css';
+/* Nunito: single typeface for both UI chrome and AI prose. */
+@import '@fontsource/nunito/400.css';
+@import '@fontsource/nunito/500.css';
+@import '@fontsource/nunito/600.css';
+@import '@fontsource/nunito/700.css';
 
 @theme {
   --font-sans:
-    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
     Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
 
   /* Brand palette - single source of truth for all color decisions */
@@ -190,16 +192,14 @@ body {
   display: none;
 }
 
-/* AI prose reading face: serif body, warm cream, looser leading. Scoped to
- * .markdown-body so UI chrome (labels, buttons, search trace) stays Inter.
- * User bubble renders via renderUserContent, not MarkdownRenderer.
- */
+/* AI prose: warm cream, looser leading. Scoped to .markdown-body so UI chrome stays separate. */
 .markdown-body {
-  font-family: 'Source Serif 4', Charter, 'Iowan Old Style', Georgia, serif;
-  color: #efe3cc;
-  font-size: 15.5px;
-  line-height: 1.65;
+  font-family: var(--font-sans);
+  color: #fbe8c6;
+  font-size: 16.5px;
+  line-height: 1.6;
   letter-spacing: 0.3px;
+  font-weight: 600;
 }
 
 /* ─── Markdown Body: Prose Defaults ───
