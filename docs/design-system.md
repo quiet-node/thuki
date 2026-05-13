@@ -78,15 +78,16 @@ Use these exact values. No substitution.
 
 ## 3. Typography
 
-**Primary font:** Inter (Google Fonts). Fall back to system-ui, -apple-system.
+**Sole typeface:** Nunito (loaded via `@fontsource/nunito`). Used for all UI chrome and AI prose. The `--font-sans` CSS variable in `@theme` is the single source of truth; every surface inherits from it. Weights 400, 500, 600, and 700 are loaded. Fall back to `-apple-system, BlinkMacSystemFont, sans-serif`.
 
-| Use                 | Weight  | Approx size |
-| ------------------- | ------- | ----------- |
-| Input text          | 400     | 15px        |
-| Chat response body  | 400     | 14px        |
-| UI labels, buttons  | 500     | 13px        |
-| Section headers     | 600-700 | 24-36px     |
-| Hero / display text | 700-800 | 48-72px     |
+There is no secondary reading face. Nunito handles both the compact bar UI and the expanded chat bubbles.
+
+| Use                 | Weight | Approx size |
+| ------------------- | ------ | ----------- |
+| Input / chat body   | 400    | 14-16px     |
+| UI labels, buttons  | 500    | 13px        |
+| Section headers     | 600    | 24-36px     |
+| Hero / display text | 700    | 48-72px     |
 
 ---
 
