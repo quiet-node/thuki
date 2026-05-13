@@ -20,7 +20,7 @@ export function IntroStep({ onComplete }: Props) {
         alignItems: 'center',
         justifyContent: 'center',
         background: 'transparent',
-        fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, sans-serif',
+        fontFamily: 'inherit',
       }}
     >
       <motion.div

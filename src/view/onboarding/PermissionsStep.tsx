@@ -28,7 +28,7 @@ const KeyChip = ({ label }: { label: string }) => (
       color: 'rgba(255,255,255,0.75)',
       verticalAlign: 'middle',
       margin: '0 1px',
-      fontFamily: 'system-ui, -apple-system, sans-serif',
+      fontFamily: 'inherit',
     }}
   >
     {label}
@@ -316,7 +316,7 @@ export function PermissionsStep() {
         alignItems: 'center',
         justifyContent: 'center',
         background: 'transparent',
-        fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, sans-serif',
+        fontFamily: 'inherit',
       }}
     >
       <motion.div

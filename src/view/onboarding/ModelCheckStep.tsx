@@ -172,7 +172,7 @@ export function ModelCheckStep() {
         alignItems: 'center',
         justifyContent: 'center',
         background: 'transparent',
-        fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, sans-serif',
+        fontFamily: 'inherit',
       }}
     >
       <motion.div
