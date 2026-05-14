@@ -195,7 +195,7 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
             <TextField
               value={value}
               onChange={setValue}
-              placeholder="http://127.0.0.1:11434"
+              placeholder={config.inference.ollama_url}
               errored={errored}
               ariaLabel="Ollama URL"
             />
