@@ -12,6 +12,10 @@ describe('main.tsx', () => {
     expect(isValidElement(rootForLabel('settings'))).toBe(true);
   });
 
+  it('rootForLabel returns the UpdateWindow tree for the "update" label', () => {
+    expect(isValidElement(rootForLabel('update'))).toBe(true);
+  });
+
   it('rootForLabel returns the App tree for any other label', () => {
     expect(isValidElement(rootForLabel('main'))).toBe(true);
   });

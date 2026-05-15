@@ -7213,7 +7213,7 @@ describe('App', () => {
       expect(screen.queryByTestId('update-footer-bar')).not.toBeInTheDocument();
     });
 
-    it('calls install_update when install link clicked on UpdateFooterBar', async () => {
+    it('opens the update window when install link clicked on UpdateFooterBar', async () => {
       (useTips as ReturnType<typeof vi.fn>).mockReturnValue({
         tip: 'test tip',
         tipKey: 0,
@@ -7237,7 +7237,7 @@ describe('App', () => {
         fireEvent.click(screen.getByText(/install & restart/i));
         await Promise.resolve();
       });
-      expect(invoke).toHaveBeenCalledWith('install_update');
+      expect(invoke).toHaveBeenCalledWith('open_update_window');
     });
 
     it('calls snooze_update_chat when later link clicked on UpdateFooterBar', async () => {

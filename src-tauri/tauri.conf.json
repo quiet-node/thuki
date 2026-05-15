@@ -42,6 +42,25 @@
         "visible": false,
         "skipTaskbar": false,
         "dragDropEnabled": false
+      },
+      {
+        "label": "update",
+        "title": "What's New",
+        "url": "index.html#/update",
+        "width": 600,
+        "height": 680,
+        "minWidth": 600,
+        "minHeight": 480,
+        "maxWidth": 600,
+        "maxHeight": 760,
+        "resizable": false,
+        "fullscreen": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": false,
+        "visible": false,
+        "skipTaskbar": false,
+        "dragDropEnabled": false
       }
     ],
     "security": {

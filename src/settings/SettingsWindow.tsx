@@ -313,7 +313,7 @@ export function SettingsWindow() {
         <UpdateBanner
           version={updater.state.update.version}
           notesUrl={updater.state.update.notes_url}
-          onInstall={() => void updater.install()}
+          onInstall={() => void updater.openWindow()}
           onLater={() => void updater.snoozeSettings(24)}
         />
       ) : null}

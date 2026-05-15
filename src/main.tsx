@@ -5,15 +5,17 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import App from './App';
 import { ConfigProvider } from './contexts/ConfigContext';
 import { SettingsWindow } from './settings/SettingsWindow';
+import { UpdateWindow } from './view/update/UpdateWindow';
 
 /**
  * Entry point for the React application.
  *
- * One bundle serves both Tauri windows defined in `tauri.conf.json`. The
+ * One bundle serves every Tauri window defined in `tauri.conf.json`. The
  * window label decides which root to mount: the `main` overlay gets the
  * full app + ConfigProvider; the `settings` window gets the standalone
  * Settings tree (which manages its own config snapshot via
- * `useConfigSync`).
+ * `useConfigSync`); the `update` window gets the standalone "What's New"
+ * tree.
  *
  * Mounting per-label keeps the Settings window from paying the cost of
  * the chat surface and avoids accidental cross-window state coupling.
@@ -29,6 +31,13 @@ export function rootForLabel(label: string): React.ReactElement {
     return (
       <React.StrictMode>
         <SettingsWindow />
+      </React.StrictMode>
+    );
+  }
+  if (label === 'update') {
+    return (
+      <React.StrictMode>
+        <UpdateWindow />
       </React.StrictMode>
     );
   }

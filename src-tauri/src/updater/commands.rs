@@ -4,7 +4,7 @@ use crate::updater::state::{SnoozeSidecar, UpdaterSnapshot, UpdaterState};
 use crate::updater::tcc_reset;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -26,17 +26,14 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
     install_update_inner(app).await
 }
 
-/// Shared install-and-restart routine. Re-checks the manifest (rather than
-/// trusting the in-memory `UpdaterState`), downloads the signed payload,
-/// verifies the ed25519 signature against the public key compiled into the
-/// app, swaps the running `.app`, and relaunches.
-///
-/// Exposed to the tray click handler so clicking "Update Thuki to vX.Y.Z"
-/// triggers the install directly without forcing the user to detour through
-/// the Settings banner. The Settings banner button calls the
-/// `install_update` Tauri command, which delegates here.
+/// Re-checks the manifest (rather than trusting the in-memory
+/// `UpdaterState`), downloads the signed payload, verifies the ed25519
+/// signature against the public key compiled into the app, and swaps the
+/// running `.app` bundle in place. Does NOT relaunch or exit: the caller
+/// decides what happens next (restart vs quit). On macOS the bundle is
+/// replaced before this returns, so a subsequent `app.exit(0)` is safe.
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn install_update_inner(app: AppHandle) -> Result<(), String> {
+async fn download_latest_update(app: &AppHandle) -> Result<(), String> {
     let updater = app.updater().map_err(|e| e.to_string())?;
     let update = updater.check().await.map_err(|e| e.to_string())?;
     let Some(update) = update else {
@@ -45,8 +42,65 @@ pub async fn install_update_inner(app: AppHandle) -> Result<(), String> {
     update
         .download_and_install(|_chunk, _total| {}, || {})
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+/// Shared install-and-restart routine.
+///
+/// Exposed to the tray click handler so clicking "Update Thuki to vX.Y.Z"
+/// triggers the install directly without forcing the user to detour through
+/// the Settings banner. The Settings banner button calls the
+/// `install_update` Tauri command, which delegates here.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn install_update_inner(app: AppHandle) -> Result<(), String> {
+    download_latest_update(&app).await?;
     app.restart();
+}
+
+/// Install-and-quit: download + swap the bundle like `install_update_inner`,
+/// but exit the process instead of relaunching. The next manual launch
+/// picks up the new binary. Used by the "Install & Quit" button in the
+/// update window for users who don't want an immediate relaunch.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[tauri::command]
+pub async fn install_update_and_quit(app: AppHandle) -> Result<(), String> {
+    download_latest_update(&app).await?;
+    app.exit(0);
+    Ok(())
+}
+
+/// "Skip This Version": permanently suppress the currently-available
+/// version. Appends it to the persisted skip list, clears the in-memory
+/// update so the banners and tray entry disappear immediately, persists
+/// the sidecar, notifies the frontend, and refreshes the tray. A newer
+/// version that is not in the skip list will still surface normally.
+///
+/// Thin orchestration wrapper (matches `snooze_update_*`): the testable
+/// logic (idempotent append, exact-match lookup) lives in `UpdaterState`
+/// and is covered by its unit tests.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[tauri::command]
+pub fn skip_update_version(state: State<'_, UpdaterState>, app: AppHandle) -> Result<(), String> {
+    let Some(version) = state.snapshot().update.map(|u| u.version) else {
+        return Err("no update available to skip".into());
+    };
+    state.add_skipped_version(version);
+    state.set_update(None);
+    persist_sidecar(&state, &app)?;
+    let _ = app.emit("update-available", state.snapshot());
+    crate::refresh_tray(&app);
+    Ok(())
+}
+
+/// Opens (or focuses) the "What's New" update window. All three update
+/// entry points (chat footer, Settings banner, tray menu) route here so
+/// the user previews the release notes and picks an action explicitly
+/// instead of an install starting on a single click.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[tauri::command]
+pub fn open_update_window(app: AppHandle) -> Result<(), String> {
+    crate::show_update_window(&app);
+    Ok(())
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]

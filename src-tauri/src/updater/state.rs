@@ -48,6 +48,13 @@ pub struct SnoozeSidecar {
     /// user can ever click.
     #[serde(default)]
     pub last_reset_for_version: Option<String>,
+    /// SemVer strings the user explicitly dismissed via "Skip This
+    /// Version" in the update window. The poller filters any available
+    /// version found in this list so the banners and tray entry stay
+    /// hidden for it permanently. A newer version not in this list still
+    /// surfaces normally. Persisted so a skip survives an app restart.
+    #[serde(default)]
+    pub skipped_versions: Vec<String>,
 }
 
 impl SnoozeSidecar {
@@ -86,6 +93,13 @@ struct UpdaterStateInner {
 pub struct AvailableUpdate {
     pub version: String,
     pub notes_url: Option<String>,
+    /// Markdown release notes from the updater manifest's `notes` field
+    /// (`tauri_plugin_updater::Update::body`). `None` when the manifest
+    /// omits release notes; the window then renders a GitHub-link
+    /// fallback built from `notes_url`.
+    pub body: Option<String>,
+    /// RFC3339 publish timestamp from the manifest, if present.
+    pub date: Option<String>,
 }
 
 impl UpdaterState {
@@ -96,6 +110,7 @@ impl UpdaterState {
             update: inner.update.clone(),
             settings_snoozed_until: inner.snooze.settings_snoozed_until,
             chat_snoozed_until: inner.snooze.chat_snoozed_until,
+            skipped_versions: inner.snooze.skipped_versions.clone(),
         }
     }
 
@@ -151,6 +166,30 @@ impl UpdaterState {
         inner.snooze.last_seen_update_version = version;
     }
 
+    /// Seed the skip list from a sidecar load at boot, before the poller
+    /// fires, so the first `is_skipped` check reflects what the user
+    /// previously dismissed.
+    pub fn set_skipped_versions(&self, versions: Vec<String>) {
+        let mut inner = self.inner.lock().expect("updater state mutex");
+        inner.snooze.skipped_versions = versions;
+    }
+
+    /// Append `version` to the skip list if not already present. Idempotent
+    /// so a double-click of "Skip This Version" cannot grow the list.
+    pub fn add_skipped_version(&self, version: String) {
+        let mut inner = self.inner.lock().expect("updater state mutex");
+        if !inner.snooze.skipped_versions.contains(&version) {
+            inner.snooze.skipped_versions.push(version);
+        }
+    }
+
+    /// True when the user has dismissed this exact version via "Skip This
+    /// Version". The poller uses this to suppress an available update.
+    pub fn is_skipped(&self, version: &str) -> bool {
+        let inner = self.inner.lock().expect("updater state mutex");
+        inner.snooze.skipped_versions.iter().any(|v| v == version)
+    }
+
     /// Mirror the on-disk `pending_reregister` field into the live state
     /// so a crash before the next sidecar save still leaves the in-memory
     /// view consistent with what was persisted.
@@ -184,6 +223,7 @@ pub struct UpdaterSnapshot {
     pub update: Option<AvailableUpdate>,
     pub settings_snoozed_until: Option<u64>,
     pub chat_snoozed_until: Option<u64>,
+    pub skipped_versions: Vec<String>,
 }
 
 /// Converts a `SystemTime` to Unix seconds. Returns `None` if the time is
@@ -215,6 +255,7 @@ mod tests {
             last_seen_update_version: None,
             pending_reregister: None,
             last_reset_for_version: Some("0.8.5".to_string()),
+            skipped_versions: Vec::new(),
         };
         original.save(&path).unwrap();
 
@@ -243,6 +284,7 @@ mod tests {
             last_seen_update_version: None,
             pending_reregister: None,
             last_reset_for_version: None,
+            skipped_versions: Vec::new(),
         };
         original.save(&path).unwrap();
 
@@ -262,6 +304,7 @@ mod tests {
             last_seen_update_version: None,
             pending_reregister: Some("Accessibility".to_string()),
             last_reset_for_version: Some("0.8.5".to_string()),
+            skipped_versions: Vec::new(),
         };
         original.save(&path).unwrap();
 
@@ -329,6 +372,8 @@ mod tests {
         state.set_update(Some(AvailableUpdate {
             version: "0.8.3".to_string(),
             notes_url: None,
+            body: None,
+            date: None,
         }));
 
         let snap = state.snapshot();
@@ -355,6 +400,8 @@ mod tests {
         state.set_update(Some(AvailableUpdate {
             version: "0.8.2".to_string(),
             notes_url: None,
+            body: None,
+            date: None,
         }));
 
         let snap = state.snapshot();
@@ -377,6 +424,8 @@ mod tests {
         state.set_update(Some(AvailableUpdate {
             version: "0.8.3".to_string(),
             notes_url: None,
+            body: None,
+            date: None,
         }));
 
         // Now seeing v0.8.3 a second time should be a no-op for snoozes.
@@ -384,6 +433,8 @@ mod tests {
         state.set_update(Some(AvailableUpdate {
             version: "0.8.3".to_string(),
             notes_url: None,
+            body: None,
+            date: None,
         }));
 
         let snap = state.snapshot();
@@ -419,6 +470,8 @@ mod tests {
         state.set_update(Some(AvailableUpdate {
             version: "0.8.0".to_string(),
             notes_url: None,
+            body: None,
+            date: None,
         }));
         let snap = state.snapshot();
         assert!(snap.last_check_at_unix.is_some());
@@ -443,6 +496,8 @@ mod tests {
         state.set_update(Some(AvailableUpdate {
             version: "0.9.0".to_string(),
             notes_url: None,
+            body: None,
+            date: None,
         }));
         let before = state.snapshot();
         let prior_ts = before.last_check_at_unix.unwrap();
@@ -504,6 +559,101 @@ mod tests {
         );
         state.set_pending_reregister(None);
         assert!(state.snooze_clone().pending_reregister.is_none());
+    }
+
+    #[test]
+    fn available_update_carries_body_and_date() {
+        let state = UpdaterState::default();
+        state.set_update(Some(AvailableUpdate {
+            version: "0.11.0".to_string(),
+            notes_url: Some("https://example.com/notes".to_string()),
+            body: Some("## Fixed\n- a bug".to_string()),
+            date: Some("2026-05-15T00:00:00Z".to_string()),
+        }));
+        let snap = state.snapshot();
+        let u = snap.update.as_ref().unwrap();
+        assert_eq!(u.body.as_deref(), Some("## Fixed\n- a bug"));
+        assert_eq!(u.date.as_deref(), Some("2026-05-15T00:00:00Z"));
+    }
+
+    #[test]
+    fn set_skipped_versions_persists_in_snapshot() {
+        let state = UpdaterState::default();
+        state.set_skipped_versions(vec!["0.9.0".to_string(), "0.10.0".to_string()]);
+        assert_eq!(
+            state.snapshot().skipped_versions,
+            vec!["0.9.0".to_string(), "0.10.0".to_string()]
+        );
+    }
+
+    #[test]
+    fn add_skipped_version_appends_unique() {
+        let state = UpdaterState::default();
+        state.add_skipped_version("0.9.0".to_string());
+        state.add_skipped_version("0.9.0".to_string());
+        state.add_skipped_version("0.10.0".to_string());
+        assert_eq!(
+            state.snapshot().skipped_versions,
+            vec!["0.9.0".to_string(), "0.10.0".to_string()]
+        );
+    }
+
+    #[test]
+    fn is_skipped_matches_exact_version_only() {
+        let state = UpdaterState::default();
+        state.add_skipped_version("0.9.0".to_string());
+        assert!(state.is_skipped("0.9.0"));
+        assert!(!state.is_skipped("0.9.1"));
+        assert!(!state.is_skipped("0.9"));
+    }
+
+    #[test]
+    fn skipped_versions_round_trip_through_snooze_clone() {
+        let state = UpdaterState::default();
+        state.add_skipped_version("0.9.0".to_string());
+        assert_eq!(
+            state.snooze_clone().skipped_versions,
+            vec!["0.9.0".to_string()]
+        );
+    }
+
+    #[test]
+    fn snooze_sidecar_round_trips_skipped_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updater_state.json");
+
+        let original = SnoozeSidecar {
+            settings_snoozed_until: None,
+            chat_snoozed_until: None,
+            last_launched_version: None,
+            last_seen_update_version: None,
+            pending_reregister: None,
+            last_reset_for_version: None,
+            skipped_versions: vec!["0.9.0".to_string(), "0.10.0".to_string()],
+        };
+        original.save(&path).unwrap();
+
+        let loaded = SnoozeSidecar::load(&path).unwrap();
+        assert_eq!(loaded, original);
+    }
+
+    #[test]
+    fn snooze_sidecar_back_compat_old_file_without_skipped_versions() {
+        // Sidecars written before the skip-version feature lack the field.
+        // Loading must default it to an empty vec so existing snooze /
+        // version state is preserved across the upgrade.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("updater_state.json");
+        std::fs::write(
+            &path,
+            r#"{"settings_snoozed_until":null,"chat_snoozed_until":null,
+                "last_launched_version":"0.10.0"}"#,
+        )
+        .unwrap();
+
+        let loaded = SnoozeSidecar::load(&path).unwrap();
+        assert_eq!(loaded.last_launched_version.as_deref(), Some("0.10.0"));
+        assert!(loaded.skipped_versions.is_empty());
     }
 
     #[test]

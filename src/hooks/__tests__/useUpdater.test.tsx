@@ -112,6 +112,58 @@ describe('useUpdater', () => {
     expect(invokeMock).toHaveBeenCalledWith('install_update');
   });
 
+  it('installAndQuit invokes install_update_and_quit', async () => {
+    invokeMock.mockResolvedValue(SNAPSHOT_NO_UPDATE);
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('get_updater_state'),
+    );
+    await act(async () => {
+      await result.current.installAndQuit();
+    });
+    expect(invokeMock).toHaveBeenCalledWith('install_update_and_quit');
+  });
+
+  it('openWindow invokes open_update_window', async () => {
+    invokeMock.mockResolvedValue(SNAPSHOT_NO_UPDATE);
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('get_updater_state'),
+    );
+    await act(async () => {
+      await result.current.openWindow();
+    });
+    expect(invokeMock).toHaveBeenCalledWith('open_update_window');
+  });
+
+  it('skip invokes skip_update_version and refreshes', async () => {
+    invokeMock.mockResolvedValue(SNAPSHOT_NO_UPDATE);
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('get_updater_state'),
+    );
+    await act(async () => {
+      await result.current.skip();
+    });
+    expect(invokeMock).toHaveBeenCalledWith('skip_update_version');
+    expect(
+      (invokeMock.mock.calls as unknown[][]).filter(
+        (c) => c[0] === 'get_updater_state',
+      ).length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it('exposes skipped_versions from the snapshot', async () => {
+    invokeMock.mockResolvedValueOnce({
+      ...SNAPSHOT_NO_UPDATE,
+      skipped_versions: ['0.7.9'],
+    });
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() =>
+      expect(result.current.state.skipped_versions).toEqual(['0.7.9']),
+    );
+  });
+
   it('updates state when update-available event fires', async () => {
     invokeMock.mockResolvedValue(SNAPSHOT_NO_UPDATE);
     const { result } = renderHook(() => useUpdater());

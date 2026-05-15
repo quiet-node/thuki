@@ -21,6 +21,15 @@ pub fn is_newer(remote: &str, local: &str) -> bool {
     }
 }
 
+/// Pure decision: should the poller surface `remote` as an available
+/// update? True only when it is strictly newer than `local` AND the user
+/// has not dismissed it via "Skip This Version". Extracted so the
+/// new-vs-skipped logic is unit-testable without the async `check_once`
+/// wrapper (which is excluded from coverage).
+pub fn should_surface_update(remote: &str, local: &str, skipped: &[String]) -> bool {
+    is_newer(remote, local) && !skipped.iter().any(|v| v == remote)
+}
+
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn check_once(app: AppHandle) {
     let state = app.state::<UpdaterState>();
@@ -41,10 +50,13 @@ pub async fn check_once(app: AppHandle) {
     match updater.check().await {
         Ok(Some(update)) => {
             let remote_version = update.version.clone();
-            if is_newer(&remote_version, &current) {
+            let skipped = state.snapshot().skipped_versions;
+            if should_surface_update(&remote_version, &current, &skipped) {
                 state.set_update(Some(AvailableUpdate {
                     version: remote_version,
                     notes_url: None,
+                    body: update.body.clone(),
+                    date: update.date.map(|d| d.to_string()),
                 }));
                 // set_update may have cleared snooze deadlines if this is
                 // a new available version. Persist so the cleared state
@@ -130,5 +142,30 @@ mod tests {
     fn is_newer_returns_false_for_unparseable() {
         assert!(!is_newer("not-a-version", "0.7.1"));
         assert!(!is_newer("0.8.0", "garbage"));
+    }
+
+    #[test]
+    fn should_surface_update_true_when_newer_and_not_skipped() {
+        assert!(should_surface_update("0.11.0", "0.10.0", &[]));
+        assert!(should_surface_update(
+            "0.11.0",
+            "0.10.0",
+            &["0.9.0".to_string()]
+        ));
+    }
+
+    #[test]
+    fn should_surface_update_false_when_skipped() {
+        assert!(!should_surface_update(
+            "0.11.0",
+            "0.10.0",
+            &["0.11.0".to_string()]
+        ));
+    }
+
+    #[test]
+    fn should_surface_update_false_when_not_newer() {
+        assert!(!should_surface_update("0.10.0", "0.10.0", &[]));
+        assert!(!should_surface_update("0.9.0", "0.10.0", &[]));
     }
 }

@@ -71,6 +71,7 @@ export const DEFAULT_UPDATER_STATE = {
   update: null,
   settings_snoozed_until: null,
   chat_snoozed_until: null,
+  skipped_versions: [],
 } as const;
 
 /**

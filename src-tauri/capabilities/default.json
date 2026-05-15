@@ -1,10 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "windows": ["main", "settings"],
+  "windows": ["main", "settings", "update"],
   "permissions": [
     "core:default",
     "core:window:allow-hide",
+    "core:window:allow-close",
     "core:window:allow-start-dragging",
     "core:window:deny-internal-toggle-maximize",
     "core:window:allow-set-size",

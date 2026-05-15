@@ -2410,7 +2410,7 @@ function App() {
                       <UpdateFooterBar
                         version={updater.state.update!.version}
                         notesUrl={updater.state.update!.notes_url}
-                        onInstall={() => void updater.install()}
+                        onInstall={() => void updater.openWindow()}
                         onLater={() => void updater.snoozeChat(24)}
                       />
                     </motion.div>
