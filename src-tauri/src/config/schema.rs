@@ -21,8 +21,9 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
-    DEFAULT_SYSTEM_CUSTOMIZED, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
-    DEFAULT_UPDATER_AUTO_CHECK, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
+    DEFAULT_SYSTEM_CUSTOMIZED, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
+    DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_AUTO_CHECK, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
+    DEFAULT_UPDATER_MANIFEST_URL,
 };
 
 /// Static, user-tunable inference daemon configuration.
@@ -116,6 +117,12 @@ pub struct WindowSection {
     /// image from /screen capture is allowed on top, for a total of
     /// max_images + 1 per message.
     pub max_images: u32,
+    /// Base font size (in CSS pixels) for chat text and the AskBar input.
+    /// Drives the `--thuki-text-base` CSS variable consumed by the AI
+    /// markdown body, the user chat bubble text, and the AskBar textarea
+    /// (plus its caret-tracking mirror). Other UI surfaces keep fixed sizes.
+    /// Valid range: 11.0..=22.0.
+    pub text_base_px: f64,
 }
 
 impl Default for WindowSection {
@@ -124,6 +131,7 @@ impl Default for WindowSection {
             overlay_width: DEFAULT_OVERLAY_WIDTH,
             max_chat_height: DEFAULT_MAX_CHAT_HEIGHT,
             max_images: DEFAULT_MAX_IMAGES,
+            text_base_px: DEFAULT_TEXT_BASE_PX,
         }
     }
 }

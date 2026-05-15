@@ -196,10 +196,19 @@ body {
 .markdown-body {
   font-family: var(--font-sans);
   color: #fbe8c6;
-  font-size: 16.5px;
+  font-size: var(--thuki-text-base, 16.5px);
   line-height: 1.6;
   letter-spacing: 0.3px;
   font-weight: 600;
+}
+
+/* User-tunable text scale shared by the user chat bubble text and the AskBar
+ * textarea + caret-tracking mirror. The CSS variable is set on <html> by an
+ * effect in App.tsx; the fallback preserves the pre-tunable Tailwind size
+ * (text-sm = 14px) when the variable is unset (e.g. test environments without
+ * the effect mounted). */
+.thuki-text-base {
+  font-size: var(--thuki-text-base, 14px);
 }
 
 /* ─── Markdown Body: Prose Defaults ───

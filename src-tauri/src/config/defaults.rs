@@ -61,6 +61,13 @@ pub const DEFAULT_MAX_CHAT_HEIGHT: f64 = 648.0;
 /// per-message image count is max_images + 1. Raise for more visual context
 /// per message; lower to keep prompts compact.
 pub const DEFAULT_MAX_IMAGES: u32 = 3;
+/// Base font size (in CSS pixels) for chat text and the AskBar input.
+/// Drives the `--thuki-text-base` CSS variable on `<html>`, which the AI
+/// markdown body, the user chat bubble text, and the AskBar textarea +
+/// caret-tracking mirror all read. Other surfaces (Settings panel,
+/// onboarding) keep fixed sizes. Raise for easier-to-read conversation
+/// text; lower to fit more text on screen.
+pub const DEFAULT_TEXT_BASE_PX: f64 = 15.0;
 
 /// Quote display defaults.
 pub const DEFAULT_QUOTE_MAX_DISPLAY_LINES: u32 = 4;
@@ -74,6 +81,11 @@ pub const DEFAULT_QUOTE_MAX_CONTEXT_LENGTH: u32 = 4096;
 pub const BOUNDS_OVERLAY_WIDTH: (f64, f64) = (200.0, 2000.0);
 pub const BOUNDS_MAX_CHAT_HEIGHT: (f64, f64) = (200.0, 2000.0);
 pub const BOUNDS_MAX_IMAGES: (u32, u32) = (1, 20);
+/// Accepted range for `window.text_base_px`. 11 px is the floor for legibility
+/// on a retina panel; 22 px is the ceiling before line wrapping in the AskBar
+/// stops looking right at the default overlay width. Values outside the range,
+/// or non-finite values, are reset to `DEFAULT_TEXT_BASE_PX` by the loader.
+pub const BOUNDS_TEXT_BASE_PX: (f64, f64) = (11.0, 22.0);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_LINES: (u32, u32) = (1, 100);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_CHARS: (u32, u32) = (1, 10_000);
 pub const BOUNDS_QUOTE_MAX_CONTEXT_LENGTH: (u32, u32) = (1, 65_536);
@@ -249,6 +261,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("window", "overlay_width"),
     ("window", "max_chat_height"),
     ("window", "max_images"),
+    ("window", "text_base_px"),
     // [quote]
     ("quote", "max_display_lines"),
     ("quote", "max_display_chars"),

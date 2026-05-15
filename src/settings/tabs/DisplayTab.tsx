@@ -20,6 +20,29 @@ interface DisplayTabProps {
 export function DisplayTab({ config, resyncToken, onSaved }: DisplayTabProps) {
   return (
     <>
+      <Section heading="Text">
+        <SaveField
+          section="window"
+          fieldKey="text_base_px"
+          label="Text size"
+          helper={configHelp('window', 'text_base_px')}
+          initialValue={config.window.text_base_px}
+          resyncToken={resyncToken}
+          onSaved={onSaved}
+          render={(value, setValue) => (
+            <NumberSlider
+              value={value}
+              min={11}
+              max={22}
+              step={0.5}
+              unit="px"
+              onChange={setValue}
+              ariaLabel="Text size"
+            />
+          )}
+        />
+      </Section>
+
       <Section heading="Window">
         <SaveField
           section="window"

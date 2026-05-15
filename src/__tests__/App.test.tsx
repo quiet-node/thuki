@@ -7267,4 +7267,17 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith('snooze_update_chat', { hours: 24 });
     });
   });
+
+  describe('text base CSS variable', () => {
+    it('writes window.textBasePx to --thuki-text-base on <html> on mount', async () => {
+      document.documentElement.style.removeProperty('--thuki-text-base');
+
+      render(<App />);
+      await act(async () => {});
+
+      expect(
+        document.documentElement.style.getPropertyValue('--thuki-text-base'),
+      ).toBe(`${DEFAULT_CONFIG.window.textBasePx}px`);
+    });
+  });
 });

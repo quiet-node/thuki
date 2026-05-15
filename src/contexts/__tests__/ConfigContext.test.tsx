@@ -21,6 +21,7 @@ function Probe() {
       <div data-testid="ollama-url">{config.inference.ollamaUrl}</div>
       <div data-testid="overlay-width">{config.window.overlayWidth}</div>
       <div data-testid="max-chat-height">{config.window.maxChatHeight}</div>
+      <div data-testid="text-base-px">{config.window.textBasePx}</div>
       <div data-testid="max-display-lines">{config.quote.maxDisplayLines}</div>
       <div data-testid="system-prompt">{config.prompt.system}</div>
     </>
@@ -79,6 +80,7 @@ describe('ConfigContext', () => {
           overlay_width: 800,
           max_chat_height: 700,
           max_images: 5,
+          text_base_px: 17,
         },
         quote: {
           max_display_lines: 6,
@@ -100,6 +102,7 @@ describe('ConfigContext', () => {
       );
       expect(screen.getByTestId('overlay-width').textContent).toBe('800');
       expect(screen.getByTestId('max-chat-height').textContent).toBe('700');
+      expect(screen.getByTestId('text-base-px').textContent).toBe('17');
       expect(screen.getByTestId('max-display-lines').textContent).toBe('6');
       expect(screen.getByTestId('system-prompt').textContent).toBe(
         'custom base prompt',

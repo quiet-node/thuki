@@ -23,6 +23,7 @@ const CONFIG_A: RawAppConfig = {
     overlay_width: 600,
     max_chat_height: 648,
     max_images: 3,
+    text_base_px: 15,
   },
   quote: {
     max_display_lines: 4,

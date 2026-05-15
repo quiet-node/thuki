@@ -31,6 +31,8 @@ const HELPERS = {
       'The largest the chat window can grow to as conversation gets longer. Raise to see more chat history without scrolling; lower to keep Thuki from taking over your screen on long chats.',
     max_images:
       'How many images you can attach to a single message by pasting or dragging. A /screen capture always adds one more on top of this limit. Raise for richer visual context per message; lower to keep prompts compact.',
+    text_base_px:
+      'How big chat text and the input bar text appear, in pixels. Affects the AI replies, your own chat messages, and what you type in the input bar. Other parts of Thuki (Settings, onboarding) keep their fixed sizes. Raise for easier-to-read text; lower to fit more on screen.',
   },
   quote: {
     max_display_lines:

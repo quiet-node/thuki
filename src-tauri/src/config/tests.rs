@@ -19,7 +19,7 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
     DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
     DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
-    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
+    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX, DEFAULT_TOP_K_URLS,
     DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
     SLASH_COMMAND_PROMPT_APPENDIX,
 };
@@ -61,6 +61,7 @@ fn defaults_const_values_match_schema_defaults() {
     assert_eq!(c.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
     assert_eq!(c.window.max_chat_height, DEFAULT_MAX_CHAT_HEIGHT);
     assert_eq!(c.window.max_images, DEFAULT_MAX_IMAGES);
+    assert_eq!(c.window.text_base_px, DEFAULT_TEXT_BASE_PX);
     assert_eq!(c.quote.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
     assert_eq!(c.quote.max_display_chars, DEFAULT_QUOTE_MAX_DISPLAY_CHARS);
     assert_eq!(c.quote.max_context_length, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH);
@@ -101,6 +102,7 @@ fn section_defaults_are_sensible() {
     let w = WindowSection::default();
     assert_eq!(w.overlay_width, DEFAULT_OVERLAY_WIDTH);
     assert_eq!(w.max_images, DEFAULT_MAX_IMAGES);
+    assert_eq!(w.text_base_px, DEFAULT_TEXT_BASE_PX);
 
     let q = QuoteSection::default();
     assert_eq!(q.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
@@ -616,6 +618,32 @@ fn resolve_out_of_bounds_max_images_resets_to_default() {
     std::fs::write(&path, "[window]\nmax_images = 99\n").unwrap();
     let config_high = load_from_path(&path).unwrap();
     assert_eq!(config_high.window.max_images, DEFAULT_MAX_IMAGES);
+}
+
+#[test]
+fn resolve_out_of_bounds_text_base_px_resets_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[window]\ntext_base_px = 6.0\n").unwrap();
+    let too_low = load_from_path(&path).unwrap();
+    assert_eq!(too_low.window.text_base_px, DEFAULT_TEXT_BASE_PX);
+
+    std::fs::write(&path, "[window]\ntext_base_px = 99.0\n").unwrap();
+    let too_high = load_from_path(&path).unwrap();
+    assert_eq!(too_high.window.text_base_px, DEFAULT_TEXT_BASE_PX);
+
+    std::fs::write(&path, "[window]\ntext_base_px = nan\n").unwrap();
+    let non_finite = load_from_path(&path).unwrap();
+    assert_eq!(non_finite.window.text_base_px, DEFAULT_TEXT_BASE_PX);
+}
+
+#[test]
+fn resolve_text_base_px_in_bounds_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[window]\ntext_base_px = 18.0\n").unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(config.window.text_base_px, 18.0);
 }
 
 #[test]

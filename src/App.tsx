@@ -479,6 +479,21 @@ function App() {
   }, [config.window.overlayWidth, config.window.maxChatHeight, overlayState]);
 
   /**
+   * Drives the `--thuki-text-base` CSS variable on `<html>` from the
+   * user-tunable `window.text_base_px` config knob. Consumers (the AI
+   * markdown body, the user chat bubble text, and the AskBar textarea +
+   * caret-tracking mirror) read the variable directly; this is the single
+   * write path that resyncs after every Settings save (via the
+   * `thuki://config-updated` refresh in `ConfigContext`).
+   */
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      '--thuki-text-base',
+      `${config.window.textBasePx}px`,
+    );
+  }, [config.window.textBasePx]);
+
+  /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally
    * rendered Framer Motion container actually mounts in the DOM. This fixes
    * the bug where a standard useEffect would run before the DOM node was ready,
