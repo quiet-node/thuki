@@ -9,49 +9,23 @@
 import { Section, NumberSlider, NumberStepper } from '../components';
 import { SaveField } from '../components/SaveField';
 import { configHelp } from '../configHelpers';
-import styles from '../../styles/settings.module.css';
 import type { RawAppConfig } from '../types';
 
-const FONT_WEIGHT_OPTIONS: readonly {
-  value: 400 | 500 | 600 | 700;
-  label: string;
-}[] = [
-  { value: 400, label: 'Regular' },
-  { value: 500, label: 'Medium' },
-  { value: 600, label: 'Semi-bold' },
-  { value: 700, label: 'Bold' },
-];
-
 /**
- * Numeric font-weight dropdown. Surfaces the four loaded Nunito weights
- * with descriptive labels (Regular / Medium / Semi-bold / Bold) while
- * keeping the underlying value the numeric CSS `font-weight` the schema
- * expects. Lives in this file rather than the shared components module
- * because no other settings row needs a label-decoupled enum dropdown.
+ * Maps the four loaded Nunito font-weights to descriptive labels used as the
+ * NumberSlider value chip + `aria-valuetext`. Keeping it as a module-scope
+ * constant (instead of a lookup baked into the slider) lets the slider stay
+ * generic while letting this tab surface typography terminology.
  */
-function FontWeightSelect({
-  value,
-  onChange,
-  ariaLabel,
-}: {
-  value: number;
-  onChange: (next: number) => void;
-  ariaLabel?: string;
-}) {
-  return (
-    <select
-      className={styles.dropdown}
-      value={String(value)}
-      aria-label={ariaLabel}
-      onChange={(e) => onChange(Number(e.target.value))}
-    >
-      {FONT_WEIGHT_OPTIONS.map((opt) => (
-        <option key={opt.value} value={String(opt.value)}>
-          {opt.label}
-        </option>
-      ))}
-    </select>
-  );
+const FONT_WEIGHT_LABEL: Record<number, string> = {
+  400: 'Regular',
+  500: 'Medium',
+  600: 'Semi-bold',
+  700: 'Bold',
+};
+
+function formatFontWeight(value: number): string {
+  return FONT_WEIGHT_LABEL[value] ?? String(value);
 }
 
 interface DisplayTabProps {
@@ -132,10 +106,14 @@ export function DisplayTab({ config, resyncToken, onSaved }: DisplayTabProps) {
           resyncToken={resyncToken}
           onSaved={onSaved}
           render={(value, setValue) => (
-            <FontWeightSelect
+            <NumberSlider
               value={value}
+              min={400}
+              max={700}
+              step={100}
               onChange={setValue}
               ariaLabel="Font weight"
+              formatValue={formatFontWeight}
             />
           )}
         />

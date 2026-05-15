@@ -170,6 +170,7 @@ export function NumberSlider({
   unit,
   onChange,
   ariaLabel,
+  formatValue,
 }: {
   value: number;
   min: number;
@@ -178,6 +179,14 @@ export function NumberSlider({
   unit?: string;
   onChange: (next: number) => void;
   ariaLabel?: string;
+  /**
+   * Optional custom formatter for the value chip and the `aria-valuetext`.
+   * Wins over `unit`. Use when an enum-like slider (e.g. font-weight at
+   * 400/500/600/700) should surface descriptive labels ("Regular", "Medium")
+   * instead of the raw number. Returning the empty string is allowed and
+   * blanks the chip.
+   */
+  formatValue?: (n: number) => string;
 }) {
   // Track local value during a continuous drag so the displayed value
   // updates per pixel, but only fire onChange on commit (mouse-up / blur).
@@ -223,7 +232,13 @@ export function NumberSlider({
         aria-valuemin={min}
         aria-valuemax={max}
         aria-valuenow={local}
-        aria-valuetext={unit ? `${local} ${unit}` : `${local}`}
+        aria-valuetext={
+          formatValue
+            ? formatValue(local)
+            : unit
+              ? `${local} ${unit}`
+              : `${local}`
+        }
         onChange={(e: ChangeEvent<HTMLInputElement>) => {
           const next = Number(e.target.value);
           draggingRef.current = true;
@@ -236,7 +251,7 @@ export function NumberSlider({
         onKeyUp={commit}
       />
       <div className={styles.valChip} aria-hidden>
-        {unit ? `${local} ${unit}` : local}
+        {formatValue ? formatValue(local) : unit ? `${local} ${unit}` : local}
       </div>
     </div>
   );

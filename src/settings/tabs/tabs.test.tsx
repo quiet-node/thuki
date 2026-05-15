@@ -705,14 +705,16 @@ describe('DisplayTab', () => {
     expect(slider).toHaveAttribute('step', '0.05');
   });
 
-  it('exposes a font-weight dropdown with the four loaded Nunito weights', () => {
+  it('exposes a font-weight slider snapping to the four loaded Nunito weights', () => {
     render(<DisplayTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
-    const select = screen.getByRole('combobox', { name: 'Font weight' });
-    const labels = Array.from(select.querySelectorAll('option')).map(
-      (o) => o.textContent,
-    );
-    expect(labels).toEqual(['Regular', 'Medium', 'Semi-bold', 'Bold']);
-    expect(select).toHaveValue(String(CONFIG.window.text_font_weight));
+    const slider = screen.getByRole('slider', { name: 'Font weight' });
+    expect(slider).toHaveAttribute('min', '400');
+    expect(slider).toHaveAttribute('max', '700');
+    expect(slider).toHaveAttribute('step', '100');
+    expect(slider).toHaveValue(String(CONFIG.window.text_font_weight));
+    // The chip + screen-reader text surface the descriptive weight label
+    // (e.g. "Medium") rather than the raw numeric font-weight value.
+    expect(slider).toHaveAttribute('aria-valuetext', 'Medium');
   });
 });
 
