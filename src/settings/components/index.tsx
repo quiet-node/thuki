@@ -183,14 +183,32 @@ export function NumberSlider({
   // updates per pixel, but only fire onChange on commit (mouse-up / blur).
   // Otherwise every intermediate frame triggers a debounced save (which
   // collapses to one anyway, but the UI thread does a lot of useless work).
+  //
+  // `localRef` mirrors `local` synchronously inside `onChange`. Reading from
+  // the ref (not the closure-captured `local`) lets the commit handlers see
+  // the latest value even when both `onChange` and `onMouseUp`/`onKeyUp`
+  // fire in the same React event tick (the common case for single-click
+  // track jumps and single-press keyboard nudges). Without the ref the
+  // commit handler would compare the *previous* render's `local` to `value`
+  // and silently skip the save when both are equal.
   const [local, setLocal] = useState(value);
+  const localRef = useRef(value);
   const draggingRef = useRef(false);
   useEffect(() => {
     // Sync external value into local state only when the user is not
     // actively dragging; otherwise the prop update would clobber the
     // in-progress drag position.
-    if (!draggingRef.current) setLocal(value);
+    if (!draggingRef.current) {
+      setLocal(value);
+      localRef.current = value;
+    }
   }, [value]);
+
+  const commit = () => {
+    draggingRef.current = false;
+    const next = localRef.current;
+    if (next !== value) onChange(next);
+  };
 
   return (
     <div className={styles.sliderRow}>
@@ -207,24 +225,15 @@ export function NumberSlider({
         aria-valuenow={local}
         aria-valuetext={unit ? `${local} ${unit}` : `${local}`}
         onChange={(e: ChangeEvent<HTMLInputElement>) => {
+          const next = Number(e.target.value);
           draggingRef.current = true;
-          setLocal(Number(e.target.value));
+          localRef.current = next;
+          setLocal(next);
         }}
-        onMouseUp={() => {
-          draggingRef.current = false;
-          if (local !== value) onChange(local);
-        }}
-        onTouchEnd={() => {
-          draggingRef.current = false;
-          if (local !== value) onChange(local);
-        }}
-        onBlur={() => {
-          draggingRef.current = false;
-          if (local !== value) onChange(local);
-        }}
-        onKeyUp={() => {
-          if (local !== value) onChange(local);
-        }}
+        onMouseUp={commit}
+        onTouchEnd={commit}
+        onBlur={commit}
+        onKeyUp={commit}
       />
       <div className={styles.valChip} aria-hidden>
         {unit ? `${local} ${unit}` : local}
