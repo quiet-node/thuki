@@ -6,10 +6,21 @@
  * manifest, with a GitHub-link fallback when the manifest omits notes) and
  * four explicit actions so an install never starts on a single stray click:
  *
- *   - Skip This Version  → never nag for this exact version again
- *   - Remind Me Later     → snooze both surfaces for 24h
- *   - Install & Quit      → download + swap the bundle, then exit
- *   - Install & Restart   → download + swap + relaunch
+ *   - Skip This Version  : never nag for this exact version again
+ *   - Remind Me Later     : snooze both surfaces for 24h
+ *   - Install & Quit      : download + swap the bundle, then exit
+ *   - Install & Restart   : download + swap + relaunch
+ *
+ * Visual direction: "Editorial / Luxury" (approved design). Centered, airy,
+ * the real Thuki mascot in a soft radial vignette, a light-weight display
+ * title, typeset release notes, and a strictly single-line action row.
+ *
+ * Single source of truth: every color comes from the `@theme` tokens in
+ * App.css (Tailwind `*-primary` / `*-text-*` / `*-surface-*` utilities) and
+ * the app font from `font-sans` (Nunito). No hardcoded palette values here.
+ * Release notes render through MarkdownRenderer inside `.update-notes`,
+ * which App.css scopes to a refined editorial type scale (still Nunito,
+ * inherited from the global `.markdown-body` rule) instead of chat prose.
  *
  * The window is an NSPanel (see `init_update_panel` in lib.rs); closing it
  * hides rather than destroys (CloseRequested intercept), so reopening is
@@ -22,27 +33,6 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useUpdater } from '../../hooks/useUpdater';
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import { WindowControls } from '../../components/WindowControls';
-
-/** Hoisted "gift" header glyph: a release/unwrap visual cue. */
-const GIFT_ICON = (
-  <svg
-    width="22"
-    height="22"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.8"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-  >
-    <polyline points="20 12 20 22 4 22 4 12" />
-    <rect x="2" y="7" width="20" height="5" />
-    <line x1="12" y1="22" x2="12" y2="7" />
-    <path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z" />
-    <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
-  </svg>
-);
 
 /**
  * Extracts a human-readable `YYYY-MM-DD` from the manifest date. The
@@ -81,6 +71,7 @@ export function UpdateWindow() {
       'SELECT',
       'PATH',
       'SVG',
+      'IMG',
       'LABEL',
       'CODE',
       'PRE',
@@ -125,35 +116,49 @@ export function UpdateWindow() {
     void updater.install();
   }, [updater]);
 
+  const releaseDate = update ? formatReleaseDate(update.date) : null;
+
   return (
     <div
-      className="flex h-screen w-screen flex-col overflow-hidden rounded-xl bg-[#0d0d0f] text-text-primary"
+      className="font-sans flex h-screen w-screen flex-col overflow-hidden rounded-2xl bg-surface-base text-text-primary"
       onMouseDown={handleDragStart}
     >
       <WindowControls onClose={close} />
 
       {update ? (
         <>
-          <header className="flex items-center gap-3 px-6 pt-4 pb-3">
-            <span className="text-primary" aria-hidden>
-              {GIFT_ICON}
-            </span>
-            <div className="min-w-0">
-              <h1 className="truncate text-[15px] font-semibold text-text-primary">
-                {`Thuki ${update.version} is ready`}
-              </h1>
-              {formatReleaseDate(update.date) ? (
-                <p className="text-[11px] text-text-secondary">
-                  {`Released ${formatReleaseDate(update.date)}`}
-                </p>
-              ) : null}
+          <header className="px-12 pt-7 pb-7 text-center">
+            <div
+              className="mx-auto mb-5 flex h-[78px] w-[78px] items-center justify-center rounded-full"
+              style={{
+                background:
+                  'radial-gradient(circle, color-mix(in srgb, var(--color-primary) 10%, transparent) 0%, transparent 70%)',
+              }}
+            >
+              <img
+                src="/thuki-logo.png"
+                alt="Thuki"
+                className="h-[62px] w-[62px] object-contain"
+              />
             </div>
+            <div className="text-[11px] font-bold tracking-[3px] uppercase text-text-secondary">
+              Update Available
+            </div>
+            <h1 className="mt-3 text-[32px] font-light tracking-[-0.6px] text-text-primary">
+              {'Thuki '}
+              <span className="font-bold">{update.version}</span>
+            </h1>
+            {releaseDate ? (
+              <div className="mt-3 text-[12.5px] tracking-[0.2px] text-text-secondary">
+                {`Released ${releaseDate}`}
+              </div>
+            ) : null}
           </header>
 
-          <div className="h-px shrink-0 bg-surface-border" />
+          <div className="mx-12 h-px bg-surface-border" />
 
           <div
-            className="min-h-0 flex-1 overflow-y-auto px-6 py-4 text-[13px] leading-relaxed"
+            className="update-notes min-h-0 flex-1 overflow-y-auto px-14 pt-6 pb-7"
             data-testid="update-notes"
           >
             <MarkdownRenderer
@@ -167,39 +172,36 @@ export function UpdateWindow() {
             />
           </div>
 
-          <div className="h-px shrink-0 bg-surface-border" />
-
-          <footer className="flex shrink-0 items-center gap-2 px-6 py-3">
+          <footer className="flex flex-nowrap items-center gap-[5px] border-t border-surface-border px-6 pt-[18px] pb-[22px]">
             <button
               type="button"
               onClick={handleSkip}
-              className="rounded-md px-2.5 py-1.5 text-[12px] text-text-secondary transition-colors duration-150 hover:text-text-primary hover:bg-white/5 cursor-pointer"
+              className="shrink-0 rounded-md px-[9px] py-[9px] text-[12px] whitespace-nowrap text-text-secondary transition-colors duration-150 hover:text-text-primary cursor-pointer"
             >
               Skip This Version
             </button>
+            <span className="ml-auto" />
             <button
               type="button"
               onClick={handleLater}
-              className="rounded-md px-2.5 py-1.5 text-[12px] text-text-secondary transition-colors duration-150 hover:text-text-primary hover:bg-white/5 cursor-pointer"
+              className="shrink-0 rounded-md px-[11px] py-[9px] text-[12.5px] whitespace-nowrap text-text-secondary transition-colors duration-150 hover:text-text-primary cursor-pointer"
             >
               Remind Me Later
             </button>
-            <div className="ml-auto flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleInstallQuit}
-                className="rounded-md border border-surface-border px-3 py-1.5 text-[12px] text-text-primary transition-colors duration-150 hover:bg-white/5 cursor-pointer"
-              >
-                Install &amp; Quit
-              </button>
-              <button
-                type="button"
-                onClick={handleInstallRestart}
-                className="rounded-md bg-primary px-3 py-1.5 text-[12px] font-medium text-black transition-opacity duration-150 hover:opacity-90 cursor-pointer"
-              >
-                Install &amp; Restart
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={handleInstallQuit}
+              className="shrink-0 rounded-[9px] border border-surface-border px-[15px] py-[9px] text-[12.5px] whitespace-nowrap text-text-primary transition-colors duration-150 hover:bg-white/[0.04] cursor-pointer"
+            >
+              Install &amp; Quit
+            </button>
+            <button
+              type="button"
+              onClick={handleInstallRestart}
+              className="ml-[5px] shrink-0 rounded-[9px] bg-primary px-[16px] py-[9px] text-[12.5px] font-bold whitespace-nowrap text-neutral transition-[filter] duration-150 hover:brightness-105 cursor-pointer"
+            >
+              Install &amp; Restart
+            </button>
           </footer>
         </>
       ) : (

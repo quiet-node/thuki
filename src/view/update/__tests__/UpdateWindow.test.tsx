@@ -74,7 +74,10 @@ describe('UpdateWindow', () => {
       date: '2026-05-15T00:00:00Z',
     });
     render(<UpdateWindow />);
-    expect(screen.getByText('Thuki 0.11.0 is ready')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+      'Thuki 0.11.0',
+    );
+    expect(screen.getByText('Update Available')).toBeInTheDocument();
     expect(screen.getByText('Released 2026-05-15')).toBeInTheDocument();
     const notes = screen.getByTestId('update-notes');
     expect(notes).toHaveTextContent('Fixed');
@@ -171,7 +174,7 @@ describe('UpdateWindow', () => {
   it('does not drag when the press lands on a text-bearing leaf', () => {
     mockState = withUpdate({ body: 'x' });
     render(<UpdateWindow />);
-    fireEvent.mouseDown(screen.getByText('Thuki 0.11.0 is ready'), {
+    fireEvent.mouseDown(screen.getByText('Update Available'), {
       button: 0,
     });
     expect(__mockWindow.startDragging).not.toHaveBeenCalled();
