@@ -47,10 +47,12 @@ async fn download_latest_update(app: &AppHandle) -> Result<(), String> {
 
 /// Shared install-and-restart routine.
 ///
-/// Exposed to the tray click handler so clicking "Update Thuki to vX.Y.Z"
-/// triggers the install directly without forcing the user to detour through
-/// the Settings banner. The Settings banner button calls the
-/// `install_update` Tauri command, which delegates here.
+/// Reached only via the `install_update` Tauri command, which the
+/// "Install & Restart" button in the "What's New" window invokes. Every
+/// update entry point (chat footer, Settings banner, tray menu) now opens
+/// that window first (see `open_update_window`) so the user previews the
+/// release notes and picks an action explicitly instead of an install
+/// starting on a single click.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn install_update_inner(app: AppHandle) -> Result<(), String> {
     download_latest_update(&app).await?;

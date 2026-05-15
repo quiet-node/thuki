@@ -96,25 +96,43 @@ export function UpdateWindow() {
     void getCurrentWindow().startDragging();
   }, []);
 
+  /**
+   * Runs an update action, then closes the window. A rejected action is
+   * logged (never silently swallowed) and still closes the window so it
+   * cannot hang with no feedback: the chat footer and Settings banner
+   * persist as the retry surface, and a failed install simply leaves the
+   * app on its current version.
+   */
+  const runAction = useCallback(
+    (action: Promise<unknown>) => {
+      action
+        .catch((err: unknown) => {
+          console.error('update window action failed', err);
+        })
+        .finally(close);
+    },
+    [close],
+  );
+
   const handleSkip = useCallback(() => {
-    void updater.skip().then(close);
-  }, [updater, close]);
+    runAction(updater.skip());
+  }, [updater, runAction]);
 
   const handleLater = useCallback(() => {
     // "Later" should quiet every surface (chat footer + settings banner),
     // not just the one the window happened to be opened from.
-    void Promise.all([updater.snoozeChat(24), updater.snoozeSettings(24)]).then(
-      close,
+    runAction(
+      Promise.all([updater.snoozeChat(24), updater.snoozeSettings(24)]),
     );
-  }, [updater, close]);
+  }, [updater, runAction]);
 
   const handleInstallQuit = useCallback(() => {
-    void updater.installAndQuit();
-  }, [updater]);
+    runAction(updater.installAndQuit());
+  }, [updater, runAction]);
 
   const handleInstallRestart = useCallback(() => {
-    void updater.install();
-  }, [updater]);
+    runAction(updater.install());
+  }, [updater, runAction]);
 
   const releaseDate = update ? formatReleaseDate(update.date) : null;
 

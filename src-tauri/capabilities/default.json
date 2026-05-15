@@ -5,7 +5,6 @@
   "permissions": [
     "core:default",
     "core:window:allow-hide",
-    "core:window:allow-close",
     "core:window:allow-start-dragging",
     "core:window:deny-internal-toggle-maximize",
     "core:window:allow-set-size",

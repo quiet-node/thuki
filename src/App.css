@@ -479,7 +479,7 @@ body {
 /* ─── Update window: editorial release-notes type scale ───
  * The "What's New" window renders manifest markdown through the same
  * MarkdownRenderer as chat, but the chat `.markdown-body` rule (16.5px,
- * cream, weight 600) is wrong here — it produces the oversized, hierarchy-
+ * cream, weight 600) is wrong here: it produces the oversized, hierarchy-
  * less wall the redesign exists to fix. Scope a refined editorial scale to
  * `.update-notes` only: smaller body, real heading hierarchy, headings as
  * letter-spaced micro-labels in the brand accent. Plain CSS outside @layer

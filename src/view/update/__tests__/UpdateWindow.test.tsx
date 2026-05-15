@@ -117,6 +117,22 @@ describe('UpdateWindow', () => {
     await waitFor(() => expect(__mockWindow.hide).toHaveBeenCalled());
   });
 
+  it('logs a rejected action and still hides the window', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    skip.mockRejectedValueOnce(new Error('boom'));
+    mockState = withUpdate({ body: 'x' });
+    render(<UpdateWindow />);
+    fireEvent.click(screen.getByRole('button', { name: /skip this version/i }));
+    await waitFor(() =>
+      expect(errorSpy).toHaveBeenCalledWith(
+        'update window action failed',
+        expect.any(Error),
+      ),
+    );
+    await waitFor(() => expect(__mockWindow.hide).toHaveBeenCalled());
+    errorSpy.mockRestore();
+  });
+
   it('Remind Me Later snoozes both surfaces for 24h then hides', async () => {
     mockState = withUpdate({ body: 'x' });
     render(<UpdateWindow />);

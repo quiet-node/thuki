@@ -60,8 +60,9 @@ use tauri_nspanel::{CollectionBehavior, ManagerExt, PanelLevel, StyleMask, Webvi
 // any future panel subclass the same way.
 //
 // ThukiPanel - overlay NSPanel: floating, keyboard input for chat.
-// ThukiSettingsPanel - settings NSPanel: non-floating, keyboard input,
-//   no ActivationPolicy switch so the Dock icon never appears.
+// ThukiSettingsPanel - settings NSPanel: floating + nonactivating so it
+//   appears on the user's current Space; keyboard input; no
+//   ActivationPolicy switch so the Dock icon never appears.
 #[cfg(target_os = "macos")]
 mod _thuki_panel {
     use tauri::Manager;
@@ -511,13 +512,14 @@ fn show_update_window(app_handle: &tauri::AppHandle) {
         let window = app_handle.get_webview_window("update");
         match app_handle.get_webview_panel("update") {
             Ok(panel) => {
-                // Deliberately NO activateIgnoringOtherApps here (unlike
-                // show_settings_window). Activating the app while another
-                // app owns a fullscreen Space makes macOS switch to this
-                // app's home desktop Space to present the window, stranding
-                // it away from the user. The overlay (show_overlay) shows
-                // its panel the same way — no activation — and that is why
-                // it appears in-place over fullscreen.
+                // Deliberately NO activateIgnoringOtherApps here (same as
+                // show_settings_window / show_overlay). Activating the app
+                // while another app owns a fullscreen Space makes macOS
+                // switch to this app's home desktop Space to present the
+                // window, stranding it away from the user. The panel's
+                // nonactivating style + can_join_all_spaces (see
+                // init_update_panel) make it appear in-place on whatever
+                // Space the user is on instead.
                 let _ = app_handle.run_on_main_thread(move || {
                     if let Some(win) = window {
                         position_update_window(&win);
