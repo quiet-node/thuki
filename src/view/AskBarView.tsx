@@ -683,7 +683,7 @@ export function AskBarView({
               ref={mirrorRef}
               aria-hidden="true"
               data-testid="askbar-mirror"
-              className="askbar-mirror absolute inset-0 pointer-events-none bg-transparent text-text-primary text-sm py-2 px-1 leading-5 whitespace-pre-wrap break-words overflow-hidden"
+              className="askbar-mirror absolute inset-0 pointer-events-none bg-transparent text-text-primary thuki-text-base py-2 px-1 leading-5 whitespace-pre-wrap break-words overflow-hidden"
             >
               {renderHighlightedText(query)}
             </div>
@@ -698,7 +698,7 @@ export function AskBarView({
               autoFocus
               rows={1}
               placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
-              className="askbar-textarea relative w-full bg-transparent border-none outline-none text-transparent text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-5"
+              className="askbar-textarea relative w-full bg-transparent border-none outline-none text-transparent thuki-text-base placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-5"
               style={{ caretColor: 'var(--color-text-primary)' }}
             />
           </div>

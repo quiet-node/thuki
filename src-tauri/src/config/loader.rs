@@ -22,19 +22,21 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::defaults::{
-    BOUNDS_KEEP_WARM_INACTIVITY_MINUTES, BOUNDS_MAX_CHAT_HEIGHT, BOUNDS_MAX_IMAGES,
-    BOUNDS_MAX_ITERATIONS, BOUNDS_NUM_CTX, BOUNDS_OVERLAY_WIDTH,
+    ALLOWED_FONT_WEIGHTS, BOUNDS_KEEP_WARM_INACTIVITY_MINUTES, BOUNDS_MAX_CHAT_HEIGHT,
+    BOUNDS_MAX_IMAGES, BOUNDS_MAX_ITERATIONS, BOUNDS_NUM_CTX, BOUNDS_OVERLAY_WIDTH,
     BOUNDS_PIPELINE_WALL_CLOCK_BUDGET_S, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
     BOUNDS_QUOTE_MAX_DISPLAY_CHARS, BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_SEARXNG_MAX_RESULTS,
-    BOUNDS_TIMEOUT_S, BOUNDS_TOP_K_URLS, BOUNDS_UPDATER_CHECK_INTERVAL_HOURS,
-    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
-    DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    BOUNDS_TEXT_BASE_PX, BOUNDS_TEXT_LETTER_SPACING_PX, BOUNDS_TEXT_LINE_HEIGHT, BOUNDS_TIMEOUT_S,
+    BOUNDS_TOP_K_URLS, BOUNDS_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
     DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
     DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
     DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
-    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
-    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
+    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
+    DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
+    DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
     SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
@@ -183,6 +185,29 @@ pub(crate) fn resolve(config: &mut AppConfig) {
         BOUNDS_MAX_IMAGES,
         DEFAULT_MAX_IMAGES,
         "window.max_images",
+    );
+    clamp_f64(
+        &mut config.window.text_base_px,
+        BOUNDS_TEXT_BASE_PX,
+        DEFAULT_TEXT_BASE_PX,
+        "window.text_base_px",
+    );
+    clamp_f64(
+        &mut config.window.text_line_height,
+        BOUNDS_TEXT_LINE_HEIGHT,
+        DEFAULT_TEXT_LINE_HEIGHT,
+        "window.text_line_height",
+    );
+    clamp_f64(
+        &mut config.window.text_letter_spacing_px,
+        BOUNDS_TEXT_LETTER_SPACING_PX,
+        DEFAULT_TEXT_LETTER_SPACING_PX,
+        "window.text_letter_spacing_px",
+    );
+    clamp_font_weight(
+        &mut config.window.text_font_weight,
+        DEFAULT_TEXT_FONT_WEIGHT,
+        "window.text_font_weight",
     );
 
     // Quote section.
@@ -342,6 +367,16 @@ fn clamp_u64(value: &mut u64, bounds: (u64, u64), default: u64, field: &str) {
             "thuki: [config] {field}={value} out of bounds [{min}, {max}]; using default {default}",
             min = bounds.0,
             max = bounds.1,
+            value = *value
+        );
+        *value = default;
+    }
+}
+
+fn clamp_font_weight(value: &mut u32, default: u32, field: &str) {
+    if !ALLOWED_FONT_WEIGHTS.contains(value) {
+        eprintln!(
+            "thuki: [config] {field}={value} not in {ALLOWED_FONT_WEIGHTS:?}; using default {default}",
             value = *value
         );
         *value = default;

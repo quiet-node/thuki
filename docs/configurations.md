@@ -52,6 +52,10 @@ system = "..."
 overlay_width = 600
 max_chat_height = 648
 max_images = 3
+text_base_px = 15.0
+text_line_height = 1.5
+text_letter_spacing_px = 0.0
+text_font_weight = 500
 
 [quote]
 max_display_lines = 4
@@ -146,6 +150,10 @@ UI configuration for the floating Thuki window: geometry knobs and input attachm
 | `overlay_width`   | `600.0` | Yes      | —               | `[200.0, 2000.0]` | How wide the floating Thuki window is, in pixels. Raise for wider input/chat at the cost of more screen space; lower to keep Thuki compact.                                            |
 | `max_chat_height` | `648.0` | Yes      | —               | `[200.0, 2000.0]` | The largest the chat window can grow to as conversation gets longer. Raise to see more chat history without scrolling; lower to keep Thuki from taking over your screen on long chats. |
 | `max_images`      | `3`     | Yes      | —               | `[1, 20]`         | Maximum number of images you can manually attach to a single message by pasting or dragging. A /screen capture always counts as one extra on top of this limit. Raise for richer visual context per message; lower to keep prompts compact. |
+| `text_base_px`    | `15.0`  | Yes      | —               | `[11.0, 22.0]`    | Base font size for chat text and the AskBar input, in CSS pixels. Drives the `--thuki-text-base` CSS variable consumed by the AI markdown body, the user chat bubble text, and the AskBar textarea (plus its caret-tracking mirror). Other surfaces (Settings panel, onboarding) keep fixed sizes. Raise for easier-to-read conversation text; lower to fit more text on screen. |
+| `text_line_height` | `1.5` | Yes      | —               | `[1.0, 2.5]`      | Line-height multiplier applied to chat text and the AskBar input. Drives the `--thuki-text-line-height` CSS variable. Raise for airier, easier-to-skim replies; lower to fit more lines on screen. |
+| `text_letter_spacing_px` | `0.0` | Yes | —             | `[-0.5, 2.0]`     | Extra space between characters, in CSS pixels. Drives the `--thuki-text-letter-spacing` CSS variable. Raise for airier letters; drop below zero to tighten the typography. |
+| `text_font_weight` | `500` | Yes      | —               | `{400, 500, 600, 700}` | CSS `font-weight` applied to chat and AskBar text. Drives the `--thuki-text-font-weight` CSS variable. Only the four loaded Nunito weights are accepted; off-grid values reset to the default. Raise for a heavier presence; lower for a lighter look. |
 | `COLLAPSED_WINDOW_HEIGHT` | `80 px` | No | Frontend constant; overwritten by ResizeObserver before the frame renders, so any value in the user-visible range produces identical results. | — | The initial height of the collapsed input bar, in pixels. Overwritten by ResizeObserver on every render, so the value the user sees is always determined dynamically. |
 | `HIDE_COMMIT_DELAY_MS` | `350 ms` | No | Frontend constant; the value sits below normal perception across its usable range and creates a visible pop if dropped below the exit-animation duration. | — | How long Thuki waits after you close the window before it hides the underlying NSPanel. Keeps the exit animation from being cut off. |
 

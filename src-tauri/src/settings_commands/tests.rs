@@ -60,8 +60,8 @@ fn parse_sample() -> DocumentMut {
 
 #[test]
 fn allowed_fields_count_matches_schema_field_count() {
-    // Hand-counted from `AppConfig`: inference(3) + prompt(1) + window(3) + quote(3)
-    // + search(11) + debug(1) + updater(3) = 25 tunable fields. The active model slug
+    // Hand-counted from `AppConfig`: inference(3) + prompt(1) + window(7) + quote(3)
+    // + search(11) + debug(1) + updater(3) = 29 tunable fields. The active model slug
     // lives in the SQLite app_config table via ActiveModelState, not in TOML. The
     // collapsed bar height and hide-commit delay are baked into the frontend (see
     // `WindowSection` doc) because they have no perceptible effect across
@@ -70,7 +70,7 @@ fn allowed_fields_count_matches_schema_field_count() {
     // directly user-tunable and is intentionally absent from ALLOWED_FIELDS.
     // If this assertion fails, the schema has drifted from the allowlist and
     // someone added a field without extending ALLOWED_FIELDS.
-    assert_eq!(ALLOWED_FIELDS.len(), 25);
+    assert_eq!(ALLOWED_FIELDS.len(), 29);
 }
 
 #[test]
@@ -409,12 +409,125 @@ fn patch_document_insert_rejects_array_with_non_string_for_missing_field() {
     matches_type_mismatch(&err, "inference", "available");
 }
 
+#[test]
+fn patch_document_inserts_missing_float_field_as_float_for_whole_number() {
+    // Regression: when an f64-typed field is missing from the user's
+    // config.toml (typical for users upgrading past a new field), a save
+    // of a whole-number JSON value (e.g. 15) must still land in the doc
+    // as TOML Float so that the *next* fractional save (e.g. 15.5) is
+    // accepted by `coerce_json_to_toml`'s existing-Float branch. If the
+    // missing-key path inferred the type from JSON shape, 15 would be
+    // inserted as Integer and 15.5 would be rejected as type mismatch.
+    let toml = "[window]\noverlay_width = 600.0\nmax_chat_height = 648.0\nmax_images = 3\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+
+    patch_document(&mut doc, "window", "text_base_px", json!(15)).unwrap();
+    let after_whole = doc
+        .get("window")
+        .and_then(|s| s.get("text_base_px"))
+        .expect("text_base_px present after first save");
+    assert!(
+        after_whole.as_value().and_then(|v| v.as_float()).is_some(),
+        "whole-number save into missing float field should land as TOML Float, got {after_whole:?}",
+    );
+
+    // Now the fractional save must succeed against the same doc.
+    patch_document(&mut doc, "window", "text_base_px", json!(15.5)).unwrap();
+    let after_fractional = doc
+        .get("window")
+        .and_then(|s| s.get("text_base_px"))
+        .and_then(|i| i.as_value())
+        .and_then(|v| v.as_float())
+        .expect("fractional save preserves Float");
+    assert!((after_fractional - 15.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn patch_document_heals_legacy_integer_for_schema_float_field() {
+    // Regression: a legacy config that already persisted `text_base_px` as
+    // a TOML Integer (which is what would happen if the user first saved
+    // a whole-number value through an older build that inferred the type
+    // from the JSON payload) must accept a subsequent fractional save and
+    // rewrite the field as TOML Float. The schema-derived template is now
+    // authoritative over the on-disk type, so the file self-heals on the
+    // very next save without requiring a migration sweep.
+    let toml = "[window]\noverlay_width = 600.0\nmax_chat_height = 648.0\nmax_images = 3\ntext_base_px = 15\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+
+    patch_document(&mut doc, "window", "text_base_px", json!(15.5)).unwrap();
+    let healed = doc
+        .get("window")
+        .and_then(|s| s.get("text_base_px"))
+        .and_then(|i| i.as_value())
+        .and_then(|v| v.as_float())
+        .expect("fractional save rewrites legacy Integer item as Float");
+    assert!((healed - 15.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn patch_document_falls_back_to_existing_item_for_unknown_key() {
+    // Defense-in-depth: when a key is not in AppConfig::default() (so
+    // schema_template_item returns None) but the key already exists in the
+    // on-disk doc, patch_document should fall back to the existing item's
+    // type for coercion. This branch is normally gated by ALLOWED_FIELDS,
+    // but the function keeps the fallback to remain correct at the type
+    // boundary if that guard is ever bypassed.
+    let toml = "[window]\noverlay_width = 600.0\nlegacy_field = \"hello\"\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+    patch_document(&mut doc, "window", "legacy_field", json!("updated")).unwrap();
+    let val = doc
+        .get("window")
+        .and_then(|s| s.get("legacy_field"))
+        .and_then(|i| i.as_value())
+        .and_then(|v| v.as_str())
+        .expect("legacy_field present after patch");
+    assert_eq!(val, "updated");
+}
+
+#[test]
+fn patch_document_infers_type_for_unknown_key_not_in_doc() {
+    // Defense-in-depth: when a key is not in AppConfig::default() AND not
+    // present in the on-disk doc, patch_document falls back to JSON type
+    // inference via json_value_to_toml_item. This exercises the final else
+    // branch in the schema-template / existing-item / inference cascade.
+    let toml = "[window]\noverlay_width = 600.0\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+    patch_document(&mut doc, "window", "new_field", json!("value")).unwrap();
+    let val = doc
+        .get("window")
+        .and_then(|s| s.get("new_field"))
+        .and_then(|i| i.as_value())
+        .and_then(|v| v.as_str())
+        .expect("new_field inserted after patch");
+    assert_eq!(val, "value");
+}
+
 // ─── json_value_to_toml_item ─────────────────────────────────────────────────
 
 #[test]
 fn json_value_to_toml_item_inserts_bool() {
     let item = json_value_to_toml_item(json!(true), "s", "k").unwrap();
     assert_eq!(item.as_bool(), Some(true));
+}
+
+#[test]
+fn json_value_to_toml_item_inserts_integer_as_toml_integer() {
+    let item = json_value_to_toml_item(json!(42), "s", "k").unwrap();
+    assert_eq!(item.as_integer(), Some(42));
+}
+
+#[test]
+fn json_value_to_toml_item_inserts_float_as_toml_float() {
+    // json!(3.14) has as_i64() == None, so the f64 branch is taken.
+    let item = json_value_to_toml_item(json!(3.14), "s", "k").unwrap();
+    let v = item.as_float().expect("should be float");
+    assert!((v - 3.14).abs() < f64::EPSILON);
+}
+
+#[test]
+fn json_value_to_toml_item_rejects_null() {
+    let err = json_value_to_toml_item(json!(null), "sec", "key").unwrap_err();
+    matches_type_mismatch(&err, "sec", "key");
 }
 
 // ─── read_document ──────────────────────────────────────────────────────────

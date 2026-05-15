@@ -43,6 +43,10 @@ const CONFIG: RawAppConfig = {
     overlay_width: 600,
     max_chat_height: 648,
     max_images: 3,
+    text_base_px: 15,
+    text_line_height: 1.5,
+    text_letter_spacing_px: 0,
+    text_font_weight: 500,
   },
   quote: {
     max_display_lines: 4,
@@ -663,12 +667,54 @@ describe('ModelTab', () => {
 });
 
 describe('DisplayTab', () => {
-  it('renders Window and Input sections', () => {
+  it('renders Text, Window, and Input sections', () => {
     render(<DisplayTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(screen.getByText('Text')).toBeInTheDocument();
     expect(screen.getByText('Window')).toBeInTheDocument();
     expect(screen.getByText('Input')).toBeInTheDocument();
+    expect(screen.getByText('Text size')).toBeInTheDocument();
+    expect(screen.getByText('Line height')).toBeInTheDocument();
+    expect(screen.getByText('Letter spacing')).toBeInTheDocument();
+    expect(screen.getByText('Font weight')).toBeInTheDocument();
     expect(screen.getByText('Overlay width')).toBeInTheDocument();
     expect(screen.getByText('Max display lines')).toBeInTheDocument();
+  });
+
+  it('exposes a text-size slider bound to the 11..22 px range', () => {
+    render(<DisplayTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', { name: 'Text size' });
+    expect(slider).toHaveAttribute('min', '11');
+    expect(slider).toHaveAttribute('max', '22');
+    expect(slider).toHaveAttribute('step', '0.5');
+    expect(slider).toHaveValue(String(CONFIG.window.text_base_px));
+  });
+
+  it('exposes a line-height slider bound to the 1..2.5 range', () => {
+    render(<DisplayTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', { name: 'Line height' });
+    expect(slider).toHaveAttribute('min', '1');
+    expect(slider).toHaveAttribute('max', '2.5');
+    expect(slider).toHaveAttribute('step', '0.05');
+  });
+
+  it('exposes a letter-spacing slider bound to the -0.5..2 px range', () => {
+    render(<DisplayTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', { name: 'Letter spacing' });
+    expect(slider).toHaveAttribute('min', '-0.5');
+    expect(slider).toHaveAttribute('max', '2');
+    expect(slider).toHaveAttribute('step', '0.05');
+  });
+
+  it('exposes a font-weight slider snapping to the four loaded Nunito weights', () => {
+    render(<DisplayTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', { name: 'Font weight' });
+    expect(slider).toHaveAttribute('min', '400');
+    expect(slider).toHaveAttribute('max', '700');
+    expect(slider).toHaveAttribute('step', '100');
+    expect(slider).toHaveValue(String(CONFIG.window.text_font_weight));
+    // The chip + screen-reader text surface the descriptive weight label
+    // (e.g. "Medium") rather than the raw numeric font-weight value.
+    expect(slider).toHaveAttribute('aria-valuetext', 'Medium');
   });
 });
 

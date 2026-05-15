@@ -21,8 +21,10 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
-    DEFAULT_SYSTEM_CUSTOMIZED, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TOP_K_URLS,
-    DEFAULT_UPDATER_AUTO_CHECK, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
+    DEFAULT_SYSTEM_CUSTOMIZED, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
+    DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
+    DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_AUTO_CHECK, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
+    DEFAULT_UPDATER_MANIFEST_URL,
 };
 
 /// Static, user-tunable inference daemon configuration.
@@ -116,6 +118,25 @@ pub struct WindowSection {
     /// image from /screen capture is allowed on top, for a total of
     /// max_images + 1 per message.
     pub max_images: u32,
+    /// Base font size (in CSS pixels) for chat text and the AskBar input.
+    /// Drives the `--thuki-text-base` CSS variable consumed by the AI
+    /// markdown body, the user chat bubble text, and the AskBar textarea
+    /// (plus its caret-tracking mirror). Other UI surfaces keep fixed sizes.
+    /// Valid range: 11.0..=22.0.
+    pub text_base_px: f64,
+    /// Line-height multiplier applied to chat + AskBar text. Drives the
+    /// `--thuki-text-line-height` CSS variable. Valid range: 1.0..=2.5.
+    pub text_line_height: f64,
+    /// Letter spacing (in CSS pixels) applied to chat + AskBar text.
+    /// Drives the `--thuki-text-letter-spacing` CSS variable. Negative
+    /// values tighten the typography; positive values airy it out.
+    /// Valid range: -0.5..=2.0.
+    pub text_letter_spacing_px: f64,
+    /// CSS `font-weight` applied to chat + AskBar text. Drives the
+    /// `--thuki-text-font-weight` CSS variable. Restricted to the four
+    /// loaded Nunito weights (400, 500, 600, 700); values outside this
+    /// set reset to the compiled default.
+    pub text_font_weight: u32,
 }
 
 impl Default for WindowSection {
@@ -124,6 +145,10 @@ impl Default for WindowSection {
             overlay_width: DEFAULT_OVERLAY_WIDTH,
             max_chat_height: DEFAULT_MAX_CHAT_HEIGHT,
             max_images: DEFAULT_MAX_IMAGES,
+            text_base_px: DEFAULT_TEXT_BASE_PX,
+            text_line_height: DEFAULT_TEXT_LINE_HEIGHT,
+            text_letter_spacing_px: DEFAULT_TEXT_LETTER_SPACING_PX,
+            text_font_weight: DEFAULT_TEXT_FONT_WEIGHT,
         }
     }
 }

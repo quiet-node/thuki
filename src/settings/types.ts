@@ -25,6 +25,10 @@ export interface RawAppConfig {
     overlay_width: number;
     max_chat_height: number;
     max_images: number;
+    text_base_px: number;
+    text_line_height: number;
+    text_letter_spacing_px: number;
+    text_font_weight: number;
   };
   quote: {
     max_display_lines: number;

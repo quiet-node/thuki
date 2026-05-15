@@ -31,6 +31,14 @@ const HELPERS = {
       'The largest the chat window can grow to as conversation gets longer. Raise to see more chat history without scrolling; lower to keep Thuki from taking over your screen on long chats.',
     max_images:
       'How many images you can attach to a single message by pasting or dragging. A /screen capture always adds one more on top of this limit. Raise for richer visual context per message; lower to keep prompts compact.',
+    text_base_px:
+      'How big chat text and the input bar text appear, in pixels. Affects the AI replies, your own chat messages, and what you type in the input bar. Other parts of Thuki (Settings, onboarding) keep their fixed sizes. Raise for easier-to-read text; lower to fit more on screen.',
+    text_line_height:
+      'How much vertical space each line of chat text and input text takes, as a multiplier of the font size. Raise for airier, easier-to-skim replies; lower to fit more lines on screen.',
+    text_letter_spacing_px:
+      'Extra space between characters, in pixels. Affects chat text and the input bar. Raise for airier letters; lower (negative values allowed) to tighten the typography.',
+    text_font_weight:
+      'How bold the chat and input text appears. Regular is the lightest; Bold is the heaviest. Only the four loaded Nunito weights are available because anything in between would silently fall back to the nearest loaded weight.',
   },
   quote: {
     max_display_lines:
