@@ -409,6 +409,39 @@ fn patch_document_insert_rejects_array_with_non_string_for_missing_field() {
     matches_type_mismatch(&err, "inference", "available");
 }
 
+#[test]
+fn patch_document_inserts_missing_float_field_as_float_for_whole_number() {
+    // Regression: when an f64-typed field is missing from the user's
+    // config.toml (typical for users upgrading past a new field), a save
+    // of a whole-number JSON value (e.g. 15) must still land in the doc
+    // as TOML Float so that the *next* fractional save (e.g. 15.5) is
+    // accepted by `coerce_json_to_toml`'s existing-Float branch. If the
+    // missing-key path inferred the type from JSON shape, 15 would be
+    // inserted as Integer and 15.5 would be rejected as type mismatch.
+    let toml = "[window]\noverlay_width = 600.0\nmax_chat_height = 648.0\nmax_images = 3\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+
+    patch_document(&mut doc, "window", "text_base_px", json!(15)).unwrap();
+    let after_whole = doc
+        .get("window")
+        .and_then(|s| s.get("text_base_px"))
+        .expect("text_base_px present after first save");
+    assert!(
+        after_whole.as_value().and_then(|v| v.as_float()).is_some(),
+        "whole-number save into missing float field should land as TOML Float, got {after_whole:?}",
+    );
+
+    // Now the fractional save must succeed against the same doc.
+    patch_document(&mut doc, "window", "text_base_px", json!(15.5)).unwrap();
+    let after_fractional = doc
+        .get("window")
+        .and_then(|s| s.get("text_base_px"))
+        .and_then(|i| i.as_value())
+        .and_then(|v| v.as_float())
+        .expect("fractional save preserves Float");
+    assert!((after_fractional - 15.5).abs() < f64::EPSILON);
+}
+
 // ─── json_value_to_toml_item ─────────────────────────────────────────────────
 
 #[test]

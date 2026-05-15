@@ -419,11 +419,44 @@ pub(crate) fn patch_document(
 
     let coerced = if let Some(existing) = table.get(key) {
         coerce_json_to_toml(existing, value, section, key)?
+    } else if let Some(template) = schema_template_item(section, key) {
+        // Key absent from the on-disk doc (typically because the user's
+        // config.toml predates this field). Coerce against a *schema-derived*
+        // template instead of inferring the TOML type from the JSON value's
+        // shape: JS numbers carry no int/float distinction, so a `15` for an
+        // f64-typed field would otherwise be inserted as `Integer`, and the
+        // very next fractional save (e.g. `15.5`) would be rejected by the
+        // existing-item coercion path. Anchoring on the schema keeps the
+        // type stable across saves.
+        coerce_json_to_toml(&template, value, section, key)?
     } else {
         json_value_to_toml_item(value, section, key)?
     };
     table.insert(key, coerced);
     Ok(())
+}
+
+/// Returns the `Item` that `AppConfig::default()` produces for `(section, key)`
+/// after a TOML round-trip. The serialized defaults document is the closest
+/// thing we have to a schema reflection: every tunable field in `AppConfig`
+/// appears in it with the TOML type the loader expects. Used by
+/// `patch_document` to keep the on-disk type stable when the field is
+/// missing from the user's file.
+///
+/// Returns `None` only when the lookup falls outside `ALLOWED_FIELDS`
+/// (impossible in practice — callers gate on that allowlist first — but the
+/// `Option` keeps this function honest at the type boundary).
+fn schema_template_item(section: &str, key: &str) -> Option<Item> {
+    let defaults_str = toml::to_string_pretty(&AppConfig::default())
+        .expect("AppConfig is always serializable to TOML");
+    let defaults_doc: DocumentMut = defaults_str
+        .parse()
+        .expect("defaults serialize to a parseable TOML document");
+    defaults_doc
+        .get(section)
+        .and_then(Item::as_table)
+        .and_then(|t| t.get(key))
+        .cloned()
 }
 
 /// Converts a JSON value to a TOML item by inferring the type from the JSON,
