@@ -44,6 +44,9 @@ const CONFIG: RawAppConfig = {
     max_chat_height: 648,
     max_images: 3,
     text_base_px: 15,
+    text_line_height: 1.5,
+    text_letter_spacing_px: 0,
+    text_font_weight: 500,
   },
   quote: {
     max_display_lines: 4,
@@ -670,6 +673,9 @@ describe('DisplayTab', () => {
     expect(screen.getByText('Window')).toBeInTheDocument();
     expect(screen.getByText('Input')).toBeInTheDocument();
     expect(screen.getByText('Text size')).toBeInTheDocument();
+    expect(screen.getByText('Line height')).toBeInTheDocument();
+    expect(screen.getByText('Letter spacing')).toBeInTheDocument();
+    expect(screen.getByText('Font weight')).toBeInTheDocument();
     expect(screen.getByText('Overlay width')).toBeInTheDocument();
     expect(screen.getByText('Max display lines')).toBeInTheDocument();
   });
@@ -681,6 +687,32 @@ describe('DisplayTab', () => {
     expect(slider).toHaveAttribute('max', '22');
     expect(slider).toHaveAttribute('step', '0.5');
     expect(slider).toHaveValue(String(CONFIG.window.text_base_px));
+  });
+
+  it('exposes a line-height slider bound to the 1..2.5 range', () => {
+    render(<DisplayTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', { name: 'Line height' });
+    expect(slider).toHaveAttribute('min', '1');
+    expect(slider).toHaveAttribute('max', '2.5');
+    expect(slider).toHaveAttribute('step', '0.05');
+  });
+
+  it('exposes a letter-spacing slider bound to the -0.5..2 px range', () => {
+    render(<DisplayTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const slider = screen.getByRole('slider', { name: 'Letter spacing' });
+    expect(slider).toHaveAttribute('min', '-0.5');
+    expect(slider).toHaveAttribute('max', '2');
+    expect(slider).toHaveAttribute('step', '0.05');
+  });
+
+  it('exposes a font-weight dropdown with the four loaded Nunito weights', () => {
+    render(<DisplayTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const select = screen.getByRole('combobox', { name: 'Font weight' });
+    const labels = Array.from(select.querySelectorAll('option')).map(
+      (o) => o.textContent,
+    );
+    expect(labels).toEqual(['Regular', 'Medium', 'Semi-bold', 'Bold']);
+    expect(select).toHaveValue(String(CONFIG.window.text_font_weight));
   });
 });
 

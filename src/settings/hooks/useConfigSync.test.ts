@@ -24,6 +24,9 @@ const CONFIG_A: RawAppConfig = {
     max_chat_height: 648,
     max_images: 3,
     text_base_px: 15,
+    text_line_height: 1.5,
+    text_letter_spacing_px: 0,
+    text_font_weight: 500,
   },
   quote: {
     max_display_lines: 4,

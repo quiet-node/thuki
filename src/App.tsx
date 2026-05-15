@@ -479,19 +479,37 @@ function App() {
   }, [config.window.overlayWidth, config.window.maxChatHeight, overlayState]);
 
   /**
-   * Drives the `--thuki-text-base` CSS variable on `<html>` from the
-   * user-tunable `window.text_base_px` config knob. Consumers (the AI
-   * markdown body, the user chat bubble text, and the AskBar textarea +
-   * caret-tracking mirror) read the variable directly; this is the single
-   * write path that resyncs after every Settings save (via the
-   * `thuki://config-updated` refresh in `ConfigContext`).
+   * Drives the typography CSS variables on `<html>` from the user-tunable
+   * `[window]` typography knobs. Consumers (the AI markdown body, the user
+   * chat bubble text, and the AskBar textarea + caret-tracking mirror) read
+   * the variables directly; this is the single write path that resyncs
+   * after every Settings save (via the `thuki://config-updated` refresh in
+   * `ConfigContext`).
    */
   useEffect(() => {
-    document.documentElement.style.setProperty(
+    const root = document.documentElement;
+    root.style.setProperty(
       '--thuki-text-base',
       `${config.window.textBasePx}px`,
     );
-  }, [config.window.textBasePx]);
+    root.style.setProperty(
+      '--thuki-text-line-height',
+      `${config.window.textLineHeight}`,
+    );
+    root.style.setProperty(
+      '--thuki-text-letter-spacing',
+      `${config.window.textLetterSpacingPx}px`,
+    );
+    root.style.setProperty(
+      '--thuki-text-font-weight',
+      `${config.window.textFontWeight}`,
+    );
+  }, [
+    config.window.textBasePx,
+    config.window.textLineHeight,
+    config.window.textLetterSpacingPx,
+    config.window.textFontWeight,
+  ]);
 
   /**
    * Callback ref to reliably attach the ResizeObserver when the conditionally

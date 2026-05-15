@@ -19,8 +19,9 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
     DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
     DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
-    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX, DEFAULT_TOP_K_URLS,
-    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
+    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
+    DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
+    DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
     SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
@@ -62,6 +63,12 @@ fn defaults_const_values_match_schema_defaults() {
     assert_eq!(c.window.max_chat_height, DEFAULT_MAX_CHAT_HEIGHT);
     assert_eq!(c.window.max_images, DEFAULT_MAX_IMAGES);
     assert_eq!(c.window.text_base_px, DEFAULT_TEXT_BASE_PX);
+    assert_eq!(c.window.text_line_height, DEFAULT_TEXT_LINE_HEIGHT);
+    assert_eq!(
+        c.window.text_letter_spacing_px,
+        DEFAULT_TEXT_LETTER_SPACING_PX
+    );
+    assert_eq!(c.window.text_font_weight, DEFAULT_TEXT_FONT_WEIGHT);
     assert_eq!(c.quote.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
     assert_eq!(c.quote.max_display_chars, DEFAULT_QUOTE_MAX_DISPLAY_CHARS);
     assert_eq!(c.quote.max_context_length, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH);
@@ -103,6 +110,9 @@ fn section_defaults_are_sensible() {
     assert_eq!(w.overlay_width, DEFAULT_OVERLAY_WIDTH);
     assert_eq!(w.max_images, DEFAULT_MAX_IMAGES);
     assert_eq!(w.text_base_px, DEFAULT_TEXT_BASE_PX);
+    assert_eq!(w.text_line_height, DEFAULT_TEXT_LINE_HEIGHT);
+    assert_eq!(w.text_letter_spacing_px, DEFAULT_TEXT_LETTER_SPACING_PX);
+    assert_eq!(w.text_font_weight, DEFAULT_TEXT_FONT_WEIGHT);
 
     let q = QuoteSection::default();
     assert_eq!(q.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
@@ -644,6 +654,77 @@ fn resolve_text_base_px_in_bounds_preserved() {
     std::fs::write(&path, "[window]\ntext_base_px = 18.0\n").unwrap();
     let config = load_from_path(&path).unwrap();
     assert_eq!(config.window.text_base_px, 18.0);
+}
+
+#[test]
+fn resolve_out_of_bounds_text_line_height_resets_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[window]\ntext_line_height = 0.5\n").unwrap();
+    let too_low = load_from_path(&path).unwrap();
+    assert_eq!(too_low.window.text_line_height, DEFAULT_TEXT_LINE_HEIGHT);
+
+    std::fs::write(&path, "[window]\ntext_line_height = 9.0\n").unwrap();
+    let too_high = load_from_path(&path).unwrap();
+    assert_eq!(too_high.window.text_line_height, DEFAULT_TEXT_LINE_HEIGHT);
+
+    std::fs::write(&path, "[window]\ntext_line_height = nan\n").unwrap();
+    let non_finite = load_from_path(&path).unwrap();
+    assert_eq!(non_finite.window.text_line_height, DEFAULT_TEXT_LINE_HEIGHT);
+}
+
+#[test]
+fn resolve_out_of_bounds_text_letter_spacing_resets_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[window]\ntext_letter_spacing_px = -5.0\n").unwrap();
+    let too_low = load_from_path(&path).unwrap();
+    assert_eq!(
+        too_low.window.text_letter_spacing_px,
+        DEFAULT_TEXT_LETTER_SPACING_PX
+    );
+
+    std::fs::write(&path, "[window]\ntext_letter_spacing_px = 10.0\n").unwrap();
+    let too_high = load_from_path(&path).unwrap();
+    assert_eq!(
+        too_high.window.text_letter_spacing_px,
+        DEFAULT_TEXT_LETTER_SPACING_PX
+    );
+
+    std::fs::write(&path, "[window]\ntext_letter_spacing_px = nan\n").unwrap();
+    let non_finite = load_from_path(&path).unwrap();
+    assert_eq!(
+        non_finite.window.text_letter_spacing_px,
+        DEFAULT_TEXT_LETTER_SPACING_PX
+    );
+}
+
+#[test]
+fn resolve_invalid_text_font_weight_resets_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[window]\ntext_font_weight = 123\n").unwrap();
+    let off_grid = load_from_path(&path).unwrap();
+    assert_eq!(off_grid.window.text_font_weight, DEFAULT_TEXT_FONT_WEIGHT);
+
+    std::fs::write(&path, "[window]\ntext_font_weight = 800\n").unwrap();
+    let above_set = load_from_path(&path).unwrap();
+    assert_eq!(above_set.window.text_font_weight, DEFAULT_TEXT_FONT_WEIGHT);
+}
+
+#[test]
+fn resolve_text_typography_in_bounds_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        "[window]\ntext_line_height = 1.8\ntext_letter_spacing_px = 0.4\ntext_font_weight = 700\n",
+    )
+    .unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(config.window.text_line_height, 1.8);
+    assert_eq!(config.window.text_letter_spacing_px, 0.4);
+    assert_eq!(config.window.text_font_weight, 700);
 }
 
 #[test]

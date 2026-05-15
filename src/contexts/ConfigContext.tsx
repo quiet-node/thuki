@@ -40,6 +40,9 @@ interface RawAppConfig {
     max_chat_height: number;
     max_images: number;
     text_base_px: number;
+    text_line_height: number;
+    text_letter_spacing_px: number;
+    text_font_weight: number;
   };
   quote: {
     max_display_lines: number;
@@ -62,6 +65,9 @@ export interface AppConfig {
     maxChatHeight: number;
     maxImages: number;
     textBasePx: number;
+    textLineHeight: number;
+    textLetterSpacingPx: number;
+    textFontWeight: number;
   };
   quote: {
     maxDisplayLines: number;
@@ -83,6 +89,9 @@ function transform(raw: RawAppConfig): AppConfig {
       maxChatHeight: raw.window.max_chat_height,
       maxImages: raw.window.max_images,
       textBasePx: raw.window.text_base_px,
+      textLineHeight: raw.window.text_line_height,
+      textLetterSpacingPx: raw.window.text_letter_spacing_px,
+      textFontWeight: raw.window.text_font_weight,
     },
     quote: {
       maxDisplayLines: raw.quote.max_display_lines,
@@ -208,6 +217,9 @@ export const DEFAULT_CONFIG: AppConfig = {
     maxChatHeight: 648,
     maxImages: 3,
     textBasePx: 15,
+    textLineHeight: 1.5,
+    textLetterSpacingPx: 0,
+    textFontWeight: 500,
   },
   quote: {
     maxDisplayLines: 4,

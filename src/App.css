@@ -197,18 +197,21 @@ body {
   font-family: var(--font-sans);
   color: #fbe8c6;
   font-size: var(--thuki-text-base, 16.5px);
-  line-height: 1.6;
-  letter-spacing: 0.3px;
-  font-weight: 600;
+  line-height: var(--thuki-text-line-height, 1.6);
+  letter-spacing: var(--thuki-text-letter-spacing, 0.3px);
+  font-weight: var(--thuki-text-font-weight, 600);
 }
 
 /* User-tunable text scale shared by the user chat bubble text and the AskBar
- * textarea + caret-tracking mirror. The CSS variable is set on <html> by an
- * effect in App.tsx; the fallback preserves the pre-tunable Tailwind size
- * (text-sm = 14px) when the variable is unset (e.g. test environments without
- * the effect mounted). */
+ * textarea + caret-tracking mirror. The CSS variables are set on <html> by an
+ * effect in App.tsx; the fallbacks preserve the pre-tunable Tailwind metrics
+ * (text-sm = 14px, leading-5 = 1.25, no letter-spacing, weight 500) when the
+ * variables are unset (e.g. test environments without the effect mounted). */
 .thuki-text-base {
   font-size: var(--thuki-text-base, 14px);
+  line-height: var(--thuki-text-line-height, 1.25);
+  letter-spacing: var(--thuki-text-letter-spacing, 0px);
+  font-weight: var(--thuki-text-font-weight, 500);
 }
 
 /* ─── Markdown Body: Prose Defaults ───

@@ -69,6 +69,24 @@ pub const DEFAULT_MAX_IMAGES: u32 = 3;
 /// text; lower to fit more text on screen.
 pub const DEFAULT_TEXT_BASE_PX: f64 = 15.0;
 
+/// Line-height multiplier applied to chat + AskBar text. Drives the
+/// `--thuki-text-line-height` CSS variable. 1.5 sits between the AskBar
+/// default (~1.25) and the previous AI-prose default (1.6); users can dial
+/// up for airier prose or down for denser screens.
+pub const DEFAULT_TEXT_LINE_HEIGHT: f64 = 1.5;
+
+/// Letter spacing applied to chat + AskBar text, in CSS pixels. Drives the
+/// `--thuki-text-letter-spacing` CSS variable. 0 keeps Nunito's native
+/// tracking; raise for airier characters, drop below zero to tighten.
+pub const DEFAULT_TEXT_LETTER_SPACING_PX: f64 = 0.0;
+
+/// Numeric CSS `font-weight` applied to chat + AskBar text. Drives the
+/// `--thuki-text-font-weight` CSS variable. Only the four loaded Nunito
+/// weights are accepted — intermediate values would silently fall back to
+/// the nearest loaded glyph set, making the slider misleading.
+pub const DEFAULT_TEXT_FONT_WEIGHT: u32 = 500;
+pub const ALLOWED_FONT_WEIGHTS: &[u32] = &[400, 500, 600, 700];
+
 /// Quote display defaults.
 pub const DEFAULT_QUOTE_MAX_DISPLAY_LINES: u32 = 4;
 pub const DEFAULT_QUOTE_MAX_DISPLAY_CHARS: u32 = 300;
@@ -86,6 +104,15 @@ pub const BOUNDS_MAX_IMAGES: (u32, u32) = (1, 20);
 /// stops looking right at the default overlay width. Values outside the range,
 /// or non-finite values, are reset to `DEFAULT_TEXT_BASE_PX` by the loader.
 pub const BOUNDS_TEXT_BASE_PX: (f64, f64) = (11.0, 22.0);
+
+/// Accepted range for `window.text_line_height` (unitless CSS multiplier).
+/// 1.0 collapses lines to glyph height (legibility floor); 2.5 is well past
+/// any reasonable airy-prose setting.
+pub const BOUNDS_TEXT_LINE_HEIGHT: (f64, f64) = (1.0, 2.5);
+
+/// Accepted range for `window.text_letter_spacing_px` (CSS pixels). Negative
+/// values tighten the typography; positive values airy it out.
+pub const BOUNDS_TEXT_LETTER_SPACING_PX: (f64, f64) = (-0.5, 2.0);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_LINES: (u32, u32) = (1, 100);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_CHARS: (u32, u32) = (1, 10_000);
 pub const BOUNDS_QUOTE_MAX_CONTEXT_LENGTH: (u32, u32) = (1, 65_536);
@@ -262,6 +289,9 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("window", "max_chat_height"),
     ("window", "max_images"),
     ("window", "text_base_px"),
+    ("window", "text_line_height"),
+    ("window", "text_letter_spacing_px"),
+    ("window", "text_font_weight"),
     // [quote]
     ("quote", "max_display_lines"),
     ("quote", "max_display_chars"),

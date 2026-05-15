@@ -7279,5 +7279,25 @@ describe('App', () => {
         document.documentElement.style.getPropertyValue('--thuki-text-base'),
       ).toBe(`${DEFAULT_CONFIG.window.textBasePx}px`);
     });
+
+    it('writes the three typography vars (line-height, letter-spacing, font-weight) on mount', async () => {
+      const root = document.documentElement;
+      root.style.removeProperty('--thuki-text-line-height');
+      root.style.removeProperty('--thuki-text-letter-spacing');
+      root.style.removeProperty('--thuki-text-font-weight');
+
+      render(<App />);
+      await act(async () => {});
+
+      expect(root.style.getPropertyValue('--thuki-text-line-height')).toBe(
+        `${DEFAULT_CONFIG.window.textLineHeight}`,
+      );
+      expect(root.style.getPropertyValue('--thuki-text-letter-spacing')).toBe(
+        `${DEFAULT_CONFIG.window.textLetterSpacingPx}px`,
+      );
+      expect(root.style.getPropertyValue('--thuki-text-font-weight')).toBe(
+        `${DEFAULT_CONFIG.window.textFontWeight}`,
+      );
+    });
   });
 });

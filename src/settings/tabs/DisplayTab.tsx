@@ -9,7 +9,50 @@
 import { Section, NumberSlider, NumberStepper } from '../components';
 import { SaveField } from '../components/SaveField';
 import { configHelp } from '../configHelpers';
+import styles from '../../styles/settings.module.css';
 import type { RawAppConfig } from '../types';
+
+const FONT_WEIGHT_OPTIONS: readonly {
+  value: 400 | 500 | 600 | 700;
+  label: string;
+}[] = [
+  { value: 400, label: 'Regular' },
+  { value: 500, label: 'Medium' },
+  { value: 600, label: 'Semi-bold' },
+  { value: 700, label: 'Bold' },
+];
+
+/**
+ * Numeric font-weight dropdown. Surfaces the four loaded Nunito weights
+ * with descriptive labels (Regular / Medium / Semi-bold / Bold) while
+ * keeping the underlying value the numeric CSS `font-weight` the schema
+ * expects. Lives in this file rather than the shared components module
+ * because no other settings row needs a label-decoupled enum dropdown.
+ */
+function FontWeightSelect({
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  value: number;
+  onChange: (next: number) => void;
+  ariaLabel?: string;
+}) {
+  return (
+    <select
+      className={styles.dropdown}
+      value={String(value)}
+      aria-label={ariaLabel}
+      onChange={(e) => onChange(Number(e.target.value))}
+    >
+      {FONT_WEIGHT_OPTIONS.map((opt) => (
+        <option key={opt.value} value={String(opt.value)}>
+          {opt.label}
+        </option>
+      ))}
+    </select>
+  );
+}
 
 interface DisplayTabProps {
   config: RawAppConfig;
@@ -38,6 +81,61 @@ export function DisplayTab({ config, resyncToken, onSaved }: DisplayTabProps) {
               unit="px"
               onChange={setValue}
               ariaLabel="Text size"
+            />
+          )}
+        />
+        <SaveField
+          section="window"
+          fieldKey="text_line_height"
+          label="Line height"
+          helper={configHelp('window', 'text_line_height')}
+          initialValue={config.window.text_line_height}
+          resyncToken={resyncToken}
+          onSaved={onSaved}
+          render={(value, setValue) => (
+            <NumberSlider
+              value={value}
+              min={1}
+              max={2.5}
+              step={0.05}
+              onChange={setValue}
+              ariaLabel="Line height"
+            />
+          )}
+        />
+        <SaveField
+          section="window"
+          fieldKey="text_letter_spacing_px"
+          label="Letter spacing"
+          helper={configHelp('window', 'text_letter_spacing_px')}
+          initialValue={config.window.text_letter_spacing_px}
+          resyncToken={resyncToken}
+          onSaved={onSaved}
+          render={(value, setValue) => (
+            <NumberSlider
+              value={value}
+              min={-0.5}
+              max={2}
+              step={0.05}
+              unit="px"
+              onChange={setValue}
+              ariaLabel="Letter spacing"
+            />
+          )}
+        />
+        <SaveField
+          section="window"
+          fieldKey="text_font_weight"
+          label="Font weight"
+          helper={configHelp('window', 'text_font_weight')}
+          initialValue={config.window.text_font_weight}
+          resyncToken={resyncToken}
+          onSaved={onSaved}
+          render={(value, setValue) => (
+            <FontWeightSelect
+              value={value}
+              onChange={setValue}
+              ariaLabel="Font weight"
             />
           )}
         />

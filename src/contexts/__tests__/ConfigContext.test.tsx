@@ -22,6 +22,11 @@ function Probe() {
       <div data-testid="overlay-width">{config.window.overlayWidth}</div>
       <div data-testid="max-chat-height">{config.window.maxChatHeight}</div>
       <div data-testid="text-base-px">{config.window.textBasePx}</div>
+      <div data-testid="text-line-height">{config.window.textLineHeight}</div>
+      <div data-testid="text-letter-spacing-px">
+        {config.window.textLetterSpacingPx}
+      </div>
+      <div data-testid="text-font-weight">{config.window.textFontWeight}</div>
       <div data-testid="max-display-lines">{config.quote.maxDisplayLines}</div>
       <div data-testid="system-prompt">{config.prompt.system}</div>
     </>
@@ -81,6 +86,9 @@ describe('ConfigContext', () => {
           max_chat_height: 700,
           max_images: 5,
           text_base_px: 17,
+          text_line_height: 1.8,
+          text_letter_spacing_px: 0.4,
+          text_font_weight: 700,
         },
         quote: {
           max_display_lines: 6,
@@ -103,6 +111,11 @@ describe('ConfigContext', () => {
       expect(screen.getByTestId('overlay-width').textContent).toBe('800');
       expect(screen.getByTestId('max-chat-height').textContent).toBe('700');
       expect(screen.getByTestId('text-base-px').textContent).toBe('17');
+      expect(screen.getByTestId('text-line-height').textContent).toBe('1.8');
+      expect(screen.getByTestId('text-letter-spacing-px').textContent).toBe(
+        '0.4',
+      );
+      expect(screen.getByTestId('text-font-weight').textContent).toBe('700');
       expect(screen.getByTestId('max-display-lines').textContent).toBe('6');
       expect(screen.getByTestId('system-prompt').textContent).toBe(
         'custom base prompt',
