@@ -442,6 +442,28 @@ fn patch_document_inserts_missing_float_field_as_float_for_whole_number() {
     assert!((after_fractional - 15.5).abs() < f64::EPSILON);
 }
 
+#[test]
+fn patch_document_heals_legacy_integer_for_schema_float_field() {
+    // Regression: a legacy config that already persisted `text_base_px` as
+    // a TOML Integer (which is what would happen if the user first saved
+    // a whole-number value through an older build that inferred the type
+    // from the JSON payload) must accept a subsequent fractional save and
+    // rewrite the field as TOML Float. The schema-derived template is now
+    // authoritative over the on-disk type, so the file self-heals on the
+    // very next save without requiring a migration sweep.
+    let toml = "[window]\noverlay_width = 600.0\nmax_chat_height = 648.0\nmax_images = 3\ntext_base_px = 15\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+
+    patch_document(&mut doc, "window", "text_base_px", json!(15.5)).unwrap();
+    let healed = doc
+        .get("window")
+        .and_then(|s| s.get("text_base_px"))
+        .and_then(|i| i.as_value())
+        .and_then(|v| v.as_float())
+        .expect("fractional save rewrites legacy Integer item as Float");
+    assert!((healed - 15.5).abs() < f64::EPSILON);
+}
+
 // ─── json_value_to_toml_item ─────────────────────────────────────────────────
 
 #[test]

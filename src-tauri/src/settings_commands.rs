@@ -417,18 +417,19 @@ pub(crate) fn patch_document(
             section: section.to_string(),
         })?;
 
-    let coerced = if let Some(existing) = table.get(key) {
-        coerce_json_to_toml(existing, value, section, key)?
-    } else if let Some(template) = schema_template_item(section, key) {
-        // Key absent from the on-disk doc (typically because the user's
-        // config.toml predates this field). Coerce against a *schema-derived*
-        // template instead of inferring the TOML type from the JSON value's
-        // shape: JS numbers carry no int/float distinction, so a `15` for an
-        // f64-typed field would otherwise be inserted as `Integer`, and the
-        // very next fractional save (e.g. `15.5`) would be rejected by the
-        // existing-item coercion path. Anchoring on the schema keeps the
-        // type stable across saves.
+    // The schema-derived template is the authoritative type source: it
+    // captures the TOML type the loader expects regardless of what the
+    // on-disk file currently holds. Preferring it over `existing` heals
+    // legacy files whose type drifted (e.g. an f64-typed field persisted
+    // as TOML Integer after a first save from a JS whole-number payload
+    // through `json_value_to_toml_item`). Falling back to the existing
+    // item, and finally to JSON inference, only matters for keys outside
+    // `AppConfig` — the allowlist normally gates this away first, so
+    // those branches are kept as defense-in-depth.
+    let coerced = if let Some(template) = schema_template_item(section, key) {
         coerce_json_to_toml(&template, value, section, key)?
+    } else if let Some(existing) = table.get(key) {
+        coerce_json_to_toml(existing, value, section, key)?
     } else {
         json_value_to_toml_item(value, section, key)?
     };
