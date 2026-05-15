@@ -464,12 +464,70 @@ fn patch_document_heals_legacy_integer_for_schema_float_field() {
     assert!((healed - 15.5).abs() < f64::EPSILON);
 }
 
+#[test]
+fn patch_document_falls_back_to_existing_item_for_unknown_key() {
+    // Defense-in-depth: when a key is not in AppConfig::default() (so
+    // schema_template_item returns None) but the key already exists in the
+    // on-disk doc, patch_document should fall back to the existing item's
+    // type for coercion. This branch is normally gated by ALLOWED_FIELDS,
+    // but the function keeps the fallback to remain correct at the type
+    // boundary if that guard is ever bypassed.
+    let toml = "[window]\noverlay_width = 600.0\nlegacy_field = \"hello\"\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+    patch_document(&mut doc, "window", "legacy_field", json!("updated")).unwrap();
+    let val = doc
+        .get("window")
+        .and_then(|s| s.get("legacy_field"))
+        .and_then(|i| i.as_value())
+        .and_then(|v| v.as_str())
+        .expect("legacy_field present after patch");
+    assert_eq!(val, "updated");
+}
+
+#[test]
+fn patch_document_infers_type_for_unknown_key_not_in_doc() {
+    // Defense-in-depth: when a key is not in AppConfig::default() AND not
+    // present in the on-disk doc, patch_document falls back to JSON type
+    // inference via json_value_to_toml_item. This exercises the final else
+    // branch in the schema-template / existing-item / inference cascade.
+    let toml = "[window]\noverlay_width = 600.0\n";
+    let mut doc: DocumentMut = toml.parse().unwrap();
+    patch_document(&mut doc, "window", "new_field", json!("value")).unwrap();
+    let val = doc
+        .get("window")
+        .and_then(|s| s.get("new_field"))
+        .and_then(|i| i.as_value())
+        .and_then(|v| v.as_str())
+        .expect("new_field inserted after patch");
+    assert_eq!(val, "value");
+}
+
 // ─── json_value_to_toml_item ─────────────────────────────────────────────────
 
 #[test]
 fn json_value_to_toml_item_inserts_bool() {
     let item = json_value_to_toml_item(json!(true), "s", "k").unwrap();
     assert_eq!(item.as_bool(), Some(true));
+}
+
+#[test]
+fn json_value_to_toml_item_inserts_integer_as_toml_integer() {
+    let item = json_value_to_toml_item(json!(42), "s", "k").unwrap();
+    assert_eq!(item.as_integer(), Some(42));
+}
+
+#[test]
+fn json_value_to_toml_item_inserts_float_as_toml_float() {
+    // json!(3.14) has as_i64() == None, so the f64 branch is taken.
+    let item = json_value_to_toml_item(json!(3.14), "s", "k").unwrap();
+    let v = item.as_float().expect("should be float");
+    assert!((v - 3.14).abs() < f64::EPSILON);
+}
+
+#[test]
+fn json_value_to_toml_item_rejects_null() {
+    let err = json_value_to_toml_item(json!(null), "sec", "key").unwrap_err();
+    matches_type_mismatch(&err, "sec", "key");
 }
 
 // ─── read_document ──────────────────────────────────────────────────────────

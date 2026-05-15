@@ -82,7 +82,7 @@ pub const DEFAULT_TEXT_LETTER_SPACING_PX: f64 = 0.0;
 
 /// Numeric CSS `font-weight` applied to chat + AskBar text. Drives the
 /// `--thuki-text-font-weight` CSS variable. Only the four loaded Nunito
-/// weights are accepted — intermediate values would silently fall back to
+/// weights are accepted; intermediate values would silently fall back to
 /// the nearest loaded glyph set, making the slider misleading.
 pub const DEFAULT_TEXT_FONT_WEIGHT: u32 = 500;
 pub const ALLOWED_FONT_WEIGHTS: &[u32] = &[400, 500, 600, 700];

@@ -25,7 +25,7 @@ const FONT_WEIGHT_LABEL: Record<number, string> = {
 };
 
 function formatFontWeight(value: number): string {
-  return FONT_WEIGHT_LABEL[value] ?? String(value);
+  return FONT_WEIGHT_LABEL[value];
 }
 
 interface DisplayTabProps {

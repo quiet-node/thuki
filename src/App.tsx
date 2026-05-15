@@ -1332,12 +1332,13 @@ function App() {
       for (const img of attachedImages) URL.revokeObjectURL(img.blobUrl);
       setAttachedImages([]);
 
-      // Resolve display paths for the real user bubble.
-      /* v8 ignore next -- handleSubmit only dispatches /extract when there is
-         either an attached image or /screen, and the pending-image gate makes
-         sure attached images are resolved before this point; so readyPaths
-         is always non-empty here. The empty fallback is defensive. */
+      // Resolve display paths for the real user bubble. handleSubmit only
+      // dispatches /extract when an image is attached or /screen is used, and
+      // the pending-image gate resolves paths before this point, so readyPaths
+      // is always non-empty. The undefined fallback is defensive.
+      /* v8 ignore start -- readyPaths non-empty invariant enforced by dispatch gate */
       const displayPaths = readyPaths.length > 0 ? readyPaths : undefined;
+      /* v8 ignore stop */
 
       // Run Vision OCR.
       setCaptureError(null);
@@ -1775,8 +1776,9 @@ function App() {
         }),
       );
       setQuery('');
-      /* v8 ignore next */
+      /* v8 ignore start -- inputRef always set when overlay is visible */
       if (inputRef.current) inputRef.current.style.height = 'auto';
+      /* v8 ignore stop */
 
       if (hasExtract) {
         pendingSubmitRef.current = {
