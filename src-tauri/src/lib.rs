@@ -51,11 +51,6 @@ use tauri::ActivationPolicy;
 #[cfg(target_os = "macos")]
 use tauri_nspanel::{CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt};
 
-#[cfg(target_os = "macos")]
-use objc2::MainThreadMarker;
-#[cfg(target_os = "macos")]
-use objc2_app_kit::NSApplication;
-
 // ─── NSPanel definition (macOS only) ────────────────────────────────────────
 
 // Each tauri_panel! invocation emits `use` statements at its call-site
@@ -89,7 +84,7 @@ mod _settings_panel {
         panel!(ThukiSettingsPanel {
             config: {
                 can_become_key_window: true,
-                is_floating_panel: false
+                is_floating_panel: true
             }
         })
     }
@@ -438,16 +433,15 @@ fn show_settings_window(app_handle: &tauri::AppHandle) {
         let window = app_handle.get_webview_window("settings");
         match app_handle.get_webview_panel("settings") {
             Ok(panel) => {
-                // Activate the app so macOS knows which Space is "current".
-                // Without this, Thuki is not the active process (ActivationPolicy::Accessory
-                // + tray menu just dismissed), and moveToActiveSpace has no anchor Space to
-                // move to — the panel silently appears on its last-known Space (usually Space 1).
+                // Deliberately NO activateIgnoringOtherApps here (same as
+                // show_overlay / show_update_window). Activating the app
+                // while another app owns a fullscreen Space makes macOS
+                // switch to this app's home desktop Space to present the
+                // window, stranding it away from the user. The panel's
+                // nonactivating style + can_join_all_spaces (see
+                // init_settings_panel) make it appear in-place on whatever
+                // Space the user is on instead.
                 let _ = app_handle.run_on_main_thread(move || {
-                    if let Some(mtm) = MainThreadMarker::new() {
-                        let ns_app = NSApplication::sharedApplication(mtm);
-                        #[allow(deprecated)]
-                        ns_app.activateIgnoringOtherApps(true);
-                    }
                     if let Some(win) = window {
                         position_settings_window(&win);
                     }
@@ -828,10 +822,20 @@ fn init_panel(app_handle: &tauri::AppHandle) {
 /// `get_webview_panel("settings")` retrieve the same panel without
 /// re-converting.
 ///
-/// Collection behavior: `move_to_active_space` moves the panel to whichever
-/// Space is current when `show_and_make_key` is called (requires the app to be
-/// the active process first — see `show_settings_window`). `full_screen_auxiliary`
-/// allows the panel to coexist with fullscreen app Spaces.
+/// Mirrors `init_panel` / `init_update_panel` for Space behavior. Settings
+/// is opened from the tray, which the user can trigger while another app
+/// owns a fullscreen Space. `move_to_active_space` was unreliable there:
+/// macOS has no regular-desktop anchor Space and silently stranded the
+/// panel on Space 1, so picking "Settings…" from the tray opened it on the
+/// desktop and the user had to swipe Spaces to find it. The
+/// `nonactivating_panel` style + showing without `activateIgnoringOtherApps`
+/// (see `show_settings_window`) avoids the app activation that forces a
+/// Space switch; `is_floating_panel` + `can_join_all_spaces` +
+/// `full_screen_auxiliary` make the panel present on whatever Space the
+/// user is on, including a fullscreen one. `can_become_key_window` (set in
+/// the macro) keeps the Settings form inputs focusable even though the
+/// panel is nonactivating. `hides_on_deactivate(false)` keeps it open if
+/// the user clicks back into the fullscreen app without closing it.
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn init_settings_panel(app_handle: &tauri::AppHandle) {
@@ -841,13 +845,15 @@ fn init_settings_panel(app_handle: &tauri::AppHandle) {
     };
     match window.to_panel::<ThukiSettingsPanel>() {
         Ok(panel) => {
-            panel.set_floating_panel(false);
+            panel.set_floating_panel(true);
             panel.set_level(PanelLevel::Floating.value());
+            panel.set_style_mask(StyleMask::empty().nonactivating_panel().into());
             panel.set_has_shadow(true);
+            panel.set_hides_on_deactivate(false);
             panel.set_collection_behavior(
                 CollectionBehavior::new()
-                    .move_to_active_space()
                     .full_screen_auxiliary()
+                    .can_join_all_spaces()
                     .into(),
             );
         }
