@@ -476,15 +476,56 @@ body {
   }
 }
 
-/* ─── Update window: editorial release-notes type scale ───
- * The "What's New" window renders manifest markdown through the same
+/* ─── Update window: Settings-panel parity ───
+ * The "What's New" window mirrors the Settings window's visual system so
+ * the two read as the same app. Every value here is lifted verbatim from
+ * `src/styles/settings.module.css` + the App.css `@theme` tokens:
+ *
+ *   .update-window-shell  → settings `.window` chrome (radial top glow over
+ *                            surface-base, warm border, 24px backdrop blur,
+ *                            and the 1px `::before` warm hairline).
+ *   .update-notes         → settings About-tab `.updateHero` card.
+ *   .update-notes h2/h3   → settings `.sectionHeading` micro-labels.
+ *
+ * Release notes still render manifest markdown through the same
  * MarkdownRenderer as chat, but the chat `.markdown-body` rule (16.5px,
- * cream, weight 600) is wrong here: it produces the oversized, hierarchy-
- * less wall the redesign exists to fix. Scope a refined editorial scale to
- * `.update-notes` only: smaller body, real heading hierarchy, headings as
- * letter-spaced micro-labels in the brand accent. Plain CSS outside @layer
- * so it overrides both `.markdown-body` and Streamdown's utilities.
+ * cream, weight 600) is wrong here. Plain CSS outside @layer so it
+ * overrides both `.markdown-body` and Streamdown's utilities.
  */
+.update-window-shell {
+  position: relative;
+  /* settings .window: radial top glow over --color-surface-base */
+  background:
+    radial-gradient(
+      ellipse 70% 40% at 50% 0%,
+      rgba(255, 141, 92, 0.08) 0%,
+      transparent 65%
+    ),
+    var(--color-surface-base);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+}
+.update-window-shell::before {
+  /* settings .window::before warm hairline */
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 15%;
+  right: 15%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 141, 92, 0.35),
+    transparent
+  );
+}
+/* settings About-tab .updateHero card */
+.update-notes {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+}
 .update-notes .markdown-body {
   font-size: 14px;
   line-height: 1.7;
@@ -509,21 +550,22 @@ body {
   letter-spacing: -0.2px;
   margin: 0 0 12px;
 }
+/* settings .sectionHeading: 11px / 600 / 0.18em / uppercase / secondary */
 .update-notes .markdown-body h2 {
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 2.5px;
-  text-transform: uppercase;
-  color: var(--color-primary);
-  margin: 26px 0 13px;
-}
-.update-notes .markdown-body h3 {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 1px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--color-text-secondary);
-  margin: 20px 0 9px;
+  margin: 22px 0 12px;
+}
+.update-notes .markdown-body h3 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  margin: 18px 0 10px;
 }
 .update-notes .markdown-body :is(h1, h2, h3):first-child {
   margin-top: 0;
@@ -543,11 +585,11 @@ body {
 .update-notes .markdown-body li::before {
   content: '';
   position: absolute;
-  left: 1px;
-  top: 13px;
-  width: 5px;
-  height: 1.5px;
-  border-radius: 1px;
+  left: 4px;
+  top: 12px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
   background: var(--color-text-secondary);
 }
 .update-notes .markdown-body li.task-list-item {

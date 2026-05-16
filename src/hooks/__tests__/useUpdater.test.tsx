@@ -112,18 +112,6 @@ describe('useUpdater', () => {
     expect(invokeMock).toHaveBeenCalledWith('install_update');
   });
 
-  it('installAndQuit invokes install_update_and_quit', async () => {
-    invokeMock.mockResolvedValue(SNAPSHOT_NO_UPDATE);
-    const { result } = renderHook(() => useUpdater());
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith('get_updater_state'),
-    );
-    await act(async () => {
-      await result.current.installAndQuit();
-    });
-    expect(invokeMock).toHaveBeenCalledWith('install_update_and_quit');
-  });
-
   it('openWindow invokes open_update_window', async () => {
     invokeMock.mockResolvedValue(SNAPSHOT_NO_UPDATE);
     const { result } = renderHook(() => useUpdater());

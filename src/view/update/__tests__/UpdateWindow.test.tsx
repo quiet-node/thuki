@@ -12,9 +12,15 @@ const skip = vi.fn(async () => {});
 const snoozeChat = vi.fn(async () => {});
 const snoozeSettings = vi.fn(async () => {});
 const install = vi.fn(async () => {});
-const installAndQuit = vi.fn(async () => {});
 const openWindow = vi.fn(async () => {});
 const checkNow = vi.fn(async () => {});
+
+// `@tauri-apps/api/app` is not test-aliased (only core/event/window are),
+// so the current-version lookup is mocked here directly.
+const getVersion = vi.fn<() => Promise<string>>(async () => '0.10.0');
+vi.mock('@tauri-apps/api/app', () => ({
+  getVersion: () => getVersion(),
+}));
 
 let mockState: UpdaterState;
 
@@ -23,7 +29,6 @@ vi.mock('../../../hooks/useUpdater', () => ({
     state: mockState,
     checkNow,
     install,
-    installAndQuit,
     openWindow,
     skip,
     snoozeChat,
@@ -56,6 +61,7 @@ function withUpdate(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getVersion.mockResolvedValue('0.10.0');
   mockState = BASE;
 });
 
@@ -68,42 +74,41 @@ describe('UpdateWindow', () => {
     );
   });
 
-  it('renders version, release date, and markdown body', () => {
-    mockState = withUpdate({
-      body: '## Fixed\n\n- a crash',
-      date: '2026-05-15T00:00:00Z',
-    });
+  it('renders the title, the available + current version subline, and the markdown body', async () => {
+    mockState = withUpdate({ body: '## Fixed\n\n- a crash' });
     render(<UpdateWindow />);
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
-      'Thuki 0.11.0',
+      'A new version of Thuki is available!',
     );
-    expect(screen.getByText('Update Available')).toBeInTheDocument();
-    expect(screen.getByText('Released 2026-05-15')).toBeInTheDocument();
+    // Subline gains the "· you have X" clause once getVersion resolves.
+    await screen.findByText('Version 0.11.0 · you have 0.10.0');
     const notes = screen.getByTestId('update-notes');
     expect(notes).toHaveTextContent('Fixed');
     expect(notes).toHaveTextContent('a crash');
   });
 
-  it('renders the GitHub-link fallback when body is empty but notes_url is set, and hides the date when absent', () => {
+  it('omits the "you have" clause when the current version lookup fails', async () => {
+    getVersion.mockRejectedValueOnce(new Error('no app version'));
+    mockState = withUpdate({ body: 'x' });
+    render(<UpdateWindow />);
+    await waitFor(() => expect(getVersion).toHaveBeenCalled());
+    expect(screen.getByText('Version 0.11.0')).toBeInTheDocument();
+    expect(screen.queryByText(/you have/i)).not.toBeInTheDocument();
+  });
+
+  it('renders the GitHub-link fallback when body is empty but notes_url is set', () => {
     mockState = withUpdate({
       body: null,
       notes_url: 'https://example.com/notes',
-      date: null,
     });
     render(<UpdateWindow />);
-    expect(screen.queryByText(/^Released/)).not.toBeInTheDocument();
     const link = screen.getByRole('link', { name: /view them on github/i });
     expect(link).toHaveAttribute('href', 'https://example.com/notes');
   });
 
-  it('renders the no-notes message when body is whitespace and notes_url is null, and ignores an unparseable date', () => {
-    mockState = withUpdate({
-      body: '   ',
-      notes_url: null,
-      date: 'not-a-date',
-    });
+  it('renders the no-notes message when body is whitespace and notes_url is null', () => {
+    mockState = withUpdate({ body: '   ', notes_url: null });
     render(<UpdateWindow />);
-    expect(screen.queryByText(/^Released/)).not.toBeInTheDocument();
     expect(screen.getByTestId('update-notes')).toHaveTextContent(
       'No release notes are available for this version.',
     );
@@ -142,17 +147,10 @@ describe('UpdateWindow', () => {
     await waitFor(() => expect(__mockWindow.hide).toHaveBeenCalled());
   });
 
-  it('Install & Quit triggers installAndQuit', () => {
+  it('Install Update triggers install', () => {
     mockState = withUpdate({ body: 'x' });
     render(<UpdateWindow />);
-    fireEvent.click(screen.getByRole('button', { name: /install & quit/i }));
-    expect(installAndQuit).toHaveBeenCalledTimes(1);
-  });
-
-  it('Install & Restart triggers install', () => {
-    mockState = withUpdate({ body: 'x' });
-    render(<UpdateWindow />);
-    fireEvent.click(screen.getByRole('button', { name: /install & restart/i }));
+    fireEvent.click(screen.getByRole('button', { name: /install update/i }));
     expect(install).toHaveBeenCalledTimes(1);
   });
 
@@ -181,7 +179,7 @@ describe('UpdateWindow', () => {
     mockState = withUpdate({ body: 'x' });
     render(<UpdateWindow />);
     fireEvent.mouseDown(
-      screen.getByRole('button', { name: /install & restart/i }),
+      screen.getByRole('button', { name: /install update/i }),
       { button: 0 },
     );
     expect(__mockWindow.startDragging).not.toHaveBeenCalled();
@@ -190,9 +188,10 @@ describe('UpdateWindow', () => {
   it('does not drag when the press lands on a text-bearing leaf', () => {
     mockState = withUpdate({ body: 'x' });
     render(<UpdateWindow />);
-    fireEvent.mouseDown(screen.getByText('Update Available'), {
-      button: 0,
-    });
+    fireEvent.mouseDown(
+      screen.getByText('A new version of Thuki is available!'),
+      { button: 0 },
+    );
     expect(__mockWindow.startDragging).not.toHaveBeenCalled();
   });
 });

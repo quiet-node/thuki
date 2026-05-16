@@ -48,7 +48,7 @@ async fn download_latest_update(app: &AppHandle) -> Result<(), String> {
 /// Shared install-and-restart routine.
 ///
 /// Reached only via the `install_update` Tauri command, which the
-/// "Install & Restart" button in the "What's New" window invokes. Every
+/// "Install Update" button in the "What's New" window invokes. Every
 /// update entry point (chat footer, Settings banner, tray menu) now opens
 /// that window first (see `open_update_window`) so the user previews the
 /// release notes and picks an action explicitly instead of an install
@@ -57,18 +57,6 @@ async fn download_latest_update(app: &AppHandle) -> Result<(), String> {
 pub async fn install_update_inner(app: AppHandle) -> Result<(), String> {
     download_latest_update(&app).await?;
     app.restart();
-}
-
-/// Install-and-quit: download + swap the bundle like `install_update_inner`,
-/// but exit the process instead of relaunching. The next manual launch
-/// picks up the new binary. Used by the "Install & Quit" button in the
-/// update window for users who don't want an immediate relaunch.
-#[cfg_attr(coverage_nightly, coverage(off))]
-#[tauri::command]
-pub async fn install_update_and_quit(app: AppHandle) -> Result<(), String> {
-    download_latest_update(&app).await?;
-    app.exit(0);
-    Ok(())
 }
 
 /// "Skip This Version": permanently suppress the currently-available

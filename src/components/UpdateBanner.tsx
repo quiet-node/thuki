@@ -49,7 +49,7 @@ export function UpdateBanner({
           className={styles.updateBannerInstall}
           onClick={onInstall}
         >
-          Install &amp; restart
+          {"What's New"}
         </button>
         <button
           type="button"

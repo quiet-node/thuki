@@ -4,51 +4,51 @@
  * Mounted by `rootForLabel` when the Tauri window label is `update`. Shows
  * the available version's release notes (rendered markdown from the updater
  * manifest, with a GitHub-link fallback when the manifest omits notes) and
- * four explicit actions so an install never starts on a single stray click:
+ * three explicit actions so an install never starts on a single stray click:
  *
- *   - Skip This Version  : never nag for this exact version again
- *   - Remind Me Later     : snooze both surfaces for 24h
- *   - Install & Quit      : download + swap the bundle, then exit
- *   - Install & Restart   : download + swap + relaunch
+ *   - Skip This Version : never nag for this exact version again
+ *   - Remind Me Later    : snooze both surfaces for 24h
+ *   - Install Update     : download + swap the bundle, then relaunch
  *
- * Visual direction: "Editorial / Luxury" (approved design). Centered, airy,
- * the real Thuki mascot in a soft radial vignette, a light-weight display
- * title, typeset release notes, and a strictly single-line action row.
+ * Visual direction: "Settings-panel parity" (approved design D). The window
+ * mirrors the Settings window's visual system so the two read as the same
+ * app: the radial-glow-over-surface-base chrome with its warm border and
+ * `::before` hairline (`.update-window-shell` in App.css, lifted verbatim
+ * from settings `.window`), a centered bare-mascot hero, the release notes
+ * inside a `.updateHero`-style card, and the primary action styled like the
+ * Settings "Check for updates" button (`.updateHeroBtn`).
  *
- * Single source of truth: every color comes from the `@theme` tokens in
- * App.css (Tailwind `*-primary` / `*-text-*` / `*-surface-*` utilities) and
- * the app font from `font-sans` (Nunito). No hardcoded palette values here.
- * Release notes render through MarkdownRenderer inside `.update-notes`,
- * which App.css scopes to a refined editorial type scale (still Nunito,
- * inherited from the global `.markdown-body` rule) instead of chat prose.
+ * Single source of truth: brand colors come from the `@theme` tokens in
+ * App.css; the few literal rgba values in the footer/shell are the exact
+ * settings.module.css values (no Settings CSS module is importable here, so
+ * they are reproduced as arbitrary Tailwind values and documented as such).
  *
  * The window is an NSPanel (see `init_update_panel` in lib.rs); closing it
  * hides rather than destroys (CloseRequested intercept), so reopening is
  * cheap and React state is preserved.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getVersion } from '@tauri-apps/api/app';
 
 import { useUpdater } from '../../hooks/useUpdater';
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import { WindowControls } from '../../components/WindowControls';
 
-/**
- * Extracts a human-readable `YYYY-MM-DD` from the manifest date. The
- * backend forwards `OffsetDateTime`'s Display string, whose exact shape is
- * not guaranteed to parse via `new Date`, so we pull the leading ISO date
- * defensively and render nothing if it is absent.
- */
-function formatReleaseDate(date: string | null): string | null {
-  if (!date) return null;
-  const match = /^\d{4}-\d{2}-\d{2}/.exec(date.trim());
-  return match ? match[0] : null;
-}
-
 export function UpdateWindow() {
   const updater = useUpdater();
   const update = updater.state.update;
+
+  // The currently-installed version, for the "You have X." half of the
+  // subline. Fetched async; until it resolves (or if it fails) the subline
+  // simply omits that clause rather than blocking the window.
+  const [currentVersion, setCurrentVersion] = useState<string | null>(null);
+  useEffect(() => {
+    void getVersion()
+      .then(setCurrentVersion)
+      .catch(() => {});
+  }, []);
 
   const close = useCallback(() => {
     void getCurrentWindow().hide();
@@ -126,57 +126,40 @@ export function UpdateWindow() {
     );
   }, [updater, runAction]);
 
-  const handleInstallQuit = useCallback(() => {
-    runAction(updater.installAndQuit());
-  }, [updater, runAction]);
-
-  const handleInstallRestart = useCallback(() => {
+  const handleInstall = useCallback(() => {
     runAction(updater.install());
   }, [updater, runAction]);
 
-  const releaseDate = update ? formatReleaseDate(update.date) : null;
-
   return (
     <div
-      className="font-sans flex h-screen w-screen flex-col overflow-hidden rounded-2xl bg-surface-base text-text-primary"
+      className="update-window-shell font-sans flex h-screen w-screen flex-col overflow-hidden rounded-[10px] border border-[rgba(255,141,92,0.12)] border-t-[rgba(255,141,92,0.2)] text-text-primary"
       onMouseDown={handleDragStart}
     >
       <WindowControls onClose={close} />
 
       {update ? (
         <>
-          <header className="px-12 pt-7 pb-7 text-center">
-            <div
-              className="mx-auto mb-5 flex h-[78px] w-[78px] items-center justify-center rounded-full"
-              style={{
-                background:
-                  'radial-gradient(circle, color-mix(in srgb, var(--color-primary) 10%, transparent) 0%, transparent 70%)',
-              }}
-            >
-              <img
-                src="/thuki-logo.png"
-                alt="Thuki"
-                className="h-[62px] w-[62px] object-contain"
-              />
-            </div>
-            <div className="text-[11px] font-bold tracking-[3px] uppercase text-text-secondary">
-              Update Available
-            </div>
-            <h1 className="mt-3 text-[32px] font-light tracking-[-0.6px] text-text-primary">
-              {'Thuki '}
-              <span className="font-bold">{update.version}</span>
+          <header className="flex flex-col items-center px-12 pt-7 pb-6 text-center">
+            <img
+              src="/thuki-logo.png"
+              alt="Thuki"
+              className="h-[76px] w-[76px] object-contain"
+            />
+            <h1 className="mt-4 text-[18px] font-bold tracking-[-0.2px] text-text-primary">
+              A new version of Thuki is available!
             </h1>
-            {releaseDate ? (
-              <div className="mt-3 text-[12.5px] tracking-[0.2px] text-text-secondary">
-                {`Released ${releaseDate}`}
-              </div>
-            ) : null}
+            <p className="mt-2 text-[13px] leading-[1.5] whitespace-nowrap text-text-secondary">
+              {`Version ${update.version}`}
+              {currentVersion ? ` · you have ${currentVersion}` : ''}
+            </p>
           </header>
 
-          <div className="mx-12 h-px bg-surface-border" />
+          <div className="mx-12 mb-[14px] text-[11px] font-semibold tracking-[0.18em] uppercase text-text-secondary">
+            Release Notes
+          </div>
 
           <div
-            className="update-notes min-h-0 flex-1 overflow-y-auto px-14 pt-6 pb-7"
+            className="update-notes mx-12 min-h-0 flex-1 overflow-y-auto p-4 text-[13px] leading-[1.55]"
             data-testid="update-notes"
           >
             <MarkdownRenderer
@@ -190,11 +173,11 @@ export function UpdateWindow() {
             />
           </div>
 
-          <footer className="flex flex-nowrap items-center gap-[5px] border-t border-surface-border px-6 pt-[18px] pb-[22px]">
+          <footer className="flex flex-nowrap items-center gap-2 border-t border-[rgba(255,255,255,0.045)] px-9 pt-[16px] pb-5">
             <button
               type="button"
               onClick={handleSkip}
-              className="shrink-0 rounded-md px-[9px] py-[9px] text-[12px] whitespace-nowrap text-text-secondary transition-colors duration-150 hover:text-text-primary cursor-pointer"
+              className="shrink-0 rounded-md px-2 py-[7px] text-[12.5px] whitespace-nowrap text-text-secondary transition-colors duration-150 hover:text-text-primary cursor-pointer"
             >
               Skip This Version
             </button>
@@ -202,23 +185,16 @@ export function UpdateWindow() {
             <button
               type="button"
               onClick={handleLater}
-              className="shrink-0 rounded-md px-[11px] py-[9px] text-[12.5px] whitespace-nowrap text-text-secondary transition-colors duration-150 hover:text-text-primary cursor-pointer"
+              className="shrink-0 rounded-lg border border-[rgba(255,255,255,0.06)] px-[14px] py-[7px] text-[12.5px] font-medium whitespace-nowrap text-text-primary transition-colors duration-150 hover:bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.1)] cursor-pointer"
             >
               Remind Me Later
             </button>
             <button
               type="button"
-              onClick={handleInstallQuit}
-              className="shrink-0 rounded-[9px] border border-surface-border px-[15px] py-[9px] text-[12.5px] whitespace-nowrap text-text-primary transition-colors duration-150 hover:bg-white/[0.04] cursor-pointer"
+              onClick={handleInstall}
+              className="ml-2 shrink-0 rounded-lg border border-[rgba(255,141,92,0.3)] bg-[rgba(255,141,92,0.12)] px-[14px] py-[7px] text-[12px] font-medium whitespace-nowrap text-primary transition-colors duration-150 hover:bg-[rgba(255,141,92,0.18)] hover:border-[rgba(255,141,92,0.42)] cursor-pointer"
             >
-              Install &amp; Quit
-            </button>
-            <button
-              type="button"
-              onClick={handleInstallRestart}
-              className="ml-[5px] shrink-0 rounded-[9px] bg-primary px-[16px] py-[9px] text-[12.5px] font-bold whitespace-nowrap text-neutral transition-[filter] duration-150 hover:brightness-105 cursor-pointer"
-            >
-              Install &amp; Restart
+              Install Update
             </button>
           </footer>
         </>

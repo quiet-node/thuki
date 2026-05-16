@@ -450,7 +450,7 @@ describe('SettingsWindow', () => {
     );
   });
 
-  it('opens the update window when Install button clicked on UpdateBanner', async () => {
+  it("opens the update window when What's New clicked on UpdateBanner", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === 'get_updater_state') {
         return {
@@ -464,7 +464,7 @@ describe('SettingsWindow', () => {
     });
     render(<SettingsWindow />);
     await waitFor(() => screen.getByText(/0\.8\.0 is ready/));
-    fireEvent.click(screen.getByRole('button', { name: /install & restart/i }));
+    fireEvent.click(screen.getByRole('button', { name: /what's new/i }));
     expect(invokeMock).toHaveBeenCalledWith('open_update_window');
   });
 

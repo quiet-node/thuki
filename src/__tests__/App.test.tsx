@@ -7234,7 +7234,7 @@ describe('App', () => {
 
       await waitFor(() => screen.getByTestId('update-footer-bar'));
       await act(async () => {
-        fireEvent.click(screen.getByText(/install & restart/i));
+        fireEvent.click(screen.getByText(/what's new/i));
         await Promise.resolve();
       });
       expect(invoke).toHaveBeenCalledWith('open_update_window');

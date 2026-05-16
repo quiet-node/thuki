@@ -1038,8 +1038,10 @@ pub fn build_trace_inner(
 
 // ─── Tray helpers ────────────────────────────────────────────────────────────
 
-/// Builds the system-tray menu. When `update_version` is `Some`, an
-/// "Update Thuki to vX.Y.Z" item is injected between the separator and Quit.
+/// Builds the system-tray menu. When `update_version` is `Some`, a
+/// "What's New in vX.Y.Z" item is injected between the separator and Quit.
+/// It opens the "What's New" window (preview + explicit actions); it does
+/// not install on click.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn build_tray_menu<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -1053,7 +1055,7 @@ fn build_tray_menu<R: tauri::Runtime>(
     let quit = MenuItem::with_id(app, "quit", "Quit Thuki", true, Some("Cmd+Q"))?;
 
     if let Some(version) = update_version {
-        let label = format!("Update Thuki to v{version}");
+        let label = format!("What's New in v{version}");
         let update = MenuItem::with_id(app, "update", &label, true, None::<&str>)?;
         let sep2 = PredefinedMenuItem::separator(app)?;
         Menu::with_items(app, &[&show, &settings, &sep1, &update, &sep2, &quit])
@@ -1155,8 +1157,8 @@ pub fn run() {
                     "update" => {
                         // Open the "What's New" window so the user previews
                         // the release notes and picks an action (Skip /
-                        // Later / Install & Quit / Install & Restart)
-                        // instead of an install starting on a single click.
+                        // Later / Install Update) instead of an install
+                        // starting on a single click.
                         // The chat footer and Settings banner route through
                         // the same `open_update_window` command.
                         show_update_window(app);
@@ -1503,8 +1505,6 @@ pub fn run() {
             updater::commands::check_for_update,
             #[cfg(not(coverage))]
             updater::commands::install_update,
-            #[cfg(not(coverage))]
-            updater::commands::install_update_and_quit,
             #[cfg(not(coverage))]
             updater::commands::skip_update_version,
             #[cfg(not(coverage))]
