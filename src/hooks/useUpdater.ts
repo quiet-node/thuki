@@ -69,10 +69,6 @@ export function useUpdater() {
     await invoke('install_update');
   }, []);
 
-  const installAndQuit = useCallback(async () => {
-    await invoke('install_update_and_quit');
-  }, []);
-
   const openWindow = useCallback(async () => {
     await invoke('open_update_window');
   }, []);
@@ -102,7 +98,6 @@ export function useUpdater() {
     state,
     checkNow,
     install,
-    installAndQuit,
     openWindow,
     skip,
     snoozeChat,

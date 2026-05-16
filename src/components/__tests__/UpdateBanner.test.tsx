@@ -23,10 +23,10 @@ describe('UpdateBanner', () => {
     expect(screen.getByText(/0\.8\.0/)).toBeInTheDocument();
   });
 
-  it('calls onInstall when Install clicked', () => {
+  it("calls onInstall when What's New clicked", () => {
     const onInstall = vi.fn();
     render(<UpdateBanner {...baseProps} onInstall={onInstall} />);
-    fireEvent.click(screen.getByRole('button', { name: /install & restart/i }));
+    fireEvent.click(screen.getByRole('button', { name: /what's new/i }));
     expect(onInstall).toHaveBeenCalled();
   });
 

@@ -24,10 +24,10 @@ describe('UpdateFooterBar', () => {
     expect(screen.getByText('v0.8.0')).toBeInTheDocument();
   });
 
-  it('calls onInstall when install link clicked', () => {
+  it("calls onInstall when what's new link clicked", () => {
     const onInstall = vi.fn();
     render(<UpdateFooterBar {...baseProps} onInstall={onInstall} />);
-    fireEvent.click(screen.getByText(/install & restart/i));
+    fireEvent.click(screen.getByText(/what's new/i));
     expect(onInstall).toHaveBeenCalled();
   });
 

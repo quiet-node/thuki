@@ -39,7 +39,7 @@ export function UpdateFooterBar({
           onClick={onInstall}
           className="text-[#ff8d5c] underline decoration-dotted underline-offset-2 decoration-[#ff8d5c]/50 cursor-pointer bg-transparent border-0 p-0 font-inherit"
         >
-          install &amp; restart
+          {"what's new"}
         </button>
         {' · '}
         <button
