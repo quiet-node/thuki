@@ -30,6 +30,10 @@ export const TIPS: readonly Tip[] = [
   '/bullets turns highlighted text or a pasted block into a concise bullet list of key points',
   '/todos scans highlighted text or notes and pulls out every action item as a checkbox list',
   'Type / in the ask bar to see all available commands and pick one with Tab',
+  {
+    text: 'Slash commands have a full reference when you want the whole toolbox at a glance ↗',
+    url: 'https://github.com/quiet-node/thuki/blob/main/docs/commands.md',
+  },
   'Commands can combine in one message: try /screen /think to capture your screen and reason through it',
   'Paste an image and type /tldr to summarize its text using Vision OCR; no vision model needed',
   'Type /translate french with an attached image to translate printed text via Vision OCR, no vision model needed',
@@ -43,6 +47,10 @@ export const TIPS: readonly Tip[] = [
   'Keep Warm in Settings keeps your active model loaded between sessions so Thuki is always ready at full speed',
   'Set Keep Warm to -1 in Settings to keep your active model loaded indefinitely until you unload it yourself',
   'Click Unload now in Settings to free your model from VRAM the moment you are done with it',
+  {
+    text: 'The config reference shows every setting you can tune without guessing names ↗',
+    url: 'https://github.com/quiet-node/thuki/blob/main/docs/configurations.md',
+  },
   'Crank the Context Window slider in Settings up if Thuki is forgetting earlier parts of long conversations',
   'Lower the Context Window in Settings to reclaim VRAM if your GPU is running tight on memory',
   'Doubling the context window roughly doubles the VRAM the KV cache needs; nudge it up gradually',
@@ -53,5 +61,9 @@ export const TIPS: readonly Tip[] = [
   {
     text: 'Context Window can be tuned in Settings. Learn how in five minutes ↗',
     url: 'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md',
+  },
+  {
+    text: 'Agentic search can dig deeper than a quick web lookup when the answer needs trail-following ↗',
+    url: 'https://github.com/quiet-node/thuki/blob/main/docs/agentic-search.md',
   },
 ];
