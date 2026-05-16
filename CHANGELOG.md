@@ -18,17 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Renamed the `[model]` section in `config.toml` to `[inference]`. The section still contains a single field, `ollama_url`, but the name now reflects what it actually configures (the inference daemon endpoint, not a model). There is no backward-compatibility shim: if you had a custom `[model]` section, rename it to `[inference]` after upgrading.
 - Active model selection is now strictly Option-typed end to end. Ollama's `/api/tags` is the single source of truth: when nothing is installed and nothing is persisted, Thuki refuses to dispatch requests and surfaces a "Pick a model" prompt instead of falling back to a hardcoded slug. The previous `DEFAULT_MODEL_NAME` constant has been removed.
 
-## [0.12.0](https://github.com/quiet-node/thuki/compare/v0.11.0...v0.12.0) (2026-05-16)
+## [0.11.1](https://github.com/quiet-node/thuki/compare/v0.11.0...v0.11.1) (2026-05-16)
 
 
-### Features
+### UI
 
-* **updater:** redesign What's New window to match Settings panel ([9f80719](https://github.com/quiet-node/thuki/commit/9f80719234913e423d7025cc4a976d6b823c0459))
-
-
-### Bug Fixes
-
-* **style:** redesign What's New window to match Settings panel ([#177](https://github.com/quiet-node/thuki/issues/177)) ([9f80719](https://github.com/quiet-node/thuki/commit/9f80719234913e423d7025cc4a976d6b823c0459))
+* **updater:** redesign the What's New window to match the Settings panel ([#177](https://github.com/quiet-node/thuki/issues/177)) ([9f80719](https://github.com/quiet-node/thuki/commit/9f80719234913e423d7025cc4a976d6b823c0459))
 
 ## [0.11.0](https://github.com/quiet-node/thuki/compare/v0.10.0...v0.11.0) (2026-05-16)
 
