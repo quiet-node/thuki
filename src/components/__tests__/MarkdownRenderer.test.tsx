@@ -252,6 +252,41 @@ describe('MarkdownRenderer', () => {
     });
   });
 
+  describe('Currency vs. math disambiguation (regression)', () => {
+    it('does not parse currency amounts as math (the reported bug)', () => {
+      // The exact failure mode: text between two currency dollars was
+      // swallowed into one inline-math run, rendered nowrap-serif by KaTeX
+      // and blowing the chat window out horizontally.
+      const pasted =
+        'I want a business that will generate $1M in 18 months and ' +
+        'be accepted into YC. The goal is $1M in 18 months for a $10M ' +
+        'valuation.';
+      const { container } = render(<MarkdownRenderer content={pasted} />);
+      expect(container.querySelector('.katex')).toBeNull();
+      expect(container.textContent).toContain('$1M in 18 months');
+      expect(container.textContent).toContain('$10M valuation');
+    });
+
+    it('still renders genuine inline math alongside currency', () => {
+      const { container } = render(
+        <MarkdownRenderer
+          content={'Budget is $5 but energy is $E = mc^2$ regardless'}
+        />,
+      );
+      expect(container.querySelector('.katex')).not.toBeNull();
+      expect(container.textContent).toContain('$5');
+      expect(container.textContent).not.toContain('$E = mc^2$');
+    });
+
+    it('leaves $ inside inline code untouched', () => {
+      const { container } = render(
+        <MarkdownRenderer content={'shell: `echo $5` prints five'} />,
+      );
+      expect(container.querySelector('.katex')).toBeNull();
+      expect(container.querySelector('code')!.textContent).toBe('echo $5');
+    });
+  });
+
   describe('Edge cases', () => {
     it('handles empty string', () => {
       const { container } = render(<MarkdownRenderer content="" />);

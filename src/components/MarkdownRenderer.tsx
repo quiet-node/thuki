@@ -2,6 +2,7 @@ import React, { memo } from 'react';
 import { Streamdown, type MathPlugin } from 'streamdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import { escapeCurrencyDollars } from '../utils/escapeCurrencyDollars';
 
 interface MarkdownRendererProps {
   content: string;
@@ -36,6 +37,14 @@ const mathPlugin: MathPlugin = {
  * relies on KaTeX's own output escaping and the default trust:false setting,
  * which blocks arbitrary-HTML LaTeX macros such as \href and \htmlClass.
  *
+ * Currency disambiguation: `remark-math` would otherwise parse the text
+ * between two currency dollars (e.g. "raise $1M ... reach $1M") as one
+ * giant inline-math run. `escapeCurrencyDollars` escapes `$<digit>` before
+ * the content reaches the parser so currency renders as plain text while
+ * genuine `$x$` / `$$...$$` math is preserved. The `.katex-display`
+ * overflow rule in App.css is the structural backstop that keeps any wide
+ * math inside its own box.
+ *
  * Memoized to skip re-renders when props are unchanged, which matters
  * during LLM token streaming where sibling bubbles would otherwise
  * re-render on every new token.
@@ -62,7 +71,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(
           linkSafety={{ enabled: false }}
           plugins={{ math: mathPlugin }}
         >
-          {content}
+          {escapeCurrencyDollars(content)}
         </Streamdown>
       </span>
     );

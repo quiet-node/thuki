@@ -243,6 +243,21 @@ body {
   padding-left: 0.25rem;
 }
 
+/* ─── KaTeX overflow containment (defense in depth) ───
+ * Currency like "$1M ... $1M" is escaped before parsing
+ * (see src/utils/escapeCurrencyDollars.ts), so it never reaches KaTeX.
+ * This rule is the structural backstop: a genuinely wide equation, or
+ * anything that ever slips the currency filter, scrolls inside its own
+ * box and can NEVER force the chat window to grow horizontally again.
+ * KaTeX renders display math as `.katex-display` with internal nowrap;
+ * clipping it here is exactly how GitHub and other renderers contain it.
+ */
+.markdown-body .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+}
+
 /* ─── Code Block - Premium Brand Style ───
  * Streamdown's utility classes (border-border, bg-background, bg-sidebar) don't
  * resolve against our custom theme. Override every layer explicitly.
