@@ -832,6 +832,14 @@ describe('AboutTab', () => {
     });
   });
 
+  it('Globe icon button opens thuki.app', async () => {
+    await renderAbout();
+    fireEvent.click(screen.getByRole('button', { name: /Visit thuki.app/ }));
+    expect(invokeMock).toHaveBeenCalledWith('open_url', {
+      url: 'https://www.thuki.app/',
+    });
+  });
+
   it('Reveal Thuki app data invokes reveal_config_in_finder', async () => {
     await renderAbout();
     await waitFor(() => screen.getByText(/Reveal Thuki app data/));

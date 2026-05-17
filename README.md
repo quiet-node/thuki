@@ -3,7 +3,7 @@
 </h1>
 
 <p align="center">
-  <img src="public/thuki-logo.png" alt="Thuki logo" width="300" />
+  <a href="https://www.thuki.app/" target="_blank" rel="noopener noreferrer"><img src="public/thuki-logo.png" alt="Thuki logo" width="300" /></a>
 </p>
 
 <p align="center">
@@ -17,6 +17,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-beta-yellow.svg" alt="Beta" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
+  <a href="https://www.thuki.app/" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/thuki.app-000000?style=flat" alt="thuki.app" /></a>
   <a href="https://github.com/quiet-node/thuki/actions/workflows/pr-pipeline.yml"><img src="https://github.com/quiet-node/thuki/actions/workflows/pr-pipeline.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="Platform: macOS" />
 </p>

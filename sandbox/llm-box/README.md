@@ -1,6 +1,6 @@
 # Thuki Sandbox
 
-This directory contains the infrastructure-as-code for running the generative engine in an isolated, secure Docker sandbox.
+This directory contains the infrastructure-as-code for running the generative engine in an isolated, secure Docker sandbox. Visit [thuki.app](https://www.thuki.app/) for the project homepage.
 
 ## Architecture
 

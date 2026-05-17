@@ -1,6 +1,6 @@
 # Contributing to Thuki
 
-Thank you for your interest in contributing! This guide will walk you through everything you need to get started.
+Thank you for your interest in contributing to [Thuki](https://www.thuki.app/)! This guide will walk you through everything you need to get started.
 
 ## Table of Contents
 
