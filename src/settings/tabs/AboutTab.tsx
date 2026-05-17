@@ -181,6 +181,20 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
               <FeedbackIcon />
             </button>
           </Tooltip>
+          <Tooltip label="Visit thuki.app — the project website.">
+            <button
+              type="button"
+              className={styles.iconLinkBtn}
+              aria-label="Visit thuki.app for more about Thuki"
+              onClick={() =>
+                void invoke('open_url', {
+                  url: 'https://www.thuki.app/',
+                })
+              }
+            >
+              <GlobeIcon />
+            </button>
+          </Tooltip>
         </div>
       </div>
 
@@ -399,6 +413,27 @@ function XIcon() {
       aria-hidden
     >
       <path d="M18.244 2H21l-6.56 7.5L22 22h-6.83l-4.74-6.2L4.8 22H2l7.04-8.06L2 2h6.92l4.28 5.66L18.244 2zm-2.4 18.5h1.74L7.27 3.4H5.4l10.444 17.1z" />
+    </svg>
+  );
+}
+
+// Globe glyph for the "thuki.app" website button.
+function GlobeIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
     </svg>
   );
 }

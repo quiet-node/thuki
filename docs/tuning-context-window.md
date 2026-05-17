@@ -3,6 +3,8 @@
 The Context Window slider in Settings goes up to 1 M tokens, but the value that's actually _good_ for your machine depends on your GPU memory and the model you picked. This guide explains what those numbers mean and walks you through finding your sweet spot in about 5 minutes.
 
 > macOS only. Thuki is a Mac app and the steps below assume Apple Silicon (M1/M2/M3/M4/M5).
+>
+> See [thuki.app](https://www.thuki.app/) for project info, downloads, and documentation.
 
 ## Quick vocabulary
 

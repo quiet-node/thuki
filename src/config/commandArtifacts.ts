@@ -53,6 +53,8 @@ export function renderCommandsMarkdown(): string {
     '',
     '# Commands',
     '',
+    'Website: [thuki.app](https://www.thuki.app/)',
+    '',
     'Commands are written as whole-word `/` triggers anywhere in your message. Press `/` to open the command suggestion menu, then Tab to complete or Enter to select.',
     '',
     'Commands can be combined when their behavior allows it. For example, `/screen /think` captures the screen and enables extended reasoning, while `/think /tldr` summarizes with thinking enabled.',

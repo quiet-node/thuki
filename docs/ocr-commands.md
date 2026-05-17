@@ -2,6 +2,8 @@
 
 Thuki has a class of slash commands that read text out of attached images locally using the **macOS Vision framework**. No network calls, no LLM round-trip, and crucially: **no vision-capable model required**. The OCR engine extracts text on-device; the resulting text is what the active model sees.
 
+See [thuki.app](https://www.thuki.app/) for project info, downloads, and documentation.
+
 ## Which commands use OCR
 
 | Command | What it does with OCR'd text |
