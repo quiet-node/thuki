@@ -247,14 +247,18 @@ body {
  * Currency like "$1M ... $1M" is escaped before parsing
  * (see src/utils/escapeCurrencyDollars.ts), so it never reaches KaTeX.
  * This rule is the structural backstop: a genuinely wide equation, or
- * anything that ever slips the currency filter, scrolls inside its own
- * box and can NEVER force the chat window to grow horizontally again.
- * KaTeX renders display math as `.katex-display` with internal nowrap;
- * clipping it here is exactly how GitHub and other renderers contain it.
+ * anything that ever slips the currency filter, scrolls horizontally
+ * inside its own box and can NEVER force the chat window to grow
+ * horizontally again. KaTeX renders display math as `.katex-display`
+ * with internal nowrap; only the horizontal axis is contained. The
+ * vertical axis is intentionally left to flow so tall display math
+ * (matrices, large integrals, stacked fractions) is never clipped:
+ * the chat scrolls vertically as usual. `overflow-x: auto` forces the
+ * computed `overflow-y` to `auto`, but with no height constraint the
+ * box grows to content height, so no spurious vertical scrollbar appears.
  */
 .markdown-body .katex-display {
   overflow-x: auto;
-  overflow-y: hidden;
   max-width: 100%;
 }
 
