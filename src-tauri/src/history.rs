@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn save_and_load_conversation_roundtrip() {
         let db = test_db();
-        let conn = db.0.lock().unwrap();
+        let conn = db.0.lock().map_err(|e| e.to_string()).unwrap();
 
         let messages = vec![
             SaveMessagePayload {
