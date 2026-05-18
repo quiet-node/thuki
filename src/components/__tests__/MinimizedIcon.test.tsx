@@ -10,7 +10,13 @@ describe('MinimizedIcon', () => {
 
   it('calls onRestore on a plain click (no drag)', () => {
     const onRestore = vi.fn();
-    render(<MinimizedIcon isWorking={false} hasUnseen={false} onRestore={onRestore} />);
+    render(
+      <MinimizedIcon
+        isWorking={false}
+        hasUnseen={false}
+        onRestore={onRestore}
+      />,
+    );
     const btn = screen.getByRole('button', { name: /restore thuki/i });
     fireEvent.pointerDown(btn, { clientX: 0, clientY: 0 });
     fireEvent.pointerUp(btn, { clientX: 1, clientY: 1 });
@@ -19,7 +25,13 @@ describe('MinimizedIcon', () => {
 
   it('does not call onRestore when the pointer moves past the drag threshold', () => {
     const onRestore = vi.fn();
-    render(<MinimizedIcon isWorking={false} hasUnseen={false} onRestore={onRestore} />);
+    render(
+      <MinimizedIcon
+        isWorking={false}
+        hasUnseen={false}
+        onRestore={onRestore}
+      />,
+    );
     const btn = screen.getByRole('button', { name: /restore thuki/i });
     fireEvent.pointerDown(btn, { clientX: 0, clientY: 0 });
     fireEvent.pointerMove(btn, { clientX: 40, clientY: 40 });
@@ -28,7 +40,9 @@ describe('MinimizedIcon', () => {
   });
 
   it('starts the native drag when moved past the threshold', () => {
-    render(<MinimizedIcon isWorking={false} hasUnseen={false} onRestore={vi.fn()} />);
+    render(
+      <MinimizedIcon isWorking={false} hasUnseen={false} onRestore={vi.fn()} />,
+    );
     const btn = screen.getByRole('button', { name: /restore thuki/i });
     fireEvent.pointerDown(btn, { clientX: 0, clientY: 0 });
     fireEvent.pointerMove(btn, { clientX: 40, clientY: 40 });
@@ -36,7 +50,9 @@ describe('MinimizedIcon', () => {
   });
 
   it('ignores pointermove with no prior pointerdown', () => {
-    render(<MinimizedIcon isWorking={false} hasUnseen={false} onRestore={vi.fn()} />);
+    render(
+      <MinimizedIcon isWorking={false} hasUnseen={false} onRestore={vi.fn()} />,
+    );
     const btn = screen.getByRole('button', { name: /restore thuki/i });
     fireEvent.pointerMove(btn, { clientX: 40, clientY: 40 });
     expect(__mockWindow.startDragging).not.toHaveBeenCalled();
@@ -48,7 +64,9 @@ describe('MinimizedIcon', () => {
   });
 
   it('does not show the working state when isWorking is false', () => {
-    render(<MinimizedIcon isWorking={false} hasUnseen={false} onRestore={vi.fn()} />);
+    render(
+      <MinimizedIcon isWorking={false} hasUnseen={false} onRestore={vi.fn()} />,
+    );
     expect(screen.queryByTestId('minimized-working')).not.toBeInTheDocument();
   });
 
@@ -58,12 +76,16 @@ describe('MinimizedIcon', () => {
   });
 
   it('does not show the ready dot when hasUnseen is false', () => {
-    render(<MinimizedIcon isWorking={false} hasUnseen={false} onRestore={vi.fn()} />);
+    render(
+      <MinimizedIcon isWorking={false} hasUnseen={false} onRestore={vi.fn()} />,
+    );
     expect(screen.queryByTestId('minimized-ready-dot')).not.toBeInTheDocument();
   });
 
   it('does not re-start drag on subsequent moves past threshold', () => {
-    render(<MinimizedIcon isWorking={false} hasUnseen={false} onRestore={vi.fn()} />);
+    render(
+      <MinimizedIcon isWorking={false} hasUnseen={false} onRestore={vi.fn()} />,
+    );
     const btn = screen.getByRole('button', { name: /restore thuki/i });
     fireEvent.pointerDown(btn, { clientX: 0, clientY: 0 });
     fireEvent.pointerMove(btn, { clientX: 40, clientY: 40 });

@@ -218,7 +218,9 @@ describe('WindowControls minimize affordance', () => {
 
   it('renders an inert minimize dot (no button) when onMinimize is omitted', () => {
     render(<WindowControls onClose={vi.fn()} />);
-    expect(screen.queryByRole('button', { name: /minimize/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /minimize/i }),
+    ).not.toBeInTheDocument();
   });
 
   it('minimize button blurs itself on programmatic focus (no relatedTarget)', () => {
