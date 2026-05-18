@@ -142,6 +142,11 @@ const ONBOARDING_LOGICAL_HEIGHT: f64 = 640.0;
 /// between the frontend exit animation and rapid activation toggles.
 static OVERLAY_INTENDED_VISIBLE: AtomicBool = AtomicBool::new(false);
 
+/// True while the overlay is collapsed into the floating minimized icon.
+/// Read by the activator layer so any activation restores the parked
+/// conversation instead of showing/hiding.
+static OVERLAY_MINIMIZED: AtomicBool = AtomicBool::new(false);
+
 /// True on first process launch; cleared when the frontend signals readiness.
 /// Used to show the overlay automatically on startup without a race condition:
 /// the frontend calls `notify_frontend_ready` after its event listener is
@@ -632,6 +637,16 @@ fn set_window_frame(app_handle: tauri::AppHandle, x: f64, y: f64, width: f64, he
 fn notify_overlay_hidden(generation: tauri::State<crate::commands::GenerationState>) {
     generation.cancel();
     OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
+}
+
+fn set_overlay_minimized_impl(minimized: bool) {
+    OVERLAY_MINIMIZED.store(minimized, Ordering::SeqCst);
+}
+
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn set_overlay_minimized(minimized: bool) {
+    set_overlay_minimized_impl(minimized);
 }
 
 /// Called by the frontend once its visibility event listener is registered.
@@ -1476,6 +1491,7 @@ pub fn run() {
             #[cfg(not(coverage))]
             ocr::extract_text_command,
             notify_overlay_hidden,
+            set_overlay_minimized,
             notify_frontend_ready,
             set_window_frame,
             #[cfg(not(coverage))]
@@ -1575,6 +1591,15 @@ mod tests {
         OVERLAY_INTENDED_VISIBLE.store(true, Ordering::SeqCst);
         OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
         assert!(!OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn set_overlay_minimized_toggles_flag() {
+        OVERLAY_MINIMIZED.store(false, Ordering::SeqCst);
+        set_overlay_minimized_impl(true);
+        assert!(OVERLAY_MINIMIZED.load(Ordering::SeqCst));
+        set_overlay_minimized_impl(false);
+        assert!(!OVERLAY_MINIMIZED.load(Ordering::SeqCst));
     }
 
     #[test]
