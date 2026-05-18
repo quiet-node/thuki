@@ -696,6 +696,14 @@ function App() {
     setUnseenCompletion(false);
   }, []);
 
+  /**
+   * Minimizes the overlay to the floating icon.
+   * Task 7 will extend this with window hide and geometry logic.
+   */
+  const handleMinimize = useCallback(() => {
+    setIsMinimized(true);
+  }, []);
+
   /** Ref attached to the chat-mode history dropdown for click-outside detection. */
   const historyDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -2293,6 +2301,7 @@ function App() {
                           ollamaReachable ? handleModelPickerToggle : undefined
                         }
                         isModelPickerOpen={isModelPickerOpen}
+                        onMinimize={handleMinimize}
                       />
                     ) : null}
                   </AnimatePresence>

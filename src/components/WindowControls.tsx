@@ -145,6 +145,11 @@ interface WindowControlsProps {
   onModelPickerToggle?: () => void;
   /** Drives `aria-expanded` on the pill button. */
   isModelPickerOpen?: boolean;
+  /**
+   * Called when the user clicks the minimize (yellow) dot. Omit to keep the
+   * dot inert and decorative (ask-bar mode or no conversation to park).
+   */
+  onMinimize?: () => void;
 }
 
 /** Decorative dot color for inactive buttons. */
@@ -160,6 +165,7 @@ export const WindowControls = memo(function WindowControls({
   activeModel,
   onModelPickerToggle,
   isModelPickerOpen = false,
+  onMinimize,
 }: WindowControlsProps) {
   // Disabled only when there is nothing to save yet and the conversation hasn't
   // been saved. Once saved the button stays active so the user can unsave.
@@ -202,12 +208,40 @@ export const WindowControls = memo(function WindowControls({
           </div>
         </button>
 
-        {/* Minimize - decorative only */}
-        <div
-          className="w-3 h-3 rounded-full ml-2"
-          style={{ backgroundColor: INACTIVE_DOT }}
-          aria-hidden="true"
-        />
+        {onMinimize !== undefined ? (
+          <button
+            type="button"
+            onClick={onMinimize}
+            onFocus={(e) => {
+              if (e.relatedTarget === null) e.currentTarget.blur();
+            }}
+            className="group/min-btn p-1.5 -m-1.5 ml-2 flex items-center justify-center rounded-full cursor-pointer"
+            aria-label="Minimize"
+          >
+            <div className="w-3 h-3 rounded-full bg-[#FEBC2E] flex items-center justify-center transition-transform duration-150 group-hover/min-btn:scale-125 group-active/min-btn:scale-90">
+              <svg
+                width="6"
+                height="6"
+                viewBox="0 0 6 6"
+                className="opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+                aria-hidden="true"
+              >
+                <path
+                  d="M0.5 3H5.5"
+                  stroke="rgba(0,0,0,0.6)"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </div>
+          </button>
+        ) : (
+          <div
+            className="w-3 h-3 rounded-full ml-2"
+            style={{ backgroundColor: INACTIVE_DOT }}
+            aria-hidden="true"
+          />
+        )}
 
         {/* Zoom - decorative only */}
         <div

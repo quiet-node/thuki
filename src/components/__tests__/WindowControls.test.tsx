@@ -206,3 +206,36 @@ describe('WindowControls', () => {
     );
   });
 });
+
+describe('WindowControls minimize affordance', () => {
+  it('renders a Minimize button and calls onMinimize when provided', () => {
+    const onMinimize = vi.fn();
+    render(<WindowControls onClose={vi.fn()} onMinimize={onMinimize} />);
+    const btn = screen.getByRole('button', { name: /minimize/i });
+    fireEvent.click(btn);
+    expect(onMinimize).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders an inert minimize dot (no button) when onMinimize is omitted', () => {
+    render(<WindowControls onClose={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: /minimize/i })).not.toBeInTheDocument();
+  });
+
+  it('minimize button blurs itself on programmatic focus (no relatedTarget)', () => {
+    const onMinimize = vi.fn();
+    render(<WindowControls onClose={vi.fn()} onMinimize={onMinimize} />);
+    const btn = screen.getByRole('button', { name: /minimize/i });
+    const blurSpy = vi.spyOn(btn, 'blur');
+    fireEvent.focus(btn, { relatedTarget: null });
+    expect(blurSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('minimize button keeps focus when focused via keyboard tab (relatedTarget present)', () => {
+    const onMinimize = vi.fn();
+    render(<WindowControls onClose={vi.fn()} onMinimize={onMinimize} />);
+    const btn = screen.getByRole('button', { name: /minimize/i });
+    const blurSpy = vi.spyOn(btn, 'blur');
+    fireEvent.focus(btn, { relatedTarget: document.body });
+    expect(blurSpy).not.toHaveBeenCalled();
+  });
+});

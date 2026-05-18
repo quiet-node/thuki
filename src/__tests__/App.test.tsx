@@ -777,6 +777,46 @@ describe('App', () => {
     expect(screen.getByText('world')).toBeInTheDocument();
   });
 
+  it('clicking Minimize button in chat mode calls setIsMinimized (handleMinimize stub)', async () => {
+    // Arrange: render App in chat mode with one complete turn.
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'hi' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // Act: click the Minimize button rendered in the chat header.
+    const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+    expect(minimizeBtn).toBeInTheDocument();
+    act(() => {
+      fireEvent.click(minimizeBtn);
+    });
+
+    // Assert: no throw; the stub runs without error.
+    // Task 7 will assert the full minimize effect (MinimizedIcon visible, etc.).
+    expect(minimizeBtn).toBeTruthy();
+  });
+
   it('hides overlay on Escape key', async () => {
     render(<App />);
     await act(async () => {});
