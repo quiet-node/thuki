@@ -127,6 +127,10 @@ const OVERLAY_LOGICAL_HEIGHT_COLLAPSED: f64 = 80.0;
 const OVERLAY_VISIBILITY_EVENT: &str = "thuki://visibility";
 const OVERLAY_VISIBILITY_SHOW: &str = "show";
 const OVERLAY_VISIBILITY_HIDE_REQUEST: &str = "hide-request";
+/// Emitted while the overlay is parked in the minimized icon and an
+/// activation occurs. The frontend restores the chat without the
+/// fresh-session wipe that OVERLAY_VISIBILITY_SHOW triggers.
+const OVERLAY_VISIBILITY_RESTORE: &str = "restore";
 
 /// Frontend event that triggers the onboarding screen when one or more
 /// required permissions have not yet been granted.
@@ -1614,6 +1618,13 @@ mod tests {
         assert_eq!(OVERLAY_VISIBILITY_EVENT, "thuki://visibility");
         assert_eq!(OVERLAY_VISIBILITY_SHOW, "show");
         assert_eq!(OVERLAY_VISIBILITY_HIDE_REQUEST, "hide-request");
+    }
+
+    #[test]
+    fn restore_visibility_constant_is_distinct() {
+        assert_ne!(OVERLAY_VISIBILITY_RESTORE, OVERLAY_VISIBILITY_SHOW);
+        assert_ne!(OVERLAY_VISIBILITY_RESTORE, OVERLAY_VISIBILITY_HIDE_REQUEST);
+        assert_eq!(OVERLAY_VISIBILITY_RESTORE, "restore");
     }
 
     #[test]
