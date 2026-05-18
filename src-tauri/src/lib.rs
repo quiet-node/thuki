@@ -266,6 +266,17 @@ fn monitor_info_fallback() -> (f64, f64, f64, f64) {
 /// back to global coordinates for `set_position`.
 #[cfg(target_os = "macos")]
 fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
+    if take_minimized_for_restore() {
+        emit_overlay_visibility(
+            app_handle,
+            OVERLAY_VISIBILITY_RESTORE,
+            None,
+            None,
+            None,
+            None,
+        );
+        return;
+    }
     let already_visible = OVERLAY_INTENDED_VISIBLE.swap(true, Ordering::SeqCst);
     if already_visible {
         return;
@@ -574,6 +585,17 @@ fn request_overlay_hide(app_handle: &tauri::AppHandle) {
 /// (e.g. Windows global hotkey) are implemented.
 #[cfg(not(target_os = "macos"))]
 fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
+    if take_minimized_for_restore() {
+        emit_overlay_visibility(
+            app_handle,
+            OVERLAY_VISIBILITY_RESTORE,
+            None,
+            None,
+            None,
+            None,
+        );
+        return;
+    }
     if OVERLAY_INTENDED_VISIBLE.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -596,6 +618,17 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 /// Uses an atomic flag as the single source of truth for intended visibility,
 /// which avoids race conditions with the native panel state during animations.
 fn toggle_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
+    if take_minimized_for_restore() {
+        emit_overlay_visibility(
+            app_handle,
+            OVERLAY_VISIBILITY_RESTORE,
+            None,
+            None,
+            None,
+            None,
+        );
+        return;
+    }
     if OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst) {
         request_overlay_hide(app_handle);
     } else {
@@ -645,6 +678,13 @@ fn notify_overlay_hidden(generation: tauri::State<crate::commands::GenerationSta
 
 fn set_overlay_minimized_impl(minimized: bool) {
     OVERLAY_MINIMIZED.store(minimized, Ordering::SeqCst);
+}
+
+/// Returns true and clears the flag if the overlay was minimized. Used by
+/// the activator layer to route any activation to a restore instead of a
+/// show or hide while a conversation is parked.
+fn take_minimized_for_restore() -> bool {
+    OVERLAY_MINIMIZED.swap(false, Ordering::SeqCst)
 }
 
 #[tauri::command]
@@ -1604,6 +1644,15 @@ mod tests {
         assert!(OVERLAY_MINIMIZED.load(Ordering::SeqCst));
         set_overlay_minimized_impl(false);
         assert!(!OVERLAY_MINIMIZED.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn minimized_guard_clears_flag() {
+        OVERLAY_MINIMIZED.store(true, Ordering::SeqCst);
+        let consumed = take_minimized_for_restore();
+        assert!(consumed);
+        assert!(!OVERLAY_MINIMIZED.load(Ordering::SeqCst));
+        assert!(!take_minimized_for_restore());
     }
 
     #[test]
