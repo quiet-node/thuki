@@ -213,6 +213,7 @@ export const WindowControls = memo(function WindowControls({
             type="button"
             onClick={onMinimize}
             onFocus={(e) => {
+              // Same programmatic-focus blur as the Close button; see its onFocus for the WebKit makeFirstResponder rationale.
               if (e.relatedTarget === null) e.currentTarget.blur();
             }}
             className="group/min-btn p-1.5 -m-1.5 ml-2 flex items-center justify-center rounded-full cursor-pointer"
