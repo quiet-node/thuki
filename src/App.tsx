@@ -624,6 +624,7 @@ function App() {
       windowY: number | null,
       screenBottomY: number | null,
     ) => {
+      // Grow-up geometry mirrored in handleRestore; keep both in sync.
       const shouldGrowUp =
         windowY !== null &&
         screenBottomY !== null &&
@@ -709,6 +710,7 @@ function App() {
         monitor != null
           ? (monitor.position.y + monitor.size.height) / scale
           : null;
+      // Grow-up geometry mirrored in replayEntranceAnimation; keep both in sync.
       const shouldGrowUp =
         screenBottomY !== null &&
         windowY + maxChatHeightRef.current + CONTAINER_VERTICAL_PADDING >
