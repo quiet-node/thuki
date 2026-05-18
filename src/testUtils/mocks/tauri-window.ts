@@ -9,6 +9,41 @@ export function __setWindowLabel(label: string) {
   mockLabel = label;
 }
 
+/** Internal geometry state used by mockWindow and currentMonitor. */
+let _windowGeometry = {
+  x: 0,
+  y: 0,
+  scale: 1,
+  monitorX: 0,
+  monitorY: 0,
+  monitorWidth: 1440,
+  monitorHeight: 900,
+  monitorNull: false,
+};
+
+/**
+ * Test helper: configure the window position and monitor geometry used by
+ * outerPosition(), scaleFactor(), and currentMonitor(). Call before the
+ * action that triggers handleRestore geometry queries.
+ */
+export function __setWindowGeometry(opts: {
+  x?: number;
+  y?: number;
+  scale?: number;
+  monitorX?: number;
+  monitorY?: number;
+  monitorWidth?: number;
+  monitorHeight?: number;
+  monitorNull?: boolean;
+}) {
+  _windowGeometry = { ..._windowGeometry, ...opts };
+  mockWindow.outerPosition.mockResolvedValue({
+    x: _windowGeometry.x,
+    y: _windowGeometry.y,
+  });
+  mockWindow.scaleFactor.mockResolvedValue(_windowGeometry.scale);
+}
+
 const mockWindow = {
   get label() {
     return mockLabel;
@@ -19,6 +54,8 @@ const mockWindow = {
   show: vi.fn(async () => {}),
   setFocus: vi.fn(async () => {}),
   startDragging: vi.fn(async () => {}),
+  outerPosition: vi.fn(async () => ({ x: 0, y: 0 })),
+  scaleFactor: vi.fn(async () => 1),
   /**
    * Mirrors Tauri's `Window.onFocusChanged` API. Returns an unlisten
    * function. Tests can drive it via `__emitFocus(true|false)`.
@@ -44,6 +81,30 @@ export function __resetFocusListeners() {
 export function getCurrentWindow() {
   return mockWindow;
 }
+
+/**
+ * Mock for Tauri's currentMonitor() function from @tauri-apps/api/window.
+ * Returns a Monitor-shaped object by default, or null when monitorNull is set.
+ */
+export const currentMonitor = vi.fn(async () => {
+  if (_windowGeometry.monitorNull) return null;
+  return {
+    name: 'mock-monitor',
+    size: {
+      width: _windowGeometry.monitorWidth,
+      height: _windowGeometry.monitorHeight,
+    },
+    position: { x: _windowGeometry.monitorX, y: _windowGeometry.monitorY },
+    workArea: {
+      position: { x: _windowGeometry.monitorX, y: _windowGeometry.monitorY },
+      size: {
+        width: _windowGeometry.monitorWidth,
+        height: _windowGeometry.monitorHeight,
+      },
+    },
+    scaleFactor: _windowGeometry.scale,
+  };
+});
 
 export class LogicalSize {
   width: number;

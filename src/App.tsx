@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getCurrentWindow, currentMonitor } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { useOllama } from './hooks/useOllama';
 import type { Message } from './hooks/useOllama';
@@ -26,6 +26,7 @@ import { ConversationView } from './view/ConversationView';
 import { AskBarView } from './view/AskBarView';
 import { OnboardingView } from './view/onboarding/index';
 import type { OnboardingStage } from './view/onboarding/index';
+import { MinimizedIcon } from './components/MinimizedIcon';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ModelPickerPanel } from './components/ModelPickerPanel';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
@@ -688,20 +689,51 @@ function App() {
   }, [cancel]);
 
   /**
-   * Clears the minimized state when the user restores the overlay via hotkey or tray.
-   * Task 7 will extend this with full restore logic (window show, scroll pin, etc.).
+   * Clears the minimized state and recomputes upward-growth geometry from the
+   * current Tauri window position so the chat restores at the correct anchor.
    */
   const handleRestore = useCallback(() => {
     setIsMinimized(false);
     setUnseenCompletion(false);
+    void invoke('set_overlay_minimized', { minimized: false });
+    void (async () => {
+      const win = getCurrentWindow();
+      const [pos, scale, monitor] = await Promise.all([
+        win.outerPosition(),
+        win.scaleFactor(),
+        currentMonitor(),
+      ]);
+      const windowX = pos.x / scale;
+      const windowY = pos.y / scale;
+      const screenBottomY =
+        monitor != null
+          ? (monitor.position.y + monitor.size.height) / scale
+          : null;
+      const shouldGrowUp =
+        screenBottomY !== null &&
+        windowY + maxChatHeightRef.current + CONTAINER_VERTICAL_PADDING >
+          screenBottomY;
+      growsUpwardRef.current = shouldGrowUp;
+      setGrowsUpward(shouldGrowUp);
+      maxHeightRef.current = 0;
+      if (shouldGrowUp) {
+        windowPosRef.current = {
+          x: windowX,
+          bottomY: windowY + COLLAPSED_WINDOW_HEIGHT,
+        };
+      }
+    })();
   }, []);
 
   /**
-   * Minimizes the overlay to the floating icon.
-   * Task 7 will extend this with window hide and geometry logic.
+   * Minimizes the overlay to the floating icon without cancelling generation.
+   * Resets upward-growth so the window is measured from the top.
    */
   const handleMinimize = useCallback(() => {
+    growsUpwardRef.current = false;
+    setGrowsUpward(false);
     setIsMinimized(true);
+    void invoke('set_overlay_minimized', { minimized: true });
   }, []);
 
   /** Ref attached to the chat-mode history dropdown for click-outside detection. */
@@ -774,6 +806,15 @@ function App() {
     setPendingNewConversation(false);
   }
   prevHistoryOpenRef.current = isHistoryOpen;
+
+  // Detect when a streamed completion finishes while the overlay is minimized.
+  // Uses the render-body ref pattern (not useEffect) to satisfy the
+  // @eslint-react/set-state-in-effect lint rule, mirroring prevHistoryOpenRef above.
+  const prevGeneratingRef = useRef(isGenerating);
+  if (prevGeneratingRef.current && !isGenerating && isMinimized) {
+    setUnseenCompletion(true);
+  }
+  prevGeneratingRef.current = isGenerating;
 
   /**
    * When a submit flips the UI from ask-bar mode into chat mode while the
@@ -2127,9 +2168,10 @@ function App() {
     requestHideOverlay();
   }, [requestHideOverlay]);
 
-  /** Hide window on Escape or Cmd+W (macOS) / Ctrl+W. */
+  /** Hide window on Escape or Cmd+W (macOS) / Ctrl+W. No-op while minimized. */
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (isMinimized) return;
       if (((e.metaKey || e.ctrlKey) && e.key === 'w') || e.key === 'Escape') {
         e.preventDefault();
         handleCloseOverlay();
@@ -2137,7 +2179,7 @@ function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleCloseOverlay]);
+  }, [handleCloseOverlay, isMinimized]);
 
   /** Programmatic focus when the overlay becomes visible. */
   useEffect(() => {
@@ -2264,82 +2306,92 @@ function App() {
                     : 'rounded-2xl shadow-bar'
                 }`}
               >
-                {/* Morphing Container - flex column ensures the input bar
+                {isMinimized ? (
+                  <MinimizedIcon
+                    isWorking={isGenerating}
+                    hasUnseen={unseenCompletion}
+                    onRestore={handleRestore}
+                  />
+                ) : (
+                  <>
+                    {/* Morphing Container - flex column ensures the input bar
                     always sticks to the bottom. overflow-hidden clips chat
                     content during the morph animation. Visual styling lives on
                     the outer layout wrapper so the footer extends the window
                     without being clipped. */}
-                <div
-                  ref={setContainerRef}
-                  style={{
-                    transition:
-                      'height 0.25s cubic-bezier(0.16, 1, 0.3, 1), min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
-                    maxHeight: `${config.window.maxChatHeight}px`,
-                  }}
-                  className="morphing-container relative flex flex-col overflow-hidden"
-                >
-                  {/* Chat Messages Area - morphs in when in chat mode. */}
-                  <AnimatePresence>
-                    {isChatMode ? (
-                      <ConversationView
-                        messages={
-                          pendingUserMessage
-                            ? [...messages, pendingUserMessage]
-                            : messages
-                        }
-                        isGenerating={isGenerating || isSubmitPending}
-                        onClose={handleCloseOverlay}
-                        onSave={handleSave}
-                        isSaved={isSaved}
-                        canSave={canSave}
-                        onNewConversation={handleNewConversation}
-                        onHistoryOpen={handleHistoryToggle}
-                        onImagePreview={handleChatImagePreview}
-                        searchStage={searchStage}
-                        activeModel={activeModel}
-                        onModelPickerToggle={
-                          ollamaReachable ? handleModelPickerToggle : undefined
-                        }
-                        isModelPickerOpen={isModelPickerOpen}
-                        onMinimize={handleMinimize}
-                      />
-                    ) : null}
-                  </AnimatePresence>
-
-                  {/* Ask-bar mode model picker drawer - above the input bar.
-                    In chat mode the trigger and drawer move to the header area above. */}
-                  {!isChatMode && (
-                    <AnimatePresence>
-                      {isModelPickerOpen && ollamaReachable ? (
-                        <motion.div
-                          ref={modelPickerAskBarRef}
-                          key="model-picker-askbar"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{
-                            height: {
-                              duration: 0.3,
-                              ease: [0.33, 1, 0.68, 1],
-                            },
-                            opacity: { duration: 0.2, delay: 0.08 },
-                          }}
-                          style={{ overflow: 'hidden' }}
-                          className="border-t border-surface-border"
-                        >
-                          <ModelPickerPanel
-                            models={availableModels}
+                    <div
+                      ref={setContainerRef}
+                      style={{
+                        transition:
+                          'height 0.25s cubic-bezier(0.16, 1, 0.3, 1), min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+                        maxHeight: `${config.window.maxChatHeight}px`,
+                      }}
+                      className="morphing-container relative flex flex-col overflow-hidden"
+                    >
+                      {/* Chat Messages Area - morphs in when in chat mode. */}
+                      <AnimatePresence>
+                        {isChatMode ? (
+                          <ConversationView
+                            messages={
+                              pendingUserMessage
+                                ? [...messages, pendingUserMessage]
+                                : messages
+                            }
+                            isGenerating={isGenerating || isSubmitPending}
+                            onClose={handleCloseOverlay}
+                            onSave={handleSave}
+                            isSaved={isSaved}
+                            canSave={canSave}
+                            onNewConversation={handleNewConversation}
+                            onHistoryOpen={handleHistoryToggle}
+                            onImagePreview={handleChatImagePreview}
+                            searchStage={searchStage}
                             activeModel={activeModel}
-                            onSelect={handleModelSelect}
-                            onClose={handleModelPickerClose}
-                            capabilities={modelCapabilities}
+                            onModelPickerToggle={
+                              ollamaReachable
+                                ? handleModelPickerToggle
+                                : undefined
+                            }
+                            isModelPickerOpen={isModelPickerOpen}
+                            onMinimize={handleMinimize}
                           />
-                        </motion.div>
-                      ) : null}
-                    </AnimatePresence>
-                  )}
+                        ) : null}
+                      </AnimatePresence>
 
-                  {/* Ask-bar mode history panel - inline below the input bar.
+                      {/* Ask-bar mode model picker drawer - above the input bar.
+                    In chat mode the trigger and drawer move to the header area above. */}
+                      {!isChatMode && (
+                        <AnimatePresence>
+                          {isModelPickerOpen && ollamaReachable ? (
+                            <motion.div
+                              ref={modelPickerAskBarRef}
+                              key="model-picker-askbar"
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: 'auto', opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{
+                                height: {
+                                  duration: 0.3,
+                                  ease: [0.33, 1, 0.68, 1],
+                                },
+                                opacity: { duration: 0.2, delay: 0.08 },
+                              }}
+                              style={{ overflow: 'hidden' }}
+                              className="border-t border-surface-border"
+                            >
+                              <ModelPickerPanel
+                                models={availableModels}
+                                activeModel={activeModel}
+                                onSelect={handleModelSelect}
+                                onClose={handleModelPickerClose}
+                                capabilities={modelCapabilities}
+                              />
+                            </motion.div>
+                          ) : null}
+                        </AnimatePresence>
+                      )}
+
+                      {/* Ask-bar mode history panel - inline below the input bar.
                     The !isChatMode gate lives OUTSIDE AnimatePresence so that when
                     a conversation is loaded (isChatMode → true) the panel unmounts
                     instantly - no exit animation runs alongside ConversationView
@@ -2348,118 +2400,125 @@ function App() {
                     causing two rapid ResizeObserver → setSize() calls (jitter).
                     AnimatePresence is still used for the manual toggle (isHistoryOpen)
                     so the drawer height-animates smoothly open and closed. */}
-                  {!isChatMode && (
-                    <AnimatePresence>
-                      {isHistoryOpen ? (
-                        <motion.div
-                          key="ask-bar-history"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{
-                            height: {
-                              duration: 0.3,
-                              ease: [0.33, 1, 0.68, 1],
-                            },
-                            opacity: { duration: 0.2, delay: 0.08 },
-                          }}
-                          style={{ overflow: 'hidden' }}
-                          className="border-t border-surface-border"
-                        >
-                          <HistoryPanel
-                            listConversations={listConversations}
-                            onLoadConversation={handleLoadConversation}
-                            onSaveAndLoad={handleSaveAndLoad}
-                            onDeleteConversation={handleDeleteConversation}
-                            hasCurrentMessages={false}
-                            showNewConversation={false}
-                            currentConversationId={conversationId}
-                          />
-                        </motion.div>
-                      ) : null}
-                    </AnimatePresence>
-                  )}
+                      {!isChatMode && (
+                        <AnimatePresence>
+                          {isHistoryOpen ? (
+                            <motion.div
+                              key="ask-bar-history"
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: 'auto', opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{
+                                height: {
+                                  duration: 0.3,
+                                  ease: [0.33, 1, 0.68, 1],
+                                },
+                                opacity: { duration: 0.2, delay: 0.08 },
+                              }}
+                              style={{ overflow: 'hidden' }}
+                              className="border-t border-surface-border"
+                            >
+                              <HistoryPanel
+                                listConversations={listConversations}
+                                onLoadConversation={handleLoadConversation}
+                                onSaveAndLoad={handleSaveAndLoad}
+                                onDeleteConversation={handleDeleteConversation}
+                                hasCurrentMessages={false}
+                                showNewConversation={false}
+                                currentConversationId={conversationId}
+                              />
+                            </motion.div>
+                          ) : null}
+                        </AnimatePresence>
+                      )}
 
-                  {/* Capture error banner: shown when /screen capture fails so
+                      {/* Capture error banner: shown when /screen capture fails so
                     the user knows why the message was not sent. */}
-                  {captureError && (
-                    <div className="px-4 py-2 border-t border-red-900/30">
-                      <p className="text-red-400 text-xs leading-relaxed">
-                        {captureError}
-                      </p>
+                      {captureError && (
+                        <div className="px-4 py-2 border-t border-red-900/30">
+                          <p className="text-red-400 text-xs leading-relaxed">
+                            {captureError}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Input Bar - always pinned to the bottom */}
+                      <AskBarView
+                        query={query}
+                        setQuery={setQuery}
+                        isChatMode={isChatMode}
+                        isGenerating={isGenerating}
+                        isSubmitPending={isSubmitPending}
+                        onSubmit={handleSubmit}
+                        onCancel={handleCancel}
+                        inputRef={inputRef}
+                        selectedText={selectedContext ?? undefined}
+                        onHistoryOpen={handleHistoryToggle}
+                        attachedImages={isSubmitPending ? [] : attachedImages}
+                        onImagesAttached={handleImagesAttached}
+                        onImageRemove={handleImageRemove}
+                        onImagePreview={handleAskBarImagePreview}
+                        onScreenshot={handleScreenshot}
+                        isDragOver={isDragOver ?? undefined}
+                        onModelPickerToggle={
+                          ollamaReachable ? handleModelPickerToggle : undefined
+                        }
+                        isModelPickerOpen={isModelPickerOpen}
+                        capabilityConflictMessage={
+                          liveCapabilityConflictMessage
+                        }
+                        shake={shakeAskBar}
+                        maxImages={config.window.maxImages}
+                        onFirstKeystroke={() => void invoke('warm_up_model')}
+                      />
                     </div>
-                  )}
 
-                  {/* Input Bar - always pinned to the bottom */}
-                  <AskBarView
-                    query={query}
-                    setQuery={setQuery}
-                    isChatMode={isChatMode}
-                    isGenerating={isGenerating}
-                    isSubmitPending={isSubmitPending}
-                    onSubmit={handleSubmit}
-                    onCancel={handleCancel}
-                    inputRef={inputRef}
-                    selectedText={selectedContext ?? undefined}
-                    onHistoryOpen={handleHistoryToggle}
-                    attachedImages={isSubmitPending ? [] : attachedImages}
-                    onImagesAttached={handleImagesAttached}
-                    onImageRemove={handleImageRemove}
-                    onImagePreview={handleAskBarImagePreview}
-                    onScreenshot={handleScreenshot}
-                    isDragOver={isDragOver ?? undefined}
-                    onModelPickerToggle={
-                      ollamaReachable ? handleModelPickerToggle : undefined
-                    }
-                    isModelPickerOpen={isModelPickerOpen}
-                    capabilityConflictMessage={liveCapabilityConflictMessage}
-                    shake={shakeAskBar}
-                    maxImages={config.window.maxImages}
-                    onFirstKeystroke={() => void invoke('warm_up_model')}
-                  />
-                </div>
-
-                {/* Footer slot — outside the morphing container so overflow-hidden
+                    {/* Footer slot — outside the morphing container so overflow-hidden
                     never clips it when chat is at max height. The layout wrapper
                     provides the matching background, so both UpdateFooterBar and
                     TipBar render seamlessly below the conversation area.
                     UpdateFooterBar takes priority and renders in BOTH modes. */}
-                {showUpdate ? (
-                  <AnimatePresence>
-                    <motion.div
-                      key="update-footer"
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                      style={{ overflow: 'hidden' }}
-                    >
-                      <UpdateFooterBar
-                        version={updater.state.update!.version}
-                        notesUrl={updater.state.update!.notes_url}
-                        onInstall={() => void updater.openWindow()}
-                        onLater={() => void updater.snoozeChat(24)}
-                      />
-                    </motion.div>
-                  </AnimatePresence>
-                ) : (
-                  <AnimatePresence>
-                    {isTipVisible && (
-                      <motion.div
-                        key="tip-bar"
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{
-                          duration: 0.25,
-                          ease: [0.16, 1, 0.3, 1],
-                        }}
-                        style={{ overflow: 'hidden' }}
-                      >
-                        <TipBar tip={activeTip} tipKey={tipKey} />
-                      </motion.div>
+                    {showUpdate ? (
+                      <AnimatePresence>
+                        <motion.div
+                          key="update-footer"
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{
+                            duration: 0.25,
+                            ease: [0.16, 1, 0.3, 1],
+                          }}
+                          style={{ overflow: 'hidden' }}
+                        >
+                          <UpdateFooterBar
+                            version={updater.state.update!.version}
+                            notesUrl={updater.state.update!.notes_url}
+                            onInstall={() => void updater.openWindow()}
+                            onLater={() => void updater.snoozeChat(24)}
+                          />
+                        </motion.div>
+                      </AnimatePresence>
+                    ) : (
+                      <AnimatePresence>
+                        {isTipVisible && (
+                          <motion.div
+                            key="tip-bar"
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{
+                              duration: 0.25,
+                              ease: [0.16, 1, 0.3, 1],
+                            }}
+                            style={{ overflow: 'hidden' }}
+                          >
+                            <TipBar tip={activeTip} tipKey={tipKey} />
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     )}
-                  </AnimatePresence>
+                  </>
                 )}
               </div>
 
