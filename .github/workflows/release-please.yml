@@ -120,25 +120,39 @@ jobs:
       - name: Generate updater manifest
         env:
           TAG: ${{ needs.release-please.outputs.tag_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         working-directory: src-tauri/target/release/bundle/macos
         run: |
           VERSION="${TAG#v}"
           PAYLOAD="Thuki_${VERSION}_aarch64.app.tar.gz"
           SIG="$(cat "${PAYLOAD}.sig")"
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          cat > latest.json <<EOF
-          {
-            "version": "${VERSION}",
-            "notes": "https://github.com/quiet-node/thuki/releases/tag/${TAG}",
-            "pub_date": "${PUB_DATE}",
-            "platforms": {
-              "darwin-aarch64": {
-                "signature": "${SIG}",
-                "url": "https://github.com/quiet-node/thuki/releases/download/${TAG}/${PAYLOAD}"
-              }
-            }
-          }
-          EOF
+          DOWNLOAD_URL="https://github.com/quiet-node/thuki/releases/download/${TAG}/${PAYLOAD}"
+
+          # Embed the full release-please changelog (the GitHub Release body
+          # for this tag) so the in-app updater shows the real notes instead
+          # of a bare link. release-please always creates this release with a
+          # non-empty body before this job runs, so an empty body means
+          # something upstream broke: fail loudly rather than ship a manifest
+          # whose notes are blank.
+          gh release view "$TAG" --json body --jq .body > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::GitHub Release body for ${TAG} is empty; refusing to publish a manifest with no notes." >&2
+            exit 1
+          fi
+
+          # jq --rawfile keeps newlines, quotes, backticks and $ in the
+          # changelog JSON-safe (the old heredoc interpolation could not).
+          jq -n \
+            --arg version "$VERSION" \
+            --rawfile notes release-notes.md \
+            --arg pub_date "$PUB_DATE" \
+            --arg sig "$SIG" \
+            --arg url "$DOWNLOAD_URL" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, platforms: {"darwin-aarch64": {signature: $sig, url: $url}}}' \
+            > latest.json
+
+          rm -f release-notes.md
 
       - name: Install create-dmg
         run: brew install create-dmg
