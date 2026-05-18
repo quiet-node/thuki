@@ -311,7 +311,7 @@ where
             // Check specific bitmask for the Control key state
             let is_press = flags.contains(CGEventFlags::CGEventFlagControl);
 
-            let mut s = cb_state.lock().unwrap();
+            let mut s = cb_state.lock().map_err(|e| e.to_string()).unwrap();
             if evaluate_activation(&mut s, is_press) {
                 cb_on_activation();
             }
