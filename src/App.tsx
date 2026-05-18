@@ -205,7 +205,8 @@ type OverlayVisibilityPayload =
       window_y: number | null;
       screen_bottom_y: number | null;
     }
-  | { state: 'hide-request' };
+  | { state: 'hide-request' }
+  | { state: 'restore' };
 type OverlayState = 'visible' | 'hidden' | 'hiding';
 
 /**
@@ -221,6 +222,10 @@ type OverlayState = 'visible' | 'hidden' | 'hiding';
 function App() {
   const [query, setQuery] = useState('');
   const [overlayState, setOverlayState] = useState<OverlayState>('hidden');
+  /** True when the overlay is parked as a floating minimized icon. */
+  const [isMinimized, setIsMinimized] = useState(false);
+  /** True when a streaming completion finished while the overlay was minimized. */
+  const [unseenCompletion, setUnseenCompletion] = useState(false);
   /** Non-null when the backend signals onboarding is needed; holds the current stage. */
   const [onboardingStage, setOnboardingStage] =
     useState<OnboardingStage | null>(null);
@@ -681,6 +686,15 @@ function App() {
       return 'hiding';
     });
   }, [cancel]);
+
+  /**
+   * Clears the minimized state when the user restores the overlay via hotkey or tray.
+   * Task 7 will extend this with full restore logic (window show, scroll pin, etc.).
+   */
+  const handleRestore = useCallback(() => {
+    setIsMinimized(false);
+    setUnseenCompletion(false);
+  }, []);
 
   /** Ref attached to the chat-mode history dropdown for click-outside detection. */
   const historyDropdownRef = useRef<HTMLDivElement>(null);
@@ -2062,6 +2076,10 @@ function App() {
       unlistenVisibility = await listen<OverlayVisibilityPayload>(
         OVERLAY_VISIBILITY_EVENT,
         ({ payload }) => {
+          if (payload.state === 'restore') {
+            handleRestore();
+            return;
+          }
           if (payload.state === 'show') {
             replayEntranceAnimation(
               payload.selected_text ?? null,
@@ -2089,7 +2107,7 @@ function App() {
       unlistenVisibility?.();
       unlistenOnboarding?.();
     };
-  }, [replayEntranceAnimation, requestHideOverlay]);
+  }, [handleRestore, replayEntranceAnimation, requestHideOverlay]);
 
   /**
    * Combined close handler shared by the keyboard shortcut (Esc/Cmd+W)

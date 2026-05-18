@@ -735,6 +735,48 @@ describe('App', () => {
     ).toBeInTheDocument();
   });
 
+  it('handles a restore visibility event without wiping the conversation', async () => {
+    // Arrange: render App and drive it into chat mode with one complete turn.
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'world' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // Confirm the conversation is present (chat mode with messages).
+    expect(screen.getByText('hello')).toBeInTheDocument();
+    expect(screen.getByText('world')).toBeInTheDocument();
+
+    // Act: dispatch a restore visibility event.
+    await act(async () => {
+      emitTauriEvent('thuki://visibility', { state: 'restore' });
+    });
+
+    // Assert: existing messages are still rendered (conversation was NOT wiped).
+    expect(screen.getByText('hello')).toBeInTheDocument();
+    expect(screen.getByText('world')).toBeInTheDocument();
+  });
+
   it('hides overlay on Escape key', async () => {
     render(<App />);
     await act(async () => {});
