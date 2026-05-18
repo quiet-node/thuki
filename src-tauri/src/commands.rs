@@ -398,7 +398,7 @@ pub async fn ask_ollama(
     // after a response (including partial/cancelled) to prevent orphaned
     // messages on errors.
     let (epoch_at_start, messages) = {
-        let conv = history.messages.lock().unwrap();
+        let conv = history.messages.lock().map_err(|e| e.to_string()).unwrap();
         let epoch = history.epoch.load(Ordering::SeqCst);
         let mut msgs = vec![ChatMessage {
             role: "system".to_string(),
@@ -429,7 +429,7 @@ pub async fn ask_ollama(
     // the conversational context (the user message and any partial response).
     let current_epoch = history.epoch.load(Ordering::SeqCst);
     if current_epoch == epoch_at_start && !accumulated.is_empty() {
-        let mut conv = history.messages.lock().unwrap();
+        let mut conv = history.messages.lock().map_err(|e| e.to_string()).unwrap();
         // Preserve images in history so that follow-up messages can still
         // reference earlier screenshots or attachments.  The full conversation
         // (including base64 blobs) is replayed to Ollama on every turn, which
@@ -464,7 +464,7 @@ pub async fn cancel_generation(generation: State<'_, GenerationState>) -> Result
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn reset_conversation(history: State<'_, ConversationHistory>) {
     history.epoch.fetch_add(1, Ordering::SeqCst);
-    history.messages.lock().unwrap().clear();
+    history.messages.lock().map_err(|e| e.to_string()).unwrap().clear();
 }
 
 #[cfg(test)]
