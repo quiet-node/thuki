@@ -18,6 +18,7 @@ import {
 import {
   __mockWindow,
   __setWindowGeometry,
+  LogicalSize,
 } from '../testUtils/mocks/tauri-window';
 import { useTips } from '../hooks/useTips';
 
@@ -7405,6 +7406,76 @@ describe('App', () => {
       expect(invoke).not.toHaveBeenCalledWith('notify_overlay_hidden');
       // cancel_generation must NOT have been called
       expect(invoke).not.toHaveBeenCalledWith('cancel_generation');
+    });
+
+    it('shrinks the window to 48x48 immediately on minimize', async () => {
+      await enterChatMode();
+      __mockWindow.setSize.mockClear();
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      // handleMinimize must call setSize(LogicalSize(48, 48)) immediately
+      expect(__mockWindow.setSize).toHaveBeenCalledWith(
+        new LogicalSize(48, 48),
+      );
+    });
+
+    it('strips chrome classes from layout wrapper when minimized', async () => {
+      await enterChatMode();
+
+      // Before minimize: layout wrapper has bg-surface-base and shadow-chat
+      // (isChatMode=true after enterChatMode)
+      const layoutWrappers = document.querySelectorAll(
+        '[class*="bg-surface-base"]',
+      );
+      expect(layoutWrappers.length).toBeGreaterThan(0);
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      // After minimize: no element with bg-surface-base class on the layout wrapper
+      const layoutWrappersAfter = document.querySelectorAll(
+        '[class*="bg-surface-base"]',
+      );
+      expect(layoutWrappersAfter.length).toBe(0);
+    });
+
+    it('strips padding from root container when minimized and restores on un-minimize', async () => {
+      await enterChatMode();
+
+      // Before minimize: root has px-3 in className
+      const rootBefore = document.querySelector('.h-screen');
+      expect(rootBefore?.className).toContain('px-3');
+      expect(rootBefore?.className).toContain('pt-2');
+      expect(rootBefore?.className).toContain('pb-6');
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      // After minimize: root must NOT have px-3/pt-2/pb-6
+      const rootAfter = document.querySelector('.h-screen');
+      expect(rootAfter?.className).not.toContain('px-3');
+      expect(rootAfter?.className).not.toContain('pt-2');
+      expect(rootAfter?.className).not.toContain('pb-6');
+
+      // Restore
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+
+      // After restore: padding is back
+      const rootRestored = document.querySelector('.h-screen');
+      expect(rootRestored?.className).toContain('px-3');
     });
 
     it('restores from the icon and clears the unseen indicator', async () => {

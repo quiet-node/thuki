@@ -92,4 +92,20 @@ describe('MinimizedIcon', () => {
     fireEvent.pointerMove(btn, { clientX: 80, clientY: 80 });
     expect(__mockWindow.startDragging).toHaveBeenCalledTimes(1);
   });
+
+  it('renders a bare logo with no circular background or rounded-xl crop', () => {
+    render(
+      <MinimizedIcon isWorking={false} hasUnseen={false} onRestore={vi.fn()} />,
+    );
+    const btn = screen.getByRole('button', { name: /restore thuki/i });
+    // No opaque card background
+    expect(btn.className).not.toContain('bg-surface-elevated');
+    expect(btn.className).not.toContain('rounded-full');
+    expect(btn.className).not.toContain('shadow-lg');
+    // Logo is 48px (w-12 h-12) with no rounded-xl crop
+    const img = screen.getByAltText('Thuki');
+    expect(img.className).toContain('w-12');
+    expect(img.className).toContain('h-12');
+    expect(img.className).not.toContain('rounded-xl');
+  });
 });

@@ -33,8 +33,7 @@ export const MinimizedIcon = memo(function MinimizedIcon({
     <button
       type="button"
       aria-label="Restore Thuki"
-      className="relative flex items-center justify-center rounded-full bg-surface-elevated shadow-lg cursor-pointer select-none"
-      style={{ width: 52, height: 52 }}
+      className="relative inline-flex items-center justify-center cursor-pointer select-none bg-transparent p-0 border-0"
       onPointerDown={(e) => {
         downPosRef.current = { x: e.clientX, y: e.clientY };
         draggedRef.current = false;
@@ -55,11 +54,11 @@ export const MinimizedIcon = memo(function MinimizedIcon({
         if (!wasDrag) onRestore();
       }}
     >
-      {/* Thuki logo reused from AskBarView: public asset /thuki-logo.png, sized for 52px container. */}
+      {/* Thuki logo: bare 48px natural shape, no background, no rounded crop. */}
       <img
         src="/thuki-logo.png"
         alt="Thuki"
-        className="w-10 h-10 rounded-xl"
+        className="w-12 h-12"
         draggable={false}
       />
       {isWorking && (
