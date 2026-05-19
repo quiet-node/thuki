@@ -170,6 +170,39 @@ const COLLAPSED_WINDOW_HEIGHT = 80;
  * window shrinks to this square so only the bare logo is visible.
  */
 const MINIMIZED_WINDOW_SIZE = 48;
+/**
+ * Top-left offset (px, from the window's top-left) at which the floating
+ * mascot sits so it lands exactly where the Thuki logo renders inside the
+ * ask bar's layout (root + motion + wrapper + bar-row padding, centered on
+ * the 40px ask-bar logo). The chat collapses "in place": the window's
+ * top-left stays put, so this offset is stable in viewport coords during the
+ * morph and when settled (no repositioning, no coordinate coupling). These
+ * are computed from the layout paddings and meant to be eyeball-nudged: it
+ * is the single knob for the icon's resting position.
+ */
+const MINIMIZED_ANCHOR = { x: 37, y: 23 } as const;
+/**
+ * Collapsed window must contain the offset mascot (anchor + icon) with a
+ * little breathing room. Top-left stays fixed, so the transparent slack sits
+ * around the icon near the bar position.
+ */
+const MINIMIZED_FRAME = {
+  width: MINIMIZED_ANCHOR.x + MINIMIZED_WINDOW_SIZE + 8,
+  height: MINIMIZED_ANCHOR.y + MINIMIZED_WINDOW_SIZE + 8,
+};
+/**
+ * The layout wrapper (the chat-chrome box the morph transform runs on) is
+ * inset from the window top-left by the root + motion paddings. Subtracting
+ * it converts the window-relative MINIMIZED_ANCHOR into a wrapper-relative
+ * transform-origin, so the chat scales toward the mascot's center: it
+ * visibly shrinks INTO the icon rather than toward the bare corner. Derived
+ * from the same anchor, so the icon position stays the single knob.
+ */
+const MORPH_WRAP_INSET = { x: 28, y: 16 } as const;
+const MORPH_ORIGIN = {
+  x: MINIMIZED_ANCHOR.x + MINIMIZED_WINDOW_SIZE / 2 - MORPH_WRAP_INSET.x,
+  y: MINIMIZED_ANCHOR.y + MINIMIZED_WINDOW_SIZE / 2 - MORPH_WRAP_INSET.y,
+};
 
 /**
  * Single source of truth for the in-page minimize/restore morph duration, in
@@ -888,8 +921,8 @@ function App() {
     // here and the `setMorphPhase` calls below are plain (pure) transitions.
     if (morphPhaseRef.current === 'collapsing') {
       void invoke('animate_overlay_frame', {
-        width: MINIMIZED_WINDOW_SIZE,
-        height: MINIMIZED_WINDOW_SIZE,
+        width: MINIMIZED_FRAME.width,
+        height: MINIMIZED_FRAME.height,
         durationMs: 0,
       });
       setMorphPhase('minimized');
@@ -2550,7 +2583,9 @@ function App() {
                 animate={morphTransform}
                 transition={morphTransition}
                 onAnimationComplete={handleMorphAnimationComplete}
-                style={{ transformOrigin: 'top left' }}
+                style={{
+                  transformOrigin: `${MORPH_ORIGIN.x}px ${MORPH_ORIGIN.y}px`,
+                }}
                 className={
                   isSettledMinimized
                     ? ''
@@ -2802,11 +2837,11 @@ function App() {
                   <motion.div
                     key="morph-mascot"
                     className={
-                      isSettledMinimized
-                        ? 'fixed top-0 left-0'
-                        : 'fixed top-0 left-0 pointer-events-none'
+                      isSettledMinimized ? 'fixed' : 'fixed pointer-events-none'
                     }
                     style={{
+                      left: MINIMIZED_ANCHOR.x,
+                      top: MINIMIZED_ANCHOR.y,
                       width: MINIMIZED_WINDOW_SIZE,
                       height: MINIMIZED_WINDOW_SIZE,
                     }}

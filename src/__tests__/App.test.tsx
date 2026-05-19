@@ -7405,9 +7405,12 @@ describe('App', () => {
       // in-page collapse morph (durationMs:0 = instant, invisible because the
       // painted content is already the mascot). The framer-motion test mock
       // flushes onAnimationComplete during the `await act` above.
+      // Collapsed window = MINIMIZED_FRAME: anchor (37,23) + 48px icon + 8px
+      // slack, so the offset mascot (at the ask-bar logo slot) is contained
+      // while the window top-left stays fixed.
       expect(invoke).toHaveBeenCalledWith('animate_overlay_frame', {
-        width: 48,
-        height: 48,
+        width: 93,
+        height: 79,
         durationMs: 0,
       });
 
