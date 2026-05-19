@@ -180,6 +180,13 @@ const MINIMIZED_WINDOW_SIZE = 48;
  * uses the same ease curve for vibe consistency.
  */
 const MORPH_DURATION_S = 0.3;
+/**
+ * Collapse runs a touch longer than expand and holds the chat opaque while it
+ * scales toward the corner (opacity keyframed to fade only at the tail), so
+ * the eye reads a continuous shrink-into-the-mascot instead of an instant
+ * disappear followed by a window-snap jump. Expand keeps MORPH_DURATION_S.
+ */
+const COLLAPSE_DURATION_S = 0.42;
 const MORPH_EASE = [0.16, 1, 0.3, 1] as const;
 
 /**
@@ -2439,12 +2446,42 @@ function App() {
    * does not snap back to identity mid-AnimatePresence-swap.
    */
   const collapsedScale = MINIMIZED_WINDOW_SIZE / overlayWidthRef.current;
-  const isCollapsedTarget =
-    morphPhase === 'collapsing' || morphPhase === 'minimized';
+  const collapsing = morphPhase === 'collapsing';
+  const isCollapsedTarget = collapsing || morphPhase === 'minimized';
+  // While collapsing, the chat stays fully opaque for the first ~65% as it
+  // scales toward the corner, then fades over the tail as it reaches mascot
+  // size: a visible shrink-into-the-icon, not an instant fade. Settled and
+  // expand keep scalar opacity.
   const morphTransform = isCollapsedTarget
-    ? { scale: collapsedScale, x: 0, y: 0, opacity: 0 }
+    ? {
+        scale: collapsedScale,
+        x: 0,
+        y: 0,
+        opacity: collapsing ? [1, 1, 0] : 0,
+      }
     : { scale: 1, x: 0, y: 0, opacity: 1 };
-  const morphTransition = { duration: MORPH_DURATION_S, ease: MORPH_EASE };
+  const morphTransition = collapsing
+    ? {
+        duration: COLLAPSE_DURATION_S,
+        ease: MORPH_EASE,
+        opacity: {
+          duration: COLLAPSE_DURATION_S,
+          times: [0, 0.65, 1],
+          ease: 'linear' as const,
+        },
+      }
+    : { duration: MORPH_DURATION_S, ease: MORPH_EASE };
+  // The mascot stays hidden while the big chat shrinks, then fades in over the
+  // tail so it "emerges" exactly as the chat collapses into it. Expand reuses
+  // the standard transition (fade out) which already reads well.
+  const mascotOpacity = isSettledMinimized ? 1 : collapsing ? [0, 0, 1] : 0;
+  const mascotTransition = collapsing
+    ? {
+        duration: COLLAPSE_DURATION_S,
+        times: [0, 0.55, 1],
+        ease: 'linear' as const,
+      }
+    : morphTransition;
 
   if (onboardingStage !== null) {
     return (
@@ -2767,13 +2804,8 @@ function App() {
                       height: MINIMIZED_WINDOW_SIZE,
                     }}
                     initial={{ opacity: morphPhase === 'expanding' ? 1 : 0 }}
-                    animate={{
-                      opacity:
-                        isSettledMinimized || morphPhase === 'collapsing'
-                          ? 1
-                          : 0,
-                    }}
-                    transition={morphTransition}
+                    animate={{ opacity: mascotOpacity }}
+                    transition={mascotTransition}
                   >
                     <MinimizedIcon
                       isWorking={isGenerating}
