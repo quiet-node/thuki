@@ -181,12 +181,14 @@ const MINIMIZED_WINDOW_SIZE = 48;
  */
 const MORPH_DURATION_S = 0.3;
 /**
- * Collapse runs a touch longer than expand and holds the chat opaque while it
- * scales toward the corner (opacity keyframed to fade only at the tail), so
- * the eye reads a continuous shrink-into-the-mascot instead of an instant
- * disappear followed by a window-snap jump. Expand keeps MORPH_DURATION_S.
+ * Collapse runs a touch longer than expand. The chat SCALE shrinks smoothly
+ * over the whole duration with a gentle standard curve (NOT the aggressive
+ * MORPH_EASE, which slams the chat to pixel-tiny in ~80ms and reads as a
+ * jumpy snap), staying opaque while it visibly shrinks and only dissolving
+ * over the tail as the mascot grows in. Expand keeps MORPH_DURATION_S/EASE.
  */
-const COLLAPSE_DURATION_S = 0.42;
+const COLLAPSE_DURATION_S = 0.5;
+const COLLAPSE_EASE = [0.4, 0, 0.2, 1] as const;
 const MORPH_EASE = [0.16, 1, 0.3, 1] as const;
 
 /**
@@ -2448,47 +2450,43 @@ function App() {
   const collapsedScale = MINIMIZED_WINDOW_SIZE / overlayWidthRef.current;
   const collapsing = morphPhase === 'collapsing';
   const isCollapsedTarget = collapsing || morphPhase === 'minimized';
-  // While collapsing, the chat stays fully opaque for the first ~65% as it
-  // scales toward the corner, then fades over the tail as it reaches mascot
-  // size: a visible shrink-into-the-icon, not an instant fade. Settled and
-  // expand keep scalar opacity.
+  // Scalar targets only (no keyframe arrays): keyframe arrays made Framer's
+  // wrapper onAnimationComplete fire ambiguously and snap the window
+  // mid-animation (the "jump"/thrash). Timing is shaped per-property in the
+  // transition instead, which fires one clean completion at the true end.
   const morphTransform = isCollapsedTarget
-    ? {
-        scale: collapsedScale,
-        x: 0,
-        y: 0,
-        opacity: collapsing ? [1, 1, 0] : 0,
-      }
+    ? { scale: collapsedScale, x: 0, y: 0, opacity: 0 }
     : { scale: 1, x: 0, y: 0, opacity: 1 };
+  // Collapse: scale shrinks smoothly across the WHOLE duration with the gentle
+  // standard curve so the eye watches a continuous shrink; opacity holds at 1
+  // until the tail then dissolves as the chat is already small and the mascot
+  // is taking over. Expand is unchanged.
   const morphTransition = collapsing
     ? {
-        duration: COLLAPSE_DURATION_S,
-        ease: MORPH_EASE,
+        scale: { duration: COLLAPSE_DURATION_S, ease: COLLAPSE_EASE },
         opacity: {
-          duration: COLLAPSE_DURATION_S,
-          // Dissolve the chat while it is still mid-size (gone by ~45%), so
-          // the eye never lands on the ugly pixel-tiny chat thumbnail the
-          // ease-out scale produces near the end.
-          times: [0, 0.18, 0.45],
+          duration: 0.2,
+          delay: COLLAPSE_DURATION_S - 0.22,
           ease: 'linear' as const,
         },
       }
     : { duration: MORPH_DURATION_S, ease: MORPH_EASE };
-  // The mascot stays hidden while the big chat shrinks, then fades in over the
-  // tail so it "emerges" exactly as the chat collapses into it. Expand reuses
-  // the standard transition (fade out) which already reads well.
-  const mascotOpacity = isSettledMinimized ? 1 : collapsing ? [0, 0, 1] : 0;
-  // Subtle scale-in so the mascot "grows into place" as it emerges instead of
-  // a flat crossfade: reads as the chat becoming the icon.
-  const mascotScale = isSettledMinimized ? 1 : collapsing ? [0.82, 0.82, 1] : 1;
+  // Mascot emerges (fade + gentle scale-up) over the back third, after the
+  // chat has visibly shrunk, so it reads as the chat becoming the icon.
+  const mascotOpacity = isSettledMinimized || collapsing ? 1 : 0;
+  const mascotScale = 1;
   const mascotTransition = collapsing
     ? {
-        // Mascot emerges over the back half and is fully settled by ~70%, so
-        // the final stretch before the window snap is a clean, solid icon
-        // with no chat ghost behind it.
-        duration: COLLAPSE_DURATION_S,
-        times: [0, 0.3, 0.7],
-        ease: 'linear' as const,
+        opacity: {
+          duration: 0.22,
+          delay: COLLAPSE_DURATION_S - 0.26,
+          ease: 'linear' as const,
+        },
+        scale: {
+          duration: 0.32,
+          delay: COLLAPSE_DURATION_S - 0.36,
+          ease: COLLAPSE_EASE,
+        },
       }
     : morphTransition;
 
@@ -2812,7 +2810,11 @@ function App() {
                       width: MINIMIZED_WINDOW_SIZE,
                       height: MINIMIZED_WINDOW_SIZE,
                     }}
-                    initial={{ opacity: morphPhase === 'expanding' ? 1 : 0 }}
+                    initial={
+                      morphPhase === 'expanding'
+                        ? { opacity: 1, scale: 1 }
+                        : { opacity: 0, scale: 0.85 }
+                    }
                     animate={{ opacity: mascotOpacity, scale: mascotScale }}
                     transition={mascotTransition}
                   >
