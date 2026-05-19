@@ -563,7 +563,7 @@ function App() {
       } else {
         await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
       }
-    } catch (err: TypeError) {
+    } catch {
       // State stays unchanged on failure; feedback is implicit in the icon.
     }
   }, [isSaved, unsave, save, messages, modelConfig]);
@@ -581,7 +581,7 @@ function App() {
       try {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
-      } catch (err: Error) {
+      } catch {
         // Load failed — current session is preserved intact.
       } finally {
         setIsHistoryOpen(false);
@@ -602,14 +602,14 @@ function App() {
     async (id: string) => {
       try {
         await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
-      } catch (err: Error) {
+      } catch {
         // Save failed — abort to avoid leaving the current session unprotected.
         return;
       }
       try {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
-      } catch (err: Error) {
+      } catch {
         // Load failed — save already committed; dismiss panel, keep current view.
       } finally {
         setIsHistoryOpen(false);
@@ -674,7 +674,7 @@ function App() {
   const handleSaveAndNew = useCallback(async () => {
     try {
       await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
-    } catch (err: Error) {
+    } catch {
       return;
     }
     resetForNewConversation();
