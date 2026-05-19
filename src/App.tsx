@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
+import { createPortal } from 'react-dom';
 import {
   useState,
   useEffect,
@@ -2443,10 +2444,6 @@ function App() {
   const morphTransform = isCollapsedTarget
     ? { scale: collapsedScale, x: 0, y: 0, opacity: 0 }
     : { scale: 1, x: 0, y: 0, opacity: 1 };
-  // The bare mascot crossfades in as the card shrinks into it (collapse) and
-  // out as the card grows back (expand), so the chat visually becomes / comes
-  // from the mascot rather than a sequential fade after the card disappears.
-  const morphIconOpacity = isCollapsedTarget ? 1 : 0;
   const morphTransition = { duration: MORPH_DURATION_S, ease: MORPH_EASE };
 
   if (onboardingStage !== null) {
@@ -2521,21 +2518,7 @@ function App() {
                 }
               >
                 <AnimatePresence mode="wait">
-                  {isSettledMinimized ? (
-                    <motion.div
-                      key="minimized-icon"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={{ duration: 0.16, delay: 0.08 }}
-                    >
-                      <MinimizedIcon
-                        isWorking={isGenerating}
-                        hasUnseen={unseenCompletion}
-                        onRestore={handleRestore}
-                      />
-                    </motion.div>
-                  ) : (
+                  {isSettledMinimized ? null : (
                     <motion.div
                       key="chat-content"
                       initial={{ opacity: 0 }}
@@ -2762,35 +2745,44 @@ function App() {
                 </AnimatePresence>
               </motion.div>
 
-              {/* Morph mascot overlay: absolutely pinned to the top-left
-                  corner (where the 48px window snaps when settled). Crossfades
-                  IN as the chat card scales down into it (collapse) and OUT as
-                  the card grows back (expand), so the chat visually becomes /
-                  emerges from the mascot. Only mounted during the transform
-                  morph; the settled bare icon is the inner-AnimatePresence one
-                  above. pointer-events-none so it never eats clicks meant for
-                  the chat underneath while morphing. */}
-              {isMorphing && (
-                <motion.div
-                  key="morph-mascot"
-                  className="absolute top-0 left-0 pointer-events-none"
-                  initial={{ opacity: morphPhase === 'expanding' ? 1 : 0 }}
-                  animate={{
-                    opacity: morphIconOpacity,
-                    scale: isCollapsedTarget ? 1 : 0.8,
-                  }}
-                  transition={morphTransition}
-                  style={{ transformOrigin: 'top left' }}
-                  aria-hidden="true"
-                >
-                  <img
-                    src="/thuki-logo.png"
-                    alt=""
-                    className="w-12 h-12"
-                    draggable={false}
-                  />
-                </motion.div>
-              )}
+              {/* Morph mascot: portaled to <body> so it is anchored to the
+                  viewport top-left (0,0) regardless of the transformed chat
+                  ancestors. That is exactly where the native 48px window
+                  snaps on collapse, so the icon and the window frame coincide
+                  by construction and the icon can never be clipped/vanish.
+                  Rendered for the whole minimized lifecycle: fades in on
+                  collapse, solid + clickable when settled, fades out on
+                  expand. */}
+              {isMinimized &&
+                createPortal(
+                  <motion.div
+                    key="morph-mascot"
+                    className={
+                      isSettledMinimized
+                        ? 'fixed top-0 left-0'
+                        : 'fixed top-0 left-0 pointer-events-none'
+                    }
+                    style={{
+                      width: MINIMIZED_WINDOW_SIZE,
+                      height: MINIMIZED_WINDOW_SIZE,
+                    }}
+                    initial={{ opacity: morphPhase === 'expanding' ? 1 : 0 }}
+                    animate={{
+                      opacity:
+                        isSettledMinimized || morphPhase === 'collapsing'
+                          ? 1
+                          : 0,
+                    }}
+                    transition={morphTransition}
+                  >
+                    <MinimizedIcon
+                      isWorking={isGenerating}
+                      hasUnseen={unseenCompletion}
+                      onRestore={handleRestore}
+                    />
+                  </motion.div>,
+                  document.body,
+                )}
 
               {/* Chat-mode model picker dropdown - floating card identical in style
                   to the chat-history dropdown. Anchored absolute right-3 top-10
