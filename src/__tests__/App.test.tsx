@@ -7401,6 +7401,14 @@ describe('App', () => {
         minimized: true,
       });
 
+      // Native frame animation requested: collapse to the 48px icon square
+      // in one IPC call (Core Animation drives the tween).
+      expect(invoke).toHaveBeenCalledWith('animate_overlay_frame', {
+        width: 48,
+        height: 48,
+        durationMs: 260,
+      });
+
       // notify_overlay_hidden must NOT have been called (no cancel)
       expect(invoke).not.toHaveBeenCalledWith('notify_overlay_hidden');
       // cancel_generation must NOT have been called
@@ -7487,10 +7495,21 @@ describe('App', () => {
         fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
         fireEvent.pointerUp(restoreBtn);
       });
+      // Restore geometry recompute + native frame animation fire inside the
+      // async IIFE; flush microtasks so the invoke calls are observable.
+      await act(async () => {});
 
       // set_overlay_minimized called with minimized: false
       expect(invoke).toHaveBeenCalledWith('set_overlay_minimized', {
         minimized: false,
+      });
+
+      // Native frame animation requested: expand back to the chat box
+      // (overlay width x max chat height) in one IPC call.
+      expect(invoke).toHaveBeenCalledWith('animate_overlay_frame', {
+        width: DEFAULT_CONFIG.window.overlayWidth,
+        height: DEFAULT_CONFIG.window.maxChatHeight,
+        durationMs: 260,
       });
 
       // ConversationView shown again with same messages

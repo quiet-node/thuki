@@ -667,6 +667,142 @@ fn set_window_frame(app_handle: tauri::AppHandle, x: f64, y: f64, width: f64, he
     });
 }
 
+/// Computes the AppKit target frame for a resize that keeps the window's
+/// visual top-left corner fixed.
+///
+/// AppKit screen coordinates are bottom-left origin (Y grows upward), so the
+/// current top edge is `origin.y + height`. To keep that top edge (and the
+/// left edge) stationary while the size changes, the new origin's Y must be
+/// `top - new_height`. This is purely relative to the current frame: no screen
+/// lookup, no multi-monitor math, no absolute Y-flip. Robust by construction.
+///
+/// `cur` is `(origin_x, origin_y, width, height)`; the return is the same shape
+/// for the target frame.
+fn compute_top_left_anchored_target(
+    cur: (f64, f64, f64, f64),
+    w: f64,
+    h: f64,
+) -> (f64, f64, f64, f64) {
+    let (cur_x, cur_y, _cur_w, cur_h) = cur;
+    let top = cur_y + cur_h;
+    let new_y = top - h;
+    (cur_x, new_y, w, h)
+}
+
+/// Animates the main overlay NSPanel/NSWindow from its current native frame to
+/// a new size, keeping the visual top-left corner fixed, using
+/// `NSAnimationContext` so the OS compositor (Core Animation) drives the
+/// animation. One IPC call per morph direction replaces the old per-frame
+/// `setSize` storm.
+///
+/// Excluded from coverage: thin wrapper over AppKit `NSWindow`/
+/// `NSAnimationContext` FFI that requires a real window and the macOS main
+/// thread. The pure geometry is covered by
+/// `compute_top_left_anchored_target`'s unit test.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn animate_overlay_frame(app_handle: tauri::AppHandle, width: f64, height: f64, duration_ms: f64) {
+    // Never panic on bad input: reject non-finite / non-positive dimensions
+    // and clamp the duration to a sane range. A missing window handle is a
+    // silent no-op.
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let duration_ms = if duration_ms.is_finite() {
+        duration_ms.clamp(0.0, 2000.0)
+    } else {
+        0.0
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::encode::{Encode, Encoding, RefEncode};
+        use objc2::rc::autoreleasepool;
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+
+        // Local NSRect/NSPoint/NSSize. `core_graphics::geometry::CGRect` does
+        // not implement objc2's `Encode`, so it cannot be a `msg_send!`
+        // return/argument type. NSRect uses CGFloat = f64 on macOS and is
+        // layout-compatible with the AppKit `NSWindow` frame ABI.
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct NSPoint {
+            x: f64,
+            y: f64,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct NSSize {
+            width: f64,
+            height: f64,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct NSRect {
+            origin: NSPoint,
+            size: NSSize,
+        }
+
+        unsafe impl Encode for NSPoint {
+            const ENCODING: Encoding = Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]);
+        }
+        unsafe impl Encode for NSSize {
+            const ENCODING: Encoding = Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING]);
+        }
+        unsafe impl Encode for NSRect {
+            const ENCODING: Encoding =
+                Encoding::Struct("CGRect", &[NSPoint::ENCODING, NSSize::ENCODING]);
+        }
+        unsafe impl RefEncode for NSRect {
+            const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+        }
+
+        let handle = app_handle.clone();
+        let _ = app_handle.run_on_main_thread(move || {
+            let Some(window) = handle.get_webview_window("main") else {
+                return;
+            };
+            let Ok(ns_window) = window.ns_window() else {
+                return;
+            };
+            if ns_window.is_null() {
+                return;
+            }
+            let win = ns_window as *mut AnyObject;
+
+            autoreleasepool(|_| unsafe {
+                let cur: NSRect = msg_send![win, frame];
+                let (tx, ty, tw, th) = compute_top_left_anchored_target(
+                    (cur.origin.x, cur.origin.y, cur.size.width, cur.size.height),
+                    width,
+                    height,
+                );
+                let target = NSRect {
+                    origin: NSPoint { x: tx, y: ty },
+                    size: NSSize {
+                        width: tw,
+                        height: th,
+                    },
+                };
+
+                let ctx_cls = class!(NSAnimationContext);
+                let _: () = msg_send![ctx_cls, beginGrouping];
+                let ctx: *mut AnyObject = msg_send![ctx_cls, currentContext];
+                let _: () = msg_send![ctx, setDuration: duration_ms / 1000.0];
+                let animator: *mut AnyObject = msg_send![win, animator];
+                let _: () = msg_send![animator, setFrame: target, display: true];
+                let _: () = msg_send![ctx_cls, endGrouping];
+            });
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app_handle, width, height, duration_ms);
+    }
+}
+
 /// Synchronizes the Rust-side visibility tracking when the frontend
 /// completes its exit animation and hides the native window.
 #[tauri::command]
@@ -1538,6 +1674,7 @@ pub fn run() {
             set_overlay_minimized,
             notify_frontend_ready,
             set_window_frame,
+            animate_overlay_frame,
             #[cfg(not(coverage))]
             permissions::check_accessibility_permission,
             #[cfg(not(coverage))]
@@ -1621,6 +1758,30 @@ mod tests {
         assert!(!f64::INFINITY.is_finite());
         assert!(!f64::NEG_INFINITY.is_finite());
         assert!(100.0_f64.is_finite());
+    }
+
+    #[test]
+    fn top_left_anchored_target_keeps_top_and_left_fixed() {
+        // Current frame: origin (100, 200), size 600x700.
+        // AppKit top edge = 200 + 700 = 900.
+        let cur = (100.0_f64, 200.0_f64, 600.0_f64, 700.0_f64);
+
+        // Shrink to a 48x48 square.
+        let (x, y, w, h) = compute_top_left_anchored_target(cur, 48.0, 48.0);
+        assert_eq!(x, 100.0, "left edge (origin.x) must not move");
+        assert_eq!(w, 48.0, "width is set to the requested value");
+        assert_eq!(h, 48.0, "height is set to the requested value");
+        // Top edge after = new_y + new_h must equal the original top (900).
+        assert_eq!(y + h, 900.0, "visual top edge must stay fixed");
+        assert_eq!(y, 852.0);
+
+        // Grow back to a larger box: top edge still fixed at 900.
+        let (gx, gy, gw, gh) = compute_top_left_anchored_target(cur, 560.0, 648.0);
+        assert_eq!(gx, 100.0);
+        assert_eq!(gw, 560.0);
+        assert_eq!(gh, 648.0);
+        assert_eq!(gy + gh, 900.0, "visual top edge must stay fixed on grow");
+        assert_eq!(gy, 252.0);
     }
 
     #[test]
