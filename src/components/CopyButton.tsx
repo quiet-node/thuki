@@ -23,7 +23,7 @@ export function CopyButton({ content, align }: CopyButtonProps) {
       if (timerRef.current) clearTimeout(timerRef.current);
       setCopied(true);
       timerRef.current = setTimeout(() => setCopied(false), 1500);
-    } catch (err: DOMException) {
+    } catch {
       // fail silently — no clipboard access is not an error worth surfacing
     }
   }, [content]);
