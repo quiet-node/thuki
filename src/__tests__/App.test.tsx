@@ -18,7 +18,6 @@ import {
 import {
   __mockWindow,
   __setWindowGeometry,
-  LogicalSize,
 } from '../testUtils/mocks/tauri-window';
 import { useTips } from '../hooks/useTips';
 
@@ -7406,21 +7405,6 @@ describe('App', () => {
       expect(invoke).not.toHaveBeenCalledWith('notify_overlay_hidden');
       // cancel_generation must NOT have been called
       expect(invoke).not.toHaveBeenCalledWith('cancel_generation');
-    });
-
-    it('shrinks the window to 48x48 immediately on minimize', async () => {
-      await enterChatMode();
-      __mockWindow.setSize.mockClear();
-
-      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
-      await act(async () => {
-        fireEvent.click(minimizeBtn);
-      });
-
-      // handleMinimize must call setSize(LogicalSize(48, 48)) immediately
-      expect(__mockWindow.setSize).toHaveBeenCalledWith(
-        new LogicalSize(48, 48),
-      );
     });
 
     it('strips chrome classes from layout wrapper when minimized', async () => {

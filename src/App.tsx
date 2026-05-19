@@ -260,6 +260,14 @@ function App() {
    */
   const morphingContainerNodeRef = useRef<HTMLDivElement | null>(null);
 
+  /**
+   * Direct reference to the layout-wrapper DOM node (the box observed by the
+   * ResizeObserver). Stored alongside the observer so the minimize/restore
+   * morph effect can drive an explicit width+height CSS transition on it,
+   * mirroring how `morphingContainerNodeRef` backs the upward-growth morph.
+   */
+  const layoutWrapperNodeRef = useRef<HTMLDivElement | null>(null);
+
   const {
     activeModel,
     availableModels,
@@ -462,6 +470,14 @@ function App() {
   isMinimizedRef.current = isMinimized;
 
   /**
+   * True only while a collapse-to-icon or expand-to-chat size transition is
+   * in flight. While set, the ResizeObserver tracks the wrapper's animating
+   * box on BOTH dimensions so the native window tweens in lockstep with the
+   * CSS transition (same mechanism as the ask<->chat morph).
+   */
+  const isMorphingRef = useRef(false);
+
+  /**
    * High-water mark for window height during streaming. While the LLM is
    * generating, the window only grows (never shrinks) to prevent jitter
    * from Streamdown's block-element reflows. Reset when generation ends
@@ -552,6 +568,8 @@ function App() {
    * chat is at max height, and the wrapper's natural height grows to include it.
    */
   const setLayoutWrapperRef = useCallback((node: HTMLDivElement | null) => {
+    layoutWrapperNodeRef.current = node;
+
     if (observerRef.current) {
       observerRef.current.disconnect();
       observerRef.current = null;
@@ -563,13 +581,32 @@ function App() {
         (entries) => {
           requestAnimationFrame(() => {
             for (const entry of entries) {
+              const rect = entry.target.getBoundingClientRect();
+
+              // State 1: mid-morph. Track the animating wrapper box on BOTH
+              // dimensions so the native window tweens in lockstep with the
+              // CSS transition. While minimized/morphing the outer root +
+              // motion padding is removed, so window == wrapper box (no
+              // CONTAINER_VERTICAL_PADDING).
+              if (isMorphingRef.current) {
+                void getCurrentWindow().setSize(
+                  new LogicalSize(
+                    Math.ceil(rect.width),
+                    Math.ceil(rect.height),
+                  ),
+                );
+                continue;
+              }
+
+              // State 2: settled minimized. Hold the fixed icon square.
               if (isMinimizedRef.current) {
                 void getCurrentWindow().setSize(
                   new LogicalSize(MINIMIZED_WINDOW_SIZE, MINIMIZED_WINDOW_SIZE),
                 );
                 continue;
               }
-              const rect = entry.target.getBoundingClientRect();
+
+              // State 3: settled chat/ask. Unchanged content-driven sizing.
               // Total vertical room: 8px (pt-2) + 24px (pb-6) + 16px (motion py-2) = 48px.
               // This ensures the tightened drop shadows aren't clipped by the native window edge.
               let targetHeight =
@@ -755,9 +792,6 @@ function App() {
     setGrowsUpward(false);
     setIsMinimized(true);
     void invoke('set_overlay_minimized', { minimized: true });
-    void getCurrentWindow().setSize(
-      new LogicalSize(MINIMIZED_WINDOW_SIZE, MINIMIZED_WINDOW_SIZE),
-    );
   }, []);
 
   /** Ref attached to the chat-mode history dropdown for click-outside detection. */
@@ -875,6 +909,97 @@ function App() {
     return () => cancelAnimationFrame(frameId);
     /* v8 ignore stop */
   }, [growsUpward, isChatMode, isHistoryOpen]);
+
+  /**
+   * Minimize/restore morph. Animates the layout wrapper from its current
+   * rendered box to an explicit target box (collapse: chat -> 48x48 square;
+   * expand: 48 -> overlay width x chat height) using the SAME explicit-start
+   * -> reflow -> rAF -> transition-to-target dance the upward-growth morph
+   * uses. While the transition runs, `isMorphingRef` routes the ResizeObserver
+   * to track the animating box per-frame, so the native window tweens in
+   * lockstep with the CSS transition: same curve, same duration, same feel as
+   * the ask<->chat morph. On collapse the wrapper clips its content (overflow
+   * hidden) so chat is masked, not reflowed, while it cross-fades to the icon.
+   * On expand, inline width/height are cleared at the end so sizing hands back
+   * to the content-driven observer path.
+   */
+  useLayoutEffect(() => {
+    /* v8 ignore start -- ResizeObserver + DOM mutations require a real browser */
+    const el = layoutWrapperNodeRef.current;
+    if (!el) return;
+
+    const startW = el.offsetWidth;
+    const startH = el.offsetHeight;
+
+    let targetW: number;
+    let targetH: number;
+    if (isMinimized) {
+      targetW = MINIMIZED_WINDOW_SIZE;
+      targetH = MINIMIZED_WINDOW_SIZE;
+    } else {
+      targetW = overlayWidthRef.current;
+      targetH = maxChatHeightRef.current;
+    }
+
+    el.style.transition = 'none';
+    el.style.width = `${startW}px`;
+    el.style.height = `${startH}px`;
+    el.style.overflow = 'hidden';
+    void el.offsetWidth; // force reflow so the start box is committed
+    isMorphingRef.current = true;
+
+    const id = requestAnimationFrame(() => {
+      el.style.transition =
+        'width 0.25s cubic-bezier(0.16, 1, 0.3, 1), height 0.25s cubic-bezier(0.16, 1, 0.3, 1)';
+      el.style.width = `${targetW}px`;
+      el.style.height = `${targetH}px`;
+    });
+
+    const settle = () => {
+      isMorphingRef.current = false;
+      el.style.transition = '';
+      if (isMinimized) {
+        // Settle as the fixed icon square.
+        el.style.width = `${MINIMIZED_WINDOW_SIZE}px`;
+        el.style.height = `${MINIMIZED_WINDOW_SIZE}px`;
+        el.style.overflow = '';
+      } else {
+        // Hand sizing back to the content-driven observer path (w-full).
+        el.style.width = '';
+        el.style.height = '';
+        el.style.overflow = '';
+      }
+    };
+
+    const onEnd = (e: TransitionEvent) => {
+      if (
+        e.target !== el ||
+        (e.propertyName !== 'width' && e.propertyName !== 'height')
+      ) {
+        return;
+      }
+      if (!isMorphingRef.current) return; // already settled (other property)
+      settle();
+      el.removeEventListener('transitionend', onEnd);
+    };
+    el.addEventListener('transitionend', onEnd);
+
+    // Fallback: transitionend can be missed if [isMinimized] toggles again
+    // mid-transition (cleanup tears down the listener before the browser
+    // fires). Clear the morph state and inline transition regardless.
+    const fallbackId = window.setTimeout(() => {
+      if (!isMorphingRef.current) return;
+      settle();
+      el.removeEventListener('transitionend', onEnd);
+    }, 300);
+
+    return () => {
+      cancelAnimationFrame(id);
+      window.clearTimeout(fallbackId);
+      el.removeEventListener('transitionend', onEnd);
+    };
+    /* v8 ignore stop */
+  }, [isMinimized]);
 
   /**
    * Observes the dropdown's height while it's open and mutates the morphing
@@ -2330,8 +2455,8 @@ function App() {
                 ref={setLayoutWrapperRef}
                 className={
                   isMinimized
-                    ? 'transition-[width,height] duration-[260ms] ease-[cubic-bezier(0.16,1,0.3,1)]'
-                    : `bg-surface-base backdrop-blur-2xl border border-surface-border transition-[width,height] duration-[260ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                    ? ''
+                    : `bg-surface-base backdrop-blur-2xl border border-surface-border ${
                         isChatMode
                           ? 'rounded-lg shadow-chat'
                           : 'rounded-2xl shadow-bar'
@@ -2345,7 +2470,7 @@ function App() {
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
-                      transition={{ duration: 0.18 }}
+                      transition={{ duration: 0.15, delay: 0.1 }}
                     >
                       <MinimizedIcon
                         isWorking={isGenerating}
@@ -2359,7 +2484,7 @@ function App() {
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
-                      transition={{ duration: 0.18 }}
+                      transition={{ duration: 0.12 }}
                     >
                       <>
                         {/* Morphing Container - flex column ensures the input bar
