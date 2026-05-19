@@ -31,7 +31,7 @@ function fromPersisted(msg: PersistedMessage): Message {
   if (msg.image_paths) {
     try {
       imagePaths = JSON.parse(msg.image_paths) as string[];
-    } catch (err: SyntaxError) {
+    } catch {
       console.warn("load_conversation: failed to parse image_paths, skipping:", msg.image_paths);
       imagePaths = undefined;
     }
