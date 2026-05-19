@@ -2466,7 +2466,10 @@ function App() {
         ease: MORPH_EASE,
         opacity: {
           duration: COLLAPSE_DURATION_S,
-          times: [0, 0.65, 1],
+          // Dissolve the chat while it is still mid-size (gone by ~45%), so
+          // the eye never lands on the ugly pixel-tiny chat thumbnail the
+          // ease-out scale produces near the end.
+          times: [0, 0.18, 0.45],
           ease: 'linear' as const,
         },
       }
@@ -2475,10 +2478,16 @@ function App() {
   // tail so it "emerges" exactly as the chat collapses into it. Expand reuses
   // the standard transition (fade out) which already reads well.
   const mascotOpacity = isSettledMinimized ? 1 : collapsing ? [0, 0, 1] : 0;
+  // Subtle scale-in so the mascot "grows into place" as it emerges instead of
+  // a flat crossfade: reads as the chat becoming the icon.
+  const mascotScale = isSettledMinimized ? 1 : collapsing ? [0.82, 0.82, 1] : 1;
   const mascotTransition = collapsing
     ? {
+        // Mascot emerges over the back half and is fully settled by ~70%, so
+        // the final stretch before the window snap is a clean, solid icon
+        // with no chat ghost behind it.
         duration: COLLAPSE_DURATION_S,
-        times: [0, 0.55, 1],
+        times: [0, 0.3, 0.7],
         ease: 'linear' as const,
       }
     : morphTransition;
@@ -2804,7 +2813,7 @@ function App() {
                       height: MINIMIZED_WINDOW_SIZE,
                     }}
                     initial={{ opacity: morphPhase === 'expanding' ? 1 : 0 }}
-                    animate={{ opacity: mascotOpacity }}
+                    animate={{ opacity: mascotOpacity, scale: mascotScale }}
                     transition={mascotTransition}
                   >
                     <MinimizedIcon
