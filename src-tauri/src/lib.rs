@@ -786,13 +786,23 @@ fn animate_overlay_frame(app_handle: tauri::AppHandle, width: f64, height: f64, 
                     },
                 };
 
-                let ctx_cls = class!(NSAnimationContext);
-                let _: () = msg_send![ctx_cls, beginGrouping];
-                let ctx: *mut AnyObject = msg_send![ctx_cls, currentContext];
-                let _: () = msg_send![ctx, setDuration: duration_ms / 1000.0];
-                let animator: *mut AnyObject = msg_send![win, animator];
-                let _: () = msg_send![animator, setFrame: target, display: true];
-                let _: () = msg_send![ctx_cls, endGrouping];
+                // duration 0 is the invisible endpoint snap used by the
+                // in-page morph: the painted web content already matches the
+                // target, so the OS frame must change instantly. The animator
+                // proxy still tweens (briefly) even at duration 0, so bypass
+                // NSAnimationContext entirely and set the frame directly on
+                // the window for a true immediate, non-animated change.
+                if duration_ms == 0.0 {
+                    let _: () = msg_send![win, setFrame: target, display: true];
+                } else {
+                    let ctx_cls = class!(NSAnimationContext);
+                    let _: () = msg_send![ctx_cls, beginGrouping];
+                    let ctx: *mut AnyObject = msg_send![ctx_cls, currentContext];
+                    let _: () = msg_send![ctx, setDuration: duration_ms / 1000.0];
+                    let animator: *mut AnyObject = msg_send![win, animator];
+                    let _: () = msg_send![animator, setFrame: target, display: true];
+                    let _: () = msg_send![ctx_cls, endGrouping];
+                }
             });
         });
     }

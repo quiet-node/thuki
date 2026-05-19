@@ -7401,12 +7401,14 @@ describe('App', () => {
         minimized: true,
       });
 
-      // Native frame animation requested: collapse to the 48px icon square
-      // in one IPC call (Core Animation drives the tween).
+      // The OS window only snap-resizes to the 48px square at the END of the
+      // in-page collapse morph (durationMs:0 = instant, invisible because the
+      // painted content is already the mascot). The framer-motion test mock
+      // flushes onAnimationComplete during the `await act` above.
       expect(invoke).toHaveBeenCalledWith('animate_overlay_frame', {
         width: 48,
         height: 48,
-        durationMs: 260,
+        durationMs: 0,
       });
 
       // notify_overlay_hidden must NOT have been called (no cancel)
@@ -7504,12 +7506,14 @@ describe('App', () => {
         minimized: false,
       });
 
-      // Native frame animation requested: expand back to the chat box
-      // (overlay width x max chat height) in one IPC call.
+      // On restore the OS window snaps back up to full chat size on the SAME
+      // tick the in-page expand starts (durationMs:0 = instant; not awaited
+      // before the transform so the user never sees the 48px mascot inside a
+      // full-size click-capturing rect).
       expect(invoke).toHaveBeenCalledWith('animate_overlay_frame', {
         width: DEFAULT_CONFIG.window.overlayWidth,
         height: DEFAULT_CONFIG.window.maxChatHeight,
-        durationMs: 260,
+        durationMs: 0,
       });
 
       // ConversationView shown again with same messages

@@ -171,13 +171,15 @@ const COLLAPSED_WINDOW_HEIGHT = 80;
 const MINIMIZED_WINDOW_SIZE = 48;
 
 /**
- * Single source of truth for the minimize/restore morph duration, in
- * milliseconds. Passed to the native `animate_overlay_frame` command so macOS
- * Core Animation drives the window-frame tween, and used to schedule the
- * `isMorphingRef` clear so the ResizeObserver stays parked for the same
- * window. Matches the app's ~0.25s ask<->chat morph feel.
+ * Single source of truth for the in-page minimize/restore morph duration, in
+ * seconds. Drives the Framer Motion transform transition on the chat-card
+ * wrapper (collapse/expand). The OS window itself does NOT animate during the
+ * morph; it only snap-resizes at the endpoints (`durationMs:0`) once the
+ * painted content already matches. Matches the app's ~0.3s morph feel and
+ * uses the same ease curve for vibe consistency.
  */
-const MORPH_DURATION_MS = 260;
+const MORPH_DURATION_S = 0.3;
+const MORPH_EASE = [0.16, 1, 0.3, 1] as const;
 
 /**
  * Authoritative deadline from the start of the hide transition to the native
@@ -238,8 +240,39 @@ type OverlayState = 'visible' | 'hidden' | 'hiding';
 function App() {
   const [query, setQuery] = useState('');
   const [overlayState, setOverlayState] = useState<OverlayState>('hidden');
-  /** True when the overlay is parked as a floating minimized icon. */
-  const [isMinimized, setIsMinimized] = useState(false);
+  /**
+   * Minimize/restore morph state machine. The morph happens entirely in the
+   * web layer (GPU transforms); the OS window only snap-resizes at the
+   * endpoints (durationMs:0) when the painted content already matches the
+   * target size, so the resize is invisible against the transparent NSPanel.
+   *
+   * - `idle`:       normal chat/ask. Content-driven window sizing (ResizeObserver
+   *                  + the two chat useLayoutEffects). Byte-identical to before.
+   * - `collapsing`: OS window stays at full chat size. The chat card scales
+   *                  down + translates toward the top-left while the bare
+   *                  mascot crossfades in. On complete: snap the OS window to
+   *                  48x48 (content is already the mascot, so it is invisible).
+   * - `minimized`:  settled. OS window is 48x48 so clicks pass through to
+   *                  the desktop around it. Only `<MinimizedIcon>` renders.
+   * - `expanding`:  OS window resized back to full chat size on the SAME tick
+   *                  the in-page expand starts (no await). Mascot scales out
+   *                  into the chat card. On complete: back to `idle`.
+   */
+  const [morphPhase, setMorphPhase] = useState<
+    'idle' | 'collapsing' | 'minimized' | 'expanding'
+  >('idle');
+  /**
+   * True whenever the overlay is not in the normal chat/ask state, i.e.
+   * during the collapse/expand morph or while settled as the floating icon.
+   * Gates the chat sizing machinery (ResizeObserver + chat useLayoutEffects)
+   * off so transforms are never fought by layout writes, and keeps
+   * Esc/Cmd+W ignored across the whole minimized lifecycle.
+   */
+  const isMinimized = morphPhase !== 'idle';
+  /** True only in the settled floating-icon state (chat subtree unmounted). */
+  const isSettledMinimized = morphPhase === 'minimized';
+  /** True only while a collapse/expand transform morph is in flight. */
+  const isMorphing = morphPhase === 'collapsing' || morphPhase === 'expanding';
   /** True when a streaming completion finished while the overlay was minimized. */
   const [unseenCompletion, setUnseenCompletion] = useState(false);
   /** Non-null when the backend signals onboarding is needed; holds the current stage. */
@@ -465,18 +498,30 @@ function App() {
 
   /**
    * Mirror of `isMinimized` as a ref so the ResizeObserver closure can skip
-   * chat sizing while the overlay is collapsed to the floating icon.
+   * chat sizing across the entire minimized lifecycle (collapsing → settled →
+   * expanding). True whenever `morphPhase !== 'idle'`.
    */
   const isMinimizedRef = useRef(false);
   isMinimizedRef.current = isMinimized;
 
   /**
-   * True only while a collapse-to-icon or expand-to-chat size transition is
-   * in flight. While set, the ResizeObserver tracks the wrapper's animating
-   * box on BOTH dimensions so the native window tweens in lockstep with the
-   * CSS transition (same mechanism as the ask<->chat morph).
+   * True only while a collapse/expand transform morph is in flight. Read by
+   * the ResizeObserver and the two chat `useLayoutEffect`s to no-op so the
+   * in-page GPU transform is never fought by a width/height/min-height layout
+   * write (which would reflow the heavy chat tree and blank the morph).
+   * Mirrored from the `isMorphing` derived state every render.
    */
   const isMorphingRef = useRef(false);
+  isMorphingRef.current = isMorphing;
+
+  /**
+   * Mirror of `morphPhase` as a ref so the transform wrapper's
+   * `onAnimationComplete` handler reads the live phase instead of a stale
+   * closure value (the handler is a `useCallback` captured before the state
+   * update that schedules the animation completion).
+   */
+  const morphPhaseRef = useRef(morphPhase);
+  morphPhaseRef.current = morphPhase;
 
   /**
    * High-water mark for window height during streaming. While the LLM is
@@ -731,75 +776,116 @@ function App() {
   }, [cancel]);
 
   /**
-   * Clears the minimized state and recomputes upward-growth geometry from the
-   * current Tauri window position so the chat restores at the correct anchor.
+   * Restores the parked conversation. The OS window is snapped back to full
+   * chat size (`durationMs:0`, instant + invisible against the transparent
+   * NSPanel) on the SAME tick the in-page expand transform starts; never
+   * awaited first, since awaiting would briefly show the 48px mascot inside a
+   * full-size click-capturing rect. The mascot scales out into the chat card;
+   * the expand wrapper's `onAnimationComplete` hands back to `idle`, where the
+   * ResizeObserver resumes content-driven sizing and fine-tunes the height.
+   *
+   * Upward-growth geometry is recomputed from the live Tauri window position
+   * so the restored chat anchors correctly. The recompute is wrapped so a
+   * geometry-query failure still completes the restore (defaults to no
+   * grow-up) instead of leaving the overlay stuck minimized.
    */
   const handleRestore = useCallback(() => {
+    // Same tick as starting the in-page expand: snap the OS window back up
+    // to full chat size (instant, invisible) and clear the Rust minimized
+    // flag. Not awaited; the transform morph starts immediately.
+    setUnseenCompletion(false);
+    setMorphPhase('expanding');
+    void invoke('set_overlay_minimized', { minimized: false });
+    void invoke('animate_overlay_frame', {
+      width: overlayWidthRef.current,
+      height: maxChatHeightRef.current,
+      durationMs: 0,
+    });
     void (async () => {
-      const win = getCurrentWindow();
-      const [pos, scale, monitor] = await Promise.all([
-        win.outerPosition(),
-        win.scaleFactor(),
-        currentMonitor(),
-      ]);
-      const windowX = pos.x / scale;
-      const windowY = pos.y / scale;
-      const screenBottomY =
-        monitor != null
-          ? (monitor.position.y + monitor.size.height) / scale
-          : null;
-      // Grow-up geometry mirrored in replayEntranceAnimation; keep both in sync.
-      const shouldGrowUp =
-        screenBottomY !== null &&
-        windowY + maxChatHeightRef.current + CONTAINER_VERTICAL_PADDING >
-          screenBottomY;
-      growsUpwardRef.current = shouldGrowUp;
-      setGrowsUpward(shouldGrowUp);
-      maxHeightRef.current = 0;
-      if (shouldGrowUp) {
-        windowPosRef.current = {
-          x: windowX,
-          bottomY: windowY + COLLAPSED_WINDOW_HEIGHT,
-        };
+      try {
+        const win = getCurrentWindow();
+        const [pos, scale, monitor] = await Promise.all([
+          win.outerPosition(),
+          win.scaleFactor(),
+          currentMonitor(),
+        ]);
+        const windowX = pos.x / scale;
+        const windowY = pos.y / scale;
+        const screenBottomY =
+          monitor != null
+            ? (monitor.position.y + monitor.size.height) / scale
+            : null;
+        // Grow-up geometry mirrored in replayEntranceAnimation; keep in sync.
+        const shouldGrowUp =
+          screenBottomY !== null &&
+          windowY + maxChatHeightRef.current + CONTAINER_VERTICAL_PADDING >
+            screenBottomY;
+        growsUpwardRef.current = shouldGrowUp;
+        setGrowsUpward(shouldGrowUp);
+        maxHeightRef.current = 0;
+        if (shouldGrowUp) {
+          windowPosRef.current = {
+            x: windowX,
+            bottomY: windowY + COLLAPSED_WINDOW_HEIGHT,
+          };
+        }
+        /* v8 ignore start -- defensive: geometry query only rejects on a
+           real Tauri runtime failure, unreachable in the jsdom mock */
+      } catch {
+        growsUpwardRef.current = false;
+        setGrowsUpward(false);
+        maxHeightRef.current = 0;
       }
-      // Park the ResizeObserver: the native command owns the frame for the
-      // duration of the morph so the observer must not fight it with setSize.
-      isMorphingRef.current = true;
-      setUnseenCompletion(false);
-      setIsMinimized(false);
-      void invoke('set_overlay_minimized', { minimized: false });
-      void invoke('animate_overlay_frame', {
-        width: overlayWidthRef.current,
-        height: maxChatHeightRef.current,
-        durationMs: MORPH_DURATION_MS,
-      });
-      window.setTimeout(() => {
-        isMorphingRef.current = false;
-      }, MORPH_DURATION_MS);
+      /* v8 ignore stop */
     })();
   }, []);
 
   /**
    * Minimizes the overlay to the floating icon without cancelling generation.
-   * Resets upward-growth so the window is measured from the top. The native
-   * `animate_overlay_frame` command drives the window-frame collapse via Core
-   * Animation in a single IPC call; `isMorphingRef` parks the ResizeObserver
-   * for the morph duration so it does not fight the native animation.
+   * The OS window stays at full chat size for the entire collapse; it is a
+   * transparent NSPanel, so an oversized transparent window shows nothing.
+   * The chat card scales down + translates toward the top-left while the bare
+   * mascot crossfades in (transforms only). The collapse wrapper's
+   * `onAnimationComplete` then settles `morphPhase` to `minimized` and snaps
+   * the OS window to 48x48 (`durationMs:0`); invisible because the painted
+   * content is already exactly the 48px mascot at the top-left corner.
    */
   const handleMinimize = useCallback(() => {
     growsUpwardRef.current = false;
     setGrowsUpward(false);
-    isMorphingRef.current = true;
-    setIsMinimized(true);
+    setMorphPhase('collapsing');
     void invoke('set_overlay_minimized', { minimized: true });
-    void invoke('animate_overlay_frame', {
-      width: MINIMIZED_WINDOW_SIZE,
-      height: MINIMIZED_WINDOW_SIZE,
-      durationMs: MORPH_DURATION_MS,
-    });
-    window.setTimeout(() => {
-      isMorphingRef.current = false;
-    }, MORPH_DURATION_MS);
+  }, []);
+
+  /**
+   * Fired by the morph transform wrapper's `onAnimationComplete`. Dispatched
+   * off the live `morphPhaseRef` (the wrapper fires this once per settled
+   * `animate` target, including the idle one, so we must filter by phase):
+   *
+   * - collapse done → the visible content is now just the 48px mascot at the
+   *   window's top-left, so snap the OS window to that 48x48 square (instant,
+   *   invisible) and settle `morphPhase` to `minimized`, which unmounts the
+   *   chat subtree and lets clicks pass through to the desktop.
+   * - expand done → hand control back to the normal chat/ask state so the
+   *   ResizeObserver resumes content-driven sizing.
+   *
+   * The `invoke` side effect lives outside the `setMorphPhase` updater (a
+   * functional updater must be pure / Strict-Mode-double-invoke safe).
+   */
+  const handleMorphAnimationComplete = useCallback(() => {
+    // `morphPhaseRef` is the race guard: it reflects the live phase, so a
+    // late/duplicate completion for an already-settled morph is filtered
+    // here and the `setMorphPhase` calls below are plain (pure) transitions.
+    if (morphPhaseRef.current === 'collapsing') {
+      void invoke('animate_overlay_frame', {
+        width: MINIMIZED_WINDOW_SIZE,
+        height: MINIMIZED_WINDOW_SIZE,
+        durationMs: 0,
+      });
+      setMorphPhase('minimized');
+    } else if (morphPhaseRef.current === 'expanding') {
+      setMorphPhase('idle');
+    }
   }, []);
 
   /** Ref attached to the chat-mode history dropdown for click-outside detection. */
@@ -895,6 +981,9 @@ function App() {
     previousIsChatModeRef.current = isChatMode;
 
     if (!container) return;
+    // Park during the minimize/restore morph: a height write here would
+    // reflow the chat tree and fight the GPU transform (blank-sliver bug).
+    if (isMinimized || isMorphingRef.current) return;
     if (!growsUpward || isHistoryOpen || !isChatMode || wasChatMode) {
       return;
     }
@@ -916,7 +1005,10 @@ function App() {
 
     return () => cancelAnimationFrame(frameId);
     /* v8 ignore stop */
-  }, [growsUpward, isChatMode, isHistoryOpen]);
+    // `isMinimized` is in deps so the early-return guard is re-evaluated when
+    // the minimize/restore morph toggles it. When idle it is always false, so
+    // the not-minimized chat/ask sizing path is unchanged.
+  }, [growsUpward, isChatMode, isHistoryOpen, isMinimized]);
 
   /**
    * Observes the dropdown's height while it's open and mutates the morphing
@@ -933,6 +1025,9 @@ function App() {
     /* v8 ignore start -- ResizeObserver + DOM mutations require a real browser */
     const container = morphingContainerNodeRef.current;
     if (!container) return;
+    // Park during the minimize/restore morph: any min-height/height write
+    // here reflows the chat tree and fights the GPU transform.
+    if (isMinimized || isMorphingRef.current) return;
 
     // Track the height when we are NOT in chat mode natively.
     if (!isChatMode) {
@@ -969,7 +1064,9 @@ function App() {
     ro.observe(dropdown);
     return () => ro.disconnect();
     /* v8 ignore stop */
-  }, [isChatMode, isHistoryOpen]);
+    // `isMinimized` in deps re-evaluates the morph guard; no behavior change
+    // for the not-minimized chat/ask path (always false there).
+  }, [isChatMode, isHistoryOpen, isMinimized]);
 
   /**
    * Toggles the save state of the current conversation.
@@ -2325,6 +2422,33 @@ function App() {
     );
   }, []);
 
+  /**
+   * In-page morph target for the chat-card transform wrapper. The morph is
+   * GPU transforms only (scale/x/y/opacity), never width/height/layout,
+   * so the heavy chat tree never reflows and there is no blank frame. The
+   * OS window does NOT resize during the animation; it only snap-resizes at
+   * the endpoints (durationMs:0) when the painted content already matches.
+   *
+   * `transformOrigin: top left` keeps the card's top-left corner pinned, so
+   * scaling alone makes the card visibly shrink toward the corner where the
+   * 48px window will snap. The exact scale/translate/curve are intentionally
+   * approximate and meant to be fine-tuned on-device.
+   *
+   * `collapsing` and `minimized` share the collapsed target so the wrapper
+   * does not snap back to identity mid-AnimatePresence-swap.
+   */
+  const collapsedScale = MINIMIZED_WINDOW_SIZE / overlayWidthRef.current;
+  const isCollapsedTarget =
+    morphPhase === 'collapsing' || morphPhase === 'minimized';
+  const morphTransform = isCollapsedTarget
+    ? { scale: collapsedScale, x: 0, y: 0, opacity: 0 }
+    : { scale: 1, x: 0, y: 0, opacity: 1 };
+  // The bare mascot crossfades in as the card shrinks into it (collapse) and
+  // out as the card grows back (expand), so the chat visually becomes / comes
+  // from the mascot rather than a sequential fade after the card disappears.
+  const morphIconOpacity = isCollapsedTarget ? 1 : 0;
+  const morphTransition = { duration: MORPH_DURATION_S, ease: MORPH_EASE };
+
   if (onboardingStage !== null) {
     return (
       <OnboardingView
@@ -2342,7 +2466,7 @@ function App() {
       onDragOver={handleRootDragOver}
       onDragLeave={handleRootDragLeave}
       onDrop={handleRootDrop}
-      className={`flex flex-col items-center ${growsUpward ? 'justify-end' : 'justify-start'} h-screen w-screen ${isMinimized ? '' : 'px-3 pt-2 pb-6'} bg-transparent overflow-visible`}
+      className={`flex flex-col items-center ${growsUpward ? 'justify-end' : 'justify-start'} h-screen w-screen ${isSettledMinimized ? '' : 'px-3 pt-2 pb-6'} bg-transparent overflow-visible`}
     >
       <AnimatePresence mode="wait">
         {shouldRenderOverlay ? (
@@ -2353,25 +2477,41 @@ function App() {
             exit={{ opacity: 0, y: -16, scale: 0.98 }}
             transition={{ type: 'spring', stiffness: 260, damping: 24 }}
             className={
-              isMinimized
+              isSettledMinimized
                 ? 'overflow-visible'
                 : 'w-full px-4 py-2 overflow-visible'
             }
           >
             {/* Relative wrapper - positioning context for absolute-positioned
                 dropdowns (history, model picker) so they can float above the
-                chat without being clipped. */}
+                chat without being clipped. Also the positioning context for
+                the morph mascot overlay (absolutely pinned to the top-left,
+                where the 48px window snaps when settled-minimized). */}
             <div className="relative">
               {/* Layout wrapper: provides visual appearance (background, border,
                   border-radius, shadow) and is observed by ResizeObserver so the
                   native window tracks the combined height of the chat area and the
                   footer slot. The inner morphing container clips content during the
                   morph animation; the footer slot sits outside it so it is never
-                  clipped by overflow-hidden when chat is at max height. */}
-              <div
+                  clipped by overflow-hidden when chat is at max height.
+
+                  During the minimize/restore morph this wrapper is the GPU
+                  transform target: it scales down + crossfades toward the
+                  top-left corner (collapse) or back out (expand). Transforms
+                  ONLY: the OS window stays full-size for the whole animation
+                  and only snap-resizes at the endpoints (durationMs:0). The
+                  ResizeObserver and the two chat useLayoutEffects are parked
+                  via isMorphingRef/isMinimizedRef so no layout write fights
+                  the transform. transformOrigin keeps the top-left pinned so
+                  scaling alone visibly shrinks the card into the corner. */}
+              <motion.div
                 ref={setLayoutWrapperRef}
+                animate={morphTransform}
+                transition={morphTransition}
+                onAnimationComplete={handleMorphAnimationComplete}
+                style={{ transformOrigin: 'top left' }}
                 className={
-                  isMinimized
+                  isSettledMinimized
                     ? ''
                     : `bg-surface-base backdrop-blur-2xl border border-surface-border ${
                         isChatMode
@@ -2381,7 +2521,7 @@ function App() {
                 }
               >
                 <AnimatePresence mode="wait">
-                  {isMinimized ? (
+                  {isSettledMinimized ? (
                     <motion.div
                       key="minimized-icon"
                       initial={{ opacity: 0 }}
@@ -2620,7 +2760,37 @@ function App() {
                     </motion.div>
                   )}
                 </AnimatePresence>
-              </div>
+              </motion.div>
+
+              {/* Morph mascot overlay: absolutely pinned to the top-left
+                  corner (where the 48px window snaps when settled). Crossfades
+                  IN as the chat card scales down into it (collapse) and OUT as
+                  the card grows back (expand), so the chat visually becomes /
+                  emerges from the mascot. Only mounted during the transform
+                  morph; the settled bare icon is the inner-AnimatePresence one
+                  above. pointer-events-none so it never eats clicks meant for
+                  the chat underneath while morphing. */}
+              {isMorphing && (
+                <motion.div
+                  key="morph-mascot"
+                  className="absolute top-0 left-0 pointer-events-none"
+                  initial={{ opacity: morphPhase === 'expanding' ? 1 : 0 }}
+                  animate={{
+                    opacity: morphIconOpacity,
+                    scale: isCollapsedTarget ? 1 : 0.8,
+                  }}
+                  transition={morphTransition}
+                  style={{ transformOrigin: 'top left' }}
+                  aria-hidden="true"
+                >
+                  <img
+                    src="/thuki-logo.png"
+                    alt=""
+                    className="w-12 h-12"
+                    draggable={false}
+                  />
+                </motion.div>
+              )}
 
               {/* Chat-mode model picker dropdown - floating card identical in style
                   to the chat-history dropdown. Anchored absolute right-3 top-10
