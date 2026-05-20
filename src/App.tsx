@@ -200,24 +200,16 @@ const COLLAPSE_MORPH_DURATION_S = 0.55;
  */
 const MORPH_EASE = [0.32, 0.72, 0, 1] as const;
 /**
- * Framer Motion spring used for the mascot's entrance on collapse and its
- * exit on expand. Slightly under-damped so the mascot springs in with a
- * small overshoot peak (~10%) — that gentle bounce reads as "the mascot
- * absorbing the chat" without any extra keyframe choreography.
+ * Grace period added on top of a morph's animation duration before the
+ * watchdog force-settles `morphPhase`, in milliseconds. The morph normally
+ * settles precisely via Framer Motion's `onAnimationComplete`, but that
+ * callback can fail to fire (e.g. an identical start/end target produces no
+ * animation, or WKWebView throttles the rAF clock on the nonactivating
+ * panel). Without a settle the machine strands mid-morph and the mascot can
+ * end up animated to invisible. The watchdog guarantees the phase always
+ * reaches its terminal state (`minimized` or `idle`) regardless.
  */
-const MASCOT_SPRING = {
-  type: 'spring' as const,
-  stiffness: 380,
-  damping: 22,
-  mass: 0.9,
-};
-/**
- * Small delay before the mascot starts its spring-in, in seconds. Short
- * enough that the mascot blooms while the chat is still funneling into the
- * corner (so the two overlap into one morph), but non-zero so the chat gets
- * a head start and the motion has a clear direction.
- */
-const MASCOT_ENTRANCE_DELAY_S = 0.04;
+const MORPH_SETTLE_GRACE_MS = 250;
 
 /**
  * Authoritative deadline from the start of the hide transition to the native
@@ -522,6 +514,13 @@ function App() {
    * layout box is unchanged across the morph — only its CSS transform is).
    */
   const layoutWrapperNodeRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Pending watchdog timer id that force-settles `morphPhase` if the morph's
+   * `onAnimationComplete` never fires. 0 means no timer scheduled
+   * (`clearTimeout(0)` is a safe no-op).
+   */
+  const morphSettleTimerRef = useRef<number>(0);
 
   /**
    * Mirror of `growsUpward` as a ref so the ResizeObserver closure can read
@@ -837,6 +836,24 @@ function App() {
    * grow-up) instead of leaving the overlay stuck minimized.
    */
   const handleRestore = useCallback(() => {
+    // Only ever expand from a settled `minimized` state. A restore request
+    // from any other phase (a stale Rust `restore` event after rapid
+    // toggling, or a React/Rust minimized-flag desync) must NOT start an
+    // expand morph: the `expanding` transform target is identical to the
+    // `idle` target ({scale:1,opacity:1}), so Framer Motion runs no animation
+    // and `onAnimationComplete` never fires. That would strand `morphPhase`
+    // in `expanding` forever, where the mascot animates itself to opacity 0
+    // and stays there: the "icon disappears after many toggles" bug. Re-sync
+    // the Rust minimized flag (so the two sides agree again) and bail.
+    if (morphPhaseRef.current !== 'minimized') {
+      void invoke('set_overlay_minimized', { minimized: false });
+      return;
+    }
+    // Keep the panel key so WKWebView does not throttle the expand
+    // animation's requestAnimationFrame clock (mirrors handleMinimize).
+    // Otherwise `onAnimationComplete` can stall and the phase never settles
+    // back to `idle`.
+    void getCurrentWindow().setFocus();
     // Same tick as starting the in-page expand: snap the OS window back up
     // to full chat size (instant, invisible) and clear the Rust minimized
     // flag. Not awaited; the transform morph starts immediately.
@@ -847,7 +864,7 @@ function App() {
     // content-driven sizing path (see the ResizeObserver callback), so the
     // composer/divider at the bottom is not clipped before the post-morph
     // correction runs. The exact height is set by the forced re-observation
-    // in handleMorphAnimationComplete once the expand settles.
+    // in settleMorphPhase once the expand settles.
     void invoke('animate_overlay_frame', {
       width: overlayWidthRef.current,
       height: maxChatHeightRef.current + CONTAINER_VERTICAL_PADDING,
@@ -900,7 +917,7 @@ function App() {
    * shrinks toward its top-left corner (scale 1 → 0.34) + fades 1 → 0, while
    * the mascot springs in from scale 0.3 + opacity 0 to scale 1 + opacity 1
    * with a small overshoot. When the chat's animation settles,
-   * `handleMorphAnimationComplete`
+   * `settleMorphPhase`
    * snaps the OS window to 48x48 (`durationMs:0`, invisible because the
    * painted content is already the mascot) and switches `morphPhase` to
    * `minimized`, which unmounts the chat subtree and lets clicks pass through
@@ -922,21 +939,28 @@ function App() {
   }, []);
 
   /**
-   * Fired by the morph transform wrapper's `onAnimationComplete`. Dispatched
-   * off the live `morphPhaseRef` (the wrapper fires this once per settled
-   * `animate` target, including the idle one, so we must filter by phase):
+   * Settles the in-flight morph to its terminal phase. Driven by BOTH the
+   * transform wrapper's `onAnimationComplete` (the precise, normal path) and
+   * a watchdog timer (the fallback when that callback never fires). Reads the
+   * live `morphPhaseRef` and is idempotent: if the phase already settled, the
+   * branches below are skipped, so a duplicate call (callback + watchdog both
+   * firing, or a redirected animation firing twice) is harmless.
    *
-   * - collapse done → the visible content is now just the 48px mascot at the
+   * - collapsing → the visible content is now just the 48px mascot at the
    *   window's top-left, so snap the OS window to that 48x48 square (instant,
-   *   invisible) and settle `morphPhase` to `minimized`, which unmounts the
-   *   chat subtree and lets clicks pass through to the desktop.
-   * - expand done → hand control back to the normal chat/ask state so the
+   *   invisible) and settle to `minimized`, which unmounts the chat subtree
+   *   and lets clicks pass through to the desktop.
+   * - expanding → hand control back to the normal chat/ask state so the
    *   ResizeObserver resumes content-driven sizing.
    *
    * The `invoke` side effect lives outside the `setMorphPhase` updater (a
    * functional updater must be pure / Strict-Mode-double-invoke safe).
    */
-  const handleMorphAnimationComplete = useCallback(() => {
+  const settleMorphPhase = useCallback(() => {
+    // Cancel any pending watchdog: whichever path (callback or timer) settles
+    // first wins, and the other becomes a no-op.
+    clearTimeout(morphSettleTimerRef.current);
+    morphSettleTimerRef.current = 0;
     if (morphPhaseRef.current === 'collapsing') {
       // Chat is now at opacity 0 (visually gone); snap the OS window to the
       // 48x48 square (instant, invisible since the painted content is
@@ -978,6 +1002,41 @@ function App() {
       /* v8 ignore stop */
     }
   }, []);
+
+  /**
+   * Arms the watchdog that force-settles the morph if `onAnimationComplete`
+   * does not fire within the animation duration plus a grace period. Any
+   * previously armed timer is cleared first (clearTimeout(0) is a safe no-op
+   * when none is pending), so only one watchdog is ever outstanding.
+   */
+  const scheduleMorphWatchdog = useCallback(
+    (durationS: number) => {
+      clearTimeout(morphSettleTimerRef.current);
+      morphSettleTimerRef.current = window.setTimeout(
+        settleMorphPhase,
+        durationS * 1000 + MORPH_SETTLE_GRACE_MS,
+      );
+    },
+    [settleMorphPhase],
+  );
+
+  // Arm the watchdog whenever a morph begins. A layout effect (not a passive
+  // effect) runs during commit, BEFORE the transform wrapper's passive
+  // `onAnimationComplete` effect, so in the normal case the precise callback
+  // clears this timer immediately and it never fires. It only fires — and
+  // force-settles the phase — when that callback is missed (identical
+  // start/end target, or a stalled rAF clock on the nonactivating panel).
+  useLayoutEffect(() => {
+    if (morphPhase === 'collapsing') {
+      scheduleMorphWatchdog(COLLAPSE_MORPH_DURATION_S);
+    } else if (morphPhase === 'expanding') {
+      scheduleMorphWatchdog(MORPH_DURATION_S);
+    }
+  }, [morphPhase, scheduleMorphWatchdog]);
+
+  // Clear any pending watchdog on unmount so it cannot fire into a torn-down
+  // tree.
+  useEffect(() => () => clearTimeout(morphSettleTimerRef.current), []);
 
   /** Ref attached to the chat-mode history dropdown for click-outside detection. */
   const historyDropdownRef = useRef<HTMLDivElement>(null);
@@ -2565,20 +2624,10 @@ function App() {
     scale: { duration: morphDuration, ease: MORPH_EASE },
     opacity: { duration: morphDuration * 0.55, ease: MORPH_EASE },
   };
-  // Mascot is mounted for the entire minimized lifecycle (collapsing,
-  // minimized, expanding). On collapse it springs in from a smaller, faded
-  // start so its arrival reads as "absorbing" the chat; on expand it tweens
-  // back to that same smaller/faded state with the same ease-out as the
-  // chat-card so the two motions stay in phase. A short entrance delay lets
-  // the chat fade get a head start so collapse reads as a handoff rather
-  // than a simultaneous crossfade.
-  const mascotAnimate = isCollapsedPhase
-    ? { opacity: 1, scale: 1 }
-    : { opacity: 0, scale: 0.3 };
-  const mascotTransition =
-    morphPhase === 'collapsing'
-      ? { ...MASCOT_SPRING, delay: MASCOT_ENTRANCE_DELAY_S }
-      : { duration: MORPH_DURATION_S, ease: MORPH_EASE };
+  // The mascot's own entrance/exit animation is CSS-driven (see the
+  // `.thuki-mascot*` rules in App.css and the portal JSX below), not Framer
+  // Motion, so it is painted by the compositor even when the nonactivating
+  // panel loses key focus and rAF is throttled.
 
   if (onboardingStage !== null) {
     return (
@@ -2639,7 +2688,7 @@ function App() {
                 ref={setLayoutWrapperRef}
                 animate={morphTransform}
                 transition={morphTransition}
-                onAnimationComplete={handleMorphAnimationComplete}
+                onAnimationComplete={settleMorphPhase}
                 style={{ transformOrigin: 'top left' }}
                 className={
                   isSettledMinimized
@@ -2655,6 +2704,17 @@ function App() {
                   {isSettledMinimized ? null : (
                     <motion.div
                       key="chat-content"
+                      // While the chat is collapsing or expanding it is still
+                      // mounted but scaled down toward the top-left corner,
+                      // where the close (X) button sits — directly under the
+                      // floating mascot, which is itself pointer-events-none
+                      // mid-morph. Without this gate a click aimed at the
+                      // mascot during a morph falls through it onto the close
+                      // button and hides the whole overlay (the
+                      // disappears-after-many-toggles bug). Disable pointer
+                      // events on the entire chat subtree while morphing;
+                      // it is fully interactive again once settled at idle.
+                      className={isMorphing ? 'pointer-events-none' : undefined}
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0, transition: { duration: 0.16 } }}
@@ -2884,32 +2944,37 @@ function App() {
                   ancestors. That is exactly where the native 48px window
                   snaps on collapse, so the icon and the window frame coincide
                   by construction and the icon can never be clipped/vanish.
-                  Rendered for the whole minimized lifecycle: fades in on
-                  collapse, solid + clickable when settled, fades out on
-                  expand. */}
+
+                  Opacity/scale are driven by CSS (see `.thuki-mascot*` in
+                  App.css), NOT Framer Motion. This is load-bearing: the panel
+                  is a nonactivating NSPanel, and when it is not the key window
+                  WKWebView throttles requestAnimationFrame. A Framer rAF tween
+                  would then never repaint the mascot off its initial opacity:0
+                  and the icon would vanish (it did, after ~7-8 rapid toggles).
+                  A CSS-declared end-state is painted by the compositor
+                  regardless of the rAF clock, so the settled icon is always
+                  visible. Phase → class: `collapsing` blooms in, `minimized`
+                  is the static visible base, `expanding` fades out. */}
               {isMinimized &&
                 createPortal(
-                  <motion.div
+                  <div
                     key="morph-mascot"
-                    className={
-                      isSettledMinimized
-                        ? 'fixed top-0 left-0'
-                        : 'fixed top-0 left-0 pointer-events-none'
-                    }
+                    className={`thuki-mascot fixed top-0 left-0${
+                      isSettledMinimized ? '' : ' pointer-events-none'
+                    }${morphPhase === 'collapsing' ? ' thuki-mascot-bloom' : ''}${
+                      morphPhase === 'expanding' ? ' thuki-mascot-leaving' : ''
+                    }`}
                     style={{
                       width: MINIMIZED_WINDOW_SIZE,
                       height: MINIMIZED_WINDOW_SIZE,
                     }}
-                    initial={{ opacity: 0, scale: 0.3 }}
-                    animate={mascotAnimate}
-                    transition={mascotTransition}
                   >
                     <MinimizedIcon
                       isWorking={isGenerating}
                       hasUnseen={unseenCompletion}
                       onRestore={handleRestore}
                     />
-                  </motion.div>,
+                  </div>,
                   document.body,
                 )}
 

@@ -631,3 +631,50 @@ body {
   border-bottom: 1px solid
     color-mix(in srgb, var(--color-primary) 28%, transparent);
 }
+
+/* ─── Minimized mascot icon ─────────────────────────────────────────────────
+   The floating mascot's opacity/scale are CSS-driven, NOT Framer Motion.
+   This is load-bearing: the overlay is a nonactivating NSPanel, and when it
+   is not the key window WKWebView throttles requestAnimationFrame. A Framer
+   rAF tween would then strand the mascot at its initial opacity:0 and the
+   icon would vanish (the disappearing-icon-after-many-toggles bug). A CSS
+   end-state is committed during style resolution and painted by the
+   compositor regardless of the JS rAF clock, so the settled icon is always
+   visible. The base/settled state is declaratively visible; collapse and
+   expand layer transient animations on top. Timings mirror the JS
+   MORPH_DURATION_S (0.36s) constant. */
+.thuki-mascot {
+  opacity: 1;
+  transform: scale(1);
+  transform-origin: center;
+}
+/* Bloom in on collapse. The base style above is already the visible
+   end-state, so even if this animation is throttled and never runs, the icon
+   still paints at opacity:1. `both` fill holds the 0% frame during the delay
+   and the 100% frame after. */
+.thuki-mascot-bloom {
+  animation: thuki-mascot-bloom 0.42s ease-out 0.04s both;
+}
+/* Fade + shrink out on expand (compositor-driven; snaps to the end-state if
+   throttled, which is correct since we are restoring the chat). */
+.thuki-mascot-leaving {
+  opacity: 0;
+  transform: scale(0.3);
+  transition:
+    opacity 0.36s ease,
+    transform 0.36s ease;
+}
+@keyframes thuki-mascot-bloom {
+  0% {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

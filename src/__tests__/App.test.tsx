@@ -7755,6 +7755,76 @@ describe('App', () => {
         screen.queryByRole('button', { name: /restore thuki/i }),
       ).toBeNull();
     });
+
+    it('keeps the mascot available across many minimize/restore cycles', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      // Toggle repeatedly. The icon must reappear on every minimize and
+      // disappear on every restore; it must never get stranded invisible
+      // (the disappearing-icon bug).
+      for (let i = 0; i < 5; i++) {
+        const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+        await act(async () => {
+          fireEvent.click(minimizeBtn);
+        });
+        expect(
+          screen.getByRole('button', { name: /restore thuki/i }),
+        ).toBeInTheDocument();
+
+        const restoreBtn = screen.getByRole('button', {
+          name: /restore thuki/i,
+        });
+        await act(async () => {
+          fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+          fireEvent.pointerUp(restoreBtn);
+        });
+        await act(async () => {});
+        expect(
+          screen.queryByRole('button', { name: /restore thuki/i }),
+        ).toBeNull();
+        // Chat is back so the next iteration can minimize again.
+        expect(screen.getByText('hello')).toBeInTheDocument();
+      }
+    });
+
+    it('ignores a restore request while not minimized and re-syncs the flag', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+      invoke.mockClear();
+
+      // A stray restore event while idle must NOT start an expand morph
+      // (which would strand the state machine in 'expanding'); it only
+      // re-syncs the Rust minimized flag.
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', { state: 'restore' });
+      });
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('set_overlay_minimized', {
+        minimized: false,
+      });
+      // Never minimized: no mascot, chat still visible.
+      expect(
+        screen.queryByRole('button', { name: /restore thuki/i }),
+      ).toBeNull();
+      expect(screen.getByText('hello')).toBeInTheDocument();
+
+      // The machine is not stranded: a subsequent minimize still works.
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+      expect(
+        screen.getByRole('button', { name: /restore thuki/i }),
+      ).toBeInTheDocument();
+    });
   });
 
   describe('text base CSS variable', () => {
