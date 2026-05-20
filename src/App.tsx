@@ -516,6 +516,14 @@ function App() {
   const observerRef = useRef<ResizeObserver | null>(null);
 
   /**
+   * The layout-wrapper DOM node the ResizeObserver watches. Stored so the
+   * restore path can force a fresh observation once the expand morph settles
+   * (the observer does not re-fire on its own then, because the wrapper's
+   * layout box is unchanged across the morph — only its CSS transform is).
+   */
+  const layoutWrapperNodeRef = useRef<HTMLDivElement | null>(null);
+
+  /**
    * Mirror of `growsUpward` as a ref so the ResizeObserver closure can read
    * it without being recreated on each state change.
    */
@@ -652,6 +660,7 @@ function App() {
    * chat is at max height, and the wrapper's natural height grows to include it.
    */
   const setLayoutWrapperRef = useCallback((node: HTMLDivElement | null) => {
+    layoutWrapperNodeRef.current = node;
     if (observerRef.current) {
       observerRef.current.disconnect();
       observerRef.current = null;
@@ -834,9 +843,14 @@ function App() {
     setUnseenCompletion(false);
     setMorphPhase('expanding');
     void invoke('set_overlay_minimized', { minimized: false });
+    // Initial guess includes CONTAINER_VERTICAL_PADDING to match the
+    // content-driven sizing path (see the ResizeObserver callback), so the
+    // composer/divider at the bottom is not clipped before the post-morph
+    // correction runs. The exact height is set by the forced re-observation
+    // in handleMorphAnimationComplete once the expand settles.
     void invoke('animate_overlay_frame', {
       width: overlayWidthRef.current,
-      height: maxChatHeightRef.current,
+      height: maxChatHeightRef.current + CONTAINER_VERTICAL_PADDING,
       durationMs: 0,
     });
     void (async () => {
@@ -883,9 +897,10 @@ function App() {
    * The OS window stays at full chat size for the entire in-page tween; the
    * transparent NSPanel under a chat that has reached opacity 0 shows nothing,
    * so the user sees a clean chat → mascot handoff. The chat-card wrapper
-   * scales 1 → 0.92 + fades 1 → 0 with an Apple ease-out, while the mascot
-   * springs in from scale 0.6 + opacity 0 to scale 1 + opacity 1 with a small
-   * overshoot. When the chat's animation settles, `handleMorphAnimationComplete`
+   * shrinks toward its top-left corner (scale 1 → 0.34) + fades 1 → 0, while
+   * the mascot springs in from scale 0.3 + opacity 0 to scale 1 + opacity 1
+   * with a small overshoot. When the chat's animation settles,
+   * `handleMorphAnimationComplete`
    * snaps the OS window to 48x48 (`durationMs:0`, invisible because the
    * painted content is already the mascot) and switches `morphPhase` to
    * `minimized`, which unmounts the chat subtree and lets clicks pass through
@@ -940,6 +955,27 @@ function App() {
     }
     if (morphPhaseRef.current === 'expanding') {
       setMorphPhase('idle');
+      // The ResizeObserver does not re-fire on its own after the morph: the
+      // wrapper's layout box is unchanged across collapse/expand (only its
+      // CSS transform changed), and the observer callback is a no-op while
+      // morphing. So the content-driven window height set on restore is never
+      // corrected and the chat can stay clipped (off by the footer/padding,
+      // and inconsistent run-to-run depending on incidental reflows). Force
+      // one fresh observation on the next frame — after the idle render
+      // commits so the morph guard has cleared — so the window snaps to the
+      // true content height.
+      /* v8 ignore start -- ResizeObserver re-observation is a browser-only
+         correction; the jsdom mock never fires the observer callback, so
+         there is no observable sizing behavior to assert here. */
+      const node = layoutWrapperNodeRef.current;
+      const observer = observerRef.current;
+      if (node && observer) {
+        requestAnimationFrame(() => {
+          observer.unobserve(node);
+          observer.observe(node);
+        });
+      }
+      /* v8 ignore stop */
     }
   }, []);
 

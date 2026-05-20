@@ -7509,10 +7509,12 @@ describe('App', () => {
       // On restore the OS window snaps back up to full chat size on the SAME
       // tick the in-page expand starts (durationMs:0 = instant; not awaited
       // before the transform so the user never sees the 48px mascot inside a
-      // full-size click-capturing rect).
+      // full-size click-capturing rect). The height includes
+      // CONTAINER_VERTICAL_PADDING (48) so the bottom composer/divider is not
+      // clipped before the post-morph re-measure runs.
       expect(invoke).toHaveBeenCalledWith('animate_overlay_frame', {
         width: DEFAULT_CONFIG.window.overlayWidth,
-        height: DEFAULT_CONFIG.window.maxChatHeight,
+        height: DEFAULT_CONFIG.window.maxChatHeight + 48,
         durationMs: 0,
       });
 
