@@ -170,59 +170,54 @@ const COLLAPSED_WINDOW_HEIGHT = 80;
  * window shrinks to this square so only the bare logo is visible.
  */
 const MINIMIZED_WINDOW_SIZE = 48;
-/**
- * Top-left offset (px, from the window's top-left) at which the floating
- * mascot sits so it lands exactly where the Thuki logo renders inside the
- * ask bar's layout (root + motion + wrapper + bar-row padding, centered on
- * the 40px ask-bar logo). The chat collapses "in place": the window's
- * top-left stays put, so this offset is stable in viewport coords during the
- * morph and when settled (no repositioning, no coordinate coupling). These
- * are computed from the layout paddings and meant to be eyeball-nudged: it
- * is the single knob for the icon's resting position.
- */
-const MINIMIZED_ANCHOR = { x: 37, y: 23 } as const;
-/**
- * Collapsed window must contain the offset mascot (anchor + icon) with a
- * little breathing room. Top-left stays fixed, so the transparent slack sits
- * around the icon near the bar position.
- */
-const MINIMIZED_FRAME = {
-  width: MINIMIZED_ANCHOR.x + MINIMIZED_WINDOW_SIZE + 8,
-  height: MINIMIZED_ANCHOR.y + MINIMIZED_WINDOW_SIZE + 8,
-};
-/**
- * The layout wrapper (the chat-chrome box the morph transform runs on) is
- * inset from the window top-left by the root + motion paddings. Subtracting
- * it converts the window-relative MINIMIZED_ANCHOR into a wrapper-relative
- * transform-origin, so the chat scales toward the mascot's center: it
- * visibly shrinks INTO the icon rather than toward the bare corner. Derived
- * from the same anchor, so the icon position stays the single knob.
- */
-const MORPH_WRAP_INSET = { x: 28, y: 16 } as const;
-const MORPH_ORIGIN = {
-  x: MINIMIZED_ANCHOR.x + MINIMIZED_WINDOW_SIZE / 2 - MORPH_WRAP_INSET.x,
-  y: MINIMIZED_ANCHOR.y + MINIMIZED_WINDOW_SIZE / 2 - MORPH_WRAP_INSET.y,
-};
 
 /**
- * Single source of truth for the in-page minimize/restore morph duration, in
- * seconds. Drives the Framer Motion transform transition on the chat-card
- * wrapper (collapse/expand). The OS window itself does NOT animate during the
- * morph; it only snap-resizes at the endpoints (`durationMs:0`) once the
- * painted content already matches. Matches the app's ~0.3s morph feel and
- * uses the same ease curve for vibe consistency.
+ * Single source of truth for the chat-card collapse/expand tween duration,
+ * in seconds. The OS window itself does NOT animate during the morph; it
+ * only snap-resizes at the endpoints (`durationMs:0`) once the painted
+ * content already matches. Floating-window apps (Raycast, Alfred, Spotlight,
+ * Linear Cmd+K) sit at 0.15s to 0.25s for a plain close. Thuki's case is
+ * different: the chat morphs into a persistent mascot rather than just
+ * vanishing, so the transition needs a touch more time and travel to read as
+ * one connected morph instead of a fade followed by a separate pop-in.
+ *
+ * This value drives the EXPAND (restore) direction only. The collapse
+ * direction uses its own, longer duration (see `COLLAPSE_MORPH_DURATION_S`).
  */
-const MORPH_DURATION_S = 0.3;
+const MORPH_DURATION_S = 0.36;
 /**
- * Collapse runs a touch longer than expand. The chat SCALE shrinks smoothly
- * over the whole duration with a gentle standard curve (NOT the aggressive
- * MORPH_EASE, which slams the chat to pixel-tiny in ~80ms and reads as a
- * jumpy snap), staying opaque while it visibly shrinks and only dissolving
- * over the tail as the mascot grows in. Expand keeps MORPH_DURATION_S/EASE.
+ * Duration of the COLLAPSE (minimize) chat-card shrink+fade, in seconds.
+ * Deliberately longer than the expand duration so the chat dissolving into
+ * the mascot reads as a slow, cinematic morph rather than a quick vanish.
+ * Only the collapse uses this; expand keeps `MORPH_DURATION_S`.
  */
-const COLLAPSE_DURATION_S = 0.5;
-const COLLAPSE_EASE = [0.4, 0, 0.2, 1] as const;
-const MORPH_EASE = [0.16, 1, 0.3, 1] as const;
+const COLLAPSE_MORPH_DURATION_S = 0.55;
+/**
+ * Apple-style ease-out curve (matches SwiftUI `.easeOut`). Applied to the
+ * chat-card collapse/expand transform so the shrink+fade reads as a clean
+ * decelerating settle rather than the overshoot-and-decay shape of the
+ * earlier curve.
+ */
+const MORPH_EASE = [0.32, 0.72, 0, 1] as const;
+/**
+ * Framer Motion spring used for the mascot's entrance on collapse and its
+ * exit on expand. Slightly under-damped so the mascot springs in with a
+ * small overshoot peak (~10%) — that gentle bounce reads as "the mascot
+ * absorbing the chat" without any extra keyframe choreography.
+ */
+const MASCOT_SPRING = {
+  type: 'spring' as const,
+  stiffness: 380,
+  damping: 22,
+  mass: 0.9,
+};
+/**
+ * Small delay before the mascot starts its spring-in, in seconds. Short
+ * enough that the mascot blooms while the chat is still funneling into the
+ * corner (so the two overlap into one morph), but non-zero so the chat gets
+ * a head start and the motion has a clear direction.
+ */
+const MASCOT_ENTRANCE_DELAY_S = 0.04;
 
 /**
  * Authoritative deadline from the start of the hide transition to the native
@@ -885,17 +880,28 @@ function App() {
 
   /**
    * Minimizes the overlay to the floating icon without cancelling generation.
-   * The OS window stays at full chat size for the entire collapse; it is a
-   * transparent NSPanel, so an oversized transparent window shows nothing.
-   * The chat card scales down + translates toward the top-left while the bare
-   * mascot crossfades in (transforms only). The collapse wrapper's
-   * `onAnimationComplete` then settles `morphPhase` to `minimized` and snaps
-   * the OS window to 48x48 (`durationMs:0`); invisible because the painted
-   * content is already exactly the 48px mascot at the top-left corner.
+   * The OS window stays at full chat size for the entire in-page tween; the
+   * transparent NSPanel under a chat that has reached opacity 0 shows nothing,
+   * so the user sees a clean chat → mascot handoff. The chat-card wrapper
+   * scales 1 → 0.92 + fades 1 → 0 with an Apple ease-out, while the mascot
+   * springs in from scale 0.6 + opacity 0 to scale 1 + opacity 1 with a small
+   * overshoot. When the chat's animation settles, `handleMorphAnimationComplete`
+   * snaps the OS window to 48x48 (`durationMs:0`, invisible because the
+   * painted content is already the mascot) and switches `morphPhase` to
+   * `minimized`, which unmounts the chat subtree and lets clicks pass through
+   * to the desktop around the 48px square.
    */
   const handleMinimize = useCallback(() => {
     growsUpwardRef.current = false;
     setGrowsUpward(false);
+    // Keep the panel key for the duration of the morph. It is a
+    // nonactivating NSPanel, so WKWebView throttles requestAnimationFrame
+    // (and with it Framer Motion's tween/spring clock) whenever the panel is
+    // not the key window — which makes the collapse jump straight to the end
+    // state and read as a hard cut rather than a morph. Focusing does not
+    // activate the app (the panel stays nonactivating / Accessory policy);
+    // it only keeps the animation clock running at 60fps.
+    void getCurrentWindow().setFocus();
     setMorphPhase('collapsing');
     void invoke('set_overlay_minimized', { minimized: true });
   }, []);
@@ -916,17 +922,23 @@ function App() {
    * functional updater must be pure / Strict-Mode-double-invoke safe).
    */
   const handleMorphAnimationComplete = useCallback(() => {
-    // `morphPhaseRef` is the race guard: it reflects the live phase, so a
-    // late/duplicate completion for an already-settled morph is filtered
-    // here and the `setMorphPhase` calls below are plain (pure) transitions.
     if (morphPhaseRef.current === 'collapsing') {
+      // Chat is now at opacity 0 (visually gone); snap the OS window to the
+      // 48x48 square (instant, invisible since the painted content is
+      // already the mascot at the window's top-left). The mascot's own
+      // spring may still be in flight — `position: fixed` keeps it pinned
+      // through the resize, and any brief overshoot past the new 48x48
+      // bounds is clipped by the smaller WKWebView surface without visible
+      // artifacts on retina.
       void invoke('animate_overlay_frame', {
-        width: MINIMIZED_FRAME.width,
-        height: MINIMIZED_FRAME.height,
+        width: MINIMIZED_WINDOW_SIZE,
+        height: MINIMIZED_WINDOW_SIZE,
         durationMs: 0,
       });
       setMorphPhase('minimized');
-    } else if (morphPhaseRef.current === 'expanding') {
+      return;
+    }
+    if (morphPhaseRef.current === 'expanding') {
       setMorphPhase('idle');
     }
   }, []);
@@ -2480,48 +2492,57 @@ function App() {
    * `collapsing` and `minimized` share the collapsed target so the wrapper
    * does not snap back to identity mid-AnimatePresence-swap.
    */
-  const collapsedScale = MINIMIZED_WINDOW_SIZE / overlayWidthRef.current;
-  const collapsing = morphPhase === 'collapsing';
-  const isCollapsedTarget = collapsing || morphPhase === 'minimized';
-  // Scalar targets only (no keyframe arrays): keyframe arrays made Framer's
-  // wrapper onAnimationComplete fire ambiguously and snap the window
-  // mid-animation (the "jump"/thrash). Timing is shaped per-property in the
-  // transition instead, which fires one clean completion at the true end.
-  const morphTransform = isCollapsedTarget
-    ? { scale: collapsedScale, x: 0, y: 0, opacity: 0 }
-    : { scale: 1, x: 0, y: 0, opacity: 1 };
-  // Collapse: scale shrinks smoothly across the WHOLE duration with the gentle
-  // standard curve so the eye watches a continuous shrink; opacity holds at 1
-  // until the tail then dissolves as the chat is already small and the mascot
-  // is taking over. Expand is unchanged.
-  const morphTransition = collapsing
-    ? {
-        scale: { duration: COLLAPSE_DURATION_S, ease: COLLAPSE_EASE },
-        opacity: {
-          duration: 0.2,
-          delay: COLLAPSE_DURATION_S - 0.22,
-          ease: 'linear' as const,
-        },
-      }
-    : { duration: MORPH_DURATION_S, ease: MORPH_EASE };
-  // Mascot emerges (fade + gentle scale-up) over the back third, after the
-  // chat has visibly shrunk, so it reads as the chat becoming the icon.
-  const mascotOpacity = isSettledMinimized || collapsing ? 1 : 0;
-  const mascotScale = 1;
-  const mascotTransition = collapsing
-    ? {
-        opacity: {
-          duration: 0.22,
-          delay: COLLAPSE_DURATION_S - 0.26,
-          ease: 'linear' as const,
-        },
-        scale: {
-          duration: 0.32,
-          delay: COLLAPSE_DURATION_S - 0.36,
-          ease: COLLAPSE_EASE,
-        },
-      }
-    : morphTransition;
+  // The chat-card collapse target: shrink the card down toward its top-left
+  // corner (transformOrigin: top-left = the corner where the 48px mascot
+  // lands) while fading out. The scale travel is large (down to ~0.34) so
+  // the card visibly funnels into the corner rather than just fading in
+  // place; that travel is what makes the collapse read as a morph. The old
+  // "tiny readable chat thumbnail" artifact is avoided by fading opacity to
+  // 0 well before the shrink finishes (see morphTransition: opacity runs at
+  // ~0.55x the scale duration), so by the time the card is small it is
+  // already invisible. We do NOT scale all the way to
+  // `MINIMIZED_WINDOW_SIZE / overlayWidth` (~0.06) because the visible part
+  // of the shrink ends once opacity hits 0, so any smaller target only
+  // affects the invisible tail.
+  // 'collapsing' and 'minimized' share the same target so the wrapper does
+  // not snap back to identity at the phase boundary; the chat subtree is
+  // also unmounted during 'minimized' so the visible result at both phases
+  // is just the portaled mascot.
+  const COLLAPSED_SCALE = 0.34;
+  const isCollapsedPhase =
+    morphPhase === 'collapsing' || morphPhase === 'minimized';
+  const morphTransform = isCollapsedPhase
+    ? { scale: COLLAPSED_SCALE, opacity: 0 }
+    : { scale: 1, opacity: 1 };
+  // Per-property timing: opacity fades faster than the scale shrinks so the
+  // card turns transparent before it gets small enough to read as a
+  // thumbnail. `onAnimationComplete` fires when the longest property (scale)
+  // settles, so the window snap to 48x48 still happens after the full
+  // collapse. Collapse uses the longer, more cinematic duration; expand
+  // keeps the snappier `MORPH_DURATION_S` so only the minimize direction is
+  // slowed down.
+  const morphDuration =
+    morphPhase === 'collapsing'
+      ? COLLAPSE_MORPH_DURATION_S
+      : MORPH_DURATION_S;
+  const morphTransition = {
+    scale: { duration: morphDuration, ease: MORPH_EASE },
+    opacity: { duration: morphDuration * 0.55, ease: MORPH_EASE },
+  };
+  // Mascot is mounted for the entire minimized lifecycle (collapsing,
+  // minimized, expanding). On collapse it springs in from a smaller, faded
+  // start so its arrival reads as "absorbing" the chat; on expand it tweens
+  // back to that same smaller/faded state with the same ease-out as the
+  // chat-card so the two motions stay in phase. A short entrance delay lets
+  // the chat fade get a head start so collapse reads as a handoff rather
+  // than a simultaneous crossfade.
+  const mascotAnimate = isCollapsedPhase
+    ? { opacity: 1, scale: 1 }
+    : { opacity: 0, scale: 0.3 };
+  const mascotTransition =
+    morphPhase === 'collapsing'
+      ? { ...MASCOT_SPRING, delay: MASCOT_ENTRANCE_DELAY_S }
+      : { duration: MORPH_DURATION_S, ease: MORPH_EASE };
 
   if (onboardingStage !== null) {
     return (
@@ -2583,9 +2604,7 @@ function App() {
                 animate={morphTransform}
                 transition={morphTransition}
                 onAnimationComplete={handleMorphAnimationComplete}
-                style={{
-                  transformOrigin: `${MORPH_ORIGIN.x}px ${MORPH_ORIGIN.y}px`,
-                }}
+                style={{ transformOrigin: 'top left' }}
                 className={
                   isSettledMinimized
                     ? ''
@@ -2837,20 +2856,16 @@ function App() {
                   <motion.div
                     key="morph-mascot"
                     className={
-                      isSettledMinimized ? 'fixed' : 'fixed pointer-events-none'
+                      isSettledMinimized
+                        ? 'fixed top-0 left-0'
+                        : 'fixed top-0 left-0 pointer-events-none'
                     }
                     style={{
-                      left: MINIMIZED_ANCHOR.x,
-                      top: MINIMIZED_ANCHOR.y,
                       width: MINIMIZED_WINDOW_SIZE,
                       height: MINIMIZED_WINDOW_SIZE,
                     }}
-                    initial={
-                      morphPhase === 'expanding'
-                        ? { opacity: 1, scale: 1 }
-                        : { opacity: 0, scale: 0.85 }
-                    }
-                    animate={{ opacity: mascotOpacity, scale: mascotScale }}
+                    initial={{ opacity: 0, scale: 0.3 }}
+                    animate={mascotAnimate}
                     transition={mascotTransition}
                   >
                     <MinimizedIcon
