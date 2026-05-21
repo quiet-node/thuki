@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import {
   useState,
   useEffect,
@@ -23,6 +23,12 @@ import {
   getEnvironmentMessage,
   isComposeCapabilityConflict,
 } from './utils/capabilityConflicts';
+import {
+  computeExpandTarget,
+  computeCollapseTarget,
+  anchorToTransformOrigin,
+  type MorphAnchor,
+} from './utils/morphGeometry';
 import { ConversationView } from './view/ConversationView';
 import { AskBarView } from './view/AskBarView';
 import { OnboardingView } from './view/onboarding/index';
@@ -291,6 +297,28 @@ function App() {
   const [morphPhase, setMorphPhase] = useState<
     'idle' | 'collapsing' | 'minimized' | 'expanding'
   >('idle');
+  /**
+   * Which corner the chat is pinned to during the minimize/restore morph.
+   * Chosen edge-aware at expand time (so the chat unfolds into open space when
+   * the icon is near a screen edge) and reused on the matching collapse so the
+   * icon returns to the same spot. Drives both the chat card's
+   * transform-origin and where the floating mascot is rendered, which is what
+   * keeps the icon visually stationary while the window resizes under it.
+   * Defaults to top-left and is reset to top-left whenever the overlay is
+   * shown fresh.
+   */
+  const [morphAnchor, setMorphAnchor] = useState<MorphAnchor>('tl');
+  /**
+   * Gates the chat-card's grow animation during expand. While false, the chat
+   * is held collapsed (scale 0.34, opacity 0 — invisible) so it cannot be seen
+   * during the native window move that repositions the overlay on screen.
+   * Flipped true only AFTER that move (and a paint yield), so the chat grows
+   * out of the anchor corner in the already-correctly-positioned window. This
+   * is what keeps the move flicker-free: across the move, BOTH the mascot
+   * (opacity 0) and the chat (collapsed) are invisible, so the ~1 stale frame
+   * WebKit may displace to the new origin contains nothing.
+   */
+  const [expandReady, setExpandReady] = useState(false);
   /**
    * True whenever the overlay is not in the normal chat/ask state, i.e.
    * during the collapse/expand morph or while settled as the floating icon.
@@ -568,6 +596,10 @@ function App() {
   const morphPhaseRef = useRef(morphPhase);
   morphPhaseRef.current = morphPhase;
 
+  /** Mirror of `morphAnchor` for reading inside callbacks (collapse snap). */
+  const morphAnchorRef = useRef(morphAnchor);
+  morphAnchorRef.current = morphAnchor;
+
   /**
    * High-water mark for window height during streaming. While the LLM is
    * generating, the window only grows (never shrinks) to prevent jitter
@@ -765,6 +797,13 @@ function App() {
       growsUpwardRef.current = shouldGrowUp;
       setGrowsUpward(shouldGrowUp);
       maxHeightRef.current = 0;
+      // A freshly shown overlay has no prior expand to mirror, so reset the
+      // morph anchor to the top-left default; the next minimize folds the icon
+      // into the chat's top-left, and a later expand recomputes edge-awareness
+      // from the icon's dragged position.
+      setMorphAnchor('tl');
+      morphAnchorRef.current = 'tl';
+      setExpandReady(false);
       if (shouldGrowUp && windowX !== null && windowY !== null) {
         windowPosRef.current = {
           x: windowX,
@@ -854,22 +893,38 @@ function App() {
     // Otherwise `onAnimationComplete` can stall and the phase never settles
     // back to `idle`.
     void getCurrentWindow().setFocus();
-    // Same tick as starting the in-page expand: snap the OS window back up
-    // to full chat size (instant, invisible) and clear the Rust minimized
-    // flag. Not awaited; the transform morph starts immediately.
     setUnseenCompletion(false);
     setMorphPhase('expanding');
+    // Hold the chat collapsed (invisible) until the window has moved; see
+    // expandReady. Combined with the mascot being opacity 0 during expand,
+    // this means nothing is visible while the native window repositions.
+    setExpandReady(false);
     void invoke('set_overlay_minimized', { minimized: false });
-    // Initial guess includes CONTAINER_VERTICAL_PADDING to match the
-    // content-driven sizing path (see the ResizeObserver callback), so the
-    // composer/divider at the bottom is not clipped before the post-morph
-    // correction runs. The exact height is set by the forced re-observation
-    // in settleMorphPhase once the expand settles.
-    void invoke('animate_overlay_frame', {
-      width: overlayWidthRef.current,
-      height: maxChatHeightRef.current + CONTAINER_VERTICAL_PADDING,
-      durationMs: 0,
-    });
+    // The window currently sits where the floating icon is (the user may have
+    // dragged it anywhere), so we recompute the anchor live from the icon's
+    // current position. computeExpandTarget picks which corner of the panel is
+    // pinned to the icon (so it unfolds into open space) and the resulting
+    // on-screen top-left. That anchor drives the chat's transform-origin and
+    // the mascot's corner. Height includes CONTAINER_VERTICAL_PADDING so the
+    // bottom composer is not clipped before settleMorphPhase's re-measure.
+    //
+    // Flicker-free ordering (all three layers matter):
+    //   1. the mascot is opacity 0 the moment morphPhase is 'expanding';
+    //   2. the chat is held collapsed (expandReady=false) so it too is
+    //      invisible;
+    //   3. we then YIELD for a paint (double rAF) so WebKit actually paints
+    //      that all-invisible state before the native window move — otherwise
+    //      WebKit's last painted frame (the still-visible mascot from before
+    //      the click) is what gets displaced to the new window origin for ~1
+    //      frame, which is the jump. Only after the move do we release the
+    //      chat to grow (expandReady=true); it starts at opacity 0, so even a
+    //      stale post-move frame shows nothing.
+    const fullWidth = overlayWidthRef.current;
+    const fullHeight = maxChatHeightRef.current + CONTAINER_VERTICAL_PADDING;
+    const yieldForPaint = () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
     void (async () => {
       try {
         const win = getCurrentWindow();
@@ -878,32 +933,69 @@ function App() {
           win.scaleFactor(),
           currentMonitor(),
         ]);
-        const windowX = pos.x / scale;
-        const windowY = pos.y / scale;
-        const screenBottomY =
-          monitor != null
-            ? (monitor.position.y + monitor.size.height) / scale
-            : null;
-        // Grow-up geometry mirrored in replayEntranceAnimation; keep in sync.
-        const shouldGrowUp =
-          screenBottomY !== null &&
-          windowY + maxChatHeightRef.current + CONTAINER_VERTICAL_PADDING >
-            screenBottomY;
-        growsUpwardRef.current = shouldGrowUp;
-        setGrowsUpward(shouldGrowUp);
-        maxHeightRef.current = 0;
-        if (shouldGrowUp) {
-          windowPosRef.current = {
-            x: windowX,
-            bottomY: windowY + COLLAPSED_WINDOW_HEIGHT,
-          };
+        const iconX = pos.x / scale;
+        const iconY = pos.y / scale;
+        let anchor: MorphAnchor;
+        let growsUp: boolean;
+        let frameX: number;
+        let frameY: number;
+        if (monitor != null) {
+          const target = computeExpandTarget(
+            { x: iconX, y: iconY, size: MINIMIZED_WINDOW_SIZE },
+            {
+              x: monitor.position.x / scale,
+              y: monitor.position.y / scale,
+              w: monitor.size.width / scale,
+              h: monitor.size.height / scale,
+            },
+            { w: fullWidth, h: fullHeight },
+          );
+          anchor = target.anchor;
+          growsUp = target.growsUpward;
+          frameX = target.x;
+          frameY = target.y;
+        } else {
+          // No monitor geometry: keep the icon's top-left, no clamp.
+          anchor = 'tl';
+          growsUp = false;
+          frameX = iconX;
+          frameY = iconY;
         }
+        morphAnchorRef.current = anchor;
+        growsUpwardRef.current = growsUp;
+        maxHeightRef.current = 0;
+        windowPosRef.current = { x: frameX, bottomY: frameY + fullHeight };
+        // eslint-disable-next-line @eslint-react/dom-no-flush-sync -- intentional: commit the anchor (and the invisible state) before the imperative native window move below.
+        flushSync(() => {
+          setMorphAnchor(anchor);
+          setGrowsUpward(growsUp);
+        });
+        await yieldForPaint();
+        void invoke('set_window_frame', {
+          x: frameX,
+          y: frameY,
+          width: fullWidth,
+          height: fullHeight,
+        });
+        setExpandReady(true);
         /* v8 ignore start -- defensive: geometry query only rejects on a
            real Tauri runtime failure, unreachable in the jsdom mock */
       } catch {
+        morphAnchorRef.current = 'tl';
         growsUpwardRef.current = false;
-        setGrowsUpward(false);
         maxHeightRef.current = 0;
+        // eslint-disable-next-line @eslint-react/dom-no-flush-sync -- intentional: commit invisible state before the native window resize (see above).
+        flushSync(() => {
+          setMorphAnchor('tl');
+          setGrowsUpward(false);
+        });
+        await yieldForPaint();
+        void invoke('animate_overlay_frame', {
+          width: fullWidth,
+          height: fullHeight,
+          durationMs: 0,
+        });
+        setExpandReady(true);
       }
       /* v8 ignore stop */
     })();
@@ -935,6 +1027,8 @@ function App() {
     // it only keeps the animation clock running at 60fps.
     void getCurrentWindow().setFocus();
     setMorphPhase('collapsing');
+    // Reset so the next expand re-enters the chat-held-collapsed prep state.
+    setExpandReady(false);
     void invoke('set_overlay_minimized', { minimized: true });
   }, []);
 
@@ -962,19 +1056,52 @@ function App() {
     clearTimeout(morphSettleTimerRef.current);
     morphSettleTimerRef.current = 0;
     if (morphPhaseRef.current === 'collapsing') {
-      // Chat is now at opacity 0 (visually gone); snap the OS window to the
-      // 48x48 square (instant, invisible since the painted content is
-      // already the mascot at the window's top-left). The mascot's own
-      // spring may still be in flight — `position: fixed` keeps it pinned
-      // through the resize, and any brief overshoot past the new 48x48
-      // bounds is clipped by the smaller WKWebView surface without visible
-      // artifacts on retina.
-      void invoke('animate_overlay_frame', {
-        width: MINIMIZED_WINDOW_SIZE,
-        height: MINIMIZED_WINDOW_SIZE,
-        durationMs: 0,
-      });
+      // Chat is now at opacity 0 (visually gone). Settle to minimized
+      // immediately (unmounts the chat subtree), then snap the OS window to
+      // the 48x48 square at the active anchor's corner of the chat's CURRENT
+      // frame, so the icon folds back to the exact screen spot the chat
+      // unfolded from. The mascot is rendered at that same corner, so it stays
+      // put through the resize. Reading the live frame here (rather than a
+      // value captured at minimize start) handles a chat that was dragged
+      // while expanded. The brief full-size-then-snap window is transparent
+      // and shows only the mascot, so it is invisible.
       setMorphPhase('minimized');
+      const anchor = morphAnchorRef.current;
+      void (async () => {
+        try {
+          const win = getCurrentWindow();
+          const [pos, size, scale] = await Promise.all([
+            win.outerPosition(),
+            win.outerSize(),
+            win.scaleFactor(),
+          ]);
+          const target = computeCollapseTarget(
+            {
+              x: pos.x / scale,
+              y: pos.y / scale,
+              w: size.width / scale,
+              h: size.height / scale,
+            },
+            anchor,
+            MINIMIZED_WINDOW_SIZE,
+          );
+          void invoke('set_window_frame', {
+            x: target.x,
+            y: target.y,
+            width: MINIMIZED_WINDOW_SIZE,
+            height: MINIMIZED_WINDOW_SIZE,
+          });
+          /* v8 ignore start -- defensive: geometry query only rejects on a
+             real Tauri runtime failure, unreachable in the jsdom mock */
+        } catch {
+          void invoke('animate_overlay_frame', {
+            width: MINIMIZED_WINDOW_SIZE,
+            height: MINIMIZED_WINDOW_SIZE,
+            durationMs: 0,
+          });
+        }
+        /* v8 ignore stop */
+      })();
       return;
     }
     if (morphPhaseRef.current === 'expanding') {
@@ -2604,9 +2731,27 @@ function App() {
   // also unmounted during 'minimized' so the visible result at both phases
   // is just the portaled mascot.
   const COLLAPSED_SCALE = 0.34;
-  const isCollapsedPhase =
-    morphPhase === 'collapsing' || morphPhase === 'minimized';
-  const morphTransform = isCollapsedPhase
+  // Tailwind inset classes that pin the floating mascot to the active anchor
+  // corner of the (portaled, viewport-fixed) window. For the 48px settled
+  // window all four corners coincide, so this also reads correctly minimized;
+  // it only matters visually while the full-size window resizes under the
+  // mascot during the morph, where the anchored corner stays on the icon.
+  const mascotCornerClass = {
+    tl: 'top-0 left-0',
+    tr: 'top-0 right-0',
+    bl: 'bottom-0 left-0',
+    br: 'bottom-0 right-0',
+  }[morphAnchor];
+  // The chat card is collapsed (small + invisible) while collapsing, settled
+  // minimized, AND during the first part of expand (before expandReady) — that
+  // last case holds it invisible across the native window move so it cannot
+  // flash at the wrong position. It grows out of the anchor corner only once
+  // expandReady flips true, after the window has been repositioned.
+  const chatCollapsed =
+    morphPhase === 'collapsing' ||
+    morphPhase === 'minimized' ||
+    (morphPhase === 'expanding' && !expandReady);
+  const morphTransform = chatCollapsed
     ? { scale: COLLAPSED_SCALE, opacity: 0 }
     : { scale: 1, opacity: 1 };
   // Per-property timing: opacity fades faster than the scale shrinks so the
@@ -2617,9 +2762,7 @@ function App() {
   // keeps the snappier `MORPH_DURATION_S` so only the minimize direction is
   // slowed down.
   const morphDuration =
-    morphPhase === 'collapsing'
-      ? COLLAPSE_MORPH_DURATION_S
-      : MORPH_DURATION_S;
+    morphPhase === 'collapsing' ? COLLAPSE_MORPH_DURATION_S : MORPH_DURATION_S;
   const morphTransition = {
     scale: { duration: morphDuration, ease: MORPH_EASE },
     opacity: { duration: morphDuration * 0.55, ease: MORPH_EASE },
@@ -2689,7 +2832,9 @@ function App() {
                 animate={morphTransform}
                 transition={morphTransition}
                 onAnimationComplete={settleMorphPhase}
-                style={{ transformOrigin: 'top left' }}
+                style={{
+                  transformOrigin: anchorToTransformOrigin(morphAnchor),
+                }}
                 className={
                   isSettledMinimized
                     ? ''
@@ -2959,7 +3104,7 @@ function App() {
                 createPortal(
                   <div
                     key="morph-mascot"
-                    className={`thuki-mascot fixed top-0 left-0${
+                    className={`thuki-mascot fixed ${mascotCornerClass}${
                       isSettledMinimized ? '' : ' pointer-events-none'
                     }${morphPhase === 'collapsing' ? ' thuki-mascot-bloom' : ''}${
                       morphPhase === 'expanding' ? ' thuki-mascot-leaving' : ''

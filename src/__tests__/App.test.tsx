@@ -7380,6 +7380,19 @@ describe('App', () => {
 
     it('minimizes to the floating icon without cancelling generation', async () => {
       await enterChatMode();
+      // Chat frame for the collapse-corner snap. No prior expand → anchor is
+      // the top-left default, so the icon folds to the chat's top-left.
+      __setWindowGeometry({
+        x: 300,
+        y: 200,
+        scale: 1,
+        width: 400,
+        height: 700,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
       // Generation is in flight (channel open, no Done yet)
       invoke.mockClear();
 
@@ -7387,6 +7400,9 @@ describe('App', () => {
       await act(async () => {
         fireEvent.click(minimizeBtn);
       });
+      // The collapse-corner snap queries the frame in settleMorphPhase's async
+      // path; flush microtasks so the set_window_frame call is observable.
+      await act(async () => {});
 
       // MinimizedIcon should be rendered
       expect(
@@ -7401,14 +7417,14 @@ describe('App', () => {
         minimized: true,
       });
 
-      // The OS window only snap-resizes to the 48px square at the END of the
-      // in-page collapse morph (durationMs:0 = instant, invisible because the
-      // painted content is already the mascot). The framer-motion test mock
-      // flushes onAnimationComplete during the `await act` above.
-      expect(invoke).toHaveBeenCalledWith('animate_overlay_frame', {
+      // At the end of the collapse morph the OS window snaps to the 48px
+      // square at the anchor's corner of the chat frame. top-left anchor +
+      // frame (300,200) → icon folds to (300,200).
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 300,
+        y: 200,
         width: 48,
         height: 48,
-        durationMs: 0,
       });
 
       // notify_overlay_hidden must NOT have been called (no cancel)
@@ -7489,6 +7505,17 @@ describe('App', () => {
         screen.getByRole('button', { name: /restore thuki/i }),
       ).toBeInTheDocument();
 
+      // Icon sits comfortably inside the monitor (no edge clamping), so the
+      // window expands anchored at the icon's top-left.
+      __setWindowGeometry({
+        x: 200,
+        y: 150,
+        scale: 1,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
       invoke.mockClear();
 
       // Restore — MinimizedIcon fires onRestore via onPointerUp (not onClick)
@@ -7497,8 +7524,8 @@ describe('App', () => {
         fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
         fireEvent.pointerUp(restoreBtn);
       });
-      // Restore geometry recompute + native frame animation fire inside the
-      // async IIFE; flush microtasks so the invoke calls are observable.
+      // Restore geometry query + native frame set fire inside the async IIFE;
+      // flush microtasks so the invoke calls are observable.
       await act(async () => {});
 
       // set_overlay_minimized called with minimized: false
@@ -7506,16 +7533,16 @@ describe('App', () => {
         minimized: false,
       });
 
-      // On restore the OS window snaps back up to full chat size on the SAME
-      // tick the in-page expand starts (durationMs:0 = instant; not awaited
-      // before the transform so the user never sees the 48px mascot inside a
-      // full-size click-capturing rect). The height includes
-      // CONTAINER_VERTICAL_PADDING (48) so the bottom composer/divider is not
-      // clipped before the post-morph re-measure runs.
-      expect(invoke).toHaveBeenCalledWith('animate_overlay_frame', {
+      // On restore the OS window is positioned on screen and grown to full
+      // chat size in one native frame set. With the icon away from any edge,
+      // the window keeps the icon's top-left (200,150). Height includes
+      // CONTAINER_VERTICAL_PADDING (48) so the bottom composer is not clipped
+      // before settleMorphPhase's post-settle re-measure.
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 200,
+        y: 150,
         width: DEFAULT_CONFIG.window.overlayWidth,
         height: DEFAULT_CONFIG.window.maxChatHeight + 48,
-        durationMs: 0,
       });
 
       // ConversationView shown again with same messages
@@ -7526,6 +7553,156 @@ describe('App', () => {
       expect(
         screen.queryByRole('button', { name: /restore thuki/i }),
       ).toBeNull();
+    });
+
+    it('clamps the expanded window left when the icon is near the right edge', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      // Icon flush against the right edge of a 1440-wide monitor (x 1392 + 48
+      // = 1440).
+      __setWindowGeometry({
+        x: 1392,
+        y: 100,
+        scale: 1,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
+      invoke.mockClear();
+
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+
+      // Anchor top-right: the panel's right edge is pinned to the icon's right
+      // edge (1392 + 48), so the window unfolds leftward and stays on screen.
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 1392 + 48 - DEFAULT_CONFIG.window.overlayWidth,
+        y: 100,
+        width: DEFAULT_CONFIG.window.overlayWidth,
+        height: DEFAULT_CONFIG.window.maxChatHeight + 48,
+      });
+    });
+
+    it('anchors the expanded window to the bottom and grows upward when the icon is near the bottom edge', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      // Icon parked near the bottom edge of a 900-tall monitor.
+      __setWindowGeometry({
+        x: 100,
+        y: 850,
+        scale: 1,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
+      invoke.mockClear();
+
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+
+      // Anchor bottom-left: the panel's bottom edge is pinned to the icon's
+      // bottom edge (850 + 48), so the top = 898 - fullHeight and the window
+      // unfolds upward instead of clipping off the bottom.
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 100,
+        y: 850 + 48 - (DEFAULT_CONFIG.window.maxChatHeight + 48),
+        width: DEFAULT_CONFIG.window.overlayWidth,
+        height: DEFAULT_CONFIG.window.maxChatHeight + 48,
+      });
+      // Bottom-anchored → the root container grows upward.
+      expect(document.querySelector('.h-screen.justify-end')).not.toBeNull();
+    });
+
+    it('folds the icon back to its origin after a right-edge expand', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      // First minimize (default top-left anchor).
+      let minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+      await act(async () => {});
+
+      // Park the icon flush against the right edge, then restore → the expand
+      // anchors top-right and the chat unfolds left to (1440 - overlayWidth).
+      __setWindowGeometry({
+        x: 1392,
+        y: 100,
+        scale: 1,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+
+      // The chat now occupies this frame (top-right anchored). Point the
+      // collapse query at it.
+      const fullHeight = DEFAULT_CONFIG.window.maxChatHeight + 48;
+      __setWindowGeometry({
+        x: 1392 + 48 - DEFAULT_CONFIG.window.overlayWidth,
+        y: 100,
+        width: DEFAULT_CONFIG.window.overlayWidth,
+        height: fullHeight,
+        scale: 1,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
+      invoke.mockClear();
+
+      // Second minimize → collapse reuses the top-right anchor, folding the
+      // icon back to its original right-edge spot (1392, 100).
+      minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 1392,
+        y: 100,
+        width: 48,
+        height: 48,
+      });
     });
 
     it('raises the unseen dot when generation finishes while minimized', async () => {

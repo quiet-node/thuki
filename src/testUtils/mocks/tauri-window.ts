@@ -14,6 +14,8 @@ let _windowGeometry = {
   x: 0,
   y: 0,
   scale: 1,
+  width: 400,
+  height: 700,
   monitorX: 0,
   monitorY: 0,
   monitorWidth: 1440,
@@ -30,6 +32,8 @@ export function __setWindowGeometry(opts: {
   x?: number;
   y?: number;
   scale?: number;
+  width?: number;
+  height?: number;
   monitorX?: number;
   monitorY?: number;
   monitorWidth?: number;
@@ -40,6 +44,10 @@ export function __setWindowGeometry(opts: {
   mockWindow.outerPosition.mockResolvedValue({
     x: _windowGeometry.x,
     y: _windowGeometry.y,
+  });
+  mockWindow.outerSize.mockResolvedValue({
+    width: _windowGeometry.width,
+    height: _windowGeometry.height,
   });
   mockWindow.scaleFactor.mockResolvedValue(_windowGeometry.scale);
 }
@@ -55,6 +63,7 @@ const mockWindow = {
   setFocus: vi.fn(async () => {}),
   startDragging: vi.fn(async () => {}),
   outerPosition: vi.fn(async () => ({ x: 0, y: 0 })),
+  outerSize: vi.fn(async () => ({ width: 400, height: 700 })),
   scaleFactor: vi.fn(async () => 1),
   /**
    * Mirrors Tauri's `Window.onFocusChanged` API. Returns an unlisten

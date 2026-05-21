@@ -655,14 +655,17 @@ body {
 .thuki-mascot-bloom {
   animation: thuki-mascot-bloom 0.42s ease-out 0.04s both;
 }
-/* Fade + shrink out on expand (compositor-driven; snaps to the end-state if
-   throttled, which is correct since we are restoring the chat). */
+/* On expand the mascot snaps invisible INSTANTLY (no transition). This is
+   load-bearing, not cosmetic: expanding moves the native window (to grow the
+   chat out of the icon's corner), and WKWebView repaints its pre-resize
+   surface at the new window origin for ~1 frame before it reflows CSS. If the
+   mascot were still visible (mid-fade) during that frame it would flash at the
+   wrong corner and snap back — the jump. By forcing opacity:0 in the same
+   commit as the move dispatch, there is simply nothing visible to flash; the
+   chat scaling in from the anchor corner carries the "grows out of the icon"
+   continuity instead. Do NOT add a transition here. */
 .thuki-mascot-leaving {
   opacity: 0;
-  transform: scale(0.3);
-  transition:
-    opacity 0.36s ease,
-    transform 0.36s ease;
 }
 @keyframes thuki-mascot-bloom {
   0% {
