@@ -528,6 +528,23 @@ function App() {
     isVisible: isTipVisible,
   } = useTips(shouldRenderOverlay);
 
+  // Animate the tip typewriter only the FIRST time a given tip (tipKey) is
+  // shown. Minimizing unmounts the chat subtree (and TipBar with it); on
+  // restore TipBar remounts with the SAME tipKey, which would otherwise replay
+  // the typewriter from scratch. We remember the last tipKey we let animate
+  // (this ref survives minimize because App itself never unmounts) and tell
+  // TipBar to render an already-seen tip as static text instead of re-typing.
+  const animatedTipKeyRef = useRef(-1);
+  useEffect(() => {
+    // Once a tip is on screen, mark its key as animated. This effect runs
+    // after render, so the render that first shows a new tip still sees the
+    // old key and animates; only later mounts of the same key are static.
+    if (isTipVisible) {
+      animatedTipKeyRef.current = tipKey;
+    }
+  }, [isTipVisible, tipKey]);
+  const tipAlreadyAnimated = tipKey === animatedTipKeyRef.current;
+
   const updater = useUpdater();
   const chatSnoozed = useMemo(
     () => (updater.state.chat_snoozed_until ?? 0) * 1000 > Date.now(),
@@ -3078,7 +3095,11 @@ function App() {
                                 }}
                                 style={{ overflow: 'hidden' }}
                               >
-                                <TipBar tip={activeTip} tipKey={tipKey} />
+                                <TipBar
+                                  tip={activeTip}
+                                  tipKey={tipKey}
+                                  skipAnimation={tipAlreadyAnimated}
+                                />
                               </motion.div>
                             )}
                           </AnimatePresence>

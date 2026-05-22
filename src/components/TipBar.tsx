@@ -28,13 +28,28 @@ interface TipBarProps {
   tip: Tip;
   tipKey: number;
   suppressed?: boolean;
+  /**
+   * Render the tip as final, static text instead of replaying the typewriter.
+   * Set when this tipKey was already animated in a prior mount (e.g. before a
+   * minimize), so re-expanding shows the settled tip rather than re-typing it.
+   */
+  skipAnimation?: boolean;
 }
 
-export function TipBar({ tip, tipKey, suppressed }: TipBarProps) {
+export function TipBar({
+  tip,
+  tipKey,
+  suppressed,
+  skipAnimation,
+}: TipBarProps) {
   const text = tipText(tip);
   const url = tipUrl(tip);
   const spanRef = useRef<HTMLSpanElement>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // Read at effect-run time (not via deps) so a re-render that flips this flag
+  // mid-animation cannot re-trigger the effect and wipe an in-progress type.
+  const skipAnimationRef = useRef(skipAnimation);
+  skipAnimationRef.current = skipAnimation;
 
   useEffect(() => {
     const span = spanRef.current;
@@ -44,6 +59,13 @@ export function TipBar({ tip, tipKey, suppressed }: TipBarProps) {
 
     timersRef.current.forEach(clearTimeout);
     timersRef.current = [];
+
+    if (skipAnimationRef.current) {
+      // Already typed on a previous mount: show the settled text at once.
+      span.textContent = text;
+      span.style.color = '#8a8a8e';
+      return;
+    }
 
     const addTimer = (fn: () => void, ms: number) => {
       // eslint-disable-next-line @eslint-react/web-api-no-leaked-timeout

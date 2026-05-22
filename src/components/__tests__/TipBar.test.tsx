@@ -53,6 +53,16 @@ describe('TipBar', () => {
     expect(screen.getByTestId('tip-text').textContent).toBe('World');
   });
 
+  it('shows the full tip text immediately, without typing, when skipAnimation is set', () => {
+    // No timers advanced: a typing run would leave the span empty at t=0, so a
+    // full string here proves the animation was skipped (the minimize/restore
+    // case, where the tip was already typed on a prior mount).
+    render(<TipBar tip="Already shown tip" tipKey={3} skipAnimation />);
+    expect(screen.getByTestId('tip-text').textContent).toBe(
+      'Already shown tip',
+    );
+  });
+
   it('cleans up timers on unmount without throwing', () => {
     const { unmount } = render(<TipBar tip="Hello" tipKey={0} />);
     expect(() => unmount()).not.toThrow();
