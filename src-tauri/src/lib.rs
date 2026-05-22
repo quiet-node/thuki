@@ -127,6 +127,10 @@ const OVERLAY_LOGICAL_HEIGHT_COLLAPSED: f64 = 80.0;
 const OVERLAY_VISIBILITY_EVENT: &str = "thuki://visibility";
 const OVERLAY_VISIBILITY_SHOW: &str = "show";
 const OVERLAY_VISIBILITY_HIDE_REQUEST: &str = "hide-request";
+/// Emitted while the overlay is parked in the minimized icon and an
+/// activation occurs. The frontend restores the chat without the
+/// fresh-session wipe that OVERLAY_VISIBILITY_SHOW triggers.
+const OVERLAY_VISIBILITY_RESTORE: &str = "restore";
 
 /// Frontend event that triggers the onboarding screen when one or more
 /// required permissions have not yet been granted.
@@ -141,6 +145,11 @@ const ONBOARDING_LOGICAL_HEIGHT: f64 = 640.0;
 /// Tracks the intended visibility state of the overlay, preventing race conditions
 /// between the frontend exit animation and rapid activation toggles.
 static OVERLAY_INTENDED_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+/// True while the overlay is collapsed into the floating minimized icon.
+/// Read by the activator layer so any activation restores the parked
+/// conversation instead of showing/hiding.
+static OVERLAY_MINIMIZED: AtomicBool = AtomicBool::new(false);
 
 /// True on first process launch; cleared when the frontend signals readiness.
 /// Used to show the overlay automatically on startup without a race condition:
@@ -183,6 +192,24 @@ fn emit_overlay_visibility(
             window_y,
             screen_bottom_y,
         },
+    );
+}
+
+/// Emits a restore request and marks the overlay intended-visible.
+///
+/// A restore makes the parked (minimized) overlay visible again, so
+/// `OVERLAY_INTENDED_VISIBLE` must agree. If it were left `false` (it can be
+/// after a hide that raced the minimized state), the next `toggle_overlay`
+/// would read it and re-show instead of hiding the now-visible overlay.
+fn emit_overlay_restore(app_handle: &tauri::AppHandle) {
+    OVERLAY_INTENDED_VISIBLE.store(true, Ordering::SeqCst);
+    emit_overlay_visibility(
+        app_handle,
+        OVERLAY_VISIBILITY_RESTORE,
+        None,
+        None,
+        None,
+        None,
     );
 }
 
@@ -257,6 +284,10 @@ fn monitor_info_fallback() -> (f64, f64, f64, f64) {
 /// back to global coordinates for `set_position`.
 #[cfg(target_os = "macos")]
 fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
+    if take_minimized_for_restore() {
+        emit_overlay_restore(app_handle);
+        return;
+    }
     let already_visible = OVERLAY_INTENDED_VISIBLE.swap(true, Ordering::SeqCst);
     if already_visible {
         return;
@@ -545,6 +576,14 @@ fn show_update_window(app_handle: &tauri::AppHandle) {
 /// Requests an animated hide sequence from the frontend. The actual native
 /// window hide is deferred until the frontend exit animation completes.
 fn request_overlay_hide(app_handle: &tauri::AppHandle) {
+    // A parked (minimized) conversation must survive a stray close request.
+    // While minimized the icon is a small NSPanel that can still receive
+    // Cmd+W / a system close, which routes here; hiding it would tear down the
+    // background stream the user explicitly minimized to keep running. Ignore
+    // the hide while minimized: the user restores first, then closes normally.
+    if OVERLAY_MINIMIZED.load(Ordering::SeqCst) {
+        return;
+    }
     if OVERLAY_INTENDED_VISIBLE.swap(false, Ordering::SeqCst) {
         emit_overlay_visibility(
             app_handle,
@@ -565,6 +604,10 @@ fn request_overlay_hide(app_handle: &tauri::AppHandle) {
 /// (e.g. Windows global hotkey) are implemented.
 #[cfg(not(target_os = "macos"))]
 fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
+    if take_minimized_for_restore() {
+        emit_overlay_restore(app_handle);
+        return;
+    }
     if OVERLAY_INTENDED_VISIBLE.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -587,6 +630,10 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 /// Uses an atomic flag as the single source of truth for intended visibility,
 /// which avoids race conditions with the native panel state during animations.
 fn toggle_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
+    if take_minimized_for_restore() {
+        emit_overlay_restore(app_handle);
+        return;
+    }
     if OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst) {
         request_overlay_hide(app_handle);
     } else {
@@ -625,6 +672,152 @@ fn set_window_frame(app_handle: tauri::AppHandle, x: f64, y: f64, width: f64, he
     });
 }
 
+/// Computes the AppKit target frame for a resize that keeps the window's
+/// visual top-left corner fixed.
+///
+/// AppKit screen coordinates are bottom-left origin (Y grows upward), so the
+/// current top edge is `origin.y + height`. To keep that top edge (and the
+/// left edge) stationary while the size changes, the new origin's Y must be
+/// `top - new_height`. This is purely relative to the current frame: no screen
+/// lookup, no multi-monitor math, no absolute Y-flip. Robust by construction.
+///
+/// `cur` is `(origin_x, origin_y, width, height)`; the return is the same shape
+/// for the target frame.
+fn compute_top_left_anchored_target(
+    cur: (f64, f64, f64, f64),
+    w: f64,
+    h: f64,
+) -> (f64, f64, f64, f64) {
+    let (cur_x, cur_y, _cur_w, cur_h) = cur;
+    let top = cur_y + cur_h;
+    let new_y = top - h;
+    (cur_x, new_y, w, h)
+}
+
+/// Animates the main overlay NSPanel/NSWindow from its current native frame to
+/// a new size, keeping the visual top-left corner fixed, using
+/// `NSAnimationContext` so the OS compositor (Core Animation) drives the
+/// animation. One IPC call per morph direction replaces the old per-frame
+/// `setSize` storm.
+///
+/// Excluded from coverage: thin wrapper over AppKit `NSWindow`/
+/// `NSAnimationContext` FFI that requires a real window and the macOS main
+/// thread. The pure geometry is covered by
+/// `compute_top_left_anchored_target`'s unit test.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn animate_overlay_frame(app_handle: tauri::AppHandle, width: f64, height: f64, duration_ms: f64) {
+    // Never panic on bad input: reject non-finite / non-positive dimensions
+    // and clamp the duration to a sane range. A missing window handle is a
+    // silent no-op.
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let duration_ms = if duration_ms.is_finite() {
+        duration_ms.clamp(0.0, 2000.0)
+    } else {
+        0.0
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::encode::{Encode, Encoding, RefEncode};
+        use objc2::rc::autoreleasepool;
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+
+        // Local NSRect/NSPoint/NSSize. `core_graphics::geometry::CGRect` does
+        // not implement objc2's `Encode`, so it cannot be a `msg_send!`
+        // return/argument type. NSRect uses CGFloat = f64 on macOS and is
+        // layout-compatible with the AppKit `NSWindow` frame ABI.
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct NSPoint {
+            x: f64,
+            y: f64,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct NSSize {
+            width: f64,
+            height: f64,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct NSRect {
+            origin: NSPoint,
+            size: NSSize,
+        }
+
+        unsafe impl Encode for NSPoint {
+            const ENCODING: Encoding = Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]);
+        }
+        unsafe impl Encode for NSSize {
+            const ENCODING: Encoding = Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING]);
+        }
+        unsafe impl Encode for NSRect {
+            const ENCODING: Encoding =
+                Encoding::Struct("CGRect", &[NSPoint::ENCODING, NSSize::ENCODING]);
+        }
+        unsafe impl RefEncode for NSRect {
+            const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+        }
+
+        let handle = app_handle.clone();
+        let _ = app_handle.run_on_main_thread(move || {
+            let Some(window) = handle.get_webview_window("main") else {
+                return;
+            };
+            let Ok(ns_window) = window.ns_window() else {
+                return;
+            };
+            if ns_window.is_null() {
+                return;
+            }
+            let win = ns_window as *mut AnyObject;
+
+            autoreleasepool(|_| unsafe {
+                let cur: NSRect = msg_send![win, frame];
+                let (tx, ty, tw, th) = compute_top_left_anchored_target(
+                    (cur.origin.x, cur.origin.y, cur.size.width, cur.size.height),
+                    width,
+                    height,
+                );
+                let target = NSRect {
+                    origin: NSPoint { x: tx, y: ty },
+                    size: NSSize {
+                        width: tw,
+                        height: th,
+                    },
+                };
+
+                // duration 0 is the invisible endpoint snap used by the
+                // in-page morph: the painted web content already matches the
+                // target, so the OS frame must change instantly. The animator
+                // proxy still tweens (briefly) even at duration 0, so bypass
+                // NSAnimationContext entirely and set the frame directly on
+                // the window for a true immediate, non-animated change.
+                if duration_ms == 0.0 {
+                    let _: () = msg_send![win, setFrame: target, display: true];
+                } else {
+                    let ctx_cls = class!(NSAnimationContext);
+                    let _: () = msg_send![ctx_cls, beginGrouping];
+                    let ctx: *mut AnyObject = msg_send![ctx_cls, currentContext];
+                    let _: () = msg_send![ctx, setDuration: duration_ms / 1000.0];
+                    let animator: *mut AnyObject = msg_send![win, animator];
+                    let _: () = msg_send![animator, setFrame: target, display: true];
+                    let _: () = msg_send![ctx_cls, endGrouping];
+                }
+            });
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app_handle, width, height, duration_ms);
+    }
+}
+
 /// Synchronizes the Rust-side visibility tracking when the frontend
 /// completes its exit animation and hides the native window.
 #[tauri::command]
@@ -632,6 +825,27 @@ fn set_window_frame(app_handle: tauri::AppHandle, x: f64, y: f64, width: f64, he
 fn notify_overlay_hidden(generation: tauri::State<crate::commands::GenerationState>) {
     generation.cancel();
     OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
+    // The overlay is now fully hidden, so it can no longer be parked in the
+    // minimized icon. Clearing the flag here prevents it leaking `true` across
+    // a hide and routing the next activation to a restore of a gone window.
+    OVERLAY_MINIMIZED.store(false, Ordering::SeqCst);
+}
+
+fn set_overlay_minimized_impl(minimized: bool) {
+    OVERLAY_MINIMIZED.store(minimized, Ordering::SeqCst);
+}
+
+/// Returns true and clears the flag if the overlay was minimized. Used by
+/// the activator layer to route any activation to a restore instead of a
+/// show or hide while a conversation is parked.
+fn take_minimized_for_restore() -> bool {
+    OVERLAY_MINIMIZED.swap(false, Ordering::SeqCst)
+}
+
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn set_overlay_minimized(minimized: bool) {
+    set_overlay_minimized_impl(minimized);
 }
 
 /// Called by the frontend once its visibility event listener is registered.
@@ -1476,8 +1690,10 @@ pub fn run() {
             #[cfg(not(coverage))]
             ocr::extract_text_command,
             notify_overlay_hidden,
+            set_overlay_minimized,
             notify_frontend_ready,
             set_window_frame,
+            animate_overlay_frame,
             #[cfg(not(coverage))]
             permissions::check_accessibility_permission,
             #[cfg(not(coverage))]
@@ -1564,6 +1780,30 @@ mod tests {
     }
 
     #[test]
+    fn top_left_anchored_target_keeps_top_and_left_fixed() {
+        // Current frame: origin (100, 200), size 600x700.
+        // AppKit top edge = 200 + 700 = 900.
+        let cur = (100.0_f64, 200.0_f64, 600.0_f64, 700.0_f64);
+
+        // Shrink to a 48x48 square.
+        let (x, y, w, h) = compute_top_left_anchored_target(cur, 48.0, 48.0);
+        assert_eq!(x, 100.0, "left edge (origin.x) must not move");
+        assert_eq!(w, 48.0, "width is set to the requested value");
+        assert_eq!(h, 48.0, "height is set to the requested value");
+        // Top edge after = new_y + new_h must equal the original top (900).
+        assert_eq!(y + h, 900.0, "visual top edge must stay fixed");
+        assert_eq!(y, 852.0);
+
+        // Grow back to a larger box: top edge still fixed at 900.
+        let (gx, gy, gw, gh) = compute_top_left_anchored_target(cur, 560.0, 648.0);
+        assert_eq!(gx, 100.0);
+        assert_eq!(gw, 560.0);
+        assert_eq!(gh, 648.0);
+        assert_eq!(gy + gh, 900.0, "visual top edge must stay fixed on grow");
+        assert_eq!(gy, 252.0);
+    }
+
+    #[test]
     fn width_height_clamp_logic() {
         assert_eq!(0.5_f64.clamp(1.0, 10_000.0), 1.0);
         assert_eq!(500.0_f64.clamp(1.0, 10_000.0), 500.0);
@@ -1578,6 +1818,24 @@ mod tests {
     }
 
     #[test]
+    fn set_overlay_minimized_toggles_flag() {
+        OVERLAY_MINIMIZED.store(false, Ordering::SeqCst);
+        set_overlay_minimized_impl(true);
+        assert!(OVERLAY_MINIMIZED.load(Ordering::SeqCst));
+        set_overlay_minimized_impl(false);
+        assert!(!OVERLAY_MINIMIZED.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn minimized_guard_clears_flag() {
+        OVERLAY_MINIMIZED.store(true, Ordering::SeqCst);
+        let consumed = take_minimized_for_restore();
+        assert!(consumed);
+        assert!(!OVERLAY_MINIMIZED.load(Ordering::SeqCst));
+        assert!(!take_minimized_for_restore());
+    }
+
+    #[test]
     fn launch_show_pending_consumed_exactly_once() {
         LAUNCH_SHOW_PENDING.store(true, Ordering::SeqCst);
         assert!(LAUNCH_SHOW_PENDING.swap(false, Ordering::SeqCst));
@@ -1589,6 +1847,13 @@ mod tests {
         assert_eq!(OVERLAY_VISIBILITY_EVENT, "thuki://visibility");
         assert_eq!(OVERLAY_VISIBILITY_SHOW, "show");
         assert_eq!(OVERLAY_VISIBILITY_HIDE_REQUEST, "hide-request");
+    }
+
+    #[test]
+    fn restore_visibility_constant_is_distinct() {
+        assert_ne!(OVERLAY_VISIBILITY_RESTORE, OVERLAY_VISIBILITY_SHOW);
+        assert_ne!(OVERLAY_VISIBILITY_RESTORE, OVERLAY_VISIBILITY_HIDE_REQUEST);
+        assert_eq!(OVERLAY_VISIBILITY_RESTORE, "restore");
     }
 
     #[test]

@@ -81,6 +81,11 @@ interface ConversationViewProps {
   onModelPickerToggle?: () => void;
   /** Whether the model picker panel is open; drives aria-expanded on the pill. */
   isModelPickerOpen?: boolean;
+  /**
+   * Called when the user clicks the minimize (yellow) dot.
+   * Omit when there is no conversation to park (ask-bar mode).
+   */
+  onMinimize?: () => void;
 }
 
 /**
@@ -108,6 +113,7 @@ export function ConversationView({
   activeModel,
   onModelPickerToggle,
   isModelPickerOpen,
+  onMinimize,
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -211,6 +217,7 @@ export function ConversationView({
         activeModel={activeModel}
         onModelPickerToggle={onModelPickerToggle}
         isModelPickerOpen={isModelPickerOpen}
+        onMinimize={onMinimize}
       />
 
       <div

@@ -20,6 +20,11 @@
   --color-tertiary: #e69c05;
   --color-neutral: #1a1a1c;
 
+  /* Status accent: "ready" green for the minimized done indicator. Sits
+     outside the warm brand palette on purpose, a conventional ready/available
+     signal that must read instantly distinct from the warm working state. */
+  --color-ready: #34d399;
+
   /* Surface tokens derived from the palette */
   --color-surface-base: rgba(22, 18, 15, 0.98);
   --color-surface-elevated: rgba(38, 30, 24, 0.6);
@@ -630,4 +635,211 @@ body {
   text-decoration: none;
   border-bottom: 1px solid
     color-mix(in srgb, var(--color-primary) 28%, transparent);
+}
+
+/* ─── Minimized mascot icon ─────────────────────────────────────────────────
+   The floating mascot's opacity/scale are CSS-driven, NOT Framer Motion.
+   This is load-bearing: the overlay is a nonactivating NSPanel, and when it
+   is not the key window WKWebView throttles requestAnimationFrame. A Framer
+   rAF tween would then strand the mascot at its initial opacity:0 and the
+   icon would vanish (the disappearing-icon-after-many-toggles bug). A CSS
+   end-state is committed during style resolution and painted by the
+   compositor regardless of the JS rAF clock, so the settled icon is always
+   visible. The base/settled state is declaratively visible; collapse and
+   expand layer transient animations on top. Timings mirror the JS
+   MORPH_DURATION_S (0.36s) constant. */
+.thuki-mascot {
+  opacity: 1;
+  transform: scale(1);
+  transform-origin: center;
+}
+/* Bloom in on collapse. The base style above is already the visible
+   end-state, so even if this animation is throttled and never runs, the icon
+   still paints at opacity:1. `both` fill holds the 0% frame during the delay
+   and the 100% frame after. */
+.thuki-mascot-bloom {
+  animation: thuki-mascot-bloom 0.42s ease-out 0.04s both;
+}
+/* On expand the mascot snaps invisible INSTANTLY (no transition). This is
+   load-bearing, not cosmetic: expanding moves the native window (to grow the
+   chat out of the icon's corner), and WKWebView repaints its pre-resize
+   surface at the new window origin for ~1 frame before it reflows CSS. If the
+   mascot were still visible (mid-fade) during that frame it would flash at the
+   wrong corner and snap back — the jump. By forcing opacity:0 in the same
+   commit as the move dispatch, there is simply nothing visible to flash; the
+   chat scaling in from the anchor corner carries the "grows out of the icon"
+   continuity instead. Do NOT add a transition here. */
+.thuki-mascot-leaving {
+  opacity: 0;
+}
+@keyframes thuki-mascot-bloom {
+  0% {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ─── Minimized Mascot Indicator ───
+ * "Jelly Wobble + Jewel Dot": while a response streams in the background the
+ * parked mascot does a soft elastic squash-and-stretch (it looks alive, not
+ * badged) and a small glossy jewel breathes at its bottom-right corner. When a
+ * reply lands while minimized the mascot does one elastic pop and the jewel
+ * holds a steady warm amber, the persistent "reply waiting" cue. The wobble is
+ * the personality; the jewel is the explicit working/done signal.
+ */
+
+/* Logo: alive while streaming. transform-origin center so the squash grows
+   symmetrically about the mascot's middle: right for a floating element (no
+   ground to settle onto) and it keeps the overshoot within the window's
+   margin on every side so nothing clips. */
+.minimized-logo-working {
+  transform-origin: center;
+  animation: minimized-wobble 1.6s ease-in-out infinite;
+}
+@keyframes minimized-wobble {
+  0%,
+  100% {
+    transform: scale(1, 1);
+  }
+  25% {
+    transform: scale(1.07, 0.93);
+  }
+  50% {
+    transform: scale(0.93, 1.07);
+  }
+  75% {
+    transform: scale(1.03, 0.97);
+  }
+}
+
+/* Logo: one-shot elastic pop the moment a reply lands while minimized. */
+.minimized-logo-done {
+  transform-origin: center;
+  animation: minimized-pop 1.3s cubic-bezier(0.2, 0.9, 0.2, 1.4);
+}
+@keyframes minimized-pop {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.15, 0.85);
+  }
+  55% {
+    transform: scale(0.9, 1.12);
+  }
+  80% {
+    transform: scale(1.04, 0.96);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* The jewel's three gradient stops are registered custom properties so they
+   INTERPOLATE: animating a registered <color> re-renders the radial gradient
+   each frame. A plain `transition`/`@keyframes` on a `background` gradient
+   does not animate, which is why the working->done color change hard-cut
+   before. Initial values are the working (orange) stops. */
+@property --jewel-hi {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: #ffd9a8;
+}
+@property --jewel-core {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: #ff8d5c;
+}
+@property --jewel-rim {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: #bc5c0b;
+}
+
+/* Jewel status bead, pinned just inside the mascot's bottom-right corner. */
+.minimized-jewel {
+  position: absolute;
+  bottom: 1px;
+  right: 1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: radial-gradient(
+    circle at 35% 30%,
+    var(--jewel-hi),
+    var(--jewel-core) 60%,
+    var(--jewel-rim)
+  );
+}
+/* Working: warm orange jewel that gently breathes. */
+.minimized-jewel-working {
+  --jewel-hi: #ffd9a8;
+  --jewel-core: #ff8d5c;
+  --jewel-rim: #bc5c0b;
+  animation: minimized-jewel-breathe 1.6s ease-in-out infinite;
+}
+@keyframes minimized-jewel-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.12);
+    opacity: 0.85;
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(255, 141, 92, 0.22);
+    opacity: 1;
+  }
+}
+/* Done: settles on a green "ready" jewel, but does NOT hard-cut from orange.
+   The handoff animation morphs the bead orange -> a bright pale-gold flash
+   (this avoids a muddy orange->green midtone and reads as a confirming "ding")
+   -> green, swelling the glow and popping scale once, in sync with the
+   mascot's completion pop. `both` holds the green end frame afterward. */
+.minimized-jewel-done {
+  --jewel-hi: #d1fae5;
+  --jewel-core: var(--color-ready);
+  --jewel-rim: #0f7a52;
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.7);
+  animation: minimized-jewel-handoff 0.85s cubic-bezier(0.2, 0.8, 0.2, 1.1) both;
+}
+@keyframes minimized-jewel-handoff {
+  0% {
+    --jewel-hi: #ffd9a8;
+    --jewel-core: #ff8d5c;
+    --jewel-rim: #bc5c0b;
+    transform: scale(1);
+    box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.25);
+  }
+  45% {
+    --jewel-hi: #ffffff;
+    --jewel-core: #ffe6a6;
+    --jewel-rim: #e69c05;
+    transform: scale(1.3);
+    box-shadow: 0 0 8px rgba(255, 214, 140, 0.95);
+  }
+  100% {
+    --jewel-hi: #d1fae5;
+    --jewel-core: var(--color-ready);
+    --jewel-rim: #0f7a52;
+    transform: scale(1);
+    box-shadow: 0 0 6px rgba(52, 211, 153, 0.7);
+  }
+}
+
+/* Respect reduced-motion: keep the jewel (the status signal) but hold it
+   still, and freeze the mascot. The indicator still communicates state. */
+@media (prefers-reduced-motion: reduce) {
+  .minimized-logo-working,
+  .minimized-logo-done,
+  .minimized-jewel-working,
+  .minimized-jewel-done {
+    animation: none;
+  }
 }

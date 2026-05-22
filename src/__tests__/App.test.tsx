@@ -15,7 +15,11 @@ import {
   enableChannelCaptureWithResponses,
   getLastChannel,
 } from '../testUtils/mocks/tauri';
-import { __mockWindow } from '../testUtils/mocks/tauri-window';
+import {
+  __mockWindow,
+  __setWindowGeometry,
+  __setAvailableMonitors,
+} from '../testUtils/mocks/tauri-window';
 import { useTips } from '../hooks/useTips';
 
 vi.mock('../hooks/useTips', () => ({
@@ -733,6 +737,88 @@ describe('App', () => {
     expect(
       screen.getByPlaceholderText('Ask Thuki anything...'),
     ).toBeInTheDocument();
+  });
+
+  it('handles a restore visibility event without wiping the conversation', async () => {
+    // Arrange: render App and drive it into chat mode with one complete turn.
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'world' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // Confirm the conversation is present (chat mode with messages).
+    expect(screen.getByText('hello')).toBeInTheDocument();
+    expect(screen.getByText('world')).toBeInTheDocument();
+
+    // Act: dispatch a restore visibility event.
+    await act(async () => {
+      emitTauriEvent('thuki://visibility', { state: 'restore' });
+    });
+
+    // Assert: existing messages are still rendered (conversation was NOT wiped).
+    expect(screen.getByText('hello')).toBeInTheDocument();
+    expect(screen.getByText('world')).toBeInTheDocument();
+  });
+
+  it('clicking Minimize button in chat mode calls setIsMinimized (handleMinimize stub)', async () => {
+    // Arrange: render App in chat mode with one complete turn.
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'hi' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // Act: click the Minimize button rendered in the chat header.
+    const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+    expect(minimizeBtn).toBeInTheDocument();
+    act(() => {
+      fireEvent.click(minimizeBtn);
+    });
+
+    // Assert: no throw; the stub runs without error.
+    // Task 7 will assert the full minimize effect (MinimizedIcon visible, etc.).
+    expect(minimizeBtn).toBeTruthy();
   });
 
   it('hides overlay on Escape key', async () => {
@@ -7265,6 +7351,703 @@ describe('App', () => {
         await Promise.resolve();
       });
       expect(invoke).toHaveBeenCalledWith('snooze_update_chat', { hours: 24 });
+    });
+  });
+
+  // ─── Minimize / restore (Task 7) ─────────────────────────────────────────────
+
+  describe('minimize / restore', () => {
+    /** Helper: enter chat mode with one complete turn. */
+    async function enterChatMode() {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b'],
+          ollamaReachable: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+    }
+
+    it('minimizes to the floating icon without cancelling generation', async () => {
+      await enterChatMode();
+      // Chat frame for the collapse-corner snap. No prior expand → anchor is
+      // the top-left default, so the icon folds to the chat's top-left.
+      __setWindowGeometry({
+        x: 300,
+        y: 200,
+        scale: 1,
+        width: 400,
+        height: 700,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
+      // Generation is in flight (channel open, no Done yet)
+      invoke.mockClear();
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+      // The collapse-corner snap queries the frame in settleMorphPhase's async
+      // path; flush microtasks so the set_window_frame call is observable.
+      await act(async () => {});
+
+      // MinimizedIcon should be rendered
+      expect(
+        screen.getByRole('button', { name: /restore thuki/i }),
+      ).toBeInTheDocument();
+
+      // ConversationView content should be gone
+      expect(screen.queryByText('hello')).toBeNull();
+
+      // set_overlay_minimized called with minimized: true
+      expect(invoke).toHaveBeenCalledWith('set_overlay_minimized', {
+        minimized: true,
+      });
+
+      // At the end of the collapse morph the OS window snaps to the 68px
+      // square at the anchor's corner of the chat frame. top-left anchor +
+      // frame (300,200) → icon folds to (300,200).
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 300,
+        y: 200,
+        width: 68,
+        height: 68,
+      });
+
+      // notify_overlay_hidden must NOT have been called (no cancel)
+      expect(invoke).not.toHaveBeenCalledWith('notify_overlay_hidden');
+      // cancel_generation must NOT have been called
+      expect(invoke).not.toHaveBeenCalledWith('cancel_generation');
+    });
+
+    it('strips chrome classes from layout wrapper when minimized', async () => {
+      await enterChatMode();
+
+      // Before minimize: layout wrapper has bg-surface-base and shadow-chat
+      // (isChatMode=true after enterChatMode)
+      const layoutWrappers = document.querySelectorAll(
+        '[class*="bg-surface-base"]',
+      );
+      expect(layoutWrappers.length).toBeGreaterThan(0);
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      // After minimize: no element with bg-surface-base class on the layout wrapper
+      const layoutWrappersAfter = document.querySelectorAll(
+        '[class*="bg-surface-base"]',
+      );
+      expect(layoutWrappersAfter.length).toBe(0);
+    });
+
+    it('strips padding from root container when minimized and restores on un-minimize', async () => {
+      await enterChatMode();
+
+      // Before minimize: root has px-3 in className
+      const rootBefore = document.querySelector('.h-screen');
+      expect(rootBefore?.className).toContain('px-3');
+      expect(rootBefore?.className).toContain('pt-2');
+      expect(rootBefore?.className).toContain('pb-6');
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      // After minimize: root must NOT have px-3/pt-2/pb-6
+      const rootAfter = document.querySelector('.h-screen');
+      expect(rootAfter?.className).not.toContain('px-3');
+      expect(rootAfter?.className).not.toContain('pt-2');
+      expect(rootAfter?.className).not.toContain('pb-6');
+
+      // Restore
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+
+      // After restore: padding is back
+      const rootRestored = document.querySelector('.h-screen');
+      expect(rootRestored?.className).toContain('px-3');
+    });
+
+    it('restores from the icon and clears the unseen indicator', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'world' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      // Minimize
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+      expect(
+        screen.getByRole('button', { name: /restore thuki/i }),
+      ).toBeInTheDocument();
+
+      // Icon sits comfortably inside the monitor (no edge clamping), so the
+      // window expands anchored at the icon's top-left.
+      __setWindowGeometry({
+        x: 200,
+        y: 150,
+        scale: 1,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
+      invoke.mockClear();
+
+      // Restore — MinimizedIcon fires onRestore via onPointerUp (not onClick)
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      // Restore geometry query + native frame set fire inside the async IIFE;
+      // flush microtasks so the invoke calls are observable.
+      await act(async () => {});
+
+      // set_overlay_minimized called with minimized: false
+      expect(invoke).toHaveBeenCalledWith('set_overlay_minimized', {
+        minimized: false,
+      });
+
+      // On restore the OS window is positioned on screen and grown to full
+      // chat size in one native frame set. With the icon away from any edge,
+      // the window keeps the icon's top-left (200,150). Height includes
+      // CONTAINER_VERTICAL_PADDING (48) so the bottom composer is not clipped
+      // before settleMorphPhase's post-settle re-measure.
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 200,
+        y: 150,
+        width: DEFAULT_CONFIG.window.overlayWidth,
+        height: DEFAULT_CONFIG.window.maxChatHeight + 48,
+      });
+
+      // ConversationView shown again with same messages
+      expect(screen.getByText('hello')).toBeInTheDocument();
+      expect(screen.getByText('world')).toBeInTheDocument();
+
+      // MinimizedIcon should be gone
+      expect(
+        screen.queryByRole('button', { name: /restore thuki/i }),
+      ).toBeNull();
+    });
+
+    it('clamps the expanded window left when the icon is near the right edge', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      // Icon flush against the right edge of a 1440-wide monitor (x 1372 + 68
+      // = 1440).
+      __setWindowGeometry({
+        x: 1372,
+        y: 100,
+        scale: 1,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
+      invoke.mockClear();
+
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+
+      // Anchor top-right: the panel's right edge is pinned to the icon's right
+      // edge (1372 + 68), so the window unfolds leftward and stays on screen.
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 1372 + 68 - DEFAULT_CONFIG.window.overlayWidth,
+        y: 100,
+        width: DEFAULT_CONFIG.window.overlayWidth,
+        height: DEFAULT_CONFIG.window.maxChatHeight + 48,
+      });
+    });
+
+    it('anchors the expanded window to the bottom and grows upward when the icon is near the bottom edge', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      // Icon parked near the bottom edge of a 900-tall monitor.
+      __setWindowGeometry({
+        x: 100,
+        y: 832,
+        scale: 1,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
+      invoke.mockClear();
+
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+
+      // Anchor bottom-left: the panel's bottom edge is pinned to the icon's
+      // bottom edge (832 + 68), so the top = 900 - fullHeight and the window
+      // unfolds upward instead of clipping off the bottom.
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 100,
+        y: 832 + 68 - (DEFAULT_CONFIG.window.maxChatHeight + 48),
+        width: DEFAULT_CONFIG.window.overlayWidth,
+        height: DEFAULT_CONFIG.window.maxChatHeight + 48,
+      });
+      // Bottom-anchored → the root container grows upward.
+      expect(document.querySelector('.h-screen.justify-end')).not.toBeNull();
+    });
+
+    it('folds the icon back to its origin after a right-edge expand', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      // First minimize (default top-left anchor).
+      let minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+      await act(async () => {});
+
+      // Park the icon flush against the right edge, then restore → the expand
+      // anchors top-right and the chat unfolds left to (1440 - overlayWidth).
+      __setWindowGeometry({
+        x: 1372,
+        y: 100,
+        scale: 1,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+
+      // The chat now occupies this frame (top-right anchored). Point the
+      // collapse query at it.
+      const fullHeight = DEFAULT_CONFIG.window.maxChatHeight + 48;
+      __setWindowGeometry({
+        x: 1372 + 68 - DEFAULT_CONFIG.window.overlayWidth,
+        y: 100,
+        width: DEFAULT_CONFIG.window.overlayWidth,
+        height: fullHeight,
+        scale: 1,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
+      invoke.mockClear();
+
+      // Second minimize → collapse reuses the top-right anchor, folding the
+      // icon back to its original right-edge spot (1372, 100).
+      minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 1372,
+        y: 100,
+        width: 68,
+        height: 68,
+      });
+    });
+
+    it('raises the unseen dot when generation finishes while minimized', async () => {
+      await enterChatMode();
+      // Minimize while streaming is in flight
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+      expect(
+        screen.getByRole('button', { name: /restore thuki/i }),
+      ).toBeInTheDocument();
+      // No ready dot yet — still generating
+      expect(screen.queryByTestId('minimized-ready-dot')).toBeNull();
+
+      // Complete the stream
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'done!' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      // Ready dot should appear
+      expect(screen.getByTestId('minimized-ready-dot')).toBeInTheDocument();
+
+      // Restore clears it
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+      expect(screen.queryByTestId('minimized-ready-dot')).toBeNull();
+    });
+
+    it('recomputes upward growth on restore when near screen bottom', async () => {
+      // Place window near the screen bottom so shouldGrowUp becomes true.
+      // maxChatHeight=648, CONTAINER_VERTICAL_PADDING=48: need windowY + 648 + 48 > screenBottom.
+      // With monitorHeight=900, monitorY=0: windowY=700 → 700+696=1396 > 900 → growsUpward.
+      __setWindowGeometry({
+        x: 100,
+        y: 700,
+        scale: 1,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
+
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      // Restore — geometry query fires inside the async IIFE
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+
+      // Wait for the async geometry IIFE to settle
+      await act(async () => {});
+
+      // Root container should have justify-end (growsUpward true).
+      // Use compound selector to target the root div (h-screen) specifically,
+      // since chat bubbles also contain .justify-end child elements.
+      const outer = document.querySelector('.h-screen.justify-end');
+      expect(outer).not.toBeNull();
+    });
+
+    it('recomputes downward growth on restore when away from screen bottom', async () => {
+      // windowY=100, monitorHeight=900: 100+648+48=796 < 900 → growsDownward.
+      __setWindowGeometry({
+        x: 100,
+        y: 100,
+        scale: 1,
+        monitorX: 0,
+        monitorY: 0,
+        monitorWidth: 1440,
+        monitorHeight: 900,
+      });
+
+      // Show overlay near bottom first so it starts with justify-end
+      render(<App />);
+      await act(async () => {});
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', {
+          state: 'show',
+          selected_text: null,
+          window_x: 100,
+          window_y: 750,
+          screen_bottom_y: 900,
+        });
+      });
+      expect(document.querySelector('.h-screen.justify-end')).not.toBeNull();
+
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b'],
+          ollamaReachable: true,
+        },
+      });
+      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: 'hi' } });
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      // After minimize, growsUpward is forced false
+      expect(document.querySelector('.h-screen.justify-start')).not.toBeNull();
+
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+
+      // With windowY=100 away from bottom → justify-start on root container
+      expect(document.querySelector('.h-screen.justify-end')).toBeNull();
+      expect(document.querySelector('.h-screen.justify-start')).not.toBeNull();
+    });
+
+    it('recomputes null monitor as no-grow-up on restore', async () => {
+      __setWindowGeometry({ x: 100, y: 700, scale: 1, monitorNull: true });
+
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+
+      // null monitor → screenBottomY null → shouldGrowUp false → root uses justify-start
+      expect(document.querySelector('.h-screen.justify-end')).toBeNull();
+      expect(document.querySelector('.h-screen.justify-start')).not.toBeNull();
+    });
+
+    it('recovers edge-awareness from availableMonitors when currentMonitor is null', async () => {
+      // currentMonitor() is null (transient during a display change), but the
+      // icon sits near the bottom edge of a monitor that availableMonitors()
+      // can still report. The fallback finds the containing monitor by
+      // position, so the expand stays edge-aware and grows upward instead of
+      // dropping the clamp.
+      __setWindowGeometry({ x: 100, y: 832, scale: 1, monitorNull: true });
+      __setAvailableMonitors([
+        { position: { x: 0, y: 0 }, size: { width: 1440, height: 900 } },
+      ]);
+
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      invoke.mockClear();
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+
+      // The recovered monitor (height 900) makes the near-bottom icon (832+68)
+      // anchor bottom and grow upward, exactly as if currentMonitor had
+      // returned it. The clamped top = 900 - (maxChatHeight + 48).
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 100,
+        y: 832 + 68 - (DEFAULT_CONFIG.window.maxChatHeight + 48),
+        width: DEFAULT_CONFIG.window.overlayWidth,
+        height: DEFAULT_CONFIG.window.maxChatHeight + 48,
+      });
+      expect(document.querySelector('.h-screen.justify-end')).not.toBeNull();
+
+      // Restore shared mock state for subsequent tests.
+      __setAvailableMonitors([]);
+      __setWindowGeometry({ monitorNull: false });
+    });
+
+    it('ignores Escape and Cmd+W while minimized', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      invoke.mockClear();
+
+      // Fire Escape while minimized
+      act(() => {
+        fireEvent.keyDown(window, { key: 'Escape' });
+      });
+      // Fire Cmd+W while minimized
+      act(() => {
+        fireEvent.keyDown(window, { key: 'w', metaKey: true });
+      });
+
+      await act(async () => {});
+
+      // MinimizedIcon still shown
+      expect(
+        screen.getByRole('button', { name: /restore thuki/i }),
+      ).toBeInTheDocument();
+      // notify_overlay_hidden must NOT have been called
+      expect(invoke).not.toHaveBeenCalledWith('notify_overlay_hidden');
+    });
+
+    it('handles restore visibility event while minimized without wiping conversation', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'world' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      // Minimize
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      // Emit a restore visibility event (hotkey/tray path)
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', { state: 'restore' });
+      });
+      await act(async () => {});
+
+      // Conversation still intact
+      expect(screen.getByText('hello')).toBeInTheDocument();
+      expect(screen.getByText('world')).toBeInTheDocument();
+      // MinimizedIcon gone
+      expect(
+        screen.queryByRole('button', { name: /restore thuki/i }),
+      ).toBeNull();
+    });
+
+    it('keeps the mascot available across many minimize/restore cycles', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      // Toggle repeatedly. The icon must reappear on every minimize and
+      // disappear on every restore; it must never get stranded invisible
+      // (the disappearing-icon bug).
+      for (let i = 0; i < 5; i++) {
+        const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+        await act(async () => {
+          fireEvent.click(minimizeBtn);
+        });
+        expect(
+          screen.getByRole('button', { name: /restore thuki/i }),
+        ).toBeInTheDocument();
+
+        const restoreBtn = screen.getByRole('button', {
+          name: /restore thuki/i,
+        });
+        await act(async () => {
+          fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+          fireEvent.pointerUp(restoreBtn);
+        });
+        await act(async () => {});
+        expect(
+          screen.queryByRole('button', { name: /restore thuki/i }),
+        ).toBeNull();
+        // Chat is back so the next iteration can minimize again.
+        expect(screen.getByText('hello')).toBeInTheDocument();
+      }
+    });
+
+    it('ignores a restore request while not minimized and re-syncs the flag', async () => {
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+      invoke.mockClear();
+
+      // A stray restore event while idle must NOT start an expand morph
+      // (which would strand the state machine in 'expanding'); it only
+      // re-syncs the Rust minimized flag.
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', { state: 'restore' });
+      });
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('set_overlay_minimized', {
+        minimized: false,
+      });
+      // Never minimized: no mascot, chat still visible.
+      expect(
+        screen.queryByRole('button', { name: /restore thuki/i }),
+      ).toBeNull();
+      expect(screen.getByText('hello')).toBeInTheDocument();
+
+      // The machine is not stranded: a subsequent minimize still works.
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+      expect(
+        screen.getByRole('button', { name: /restore thuki/i }),
+      ).toBeInTheDocument();
     });
   });
 

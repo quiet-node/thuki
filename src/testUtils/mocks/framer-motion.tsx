@@ -45,18 +45,47 @@ function stripMotionProps<T extends Record<string, unknown>>(
   return clean;
 }
 
-export const motion = {
-  div: ({
-    children,
-    className,
-    ref,
-    ...props
-  }: React.HTMLAttributes<HTMLDivElement> &
-    Record<string, unknown> & { ref?: React.Ref<HTMLDivElement> }) => (
+/**
+ * Synchronous stand-in for a Framer Motion `motion.div`. In addition to
+ * stripping motion props, it reproduces `onAnimationComplete`: the real
+ * library fires it once the `animate` target settles, so here we fire it on
+ * mount and again whenever the serialized `animate` prop changes. Tests that
+ * drive the minimize/restore morph sequencing (which keys off
+ * `onAnimationComplete`) can then flush it with a plain
+ * `await act(async () => {})` instead of needing fake timers. Fires after
+ * paint via `useEffect`, matching Framer's "after the animation" ordering
+ * closely enough for assertions. Defined as a PascalCase component so the
+ * Hook call satisfies the rules-of-hooks lint.
+ */
+function MotionDiv({
+  children,
+  className,
+  ref,
+  animate,
+  onAnimationComplete,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement> &
+  Record<string, unknown> & { ref?: React.Ref<HTMLDivElement> }) {
+  const animateKey = JSON.stringify(animate);
+  React.useEffect(() => {
+    if (typeof onAnimationComplete === 'function') {
+      onAnimationComplete(animate);
+    }
+    // Only `animateKey` is a dep: the serialized animate target is the
+    // trigger so the callback fires exactly once per distinct target
+    // (mirrors Framer's settle semantics). `animate`/`onAnimationComplete`
+    // are deliberately excluded.
+    // eslint-disable-next-line @eslint-react/exhaustive-deps
+  }, [animateKey]);
+  return (
     <div ref={ref} className={className} {...stripMotionProps(props)}>
       {children}
     </div>
-  ),
+  );
+}
+
+export const motion = {
+  div: MotionDiv,
   span: ({
     children,
     className,
