@@ -3,6 +3,7 @@ import {
   computeExpandTarget,
   computeCollapseTarget,
   anchorToTransformOrigin,
+  pickMonitorForPoint,
   type MorphAnchor,
 } from '../morphGeometry';
 
@@ -75,24 +76,30 @@ describe('computeExpandTarget', () => {
     expect(r.x).toBe(iconX + ICON - PANEL.w);
   });
 
-  it('panel wider than the monitor → clamps to the monitor left edge', () => {
+  it('panel wider than the monitor → top-left anchor pinned to the left edge', () => {
     const narrow = { x: 0, y: 0, w: 300, h: 900 };
     const r = computeExpandTarget({ x: 250, y: 80, size: ICON }, narrow, PANEL);
-    // 250 + 400 > 300 → anchor right → x = 250+48-400 = -102 → clamp lo=0.
-    expect(r.anchor).toBe('tr');
+    // panel.w (400) > monitor.w (300): neither edge fits, so the clamp pins to
+    // the monitor's left edge (x=0). The anchor must stay LEFT to match — a
+    // 'tr' anchor would drive a right-pinned layout over a left-pinned frame.
+    expect(r.anchor).toBe('tl');
     expect(r.x).toBe(0);
   });
 
-  it('panel taller than the monitor → clamps to the monitor top edge', () => {
+  it('panel taller than the monitor → top-left anchor, growsUpward false', () => {
     const shortMon = { x: 0, y: 0, w: 1440, h: 500 };
     const r = computeExpandTarget(
       { x: 100, y: 400, size: ICON },
       shortMon,
       PANEL,
     );
-    // 400 + 700 > 500 → anchor bottom → y = 400+48-700 = -252 → clamp lo=0.
-    expect(r.anchor).toBe('bl');
+    // panel.h (700) > monitor.h (500): neither edge fits, so the clamp pins to
+    // the monitor's top edge (y=0). The anchor stays TOP and growsUpward is
+    // false, consistent with the top-pinned frame (no bottom-anchored layout
+    // over a top-pinned window).
+    expect(r.anchor).toBe('tl');
     expect(r.y).toBe(0);
+    expect(r.growsUpward).toBe(false);
   });
 
   it('second monitor with non-zero offset → right edge uses monitor.x + w', () => {
@@ -161,6 +168,30 @@ describe('computeCollapseTarget', () => {
       expect(back).toEqual({ x: icon.x, y: icon.y });
     },
   );
+});
+
+describe('pickMonitorForPoint', () => {
+  const left = { x: 0, y: 0, w: 1440, h: 900 };
+  const right = { x: 1440, y: 0, w: 1920, h: 1080 };
+
+  it('returns the monitor containing the point', () => {
+    expect(pickMonitorForPoint([left, right], { x: 1500, y: 200 })).toBe(right);
+    expect(pickMonitorForPoint([left, right], { x: 100, y: 100 })).toBe(left);
+  });
+
+  it('is half-open on the far edge so a shared boundary belongs to one monitor', () => {
+    // x = 1440 is the left monitor's far edge (excluded) and the right
+    // monitor's near edge (included).
+    expect(pickMonitorForPoint([left, right], { x: 1440, y: 0 })).toBe(right);
+  });
+
+  it('returns null when no monitor contains the point', () => {
+    expect(pickMonitorForPoint([left], { x: 5000, y: 5000 })).toBeNull();
+  });
+
+  it('returns null for an empty monitor list', () => {
+    expect(pickMonitorForPoint([], { x: 0, y: 0 })).toBeNull();
+  });
 });
 
 describe('anchorToTransformOrigin', () => {

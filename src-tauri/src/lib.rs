@@ -195,6 +195,24 @@ fn emit_overlay_visibility(
     );
 }
 
+/// Emits a restore request and marks the overlay intended-visible.
+///
+/// A restore makes the parked (minimized) overlay visible again, so
+/// `OVERLAY_INTENDED_VISIBLE` must agree. If it were left `false` (it can be
+/// after a hide that raced the minimized state), the next `toggle_overlay`
+/// would read it and re-show instead of hiding the now-visible overlay.
+fn emit_overlay_restore(app_handle: &tauri::AppHandle) {
+    OVERLAY_INTENDED_VISIBLE.store(true, Ordering::SeqCst);
+    emit_overlay_visibility(
+        app_handle,
+        OVERLAY_VISIBILITY_RESTORE,
+        None,
+        None,
+        None,
+        None,
+    );
+}
+
 /// CoreGraphics display lookup - uses macOS-native `CGGetDisplaysWithPoint`
 /// for hit-testing instead of manual iteration + containment checks.
 /// All coordinates are in the Quartz display coordinate space (top-left of
@@ -267,14 +285,7 @@ fn monitor_info_fallback() -> (f64, f64, f64, f64) {
 #[cfg(target_os = "macos")]
 fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
     if take_minimized_for_restore() {
-        emit_overlay_visibility(
-            app_handle,
-            OVERLAY_VISIBILITY_RESTORE,
-            None,
-            None,
-            None,
-            None,
-        );
+        emit_overlay_restore(app_handle);
         return;
     }
     let already_visible = OVERLAY_INTENDED_VISIBLE.swap(true, Ordering::SeqCst);
@@ -565,6 +576,14 @@ fn show_update_window(app_handle: &tauri::AppHandle) {
 /// Requests an animated hide sequence from the frontend. The actual native
 /// window hide is deferred until the frontend exit animation completes.
 fn request_overlay_hide(app_handle: &tauri::AppHandle) {
+    // A parked (minimized) conversation must survive a stray close request.
+    // While minimized the icon is a small NSPanel that can still receive
+    // Cmd+W / a system close, which routes here; hiding it would tear down the
+    // background stream the user explicitly minimized to keep running. Ignore
+    // the hide while minimized: the user restores first, then closes normally.
+    if OVERLAY_MINIMIZED.load(Ordering::SeqCst) {
+        return;
+    }
     if OVERLAY_INTENDED_VISIBLE.swap(false, Ordering::SeqCst) {
         emit_overlay_visibility(
             app_handle,
@@ -586,14 +605,7 @@ fn request_overlay_hide(app_handle: &tauri::AppHandle) {
 #[cfg(not(target_os = "macos"))]
 fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
     if take_minimized_for_restore() {
-        emit_overlay_visibility(
-            app_handle,
-            OVERLAY_VISIBILITY_RESTORE,
-            None,
-            None,
-            None,
-            None,
-        );
+        emit_overlay_restore(app_handle);
         return;
     }
     if OVERLAY_INTENDED_VISIBLE.swap(true, Ordering::SeqCst) {
@@ -619,14 +631,7 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 /// which avoids race conditions with the native panel state during animations.
 fn toggle_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
     if take_minimized_for_restore() {
-        emit_overlay_visibility(
-            app_handle,
-            OVERLAY_VISIBILITY_RESTORE,
-            None,
-            None,
-            None,
-            None,
-        );
+        emit_overlay_restore(app_handle);
         return;
     }
     if OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst) {
@@ -820,6 +825,10 @@ fn animate_overlay_frame(app_handle: tauri::AppHandle, width: f64, height: f64, 
 fn notify_overlay_hidden(generation: tauri::State<crate::commands::GenerationState>) {
     generation.cancel();
     OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
+    // The overlay is now fully hidden, so it can no longer be parked in the
+    // minimized icon. Clearing the flag here prevents it leaking `true` across
+    // a hide and routing the next activation to a restore of a gone window.
+    OVERLAY_MINIMIZED.store(false, Ordering::SeqCst);
 }
 
 fn set_overlay_minimized_impl(minimized: bool) {

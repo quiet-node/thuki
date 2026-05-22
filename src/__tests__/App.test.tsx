@@ -18,6 +18,7 @@ import {
 import {
   __mockWindow,
   __setWindowGeometry,
+  __setAvailableMonitors,
 } from '../testUtils/mocks/tauri-window';
 import { useTips } from '../hooks/useTips';
 
@@ -7869,6 +7870,52 @@ describe('App', () => {
       // null monitor → screenBottomY null → shouldGrowUp false → root uses justify-start
       expect(document.querySelector('.h-screen.justify-end')).toBeNull();
       expect(document.querySelector('.h-screen.justify-start')).not.toBeNull();
+    });
+
+    it('recovers edge-awareness from availableMonitors when currentMonitor is null', async () => {
+      // currentMonitor() is null (transient during a display change), but the
+      // icon sits near the bottom edge of a monitor that availableMonitors()
+      // can still report. The fallback finds the containing monitor by
+      // position, so the expand stays edge-aware and grows upward instead of
+      // dropping the clamp.
+      __setWindowGeometry({ x: 100, y: 832, scale: 1, monitorNull: true });
+      __setAvailableMonitors([
+        { position: { x: 0, y: 0 }, size: { width: 1440, height: 900 } },
+      ]);
+
+      await enterChatMode();
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+
+      invoke.mockClear();
+      const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
+      await act(async () => {
+        fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
+        fireEvent.pointerUp(restoreBtn);
+      });
+      await act(async () => {});
+
+      // The recovered monitor (height 900) makes the near-bottom icon (832+68)
+      // anchor bottom and grow upward, exactly as if currentMonitor had
+      // returned it. The clamped top = 900 - (maxChatHeight + 48).
+      expect(invoke).toHaveBeenCalledWith('set_window_frame', {
+        x: 100,
+        y: 832 + 68 - (DEFAULT_CONFIG.window.maxChatHeight + 48),
+        width: DEFAULT_CONFIG.window.overlayWidth,
+        height: DEFAULT_CONFIG.window.maxChatHeight + 48,
+      });
+      expect(document.querySelector('.h-screen.justify-end')).not.toBeNull();
+
+      // Restore shared mock state for subsequent tests.
+      __setAvailableMonitors([]);
+      __setWindowGeometry({ monitorNull: false });
     });
 
     it('ignores Escape and Cmd+W while minimized', async () => {

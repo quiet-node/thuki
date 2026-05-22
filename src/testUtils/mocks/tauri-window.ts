@@ -91,6 +91,33 @@ export function getCurrentWindow() {
   return mockWindow;
 }
 
+/** Monitor list returned by the availableMonitors() mock. Empty by default. */
+let _availableMonitors: Array<{
+  position: { x: number; y: number };
+  size: { width: number; height: number };
+}> = [];
+
+/**
+ * Test helper: set the monitor list returned by availableMonitors(). Used to
+ * exercise handleRestore's currentMonitor()-null fallback, where the monitor
+ * under the icon is recovered by containment. Coordinates are physical pixels,
+ * matching Tauri's Monitor shape.
+ */
+export function __setAvailableMonitors(
+  monitors: Array<{
+    position: { x: number; y: number };
+    size: { width: number; height: number };
+  }>,
+) {
+  _availableMonitors = monitors;
+}
+
+/**
+ * Mock for Tauri's availableMonitors() from @tauri-apps/api/window. Returns the
+ * list configured via __setAvailableMonitors (empty by default).
+ */
+export const availableMonitors = vi.fn(async () => _availableMonitors);
+
 /**
  * Mock for Tauri's currentMonitor() function from @tauri-apps/api/window.
  * Returns a Monitor-shaped object by default, or null when monitorNull is set.

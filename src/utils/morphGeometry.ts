@@ -61,8 +61,14 @@ export function computeExpandTarget(
   const growRightFits = icon.x + panel.w <= monitor.x + monitor.w;
   const growDownFits = icon.y + panel.h <= monitor.y + monitor.h;
 
-  const anchorRight = !growRightFits;
-  const anchorBottom = !growDownFits;
+  // Flip to the opposite edge only when growing the natural direction would
+  // overflow AND the panel actually fits on that axis. When the panel is
+  // larger than the monitor on an axis, neither edge fits: the clamp below
+  // pins to the monitor's near (top/left) edge, so the anchor must stay
+  // top/left too. Otherwise the reported `growsUpward`/anchor would contradict
+  // the clamped frame (bottom-anchored layout over a top-pinned window).
+  const anchorRight = !growRightFits && panel.w <= monitor.w;
+  const anchorBottom = !growDownFits && panel.h <= monitor.h;
 
   // Left anchors keep the icon's left edge as the panel's left; right anchors
   // pin the panel's right edge to the icon's right edge (icon.x + icon.size).
@@ -95,6 +101,34 @@ export function computeCollapseTarget(
     x: right ? frame.x + frame.w - iconSize : frame.x,
     y: bottom ? frame.y + frame.h - iconSize : frame.y,
   };
+}
+
+/**
+ * Returns the monitor whose bounds contain `point`, or null if none do.
+ *
+ * Used as an edge-awareness fallback when Tauri's `currentMonitor()` returns
+ * null (transiently possible during a display-topology change): scanning the
+ * full monitor list for the one actually under the icon can never select a
+ * wrong display, unlike a blind primary-monitor fallback. Coordinates are
+ * compared in whatever space the caller passes; pass physical pixels to match
+ * Tauri's `Monitor.position`/`Monitor.size`. Half-open on the far edges so a
+ * point on a shared boundary belongs to exactly one monitor.
+ */
+export function pickMonitorForPoint(
+  monitors: readonly Rect[],
+  point: { x: number; y: number },
+): Rect | null {
+  for (const m of monitors) {
+    if (
+      point.x >= m.x &&
+      point.x < m.x + m.w &&
+      point.y >= m.y &&
+      point.y < m.y + m.h
+    ) {
+      return m;
+    }
+  }
+  return null;
 }
 
 /** Maps a `MorphAnchor` to a CSS `transform-origin` value. */

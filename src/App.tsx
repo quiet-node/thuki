@@ -11,7 +11,11 @@ import {
 } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { getCurrentWindow, currentMonitor } from '@tauri-apps/api/window';
+import {
+  getCurrentWindow,
+  currentMonitor,
+  availableMonitors,
+} from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { useOllama } from './hooks/useOllama';
 import type { Message } from './hooks/useOllama';
@@ -27,6 +31,7 @@ import {
   computeExpandTarget,
   computeCollapseTarget,
   anchorToTransformOrigin,
+  pickMonitorForPoint,
   type MorphAnchor,
 } from './utils/morphGeometry';
 import { ConversationView } from './view/ConversationView';
@@ -810,6 +815,15 @@ function App() {
       windowY: number | null,
       screenBottomY: number | null,
     ) => {
+      // A fresh show always starts from the normal chat/ask state. Reset any
+      // morph phase (and cancel a pending morph watchdog) left over from a
+      // prior minimized session that was hidden without settling, so the
+      // overlay never reappears stuck as the icon or mid-morph. Also clear the
+      // unseen-completion indicator since this is a brand-new session.
+      clearTimeout(morphSettleTimerRef.current);
+      morphSettleTimerRef.current = 0;
+      setMorphPhase('idle');
+      setUnseenCompletion(false);
       // Grow-up geometry mirrored in handleRestore; keep both in sync.
       const shouldGrowUp =
         windowY !== null &&
@@ -950,26 +964,56 @@ function App() {
     void (async () => {
       try {
         const win = getCurrentWindow();
-        const [pos, scale, monitor] = await Promise.all([
+        const [pos, scale, currentMon] = await Promise.all([
           win.outerPosition(),
           win.scaleFactor(),
           currentMonitor(),
         ]);
         const iconX = pos.x / scale;
         const iconY = pos.y / scale;
+        // Logical bounds of the monitor under the icon. `currentMonitor()` can
+        // return null transiently during a display-topology change; rather
+        // than drop edge-awareness entirely (which can let the chat expand off
+        // an edge), recover by scanning `availableMonitors()` for the display
+        // actually under the icon. Containment matching can never pick a wrong
+        // monitor, so the worst case degrades to the no-clamp fallback below.
+        let monitorRect: { x: number; y: number; w: number; h: number } | null =
+          currentMon != null
+            ? {
+                x: currentMon.position.x / scale,
+                y: currentMon.position.y / scale,
+                w: currentMon.size.width / scale,
+                h: currentMon.size.height / scale,
+              }
+            : null;
+        if (monitorRect == null) {
+          const all = await availableMonitors();
+          const hit = pickMonitorForPoint(
+            all.map((m) => ({
+              x: m.position.x,
+              y: m.position.y,
+              w: m.size.width,
+              h: m.size.height,
+            })),
+            { x: pos.x, y: pos.y },
+          );
+          if (hit != null) {
+            monitorRect = {
+              x: hit.x / scale,
+              y: hit.y / scale,
+              w: hit.w / scale,
+              h: hit.h / scale,
+            };
+          }
+        }
         let anchor: MorphAnchor;
         let growsUp: boolean;
         let frameX: number;
         let frameY: number;
-        if (monitor != null) {
+        if (monitorRect != null) {
           const target = computeExpandTarget(
             { x: iconX, y: iconY, size: MINIMIZED_WINDOW_SIZE },
-            {
-              x: monitor.position.x / scale,
-              y: monitor.position.y / scale,
-              w: monitor.size.width / scale,
-              h: monitor.size.height / scale,
-            },
+            monitorRect,
             { w: fullWidth, h: fullHeight },
           );
           anchor = target.anchor;
@@ -977,7 +1021,7 @@ function App() {
           frameX = target.x;
           frameY = target.y;
         } else {
-          // No monitor geometry: keep the icon's top-left, no clamp.
+          // No monitor geometry at all: keep the icon's top-left, no clamp.
           anchor = 'tl';
           growsUp = false;
           frameX = iconX;
@@ -1038,6 +1082,17 @@ function App() {
    * to the desktop around the 48px square.
    */
   const handleMinimize = useCallback(() => {
+    // Only collapse from the settled chat/ask state. The minimize button stays
+    // mounted throughout an expand (the chat subtree renders for every phase
+    // except the settled `minimized` one), so a click mid-expand would jump
+    // `morphPhase` from 'expanding' to 'collapsing' while that expand's pending
+    // async window-frame write is still in flight, desyncing window geometry.
+    // Mirrors handleRestore's `!== 'minimized'` guard.
+    /* v8 ignore next -- unreachable in the jsdom harness: the framer-motion
+       mock fires onAnimationComplete on mount, so the morph never lingers in a
+       non-idle, non-minimized phase for a click to land on. Real in the
+       browser, where the ~360ms expand tween runs with the button mounted. */
+    if (morphPhaseRef.current !== 'idle') return;
     growsUpwardRef.current = false;
     setGrowsUpward(false);
     // Keep the panel key for the duration of the morph. It is a
@@ -1088,6 +1143,15 @@ function App() {
       // while expanded. The brief full-size-then-snap window is transparent
       // and shows only the mascot, so it is invisible.
       setMorphPhase('minimized');
+      // Re-assert the Rust minimized flag at the collapse SETTLE.
+      // `handleMinimize` set it at collapse START; if an activation arrived
+      // mid-collapse, the activator consumed (cleared) the flag and emitted a
+      // restore that `handleRestore` ignored (phase was still 'collapsing'),
+      // leaving Rust=not-minimized while we now settle to minimized. Without
+      // this re-assert the two sides disagree and the NEXT activation takes the
+      // show/hide path, wiping the parked conversation. Re-asserting keeps them
+      // in sync so the next activation correctly restores.
+      void invoke('set_overlay_minimized', { minimized: true });
       const anchor = morphAnchorRef.current;
       void (async () => {
         try {
@@ -1178,10 +1242,16 @@ function App() {
   useLayoutEffect(() => {
     if (morphPhase === 'collapsing') {
       scheduleMorphWatchdog(COLLAPSE_MORPH_DURATION_S);
-    } else if (morphPhase === 'expanding') {
+    } else if (morphPhase === 'expanding' && expandReady) {
+      // Arm the expand watchdog only once `expandReady` flips true — that is
+      // when the grow tween actually begins. The expand defers the tween
+      // behind a geometry-query IIFE (outerPosition + scaleFactor +
+      // currentMonitor + a paint yield); arming at phase entry instead would
+      // start the clock before the tween, so a slow/cold IPC round-trip could
+      // let the watchdog force-settle to `idle` mid-tween and snap the chat in.
       scheduleMorphWatchdog(MORPH_DURATION_S);
     }
-  }, [morphPhase, scheduleMorphWatchdog]);
+  }, [morphPhase, expandReady, scheduleMorphWatchdog]);
 
   // Clear any pending watchdog on unmount so it cannot fire into a torn-down
   // tree.
@@ -1262,7 +1332,11 @@ function App() {
   // Uses the render-body ref pattern (not useEffect) to satisfy the
   // @eslint-react/set-state-in-effect lint rule, mirroring prevHistoryOpenRef above.
   const prevGeneratingRef = useRef(isGenerating);
-  if (prevGeneratingRef.current && !isGenerating && isMinimized) {
+  // Gate on `isSettledMinimized` (the parked-icon state), not `isMinimized`
+  // (true throughout the collapse/expand morph too). A stream finishing during
+  // an in-flight RESTORE would otherwise re-raise the "unseen" indicator the
+  // restore just cleared, so it would wrongly show again on the next minimize.
+  if (prevGeneratingRef.current && !isGenerating && isSettledMinimized) {
     setUnseenCompletion(true);
   }
   prevGeneratingRef.current = isGenerating;
@@ -2643,13 +2717,19 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleCloseOverlay, isMinimized]);
 
-  /** Programmatic focus when the overlay becomes visible. */
+  /**
+   * Programmatic focus when the overlay is visible and in the normal (idle)
+   * chat/ask state. Keyed on `morphPhase` as well as `overlayState` so a
+   * restore — which settles `minimized → idle` without `overlayState` ever
+   * leaving 'visible' — refocuses the composer. Without the `morphPhase`
+   * dependency the textarea stayed unfocused after restoring a parked chat.
+   */
   useEffect(() => {
-    if (overlayState === 'visible') {
+    if (overlayState === 'visible' && morphPhase === 'idle') {
       const raf = requestAnimationFrame(() => inputRef.current?.focus());
       return () => cancelAnimationFrame(raf);
     }
-  }, [overlayState]);
+  }, [overlayState, morphPhase]);
 
   /**
    * Commits the native window hide after a fixed deadline from the start of
