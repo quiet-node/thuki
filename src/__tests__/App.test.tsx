@@ -7417,14 +7417,14 @@ describe('App', () => {
         minimized: true,
       });
 
-      // At the end of the collapse morph the OS window snaps to the 48px
+      // At the end of the collapse morph the OS window snaps to the 68px
       // square at the anchor's corner of the chat frame. top-left anchor +
       // frame (300,200) → icon folds to (300,200).
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
         x: 300,
         y: 200,
-        width: 48,
-        height: 48,
+        width: 68,
+        height: 68,
       });
 
       // notify_overlay_hidden must NOT have been called (no cancel)
@@ -7567,10 +7567,10 @@ describe('App', () => {
         fireEvent.click(minimizeBtn);
       });
 
-      // Icon flush against the right edge of a 1440-wide monitor (x 1392 + 48
+      // Icon flush against the right edge of a 1440-wide monitor (x 1372 + 68
       // = 1440).
       __setWindowGeometry({
-        x: 1392,
+        x: 1372,
         y: 100,
         scale: 1,
         monitorX: 0,
@@ -7588,9 +7588,9 @@ describe('App', () => {
       await act(async () => {});
 
       // Anchor top-right: the panel's right edge is pinned to the icon's right
-      // edge (1392 + 48), so the window unfolds leftward and stays on screen.
+      // edge (1372 + 68), so the window unfolds leftward and stays on screen.
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
-        x: 1392 + 48 - DEFAULT_CONFIG.window.overlayWidth,
+        x: 1372 + 68 - DEFAULT_CONFIG.window.overlayWidth,
         y: 100,
         width: DEFAULT_CONFIG.window.overlayWidth,
         height: DEFAULT_CONFIG.window.maxChatHeight + 48,
@@ -7612,7 +7612,7 @@ describe('App', () => {
       // Icon parked near the bottom edge of a 900-tall monitor.
       __setWindowGeometry({
         x: 100,
-        y: 850,
+        y: 832,
         scale: 1,
         monitorX: 0,
         monitorY: 0,
@@ -7629,11 +7629,11 @@ describe('App', () => {
       await act(async () => {});
 
       // Anchor bottom-left: the panel's bottom edge is pinned to the icon's
-      // bottom edge (850 + 48), so the top = 898 - fullHeight and the window
+      // bottom edge (832 + 68), so the top = 900 - fullHeight and the window
       // unfolds upward instead of clipping off the bottom.
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
         x: 100,
-        y: 850 + 48 - (DEFAULT_CONFIG.window.maxChatHeight + 48),
+        y: 832 + 68 - (DEFAULT_CONFIG.window.maxChatHeight + 48),
         width: DEFAULT_CONFIG.window.overlayWidth,
         height: DEFAULT_CONFIG.window.maxChatHeight + 48,
       });
@@ -7658,7 +7658,7 @@ describe('App', () => {
       // Park the icon flush against the right edge, then restore → the expand
       // anchors top-right and the chat unfolds left to (1440 - overlayWidth).
       __setWindowGeometry({
-        x: 1392,
+        x: 1372,
         y: 100,
         scale: 1,
         monitorX: 0,
@@ -7677,7 +7677,7 @@ describe('App', () => {
       // collapse query at it.
       const fullHeight = DEFAULT_CONFIG.window.maxChatHeight + 48;
       __setWindowGeometry({
-        x: 1392 + 48 - DEFAULT_CONFIG.window.overlayWidth,
+        x: 1372 + 68 - DEFAULT_CONFIG.window.overlayWidth,
         y: 100,
         width: DEFAULT_CONFIG.window.overlayWidth,
         height: fullHeight,
@@ -7690,7 +7690,7 @@ describe('App', () => {
       invoke.mockClear();
 
       // Second minimize → collapse reuses the top-right anchor, folding the
-      // icon back to its original right-edge spot (1392, 100).
+      // icon back to its original right-edge spot (1372, 100).
       minimizeBtn = screen.getByRole('button', { name: /minimize/i });
       await act(async () => {
         fireEvent.click(minimizeBtn);
@@ -7698,10 +7698,10 @@ describe('App', () => {
       await act(async () => {});
 
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
-        x: 1392,
+        x: 1372,
         y: 100,
-        width: 48,
-        height: 48,
+        width: 68,
+        height: 68,
       });
     });
 

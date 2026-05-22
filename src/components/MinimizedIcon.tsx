@@ -18,8 +18,10 @@ const DRAG_THRESHOLD_PX = 6;
  * Renders the Thuki logo in a small circular button. Supports:
  * - Dragging: pointer move past threshold calls the native window drag.
  * - Restore: plain click (no drag) calls onRestore.
- * - Working pulse: animated ring when isWorking is true.
- * - Ready dot: small indicator dot when hasUnseen is true.
+ * - Working: the mascot does a soft elastic "jelly wobble" and a warm jewel
+ *   breathes at its bottom-right corner while a response streams.
+ * - Done: the mascot does one elastic pop and the jewel holds a steady amber
+ *   when a reply landed while minimized and has not been seen.
  */
 export const MinimizedIcon = memo(function MinimizedIcon({
   isWorking,
@@ -29,11 +31,18 @@ export const MinimizedIcon = memo(function MinimizedIcon({
   const downPosRef = useRef<{ x: number; y: number } | null>(null);
   const draggedRef = useRef(false);
 
+  // Wobble while working; one-shot pop the moment a reply lands; otherwise still.
+  const logoMotion = isWorking
+    ? ' minimized-logo-working'
+    : hasUnseen
+      ? ' minimized-logo-done'
+      : '';
+
   return (
     <button
       type="button"
       aria-label="Restore Thuki"
-      className="relative inline-flex items-center justify-center cursor-pointer select-none bg-transparent p-0 border-0"
+      className="flex w-full h-full items-center justify-center cursor-pointer select-none bg-transparent p-0 border-0"
       onPointerDown={(e) => {
         downPosRef.current = { x: e.clientX, y: e.clientY };
         draggedRef.current = false;
@@ -54,27 +63,34 @@ export const MinimizedIcon = memo(function MinimizedIcon({
         if (!wasDrag) onRestore();
       }}
     >
-      {/* Thuki logo: bare 48px natural shape, no background, no rounded crop. */}
-      <img
-        src="/thuki-logo.png"
-        alt="Thuki"
-        className="w-12 h-12"
-        draggable={false}
-      />
-      {isWorking && (
-        <span
-          data-testid="minimized-working"
-          className="absolute inset-0 rounded-full ring-2 ring-primary/60 animate-pulse"
-          aria-hidden="true"
+      {/* Logo + status jewel as one unit, centered in the (larger) window with
+          margin so the working wobble / completion pop can overshoot the logo
+          without being clipped by the window frame. The jewel is positioned
+          relative to this 48px wrapper, so it tracks the logo's bottom-right
+          corner rather than the window's. */}
+      <span className="relative inline-flex">
+        {/* Thuki logo: bare 48px natural shape, no background, no rounded crop. */}
+        <img
+          src="/thuki-logo.png"
+          alt="Thuki"
+          className={`w-12 h-12${logoMotion}`}
+          draggable={false}
         />
-      )}
-      {hasUnseen && (
-        <span
-          data-testid="minimized-ready-dot"
-          className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-primary border border-surface-border"
-          aria-hidden="true"
-        />
-      )}
+        {isWorking && (
+          <span
+            data-testid="minimized-working"
+            className="minimized-jewel minimized-jewel-working"
+            aria-hidden="true"
+          />
+        )}
+        {!isWorking && hasUnseen && (
+          <span
+            data-testid="minimized-ready-dot"
+            className="minimized-jewel minimized-jewel-done"
+            aria-hidden="true"
+          />
+        )}
+      </span>
     </button>
   );
 });

@@ -6,7 +6,7 @@
  * this layer — callers must convert physical → logical (divide by scale)
  * before calling, and pass the results straight to `set_window_frame`.
  *
- * The floating mascot icon is a small square (`iconSize`, 48px) that the user
+ * The floating mascot icon is a small square (`iconSize`, 68px) that the user
  * can park anywhere. On expand it grows into a `panel` (the full chat window).
  * To avoid clipping off a screen edge AND to avoid the icon visually jumping,
  * we pick which CORNER of the panel is pinned to the icon's corresponding

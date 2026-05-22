@@ -173,9 +173,14 @@ const COLLAPSED_WINDOW_HEIGHT = 80;
 
 /**
  * Logical-pixel side length of the minimized floating-icon window. The native
- * window shrinks to this square so only the bare logo is visible.
+ * window shrinks to this square. The 48px mascot logo is centered inside it
+ * with a margin, so the working "jelly wobble" / completion pop can overshoot
+ * the logo's bounds, and the status jewel's glow can bloom at the bottom-right
+ * corner, without being clipped by the window frame (body overflow is hidden).
+ * This size is the icon footprint fed to the edge-aware morph geometry, so
+ * both the native window and the in-chat morph mascot use it.
  */
-const MINIMIZED_WINDOW_SIZE = 48;
+const MINIMIZED_WINDOW_SIZE = 68;
 
 /**
  * Single source of truth for the chat-card collapse/expand tween duration,
@@ -2715,7 +2720,7 @@ function App() {
    * does not snap back to identity mid-AnimatePresence-swap.
    */
   // The chat-card collapse target: shrink the card down toward its top-left
-  // corner (transformOrigin: top-left = the corner where the 48px mascot
+  // corner (transformOrigin: top-left = the corner where the 68px mascot
   // lands) while fading out. The scale travel is large (down to ~0.34) so
   // the card visibly funnels into the corner rather than just fading in
   // place; that travel is what makes the collapse read as a morph. The old
@@ -2732,7 +2737,7 @@ function App() {
   // is just the portaled mascot.
   const COLLAPSED_SCALE = 0.34;
   // Tailwind inset classes that pin the floating mascot to the active anchor
-  // corner of the (portaled, viewport-fixed) window. For the 48px settled
+  // corner of the (portaled, viewport-fixed) window. For the 68px settled
   // window all four corners coincide, so this also reads correctly minimized;
   // it only matters visually while the full-size window resizes under the
   // mascot during the morph, where the anchored corner stays on the icon.
