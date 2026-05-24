@@ -995,10 +995,17 @@ fn finish_onboarding(
 ///   fullscreen Spaces (this is what standard `alwaysOnTop` cannot do)
 /// - `StyleMask::nonactivating_panel()` - prevents the panel from stealing
 ///   focus/activation from the fullscreen application
-/// - `set_has_shadow(false)` - disables the native compositor shadow, which
-///   renders differently for key vs. non-key windows, causing a visible change
-///   when the user clicks elsewhere. CSS `shadow-bar` provides a consistent
-///   elevation effect independent of key-window state.
+/// - `set_has_shadow(true)` - lets macOS draw the native compositor shadow
+///   outside the window frame. The web layer can therefore size the NSPanel
+///   to match the painted card exactly, with no transparent margin reserved
+///   for a CSS `box-shadow`. The previous CSS-shadow strategy left a
+///   transparent ring inside the NSPanel that any overlapping window's dim
+///   (notably the save dialog used by `/export`) would render into as a
+///   visible "ghost rectangle" around the card. Native shadow + a tight
+///   window removes that ring entirely. The macOS-standard cost is that the
+///   shadow re-renders with the inactive style when the panel loses key
+///   state; Settings and Update windows have always lived with this and the
+///   overlay now matches them.
 #[cfg(target_os = "macos")]
 fn init_panel(app_handle: &tauri::AppHandle) {
     let window: WebviewWindow = app_handle
@@ -1023,47 +1030,36 @@ fn init_panel(app_handle: &tauri::AppHandle) {
     // Keep the panel visible when the user clicks back into the fullscreen app.
     panel.set_hides_on_deactivate(false);
 
-    // Disable the native compositor shadow. macOS renders visually distinct
-    // shadows for key vs. non-key windows, which causes the overlay to appear
-    // different after the user clicks elsewhere. The CSS `shadow-bar` provides
-    // a stable, focus-independent elevation effect.
-    panel.set_has_shadow(false);
+    // Native compositor shadow. The OS draws the shadow outside the window
+    // frame and follows the panel's actual rendered alpha (the rounded CSS
+    // chrome inside the WebView), so the NSPanel itself can be sized
+    // tightly to the painted card with no transparent margin reserved for
+    // a CSS shadow. See module-level doc above for the rationale.
+    panel.set_has_shadow(true);
 
-    // Three NSPanel-layer assertions to keep the overlay visually clean
-    // through the save-dialog flow, only one of which is strictly novel:
+    // Two NSPanel-layer assertions worth keeping for the export / modal
+    // flow even though the load-bearing fix is now the native shadow plus
+    // the tightened window:
     //
     // 1. `setBackgroundColor: NSColor.clearColor` + `setOpaque: NO` -
     //    re-asserted because `to_panel::<ThukiPanel>()` plus the
     //    subsequent `set_style_mask` rewrite can leave the panel with
     //    `NSColor.windowBackgroundColor` painted into the backing layer.
+    //    The native shadow needs an honest alpha channel to compute its
+    //    shape from, so any leftover opaque background defeats the
+    //    rounded-shadow effect.
     //
     // 2. `setWorksWhenModal: YES` - keeps the panel receiving keyboard
     //    and mouse events even while an application-modal session
     //    (NSSavePanel from `rfd`) is up. Per Apple docs this property
-    //    controls event routing, NOT the AppKit modal dim - which is
-    //    hardcoded on every non-modal window of the app and cannot be
-    //    cleanly opted out of. Still worth setting so the panel stays
-    //    interactive across the modal.
+    //    controls event routing, NOT the AppKit modal dim. Still worth
+    //    setting so the panel stays interactive across the modal.
     //
-    // 3. `contentView.layer.cornerRadius` + `masksToBounds` - the
-    //    load-bearing fix for the visible halo around Thuki when the
-    //    save dialog is up. AppKit's modal dim fills the entire NSPanel
-    //    bounds, but the CSS chrome inside the WebView only paints a
-    //    smaller rounded-rect (Tailwind `rounded-lg`, 8 px). The dim
-    //    bleeds out from the dark CSS chrome and shows as a slate-gray
-    //    annular halo. Clipping the content-view layer to the same
-    //    rounded shape the CSS draws gives the dim no pixels to land on
-    //    outside the chrome. Normal-state rendering is untouched: there
-    //    is nothing to clip when the overlay is not being dimmed.
-    //
-    //    8 px matches `rounded-lg` used by the chat-mode chrome - the
-    //    only state from which the save dialog can be launched (the
-    //    export button only renders in chat mode and `/export` gates on
-    //    `messages.length > 0`). Ask-bar mode uses `rounded-2xl`
-    //    (16 px), which produces a smaller visible CSS shape than this
-    //    8 px content-view clip; the clip therefore has no visible
-    //    effect in ask-bar mode (the smaller CSS shape is already
-    //    inside the clip).
+    // The previous `contentView.layer.cornerRadius` + `masksToBounds`
+    // clip is intentionally NOT re-applied: with the tightened window
+    // there is no transparent margin for the AppKit modal dim to spill
+    // into, and a hard-coded 8 px clip would truncate the ask-bar
+    // chrome's 16 px (`rounded-2xl`) corners.
     if let Ok(ns_window) = window.ns_window() {
         if !ns_window.is_null() {
             use objc2::rc::autoreleasepool;
@@ -1076,17 +1072,6 @@ fn init_panel(app_handle: &tauri::AppHandle) {
                     let _: () = msg_send![win, setBackgroundColor: clear];
                     let _: () = msg_send![win, setOpaque: false];
                     let _: () = msg_send![win, setWorksWhenModal: true];
-
-                    let content_view: *mut AnyObject = msg_send![win, contentView];
-                    if !content_view.is_null() {
-                        let _: () = msg_send![content_view, setWantsLayer: true];
-                        let layer: *mut AnyObject = msg_send![content_view, layer];
-                        if !layer.is_null() {
-                            let radius: f64 = 8.0;
-                            let _: () = msg_send![layer, setCornerRadius: radius];
-                            let _: () = msg_send![layer, setMasksToBounds: true];
-                        }
-                    }
                 });
             }
         }

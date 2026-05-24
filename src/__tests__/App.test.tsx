@@ -1220,12 +1220,15 @@ describe('App', () => {
         triggerResize(container!, 60);
       });
 
-      // bottomY(884) - targetHeight(108) = 776
+      // bottomY(884) - targetHeight(60) = 824. The window now matches the
+      // painted card 1:1 (CONTAINER_VERTICAL_PADDING = 0); the native
+      // NSPanel shadow renders outside the window frame so no transparent
+      // ring is reserved inside.
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
         x: 100,
-        y: 776,
+        y: 824,
         width: 600,
-        height: 108,
+        height: 60,
       });
     });
 
@@ -1314,12 +1317,13 @@ describe('App', () => {
       act(() => {
         triggerResize(container2!, 60);
       });
-      // bottomY = 804+80 = 884. 884-108 = 776.
+      // bottomY = 804+80 = 884. 884-60 = 824. The window matches the
+      // painted card 1:1 now that CONTAINER_VERTICAL_PADDING is 0.
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
         x: 100,
-        y: 776,
+        y: 824,
         width: 600,
-        height: 108,
+        height: 60,
       });
     });
   });
@@ -7461,27 +7465,24 @@ describe('App', () => {
       expect(layoutWrappersAfter.length).toBe(0);
     });
 
-    it('strips padding from root container when minimized and restores on un-minimize', async () => {
+    it('renders the root container without transparent padding in every mode', async () => {
       await enterChatMode();
 
-      // Before minimize: root has px-3 in className
       const rootBefore = document.querySelector('.h-screen');
-      expect(rootBefore?.className).toContain('px-3');
-      expect(rootBefore?.className).toContain('pt-2');
-      expect(rootBefore?.className).toContain('pb-6');
+      expect(rootBefore?.className).not.toContain('px-3');
+      expect(rootBefore?.className).not.toContain('pt-2');
+      expect(rootBefore?.className).not.toContain('pb-6');
 
       const minimizeBtn = screen.getByRole('button', { name: /minimize/i });
       await act(async () => {
         fireEvent.click(minimizeBtn);
       });
 
-      // After minimize: root must NOT have px-3/pt-2/pb-6
       const rootAfter = document.querySelector('.h-screen');
       expect(rootAfter?.className).not.toContain('px-3');
       expect(rootAfter?.className).not.toContain('pt-2');
       expect(rootAfter?.className).not.toContain('pb-6');
 
-      // Restore
       const restoreBtn = screen.getByRole('button', { name: /restore thuki/i });
       await act(async () => {
         fireEvent.pointerDown(restoreBtn, { clientX: 0, clientY: 0 });
@@ -7489,9 +7490,8 @@ describe('App', () => {
       });
       await act(async () => {});
 
-      // After restore: padding is back
       const rootRestored = document.querySelector('.h-screen');
-      expect(rootRestored?.className).toContain('px-3');
+      expect(rootRestored?.className).not.toContain('px-3');
     });
 
     it('restores from the icon and clears the unseen indicator', async () => {
@@ -7541,14 +7541,15 @@ describe('App', () => {
 
       // On restore the OS window is positioned on screen and grown to full
       // chat size in one native frame set. With the icon away from any edge,
-      // the window keeps the icon's top-left (200,150). Height includes
-      // CONTAINER_VERTICAL_PADDING (48) so the bottom composer is not clipped
-      // before settleMorphPhase's post-settle re-measure.
+      // the window keeps the icon's top-left (200,150). Height is the
+      // configured `maxChatHeight` exactly now that the native NSPanel
+      // shadow lives outside the window frame and the web layer no longer
+      // reserves a transparent ring (CONTAINER_VERTICAL_PADDING = 0).
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
         x: 200,
         y: 150,
         width: DEFAULT_CONFIG.window.overlayWidth,
-        height: DEFAULT_CONFIG.window.maxChatHeight + 48,
+        height: DEFAULT_CONFIG.window.maxChatHeight,
       });
 
       // ConversationView shown again with same messages
@@ -7599,7 +7600,7 @@ describe('App', () => {
         x: 1372 + 68 - DEFAULT_CONFIG.window.overlayWidth,
         y: 100,
         width: DEFAULT_CONFIG.window.overlayWidth,
-        height: DEFAULT_CONFIG.window.maxChatHeight + 48,
+        height: DEFAULT_CONFIG.window.maxChatHeight,
       });
     });
 
@@ -7639,9 +7640,9 @@ describe('App', () => {
       // unfolds upward instead of clipping off the bottom.
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
         x: 100,
-        y: 832 + 68 - (DEFAULT_CONFIG.window.maxChatHeight + 48),
+        y: 832 + 68 - DEFAULT_CONFIG.window.maxChatHeight,
         width: DEFAULT_CONFIG.window.overlayWidth,
-        height: DEFAULT_CONFIG.window.maxChatHeight + 48,
+        height: DEFAULT_CONFIG.window.maxChatHeight,
       });
       // Bottom-anchored → the root container grows upward.
       expect(document.querySelector('.h-screen.justify-end')).not.toBeNull();
@@ -7681,7 +7682,7 @@ describe('App', () => {
 
       // The chat now occupies this frame (top-right anchored). Point the
       // collapse query at it.
-      const fullHeight = DEFAULT_CONFIG.window.maxChatHeight + 48;
+      const fullHeight = DEFAULT_CONFIG.window.maxChatHeight;
       __setWindowGeometry({
         x: 1372 + 68 - DEFAULT_CONFIG.window.overlayWidth,
         y: 100,
@@ -7746,7 +7747,7 @@ describe('App', () => {
 
     it('recomputes upward growth on restore when near screen bottom', async () => {
       // Place window near the screen bottom so shouldGrowUp becomes true.
-      // maxChatHeight=648, CONTAINER_VERTICAL_PADDING=48: need windowY + 648 + 48 > screenBottom.
+      // maxChatHeight=648, CONTAINER_VERTICAL_PADDING=0 (tightened window): need windowY + 648 > screenBottom.
       // With monitorHeight=900, monitorY=0: windowY=700 → 700+696=1396 > 900 → growsUpward.
       __setWindowGeometry({
         x: 100,
@@ -7912,9 +7913,9 @@ describe('App', () => {
       // returned it. The clamped top = 900 - (maxChatHeight + 48).
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
         x: 100,
-        y: 832 + 68 - (DEFAULT_CONFIG.window.maxChatHeight + 48),
+        y: 832 + 68 - DEFAULT_CONFIG.window.maxChatHeight,
         width: DEFAULT_CONFIG.window.overlayWidth,
-        height: DEFAULT_CONFIG.window.maxChatHeight + 48,
+        height: DEFAULT_CONFIG.window.maxChatHeight,
       });
       expect(document.querySelector('.h-screen.justify-end')).not.toBeNull();
 

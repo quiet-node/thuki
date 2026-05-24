@@ -170,8 +170,19 @@ type PendingSubmit =
       think: boolean;
     };
 
-/** Total transparent padding around the morphing container: pt-2(8) + pb-6(24) + motion py-2(16). */
-const CONTAINER_VERTICAL_PADDING = 48;
+/**
+ * Total transparent padding around the morphing container.
+ *
+ * Held at zero now that the NSPanel uses the native compositor shadow
+ * (`set_has_shadow(true)` in `init_panel`): the OS draws the shadow outside
+ * the window frame, so there is no reason to inflate the window with a
+ * transparent ring inside which the CSS shadow used to render. Tightening
+ * the NSPanel to the painted card is what eliminates the "ghost rectangle"
+ * other windows could dim into when they covered the previous transparent
+ * margin. The constant stays as a single knob in case a future surface
+ * deliberately reintroduces a transparent gutter.
+ */
+const CONTAINER_VERTICAL_PADDING = 0;
 
 /**
  * Collapsed-bar height used as the seed for the show-time upward-grow Y math
@@ -3040,7 +3051,7 @@ function App() {
       onDragOver={handleRootDragOver}
       onDragLeave={handleRootDragLeave}
       onDrop={handleRootDrop}
-      className={`flex flex-col items-center ${growsUpward ? 'justify-end' : 'justify-start'} h-screen w-screen ${isSettledMinimized ? '' : 'px-3 pt-2 pb-6'} bg-transparent overflow-visible`}
+      className={`flex flex-col items-center ${growsUpward ? 'justify-end' : 'justify-start'} h-screen w-screen bg-transparent overflow-visible`}
     >
       <AnimatePresence mode="wait">
         {shouldRenderOverlay ? (
@@ -3053,7 +3064,7 @@ function App() {
             className={
               isSettledMinimized
                 ? 'overflow-visible'
-                : 'w-full px-4 py-2 overflow-visible'
+                : 'w-full overflow-visible'
             }
           >
             {/* Relative wrapper - positioning context for absolute-positioned
@@ -3090,9 +3101,7 @@ function App() {
                   isSettledMinimized
                     ? ''
                     : `bg-surface-base backdrop-blur-2xl border border-surface-border ${
-                        isChatMode
-                          ? 'rounded-lg shadow-chat'
-                          : 'rounded-2xl shadow-bar'
+                        isChatMode ? 'rounded-lg' : 'rounded-2xl'
                       }`
                 }
               >
