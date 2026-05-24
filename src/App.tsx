@@ -54,6 +54,12 @@ import {
   SCREEN_CAPTURE_PLACEHOLDER,
   buildPrompt,
 } from './config/commands';
+import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+import {
+  defaultExportFilename,
+  serializeForClipboard,
+  serializeForFile,
+} from './lib/exportSerializer';
 import './App.css';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
@@ -356,6 +362,13 @@ function App() {
 
   /** Whether the model picker panel is currently open. Mutually exclusive with `isHistoryOpen`. */
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
+  /** Whether the chat-header export popover (clipboard / file) is currently open. */
+  const [isExportOpen, setIsExportOpen] = useState(false);
+  /**
+   * Ref to the export popover root. Used by the outside-click effect to
+   * keep the popover open while the user is clicking inside it.
+   */
+  const exportPopoverRef = useRef<HTMLDivElement>(null);
   /**
    * True when the user clicked + while an unsaved conversation is active.
    * Causes the history dropdown to show a SwitchConfirmation prompt instead
@@ -472,9 +485,28 @@ function App() {
   /** True while waiting for images to finish processing before a deferred
    *  submit. Drives the "waiting" UI state in the ask bar. */
   const [isSubmitPending, setIsSubmitPending] = useState(false);
-  /** Error message from a failed /screen capture. Shown inline above the ask
-   *  bar so the user knows capture failed rather than seeing no response. */
+  /** Error message from a failed /screen capture or any other gate that
+   *  surfaces user-facing feedback. Shown inline above the ask bar so the
+   *  user knows the submission did not go through. Auto-clears after a
+   *  short linger so a one-off mistake does not leave the banner up
+   *  forever; the next submit also clears it preemptively. */
   const [captureError, setCaptureError] = useState<string | null>(null);
+  /**
+   * Auto-dismiss the capture-error banner after a short linger so a
+   * one-off mistake (empty `/extract`, empty `/export`, OCR miss, etc.)
+   * does not leave a red banner up indefinitely. Mirrors the
+   * `shakeAskBar` self-clearing pattern.
+   *
+   * 5 seconds reads as a deliberate auto-hide rather than a flash and
+   * gives the user time to read a one-line message twice. The banner is
+   * also cleared at the top of `handleSubmit` so a fresh submit attempt
+   * always starts clean regardless of timing.
+   */
+  useEffect(() => {
+    if (!captureError) return;
+    const timer = setTimeout(() => setCaptureError(null), 5000);
+    return () => clearTimeout(timer);
+  }, [captureError]);
   /**
    * Set to true when a /screen capture is dispatched, false when it resolves
    * or when the user cancels. Lets the async tail in handleScreenSubmit
@@ -2257,6 +2289,104 @@ function App() {
     composeCapabilityState,
   ]);
 
+  /**
+   * Opens the macOS save dialog, serialises the current session as a
+   * self-contained Markdown file (frontmatter + role-labelled blocks +
+   * inline base64 images via the Tauri asset protocol), and asks the
+   * Rust backend to write it to the user's chosen path.
+   *
+   * No-ops on an empty session (defensive — the slash-command path is
+   * gated upstream and the chat-header button only renders in chat mode).
+   * User cancellation of the save dialog returns silently. A failed
+   * write surfaces the OS-level error message via the existing
+   * `captureError` banner.
+   */
+  const runFileExport = useCallback(async () => {
+    setIsExportOpen(false);
+    /* v8 ignore start -- defensive: callers gate on messages.length > 0 */
+    if (messages.length === 0) return;
+    /* v8 ignore stop */
+    try {
+      const path = await saveDialog({
+        defaultPath: defaultExportFilename(new Date()),
+        filters: [{ name: 'Markdown', extensions: ['md'] }],
+      });
+      if (path === null) return;
+      const content = await serializeForFile(
+        messages,
+        { fallbackModel: activeModel },
+        new Date(),
+      );
+      await invoke('save_chat_export', { path, content });
+    } catch (err) {
+      setCaptureError(
+        `Failed to export: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }, [messages, activeModel]);
+
+  /**
+   * Copies the current session to the system clipboard as body-only
+   * Markdown. Strips the YAML frontmatter (would surface as visible
+   * noise in chat apps) and substitutes image markers for screenshots
+   * (a multi-megabyte base64 payload would otherwise jam most paste
+   * targets). Errors surface via the `captureError` banner.
+   */
+  const runClipboardCopy = useCallback(async () => {
+    setIsExportOpen(false);
+    /* v8 ignore start -- defensive: callers gate on messages.length > 0 */
+    if (messages.length === 0) return;
+    /* v8 ignore stop */
+    try {
+      const content = serializeForClipboard(messages);
+      await navigator.clipboard.writeText(content);
+    } catch (err) {
+      setCaptureError(
+        `Failed to copy: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }, [messages]);
+
+  /**
+   * Toggles the export popover from the chat-header button. Closes the
+   * model-picker dropdown when opening so the two popovers (anchored to
+   * the same `right-3 top-10` corner of the chat header) never overlap.
+   */
+  const handleExportToggle = useCallback(() => {
+    setIsExportOpen((open) => {
+      if (!open) {
+        setIsModelPickerOpen(false);
+      }
+      return !open;
+    });
+  }, []);
+
+  /**
+   * Dismisses the export popover when the user clicks outside it. The
+   * toggle button itself is excluded so the click that already toggled
+   * the popover does not also close it on the same gesture.
+   */
+  useEffect(() => {
+    if (!isExportOpen) return;
+    const handler = (event: MouseEvent) => {
+      const target = event.target;
+      /* v8 ignore start -- happy-dom always yields a Node target */
+      if (!(target instanceof Node)) return;
+      /* v8 ignore stop */
+      const popover = exportPopoverRef.current;
+      /* v8 ignore start -- the ref is attached whenever the popover renders */
+      if (popover === null) return;
+      /* v8 ignore stop */
+      if (popover.contains(target)) return;
+      if (target instanceof Element && target.closest('[data-export-toggle]')) {
+        return;
+      }
+      setIsExportOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [isExportOpen]);
+
   const handleSubmit = useCallback(() => {
     if (
       (query.trim().length === 0 && attachedImages.length === 0) ||
@@ -2285,6 +2415,23 @@ function App() {
     if (hasExtract && attachedImages.length === 0 && !hasScreen) {
       setCaptureError('Attach an image or add /screen to extract text from.');
       setShakeAskBar(true);
+      return;
+    }
+
+    // /export is a session-level command. It must run in isolation from any
+    // other command in the same message and is gated on "at least one
+    // message exists". Same shake + banner UX as /extract for consistency.
+    const hasExport = found.has('/export');
+    if (hasExport) {
+      if (messages.length === 0) {
+        setCaptureError('No messages to export yet.');
+        setShakeAskBar(true);
+        return;
+      }
+      setQuery('');
+      /* v8 ignore next */
+      inputRef.current!.style.height = 'auto';
+      void runFileExport();
       return;
     }
 
@@ -2483,6 +2630,8 @@ function App() {
     searchActive,
     quote.maxContextLength,
     hasBlockingConflict,
+    messages.length,
+    runFileExport,
   ]);
 
   // When a pending submit exists and all images finish processing, dispatch
@@ -3008,6 +3157,12 @@ function App() {
                                 }
                                 isModelPickerOpen={isModelPickerOpen}
                                 onMinimize={handleMinimize}
+                                onExportToggle={
+                                  messages.length > 0
+                                    ? handleExportToggle
+                                    : undefined
+                                }
+                                isExportOpen={isExportOpen}
                               />
                             ) : null}
                           </AnimatePresence>
@@ -3252,6 +3407,50 @@ function App() {
                       capabilities={modelCapabilities}
                       compact
                     />
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+
+              {/* Chat-mode export popover. Anchored to the same right-3 top-10
+                  corner as the model picker dropdown; the two never overlap
+                  because opening one closes the other. Visual treatment mirrors
+                  the `SwitchConfirmation` prompt (sentence-case title, plain
+                  text rows, primary-highlighted recommended action) so the two
+                  small popovers feel like a single language. */}
+              <AnimatePresence>
+                {isChatMode && isExportOpen ? (
+                  <motion.div
+                    ref={exportPopoverRef}
+                    key="export-popover"
+                    initial={{ opacity: 0, y: -8, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                    transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                    role="dialog"
+                    aria-label="Export chat"
+                    className="absolute right-3 top-10 z-50 w-56 rounded-xl border border-surface-border bg-surface-base shadow-chat overflow-hidden"
+                  >
+                    <div className="px-3 py-3 flex flex-col gap-2.5">
+                      <p className="text-xs text-text-secondary leading-snug">
+                        Export chat
+                      </p>
+                      <div className="flex flex-col gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void runFileExport()}
+                          className="w-full text-left px-3 py-2 rounded-lg text-xs text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
+                        >
+                          Save as Markdown…
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void runClipboardCopy()}
+                          className="w-full text-left px-3 py-2 rounded-lg text-xs text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
+                        >
+                          Copy to clipboard
+                        </button>
+                      </div>
+                    </div>
                   </motion.div>
                 ) : null}
               </AnimatePresence>

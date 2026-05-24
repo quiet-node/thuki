@@ -18,6 +18,7 @@
 pub mod commands;
 pub mod config;
 pub mod database;
+pub mod export;
 pub mod history;
 pub mod images;
 pub mod models;
@@ -1027,6 +1028,69 @@ fn init_panel(app_handle: &tauri::AppHandle) {
     // different after the user clicks elsewhere. The CSS `shadow-bar` provides
     // a stable, focus-independent elevation effect.
     panel.set_has_shadow(false);
+
+    // Three NSPanel-layer assertions to keep the overlay visually clean
+    // through the save-dialog flow, only one of which is strictly novel:
+    //
+    // 1. `setBackgroundColor: NSColor.clearColor` + `setOpaque: NO` -
+    //    re-asserted because `to_panel::<ThukiPanel>()` plus the
+    //    subsequent `set_style_mask` rewrite can leave the panel with
+    //    `NSColor.windowBackgroundColor` painted into the backing layer.
+    //
+    // 2. `setWorksWhenModal: YES` - keeps the panel receiving keyboard
+    //    and mouse events even while an application-modal session
+    //    (NSSavePanel from `rfd`) is up. Per Apple docs this property
+    //    controls event routing, NOT the AppKit modal dim - which is
+    //    hardcoded on every non-modal window of the app and cannot be
+    //    cleanly opted out of. Still worth setting so the panel stays
+    //    interactive across the modal.
+    //
+    // 3. `contentView.layer.cornerRadius` + `masksToBounds` - the
+    //    load-bearing fix for the visible halo around Thuki when the
+    //    save dialog is up. AppKit's modal dim fills the entire NSPanel
+    //    bounds, but the CSS chrome inside the WebView only paints a
+    //    smaller rounded-rect (Tailwind `rounded-lg`, 8 px). The dim
+    //    bleeds out from the dark CSS chrome and shows as a slate-gray
+    //    annular halo. Clipping the content-view layer to the same
+    //    rounded shape the CSS draws gives the dim no pixels to land on
+    //    outside the chrome. Normal-state rendering is untouched: there
+    //    is nothing to clip when the overlay is not being dimmed.
+    //
+    //    8 px matches `rounded-lg` used by the chat-mode chrome - the
+    //    only state from which the save dialog can be launched (the
+    //    export button only renders in chat mode and `/export` gates on
+    //    `messages.length > 0`). Ask-bar mode uses `rounded-2xl`
+    //    (16 px), which produces a smaller visible CSS shape than this
+    //    8 px content-view clip; the clip therefore has no visible
+    //    effect in ask-bar mode (the smaller CSS shape is already
+    //    inside the clip).
+    if let Ok(ns_window) = window.ns_window() {
+        if !ns_window.is_null() {
+            use objc2::rc::autoreleasepool;
+            use objc2::runtime::AnyObject;
+            use objc2::{class, msg_send};
+            let win = ns_window as *mut AnyObject;
+            unsafe {
+                autoreleasepool(|_| {
+                    let clear: *mut AnyObject = msg_send![class!(NSColor), clearColor];
+                    let _: () = msg_send![win, setBackgroundColor: clear];
+                    let _: () = msg_send![win, setOpaque: false];
+                    let _: () = msg_send![win, setWorksWhenModal: true];
+
+                    let content_view: *mut AnyObject = msg_send![win, contentView];
+                    if !content_view.is_null() {
+                        let _: () = msg_send![content_view, setWantsLayer: true];
+                        let layer: *mut AnyObject = msg_send![content_view, layer];
+                        if !layer.is_null() {
+                            let radius: f64 = 8.0;
+                            let _: () = msg_send![layer, setCornerRadius: radius];
+                            let _: () = msg_send![layer, setMasksToBounds: true];
+                        }
+                    }
+                });
+            }
+        }
+    }
 }
 
 // ─── Settings panel initialisation ──────────────────────────────────────────
@@ -1331,6 +1395,7 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
@@ -1689,6 +1754,8 @@ pub fn run() {
             screenshot::capture_full_screen_command,
             #[cfg(not(coverage))]
             ocr::extract_text_command,
+            #[cfg(not(coverage))]
+            export::save_chat_export,
             notify_overlay_hidden,
             set_overlay_minimized,
             notify_frontend_ready,

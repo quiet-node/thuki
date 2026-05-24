@@ -102,6 +102,25 @@ const HISTORY_ICON = (
   </svg>
 );
 
+/** Hoisted download-arrow-into-tray icon. */
+const EXPORT_ICON = (
+  <svg
+    width="13"
+    height="13"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M12 3v12" />
+    <path d="M7 10l5 5 5-5" />
+    <path d="M5 17v2a2 2 0 002 2h10a2 2 0 002-2v-2" />
+  </svg>
+);
+
 interface WindowControlsProps {
   /** Triggers the overlay hide animation sequence. */
   onClose: () => void;
@@ -150,6 +169,16 @@ interface WindowControlsProps {
    * dot inert and decorative (ask-bar mode or no conversation to park).
    */
   onMinimize?: () => void;
+  /**
+   * Called when the user clicks the export button to open the export
+   * options popover. Omit to hide the export button entirely.
+   */
+  onExportToggle?: () => void;
+  /**
+   * Drives `aria-expanded` on the export button so screen readers reflect
+   * the popover's open state.
+   */
+  isExportOpen?: boolean;
 }
 
 /** Decorative dot color for inactive buttons. */
@@ -166,6 +195,8 @@ export const WindowControls = memo(function WindowControls({
   onModelPickerToggle,
   isModelPickerOpen = false,
   onMinimize,
+  onExportToggle,
+  isExportOpen = false,
 }: WindowControlsProps) {
   // Disabled only when there is nothing to save yet and the conversation hasn't
   // been saved. Once saved the button stays active so the user can unsave.
@@ -347,6 +378,26 @@ export const WindowControls = memo(function WindowControls({
                 className="w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-primary hover:bg-primary/8 transition-colors duration-150 cursor-pointer"
               >
                 {HISTORY_ICON}
+              </button>
+            </Tooltip>
+          )}
+
+          {onExportToggle !== undefined && (
+            <Tooltip label="Export chat">
+              <button
+                type="button"
+                onClick={onExportToggle}
+                aria-label="Export chat"
+                aria-expanded={isExportOpen}
+                aria-haspopup="dialog"
+                data-export-toggle
+                className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors duration-150 cursor-pointer ${
+                  isExportOpen
+                    ? 'text-primary bg-primary/10'
+                    : 'text-text-secondary hover:text-primary hover:bg-primary/8'
+                }`}
+              >
+                {EXPORT_ICON}
               </button>
             </Tooltip>
           )}

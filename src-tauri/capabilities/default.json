@@ -8,6 +8,7 @@
     "core:window:allow-start-dragging",
     "core:window:deny-internal-toggle-maximize",
     "core:window:allow-set-size",
-    "core:window:allow-set-focus"
+    "core:window:allow-set-focus",
+    "dialog:allow-save"
   ]
 }

@@ -308,6 +308,31 @@ export const COMMANDS: readonly Command[] = [
       'Explain the following in plain, simple language. Assume the reader is smart but has no background in the topic: avoid jargon and use analogies where helpful. Structure your answer in two parts: a brief explanation of the concept, followed by at least one concrete example that makes it tangible. Be concise. Output only the explanation, no introduction or sign-off.\n\nText: $INPUT',
   },
   {
+    trigger: '/export',
+    label: '/export',
+    description: 'Export the conversation as a Markdown file',
+    docs: {
+      summary:
+        'Exports the current conversation as a self-contained Markdown file via a native macOS save dialog.',
+      usage: '/export',
+      examples: [
+        '`/export`: opens the save dialog to write a Markdown file of the current chat',
+      ],
+      behavior:
+        'Opens the native save sheet pre-filled with `thuki-chat-YYYY-MM-DD-HHMM.md`. The resulting file is self-contained: YAML frontmatter (model, exported_at, message_count), role-labelled blocks, collapsible thinking blocks, search source footnotes, and base64-inlined screenshots. No data leaves the machine. Requires at least one message in the current session; submitting `/export` in an empty chat shakes the ask bar with a "No messages to export yet." warning.',
+      composability:
+        '`/export` is a session-level command and is not composed with other slash commands. Any other triggers in the same message are ignored when `/export` is present.',
+    },
+    promptHelp: {
+      summary:
+        'export the current conversation to a Markdown file on disk via the native save dialog.',
+      whenToSuggest:
+        'Mention this when the user asks to save the conversation, share it, or archive it.',
+      limit:
+        'The command writes a file and does not produce a chat response. It cannot be composed with other commands.',
+    },
+  },
+  {
     trigger: '/todos',
     label: '/todos',
     description: 'Extract to-do items as a checkbox list',
