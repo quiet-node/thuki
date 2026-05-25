@@ -2326,7 +2326,10 @@ function App() {
       void invoke('set_overlay_alpha', { alpha: 0, durationMs: 0 });
       const path = await saveDialog({
         defaultPath: defaultExportFilename(new Date()),
-        filters: [{ name: 'Markdown', extensions: ['md'] }],
+        filters: [
+          { name: 'Markdown', extensions: ['md'] },
+          { name: 'Plain text', extensions: ['txt'] },
+        ],
       });
       if (path === null) return;
       const content = await serializeForFile(

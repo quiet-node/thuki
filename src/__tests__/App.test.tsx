@@ -8172,7 +8172,10 @@ describe('App', () => {
           defaultPath: expect.stringMatching(
             /^thuki-chat-\d{4}-\d{2}-\d{2}-\d{4}\.md$/,
           ),
-          filters: [{ name: 'Markdown', extensions: ['md'] }],
+          filters: [
+            { name: 'Markdown', extensions: ['md'] },
+            { name: 'Plain text', extensions: ['txt'] },
+          ],
         }),
       );
       await vi.waitFor(() => {
