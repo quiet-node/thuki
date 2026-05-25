@@ -8,7 +8,6 @@ import {
   isSafeHttpUrl,
   serializeForClipboard,
   serializeForFile,
-  serializeForFileAsText,
   yamlQuote,
   type FileExportContext,
   type ImageLoader,
@@ -51,22 +50,6 @@ describe('defaultExportFilename', () => {
 
   it('formats double-digit hour and minute correctly', () => {
     const filename = defaultExportFilename(new Date(2026, 4, 24, 14, 30, 15));
-    expect(filename).toBe('thuki-chat-2026-05-24-1430.md');
-  });
-
-  it('uses the .txt extension when requested', () => {
-    const filename = defaultExportFilename(
-      new Date(2026, 4, 24, 14, 30, 15),
-      'txt',
-    );
-    expect(filename).toBe('thuki-chat-2026-05-24-1430.txt');
-  });
-
-  it('explicitly defaults to .md when no extension is supplied', () => {
-    const filename = defaultExportFilename(
-      new Date(2026, 4, 24, 14, 30, 15),
-      'md',
-    );
     expect(filename).toBe('thuki-chat-2026-05-24-1430.md');
   });
 });
@@ -696,149 +679,5 @@ describe('serializeForFile sanitization (end-to-end)', () => {
       'Phish (link omitted: javascript:fetch("/?c="+document.cookie))',
     );
     expect(result).not.toMatch(/\]\(javascript:/);
-  });
-});
-
-describe('serializeForFileAsText', () => {
-  const NOW = new Date(2026, 4, 24, 14, 30, 15);
-
-  it('emits a labelled header with model, exported timestamp, and count (no YAML)', () => {
-    const messages: Message[] = [
-      makeMessage({ id: 'u1', role: 'user', content: 'hi' }),
-      makeMessage({
-        id: 'a1',
-        role: 'assistant',
-        content: 'hello',
-        modelName: 'qwen:7b',
-      }),
-    ];
-    const result = serializeForFileAsText(messages, CTX, NOW);
-    expect(result.startsWith('Thuki chat export\n')).toBe(true);
-    expect(result).toContain('Model: qwen:7b');
-    expect(result).toMatch(/Exported: 2026-05-24T14:30:15[+-]\d{2}:\d{2}/);
-    expect(result).toContain('Messages: 2');
-    // Plain text never includes the YAML frontmatter or Markdown markers.
-    expect(result).not.toContain('---\napp:');
-    expect(result).not.toContain('## ');
-  });
-
-  it('renders user blocks with a "User:" label and the raw content', () => {
-    const messages: Message[] = [
-      makeMessage({ id: 'u1', role: 'user', content: 'a question' }),
-    ];
-    const result = serializeForFileAsText(messages, CTX, NOW);
-    expect(result).toContain('User:\n\na question');
-  });
-
-  it('renders assistant blocks with model name in parentheses', () => {
-    const messages: Message[] = [
-      makeMessage({
-        id: 'a1',
-        role: 'assistant',
-        content: 'an answer',
-        modelName: 'qwen:7b',
-      }),
-    ];
-    const result = serializeForFileAsText(messages, CTX, NOW);
-    expect(result).toContain('Assistant (qwen:7b):\n\nan answer');
-  });
-
-  it('renders an unattributed assistant block as plain "Assistant:"', () => {
-    const messages: Message[] = [
-      makeMessage({ id: 'a1', role: 'assistant', content: 'an answer' }),
-    ];
-    const result = serializeForFileAsText(messages, CTX, NOW);
-    expect(result).toContain('Assistant:\n\nan answer');
-  });
-
-  it('indents quoted text with two leading spaces per line', () => {
-    const messages: Message[] = [
-      makeMessage({
-        id: 'u1',
-        role: 'user',
-        content: 'follow up',
-        quotedText: 'first line\nsecond line',
-      }),
-    ];
-    const result = serializeForFileAsText(messages, CTX, NOW);
-    expect(result).toContain('  first line\n  second line');
-  });
-
-  it('emits image markers (no base64, no Markdown image syntax)', () => {
-    const messages: Message[] = [
-      makeMessage({
-        id: 'u1',
-        role: 'user',
-        content: '',
-        imagePaths: ['/Users/me/shot.jpg', '/Users/me/two.png'],
-      }),
-    ];
-    const result = serializeForFileAsText(messages, CTX, NOW);
-    expect(result).toContain('[Screenshot: shot.jpg]\n[Screenshot: two.png]');
-    expect(result).not.toContain('data:image/');
-    expect(result).not.toContain('![Screenshot]');
-  });
-
-  it('renders sources as a plain-text numbered list with a "Sources" header', () => {
-    const messages: Message[] = [
-      makeMessage({
-        id: 'a1',
-        role: 'assistant',
-        content: '',
-        searchSources: [
-          { title: 'First', url: 'https://example.com/one' },
-          { title: '', url: 'https://example.com/two' },
-        ],
-      }),
-    ];
-    const result = serializeForFileAsText(messages, CTX, NOW);
-    expect(result).toContain('Sources (/search):');
-    expect(result).toContain('1. First - https://example.com/one');
-    expect(result).toContain(
-      '2. https://example.com/two - https://example.com/two',
-    );
-  });
-
-  it('separates consecutive messages with a long dashed rule', () => {
-    const messages: Message[] = [
-      makeMessage({ id: 'u1', role: 'user', content: 'a' }),
-      makeMessage({ id: 'a1', role: 'assistant', content: 'b' }),
-    ];
-    const result = serializeForFileAsText(messages, CTX, NOW);
-    expect(result).toContain('a\n\n----------\n\nAssistant:');
-  });
-
-  it('emits just the header when the conversation is empty', () => {
-    const result = serializeForFileAsText([], CTX, NOW);
-    expect(result.startsWith('Thuki chat export\n')).toBe(true);
-    expect(result).toContain('Messages: 0');
-    // No body section appended, no trailing message-block content.
-    expect(result).not.toContain('User:');
-    expect(result).not.toContain('Assistant:');
-  });
-
-  it('skips the quoted-text block for messages with no quote', () => {
-    const messages: Message[] = [
-      makeMessage({ id: 'u1', role: 'user', content: 'plain' }),
-    ];
-    const result = serializeForFileAsText(messages, CTX, NOW);
-    expect(result).toContain('User:\n\nplain');
-    expect(result).not.toMatch(/^ {2}/m);
-  });
-
-  it('skips the image block when no imagePaths are attached', () => {
-    const messages: Message[] = [
-      makeMessage({ id: 'u1', role: 'user', content: 'no images' }),
-    ];
-    const result = serializeForFileAsText(messages, CTX, NOW);
-    expect(result).not.toContain('[Screenshot:');
-  });
-
-  it('skips the sources block when no searchSources are present', () => {
-    const messages: Message[] = [
-      makeMessage({ id: 'a1', role: 'assistant', content: 'no sources' }),
-    ];
-    const result = serializeForFileAsText(messages, CTX, NOW);
-    expect(result).not.toContain('Sources (/search):');
   });
 });

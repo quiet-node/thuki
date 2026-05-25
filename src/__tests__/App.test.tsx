@@ -8139,7 +8139,6 @@ describe('App', () => {
     type ExportArgs = {
       content: string;
       defaultFilename: string;
-      format: string;
     };
     function overrideExportInvoke(
       impl: (args: ExportArgs) => Promise<boolean>,
@@ -8171,9 +8170,6 @@ describe('App', () => {
       expect(popover).toHaveAttribute('aria-orientation', 'vertical');
       expect(
         screen.getByRole('menuitem', { name: /Save as Markdown/i }),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByRole('menuitem', { name: /Save as Plain text/i }),
       ).toBeInTheDocument();
       expect(
         screen.getByRole('menuitem', { name: /Copy to clipboard/i }),
@@ -8224,63 +8220,11 @@ describe('App', () => {
         expect(captured).not.toBeNull();
       });
       const md = captured as ExportArgs | null;
-      expect(md?.format).toBe('md');
       // Markdown serialiser emits YAML frontmatter at the top of the file.
       expect(md?.content.startsWith('---\napp: ')).toBe(true);
       expect(md?.content).toContain('## User');
-    });
-
-    it('invokes prompt_and_save_chat_export with plain text content when Plain text is clicked', async () => {
-      await enterChatMode();
-      let captured: ExportArgs | null = null;
-      overrideExportInvoke(async (args) => {
-        captured = args;
-        return true;
-      });
-
-      await openExportPopover();
-      await act(async () => {
-        fireEvent.click(
-          screen.getByRole('menuitem', { name: /Save as Plain text/i }),
-        );
-      });
-      await act(async () => {});
-
-      await waitFor(() => {
-        expect(captured).not.toBeNull();
-      });
-      const txt = captured as ExportArgs | null;
-      expect(txt?.format).toBe('txt');
-      // Plain text serialiser emits a labelled header and NO YAML
-      // frontmatter / Markdown markers.
-      expect(txt?.content.startsWith('Thuki chat export\n')).toBe(true);
-      expect(txt?.content).not.toContain('---\napp:');
-      expect(txt?.content).not.toContain('## User');
-      expect(txt?.content).toContain('User:');
-    });
-
-    it('forwards the requested filename so the dialog opens with the right extension', async () => {
-      await enterChatMode();
-      let captured: ExportArgs | null = null;
-      overrideExportInvoke(async (args) => {
-        captured = args;
-        return true;
-      });
-
-      await openExportPopover();
-      await act(async () => {
-        fireEvent.click(
-          screen.getByRole('menuitem', { name: /Save as Plain text/i }),
-        );
-      });
-      await act(async () => {});
-
-      await waitFor(() => {
-        expect(captured).not.toBeNull();
-      });
-      const fname = captured as ExportArgs | null;
-      expect(fname?.defaultFilename).toMatch(
-        /^thuki-chat-\d{4}-\d{2}-\d{2}-\d{4}\.txt$/,
+      expect(md?.defaultFilename).toMatch(
+        /^thuki-chat-\d{4}-\d{2}-\d{2}-\d{4}\.md$/,
       );
     });
 
@@ -8303,7 +8247,7 @@ describe('App', () => {
       // The Rust command was called.
       expect(invoke).toHaveBeenCalledWith(
         'prompt_and_save_chat_export',
-        expect.objectContaining({ format: 'md' }),
+        expect.objectContaining({ content: expect.any(String) }),
       );
     });
 

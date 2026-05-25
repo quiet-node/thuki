@@ -58,7 +58,6 @@ import {
   defaultExportFilename,
   serializeForClipboard,
   serializeForFile,
-  serializeForFileAsText,
 } from './lib/exportSerializer';
 import './App.css';
 
@@ -2331,19 +2330,12 @@ function App() {
   ]);
 
   /**
-   * Serialises the current session and asks the Rust backend to open
-   * the native save dialog and write the chosen format to disk in one
+   * Serialises the current session as Markdown and asks the Rust
+   * backend to open the native save dialog and write to disk in one
    * atomic operation. The destination path lives entirely inside Rust:
-   * the renderer hands over content + suggested filename + format and
-   * receives a boolean indicating whether a file was written, so a
-   * compromised renderer cannot direct the write at a path of its
-   * choosing.
-   *
-   * Format routing:
-   *   - 'md'  → {@link serializeForFile} (full Markdown with YAML
-   *             frontmatter and inline base64 images).
-   *   - 'txt' → {@link serializeForFileAsText} (plain text with image
-   *             markers; no Markdown markers, no base64).
+   * the renderer hands over content + suggested filename and receives
+   * a boolean indicating whether a file was written, so a compromised
+   * renderer cannot direct the write at a path of its choosing.
    *
    * Re-entrancy: NSPanel uses `setWorksWhenModal:YES` so the chat
    * header button stays clickable while the save dialog is up. A
@@ -2356,66 +2348,55 @@ function App() {
    * absolute destination path), so the banner cannot leak the path
    * the user picked into a screenshot or screen recording.
    */
-  const runFileExport = useCallback(
-    async (format: 'md' | 'txt') => {
-      setIsExportOpen(false);
-      const snapshot = messagesRef.current;
-      /* v8 ignore start -- defensive: the popover only renders in chat mode */
-      if (snapshot.length === 0) return;
-      /* v8 ignore stop */
-      if (isExportInFlightRef.current) return;
-      isExportInFlightRef.current = true;
-      // Single try/catch covers BOTH the serialisation step and the
-      // dialog/write IPC. The Markdown path runs an image-load
-      // Promise.all and is awaited BEFORE the overlay hides so the
-      // perceived "preparing export" surface stays Thuki rather than a
-      // blank screen. The plain text path is synchronous. Either way,
-      // the alpha bracketing only covers the IPC window so the overlay
-      // is hidden for exactly the dialog + write, never the prep.
-      try {
-        const now = new Date();
-        const content =
-          format === 'md'
-            ? await serializeForFile(
-                snapshot,
-                { fallbackModel: activeModel },
-                now,
-              )
-            : serializeForFileAsText(
-                snapshot,
-                { fallbackModel: activeModel },
-                now,
-              );
-        // Hide Thuki via NSPanel alpha while the native save dialog is
-        // on screen. The dialog's drop-shadow and vibrancy backdrop
-        // would otherwise bleed onto Thuki's transparent shadow margin
-        // and render as a dark "ghost" rectangle around the card.
-        // Hide instantly — the dialog's own appear animation is the
-        // motion the user reads, so a snap-out keeps the transition
-        // crisp from Thuki → dialog.
-        void invoke('set_overlay_alpha', { alpha: 0, durationMs: 0 });
-        await invoke('prompt_and_save_chat_export', {
-          content,
-          defaultFilename: defaultExportFilename(new Date(), format),
-          format,
-        });
-      } catch (err) {
-        setCaptureError(
-          `Failed to export: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      } finally {
-        // Fade back in over 150 ms so Thuki re-emerges in step with the
-        // dialog's dismiss animation instead of snapping in late. If
-        // serialisation threw before the alpha:0 dispatched, this is
-        // an alpha:1 → alpha:1 no-op rather than a wasted state change.
-        void invoke('set_overlay_alpha', { alpha: 1, durationMs: 150 });
-        isExportInFlightRef.current = false;
-      }
-    },
+  const runFileExport = useCallback(async () => {
+    setIsExportOpen(false);
+    const snapshot = messagesRef.current;
+    /* v8 ignore start -- defensive: the popover only renders in chat mode */
+    if (snapshot.length === 0) return;
+    /* v8 ignore stop */
+    if (isExportInFlightRef.current) return;
+    isExportInFlightRef.current = true;
+    // Single try/catch covers BOTH the serialisation step and the
+    // dialog/write IPC. Serialisation runs an image-load Promise.all
+    // and is awaited BEFORE the overlay hides so the perceived
+    // "preparing export" surface stays Thuki rather than a blank
+    // screen. The alpha bracketing only covers the IPC window so the
+    // overlay is hidden for exactly the dialog + write, never the
+    // prep.
+    try {
+      const now = new Date();
+      const content = await serializeForFile(
+        snapshot,
+        { fallbackModel: activeModel },
+        now,
+      );
+      // Hide Thuki via NSPanel alpha while the native save dialog is
+      // on screen. The dialog's drop-shadow and vibrancy backdrop
+      // would otherwise bleed onto Thuki's transparent shadow margin
+      // and render as a dark "ghost" rectangle around the card.
+      // Hide instantly — the dialog's own appear animation is the
+      // motion the user reads, so a snap-out keeps the transition
+      // crisp from Thuki → dialog.
+      void invoke('set_overlay_alpha', { alpha: 0, durationMs: 0 });
+      await invoke('prompt_and_save_chat_export', {
+        content,
+        defaultFilename: defaultExportFilename(new Date()),
+      });
+    } catch (err) {
+      setCaptureError(
+        `Failed to export: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      // Fade back in over 150 ms so Thuki re-emerges in step with the
+      // dialog's dismiss animation instead of snapping in late. If
+      // serialisation threw before the alpha:0 dispatched, this is
+      // an alpha:1 → alpha:1 no-op rather than a wasted state change.
+      void invoke('set_overlay_alpha', { alpha: 1, durationMs: 150 });
+      isExportInFlightRef.current = false;
+    }
     // `messages` is read via `messagesRef.current` so a long streaming
     // response does not reallocate this callback per Token chunk.
-    [activeModel],
-  );
+  }, [activeModel]);
 
   /**
    * Copies the current session to the system clipboard as body-only
@@ -3541,18 +3522,10 @@ function App() {
                             // without having to Tab past the surrounding chat.
                             if (node !== null) node.focus();
                           }}
-                          onClick={() => void runFileExport('md')}
+                          onClick={() => void runFileExport()}
                           className="w-full text-left px-3 py-2 rounded-lg text-xs text-text-primary hover:bg-white/5 focus-visible:bg-white/5 focus:outline-none transition-colors duration-150 cursor-pointer"
                         >
                           Save as Markdown…
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          onClick={() => void runFileExport('txt')}
-                          className="w-full text-left px-3 py-2 rounded-lg text-xs text-text-primary hover:bg-white/5 focus-visible:bg-white/5 focus:outline-none transition-colors duration-150 cursor-pointer"
-                        >
-                          Save as Plain text…
                         </button>
                         <button
                           type="button"

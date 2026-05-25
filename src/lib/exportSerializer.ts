@@ -1,22 +1,18 @@
 /**
  * Chat session export serialisers.
  *
- * Three outputs:
+ * Two outputs:
  *
  * - {@link serializeForFile}: self-contained Markdown artefact. Includes a
  *   YAML frontmatter block, the conditional customised system prompt, and
  *   inline base64 data URIs for screenshots. Suitable for archival, GitHub,
  *   Notion, Obsidian, or pasting back into another LLM.
- * - {@link serializeForFileAsText}: header block plus a plain text body
- *   (no Markdown markers, no YAML, no inline base64). The exported file
- *   is what TextEdit shows when the user picks "Save as Plain text…": a
- *   human-readable transcript with image markers instead of pixel data.
  * - {@link serializeForClipboard}: body-only Markdown. Frontmatter is
  *   stripped and screenshots are replaced with a textual placeholder so
  *   pasting into Slack, Discord, or a plain editor stays readable and does
  *   not detonate multi-megabyte base64 payloads on the clipboard.
  *
- * All three functions are pure with respect to the date and the
+ * Both functions are pure with respect to the date and the
  * caller-provided configuration. The caller injects `now: Date` so tests
  * can assert deterministic output and so the export captures a single
  * coherent moment instead of drifting across nested `new Date()` calls.
@@ -45,22 +41,18 @@ export interface FileExportContext {
 /**
  * Returns the default filename suggested in the native save dialog.
  *
- * Format: `thuki-chat-YYYY-MM-DD-HHMM.<ext>`. Local timezone (matches
+ * Format: `thuki-chat-YYYY-MM-DD-HHMM.md`. Local timezone (matches
  * what the user perceives as "now"). No slug from the first user
  * message so a privacy-sensitive snippet does not become visible in
- * Finder / Spotlight. `ext` defaults to `'md'` so callers that haven't
- * been updated still get the canonical Markdown extension.
+ * Finder / Spotlight.
  */
-export function defaultExportFilename(
-  now: Date,
-  ext: 'md' | 'txt' = 'md',
-): string {
+export function defaultExportFilename(now: Date): string {
   const yyyy = now.getFullYear();
   const mm = pad2(now.getMonth() + 1);
   const dd = pad2(now.getDate());
   const hh = pad2(now.getHours());
   const mi = pad2(now.getMinutes());
-  return `thuki-chat-${yyyy}-${mm}-${dd}-${hh}${mi}.${ext}`;
+  return `thuki-chat-${yyyy}-${mm}-${dd}-${hh}${mi}.md`;
 }
 
 /**
@@ -124,27 +116,6 @@ export async function serializeForFile(
 }
 
 /**
- * Serialises an entire conversation into a plain text file. No Markdown
- * markers, no YAML, no base64. Screenshots are replaced with textual
- * markers so the exported file is readable as-is in TextEdit or any
- * other plain-text editor without paging through megabytes of pixel
- * data.
- *
- * Includes a short labelled header (model, export timestamp, message
- * count) so the file is self-describing without imposing YAML syntax
- * on a text reader.
- */
-export function serializeForFileAsText(
-  messages: readonly Message[],
-  ctx: FileExportContext,
-  now: Date,
-): string {
-  const header = buildTextHeader(messages, ctx, now);
-  const body = buildBodyTextOnly(messages);
-  return body.length > 0 ? `${header}\n\n${body}` : `${header}\n`;
-}
-
-/**
  * Serialises an entire conversation into clipboard-friendly Markdown.
  *
  * No frontmatter (would surface as noisy text when pasted into chat
@@ -171,19 +142,6 @@ function buildFrontmatter(
   ].join('\n');
 }
 
-function buildTextHeader(
-  messages: readonly Message[],
-  ctx: FileExportContext,
-  now: Date,
-): string {
-  return [
-    'Thuki chat export',
-    `Model: ${pickModel(messages, ctx.fallbackModel)}`,
-    `Exported: ${isoLocal(now)}`,
-    `Messages: ${messages.length}`,
-  ].join('\n');
-}
-
 async function buildBody(
   messages: readonly Message[],
   loadImage: ImageLoader,
@@ -197,13 +155,6 @@ async function buildBody(
 function buildBodyMarkdownTextOnly(messages: readonly Message[]): string {
   const sections = messages.map(renderMessageTextOnly);
   return sections.join('\n\n---\n\n').concat(sections.length > 0 ? '\n' : '');
-}
-
-function buildBodyTextOnly(messages: readonly Message[]): string {
-  const sections = messages.map(renderMessagePlainText);
-  return sections
-    .join('\n\n----------\n\n')
-    .concat(sections.length > 0 ? '\n' : '');
 }
 
 async function renderMessage(
@@ -239,19 +190,6 @@ function renderMessageTextOnly(message: Message): string {
   return parts.join('\n\n');
 }
 
-function renderMessagePlainText(message: Message): string {
-  const parts: string[] = [`${roleLabel(message)}:`];
-  if (message.quotedText) {
-    parts.push(renderQuotePlain(message.quotedText));
-  }
-  if (message.content) parts.push(message.content);
-  const imageMarkers = renderImagesAsPlainMarkers(message);
-  if (imageMarkers) parts.push(imageMarkers);
-  const sources = renderSourcesPlain(message);
-  if (sources) parts.push(sources);
-  return parts.join('\n\n');
-}
-
 function roleLabel(message: Message): string {
   if (message.role === 'user') return 'User';
   return message.modelName ? `Assistant (${message.modelName})` : 'Assistant';
@@ -262,13 +200,6 @@ function renderQuote(message: Message): string | null {
   return message.quotedText
     .split('\n')
     .map((line) => `> ${line}`)
-    .join('\n');
-}
-
-function renderQuotePlain(quoted: string): string {
-  return quoted
-    .split('\n')
-    .map((line) => `  ${line}`)
     .join('\n');
 }
 
@@ -306,13 +237,6 @@ function renderImagesAsMarkers(message: Message): string | null {
     .join('\n\n');
 }
 
-function renderImagesAsPlainMarkers(message: Message): string | null {
-  if (!message.imagePaths || message.imagePaths.length === 0) return null;
-  return message.imagePaths
-    .map((path) => `[Screenshot: ${basename(path)}]`)
-    .join('\n');
-}
-
 function renderSources(message: Message): string | null {
   const sources = message.searchSources;
   if (!sources || sources.length === 0) return null;
@@ -320,17 +244,6 @@ function renderSources(message: Message): string | null {
   sources.forEach((source, index) => {
     const title = source.title || source.url;
     lines.push(formatMarkdownSourceLine(index + 1, title, source.url));
-  });
-  return lines.join('\n');
-}
-
-function renderSourcesPlain(message: Message): string | null {
-  const sources = message.searchSources;
-  if (!sources || sources.length === 0) return null;
-  const lines = ['Sources (/search):'];
-  sources.forEach((source, index) => {
-    const title = source.title || source.url;
-    lines.push(`${index + 1}. ${title} - ${source.url}`);
   });
   return lines.join('\n');
 }
