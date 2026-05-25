@@ -18,6 +18,7 @@
 pub mod commands;
 pub mod config;
 pub mod database;
+pub mod export;
 pub mod history;
 pub mod images;
 pub mod models;
@@ -818,6 +819,121 @@ fn animate_overlay_frame(app_handle: tauri::AppHandle, width: f64, height: f64, 
     }
 }
 
+/// Sets the alpha (opacity) of the main overlay NSPanel.
+///
+/// Used to temporarily hide Thuki while a foreign system dialog (the
+/// `NSSavePanel` invoked by the export flow) is on screen. That dialog
+/// ships with its own drop-shadow and `NSVisualEffectView` vibrancy
+/// backdrop, both of which bleed onto anything behind them. Thuki's
+/// transparent CSS shadow margin would otherwise show through as a
+/// dark "ghost" rectangle around the card.
+///
+/// Driving alpha to 0 removes Thuki from the compositor for the
+/// duration of the dialog without disturbing the NSPanel's state
+/// machine, the activator, the trace recorder, or the React tree.
+/// Restoring alpha to 1.0 paints the window again with the exact
+/// same content it had before. Cheap, idempotent, and unrelated to
+/// the window-resize path that the tighten-to-card approach broke.
+///
+/// When `duration_ms > 0` the transition is driven through
+/// `NSAnimationContext` so the alpha change overlaps the dialog's
+/// own fade-in / fade-out. With `duration_ms = 0` the alpha is set
+/// instantly. Hiding the panel usually wants `0` (snap out so the
+/// dialog's appearance is the only motion the user reads); restoring
+/// usually wants a small duration so Thuki gracefully fades back in
+/// instead of popping over the dialog dismiss animation.
+///
+/// Non-finite values are silently dropped and the magnitude is clamped
+/// to `[0.0, 1.0]` so the IPC boundary stays forgiving. Duration is
+/// clamped to `[0.0, 2000.0]` ms for the same reason.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn set_overlay_alpha(app_handle: tauri::AppHandle, alpha: f64, duration_ms: f64) {
+    if !alpha.is_finite() {
+        return;
+    }
+    let alpha = alpha.clamp(0.0, 1.0);
+    let duration_ms = if duration_ms.is_finite() {
+        duration_ms.clamp(0.0, 2000.0)
+    } else {
+        0.0
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::class;
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+
+        let handle = app_handle.clone();
+        let _ = app_handle.run_on_main_thread(move || {
+            let Some(window) = handle.get_webview_window("main") else {
+                return;
+            };
+            let Ok(ns_window) = window.ns_window() else {
+                return;
+            };
+            if ns_window.is_null() {
+                return;
+            }
+            let win = ns_window as *mut AnyObject;
+            unsafe {
+                if duration_ms == 0.0 {
+                    let _: () = msg_send![win, setAlphaValue: alpha];
+                } else {
+                    let ctx_cls = class!(NSAnimationContext);
+                    let _: () = msg_send![ctx_cls, beginGrouping];
+                    let ctx: *mut AnyObject = msg_send![ctx_cls, currentContext];
+                    let _: () = msg_send![ctx, setDuration: duration_ms / 1000.0];
+                    let animator: *mut AnyObject = msg_send![win, animator];
+                    let _: () = msg_send![animator, setAlphaValue: alpha];
+                    let _: () = msg_send![ctx_cls, endGrouping];
+                }
+            }
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app_handle, alpha, duration_ms);
+    }
+}
+
+/// Sets the default appearance of `NSSavePanel` (and its `NSOpenPanel`
+/// sibling) to the **compact** layout — no sidebar, no file browser,
+/// just the Save As field, a Where popup, and the action buttons.
+///
+/// macOS persists the expansion state of these panels per app under
+/// the `NSNavPanelExpandedStateForSaveMode` key in `NSUserDefaults`.
+/// On a fresh launch the panel inherits the system default, which is
+/// the wide expanded layout most apps want. For a Spotlight-style
+/// overlay like Thuki where export is a quick action invoked from a
+/// floating bar, the compact layout reads as the right shape: the
+/// user already picked the file in their head, they just need to
+/// confirm the name and location.
+///
+/// Writing the key at startup means every save dialog opens compact
+/// on a fresh launch. Within a session, macOS rewrites the key when
+/// the user manually toggles the disclosure triangle, so their
+/// per-save preference is respected until the next launch.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn apply_save_panel_compact_default() {
+    use objc2::class;
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::ns_string;
+
+    let key = ns_string!("NSNavPanelExpandedStateForSaveMode");
+    unsafe {
+        let defaults: *mut AnyObject = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        if defaults.is_null() {
+            return;
+        }
+        let _: () = msg_send![defaults, setBool: false, forKey: key];
+    }
+}
+
 /// Synchronizes the Rust-side visibility tracking when the frontend
 /// completes its exit animation and hides the native window.
 #[tauri::command]
@@ -1027,6 +1143,70 @@ fn init_panel(app_handle: &tauri::AppHandle) {
     // different after the user clicks elsewhere. The CSS `shadow-bar` provides
     // a stable, focus-independent elevation effect.
     panel.set_has_shadow(false);
+
+    // Three NSPanel-layer assertions to keep the overlay visually clean
+    // through the save-dialog flow, only one of which is strictly novel:
+    //
+    // 1. `setBackgroundColor: NSColor.clearColor` + `setOpaque: NO` -
+    //    re-asserted because `to_panel::<ThukiPanel>()` plus the
+    //    subsequent `set_style_mask` rewrite can leave the panel with
+    //    `NSColor.windowBackgroundColor` painted into the backing layer.
+    //
+    // 2. `setWorksWhenModal: YES` - keeps the panel receiving keyboard
+    //    and mouse events even while an application-modal session
+    //    (NSSavePanel from `rfd`) is up. Per Apple docs this property
+    //    controls event routing, NOT the AppKit modal dim - which is
+    //    hardcoded on every non-modal window of the app and cannot be
+    //    cleanly opted out of. Still worth setting so the panel stays
+    //    interactive across the modal.
+    //
+    // 3. `contentView.layer.cornerRadius` + `masksToBounds` - the
+    //    load-bearing fix for the visible halo around Thuki when the
+    //    save dialog is up. AppKit's modal dim fills the entire NSPanel
+    //    bounds, but the CSS chrome inside the WebView only paints a
+    //    smaller rounded-rect (Tailwind `rounded-lg`, 8 px). The dim
+    //    bleeds out from the dark CSS chrome and shows as a slate-gray
+    //    annular halo. Clipping the content-view layer to the same
+    //    rounded shape the CSS draws gives the dim no pixels to land on
+    //    outside the chrome. Normal-state rendering is untouched: there
+    //    is nothing to clip when the overlay is not being dimmed.
+    //
+    //    8 px matches `rounded-lg` used by the chat-mode chrome - the
+    //    only state from which the save dialog can be launched (the
+    //    export button only renders in chat mode and the chat-header
+    //    handler gates on `messages.length > 0`). Ask-bar mode uses
+    //    `rounded-2xl`
+    //    (16 px), which produces a smaller visible CSS shape than this
+    //    8 px content-view clip; the clip therefore has no visible
+    //    effect in ask-bar mode (the smaller CSS shape is already
+    //    inside the clip).
+    if let Ok(ns_window) = window.ns_window() {
+        if !ns_window.is_null() {
+            use objc2::rc::autoreleasepool;
+            use objc2::runtime::AnyObject;
+            use objc2::{class, msg_send};
+            let win = ns_window as *mut AnyObject;
+            unsafe {
+                autoreleasepool(|_| {
+                    let clear: *mut AnyObject = msg_send![class!(NSColor), clearColor];
+                    let _: () = msg_send![win, setBackgroundColor: clear];
+                    let _: () = msg_send![win, setOpaque: false];
+                    let _: () = msg_send![win, setWorksWhenModal: true];
+
+                    let content_view: *mut AnyObject = msg_send![win, contentView];
+                    if !content_view.is_null() {
+                        let _: () = msg_send![content_view, setWantsLayer: true];
+                        let layer: *mut AnyObject = msg_send![content_view, layer];
+                        if !layer.is_null() {
+                            let radius: f64 = 8.0;
+                            let _: () = msg_send![layer, setCornerRadius: radius];
+                            let _: () = msg_send![layer, setMasksToBounds: true];
+                        }
+                    }
+                });
+            }
+        }
+    }
 }
 
 // ─── Settings panel initialisation ──────────────────────────────────────────
@@ -1331,6 +1511,7 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
@@ -1342,6 +1523,12 @@ pub fn run() {
             init_settings_panel(app.app_handle());
             #[cfg(target_os = "macos")]
             init_update_panel(app.app_handle());
+
+            // Default the export save dialog to the compact layout. The
+            // user can still hit the disclosure triangle for a full
+            // file browser on any individual save.
+            #[cfg(target_os = "macos")]
+            apply_save_panel_compact_default();
 
             // ── System tray icon + menu ───────────────────────────────────
             // Order chosen for muscle-memory parity with mac tray apps
@@ -1689,11 +1876,14 @@ pub fn run() {
             screenshot::capture_full_screen_command,
             #[cfg(not(coverage))]
             ocr::extract_text_command,
+            #[cfg(not(coverage))]
+            export::prompt_and_save_chat_export,
             notify_overlay_hidden,
             set_overlay_minimized,
             notify_frontend_ready,
             set_window_frame,
             animate_overlay_frame,
+            set_overlay_alpha,
             #[cfg(not(coverage))]
             permissions::check_accessibility_permission,
             #[cfg(not(coverage))]

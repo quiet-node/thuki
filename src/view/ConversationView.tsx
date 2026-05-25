@@ -86,6 +86,13 @@ interface ConversationViewProps {
    * Omit when there is no conversation to park (ask-bar mode).
    */
   onMinimize?: () => void;
+  /**
+   * Called when the user clicks the export button to toggle the export
+   * options popover. Omit to hide the export button entirely.
+   */
+  onExportToggle?: () => void;
+  /** Drives `aria-expanded` on the export button. */
+  isExportOpen?: boolean;
 }
 
 /**
@@ -114,6 +121,8 @@ export function ConversationView({
   onModelPickerToggle,
   isModelPickerOpen,
   onMinimize,
+  onExportToggle,
+  isExportOpen,
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -218,6 +227,8 @@ export function ConversationView({
         onModelPickerToggle={onModelPickerToggle}
         isModelPickerOpen={isModelPickerOpen}
         onMinimize={onMinimize}
+        onExportToggle={onExportToggle}
+        isExportOpen={isExportOpen}
       />
 
       <div
