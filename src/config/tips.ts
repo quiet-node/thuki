@@ -66,7 +66,7 @@ export const TIPS: readonly Tip[] = [
     text: 'Agentic search can dig deeper than a quick web lookup when the answer needs trail-following ↗',
     url: 'https://github.com/quiet-node/thuki/blob/main/docs/agentic-search.md',
   },
-  'The export icon in the chat header saves the current session as a Markdown or .txt file',
+  'The export icon in the chat header saves the current session as a Markdown file',
   'Click the export icon and pick Copy to clipboard to grab the whole conversation, ready to paste anywhere',
   'Exports include the model name, every message, /think reasoning, search sources, and inline screenshots',
 ];
