@@ -1173,8 +1173,9 @@ fn init_panel(app_handle: &tauri::AppHandle) {
     //
     //    8 px matches `rounded-lg` used by the chat-mode chrome - the
     //    only state from which the save dialog can be launched (the
-    //    export button only renders in chat mode and `/export` gates on
-    //    `messages.length > 0`). Ask-bar mode uses `rounded-2xl`
+    //    export button only renders in chat mode and the chat-header
+    //    handler gates on `messages.length > 0`). Ask-bar mode uses
+    //    `rounded-2xl`
     //    (16 px), which produces a smaller visible CSS shape than this
     //    8 px content-view clip; the clip therefore has no visible
     //    effect in ask-bar mode (the smaller CSS shape is already
@@ -1876,7 +1877,7 @@ pub fn run() {
             #[cfg(not(coverage))]
             ocr::extract_text_command,
             #[cfg(not(coverage))]
-            export::save_chat_export,
+            export::prompt_and_save_chat_export,
             notify_overlay_hidden,
             set_overlay_minimized,
             notify_frontend_ready,

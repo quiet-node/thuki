@@ -1,21 +1,31 @@
 /**
  * Chat session export serialisers.
  *
- * Two outputs:
+ * Three outputs:
  *
  * - {@link serializeForFile}: self-contained Markdown artefact. Includes a
  *   YAML frontmatter block, the conditional customised system prompt, and
  *   inline base64 data URIs for screenshots. Suitable for archival, GitHub,
  *   Notion, Obsidian, or pasting back into another LLM.
+ * - {@link serializeForFileAsText}: header block plus a plain text body
+ *   (no Markdown markers, no YAML, no inline base64). The exported file
+ *   is what TextEdit shows when the user picks "Save as Plain text…": a
+ *   human-readable transcript with image markers instead of pixel data.
  * - {@link serializeForClipboard}: body-only Markdown. Frontmatter is
  *   stripped and screenshots are replaced with a textual placeholder so
  *   pasting into Slack, Discord, or a plain editor stays readable and does
  *   not detonate multi-megabyte base64 payloads on the clipboard.
  *
- * Both functions are intentionally pure with respect to the date and the
+ * All three functions are pure with respect to the date and the
  * caller-provided configuration. The caller injects `now: Date` so tests
  * can assert deterministic output and so the export captures a single
  * coherent moment instead of drifting across nested `new Date()` calls.
+ *
+ * Markdown emission escapes untrusted strings (model name, search
+ * source title, search source URL) at the boundary: search sources
+ * with `javascript:` or otherwise non-http(s) URLs are degraded to
+ * plain text so an exported file opened in a third-party Markdown
+ * viewer cannot turn into a clickable hostile link.
  */
 
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -98,7 +108,9 @@ function blobToDataUri(blob: Blob): Promise<string> {
  *
  * Asynchronous because screenshots are read from disk and base64-encoded.
  * Image read failures fall back to a textual placeholder so a single
- * broken file path never aborts the whole export.
+ * broken file path never aborts the whole export. Image loads run in
+ * parallel via `Promise.all` so the per-message latency is bounded by
+ * the slowest image rather than the sum of all images.
  */
 export async function serializeForFile(
   messages: readonly Message[],
@@ -112,6 +124,27 @@ export async function serializeForFile(
 }
 
 /**
+ * Serialises an entire conversation into a plain text file. No Markdown
+ * markers, no YAML, no base64. Screenshots are replaced with textual
+ * markers so the exported file is readable as-is in TextEdit or any
+ * other plain-text editor without paging through megabytes of pixel
+ * data.
+ *
+ * Includes a short labelled header (model, export timestamp, message
+ * count) so the file is self-describing without imposing YAML syntax
+ * on a text reader.
+ */
+export function serializeForFileAsText(
+  messages: readonly Message[],
+  ctx: FileExportContext,
+  now: Date,
+): string {
+  const header = buildTextHeader(messages, ctx, now);
+  const body = buildBodyTextOnly(messages);
+  return body.length > 0 ? `${header}\n\n${body}` : `${header}\n`;
+}
+
+/**
  * Serialises an entire conversation into clipboard-friendly Markdown.
  *
  * No frontmatter (would surface as noisy text when pasted into chat
@@ -120,7 +153,7 @@ export async function serializeForFile(
  * context that a screenshot existed is preserved.
  */
 export function serializeForClipboard(messages: readonly Message[]): string {
-  return buildBodyTextOnly(messages);
+  return buildBodyMarkdownTextOnly(messages);
 }
 
 function buildFrontmatter(
@@ -130,11 +163,24 @@ function buildFrontmatter(
 ): string {
   return [
     '---',
-    'app: Thuki',
-    `model: ${pickModel(messages, ctx.fallbackModel)}`,
-    `exported_at: ${isoLocal(now)}`,
+    `app: ${yamlQuote('Thuki')}`,
+    `model: ${yamlQuote(pickModel(messages, ctx.fallbackModel))}`,
+    `exported_at: ${yamlQuote(isoLocal(now))}`,
     `message_count: ${messages.length}`,
     '---',
+  ].join('\n');
+}
+
+function buildTextHeader(
+  messages: readonly Message[],
+  ctx: FileExportContext,
+  now: Date,
+): string {
+  return [
+    'Thuki chat export',
+    `Model: ${pickModel(messages, ctx.fallbackModel)}`,
+    `Exported: ${isoLocal(now)}`,
+    `Messages: ${messages.length}`,
   ].join('\n');
 }
 
@@ -142,16 +188,22 @@ async function buildBody(
   messages: readonly Message[],
   loadImage: ImageLoader,
 ): Promise<string> {
-  const sections: string[] = [];
-  for (const message of messages) {
-    sections.push(await renderMessage(message, loadImage));
-  }
+  const sections = await Promise.all(
+    messages.map((message) => renderMessage(message, loadImage)),
+  );
+  return sections.join('\n\n---\n\n').concat(sections.length > 0 ? '\n' : '');
+}
+
+function buildBodyMarkdownTextOnly(messages: readonly Message[]): string {
+  const sections = messages.map(renderMessageTextOnly);
   return sections.join('\n\n---\n\n').concat(sections.length > 0 ? '\n' : '');
 }
 
 function buildBodyTextOnly(messages: readonly Message[]): string {
-  const sections = messages.map(renderMessageTextOnly);
-  return sections.join('\n\n---\n\n').concat(sections.length > 0 ? '\n' : '');
+  const sections = messages.map(renderMessagePlainText);
+  return sections
+    .join('\n\n----------\n\n')
+    .concat(sections.length > 0 ? '\n' : '');
 }
 
 async function renderMessage(
@@ -187,6 +239,19 @@ function renderMessageTextOnly(message: Message): string {
   return parts.join('\n\n');
 }
 
+function renderMessagePlainText(message: Message): string {
+  const parts: string[] = [`${roleLabel(message)}:`];
+  if (message.quotedText) {
+    parts.push(renderQuotePlain(message.quotedText));
+  }
+  if (message.content) parts.push(message.content);
+  const imageMarkers = renderImagesAsPlainMarkers(message);
+  if (imageMarkers) parts.push(imageMarkers);
+  const sources = renderSourcesPlain(message);
+  if (sources) parts.push(sources);
+  return parts.join('\n\n');
+}
+
 function roleLabel(message: Message): string {
   if (message.role === 'user') return 'User';
   return message.modelName ? `Assistant (${message.modelName})` : 'Assistant';
@@ -194,11 +259,17 @@ function roleLabel(message: Message): string {
 
 function renderQuote(message: Message): string | null {
   if (!message.quotedText) return null;
-  const quoted = message.quotedText
+  return message.quotedText
     .split('\n')
     .map((line) => `> ${line}`)
     .join('\n');
-  return quoted;
+}
+
+function renderQuotePlain(quoted: string): string {
+  return quoted
+    .split('\n')
+    .map((line) => `  ${line}`)
+    .join('\n');
 }
 
 function renderThinking(thinking: string): string {
@@ -210,10 +281,9 @@ async function renderImages(
   loadImage: ImageLoader,
 ): Promise<string | null> {
   if (!message.imagePaths || message.imagePaths.length === 0) return null;
-  const rendered: string[] = [];
-  for (const path of message.imagePaths) {
-    rendered.push(await renderSingleImage(path, loadImage));
-  }
+  const rendered = await Promise.all(
+    message.imagePaths.map((path) => renderSingleImage(path, loadImage)),
+  );
   return rendered.join('\n\n');
 }
 
@@ -236,15 +306,117 @@ function renderImagesAsMarkers(message: Message): string | null {
     .join('\n\n');
 }
 
+function renderImagesAsPlainMarkers(message: Message): string | null {
+  if (!message.imagePaths || message.imagePaths.length === 0) return null;
+  return message.imagePaths
+    .map((path) => `[Screenshot: ${basename(path)}]`)
+    .join('\n');
+}
+
 function renderSources(message: Message): string | null {
   const sources = message.searchSources;
   if (!sources || sources.length === 0) return null;
   const lines = ['**Sources** (`/search`):'];
   sources.forEach((source, index) => {
     const title = source.title || source.url;
-    lines.push(`${index + 1}. [${title}](${source.url})`);
+    lines.push(formatMarkdownSourceLine(index + 1, title, source.url));
   });
   return lines.join('\n');
+}
+
+function renderSourcesPlain(message: Message): string | null {
+  const sources = message.searchSources;
+  if (!sources || sources.length === 0) return null;
+  const lines = ['Sources (/search):'];
+  sources.forEach((source, index) => {
+    const title = source.title || source.url;
+    lines.push(`${index + 1}. ${title} - ${source.url}`);
+  });
+  return lines.join('\n');
+}
+
+/**
+ * Renders one ordered-list line of the **Sources** block. Untrusted
+ * title characters are backslash-escaped; the URL scheme is validated
+ * against an http(s)-only allowlist so a search source carrying a
+ * `javascript:` URL cannot land in the exported file as a clickable
+ * link in a third-party Markdown viewer (Streamdown + rehype-sanitize
+ * protect Thuki's own renderer but the exported file is consumed
+ * elsewhere).
+ *
+ * Safe URLs are wrapped in `<...>` angle brackets so URLs containing
+ * `(` `)` parse correctly per CommonMark. Unsafe URLs fall through to
+ * a plain-text rendering that quotes the raw URL after the title so no
+ * information is lost while no anchor element is generated.
+ */
+export function formatMarkdownSourceLine(
+  index: number,
+  title: string,
+  url: string,
+): string {
+  const escapedTitle = escapeMarkdownLinkText(title);
+  if (isSafeHttpUrl(url) && !containsAngleBracket(url)) {
+    return `${index}. [${escapedTitle}](<${url}>)`;
+  }
+  return `${index}. ${escapedTitle} (link omitted: ${url})`;
+}
+
+/**
+ * Returns `true` for `http://` or `https://` URLs only. Everything
+ * else - including `javascript:`, `data:`, `file:`, `vbscript:`,
+ * bare strings, and URLs with a CR/LF in them - is rejected.
+ */
+export function isSafeHttpUrl(value: string): boolean {
+  if (/[\r\n\t]/.test(value)) return false;
+  return /^https?:\/\//i.test(value);
+}
+
+function containsAngleBracket(value: string): boolean {
+  return value.includes('<') || value.includes('>');
+}
+
+/**
+ * Backslash-escapes the CommonMark link-text metacharacters so a title
+ * containing `]`, `[`, or `\` cannot truncate or repoint the rendered
+ * link. Also escapes leading/trailing whitespace artefacts that would
+ * otherwise produce a soft-break.
+ */
+export function escapeMarkdownLinkText(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]');
+}
+
+/**
+ * YAML double-quoted string encoding. Backslash and double-quote are
+ * escaped, ASCII control characters are converted to their `\xHH`
+ * escape, and a literal newline becomes `\n`. Wrapping the result in
+ * double quotes produces a string that any conformant YAML 1.1/1.2
+ * parser (Obsidian, Jekyll, Hugo, Pandoc) decodes back to the
+ * original characters.
+ */
+export function yamlQuote(value: string): string {
+  let escaped = '';
+  for (const ch of value) {
+    const code = ch.charCodeAt(0);
+    if (ch === '\\') {
+      escaped += '\\\\';
+    } else if (ch === '"') {
+      escaped += '\\"';
+    } else if (ch === '\n') {
+      escaped += '\\n';
+    } else if (ch === '\r') {
+      escaped += '\\r';
+    } else if (ch === '\t') {
+      escaped += '\\t';
+    } else if (code < 0x20 || code === 0x7f) {
+      escaped += `\\x${code.toString(16).padStart(2, '0')}`;
+    } else {
+      escaped += ch;
+    }
+  }
+  return `"${escaped}"`;
 }
 
 function pickModel(

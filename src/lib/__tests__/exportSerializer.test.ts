@@ -3,8 +3,13 @@ import type { Message } from '../../hooks/useOllama';
 import {
   defaultExportFilename,
   defaultImageLoader,
+  escapeMarkdownLinkText,
+  formatMarkdownSourceLine,
+  isSafeHttpUrl,
   serializeForClipboard,
   serializeForFile,
+  serializeForFileAsText,
+  yamlQuote,
   type FileExportContext,
   type ImageLoader,
 } from '../exportSerializer';
@@ -82,9 +87,9 @@ describe('serializeForFile', () => {
 
     const result = await serializeForFile(messages, CTX, NOW, stubImageLoader);
 
-    expect(result).toContain('---\napp: Thuki');
-    expect(result).toContain('model: llama3.2:3b');
-    expect(result).toMatch(/exported_at: 2026-05-24T14:30:15[+-]\d{2}:\d{2}/);
+    expect(result).toContain('---\napp: "Thuki"');
+    expect(result).toContain('model: "llama3.2:3b"');
+    expect(result).toMatch(/exported_at: "2026-05-24T14:30:15[+-]\d{2}:\d{2}"/);
     expect(result).toContain('message_count: 2');
   });
 
@@ -95,7 +100,7 @@ describe('serializeForFile', () => {
     ];
 
     const result = await serializeForFile(messages, CTX, NOW, stubImageLoader);
-    expect(result).toContain('model: default-model');
+    expect(result).toContain('model: "default-model"');
   });
 
   it('emits "unknown" when no assistant modelName and no fallback', async () => {
@@ -108,7 +113,7 @@ describe('serializeForFile', () => {
       NOW,
       stubImageLoader,
     );
-    expect(result).toContain('model: unknown');
+    expect(result).toContain('model: "unknown"');
   });
 
   it('emits frontmatter even when there are zero messages', async () => {
@@ -190,8 +195,8 @@ describe('serializeForFile', () => {
     ];
     const result = await serializeForFile(messages, CTX, NOW, stubImageLoader);
     expect(result).toContain('**Sources** (`/search`):');
-    expect(result).toContain('1. [First](https://example.com/one)');
-    expect(result).toContain('2. [Second](https://example.com/two)');
+    expect(result).toContain('1. [First](<https://example.com/one>)');
+    expect(result).toContain('2. [Second](<https://example.com/two>)');
   });
 
   it('uses the source URL as the link label when the title is empty', async () => {
@@ -205,7 +210,7 @@ describe('serializeForFile', () => {
     ];
     const result = await serializeForFile(messages, CTX, NOW, stubImageLoader);
     expect(result).toContain(
-      '1. [https://nowhere.example/page](https://nowhere.example/page)',
+      '1. [https://nowhere.example/page](<https://nowhere.example/page>)',
     );
   });
 
@@ -285,7 +290,7 @@ describe('serializeForFile', () => {
         new Date(2026, 4, 24, 14, 30, 15),
         stubImageLoader,
       );
-      expect(result).toMatch(/exported_at: 2026-05-24T14:30:15\+09:00/);
+      expect(result).toMatch(/exported_at: "2026-05-24T14:30:15\+09:00"/);
     } finally {
       spy.mockRestore();
     }
@@ -303,7 +308,7 @@ describe('serializeForFile', () => {
         new Date(2026, 4, 24, 14, 30, 15),
         stubImageLoader,
       );
-      expect(result).toMatch(/exported_at: 2026-05-24T14:30:15-05:00/);
+      expect(result).toMatch(/exported_at: "2026-05-24T14:30:15-05:00"/);
     } finally {
       spy.mockRestore();
     }
@@ -348,7 +353,7 @@ describe('serializeForClipboard', () => {
       makeMessage({ id: 'u1', role: 'user', content: 'hi' }),
     ];
     const result = serializeForClipboard(messages);
-    expect(result).not.toContain('---\napp: Thuki');
+    expect(result).not.toContain('---\napp:');
     expect(result).not.toContain('exported_at');
   });
 
@@ -407,7 +412,7 @@ describe('serializeForClipboard', () => {
     ];
     const result = serializeForClipboard(messages);
     expect(result).toContain('<details>');
-    expect(result).toContain('1. [Doc](https://example.com)');
+    expect(result).toContain('1. [Doc](<https://example.com>)');
   });
 
   it('returns an empty string when there are zero messages', () => {
@@ -518,5 +523,322 @@ describe('defaultImageLoader', () => {
     );
 
     await expect(defaultImageLoader('/x')).rejects.toThrow('FileReader error');
+  });
+});
+
+describe('yamlQuote', () => {
+  it('wraps a plain string in double quotes', () => {
+    expect(yamlQuote('Thuki')).toBe('"Thuki"');
+  });
+
+  it('escapes embedded double quotes', () => {
+    expect(yamlQuote('he said "hi"')).toBe('"he said \\"hi\\""');
+  });
+
+  it('escapes backslashes', () => {
+    expect(yamlQuote('a\\b')).toBe('"a\\\\b"');
+  });
+
+  it('escapes newline / carriage return / tab as YAML escape sequences', () => {
+    expect(yamlQuote('a\nb')).toBe('"a\\nb"');
+    expect(yamlQuote('a\rb')).toBe('"a\\rb"');
+    expect(yamlQuote('a\tb')).toBe('"a\\tb"');
+  });
+
+  it('encodes ASCII control characters as \\xHH', () => {
+    expect(yamlQuote('\x00\x01\x1f')).toBe('"\\x00\\x01\\x1f"');
+  });
+
+  it('encodes DEL (0x7f) as \\x7f', () => {
+    expect(yamlQuote('\x7f')).toBe('"\\x7f"');
+  });
+
+  it('neutralises a YAML-injection attempt via embedded "---" + newline', () => {
+    const malicious = 'my-model\n---\ninjected: true';
+    const quoted = yamlQuote(malicious);
+    expect(quoted).toBe('"my-model\\n---\\ninjected: true"');
+    expect(quoted).not.toContain('\n');
+  });
+
+  it('preserves printable ASCII verbatim', () => {
+    expect(yamlQuote('abc 123 :-/')).toBe('"abc 123 :-/"');
+  });
+});
+
+describe('escapeMarkdownLinkText', () => {
+  it('escapes backslashes', () => {
+    expect(escapeMarkdownLinkText('a\\b')).toBe('a\\\\b');
+  });
+
+  it('escapes square brackets', () => {
+    expect(escapeMarkdownLinkText('foo[bar]baz')).toBe('foo\\[bar\\]baz');
+  });
+
+  it('escapes nested ](', () => {
+    expect(escapeMarkdownLinkText('] (')).toBe('\\] (');
+  });
+
+  it('leaves a plain string untouched', () => {
+    expect(escapeMarkdownLinkText('clean title')).toBe('clean title');
+  });
+});
+
+describe('isSafeHttpUrl', () => {
+  it('accepts http and https URLs', () => {
+    expect(isSafeHttpUrl('http://example.com')).toBe(true);
+    expect(isSafeHttpUrl('https://example.com/page?q=1')).toBe(true);
+    expect(isSafeHttpUrl('HTTPS://EXAMPLE.COM')).toBe(true);
+  });
+
+  it('rejects javascript:, data:, file:, mailto:, vbscript: URLs', () => {
+    expect(isSafeHttpUrl('javascript:alert(1)')).toBe(false);
+    expect(isSafeHttpUrl('data:text/html,<script>x</script>')).toBe(false);
+    expect(isSafeHttpUrl('file:///etc/passwd')).toBe(false);
+    expect(isSafeHttpUrl('mailto:x@y.z')).toBe(false);
+    expect(isSafeHttpUrl('vbscript:msgbox(1)')).toBe(false);
+  });
+
+  it('rejects URLs containing control characters', () => {
+    expect(isSafeHttpUrl('https://example.com/\n')).toBe(false);
+    expect(isSafeHttpUrl('https://example.com/\r')).toBe(false);
+    expect(isSafeHttpUrl('https://example.com/\t')).toBe(false);
+  });
+
+  it('rejects bare strings without a scheme', () => {
+    expect(isSafeHttpUrl('example.com')).toBe(false);
+    expect(isSafeHttpUrl('')).toBe(false);
+  });
+});
+
+describe('formatMarkdownSourceLine', () => {
+  it('renders a safe https URL as an angle-bracketed Markdown link', () => {
+    expect(
+      formatMarkdownSourceLine(1, 'Example', 'https://example.com/a?b=c'),
+    ).toBe('1. [Example](<https://example.com/a?b=c>)');
+  });
+
+  it('escapes link-text metacharacters in the title', () => {
+    expect(
+      formatMarkdownSourceLine(2, 'Has ] bracket', 'https://example.com'),
+    ).toBe('2. [Has \\] bracket](<https://example.com>)');
+  });
+
+  it('degrades a javascript: URL to a non-clickable line that preserves the raw URL', () => {
+    const line = formatMarkdownSourceLine(
+      3,
+      'Click here',
+      'javascript:alert(1)',
+    );
+    expect(line).toBe('3. Click here (link omitted: javascript:alert(1))');
+    expect(line).not.toContain('[Click here]');
+    expect(line).not.toMatch(/\]\(javascript:/);
+  });
+
+  it('degrades a URL containing angle brackets even with an http scheme', () => {
+    const line = formatMarkdownSourceLine(
+      4,
+      'Bad',
+      'https://example.com/<script>',
+    );
+    expect(line).toBe('4. Bad (link omitted: https://example.com/<script>)');
+  });
+
+  it('round-trips a URL with parens via angle-bracket wrapping (no extra escaping)', () => {
+    expect(
+      formatMarkdownSourceLine(
+        5,
+        'Wiki',
+        'https://en.wikipedia.org/wiki/Foo_(bar)',
+      ),
+    ).toBe('5. [Wiki](<https://en.wikipedia.org/wiki/Foo_(bar)>)');
+  });
+});
+
+describe('serializeForFile sanitization (end-to-end)', () => {
+  const NOW = new Date(2026, 4, 24, 14, 30, 15);
+  const stub: ImageLoader = async (p) => `data:image/jpeg;base64,STUB(${p})`;
+
+  it('YAML-quotes a model name containing a newline and "---" so the frontmatter cannot be injected', async () => {
+    const messages: Message[] = [
+      makeMessage({
+        id: 'a1',
+        role: 'assistant',
+        content: 'hi',
+        modelName: 'my-model\n---\ninjected: true',
+      }),
+    ];
+    const result = await serializeForFile(
+      messages,
+      { fallbackModel: null },
+      NOW,
+      stub,
+    );
+    expect(result).toContain('model: "my-model\\n---\\ninjected: true"');
+    // The injected "---" must not appear as a YAML document boundary on
+    // its own line within the frontmatter block.
+    const frontmatterBlock = result.split('---\n')[1] ?? '';
+    expect(frontmatterBlock).not.toContain('\ninjected:');
+  });
+
+  it('omits a javascript: source URL from the rendered Markdown link', async () => {
+    const messages: Message[] = [
+      makeMessage({
+        id: 'a1',
+        role: 'assistant',
+        content: 'see',
+        searchSources: [
+          { title: 'Phish', url: 'javascript:fetch("/?c="+document.cookie)' },
+        ],
+      }),
+    ];
+    const result = await serializeForFile(messages, CTX, NOW, stub);
+    expect(result).toContain(
+      'Phish (link omitted: javascript:fetch("/?c="+document.cookie))',
+    );
+    expect(result).not.toMatch(/\]\(javascript:/);
+  });
+});
+
+describe('serializeForFileAsText', () => {
+  const NOW = new Date(2026, 4, 24, 14, 30, 15);
+
+  it('emits a labelled header with model, exported timestamp, and count (no YAML)', () => {
+    const messages: Message[] = [
+      makeMessage({ id: 'u1', role: 'user', content: 'hi' }),
+      makeMessage({
+        id: 'a1',
+        role: 'assistant',
+        content: 'hello',
+        modelName: 'qwen:7b',
+      }),
+    ];
+    const result = serializeForFileAsText(messages, CTX, NOW);
+    expect(result.startsWith('Thuki chat export\n')).toBe(true);
+    expect(result).toContain('Model: qwen:7b');
+    expect(result).toMatch(/Exported: 2026-05-24T14:30:15[+-]\d{2}:\d{2}/);
+    expect(result).toContain('Messages: 2');
+    // Plain text never includes the YAML frontmatter or Markdown markers.
+    expect(result).not.toContain('---\napp:');
+    expect(result).not.toContain('## ');
+  });
+
+  it('renders user blocks with a "User:" label and the raw content', () => {
+    const messages: Message[] = [
+      makeMessage({ id: 'u1', role: 'user', content: 'a question' }),
+    ];
+    const result = serializeForFileAsText(messages, CTX, NOW);
+    expect(result).toContain('User:\n\na question');
+  });
+
+  it('renders assistant blocks with model name in parentheses', () => {
+    const messages: Message[] = [
+      makeMessage({
+        id: 'a1',
+        role: 'assistant',
+        content: 'an answer',
+        modelName: 'qwen:7b',
+      }),
+    ];
+    const result = serializeForFileAsText(messages, CTX, NOW);
+    expect(result).toContain('Assistant (qwen:7b):\n\nan answer');
+  });
+
+  it('renders an unattributed assistant block as plain "Assistant:"', () => {
+    const messages: Message[] = [
+      makeMessage({ id: 'a1', role: 'assistant', content: 'an answer' }),
+    ];
+    const result = serializeForFileAsText(messages, CTX, NOW);
+    expect(result).toContain('Assistant:\n\nan answer');
+  });
+
+  it('indents quoted text with two leading spaces per line', () => {
+    const messages: Message[] = [
+      makeMessage({
+        id: 'u1',
+        role: 'user',
+        content: 'follow up',
+        quotedText: 'first line\nsecond line',
+      }),
+    ];
+    const result = serializeForFileAsText(messages, CTX, NOW);
+    expect(result).toContain('  first line\n  second line');
+  });
+
+  it('emits image markers (no base64, no Markdown image syntax)', () => {
+    const messages: Message[] = [
+      makeMessage({
+        id: 'u1',
+        role: 'user',
+        content: '',
+        imagePaths: ['/Users/me/shot.jpg', '/Users/me/two.png'],
+      }),
+    ];
+    const result = serializeForFileAsText(messages, CTX, NOW);
+    expect(result).toContain('[Screenshot: shot.jpg]\n[Screenshot: two.png]');
+    expect(result).not.toContain('data:image/');
+    expect(result).not.toContain('![Screenshot]');
+  });
+
+  it('renders sources as a plain-text numbered list with a "Sources" header', () => {
+    const messages: Message[] = [
+      makeMessage({
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        searchSources: [
+          { title: 'First', url: 'https://example.com/one' },
+          { title: '', url: 'https://example.com/two' },
+        ],
+      }),
+    ];
+    const result = serializeForFileAsText(messages, CTX, NOW);
+    expect(result).toContain('Sources (/search):');
+    expect(result).toContain('1. First - https://example.com/one');
+    expect(result).toContain(
+      '2. https://example.com/two - https://example.com/two',
+    );
+  });
+
+  it('separates consecutive messages with a long dashed rule', () => {
+    const messages: Message[] = [
+      makeMessage({ id: 'u1', role: 'user', content: 'a' }),
+      makeMessage({ id: 'a1', role: 'assistant', content: 'b' }),
+    ];
+    const result = serializeForFileAsText(messages, CTX, NOW);
+    expect(result).toContain('a\n\n----------\n\nAssistant:');
+  });
+
+  it('emits just the header when the conversation is empty', () => {
+    const result = serializeForFileAsText([], CTX, NOW);
+    expect(result.startsWith('Thuki chat export\n')).toBe(true);
+    expect(result).toContain('Messages: 0');
+    // No body section appended, no trailing message-block content.
+    expect(result).not.toContain('User:');
+    expect(result).not.toContain('Assistant:');
+  });
+
+  it('skips the quoted-text block for messages with no quote', () => {
+    const messages: Message[] = [
+      makeMessage({ id: 'u1', role: 'user', content: 'plain' }),
+    ];
+    const result = serializeForFileAsText(messages, CTX, NOW);
+    expect(result).toContain('User:\n\nplain');
+    expect(result).not.toMatch(/^ {2}/m);
+  });
+
+  it('skips the image block when no imagePaths are attached', () => {
+    const messages: Message[] = [
+      makeMessage({ id: 'u1', role: 'user', content: 'no images' }),
+    ];
+    const result = serializeForFileAsText(messages, CTX, NOW);
+    expect(result).not.toContain('[Screenshot:');
+  });
+
+  it('skips the sources block when no searchSources are present', () => {
+    const messages: Message[] = [
+      makeMessage({ id: 'a1', role: 'assistant', content: 'no sources' }),
+    ];
+    const result = serializeForFileAsText(messages, CTX, NOW);
+    expect(result).not.toContain('Sources (/search):');
   });
 });

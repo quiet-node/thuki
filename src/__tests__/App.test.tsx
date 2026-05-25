@@ -15,11 +15,6 @@ import {
   enableChannelCaptureWithResponses,
   getLastChannel,
 } from '../testUtils/mocks/tauri';
-import { save as saveDialog } from '@tauri-apps/plugin-dialog';
-
-vi.mock('@tauri-apps/plugin-dialog', () => ({
-  save: vi.fn(),
-}));
 import {
   __mockWindow,
   __setWindowGeometry,
@@ -8089,14 +8084,13 @@ describe('App', () => {
     });
   });
 
-  // ─── /export command ────────────────────────────────────────────────────────
+  // ─── chat-header export button ──────────────────────────────────────────────
 
-  describe('/export command', () => {
+  describe('chat-header export button', () => {
     let writeText: ReturnType<typeof vi.fn>;
     let clipboardSpy: { mockRestore: () => void } | null = null;
 
     beforeEach(() => {
-      vi.mocked(saveDialog).mockReset();
       writeText = vi.fn().mockResolvedValue(undefined);
       // happy-dom defines `navigator.clipboard` as a non-configurable
       // property, so a full property redefinition throws. Spy on the
@@ -8136,91 +8130,28 @@ describe('App', () => {
       });
     }
 
-    it('silently no-ops when the user cancels the save dialog', async () => {
-      await enterChatMode();
-      vi.mocked(saveDialog).mockResolvedValue(null);
-      invoke.mockClear();
-
-      await openExportPopover();
-      await act(async () => {
-        fireEvent.click(
-          screen.getByRole('button', { name: /Save as Markdown/i }),
-        );
-      });
-      await act(async () => {});
-
-      expect(saveDialog).toHaveBeenCalled();
-      expect(invoke).not.toHaveBeenCalledWith(
-        'save_chat_export',
-        expect.anything(),
-      );
-    });
-
-    it('surfaces an error banner when save_chat_export rejects', async () => {
-      await enterChatMode();
-      vi.mocked(saveDialog).mockResolvedValue('/bad/path.md');
-      // Override invoke for save_chat_export to reject without disturbing
-      // the channel-capture seed for unrelated commands.
+    /**
+     * Routes `invoke('prompt_and_save_chat_export', ...)` to a custom
+     * impl while leaving every other command on the channel-capture
+     * default. Returns the wrapped impl handle so tests can read calls
+     * back. Mirrors the previous `save_chat_export` override pattern.
+     */
+    type ExportArgs = {
+      content: string;
+      defaultFilename: string;
+      format: string;
+    };
+    function overrideExportInvoke(
+      impl: (args: ExportArgs) => Promise<boolean>,
+    ) {
       const prev = invoke.getMockImplementation();
       invoke.mockImplementation(async (cmd, args) => {
-        if (cmd === 'save_chat_export') {
-          throw new Error('disk full');
+        if (cmd === 'prompt_and_save_chat_export') {
+          return await impl(args as ExportArgs);
         }
         return prev ? prev(cmd, args) : undefined;
       });
-
-      await openExportPopover();
-      await act(async () => {
-        fireEvent.click(
-          screen.getByRole('button', { name: /Save as Markdown/i }),
-        );
-      });
-      await act(async () => {});
-
-      await vi.waitFor(() => {
-        expect(
-          screen.getByText(/Failed to export: disk full/),
-        ).toBeInTheDocument();
-      });
-    });
-
-    it('surfaces an error banner when the save dialog itself throws', async () => {
-      await enterChatMode();
-      vi.mocked(saveDialog).mockRejectedValue(new Error('dialog blew up'));
-
-      await openExportPopover();
-      await act(async () => {
-        fireEvent.click(
-          screen.getByRole('button', { name: /Save as Markdown/i }),
-        );
-      });
-      await act(async () => {});
-
-      await vi.waitFor(() => {
-        expect(
-          screen.getByText(/Failed to export: dialog blew up/),
-        ).toBeInTheDocument();
-      });
-    });
-
-    it('falls back to String(err) when the save dialog throws a non-Error', async () => {
-      await enterChatMode();
-      vi.mocked(saveDialog).mockRejectedValue('plain string err');
-
-      await openExportPopover();
-      await act(async () => {
-        fireEvent.click(
-          screen.getByRole('button', { name: /Save as Markdown/i }),
-        );
-      });
-      await act(async () => {});
-
-      await vi.waitFor(() => {
-        expect(
-          screen.getByText(/Failed to export: plain string err/),
-        ).toBeInTheDocument();
-      });
-    });
+    }
 
     it('renders the export button in chat mode and the popover opens on click', async () => {
       await enterChatMode();
@@ -8228,20 +8159,24 @@ describe('App', () => {
       const exportButton = screen.getByRole('button', { name: 'Export chat' });
       expect(exportButton).toBeInTheDocument();
       expect(exportButton).toHaveAttribute('aria-expanded', 'false');
+      expect(exportButton).toHaveAttribute('aria-haspopup', 'menu');
 
       await act(async () => {
         fireEvent.click(exportButton);
       });
 
       expect(exportButton).toHaveAttribute('aria-expanded', 'true');
+      const popover = screen.getByRole('menu', { name: 'Export chat' });
+      expect(popover).toBeInTheDocument();
+      expect(popover).toHaveAttribute('aria-orientation', 'vertical');
       expect(
-        screen.getByRole('button', { name: /Save as Markdown/i }),
+        screen.getByRole('menuitem', { name: /Save as Markdown/i }),
       ).toBeInTheDocument();
       expect(
-        screen.getByRole('button', { name: /Save as Plain text/i }),
+        screen.getByRole('menuitem', { name: /Save as Plain text/i }),
       ).toBeInTheDocument();
       expect(
-        screen.getByRole('button', { name: /Copy to clipboard/i }),
+        screen.getByRole('menuitem', { name: /Copy to clipboard/i }),
       ).toBeInTheDocument();
     });
 
@@ -8253,82 +8188,176 @@ describe('App', () => {
       expect(screen.queryByRole('button', { name: 'Export chat' })).toBeNull();
     });
 
-    it('invokes save_chat_export when the "Save as Markdown" button is clicked', async () => {
+    it('focuses the first menuitem when the popover opens', async () => {
       await enterChatMode();
-      vi.mocked(saveDialog).mockResolvedValue('/tmp/btn-export.md');
-      invoke.mockClear();
+      await openExportPopover();
 
-      await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Export chat' }));
+      const firstItem = screen.getByRole('menuitem', {
+        name: /Save as Markdown/i,
       });
+      expect(document.activeElement).toBe(firstItem);
+    });
+
+    it('invokes prompt_and_save_chat_export with Markdown content when Markdown is clicked', async () => {
+      await enterChatMode();
+      let captured: ExportArgs | null = null;
+      overrideExportInvoke(async (args) => {
+        captured = args;
+        return true;
+      });
+      invoke.mockClear();
+      // re-install override after mockClear (mockClear preserves impl)
+      overrideExportInvoke(async (args) => {
+        captured = args;
+        return true;
+      });
+
+      await openExportPopover();
       await act(async () => {
         fireEvent.click(
-          screen.getByRole('button', { name: /Save as Markdown/i }),
+          screen.getByRole('menuitem', { name: /Save as Markdown/i }),
         );
+      });
+      await act(async () => {});
+
+      await waitFor(() => {
+        expect(captured).not.toBeNull();
+      });
+      const md = captured as ExportArgs | null;
+      expect(md?.format).toBe('md');
+      // Markdown serialiser emits YAML frontmatter at the top of the file.
+      expect(md?.content.startsWith('---\napp: ')).toBe(true);
+      expect(md?.content).toContain('## User');
+    });
+
+    it('invokes prompt_and_save_chat_export with plain text content when Plain text is clicked', async () => {
+      await enterChatMode();
+      let captured: ExportArgs | null = null;
+      overrideExportInvoke(async (args) => {
+        captured = args;
+        return true;
       });
 
-      await vi.waitFor(() => {
-        expect(invoke).toHaveBeenCalledWith(
-          'save_chat_export',
-          expect.objectContaining({ path: '/tmp/btn-export.md' }),
+      await openExportPopover();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('menuitem', { name: /Save as Plain text/i }),
         );
       });
-      // Markdown row opens the dialog with .md primary and .txt secondary.
-      expect(saveDialog).toHaveBeenCalledWith(
-        expect.objectContaining({
-          defaultPath: expect.stringMatching(
-            /^thuki-chat-\d{4}-\d{2}-\d{2}-\d{4}\.md$/,
-          ),
-          filters: [
-            { name: 'Markdown', extensions: ['md'] },
-            { name: 'Plain text', extensions: ['txt'] },
-          ],
-        }),
+      await act(async () => {});
+
+      await waitFor(() => {
+        expect(captured).not.toBeNull();
+      });
+      const txt = captured as ExportArgs | null;
+      expect(txt?.format).toBe('txt');
+      // Plain text serialiser emits a labelled header and NO YAML
+      // frontmatter / Markdown markers.
+      expect(txt?.content.startsWith('Thuki chat export\n')).toBe(true);
+      expect(txt?.content).not.toContain('---\napp:');
+      expect(txt?.content).not.toContain('## User');
+      expect(txt?.content).toContain('User:');
+    });
+
+    it('forwards the requested filename so the dialog opens with the right extension', async () => {
+      await enterChatMode();
+      let captured: ExportArgs | null = null;
+      overrideExportInvoke(async (args) => {
+        captured = args;
+        return true;
+      });
+
+      await openExportPopover();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('menuitem', { name: /Save as Plain text/i }),
+        );
+      });
+      await act(async () => {});
+
+      await waitFor(() => {
+        expect(captured).not.toBeNull();
+      });
+      const fname = captured as ExportArgs | null;
+      expect(fname?.defaultFilename).toMatch(
+        /^thuki-chat-\d{4}-\d{2}-\d{2}-\d{4}\.txt$/,
       );
     });
 
-    it('invokes save_chat_export with the .txt-first filter when "Save as Plain text" is clicked', async () => {
+    it('silently no-ops when the Rust command reports user cancellation (returns false)', async () => {
       await enterChatMode();
-      vi.mocked(saveDialog).mockResolvedValue('/tmp/btn-export.txt');
+      overrideExportInvoke(async () => false);
       invoke.mockClear();
+      overrideExportInvoke(async () => false);
 
-      await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Export chat' }));
-      });
+      await openExportPopover();
       await act(async () => {
         fireEvent.click(
-          screen.getByRole('button', { name: /Save as Plain text/i }),
+          screen.getByRole('menuitem', { name: /Save as Markdown/i }),
         );
       });
+      await act(async () => {});
 
-      await vi.waitFor(() => {
-        expect(invoke).toHaveBeenCalledWith(
-          'save_chat_export',
-          expect.objectContaining({ path: '/tmp/btn-export.txt' }),
-        );
-      });
-      expect(saveDialog).toHaveBeenCalledWith(
-        expect.objectContaining({
-          defaultPath: expect.stringMatching(
-            /^thuki-chat-\d{4}-\d{2}-\d{2}-\d{4}\.txt$/,
-          ),
-          filters: [
-            { name: 'Plain text', extensions: ['txt'] },
-            { name: 'Markdown', extensions: ['md'] },
-          ],
-        }),
+      // No banner, dialog cancellation is not an error condition.
+      expect(screen.queryByText(/Failed to export/)).not.toBeInTheDocument();
+      // The Rust command was called.
+      expect(invoke).toHaveBeenCalledWith(
+        'prompt_and_save_chat_export',
+        expect.objectContaining({ format: 'md' }),
       );
     });
 
-    it('writes to the clipboard when the "Copy to clipboard" button is clicked', async () => {
+    it('surfaces an error banner when prompt_and_save_chat_export rejects', async () => {
       await enterChatMode();
-
-      await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Export chat' }));
+      overrideExportInvoke(async () => {
+        throw new Error('Permission denied. Choose a writable location.');
       });
+
+      await openExportPopover();
       await act(async () => {
         fireEvent.click(
-          screen.getByRole('button', { name: /Copy to clipboard/i }),
+          screen.getByRole('menuitem', { name: /Save as Markdown/i }),
+        );
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByText(
+            /Failed to export: Permission denied\. Choose a writable location\./,
+          ),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('falls back to String(err) when the Rust command throws a non-Error', async () => {
+      await enterChatMode();
+      overrideExportInvoke(async () => {
+        throw 'rust-plain-string';
+      });
+
+      await openExportPopover();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('menuitem', { name: /Save as Markdown/i }),
+        );
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        expect(
+          screen.getByText(/Failed to export: rust-plain-string/),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('writes to the clipboard when the Copy to clipboard menuitem is clicked', async () => {
+      await enterChatMode();
+
+      await openExportPopover();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('menuitem', { name: /Copy to clipboard/i }),
         );
       });
 
@@ -8343,12 +8372,10 @@ describe('App', () => {
       await enterChatMode();
       writeText.mockRejectedValueOnce(new Error('clipboard denied'));
 
-      await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Export chat' }));
-      });
+      await openExportPopover();
       await act(async () => {
         fireEvent.click(
-          screen.getByRole('button', { name: /Copy to clipboard/i }),
+          screen.getByRole('menuitem', { name: /Copy to clipboard/i }),
         );
       });
 
@@ -8363,12 +8390,10 @@ describe('App', () => {
       await enterChatMode();
       writeText.mockRejectedValueOnce('clip-plain');
 
-      await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Export chat' }));
-      });
+      await openExportPopover();
       await act(async () => {
         fireEvent.click(
-          screen.getByRole('button', { name: /Copy to clipboard/i }),
+          screen.getByRole('menuitem', { name: /Copy to clipboard/i }),
         );
       });
 
@@ -8381,32 +8406,26 @@ describe('App', () => {
 
     it('keeps the popover open when mousedown lands inside it', async () => {
       await enterChatMode();
+      await openExportPopover();
 
-      await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Export chat' }));
-      });
-      const item = screen.getByRole('button', {
+      const item = screen.getByRole('menuitem', {
         name: /Save as Markdown/i,
       });
       await act(async () => {
         fireEvent.mouseDown(item);
       });
+      await act(async () => {});
 
-      // popover.contains(target) returned true, so the outside-click
-      // handler bailed and the popover remains rendered.
       expect(
-        screen.getByRole('button', { name: /Save as Markdown/i }),
+        screen.queryByRole('menuitem', { name: /Save as Markdown/i }),
       ).toBeInTheDocument();
     });
 
     it('closes the popover when clicking outside', async () => {
       await enterChatMode();
-
-      await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Export chat' }));
-      });
+      await openExportPopover();
       expect(
-        screen.queryByRole('button', { name: /Save as Markdown/i }),
+        screen.queryByRole('menuitem', { name: /Save as Markdown/i }),
       ).toBeInTheDocument();
 
       await act(async () => {
@@ -8414,7 +8433,7 @@ describe('App', () => {
       });
 
       expect(
-        screen.queryByRole('button', { name: /Save as Markdown/i }),
+        screen.queryByRole('menuitem', { name: /Save as Markdown/i }),
       ).toBeNull();
     });
 
@@ -8449,8 +8468,8 @@ describe('App', () => {
 
         // /extract with no image triggers the same captureError surface
         // we want to auto-dismiss. Used as the harness here because
-        // /export is button-only now and the button does not render
-        // until chat mode (so it can't trigger an empty-state error).
+        // the chat-header export button does not render until chat mode
+        // (so it cannot trigger an empty-state error).
         const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
         act(() => {
           fireEvent.change(textarea, { target: { value: '/extract' } });
@@ -8494,19 +8513,173 @@ describe('App', () => {
 
       // Export popover is open.
       expect(
-        screen.getByRole('button', { name: /Save as Markdown/i }),
+        screen.getByRole('menuitem', { name: /Save as Markdown/i }),
       ).toBeInTheDocument();
     });
 
-    it('drives overlay alpha to 0 before the save dialog and back to 1 after a successful save', async () => {
+    it('closes the export popover when the user opens the history dropdown', async () => {
       await enterChatMode();
-      vi.mocked(saveDialog).mockResolvedValue('/tmp/alpha-test.md');
-      invoke.mockClear();
+      // HistoryPanel renders when the dropdown opens and iterates over
+      // the conversations list — stub the IPC source so it gets [].
+      const prev = invoke.getMockImplementation();
+      invoke.mockImplementation(async (cmd, args) => {
+        if (cmd === 'list_conversations') return [];
+        return prev ? prev(cmd, args) : undefined;
+      });
+      await openExportPopover();
+      expect(
+        screen.getByRole('menuitem', { name: /Save as Markdown/i }),
+      ).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Open history' }));
+      });
+
+      expect(
+        screen.queryByRole('menuitem', { name: /Save as Markdown/i }),
+      ).toBeNull();
+    });
+
+    it('closes the export popover when the user opens the model picker', async () => {
+      await enterChatMode();
+      await openExportPopover();
+      expect(
+        screen.getByRole('menuitem', { name: /Save as Markdown/i }),
+      ).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+      });
+
+      expect(
+        screen.queryByRole('menuitem', { name: /Save as Markdown/i }),
+      ).toBeNull();
+    });
+
+    it('closes the export popover when the user minimizes the overlay', async () => {
+      await enterChatMode();
+      await openExportPopover();
+      expect(
+        screen.getByRole('menuitem', { name: /Save as Markdown/i }),
+      ).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Minimize' }));
+      });
+
+      expect(
+        screen.queryByRole('menuitem', { name: /Save as Markdown/i }),
+      ).toBeNull();
+    });
+
+    it('closes the export popover when the user starts a new conversation', async () => {
+      await enterChatMode();
+      // The "New conversation" handler routes through HistoryPanel as
+      // the SwitchConfirmation host when the session is unsaved, so the
+      // panel may mount; stub list_conversations to be safe.
+      const prev = invoke.getMockImplementation();
+      invoke.mockImplementation(async (cmd, args) => {
+        if (cmd === 'list_conversations') return [];
+        return prev ? prev(cmd, args) : undefined;
+      });
+      await openExportPopover();
+      expect(
+        screen.getByRole('menuitem', { name: /Save as Markdown/i }),
+      ).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'New conversation' }),
+        );
+      });
+
+      expect(
+        screen.queryByRole('menuitem', { name: /Save as Markdown/i }),
+      ).toBeNull();
+    });
+
+    it('Escape dismisses the popover and returns focus to the toggle button (does not close the overlay)', async () => {
+      await enterChatMode();
+      await openExportPopover();
+      const toggle = screen.getByRole('button', { name: 'Export chat' });
+
+      await act(async () => {
+        fireEvent.keyDown(window, { key: 'Escape' });
+      });
+      await act(async () => {});
+
+      expect(
+        screen.queryByRole('menuitem', { name: /Save as Markdown/i }),
+      ).toBeNull();
+      expect(document.activeElement).toBe(toggle);
+      // The overlay is still mounted (the export button is still there).
+      expect(toggle).toBeInTheDocument();
+    });
+
+    it('drops a re-entrant export click while the first is still in flight', async () => {
+      await enterChatMode();
+      let resolveFirst: ((v: boolean) => void) | undefined;
+      let calls = 0;
+      overrideExportInvoke(
+        () =>
+          new Promise<boolean>((resolve) => {
+            calls += 1;
+            if (calls === 1) {
+              resolveFirst = resolve;
+            } else {
+              resolve(true);
+            }
+          }),
+      );
+
+      // First click — popover closes, runFileExport is in flight.
+      await openExportPopover();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('menuitem', { name: /Save as Markdown/i }),
+        );
+      });
+      await act(async () => {});
+
+      // Second click — reopen popover and click again. Should NOT
+      // dispatch a second prompt_and_save_chat_export.
+      await openExportPopover();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('menuitem', { name: /Save as Markdown/i }),
+        );
+      });
+      await act(async () => {});
+
+      expect(calls).toBe(1);
+
+      // Resolve the first call; verify a subsequent click then succeeds.
+      await act(async () => {
+        resolveFirst?.(true);
+      });
+      await act(async () => {});
 
       await openExportPopover();
       await act(async () => {
         fireEvent.click(
-          screen.getByRole('button', { name: /Save as Markdown/i }),
+          screen.getByRole('menuitem', { name: /Save as Markdown/i }),
+        );
+      });
+      await act(async () => {});
+
+      expect(calls).toBe(2);
+    });
+
+    it('drives overlay alpha to 0 before the IPC call and back to 1 after success', async () => {
+      await enterChatMode();
+      overrideExportInvoke(async () => true);
+      invoke.mockClear();
+      overrideExportInvoke(async () => true);
+
+      await openExportPopover();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('menuitem', { name: /Save as Markdown/i }),
         );
       });
       await act(async () => {});
@@ -8524,35 +8697,38 @@ describe('App', () => {
         });
       });
 
-      // The ghost-rectangle fix relies on the alpha bracketing the
-      // save_chat_export call. Assert the ordering so a future
-      // refactor cannot accidentally re-show Thuki mid-dialog.
+      // Assert ordering: alpha:0 → prompt_and_save_chat_export → alpha:1
+      // so the overlay stays hidden for exactly the dialog+write
+      // window and not a frame longer.
       const calls = vi.mocked(invoke).mock.calls;
       const alphaZeroIdx = calls.findIndex(
         (call) =>
           call[0] === 'set_overlay_alpha' &&
           (call[1] as { alpha: number } | undefined)?.alpha === 0,
       );
-      const saveIdx = calls.findIndex((call) => call[0] === 'save_chat_export');
+      const promptIdx = calls.findIndex(
+        (call) => call[0] === 'prompt_and_save_chat_export',
+      );
       const alphaOneIdx = calls.findIndex(
         (call) =>
           call[0] === 'set_overlay_alpha' &&
           (call[1] as { alpha: number } | undefined)?.alpha === 1,
       );
       expect(alphaZeroIdx).toBeGreaterThanOrEqual(0);
-      expect(saveIdx).toBeGreaterThan(alphaZeroIdx);
-      expect(alphaOneIdx).toBeGreaterThan(saveIdx);
+      expect(promptIdx).toBeGreaterThan(alphaZeroIdx);
+      expect(alphaOneIdx).toBeGreaterThan(promptIdx);
     });
 
-    it('restores overlay alpha to 1 when the user cancels the save dialog', async () => {
+    it('restores overlay alpha to 1 when the Rust command reports cancellation', async () => {
       await enterChatMode();
-      vi.mocked(saveDialog).mockResolvedValue(null);
+      overrideExportInvoke(async () => false);
       invoke.mockClear();
+      overrideExportInvoke(async () => false);
 
       await openExportPopover();
       await act(async () => {
         fireEvent.click(
-          screen.getByRole('button', { name: /Save as Markdown/i }),
+          screen.getByRole('menuitem', { name: /Save as Markdown/i }),
         );
       });
       await act(async () => {});
@@ -8563,27 +8739,20 @@ describe('App', () => {
           durationMs: 150,
         });
       });
-      expect(invoke).not.toHaveBeenCalledWith(
-        'save_chat_export',
-        expect.anything(),
-      );
+      // No banner on a clean cancellation.
+      expect(screen.queryByText(/Failed to export/)).not.toBeInTheDocument();
     });
 
-    it('restores overlay alpha to 1 when save_chat_export rejects', async () => {
+    it('restores overlay alpha to 1 when the Rust command rejects', async () => {
       await enterChatMode();
-      vi.mocked(saveDialog).mockResolvedValue('/tmp/will-fail.md');
-      const prev = invoke.getMockImplementation();
-      invoke.mockImplementation(async (cmd, args) => {
-        if (cmd === 'save_chat_export') {
-          throw new Error('disk full');
-        }
-        return prev ? prev(cmd, args) : undefined;
+      overrideExportInvoke(async () => {
+        throw new Error('disk full');
       });
 
       await openExportPopover();
       await act(async () => {
         fireEvent.click(
-          screen.getByRole('button', { name: /Save as Markdown/i }),
+          screen.getByRole('menuitem', { name: /Save as Markdown/i }),
         );
       });
       await act(async () => {});

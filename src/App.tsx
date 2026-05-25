@@ -54,11 +54,11 @@ import {
   SCREEN_CAPTURE_PLACEHOLDER,
   buildPrompt,
 } from './config/commands';
-import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import {
   defaultExportFilename,
   serializeForClipboard,
   serializeForFile,
+  serializeForFileAsText,
 } from './lib/exportSerializer';
 import './App.css';
 
@@ -369,6 +369,14 @@ function App() {
    * keep the popover open while the user is clicking inside it.
    */
   const exportPopoverRef = useRef<HTMLDivElement>(null);
+  // Re-entrancy guard for runFileExport. NSPanel's setWorksWhenModal:YES
+  // keeps the chat header clickable while the native save dialog is on
+  // screen, so a second export click would interleave the alpha:0/alpha:1
+  // brackets and re-show the overlay behind the still-open dialog (the
+  // ghost-rectangle artefact the alpha bracketing is designed to prevent).
+  // The ref is set true at the start of runFileExport and cleared in the
+  // finally block; concurrent calls observe `true` and return immediately.
+  const isExportInFlightRef = useRef(false);
   /**
    * True when the user clicked + while an unsaved conversation is active.
    * Causes the history dropdown to show a SwitchConfirmation prompt instead
@@ -452,6 +460,18 @@ function App() {
     getTraceConversationId,
     addOcrTurn,
   } = useOllama(activeModel, handleTurnComplete);
+
+  /**
+   * Mirror of `messages` as a ref so export handlers (and any future
+   * callback that needs a live snapshot of the conversation) can read
+   * the current value without joining the streaming token cadence as a
+   * `useCallback` dependency. `messages` updates on every Token chunk,
+   * which would otherwise reallocate `runFileExport` / `runClipboardCopy`
+   * hundreds of times during a long generation and defeat downstream
+   * memoization.
+   */
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
 
   /**
    * Sticky flag: once the user invokes `/search`, subsequent submits in the
@@ -1127,6 +1147,13 @@ function App() {
     if (morphPhaseRef.current !== 'idle') return;
     growsUpwardRef.current = false;
     setGrowsUpward(false);
+    // Dismiss any open chat-header popovers before collapsing — they
+    // are anchored to the chat-mode coordinate space and would otherwise
+    // either stay visually orphaned over the mascot or flash open again
+    // on restore.
+    setIsExportOpen(false);
+    setIsHistoryOpen(false);
+    setIsModelPickerOpen(false);
     // Keep the panel key for the duration of the morph. It is a
     // nonactivating NSPanel, so WKWebView throttles requestAnimationFrame
     // (and with it Framer Motion's tween/spring clock) whenever the panel is
@@ -1321,10 +1348,16 @@ function App() {
     return () => document.removeEventListener('mousedown', handleMouseDown);
   }, [isModelPickerOpen]);
 
-  /** Toggles the history panel open/closed. Closes model picker (mutually exclusive). */
+  /**
+   * Toggles the history panel open/closed. Closes the model picker AND
+   * the export popover so the three header popovers (anchored to the
+   * same `right-3 top-10` corner) stay mutually exclusive regardless of
+   * which one the user opens next.
+   */
   const handleHistoryToggle = useCallback(() => {
     setIsHistoryOpen((prev) => !prev);
     setIsModelPickerOpen(false);
+    setIsExportOpen(false);
   }, []);
 
   /**
@@ -1512,6 +1545,7 @@ function App() {
         // Load failed - current session is preserved intact.
       } finally {
         setIsHistoryOpen(false);
+        setIsExportOpen(false);
       }
     },
     [loadConversation, loadMessages],
@@ -1541,6 +1575,7 @@ function App() {
         // Load failed - save already committed; dismiss panel, keep current view.
       } finally {
         setIsHistoryOpen(false);
+        setIsExportOpen(false);
       }
     },
     [save, messages, loadConversation, loadMessages, activeModel],
@@ -1571,6 +1606,7 @@ function App() {
     reset();
     resetHistory();
     setIsHistoryOpen(false);
+    setIsExportOpen(false);
     setQuery('');
     setAttachedImages((prev) => {
       for (const img of prev) URL.revokeObjectURL(img.blobUrl);
@@ -1591,6 +1627,11 @@ function App() {
    * immediately.
    */
   const handleNewConversation = useCallback(() => {
+    // Whichever branch we take below, the export popover should not
+    // outlive the click — either we route through SwitchConfirmation
+    // (history dropdown takes over the chat-header coordinate space) or
+    // we reset the session outright.
+    setIsExportOpen(false);
     if (!isSaved && messages.length > 0) {
       setPendingNewConversation(true);
       setIsHistoryOpen(true);
@@ -2290,76 +2331,90 @@ function App() {
   ]);
 
   /**
-   * Opens the macOS save dialog, serialises the current session as a
-   * self-contained Markdown file (frontmatter + role-labelled blocks +
-   * inline base64 images via the Tauri asset protocol), and asks the
-   * Rust backend to write it to the user's chosen path.
+   * Serialises the current session and asks the Rust backend to open
+   * the native save dialog and write the chosen format to disk in one
+   * atomic operation. The destination path lives entirely inside Rust:
+   * the renderer hands over content + suggested filename + format and
+   * receives a boolean indicating whether a file was written, so a
+   * compromised renderer cannot direct the write at a path of its
+   * choosing.
    *
-   * No-ops on an empty session (defensive — the slash-command path is
-   * gated upstream and the chat-header button only renders in chat mode).
-   * User cancellation of the save dialog returns silently. A failed
-   * write surfaces the OS-level error message via the existing
-   * `captureError` banner.
+   * Format routing:
+   *   - 'md'  → {@link serializeForFile} (full Markdown with YAML
+   *             frontmatter and inline base64 images).
+   *   - 'txt' → {@link serializeForFileAsText} (plain text with image
+   *             markers; no Markdown markers, no base64).
+   *
+   * Re-entrancy: NSPanel uses `setWorksWhenModal:YES` so the chat
+   * header button stays clickable while the save dialog is up. A
+   * second click while the first export is still in flight is dropped
+   * via `isExportInFlightRef` so the alpha:0/alpha:1 brackets cannot
+   * interleave and re-show the overlay behind a still-open dialog.
+   *
+   * Errors surface via the `captureError` banner. The Rust side
+   * returns a fixed user-facing string per io error kind (never the
+   * absolute destination path), so the banner cannot leak the path
+   * the user picked into a screenshot or screen recording.
    */
   const runFileExport = useCallback(
     async (format: 'md' | 'txt') => {
       setIsExportOpen(false);
-      /* v8 ignore start -- defensive: callers gate on messages.length > 0 */
-      if (messages.length === 0) return;
+      const snapshot = messagesRef.current;
+      /* v8 ignore start -- defensive: the popover only renders in chat mode */
+      if (snapshot.length === 0) return;
       /* v8 ignore stop */
-      // The two-row popover lets the user pick Markdown or Plain text
-      // before opening the dialog. The chosen format becomes the
-      // PRIMARY filter (top of the dropdown) so the dialog opens with
-      // the matching extension pre-selected and the default filename
-      // reflects it. The other format stays available as the second
-      // entry so the user can still switch without re-opening.
-      const markdownFilter = { name: 'Markdown', extensions: ['md'] };
-      const plainTextFilter = { name: 'Plain text', extensions: ['txt'] };
-      const filters =
-        format === 'md'
-          ? [markdownFilter, plainTextFilter]
-          : [plainTextFilter, markdownFilter];
-
-      // Hide Thuki via NSPanel alpha while the native save dialog is
-      // on screen. The dialog's drop-shadow and vibrancy backdrop
-      // would otherwise bleed onto Thuki's transparent shadow margin
-      // and render as a dark "ghost" rectangle around the card.
-      //
-      // Both `set_overlay_alpha` calls are fired without `await` so
-      // the main thread sees them dispatched in the same event-loop
-      // tick as the save-dialog command. Awaiting alpha serially
-      // introduces a visible "Thuki invisible, dialog not yet
-      // appearing" frame that reads as a glitch; the fire-and-forget
-      // shape collapses that gap. The setter is a thin Rust function
-      // that cannot fail in practice — IPC bus rejection would be the
-      // only path — so an unhandled rejection is acceptable.
+      if (isExportInFlightRef.current) return;
+      isExportInFlightRef.current = true;
+      // Single try/catch covers BOTH the serialisation step and the
+      // dialog/write IPC. The Markdown path runs an image-load
+      // Promise.all and is awaited BEFORE the overlay hides so the
+      // perceived "preparing export" surface stays Thuki rather than a
+      // blank screen. The plain text path is synchronous. Either way,
+      // the alpha bracketing only covers the IPC window so the overlay
+      // is hidden for exactly the dialog + write, never the prep.
       try {
+        const now = new Date();
+        const content =
+          format === 'md'
+            ? await serializeForFile(
+                snapshot,
+                { fallbackModel: activeModel },
+                now,
+              )
+            : serializeForFileAsText(
+                snapshot,
+                { fallbackModel: activeModel },
+                now,
+              );
+        // Hide Thuki via NSPanel alpha while the native save dialog is
+        // on screen. The dialog's drop-shadow and vibrancy backdrop
+        // would otherwise bleed onto Thuki's transparent shadow margin
+        // and render as a dark "ghost" rectangle around the card.
         // Hide instantly — the dialog's own appear animation is the
         // motion the user reads, so a snap-out keeps the transition
         // crisp from Thuki → dialog.
         void invoke('set_overlay_alpha', { alpha: 0, durationMs: 0 });
-        const path = await saveDialog({
-          defaultPath: defaultExportFilename(new Date(), format),
-          filters,
+        await invoke('prompt_and_save_chat_export', {
+          content,
+          defaultFilename: defaultExportFilename(new Date(), format),
+          format,
         });
-        if (path === null) return;
-        const content = await serializeForFile(
-          messages,
-          { fallbackModel: activeModel },
-          new Date(),
-        );
-        await invoke('save_chat_export', { path, content });
       } catch (err) {
         setCaptureError(
           `Failed to export: ${err instanceof Error ? err.message : String(err)}`,
         );
       } finally {
         // Fade back in over 150 ms so Thuki re-emerges in step with the
-        // dialog's dismiss animation instead of snapping in late.
+        // dialog's dismiss animation instead of snapping in late. If
+        // serialisation threw before the alpha:0 dispatched, this is
+        // an alpha:1 → alpha:1 no-op rather than a wasted state change.
         void invoke('set_overlay_alpha', { alpha: 1, durationMs: 150 });
+        isExportInFlightRef.current = false;
       }
     },
-    [messages, activeModel],
+    // `messages` is read via `messagesRef.current` so a long streaming
+    // response does not reallocate this callback per Token chunk.
+    [activeModel],
   );
 
   /**
@@ -2371,28 +2426,35 @@ function App() {
    */
   const runClipboardCopy = useCallback(async () => {
     setIsExportOpen(false);
-    /* v8 ignore start -- defensive: callers gate on messages.length > 0 */
-    if (messages.length === 0) return;
+    const snapshot = messagesRef.current;
+    /* v8 ignore start -- defensive: the popover only renders in chat mode */
+    if (snapshot.length === 0) return;
     /* v8 ignore stop */
     try {
-      const content = serializeForClipboard(messages);
+      const content = serializeForClipboard(snapshot);
       await navigator.clipboard.writeText(content);
     } catch (err) {
       setCaptureError(
         `Failed to copy: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-  }, [messages]);
+    // `messages` is read via `messagesRef.current`; see runFileExport's
+    // dep-list comment for why streaming-cadence reallocation is avoided.
+  }, []);
 
   /**
    * Toggles the export popover from the chat-header button. Closes the
-   * model-picker dropdown when opening so the two popovers (anchored to
-   * the same `right-3 top-10` corner of the chat header) never overlap.
+   * model-picker dropdown AND the history dropdown when opening so the
+   * three popovers (all anchored to the same `right-3 top-10` corner
+   * of the chat header) never overlap. The mutual-exclusion close is
+   * mirrored by `handleHistoryToggle` and `handleModelPickerToggle` so
+   * the invariant holds regardless of which one opens.
    */
   const handleExportToggle = useCallback(() => {
     setIsExportOpen((open) => {
       if (!open) {
         setIsModelPickerOpen(false);
+        setIsHistoryOpen(false);
       }
       return !open;
     });
@@ -2814,6 +2876,7 @@ function App() {
       return opening;
     });
     setIsHistoryOpen(false);
+    setIsExportOpen(false);
   }, [refreshModels, refreshModelCapabilities]);
 
   /**
@@ -2871,10 +2934,25 @@ function App() {
     requestHideOverlay();
   }, [requestHideOverlay]);
 
-  /** Hide window on Escape or Cmd+W (macOS) / Ctrl+W. No-op while minimized. */
+  /**
+   * Hide window on Escape or Cmd+W (macOS) / Ctrl+W. No-op while
+   * minimized. When the export popover is open, Escape dismisses just
+   * the popover (and returns focus to its toggle button) rather than
+   * closing the whole overlay — this matches macOS popover convention
+   * and prevents the global handler from blowing away the user's
+   * conversation when they only meant to back out of the export menu.
+   */
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (isMinimized) return;
+      if (e.key === 'Escape' && isExportOpen) {
+        e.preventDefault();
+        setIsExportOpen(false);
+        document
+          .querySelector<HTMLButtonElement>('[data-export-toggle]')
+          ?.focus();
+        return;
+      }
       if (((e.metaKey || e.ctrlKey) && e.key === 'w') || e.key === 'Escape') {
         e.preventDefault();
         handleCloseOverlay();
@@ -2882,7 +2960,7 @@ function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleCloseOverlay, isMinimized]);
+  }, [handleCloseOverlay, isMinimized, isExportOpen]);
 
   /**
    * Programmatic focus when the overlay is visible and in the normal (idle)
@@ -3444,7 +3522,8 @@ function App() {
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: -8, scale: 0.97 }}
                     transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-                    role="dialog"
+                    role="menu"
+                    aria-orientation="vertical"
                     aria-label="Export chat"
                     className="absolute right-3 top-10 z-50 w-56 rounded-xl border border-surface-border bg-surface-base shadow-chat overflow-hidden"
                   >
@@ -3455,22 +3534,31 @@ function App() {
                       <div className="flex flex-col gap-1.5">
                         <button
                           type="button"
+                          role="menuitem"
+                          ref={(node) => {
+                            // Focus the first item when the popover renders so
+                            // keyboard users can immediately invoke an export
+                            // without having to Tab past the surrounding chat.
+                            if (node !== null) node.focus();
+                          }}
                           onClick={() => void runFileExport('md')}
-                          className="w-full text-left px-3 py-2 rounded-lg text-xs text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
+                          className="w-full text-left px-3 py-2 rounded-lg text-xs text-text-primary hover:bg-white/5 focus-visible:bg-white/5 focus:outline-none transition-colors duration-150 cursor-pointer"
                         >
                           Save as Markdown…
                         </button>
                         <button
                           type="button"
+                          role="menuitem"
                           onClick={() => void runFileExport('txt')}
-                          className="w-full text-left px-3 py-2 rounded-lg text-xs text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
+                          className="w-full text-left px-3 py-2 rounded-lg text-xs text-text-primary hover:bg-white/5 focus-visible:bg-white/5 focus:outline-none transition-colors duration-150 cursor-pointer"
                         >
                           Save as Plain text…
                         </button>
                         <button
                           type="button"
+                          role="menuitem"
                           onClick={() => void runClipboardCopy()}
-                          className="w-full text-left px-3 py-2 rounded-lg text-xs text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
+                          className="w-full text-left px-3 py-2 rounded-lg text-xs text-text-primary hover:bg-white/5 focus-visible:bg-white/5 focus:outline-none transition-colors duration-150 cursor-pointer"
                         >
                           Copy to clipboard
                         </button>

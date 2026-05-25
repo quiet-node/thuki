@@ -389,7 +389,7 @@ export const WindowControls = memo(function WindowControls({
                 onClick={onExportToggle}
                 aria-label="Export chat"
                 aria-expanded={isExportOpen}
-                aria-haspopup="dialog"
+                aria-haspopup="menu"
                 data-export-toggle
                 className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors duration-150 cursor-pointer ${
                   isExportOpen
