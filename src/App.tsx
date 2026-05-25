@@ -2301,53 +2301,66 @@ function App() {
    * write surfaces the OS-level error message via the existing
    * `captureError` banner.
    */
-  const runFileExport = useCallback(async () => {
-    setIsExportOpen(false);
-    /* v8 ignore start -- defensive: callers gate on messages.length > 0 */
-    if (messages.length === 0) return;
-    /* v8 ignore stop */
-    // Hide Thuki via NSPanel alpha while the native save dialog is on
-    // screen. The dialog's drop-shadow and vibrancy backdrop would
-    // otherwise bleed onto Thuki's transparent shadow margin and render
-    // as a dark "ghost" rectangle around the card.
-    //
-    // Both `set_overlay_alpha` calls are fired without `await` so the
-    // main thread sees them dispatched in the same event-loop tick as
-    // the save-dialog command. Awaiting alpha serially introduces a
-    // visible "Thuki invisible, dialog not yet appearing" frame that
-    // reads as a glitch; the fire-and-forget shape collapses that gap.
-    // The setter is a thin Rust function that cannot fail in
-    // practice — IPC bus rejection would be the only path — so an
-    // unhandled rejection is acceptable.
-    try {
-      // Hide instantly — the dialog's own appear animation is the
-      // motion the user reads, so a snap-out keeps the transition
-      // crisp from Thuki → dialog.
-      void invoke('set_overlay_alpha', { alpha: 0, durationMs: 0 });
-      const path = await saveDialog({
-        defaultPath: defaultExportFilename(new Date()),
-        filters: [
-          { name: 'Markdown', extensions: ['md'] },
-          { name: 'Plain text', extensions: ['txt'] },
-        ],
-      });
-      if (path === null) return;
-      const content = await serializeForFile(
-        messages,
-        { fallbackModel: activeModel },
-        new Date(),
-      );
-      await invoke('save_chat_export', { path, content });
-    } catch (err) {
-      setCaptureError(
-        `Failed to export: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    } finally {
-      // Fade back in over 150 ms so Thuki re-emerges in step with the
-      // dialog's dismiss animation instead of snapping in late.
-      void invoke('set_overlay_alpha', { alpha: 1, durationMs: 150 });
-    }
-  }, [messages, activeModel]);
+  const runFileExport = useCallback(
+    async (format: 'md' | 'txt') => {
+      setIsExportOpen(false);
+      /* v8 ignore start -- defensive: callers gate on messages.length > 0 */
+      if (messages.length === 0) return;
+      /* v8 ignore stop */
+      // The two-row popover lets the user pick Markdown or Plain text
+      // before opening the dialog. The chosen format becomes the
+      // PRIMARY filter (top of the dropdown) so the dialog opens with
+      // the matching extension pre-selected and the default filename
+      // reflects it. The other format stays available as the second
+      // entry so the user can still switch without re-opening.
+      const markdownFilter = { name: 'Markdown', extensions: ['md'] };
+      const plainTextFilter = { name: 'Plain text', extensions: ['txt'] };
+      const filters =
+        format === 'md'
+          ? [markdownFilter, plainTextFilter]
+          : [plainTextFilter, markdownFilter];
+
+      // Hide Thuki via NSPanel alpha while the native save dialog is
+      // on screen. The dialog's drop-shadow and vibrancy backdrop
+      // would otherwise bleed onto Thuki's transparent shadow margin
+      // and render as a dark "ghost" rectangle around the card.
+      //
+      // Both `set_overlay_alpha` calls are fired without `await` so
+      // the main thread sees them dispatched in the same event-loop
+      // tick as the save-dialog command. Awaiting alpha serially
+      // introduces a visible "Thuki invisible, dialog not yet
+      // appearing" frame that reads as a glitch; the fire-and-forget
+      // shape collapses that gap. The setter is a thin Rust function
+      // that cannot fail in practice — IPC bus rejection would be the
+      // only path — so an unhandled rejection is acceptable.
+      try {
+        // Hide instantly — the dialog's own appear animation is the
+        // motion the user reads, so a snap-out keeps the transition
+        // crisp from Thuki → dialog.
+        void invoke('set_overlay_alpha', { alpha: 0, durationMs: 0 });
+        const path = await saveDialog({
+          defaultPath: defaultExportFilename(new Date(), format),
+          filters,
+        });
+        if (path === null) return;
+        const content = await serializeForFile(
+          messages,
+          { fallbackModel: activeModel },
+          new Date(),
+        );
+        await invoke('save_chat_export', { path, content });
+      } catch (err) {
+        setCaptureError(
+          `Failed to export: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } finally {
+        // Fade back in over 150 ms so Thuki re-emerges in step with the
+        // dialog's dismiss animation instead of snapping in late.
+        void invoke('set_overlay_alpha', { alpha: 1, durationMs: 150 });
+      }
+    },
+    [messages, activeModel],
+  );
 
   /**
    * Copies the current session to the system clipboard as body-only
@@ -2455,7 +2468,7 @@ function App() {
       setQuery('');
       /* v8 ignore next */
       inputRef.current!.style.height = 'auto';
-      void runFileExport();
+      void runFileExport('md');
       return;
     }
 
@@ -3461,10 +3474,17 @@ function App() {
                       <div className="flex flex-col gap-1.5">
                         <button
                           type="button"
-                          onClick={() => void runFileExport()}
+                          onClick={() => void runFileExport('md')}
                           className="w-full text-left px-3 py-2 rounded-lg text-xs text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
                         >
                           Save as Markdown…
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void runFileExport('txt')}
+                          className="w-full text-left px-3 py-2 rounded-lg text-xs text-text-primary hover:bg-white/5 transition-colors duration-150 cursor-pointer"
+                        >
+                          Save as Plain text…
                         </button>
                         <button
                           type="button"

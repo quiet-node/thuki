@@ -35,18 +35,22 @@ export interface FileExportContext {
 /**
  * Returns the default filename suggested in the native save dialog.
  *
- * Format: `thuki-chat-YYYY-MM-DD-HHMM.md`. Local timezone (matches what
- * the user perceives as "now"). No slug from the first user message so
- * a privacy-sensitive snippet does not become visible in Finder /
- * Spotlight.
+ * Format: `thuki-chat-YYYY-MM-DD-HHMM.<ext>`. Local timezone (matches
+ * what the user perceives as "now"). No slug from the first user
+ * message so a privacy-sensitive snippet does not become visible in
+ * Finder / Spotlight. `ext` defaults to `'md'` so callers that haven't
+ * been updated still get the canonical Markdown extension.
  */
-export function defaultExportFilename(now: Date): string {
+export function defaultExportFilename(
+  now: Date,
+  ext: 'md' | 'txt' = 'md',
+): string {
   const yyyy = now.getFullYear();
   const mm = pad2(now.getMonth() + 1);
   const dd = pad2(now.getDate());
   const hh = pad2(now.getHours());
   const mi = pad2(now.getMinutes());
-  return `thuki-chat-${yyyy}-${mm}-${dd}-${hh}${mi}.md`;
+  return `thuki-chat-${yyyy}-${mm}-${dd}-${hh}${mi}.${ext}`;
 }
 
 /**

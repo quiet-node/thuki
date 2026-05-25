@@ -48,6 +48,22 @@ describe('defaultExportFilename', () => {
     const filename = defaultExportFilename(new Date(2026, 4, 24, 14, 30, 15));
     expect(filename).toBe('thuki-chat-2026-05-24-1430.md');
   });
+
+  it('uses the .txt extension when requested', () => {
+    const filename = defaultExportFilename(
+      new Date(2026, 4, 24, 14, 30, 15),
+      'txt',
+    );
+    expect(filename).toBe('thuki-chat-2026-05-24-1430.txt');
+  });
+
+  it('explicitly defaults to .md when no extension is supplied', () => {
+    const filename = defaultExportFilename(
+      new Date(2026, 4, 24, 14, 30, 15),
+      'md',
+    );
+    expect(filename).toBe('thuki-chat-2026-05-24-1430.md');
+  });
 });
 
 describe('serializeForFile', () => {

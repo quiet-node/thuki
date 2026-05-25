@@ -8327,6 +8327,51 @@ describe('App', () => {
           expect.objectContaining({ path: '/tmp/btn-export.md' }),
         );
       });
+      // Markdown row opens the dialog with .md primary and .txt secondary.
+      expect(saveDialog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          defaultPath: expect.stringMatching(
+            /^thuki-chat-\d{4}-\d{2}-\d{2}-\d{4}\.md$/,
+          ),
+          filters: [
+            { name: 'Markdown', extensions: ['md'] },
+            { name: 'Plain text', extensions: ['txt'] },
+          ],
+        }),
+      );
+    });
+
+    it('invokes save_chat_export with the .txt-first filter when "Save as Plain text" is clicked', async () => {
+      await enterChatMode();
+      vi.mocked(saveDialog).mockResolvedValue('/tmp/btn-export.txt');
+      invoke.mockClear();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Export chat' }));
+      });
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: /Save as Plain text/i }),
+        );
+      });
+
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith(
+          'save_chat_export',
+          expect.objectContaining({ path: '/tmp/btn-export.txt' }),
+        );
+      });
+      expect(saveDialog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          defaultPath: expect.stringMatching(
+            /^thuki-chat-\d{4}-\d{2}-\d{2}-\d{4}\.txt$/,
+          ),
+          filters: [
+            { name: 'Plain text', extensions: ['txt'] },
+            { name: 'Markdown', extensions: ['md'] },
+          ],
+        }),
+      );
     });
 
     it('writes to the clipboard when the "Copy to clipboard" button is clicked', async () => {
