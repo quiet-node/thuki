@@ -192,21 +192,6 @@ Explains any concept, term, or code snippet in plain language, always with a con
 
 ---
 
-## /export
-
-Exports the current conversation as a self-contained file via a native macOS save dialog. The dialog offers Markdown (.md) and Plain text (.txt) as format choices; both write the same content.
-
-**Usage:** `/export`
-
-**Examples:**
-- `/export`: opens the save dialog to write the current chat to disk
-
-**Behavior:** Opens the native save sheet pre-filled with `thuki-chat-YYYY-MM-DD-HHMM.md`. Switch the format dropdown to "Plain text" to save the same content as `.txt` instead. The file body is self-contained: YAML frontmatter (model, exported_at, message_count), role-labelled blocks, collapsible thinking blocks, search source footnotes, and base64-inlined screenshots. No data leaves the machine. Requires at least one message in the current session; submitting `/export` in an empty chat shakes the ask bar with a "No messages to export yet." warning.
-
-**Composable:** `/export` is a session-level command and is not composed with other slash commands. Any other triggers in the same message are ignored when `/export` is present.
-
----
-
 ## /todos
 
 Summarizes what a piece of text is about, then extracts every task, action item, and commitment as a markdown checkbox list.

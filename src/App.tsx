@@ -493,7 +493,7 @@ function App() {
   const [captureError, setCaptureError] = useState<string | null>(null);
   /**
    * Auto-dismiss the capture-error banner after a short linger so a
-   * one-off mistake (empty `/extract`, empty `/export`, OCR miss, etc.)
+   * one-off mistake (empty `/extract`, OCR miss, capture failure, etc.)
    * does not leave a red banner up indefinitely. Mirrors the
    * `shakeAskBar` self-clearing pattern.
    *
@@ -2455,23 +2455,6 @@ function App() {
       return;
     }
 
-    // /export is a session-level command. It must run in isolation from any
-    // other command in the same message and is gated on "at least one
-    // message exists". Same shake + banner UX as /extract for consistency.
-    const hasExport = found.has('/export');
-    if (hasExport) {
-      if (messages.length === 0) {
-        setCaptureError('No messages to export yet.');
-        setShakeAskBar(true);
-        return;
-      }
-      setQuery('');
-      /* v8 ignore next */
-      inputRef.current!.style.height = 'auto';
-      void runFileExport('md');
-      return;
-    }
-
     // OCR paths (/extract, utility commands with images or /screen) bypass
     // the Ollama capability/environment gate: Vision OCR runs locally and
     // utility OCR sends extracted text — never image bytes — to the model.
@@ -2667,8 +2650,6 @@ function App() {
     searchActive,
     quote.maxContextLength,
     hasBlockingConflict,
-    messages.length,
-    runFileExport,
   ]);
 
   // When a pending submit exists and all images finish processing, dispatch

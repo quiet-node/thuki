@@ -311,39 +311,6 @@ const ACTION_ICON = (
   </svg>
 );
 
-/** Download-arrow-into-tray icon for /export command. */
-const EXPORT_ICON = (
-  <svg
-    width="14"
-    height="14"
-    viewBox="0 0 16 16"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden="true"
-  >
-    <path
-      d="M8 2v8"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-    />
-    <path
-      d="M4.5 6.5L8 10l3.5-3.5"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-    <path
-      d="M2.5 11v2a1 1 0 001 1h9a1 1 0 001-1v-2"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
-);
-
 /** Info-circle icon for /explain command. */
 const EXPLAIN_ICON = (
   <svg
@@ -390,8 +357,6 @@ function iconForTrigger(trigger: string): React.ReactNode {
       return EXPLAIN_ICON;
     case '/extract':
       return EXTRACT_ICON;
-    case '/export':
-      return EXPORT_ICON;
     default:
       return SCREEN_ICON;
   }

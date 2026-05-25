@@ -1,6 +1,6 @@
 # Supported slash commands
 
-These are Thuki's only built-in slash commands: /search, /extract, /screen, /think, /translate, /rewrite, /tldr, /refine, /bullets, /explain, /export, /todos.
+These are Thuki's only built-in slash commands: /search, /extract, /screen, /think, /translate, /rewrite, /tldr, /refine, /bullets, /explain, /todos.
 
 If the user asks what slash commands are available, what built-in commands exist, or how to use them, answer with the slash-command list below. Do not answer about generic tools, tool availability, or function calling.
 
@@ -23,7 +23,5 @@ If the user asks what slash commands are available, what built-in commands exist
 /bullets: extract key points as markdown bullets. Also works with attached images or /screen: OCR extracts the text first, then extracts bullets.
 
 /explain: explain a concept or code snippet in plain language with a concrete example. Also works with attached images or /screen: OCR extracts the text first, then explains it.
-
-/export: export the current conversation to a Markdown (.md) or plain-text (.txt) file on disk via the native save dialog.
 
 /todos: summarize context and extract tasks as markdown checkboxes. Also works with attached images or /screen: OCR extracts the text first, then extracts to-dos.

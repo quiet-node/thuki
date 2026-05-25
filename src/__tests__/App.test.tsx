@@ -8130,76 +8130,22 @@ describe('App', () => {
       await act(async () => {});
     }
 
-    it('shakes ask bar and shows warning when /export is submitted with no messages', async () => {
-      render(<App />);
-      await act(async () => {});
-      await showOverlay();
-
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      act(() => {
-        fireEvent.change(textarea, { target: { value: '/export' } });
-      });
+    async function openExportPopover() {
       await act(async () => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+        fireEvent.click(screen.getByRole('button', { name: 'Export chat' }));
       });
-
-      expect(
-        screen.getByText('No messages to export yet.'),
-      ).toBeInTheDocument();
-      expect(saveDialog).not.toHaveBeenCalled();
-      expect(invoke).not.toHaveBeenCalledWith(
-        'save_chat_export',
-        expect.anything(),
-      );
-    });
-
-    it('opens the save dialog and invokes save_chat_export on /export submit with messages', async () => {
-      await enterChatMode();
-      vi.mocked(saveDialog).mockResolvedValue('/tmp/thuki-chat.md');
-      invoke.mockClear();
-
-      const textarea = screen.getByPlaceholderText('Reply...');
-      act(() => {
-        fireEvent.change(textarea, { target: { value: '/export' } });
-      });
-      await act(async () => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-      });
-      await act(async () => {});
-
-      expect(saveDialog).toHaveBeenCalledWith(
-        expect.objectContaining({
-          defaultPath: expect.stringMatching(
-            /^thuki-chat-\d{4}-\d{2}-\d{2}-\d{4}\.md$/,
-          ),
-          filters: [
-            { name: 'Markdown', extensions: ['md'] },
-            { name: 'Plain text', extensions: ['txt'] },
-          ],
-        }),
-      );
-      await vi.waitFor(() => {
-        expect(invoke).toHaveBeenCalledWith(
-          'save_chat_export',
-          expect.objectContaining({
-            path: '/tmp/thuki-chat.md',
-            content: expect.stringContaining('---\napp: Thuki'),
-          }),
-        );
-      });
-    });
+    }
 
     it('silently no-ops when the user cancels the save dialog', async () => {
       await enterChatMode();
       vi.mocked(saveDialog).mockResolvedValue(null);
       invoke.mockClear();
 
-      const textarea = screen.getByPlaceholderText('Reply...');
-      act(() => {
-        fireEvent.change(textarea, { target: { value: '/export' } });
-      });
+      await openExportPopover();
       await act(async () => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+        fireEvent.click(
+          screen.getByRole('button', { name: /Save as Markdown/i }),
+        );
       });
       await act(async () => {});
 
@@ -8223,12 +8169,11 @@ describe('App', () => {
         return prev ? prev(cmd, args) : undefined;
       });
 
-      const textarea = screen.getByPlaceholderText('Reply...');
-      act(() => {
-        fireEvent.change(textarea, { target: { value: '/export' } });
-      });
+      await openExportPopover();
       await act(async () => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+        fireEvent.click(
+          screen.getByRole('button', { name: /Save as Markdown/i }),
+        );
       });
       await act(async () => {});
 
@@ -8243,12 +8188,11 @@ describe('App', () => {
       await enterChatMode();
       vi.mocked(saveDialog).mockRejectedValue(new Error('dialog blew up'));
 
-      const textarea = screen.getByPlaceholderText('Reply...');
-      act(() => {
-        fireEvent.change(textarea, { target: { value: '/export' } });
-      });
+      await openExportPopover();
       await act(async () => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+        fireEvent.click(
+          screen.getByRole('button', { name: /Save as Markdown/i }),
+        );
       });
       await act(async () => {});
 
@@ -8263,12 +8207,11 @@ describe('App', () => {
       await enterChatMode();
       vi.mocked(saveDialog).mockRejectedValue('plain string err');
 
-      const textarea = screen.getByPlaceholderText('Reply...');
-      act(() => {
-        fireEvent.change(textarea, { target: { value: '/export' } });
-      });
+      await openExportPopover();
       await act(async () => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+        fireEvent.click(
+          screen.getByRole('button', { name: /Save as Markdown/i }),
+        );
       });
       await act(async () => {});
 
@@ -8293,6 +8236,9 @@ describe('App', () => {
       expect(exportButton).toHaveAttribute('aria-expanded', 'true');
       expect(
         screen.getByRole('button', { name: /Save as Markdown/i }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /Save as Plain text/i }),
       ).toBeInTheDocument();
       expect(
         screen.getByRole('button', { name: /Copy to clipboard/i }),
@@ -8501,16 +8447,22 @@ describe('App', () => {
         await act(async () => {});
         await showOverlay();
 
+        // /extract with no image triggers the same captureError surface
+        // we want to auto-dismiss. Used as the harness here because
+        // /export is button-only now and the button does not render
+        // until chat mode (so it can't trigger an empty-state error).
         const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
         act(() => {
-          fireEvent.change(textarea, { target: { value: '/export' } });
+          fireEvent.change(textarea, { target: { value: '/extract' } });
         });
         await act(async () => {
           fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
         });
 
         expect(
-          screen.getByText('No messages to export yet.'),
+          screen.getByText(
+            'Attach an image or add /screen to extract text from.',
+          ),
         ).toBeInTheDocument();
 
         // Auto-dismiss timer is 5s. Advance past it.
@@ -8518,7 +8470,11 @@ describe('App', () => {
           vi.advanceTimersByTime(5000);
         });
 
-        expect(screen.queryByText('No messages to export yet.')).toBeNull();
+        expect(
+          screen.queryByText(
+            'Attach an image or add /screen to extract text from.',
+          ),
+        ).toBeNull();
       } finally {
         vi.useRealTimers();
       }
@@ -8547,12 +8503,11 @@ describe('App', () => {
       vi.mocked(saveDialog).mockResolvedValue('/tmp/alpha-test.md');
       invoke.mockClear();
 
-      const textarea = screen.getByPlaceholderText('Reply...');
-      act(() => {
-        fireEvent.change(textarea, { target: { value: '/export' } });
-      });
+      await openExportPopover();
       await act(async () => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+        fireEvent.click(
+          screen.getByRole('button', { name: /Save as Markdown/i }),
+        );
       });
       await act(async () => {});
 
@@ -8594,12 +8549,11 @@ describe('App', () => {
       vi.mocked(saveDialog).mockResolvedValue(null);
       invoke.mockClear();
 
-      const textarea = screen.getByPlaceholderText('Reply...');
-      act(() => {
-        fireEvent.change(textarea, { target: { value: '/export' } });
-      });
+      await openExportPopover();
       await act(async () => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+        fireEvent.click(
+          screen.getByRole('button', { name: /Save as Markdown/i }),
+        );
       });
       await act(async () => {});
 
@@ -8626,12 +8580,11 @@ describe('App', () => {
         return prev ? prev(cmd, args) : undefined;
       });
 
-      const textarea = screen.getByPlaceholderText('Reply...');
-      act(() => {
-        fireEvent.change(textarea, { target: { value: '/export' } });
-      });
+      await openExportPopover();
       await act(async () => {
-        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+        fireEvent.click(
+          screen.getByRole('button', { name: /Save as Markdown/i }),
+        );
       });
       await act(async () => {});
 
