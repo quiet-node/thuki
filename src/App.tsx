@@ -2306,7 +2306,24 @@ function App() {
     /* v8 ignore start -- defensive: callers gate on messages.length > 0 */
     if (messages.length === 0) return;
     /* v8 ignore stop */
+    // Hide Thuki via NSPanel alpha while the native save dialog is on
+    // screen. The dialog's drop-shadow and vibrancy backdrop would
+    // otherwise bleed onto Thuki's transparent shadow margin and render
+    // as a dark "ghost" rectangle around the card.
+    //
+    // Both `set_overlay_alpha` calls are fired without `await` so the
+    // main thread sees them dispatched in the same event-loop tick as
+    // the save-dialog command. Awaiting alpha serially introduces a
+    // visible "Thuki invisible, dialog not yet appearing" frame that
+    // reads as a glitch; the fire-and-forget shape collapses that gap.
+    // The setter is a thin Rust function that cannot fail in
+    // practice — IPC bus rejection would be the only path — so an
+    // unhandled rejection is acceptable.
     try {
+      // Hide instantly — the dialog's own appear animation is the
+      // motion the user reads, so a snap-out keeps the transition
+      // crisp from Thuki → dialog.
+      void invoke('set_overlay_alpha', { alpha: 0, durationMs: 0 });
       const path = await saveDialog({
         defaultPath: defaultExportFilename(new Date()),
         filters: [{ name: 'Markdown', extensions: ['md'] }],
@@ -2322,6 +2339,10 @@ function App() {
       setCaptureError(
         `Failed to export: ${err instanceof Error ? err.message : String(err)}`,
       );
+    } finally {
+      // Fade back in over 150 ms so Thuki re-emerges in step with the
+      // dialog's dismiss animation instead of snapping in late.
+      void invoke('set_overlay_alpha', { alpha: 1, durationMs: 150 });
     }
   }, [messages, activeModel]);
 

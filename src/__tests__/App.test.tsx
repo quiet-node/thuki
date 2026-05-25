@@ -8493,5 +8493,106 @@ describe('App', () => {
         screen.getByRole('button', { name: /Save as Markdown/i }),
       ).toBeInTheDocument();
     });
+
+    it('drives overlay alpha to 0 before the save dialog and back to 1 after a successful save', async () => {
+      await enterChatMode();
+      vi.mocked(saveDialog).mockResolvedValue('/tmp/alpha-test.md');
+      invoke.mockClear();
+
+      const textarea = screen.getByPlaceholderText('Reply...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/export' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('set_overlay_alpha', {
+          alpha: 0,
+          durationMs: 0,
+        });
+      });
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('set_overlay_alpha', {
+          alpha: 1,
+          durationMs: 150,
+        });
+      });
+
+      // The ghost-rectangle fix relies on the alpha bracketing the
+      // save_chat_export call. Assert the ordering so a future
+      // refactor cannot accidentally re-show Thuki mid-dialog.
+      const calls = vi.mocked(invoke).mock.calls;
+      const alphaZeroIdx = calls.findIndex(
+        (call) =>
+          call[0] === 'set_overlay_alpha' &&
+          (call[1] as { alpha: number } | undefined)?.alpha === 0,
+      );
+      const saveIdx = calls.findIndex((call) => call[0] === 'save_chat_export');
+      const alphaOneIdx = calls.findIndex(
+        (call) =>
+          call[0] === 'set_overlay_alpha' &&
+          (call[1] as { alpha: number } | undefined)?.alpha === 1,
+      );
+      expect(alphaZeroIdx).toBeGreaterThanOrEqual(0);
+      expect(saveIdx).toBeGreaterThan(alphaZeroIdx);
+      expect(alphaOneIdx).toBeGreaterThan(saveIdx);
+    });
+
+    it('restores overlay alpha to 1 when the user cancels the save dialog', async () => {
+      await enterChatMode();
+      vi.mocked(saveDialog).mockResolvedValue(null);
+      invoke.mockClear();
+
+      const textarea = screen.getByPlaceholderText('Reply...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/export' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('set_overlay_alpha', {
+          alpha: 1,
+          durationMs: 150,
+        });
+      });
+      expect(invoke).not.toHaveBeenCalledWith(
+        'save_chat_export',
+        expect.anything(),
+      );
+    });
+
+    it('restores overlay alpha to 1 when save_chat_export rejects', async () => {
+      await enterChatMode();
+      vi.mocked(saveDialog).mockResolvedValue('/tmp/will-fail.md');
+      const prev = invoke.getMockImplementation();
+      invoke.mockImplementation(async (cmd, args) => {
+        if (cmd === 'save_chat_export') {
+          throw new Error('disk full');
+        }
+        return prev ? prev(cmd, args) : undefined;
+      });
+
+      const textarea = screen.getByPlaceholderText('Reply...');
+      act(() => {
+        fireEvent.change(textarea, { target: { value: '/export' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('set_overlay_alpha', {
+          alpha: 1,
+          durationMs: 150,
+        });
+      });
+    });
   });
 });
