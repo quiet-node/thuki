@@ -4275,7 +4275,7 @@ dependencies = [
 
 [[package]]
 name = "thuki"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
