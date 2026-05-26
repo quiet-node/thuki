@@ -33,6 +33,8 @@ pub mod warmup;
 
 #[cfg(target_os = "macos")]
 mod activator;
+#[cfg(target_os = "macos")]
+mod cg_displays;
 pub mod context;
 pub mod permissions;
 
@@ -212,52 +214,6 @@ fn emit_overlay_restore(app_handle: &tauri::AppHandle) {
         None,
         None,
     );
-}
-
-/// CoreGraphics display lookup - uses macOS-native `CGGetDisplaysWithPoint`
-/// for hit-testing instead of manual iteration + containment checks.
-/// All coordinates are in the Quartz display coordinate space (top-left of
-/// primary display, Y-down), matching the AX API and `CGEventGetLocation`.
-#[cfg(target_os = "macos")]
-mod cg_displays {
-    use core_graphics::geometry::{CGPoint, CGRect};
-
-    type CGDirectDisplayID = u32;
-
-    extern "C" {
-        fn CGGetDisplaysWithPoint(
-            point: CGPoint,
-            max_displays: u32,
-            displays: *mut CGDirectDisplayID,
-            matching_display_count: *mut u32,
-        ) -> i32;
-        fn CGDisplayBounds(display: CGDirectDisplayID) -> CGRect;
-        fn CGMainDisplayID() -> CGDirectDisplayID;
-    }
-
-    fn rect_to_tuple(r: CGRect) -> (f64, f64, f64, f64) {
-        (r.origin.x, r.origin.y, r.size.width, r.size.height)
-    }
-
-    /// Returns `(origin_x, origin_y, width, height)` in Quartz points for
-    /// the display containing `(global_x, global_y)`.
-    pub fn display_for_point(global_x: f64, global_y: f64) -> Option<(f64, f64, f64, f64)> {
-        unsafe {
-            let point = CGPoint::new(global_x, global_y);
-            let mut ids = [0u32; 4];
-            let mut count: u32 = 0;
-            let err = CGGetDisplaysWithPoint(point, 4, ids.as_mut_ptr(), &mut count);
-            if err != 0 || count == 0 {
-                return None;
-            }
-            Some(rect_to_tuple(CGDisplayBounds(ids[0])))
-        }
-    }
-
-    /// Returns `(origin_x, origin_y, width, height)` of the main (menu-bar) display.
-    pub fn main_display() -> (f64, f64, f64, f64) {
-        unsafe { rect_to_tuple(CGDisplayBounds(CGMainDisplayID())) }
-    }
 }
 
 /// Returns the Quartz-coordinate bounds of the display containing

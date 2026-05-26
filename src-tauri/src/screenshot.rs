@@ -117,6 +117,13 @@ pub async fn capture_screenshot_command(
 /// effectively excluding Thuki from the screenshot without hiding the window.
 /// Returns `(width, height, rgba_bytes)` on success.
 ///
+/// `anchor` is a logical-point coordinate (Quartz space) used to pick which
+/// display to capture in multi-monitor setups: the display containing the
+/// anchor is captured. When `None` or the anchor lies outside every active
+/// display, falls back to the main (menu-bar) display. The typical anchor is
+/// the center of Thuki's own window, which is the display the user is
+/// actually looking at when they invoke `/screen`.
+///
 /// MUST run on the macOS main thread. CoreGraphics APIs internally dispatch
 /// to the main thread; calling them from a background thread deadlocks.
 ///
@@ -128,7 +135,7 @@ pub async fn capture_screenshot_command(
 /// requires Screen Recording permission and a running display server.
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn capture_full_screen_raw() -> Result<(u32, u32, Vec<u8>), String> {
+fn capture_full_screen_raw(anchor: Option<(f64, f64)>) -> Result<(u32, u32, Vec<u8>), String> {
     use core_foundation::base::TCFType;
     use core_foundation::string::CFString;
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
@@ -173,8 +180,6 @@ fn capture_full_screen_raw() -> Result<(u32, u32, Vec<u8>), String> {
             relativeToWindow: u32,
             imageOption: u32,
         ) -> *const c_void;
-        fn CGMainDisplayID() -> u32;
-        fn CGDisplayBounds(display: u32) -> CGRect;
         fn CGImageGetWidth(image: *const c_void) -> usize;
         fn CGImageGetHeight(image: *const c_void) -> usize;
         fn CGImageRelease(image: *const c_void);
@@ -205,10 +210,25 @@ fn capture_full_screen_raw() -> Result<(u32, u32, Vec<u8>), String> {
     let our_pid = std::process::id() as i32;
 
     unsafe {
-        // Use the actual main display bounds instead of abstract CGRectNull
-        // or CGRectInfinite, which have platform-dependent representations
-        // that can cause CGWindowListCreateImage to return null.
-        let screen_bounds = CGDisplayBounds(CGMainDisplayID());
+        // Resolve which display to capture. CGWindowListCreateImage requires a
+        // concrete CGRect: passing CGRectNull/CGRectInfinite has platform-
+        // dependent representations that can return null, so we always pass
+        // the bounds of a specific display.
+        //
+        // In multi-monitor setups, capture the display containing the anchor
+        // point (typically the center of Thuki's own window). This matches the
+        // monitor the user is actually looking at when they invoke `/screen`.
+        // If no anchor is provided or it lies outside every active display,
+        // fall back to the main (menu-bar) display.
+        let (sb_x, sb_y, sb_w, sb_h) = match anchor {
+            Some((x, y)) => crate::cg_displays::display_for_point(x, y)
+                .unwrap_or_else(crate::cg_displays::main_display),
+            None => crate::cg_displays::main_display(),
+        };
+        let screen_bounds = CGRect {
+            origin: CGPoint::new(sb_x, sb_y),
+            size: CGSize::new(sb_w, sb_h),
+        };
 
         // Two-stage permission check for Screen Recording.
         //
@@ -377,17 +397,79 @@ fn capture_full_screen_raw() -> Result<(u32, u32, Vec<u8>), String> {
 /// main thread because CoreGraphics APIs internally dispatch there and will
 /// deadlock if called from a background thread.
 ///
+/// `anchor` selects which display to capture in multi-monitor setups. See
+/// `capture_full_screen_raw` for the resolution rules.
+///
 /// Returns `(width, height, rgba_bytes)` on success.
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
-    capture_full_screen_raw()
+fn capture_full_screen_pixels(anchor: Option<(f64, f64)>) -> Result<(u32, u32, Vec<u8>), String> {
+    capture_full_screen_raw(anchor)
 }
 
 /// Non-macOS stub: full-screen capture is macOS-only.
 #[cfg(not(target_os = "macos"))]
-fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
+fn capture_full_screen_pixels(_anchor: Option<(f64, f64)>) -> Result<(u32, u32, Vec<u8>), String> {
     Err("full-screen capture is only supported on macOS".to_string())
+}
+
+/// Reads the `CGDirectDisplayID` of the `NSScreen` the given `NSWindow` lives
+/// on. This is the canonical way to ask "which monitor is this window
+/// currently shown on?" on macOS, and it avoids the coordinate-conversion
+/// mismatches that arise from manually computing logical points across
+/// mixed-DPI multi-monitor setups (e.g. a 2x retina primary + 1x secondary).
+///
+/// Uses raw Objective-C runtime messaging so we do not need to enable extra
+/// `objc2-app-kit` features. MUST be called on the macOS main thread: AppKit
+/// window/screen APIs are main-thread-only.
+///
+/// Returns `None` when:
+/// - the pointer is null,
+/// - the window has no current screen (offscreen / mid-transition),
+/// - the device-description dictionary lacks `NSScreenNumber`, or
+/// - any runtime message returns nil.
+///
+/// Excluded from coverage: pure Objective-C runtime messaging that requires a
+/// live window server and a real `NSWindow` instance.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+unsafe fn nswindow_display_id(ns_window: *mut std::ffi::c_void) -> Option<u32> {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSString;
+
+    if ns_window.is_null() {
+        return None;
+    }
+    let ns_window: *mut AnyObject = ns_window.cast();
+
+    let ns_screen: *mut AnyObject = msg_send![ns_window, screen];
+    if ns_screen.is_null() {
+        return None;
+    }
+
+    let device_desc: *mut AnyObject = msg_send![ns_screen, deviceDescription];
+    if device_desc.is_null() {
+        return None;
+    }
+
+    let key = NSString::from_str("NSScreenNumber");
+    let key_ref: *const NSString = &*key;
+    let value: *mut AnyObject = msg_send![device_desc, objectForKey: key_ref];
+    if value.is_null() {
+        return None;
+    }
+
+    let display_id: u32 = msg_send![value, unsignedIntValue];
+    Some(display_id)
+}
+
+/// Returns the Quartz-coordinate center of a display rectangle expressed as
+/// `(origin_x, origin_y, width, height)`. Pure helper, used to derive an
+/// anchor point from a known display's bounds.
+fn display_bounds_center(bounds: (f64, f64, f64, f64)) -> (f64, f64) {
+    let (x, y, w, h) = bounds;
+    (x + w / 2.0, y + h / 2.0)
 }
 
 /// Tauri command: silently captures the full screen (excluding Thuki's own
@@ -411,12 +493,35 @@ pub async fn capture_full_screen_command(
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
 
+    // Resolve the Thuki window so we can ask AppKit which display it lives on.
+    // The handle is read here (off the main thread) but only dereferenced
+    // inside the main-thread closure below: AppKit window/screen APIs are
+    // strictly main-thread-only.
+    let main_window = app_handle.get_webview_window("main");
+
     // Phase 1: Capture raw RGBA pixels on the main thread (CoreGraphics
     // requirement). Returns (width, height, rgba_bytes).
+    //
+    // The anchor point steers multi-monitor capture: we look up the
+    // `CGDirectDisplayID` of the `NSScreen` the Thuki window is on, then take
+    // the center of that display's bounds. Fallback chain: window missing →
+    // `ns_window` unavailable → `NSScreen` nil → `None`, which downstream
+    // resolves to the main (menu-bar) display.
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(u32, u32, Vec<u8>), String>>();
     app_handle
         .run_on_main_thread(move || {
-            tx.send(capture_full_screen_pixels()).ok();
+            #[cfg(target_os = "macos")]
+            let anchor = main_window
+                .as_ref()
+                .and_then(|w| w.ns_window().ok())
+                .and_then(|p| unsafe { nswindow_display_id(p) })
+                .map(|id| display_bounds_center(crate::cg_displays::bounds_for_display(id)));
+            #[cfg(not(target_os = "macos"))]
+            let anchor: Option<(f64, f64)> = {
+                let _ = &main_window;
+                None
+            };
+            tx.send(capture_full_screen_pixels(anchor)).ok();
         })
         .map_err(|e| format!("failed to dispatch capture to main thread: {e}"))?;
 
@@ -526,8 +631,56 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn capture_full_screen_returns_err_on_non_macos() {
-        let result = capture_full_screen_pixels();
+        let result = capture_full_screen_pixels(None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("only supported on macOS"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn capture_full_screen_returns_err_on_non_macos_with_anchor() {
+        let result = capture_full_screen_pixels(Some((100.0, 100.0)));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn display_bounds_center_returns_midpoint_for_primary_display() {
+        // Primary display at origin (0, 0), 1920x1080: center is (960, 540).
+        assert_eq!(
+            display_bounds_center((0.0, 0.0, 1920.0, 1080.0)),
+            (960.0, 540.0)
+        );
+    }
+
+    #[test]
+    fn display_bounds_center_returns_midpoint_for_offset_display() {
+        // Secondary display at (1920, 0), 1920x1080: center is (2880, 540).
+        // This is the case that the multi-monitor fix targets: anchoring on
+        // a non-primary display so the screen capture picks the right one.
+        assert_eq!(
+            display_bounds_center((1920.0, 0.0, 1920.0, 1080.0)),
+            (2880.0, 540.0)
+        );
+    }
+
+    #[test]
+    fn display_bounds_center_handles_negative_origin() {
+        // Display positioned left of the primary has a negative origin in
+        // Quartz coordinates (origin at primary's top-left).
+        assert_eq!(
+            display_bounds_center((-1280.0, 0.0, 1280.0, 720.0)),
+            (-640.0, 360.0)
+        );
+    }
+
+    #[test]
+    fn display_bounds_center_handles_zero_size() {
+        // Defensive: a zero-sized rect collapses to its origin. We never
+        // expect to see this in practice (CGDisplayBounds returns a real
+        // rect), but the helper is pure and must not panic.
+        assert_eq!(
+            display_bounds_center((100.0, 200.0, 0.0, 0.0)),
+            (100.0, 200.0)
+        );
     }
 }
