@@ -70,6 +70,10 @@ const HELPERS = {
     router_timeout_s:
       'How long (in seconds) Thuki waits for the AI to decide whether your question even needs a web search and to plan the first queries. Raise this if your local AI model is slow on your hardware. Lowering it only causes the planning step to give up early.',
   },
+  behavior: {
+    auto_replace:
+      'When on, a /rewrite or /refine result is written straight back into the app you were using, replacing your highlighted text the moment the rewrite is ready, with no extra click. When off, the rewrite appears in Thuki and you press the Replace button to send it back yourself. The Replace button is always available either way. Off by default because it edits text in another app.',
+  },
   debug: {
     trace_enabled:
       'When on, Thuki saves a JSONL trace of every chat and search session to ~/Library/Application Support/com.quietnode.thuki/traces/. Useful for debugging and refining your prompts. Off by default.',

@@ -7,7 +7,10 @@ import {
 } from '@testing-library/react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import App from '../App';
-import { DEFAULT_CONFIG } from '../contexts/ConfigContext';
+import {
+  DEFAULT_CONFIG,
+  ConfigProviderForTest,
+} from '../contexts/ConfigContext';
 import {
   invoke,
   emitTauriEvent,
@@ -1112,6 +1115,58 @@ describe('App', () => {
         quotedText: 'selected snippet',
       }),
     );
+  });
+
+  it('auto-replaces the source selection after /rewrite when the setting is on', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+      replace_selection: 'replaced',
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{ ...DEFAULT_CONFIG, behavior: { autoReplace: true } }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    act(() => {
+      getLastChannel()?.simulateMessage({
+        type: 'Token',
+        data: 'Polished draft',
+      });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // Auto-replace dismisses the overlay first, then pastes once the native
+    // hide has committed and focus has returned to the source app. Wait past
+    // both deadlines so the deferred paste fires.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    });
+
+    // The completed /rewrite over a selection writes straight back to the
+    // source app because auto-replace is enabled.
+    expect(invoke).toHaveBeenCalledWith('replace_selection', {
+      text: 'Polished draft',
+    });
   });
 
   it('applies justify-end when window is near screen bottom', async () => {

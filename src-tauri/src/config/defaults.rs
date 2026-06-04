@@ -229,6 +229,16 @@ pub const BOUNDS_TIMEOUT_S: (u64, u64) = (1, 300);
 /// by default.
 pub const DEFAULT_DEBUG_TRACE_ENABLED: bool = false;
 
+/// Whether `/rewrite` and `/refine` results are written straight back into the
+/// source app (replacing the selection) the moment the model finishes,
+/// without the user clicking the in-chat Replace button.
+///
+/// Off by default: auto-replace mutates text in another app, so the
+/// conservative default is to require an explicit click. When on, the Replace
+/// button still renders as a manual re-trigger. Toggleable from the Settings
+/// panel (AI tab).
+pub const DEFAULT_AUTO_REPLACE: bool = false;
+
 // Ollama API baked-in limits: not exposed in config.toml because they bound
 // attacker-controlled data (response bodies from the local Ollama daemon) and
 // keep the UI responsive when the daemon is hung. Changing either timeout
@@ -296,6 +306,8 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("quote", "max_display_lines"),
     ("quote", "max_display_chars"),
     ("quote", "max_context_length"),
+    // [behavior]
+    ("behavior", "auto_replace"),
     // [search]
     ("search", "searxng_url"),
     ("search", "reader_url"),
@@ -323,6 +335,7 @@ pub const ALLOWED_SECTIONS: &[&str] = &[
     "prompt",
     "window",
     "quote",
+    "behavior",
     "search",
     "debug",
     "updater",

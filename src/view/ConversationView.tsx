@@ -69,6 +69,11 @@ interface ConversationViewProps {
   /** Called when the user clicks a thumbnail to preview it. */
   onImagePreview?: (path: string) => void;
   /**
+   * Dismisses the overlay and writes a `/rewrite` or `/refine` result back into
+   * the source app. Wired to the per-message Replace button on those results.
+   */
+  onReplace?: (text: string) => void;
+  /**
    * Current `/search` pipeline stage. When non-null and the last assistant
    * message has no content yet, a transient stage pill is rendered in place
    * of the typing indicator.
@@ -116,6 +121,7 @@ export function ConversationView({
   onHistoryOpen,
   onNewConversation,
   onImagePreview,
+  onReplace,
   searchStage = null,
   activeModel,
   onModelPickerToggle,
@@ -271,6 +277,7 @@ export function ConversationView({
               isStreaming={isLastAssistant}
               imagePaths={msg.imagePaths}
               onImagePreview={onImagePreview}
+              onReplace={msg.replaceCommand ? onReplace : undefined}
               errorKind={msg.errorKind}
               thinkingContent={msg.thinkingContent}
               isThinkingPending={isThinkingPending}

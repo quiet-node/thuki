@@ -61,16 +61,16 @@ fn parse_sample() -> DocumentMut {
 #[test]
 fn allowed_fields_count_matches_schema_field_count() {
     // Hand-counted from `AppConfig`: inference(3) + prompt(1) + window(7) + quote(3)
-    // + search(11) + debug(1) + updater(3) = 29 tunable fields. The active model slug
-    // lives in the SQLite app_config table via ActiveModelState, not in TOML. The
-    // collapsed bar height and hide-commit delay are baked into the frontend (see
-    // `WindowSection` doc) because they have no perceptible effect across
+    // + behavior(1) + search(11) + debug(1) + updater(3) = 30 tunable fields. The
+    // active model slug lives in the SQLite app_config table via ActiveModelState,
+    // not in TOML. The collapsed bar height and hide-commit delay are baked into the
+    // frontend (see `WindowSection` doc) because they have no perceptible effect across
     // their usable range. `prompt.system_customized` is an internal migration flag
     // co-written by set_config_field when prompt.system is saved; it is not
     // directly user-tunable and is intentionally absent from ALLOWED_FIELDS.
     // If this assertion fails, the schema has drifted from the allowlist and
     // someone added a field without extending ALLOWED_FIELDS.
-    assert_eq!(ALLOWED_FIELDS.len(), 29);
+    assert_eq!(ALLOWED_FIELDS.len(), 30);
 }
 
 #[test]
@@ -82,6 +82,7 @@ fn allowed_sections_match_app_config_top_level_keys() {
             "prompt",
             "window",
             "quote",
+            "behavior",
             "search",
             "debug",
             "updater"

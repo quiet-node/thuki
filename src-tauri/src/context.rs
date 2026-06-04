@@ -166,13 +166,20 @@ mod macos {
         // SAFETY: Accessibility permission is checked before the activator starts.
         unsafe { simulate_cmd_c() };
         // Poll the pasteboard with exponential backoff instead of a fixed sleep.
-        // Fast machines return in ~10ms; slower machines get up to ~150ms total.
+        // Fast machines return in ~10ms. The first synthetic Cmd+C intermittently
+        // fails to land in Electron text inputs (Discord's editor, Slack), so if
+        // nothing has changed by the midpoint we re-issue it once; a Cmd+C with
+        // no selection is a harmless no-op. Worst case (no selection) ~315ms.
         let mut after = before.clone();
-        for delay_ms in [10, 20, 40, 80] {
+        for (i, delay_ms) in [10u64, 20, 40, 65, 80, 100].into_iter().enumerate() {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
             after = clipboard_text();
             if after != before {
                 break;
+            }
+            if i == 2 {
+                // SAFETY: same precondition as the first call above.
+                unsafe { simulate_cmd_c() };
             }
         }
         // Always restore the original clipboard regardless of outcome.

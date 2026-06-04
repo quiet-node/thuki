@@ -37,6 +37,7 @@ mod activator;
 mod cg_displays;
 pub mod context;
 pub mod permissions;
+pub mod replace;
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -1578,6 +1579,15 @@ pub fn run() {
 
             // ── Persistent HTTP client ────────────────────────────────
             app.manage(reqwest::Client::new());
+
+            // ── Replace-target tracking ───────────────────────────────
+            // Tracks the last-active non-Thuki app via an NSWorkspace
+            // observer; this is the app the /rewrite & /refine Replace action
+            // writes into. Managed so `replace_selection` can read the target,
+            // and the observer is installed on the main thread here at setup.
+            let last_active_app = crate::replace::LastActiveAppState::default();
+            app.manage(last_active_app.clone());
+            crate::replace::start_activation_tracking(last_active_app);
             let warmup_handle = app.handle().clone();
             app.manage(warmup::WarmupState::with_on_loaded(Arc::new(
                 move |model| {
@@ -1834,6 +1844,8 @@ pub fn run() {
             ocr::extract_text_command,
             #[cfg(not(coverage))]
             export::prompt_and_save_chat_export,
+            #[cfg(not(coverage))]
+            replace::replace_selection,
             notify_overlay_hidden,
             set_overlay_minimized,
             notify_frontend_ready,

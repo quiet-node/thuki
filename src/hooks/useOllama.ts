@@ -38,6 +38,10 @@ export interface Message {
   fromSearch?: boolean;
   /** Marks an assistant message produced through a `/think` turn. */
   fromThink?: boolean;
+  /** Trigger of the replaceable utility command (`/rewrite` or `/refine`) that
+   *  produced this assistant message. Present only on those results; drives the
+   *  in-chat Replace button and the auto-replace path. */
+  replaceCommand?: string;
   /** Source links forwarded by the search pipeline. */
   searchSources?: SearchResultPreview[];
   /** Warnings emitted by the `/search` pipeline during this turn. */
@@ -262,6 +266,7 @@ export function useOllama(
       think?: boolean,
       promptOverride?: string,
       displayImagePaths?: string[],
+      replaceCommand?: string,
     ) => {
       if (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) {
         return;
@@ -290,6 +295,7 @@ export function useOllama(
         role: 'assistant',
         content: '',
         fromThink: think ? true : undefined,
+        replaceCommand,
         modelName: activeModel ?? undefined,
       };
 

@@ -62,6 +62,11 @@ max_display_lines = 4
 max_display_chars = 300
 max_context_length = 4096
 
+[behavior]
+# Write /rewrite and /refine results straight back into the source app,
+# replacing your selection, without clicking the in-chat Replace button.
+auto_replace = false
+
 [search]
 # URLs of the local sandbox services. Match the bindings in
 # `sandbox/docker-compose.yml`. Override only if you run SearXNG or the
@@ -166,6 +171,14 @@ Controls how text you select in another app (and bring to Thuki) appears as a qu
 | `max_display_lines`  | `4`     | Yes      | —               | `[1, 100]`   | How many lines of the quoted text are shown as a preview in the input bar. The full text is still sent to the AI; this only affects what you see. Raise to preview more of the quote at a glance; lower to keep the input bar compact.                             |
 | `max_display_chars`  | `300`   | Yes      | —               | `[1, 10000]` | How many characters of the quoted text are shown as a preview in the input bar. Same idea as `max_display_lines`: the full text is still sent to the AI. Raise for a longer preview; lower to keep the bar compact.                                                |
 | `max_context_length` | `4096`  | Yes      | —               | `[1, 65536]` | How many characters of the quoted text are actually sent to the AI. Anything past this is cut off. Raise if you quote long passages and want the AI to see all of it; lower if your model has a small context window or you want to save tokens on big selections. |
+
+### `[behavior]`
+
+Controls what happens to a `/rewrite` or `/refine` result: whether Thuki writes it straight back into the app you were using, or waits for you to send it back yourself.
+
+| Constant       | Default | Tunable? | Why not tunable | Bounds | Description                                                                                                                                                                                                                                                                                                          |
+| :------------- | :------ | :------- | :-------------- | :----- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auto_replace` | `false` | Yes      | —               | —      | When on, a `/rewrite` or `/refine` result is written straight back into the source app, replacing your highlighted text, the moment the rewrite is ready, with no extra click. When off, the rewrite appears in Thuki and you press the Replace button to send it back. The Replace button is available either way. |
 
 ### `[search]`
 

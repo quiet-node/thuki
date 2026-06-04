@@ -35,6 +35,9 @@ export interface RawAppConfig {
     max_display_chars: number;
     max_context_length: number;
   };
+  behavior: {
+    auto_replace: boolean;
+  };
   search: {
     searxng_url: string;
     reader_url: string;

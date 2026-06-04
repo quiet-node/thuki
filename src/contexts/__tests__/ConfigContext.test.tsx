@@ -95,6 +95,9 @@ describe('ConfigContext', () => {
           max_display_chars: 500,
           max_context_length: 8192,
         },
+        behavior: {
+          auto_replace: true,
+        },
       });
 
       render(
@@ -184,6 +187,9 @@ describe('ConfigContext', () => {
           max_display_chars: 300,
           max_context_length: 4096,
         },
+        behavior: {
+          auto_replace: false,
+        },
       };
       const updated = {
         ...initial,
@@ -211,6 +217,71 @@ describe('ConfigContext', () => {
       expect(screen.getByTestId('max-chat-height').textContent).toBe('800');
     });
 
+    it('refetches config when the overlay shows', async () => {
+      const initial = {
+        inference: { ollama_url: 'http://127.0.0.1:11434' },
+        prompt: { system: '' },
+        window: { overlay_width: 600, max_chat_height: 648, max_images: 3 },
+        quote: {
+          max_display_lines: 4,
+          max_display_chars: 300,
+          max_context_length: 4096,
+        },
+        behavior: { auto_replace: false },
+      };
+      const updated = {
+        ...initial,
+        window: { overlay_width: 950, max_chat_height: 648, max_images: 3 },
+      };
+      invoke.mockResolvedValueOnce(initial).mockResolvedValueOnce(updated);
+
+      render(
+        <ConfigProvider>
+          <Probe />
+        </ConfigProvider>,
+      );
+      await act(async () => {});
+      expect(screen.getByTestId('overlay-width').textContent).toBe('600');
+
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', { state: 'show' });
+      });
+
+      expect(screen.getByTestId('overlay-width').textContent).toBe('950');
+    });
+
+    it('does not refetch on non-show or payloadless visibility events', async () => {
+      const initial = {
+        inference: { ollama_url: 'http://127.0.0.1:11434' },
+        prompt: { system: '' },
+        window: { overlay_width: 600, max_chat_height: 648, max_images: 3 },
+        quote: {
+          max_display_lines: 4,
+          max_display_chars: 300,
+          max_context_length: 4096,
+        },
+        behavior: { auto_replace: false },
+      };
+      invoke.mockResolvedValue(initial);
+
+      render(
+        <ConfigProvider>
+          <Probe />
+        </ConfigProvider>,
+      );
+      await act(async () => {});
+      const callsAfterMount = invoke.mock.calls.length;
+
+      // A hide-request (state !== 'show') and a payloadless event must not
+      // trigger a config refetch.
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', { state: 'hide-request' });
+        emitTauriEvent('thuki://visibility', null);
+      });
+
+      expect(invoke.mock.calls.length).toBe(callsAfterMount);
+    });
+
     it('keeps last good config when a refresh invoke rejects', async () => {
       const initial = {
         inference: { ollama_url: 'http://127.0.0.1:11434' },
@@ -224,6 +295,9 @@ describe('ConfigContext', () => {
           max_display_lines: 4,
           max_display_chars: 300,
           max_context_length: 4096,
+        },
+        behavior: {
+          auto_replace: false,
         },
       };
       invoke
@@ -266,6 +340,9 @@ describe('ConfigContext', () => {
           max_display_chars: 300,
           max_context_length: 4096,
         },
+        behavior: {
+          auto_replace: false,
+        },
       });
 
       const { unmount } = render(
@@ -296,6 +373,9 @@ describe('ConfigContext', () => {
           max_display_lines: 4,
           max_display_chars: 300,
           max_context_length: 4096,
+        },
+        behavior: {
+          auto_replace: false,
         },
       });
 
@@ -382,6 +462,9 @@ describe('ConfigContext', () => {
           max_display_lines: 4,
           max_display_chars: 300,
           max_context_length: 4096,
+        },
+        behavior: {
+          auto_replace: false,
         },
       });
 

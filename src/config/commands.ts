@@ -198,7 +198,7 @@ export const COMMANDS: readonly Command[] = [
         '`/rewrite so basically what happened was i was trying to fix the bug`: rewrites typed text for clarity',
       ],
       behavior:
-        'Preserves the original meaning while improving flow and readability. Outputs only the rewritten text.',
+        'Preserves the original meaning while improving flow and readability. Outputs only the rewritten text. A Replace button on the result writes the rewritten text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button.',
       composability:
         '`/rewrite` works with attached images or `/screen`. Vision OCR extracts the text first, then rewrites it.',
     },
@@ -245,7 +245,7 @@ export const COMMANDS: readonly Command[] = [
         '`/refine hey just wanted to follow up on the thing we discussed`: cleans up typed text',
       ],
       behavior:
-        'Corrects errors and smooths rough phrasing without restructuring or adding new ideas. Your original tone and meaning stay intact.',
+        'Corrects errors and smooths rough phrasing without restructuring or adding new ideas. Your original tone and meaning stay intact. A Replace button on the result writes the refined text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button.',
       composability:
         '`/refine` works with attached images or `/screen`. Vision OCR extracts the text first, then refines it.',
     },
@@ -339,6 +339,16 @@ export const COMMANDS: readonly Command[] = [
  * renders a branded screen-capture loading tile instead of a broken image.
  */
 export const SCREEN_CAPTURE_PLACEHOLDER = 'blob:screen-capture-loading';
+
+/**
+ * Slash commands whose results can be written back into the source app via the
+ * in-chat Replace button (and the auto-replace setting). Limited to the
+ * in-place text transforms where "replace my selection" is the natural intent.
+ */
+export const REPLACEABLE_COMMANDS: ReadonlySet<string> = new Set([
+  '/rewrite',
+  '/refine',
+]);
 
 /**
  * Builds a fully composed prompt from a utility command's template.

@@ -14,17 +14,17 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{
-    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX,
-    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S,
-    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
-    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
-    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
-    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
-    DEFAULT_SYSTEM_CUSTOMIZED, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
-    DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
-    DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_AUTO_CHECK, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
-    DEFAULT_UPDATER_MANIFEST_URL,
+    DEFAULT_AUTO_REPLACE, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
+    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
+    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
+    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_CUSTOMIZED, DEFAULT_SYSTEM_PROMPT_BASE,
+    DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX,
+    DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_AUTO_CHECK,
+    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
 };
 
 /// Static, user-tunable inference daemon configuration.
@@ -172,6 +172,25 @@ impl Default for QuoteSection {
     }
 }
 
+/// Selection-replacement behavior for the `/rewrite` and `/refine` commands.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct BehaviorSection {
+    /// When `true`, a `/rewrite` or `/refine` result is written straight back
+    /// into the source app (replacing the selection) as soon as the model
+    /// finishes, with no Replace-button click required. When `false`, the
+    /// user triggers the write manually via the in-chat Replace button.
+    pub auto_replace: bool,
+}
+
+impl Default for BehaviorSection {
+    fn default() -> Self {
+        Self {
+            auto_replace: DEFAULT_AUTO_REPLACE,
+        }
+    }
+}
+
 /// Search pipeline and service configuration.
 ///
 /// Service URLs control where the SearXNG and reader sidecar processes live.
@@ -306,6 +325,7 @@ pub struct AppConfig {
     pub prompt: PromptSection,
     pub window: WindowSection,
     pub quote: QuoteSection,
+    pub behavior: BehaviorSection,
     pub search: SearchSection,
     pub debug: DebugSection,
     #[serde(default)]

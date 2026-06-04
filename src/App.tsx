@@ -51,6 +51,7 @@ import { MAX_IMAGE_SIZE_BYTES } from './types/image';
 import { useConfig } from './contexts/ConfigContext';
 import {
   COMMANDS,
+  REPLACEABLE_COMMANDS,
   SCREEN_CAPTURE_PLACEHOLDER,
   buildPrompt,
 } from './config/commands';
@@ -59,6 +60,7 @@ import {
   serializeForClipboard,
   serializeForFile,
 } from './lib/exportSerializer';
+import { replaceSelection, shouldAutoReplace } from './utils/replaceSelection';
 import './App.css';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
@@ -241,6 +243,15 @@ const MORPH_SETTLE_GRACE_MS = 250;
  * it below the exit-animation duration causes a visible pop.
  */
 const HIDE_COMMIT_DELAY_MS = 350;
+
+/**
+ * Delay from triggering a Replace (which dismisses the overlay) to posting the
+ * synthetic paste into the source app. Must exceed `HIDE_COMMIT_DELAY_MS` so
+ * the overlay's native window is hidden — returning keyboard focus to the
+ * target app — before Cmd+V fires; the extra margin lets the OS settle the
+ * key-window transfer so the paste never lands back in Thuki.
+ */
+const REPLACE_PASTE_DELAY_MS = HIDE_COMMIT_DELAY_MS + 90;
 
 /**
  * Parses a message to detect all valid slash commands present as whole words.
@@ -434,8 +445,24 @@ function App() {
   } = useConversationHistory();
 
   /**
+   * Latest value of the auto-replace setting, mirrored into a ref so the
+   * turn-completion handler can read it without taking `config` (created
+   * further down the component) as a dependency.
+   */
+  const autoReplaceRef = useRef(false);
+
+  /**
+   * Mirror of `performReplace`, so the turn-completion handler (defined before
+   * `performReplace`) can trigger an auto-replace without a forward reference.
+   */
+  const performReplaceRef = useRef<((text: string) => void) | null>(null);
+
+  /**
    * Persist a completed user/assistant turn to SQLite if the conversation
-   * has been saved. Passed as `onTurnComplete` to `useOllama`.
+   * has been saved. Passed as `onTurnComplete` to `useOllama`. When
+   * auto-replace is enabled and the turn was a `/rewrite` or `/refine` over a
+   * selection, dismiss the overlay and write the result back into the source
+   * app (the same flow as the manual Replace button).
    */
   const handleTurnComplete = useCallback(
     async (
@@ -443,6 +470,9 @@ function App() {
       assistantMsg: Parameters<typeof persistTurn>[1],
     ) => {
       await persistTurn(userMsg, assistantMsg);
+      if (shouldAutoReplace(autoReplaceRef.current, assistantMsg, userMsg)) {
+        performReplaceRef.current?.(assistantMsg.content);
+      }
     },
     [persistTurn],
   );
@@ -556,6 +586,12 @@ function App() {
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
   const config = useConfig();
   const quote = config.quote;
+
+  // Keep the auto-replace ref in sync with the latest config so
+  // `handleTurnComplete` can read it without a `config` dependency.
+  useEffect(() => {
+    autoReplaceRef.current = config.behavior.autoReplace;
+  }, [config]);
 
   /**
    * True when the window is near the screen bottom and should grow upward.
@@ -946,6 +982,29 @@ function App() {
       return 'hiding';
     });
   }, [cancel]);
+
+  /**
+   * Dismisses the overlay, then writes a `/rewrite` or `/refine` result back
+   * into the source app. Dismissing returns keyboard focus to the target app,
+   * so the synthetic paste — fired once the overlay's native window has hidden
+   * — lands there rather than in Thuki. Drives both the manual Replace button
+   * and the auto-replace path.
+   */
+  const performReplace = useCallback(
+    (text: string) => {
+      requestHideOverlay();
+      setTimeout(() => {
+        void replaceSelection(text);
+      }, REPLACE_PASTE_DELAY_MS);
+    },
+    [requestHideOverlay],
+  );
+
+  // Mirror `performReplace` into a ref so the earlier-defined turn-completion
+  // handler can trigger auto-replace without a forward reference.
+  useEffect(() => {
+    performReplaceRef.current = performReplace;
+  }, [performReplace]);
 
   /**
    * Restores the parked conversation. The OS window is snapped back to full
@@ -2203,6 +2262,7 @@ function App() {
         composedPrompt,
         /* v8 ignore next -- dispatch guard ensures at least one image source; empty path is defensive */
         readyPaths.length > 0 ? readyPaths : undefined,
+        REPLACEABLE_COMMANDS.has(trigger) ? trigger : undefined,
       );
     },
     [
@@ -2667,6 +2727,8 @@ function App() {
         undefined,
         hasThink || undefined,
         composedPrompt,
+        undefined,
+        REPLACEABLE_COMMANDS.has(utilityTrigger) ? utilityTrigger : undefined,
       );
       setSelectedContext(null);
       setQuery('');
@@ -3225,6 +3287,7 @@ function App() {
                                 onNewConversation={handleNewConversation}
                                 onHistoryOpen={handleHistoryToggle}
                                 onImagePreview={handleChatImagePreview}
+                                onReplace={performReplace}
                                 searchStage={searchStage}
                                 activeModel={activeModel}
                                 onModelPickerToggle={
