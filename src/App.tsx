@@ -245,15 +245,6 @@ const MORPH_SETTLE_GRACE_MS = 250;
 const HIDE_COMMIT_DELAY_MS = 350;
 
 /**
- * Delay from triggering a Replace (which dismisses the overlay) to posting the
- * synthetic paste into the source app. Must exceed `HIDE_COMMIT_DELAY_MS` so
- * the overlay's native window is hidden — returning keyboard focus to the
- * target app — before Cmd+V fires; the extra margin lets the OS settle the
- * key-window transfer so the paste never lands back in Thuki.
- */
-const REPLACE_PASTE_DELAY_MS = HIDE_COMMIT_DELAY_MS + 90;
-
-/**
  * Parses a message to detect all valid slash commands present as whole words.
  * Derives detectable commands from the COMMANDS registry so adding a command
  * to the registry is sufficient (no hardcoded trigger strings here).
@@ -984,21 +975,14 @@ function App() {
   }, [cancel]);
 
   /**
-   * Dismisses the overlay, then writes a `/rewrite` or `/refine` result back
-   * into the source app. Dismissing returns keyboard focus to the target app,
-   * so the synthetic paste — fired once the overlay's native window has hidden
-   * — lands there rather than in Thuki. Drives both the manual Replace button
-   * and the auto-replace path.
+   * Writes a `/rewrite` or `/refine` result back into the source app, replacing
+   * the user's selection. The native paste is posted directly to the target
+   * process, so the overlay stays open: no dismiss, and the user can Replace
+   * repeatedly. Drives both the manual Replace button and the auto-replace path.
    */
-  const performReplace = useCallback(
-    (text: string) => {
-      requestHideOverlay();
-      setTimeout(() => {
-        void replaceSelection(text);
-      }, REPLACE_PASTE_DELAY_MS);
-    },
-    [requestHideOverlay],
-  );
+  const performReplace = useCallback((text: string) => {
+    void replaceSelection(text);
+  }, []);
 
   // Mirror `performReplace` into a ref so the earlier-defined turn-completion
   // handler can trigger auto-replace without a forward reference.

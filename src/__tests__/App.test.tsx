@@ -1155,12 +1155,10 @@ describe('App', () => {
     });
     await act(async () => {});
 
-    // Auto-replace dismisses the overlay first, then pastes once the native
-    // hide has committed and focus has returned to the source app. Wait past
-    // both deadlines so the deferred paste fires.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 600));
-    });
+    // Auto-replace writes straight back to the source app on completion. The
+    // paste is posted to the target process and fires synchronously, with no
+    // overlay dismiss to wait on.
+    await act(async () => {});
 
     // The completed /rewrite over a selection writes straight back to the
     // source app because auto-replace is enabled.

@@ -10,16 +10,18 @@
 //!    whether that is the app you summoned Thuki from (in-place) or a different
 //!    app you clicked into afterwards (retarget).
 //!
-//! 2. **Writing (synthetic paste).** The frontend dismisses the overlay first,
-//!    so keyboard focus has returned to the target app by the time this runs.
-//!    The clipboard is saved, the rewrite written (tagged transient so
-//!    clipboard-history managers skip it), the target re-activated for good
-//!    measure, Cmd+V posted, and the clipboard restored. Paste is used rather
-//!    than an Accessibility write because, once an app regains focus, Cmd+V
-//!    reliably *replaces* its selection — an AX selected-text write does not:
-//!    the selection range collapses when the app loses focus, so the AX write
-//!    inserts at the caret instead. Secure input (a focused password field)
-//!    suppresses the write entirely.
+//! 2. **Writing (synthetic paste).** The clipboard is saved, the rewrite
+//!    written to it (tagged transient so clipboard-history managers skip it),
+//!    the target app activated, and a synthetic Cmd+V posted directly to the
+//!    target process with `CGEventPostToPid`. Posting to the process rather
+//!    than the system key window means the paste reaches the source app even
+//!    though Thuki's nonactivating panel still holds the key window, so the
+//!    overlay stays open instead of having to be dismissed first. The clipboard
+//!    is then restored. Paste is used rather than an Accessibility write
+//!    because Cmd+V reliably *replaces* the selection. An AX selected-text
+//!    write does not: the selection range collapses when the app loses focus,
+//!    so the AX write inserts at the caret instead. Secure input (a focused
+//!    password field) suppresses the write entirely.
 
 use std::sync::{Arc, Mutex};
 
@@ -83,13 +85,14 @@ pub fn start_activation_tracking(state: LastActiveAppState) {
     }
 }
 
-/// Pastes `text` into the last-active app, replacing its selection. The
-/// frontend must dismiss the overlay before invoking this so focus has
-/// returned to the target. Returns [`ReplaceOutcome::Skipped`] without side
-/// effects when there is nothing safe to write into.
+/// Pastes `text` into the last-active app, replacing its selection. The paste
+/// is posted directly to the target process, so the overlay does not need to be
+/// dismissed first. Returns [`ReplaceOutcome::Skipped`] without side effects
+/// when there is nothing safe to write into.
 ///
 /// Runs the macOS clipboard / event work on a blocking pool thread: the paste
-/// path sleeps while focus transfers, so it must not run on the main thread.
+/// path sleeps while the target activates, so it must not run on the main
+/// thread.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn replace_selection(
@@ -139,8 +142,6 @@ mod macos {
 
     /// macOS virtual keycode for 'v'.
     const KEY_V: u16 = 0x09;
-    /// CGEventTapLocation::kCGHIDEventTap.
-    const K_CG_HID_EVENT_TAP: u32 = 0;
     /// CGEventFlags::kCGEventFlagMaskCommand.
     const K_CG_EVENT_FLAG_MASK_COMMAND: u64 = 0x0010_0000;
     /// NSApplicationActivationOptions::NSApplicationActivateIgnoringOtherApps.
@@ -158,7 +159,11 @@ mod macos {
             key_down: bool,
         ) -> CFTypeRef;
         fn CGEventSetFlags(event: CFTypeRef, flags: u64);
-        fn CGEventPost(tap_location: u32, event: CFTypeRef);
+        // Posts an event directly to a target process, bypassing the key-window
+        // routing that `CGEventPost` uses. This delivers the paste to the
+        // source app even though Thuki's panel still holds the system key
+        // window, so the overlay does not need to be dismissed first.
+        fn CGEventPostToPid(pid: i32, event: CFTypeRef);
     }
 
     #[link(name = "Carbon", kind = "framework")]
@@ -235,8 +240,9 @@ mod macos {
     }
 
     /// Brings the app with `pid` to the foreground and waits, with bounded
-    /// backoff, for the activation to take effect, so the following synthetic
-    /// Cmd+V lands in it.
+    /// backoff, for the activation to take effect, so its focused text field is
+    /// first responder and handles the synthetic Cmd+V as a paste over the
+    /// selection.
     unsafe fn activate_and_settle(pid: i32) {
         let app: *mut AnyObject =
             msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid];
@@ -251,18 +257,20 @@ mod macos {
         }
     }
 
-    /// Posts a synthetic Cmd+V to whatever app currently holds key focus.
-    unsafe fn simulate_cmd_v() {
+    /// Posts a synthetic Cmd+V directly to the process `pid`. Targeting the
+    /// process rather than the system key window is what lets the paste land in
+    /// the source app while Thuki's panel remains key and visible.
+    unsafe fn post_cmd_v_to_pid(pid: i32) {
         let down = CGEventCreateKeyboardEvent(std::ptr::null(), KEY_V, true);
         if !down.is_null() {
             CGEventSetFlags(down, K_CG_EVENT_FLAG_MASK_COMMAND);
-            CGEventPost(K_CG_HID_EVENT_TAP, down);
+            CGEventPostToPid(pid, down);
             CFRelease(down);
         }
         let up = CGEventCreateKeyboardEvent(std::ptr::null(), KEY_V, false);
         if !up.is_null() {
             CGEventSetFlags(up, K_CG_EVENT_FLAG_MASK_COMMAND);
-            CGEventPost(K_CG_HID_EVENT_TAP, up);
+            CGEventPostToPid(pid, up);
             CFRelease(up);
         }
     }
@@ -322,7 +330,7 @@ mod macos {
             let saved = pasteboard_string();
             write_pasteboard_transient(text);
             activate_and_settle(pid);
-            simulate_cmd_v();
+            post_cmd_v_to_pid(pid);
             std::thread::sleep(std::time::Duration::from_millis(PASTE_SETTLE_MS));
             restore_pasteboard(saved);
             ReplaceOutcome::Replaced
