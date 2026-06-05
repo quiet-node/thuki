@@ -1269,6 +1269,137 @@ describe('App', () => {
     expect(__mockWindow.hide).not.toHaveBeenCalled();
   });
 
+  it('keeps the Replace button on a plain follow-up after /rewrite', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: { autoReplace: false, autoClose: false },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Polished v1' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // The first /rewrite result is replaceable.
+    expect(
+      screen.queryAllByLabelText('Replace selection in source app'),
+    ).toHaveLength(1);
+
+    // A plain refinement inherits sticky rewrite mode, so its result is
+    // replaceable too.
+    act(() => {
+      fireEvent.change(textarea, { target: { value: 'make it longer' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Longer v2' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    expect(
+      screen.queryAllByLabelText('Replace selection in source app'),
+    ).toHaveLength(2);
+  });
+
+  it('drops the Replace button when a different command interrupts the rewrite session', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: { autoReplace: false, autoClose: false },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Polished v1' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // A non-replaceable command exits rewrite mode for itself and for any
+    // later plain follow-up.
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/tldr wrap this up' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Short.' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    act(() => {
+      fireEvent.change(textarea, { target: { value: 'and again' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Again.' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // Only the original /rewrite result carries a Replace button.
+    expect(
+      screen.queryAllByLabelText('Replace selection in source app'),
+    ).toHaveLength(1);
+  });
+
   it('applies justify-end when window is near screen bottom', async () => {
     render(<App />);
     await act(async () => {});

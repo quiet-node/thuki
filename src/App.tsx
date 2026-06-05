@@ -450,6 +450,16 @@ function App() {
   const autoCloseRef = useRef(false);
 
   /**
+   * Sticky rewrite mode: the trigger of the most recent replaceable command
+   * (`/rewrite` or `/refine`) in this conversation, or `null`. Plain follow-up
+   * turns inherit it so refinements ("make it longer") keep the Replace button;
+   * any other command exits the mode. Mirrors `searchActive`'s lifecycle. A ref,
+   * not state, because nothing re-renders on change — each message carries its
+   * own `replaceCommand`, fixed at creation.
+   */
+  const stickyReplaceCommandRef = useRef<string | null>(null);
+
+  /**
    * Mirror of `performReplace`, so the turn-completion handler (defined before
    * `performReplace`) can trigger an auto-replace without a forward reference.
    */
@@ -948,6 +958,7 @@ function App() {
       setPendingUserMessage(null);
       setCaptureError(null);
       setSearchActive(false);
+      stickyReplaceCommandRef.current = null;
 
       void refreshModels();
       reset();
@@ -968,6 +979,7 @@ function App() {
     screenCapturePendingRef.current = false;
     screenCaptureInputSnapshotRef.current = null;
     setSearchActive(false);
+    stickyReplaceCommandRef.current = null;
     setSelectedContext(null);
     setPreviewImageUrl(null);
     setAttachedImages((prev) => {
@@ -1600,6 +1612,7 @@ function App() {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
         setSearchActive(false);
+        stickyReplaceCommandRef.current = null;
       } catch {
         // Load failed - current session is preserved intact.
       } finally {
@@ -1630,6 +1643,7 @@ function App() {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
         setSearchActive(false);
+        stickyReplaceCommandRef.current = null;
       } catch {
         // Load failed - save already committed; dismiss panel, keep current view.
       } finally {
@@ -1677,6 +1691,7 @@ function App() {
     setIsSubmitPending(false);
     setPendingUserMessage(null);
     setSearchActive(false);
+    stickyReplaceCommandRef.current = null;
   }, [reset, resetHistory]);
 
   /**
@@ -1888,7 +1903,17 @@ function App() {
         .filter((img) => img.filePath !== null)
         .map((img) => img.filePath as string);
       const images = readyPaths.length > 0 ? readyPaths : undefined;
-      ask(submitQuery, context, images, think);
+      // Plain submits inherit sticky rewrite mode so refinements of a
+      // `/rewrite`/`/refine` result keep their Replace button.
+      ask(
+        submitQuery,
+        context,
+        images,
+        think,
+        undefined,
+        undefined,
+        stickyReplaceCommandRef.current ?? undefined,
+      );
       setSelectedContext(null);
       setQuery('');
       for (const img of attachedImages) {
@@ -2622,6 +2647,16 @@ function App() {
       !(hasThink && selectedContext?.trim())
     )
       return;
+
+    // Maintain sticky rewrite mode. A replaceable command (re)starts it; any
+    // other command exits it; a plain follow-up leaves it intact so its
+    // refinement inherits the Replace button through `executeSubmit`. Search
+    // turns have already returned above, so `/search` needs no branch here.
+    if (utilityTrigger && REPLACEABLE_COMMANDS.has(utilityTrigger)) {
+      stickyReplaceCommandRef.current = utilityTrigger;
+    } else if (utilityTrigger || hasScreen || hasThink || hasExtract) {
+      stickyReplaceCommandRef.current = null;
+    }
 
     const context = sanitizeContext(selectedContext, quote.maxContextLength);
 
