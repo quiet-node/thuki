@@ -644,6 +644,25 @@ fn write_field_to_disk_persists_and_returns_resolved_config() {
 }
 
 #[test]
+fn write_field_to_disk_creates_section_absent_from_older_file() {
+    // Regression: a config.toml seeded before the [behavior] section was added
+    // to the schema has no [behavior] table (SAMPLE_CONFIG reproduces this
+    // older-file shape). Toggling behavior.auto_replace must create the section
+    // rather than fail with UnknownSection; otherwise the setting can never be
+    // turned on for any user whose config predates the section.
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    let resolved = write_field_to_disk(&path, "behavior", "auto_replace", json!(true)).unwrap();
+    assert!(resolved.behavior.auto_replace);
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("[behavior]"));
+    assert!(on_disk.contains("auto_replace = true"));
+}
+
+#[test]
 fn write_field_to_disk_accepts_search_pipeline_wall_clock_budget() {
     let dir = tempdir();
     let path = dir.join("config.toml");
