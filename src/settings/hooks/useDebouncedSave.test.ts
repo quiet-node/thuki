@@ -32,6 +32,7 @@ const SAMPLE_CONFIG: RawAppConfig = {
   },
   behavior: {
     auto_replace: false,
+    auto_close: false,
   },
   search: {
     searxng_url: 'http://127.0.0.1:25017',

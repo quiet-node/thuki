@@ -60,6 +60,7 @@ interface RawAppConfig {
   };
   behavior: {
     auto_replace: boolean;
+    auto_close: boolean;
   };
 }
 
@@ -89,6 +90,8 @@ export interface AppConfig {
   behavior: {
     /** Auto-write `/rewrite` & `/refine` results back into the source app. */
     autoReplace: boolean;
+    /** Dismiss the overlay after a `/rewrite` or `/refine` result is replaced. */
+    autoClose: boolean;
   };
 }
 
@@ -116,6 +119,7 @@ function transform(raw: RawAppConfig): AppConfig {
     },
     behavior: {
       autoReplace: raw.behavior.auto_replace,
+      autoClose: raw.behavior.auto_close,
     },
   };
 }
@@ -258,5 +262,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   behavior: {
     autoReplace: false,
+    autoClose: false,
   },
 };

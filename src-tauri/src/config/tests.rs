@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    DEFAULT_AUTO_REPLACE, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
     DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
     DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
     DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
@@ -1206,12 +1206,14 @@ fn config_error_io_error_serializes_io_source_as_display_string() {
 fn behavior_section_default_matches_compiled_defaults() {
     let b = BehaviorSection::default();
     assert_eq!(b.auto_replace, DEFAULT_AUTO_REPLACE);
+    assert_eq!(b.auto_close, DEFAULT_AUTO_CLOSE);
 }
 
 #[test]
 fn app_config_default_includes_behavior_section_with_compiled_defaults() {
     let c = AppConfig::default();
     assert_eq!(c.behavior.auto_replace, DEFAULT_AUTO_REPLACE);
+    assert_eq!(c.behavior.auto_close, DEFAULT_AUTO_CLOSE);
 }
 
 #[test]
@@ -1221,6 +1223,15 @@ fn behavior_auto_replace_round_trips_through_load() {
     std::fs::write(&path, "[behavior]\nauto_replace = true\n").unwrap();
     let loaded = load_from_path(&path).unwrap();
     assert!(loaded.behavior.auto_replace);
+}
+
+#[test]
+fn behavior_auto_close_round_trips_through_load() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[behavior]\nauto_close = true\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert!(loaded.behavior.auto_close);
 }
 
 #[test]
@@ -1235,6 +1246,10 @@ fn toml_without_behavior_section_deserializes_to_defaults() {
     let loaded = load_from_path(&path).unwrap();
     assert_eq!(
         loaded.behavior.auto_replace, DEFAULT_AUTO_REPLACE,
+        "missing [behavior] section must deserialize to defaults via #[serde(default)]"
+    );
+    assert_eq!(
+        loaded.behavior.auto_close, DEFAULT_AUTO_CLOSE,
         "missing [behavior] section must deserialize to defaults via #[serde(default)]"
     );
 }

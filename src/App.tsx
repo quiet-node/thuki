@@ -443,6 +443,13 @@ function App() {
   const autoReplaceRef = useRef(false);
 
   /**
+   * Mirror of `config.behavior.autoClose`, read by the replace path to decide
+   * whether to dismiss the overlay after a successful write-back. Same ref
+   * indirection as `autoReplaceRef` so the handlers avoid a `config` dependency.
+   */
+  const autoCloseRef = useRef(false);
+
+  /**
    * Mirror of `performReplace`, so the turn-completion handler (defined before
    * `performReplace`) can trigger an auto-replace without a forward reference.
    */
@@ -582,6 +589,7 @@ function App() {
   // `handleTurnComplete` can read it without a `config` dependency.
   useEffect(() => {
     autoReplaceRef.current = config.behavior.autoReplace;
+    autoCloseRef.current = config.behavior.autoClose;
   }, [config]);
 
   /**
@@ -977,12 +985,21 @@ function App() {
   /**
    * Writes a `/rewrite` or `/refine` result back into the source app, replacing
    * the user's selection. The native paste is posted directly to the target
-   * process, so the overlay stays open: no dismiss, and the user can Replace
-   * repeatedly. Drives both the manual Replace button and the auto-replace path.
+   * process, so the overlay can stay open and the user can Replace repeatedly.
+   * When auto-close is on, the overlay dismisses itself after a *successful*
+   * write (a skipped write leaves it open). Drives both the manual Replace
+   * button and the auto-replace path.
    */
-  const performReplace = useCallback((text: string) => {
-    void replaceSelection(text);
-  }, []);
+  const performReplace = useCallback(
+    (text: string) => {
+      void replaceSelection(text).then((replaced) => {
+        if (replaced && autoCloseRef.current) {
+          requestHideOverlay();
+        }
+      });
+    },
+    [requestHideOverlay],
+  );
 
   // Mirror `performReplace` into a ref so the earlier-defined turn-completion
   // handler can trigger auto-replace without a forward reference.

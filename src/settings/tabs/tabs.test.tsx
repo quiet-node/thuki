@@ -56,6 +56,7 @@ const CONFIG: RawAppConfig = {
   },
   behavior: {
     auto_replace: false,
+    auto_close: false,
   },
   search: {
     searxng_url: 'http://127.0.0.1:25017',
@@ -1046,12 +1047,43 @@ describe('BehaviorTab', () => {
   it('reflects an enabled auto_replace value on the toggle', () => {
     render(
       <BehaviorTab
-        config={{ ...CONFIG, behavior: { auto_replace: true } }}
+        config={{
+          ...CONFIG,
+          behavior: { auto_replace: true, auto_close: false },
+        }}
         resyncToken={0}
         onSaved={() => {}}
       />,
     );
     expect(screen.getByRole('switch', { name: TOGGLE_NAME })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+  });
+
+  const CLOSE_NAME = /Close Thuki after replacing selected text/;
+
+  it('renders the Auto-close toggle in the Text Replacement section', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(screen.getByText('Auto-close')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: CLOSE_NAME })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+  });
+
+  it('reflects an enabled auto_close value on the toggle', () => {
+    render(
+      <BehaviorTab
+        config={{
+          ...CONFIG,
+          behavior: { auto_replace: false, auto_close: true },
+        }}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    expect(screen.getByRole('switch', { name: CLOSE_NAME })).toHaveAttribute(
       'aria-checked',
       'true',
     );

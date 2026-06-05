@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{
-    DEFAULT_AUTO_REPLACE, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
     DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
     DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
     DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
@@ -181,12 +181,18 @@ pub struct BehaviorSection {
     /// finishes, with no Replace-button click required. When `false`, the
     /// user triggers the write manually via the in-chat Replace button.
     pub auto_replace: bool,
+    /// When `true`, the overlay dismisses itself after a `/rewrite` or
+    /// `/refine` result is successfully replaced into the source app, whether
+    /// the replace was automatic (`auto_replace`) or a manual Replace click.
+    /// Independent of `auto_replace`; only closes on a successful replace.
+    pub auto_close: bool,
 }
 
 impl Default for BehaviorSection {
     fn default() -> Self {
         Self {
             auto_replace: DEFAULT_AUTO_REPLACE,
+            auto_close: DEFAULT_AUTO_CLOSE,
         }
     }
 }

@@ -1129,7 +1129,10 @@ describe('App', () => {
 
     render(
       <ConfigProviderForTest
-        value={{ ...DEFAULT_CONFIG, behavior: { autoReplace: true } }}
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: { autoReplace: true, autoClose: false },
+        }}
       >
         <App />
       </ConfigProviderForTest>,
@@ -1165,6 +1168,105 @@ describe('App', () => {
     expect(invoke).toHaveBeenCalledWith('replace_selection', {
       text: 'Polished draft',
     });
+  });
+
+  it('auto-closes after a successful replace when auto-close is on', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+      replace_selection: 'replaced',
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: { autoReplace: true, autoClose: true },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+    __mockWindow.hide.mockClear();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    act(() => {
+      getLastChannel()?.simulateMessage({
+        type: 'Token',
+        data: 'Polished draft',
+      });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // The replace succeeds, so auto-close dismisses the overlay; the native
+    // window hides once the exit animation commits (HIDE_COMMIT_DELAY_MS).
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(__mockWindow.hide).toHaveBeenCalled();
+  });
+
+  it('does not auto-close when the replace is skipped', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+      replace_selection: 'skipped',
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: { autoReplace: true, autoClose: true },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+    __mockWindow.hide.mockClear();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    act(() => {
+      getLastChannel()?.simulateMessage({
+        type: 'Token',
+        data: 'Polished draft',
+      });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // A skipped replace (no target app / secure field) must leave Thuki open.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(__mockWindow.hide).not.toHaveBeenCalled();
   });
 
   it('applies justify-end when window is near screen bottom', async () => {

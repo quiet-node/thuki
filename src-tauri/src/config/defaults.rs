@@ -239,6 +239,16 @@ pub const DEFAULT_DEBUG_TRACE_ENABLED: bool = false;
 /// panel (AI tab).
 pub const DEFAULT_AUTO_REPLACE: bool = false;
 
+/// When `true`, the Thuki overlay dismisses itself immediately after a
+/// `/rewrite` or `/refine` result is replaced back into the source app, whether
+/// the replace was automatic (see [`DEFAULT_AUTO_REPLACE`]) or a manual Replace
+/// click. Only closes on a *successful* replace; a skipped write (no target /
+/// secure field) leaves the overlay open.
+///
+/// Off by default. Independent of auto-replace: usable with either trigger.
+/// Toggleable from the Settings panel (Behavior tab).
+pub const DEFAULT_AUTO_CLOSE: bool = false;
+
 // Ollama API baked-in limits: not exposed in config.toml because they bound
 // attacker-controlled data (response bodies from the local Ollama daemon) and
 // keep the UI responsive when the daemon is hung. Changing either timeout
@@ -308,6 +318,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("quote", "max_context_length"),
     // [behavior]
     ("behavior", "auto_replace"),
+    ("behavior", "auto_close"),
     // [search]
     ("search", "searxng_url"),
     ("search", "reader_url"),

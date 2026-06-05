@@ -66,6 +66,9 @@ max_context_length = 4096
 # Write /rewrite and /refine results straight back into the source app,
 # replacing your selection, without clicking the in-chat Replace button.
 auto_replace = false
+# Dismiss the Thuki overlay after a /rewrite or /refine result is replaced
+# back into the source app (manual Replace click or auto-replace).
+auto_close = false
 
 [search]
 # URLs of the local sandbox services. Match the bindings in
@@ -179,6 +182,7 @@ Controls what happens to a `/rewrite` or `/refine` result: whether Thuki writes 
 | Constant       | Default | Tunable? | Why not tunable | Bounds | Description                                                                                                                                                                                                                                                                                                          |
 | :------------- | :------ | :------- | :-------------- | :----- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `auto_replace` | `false` | Yes      | —               | —      | When on, a `/rewrite` or `/refine` result is written straight back into the source app, replacing your highlighted text, the moment the rewrite is ready, with no extra click. When off, the rewrite appears in Thuki and you press the Replace button to send it back. The Replace button is available either way. |
+| `auto_close`   | `false` | Yes      | —               | —      | When on, the Thuki overlay closes itself right after a `/rewrite` or `/refine` result is replaced back into the source app, whether the replace happened automatically (`auto_replace`) or from a manual Replace click. Only closes on a successful replace. Independent of `auto_replace`. Turn on for a one-shot rewrite-and-dismiss flow; leave off to keep Thuki open and replace repeatedly. |
 
 ### `[search]`
 

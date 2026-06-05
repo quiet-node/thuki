@@ -37,6 +37,7 @@ export interface RawAppConfig {
   };
   behavior: {
     auto_replace: boolean;
+    auto_close: boolean;
   };
   search: {
     searxng_url: string;

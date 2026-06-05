@@ -1,10 +1,11 @@
 /**
  * Behavior tab.
  *
- * Settings that control how Thuki acts after you invoke it. Currently the
- * Text Replacement group: whether a `/rewrite` or `/refine` result is written
- * straight back into the source app, replacing your selection (auto-replace).
- * The per-result Replace button is always available regardless of this toggle.
+ * Settings that control how Thuki acts after you invoke it. The Text
+ * Replacement group covers the `/rewrite` and `/refine` commands: whether their
+ * result is written straight back into the source app (auto-replace), and
+ * whether Thuki dismisses itself once it has been replaced (auto-close). The
+ * per-result Replace button is always available regardless of these toggles.
  */
 
 import { Section, Toggle } from '../components';
@@ -34,14 +35,32 @@ export function BehaviorTab({
         resyncToken={resyncToken}
         onSaved={onSaved}
         rightAlign
-        // The tab is short (a single row near the window bottom); anchor the
-        // long help tooltip above the "?" so it is not clipped by the edge.
+        // The tab is short, so its rows sit near the window bottom; anchor the
+        // long help tooltips above the "?" so they are not clipped by the edge.
         tooltipPlacement="top"
         render={(value, setValue) => (
           <Toggle
             checked={value}
             onChange={setValue}
             ariaLabel="Auto-replace selected text after /rewrite or /refine"
+          />
+        )}
+      />
+      <SaveField
+        section="behavior"
+        fieldKey="auto_close"
+        label="Auto-close"
+        helper={configHelp('behavior', 'auto_close')}
+        initialValue={config.behavior.auto_close}
+        resyncToken={resyncToken}
+        onSaved={onSaved}
+        rightAlign
+        tooltipPlacement="top"
+        render={(value, setValue) => (
+          <Toggle
+            checked={value}
+            onChange={setValue}
+            ariaLabel="Close Thuki after replacing selected text"
           />
         )}
       />
