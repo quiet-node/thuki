@@ -436,26 +436,6 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
         />
       </Section>
 
-      <Section heading="Rewrite">
-        <SaveField
-          section="behavior"
-          fieldKey="auto_replace"
-          label="Auto-replace selected text"
-          helper={configHelp('behavior', 'auto_replace')}
-          initialValue={config.behavior.auto_replace}
-          resyncToken={resyncToken}
-          onSaved={onSaved}
-          rightAlign
-          render={(value, setValue) => (
-            <Toggle
-              checked={value}
-              onChange={setValue}
-              ariaLabel="Auto-replace selected text after /rewrite or /refine"
-            />
-          )}
-        />
-      </Section>
-
       <div className={styles.devSection}>
         <button
           type="button"

@@ -16,4 +16,12 @@ describe('ReplaceButton', () => {
     fireEvent.click(screen.getByRole('button', { name: LABEL }));
     expect(onReplace).toHaveBeenCalledWith('rewritten text');
   });
+
+  it('shows a hover tooltip (same Tooltip used by the chat header icons)', () => {
+    render(<ReplaceButton content="x" onReplace={vi.fn()} />);
+    fireEvent.mouseEnter(
+      screen.getByRole('button', { name: LABEL }).parentElement!,
+    );
+    expect(screen.getByText('Replace selection')).toBeInTheDocument();
+  });
 });

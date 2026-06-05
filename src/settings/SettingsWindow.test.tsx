@@ -94,14 +94,32 @@ describe('SettingsWindow', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders the four tab labels after config loads', async () => {
+  it('renders the five tab labels after config loads', async () => {
     render(<SettingsWindow />);
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: /AI/ })).toBeInTheDocument(),
     );
+    expect(screen.getByRole('tab', { name: /Behavior/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Web/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Display/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /About/ })).toBeInTheDocument();
+  });
+
+  it('switching to the Behavior tab shows the Text Replacement section', async () => {
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /Behavior/ }));
+
+    fireEvent.click(screen.getByRole('tab', { name: /Behavior/ }));
+    expect(screen.getByRole('tab', { name: /Behavior/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByText('Text Replacement')).toBeInTheDocument();
+    expect(
+      screen.getByRole('switch', {
+        name: /Auto-replace selected text after \/rewrite or \/refine/,
+      }),
+    ).toBeInTheDocument();
   });
 
   it('starts on the AI tab', async () => {
@@ -158,7 +176,7 @@ describe('SettingsWindow', () => {
 
     const modelTab = screen.getByRole('tab', { name: /AI/ });
     fireEvent.keyDown(modelTab, { key: 'ArrowRight' });
-    expect(screen.getByRole('tab', { name: /Web/ })).toHaveAttribute(
+    expect(screen.getByRole('tab', { name: /Behavior/ })).toHaveAttribute(
       'aria-selected',
       'true',
     );

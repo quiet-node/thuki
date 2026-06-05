@@ -1,5 +1,5 @@
 /**
- * Smoke + interaction tests for the four Settings tabs.
+ * Smoke + interaction tests for the five Settings tabs.
  *
  * Each tab's body is mostly declarative `SaveField` markup whose behavior
  * is unit-tested in `components.test`, `SaveField.test`, and
@@ -28,6 +28,7 @@ import { ModelTab } from './ModelTab';
 import { DisplayTab } from './DisplayTab';
 import { SearchTab } from './SearchTab';
 import { AboutTab } from './AboutTab';
+import { BehaviorTab } from './BehaviorTab';
 import type { RawAppConfig } from '../types';
 
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
@@ -111,6 +112,17 @@ describe('ModelTab', () => {
     expect(screen.getByText('Prompt')).toBeInTheDocument();
     expect(screen.getByText('Ollama URL')).toBeInTheDocument();
     expect(screen.getByText('System prompt')).toBeInTheDocument();
+  });
+
+  it('no longer renders the auto-replace toggle (moved to the Behavior tab)', async () => {
+    await renderModelTab();
+    expect(screen.queryByText('Text Replacement')).not.toBeInTheDocument();
+    expect(screen.queryByText('Rewrite')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('switch', {
+        name: /Auto-replace selected text after \/rewrite or \/refine/,
+      }),
+    ).not.toBeInTheDocument();
   });
 
   it('renders the live char counter for the prompt textarea', async () => {
@@ -1014,5 +1026,46 @@ describe('AboutTab', () => {
     await waitFor(() =>
       expect(screen.getAllByText(/Required/).length).toBeGreaterThan(0),
     );
+  });
+});
+
+describe('BehaviorTab', () => {
+  const TOGGLE_NAME = /Auto-replace selected text after \/rewrite or \/refine/;
+
+  it('renders the Text Replacement section with the Auto-replace toggle', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(screen.getByText('Text Replacement')).toBeInTheDocument();
+    // Label is the short one-line form; full copy lives in the "?" tooltip.
+    expect(screen.getByText('Auto-replace')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: TOGGLE_NAME })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+  });
+
+  it('reflects an enabled auto_replace value on the toggle', () => {
+    render(
+      <BehaviorTab
+        config={{ ...CONFIG, behavior: { auto_replace: true } }}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    expect(screen.getByRole('switch', { name: TOGGLE_NAME })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+  });
+
+  it('opens the help tooltip upward so it is not clipped at the short window edge', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const help = screen.getByRole('button', { name: 'About Auto-replace' });
+    fireEvent.mouseEnter(help.parentElement!);
+    // placement="top" positions the tooltip box with a `translate(..., -100%)`
+    // transform (it sits above the trigger). The default "bottom" placement
+    // uses `translateX(-50%)`, which here would overflow the bottom edge.
+    expect(
+      document.body.querySelector('[style*="translate(-50%, -100%)"]'),
+    ).not.toBeNull();
   });
 });
