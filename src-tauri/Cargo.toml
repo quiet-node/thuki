@@ -33,7 +33,7 @@ tokio-util = "0.7"
 toml = "1.0"
 toml_edit = "0.25"
 parking_lot = "0.12"
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
