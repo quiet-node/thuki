@@ -1100,4 +1100,15 @@ describe('BehaviorTab', () => {
       document.body.querySelector('[style*="translate(-50%, -100%)"]'),
     ).not.toBeNull();
   });
+
+  it('shows a scope help tooltip on the Text Replacement section heading', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.mouseEnter(
+      screen.getByRole('button', { name: 'About Text Replacement' })
+        .parentElement!,
+    );
+    expect(
+      screen.getByText(/Applies only to \/rewrite and \/refine/),
+    ).toBeInTheDocument();
+  });
 });

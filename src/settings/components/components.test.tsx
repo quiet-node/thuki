@@ -26,6 +26,40 @@ describe('Section', () => {
     expect(screen.getByText('GENERAL')).toBeInTheDocument();
     expect(screen.getByText('row')).toBeInTheDocument();
   });
+
+  it('renders a `?` info button next to the heading when helper is provided', () => {
+    render(
+      <Section heading="GENERAL" helper="What this group is about.">
+        <span>row</span>
+      </Section>,
+    );
+    expect(
+      screen.getByRole('button', { name: /About GENERAL/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the section helper tooltip on hover', () => {
+    render(
+      <Section heading="GENERAL" helper="What this group is about.">
+        <span>row</span>
+      </Section>,
+    );
+    fireEvent.mouseEnter(
+      screen.getByRole('button', { name: /About GENERAL/ }).parentElement!,
+    );
+    expect(screen.getByText('What this group is about.')).toBeInTheDocument();
+  });
+
+  it('omits the section info button when no helper is provided', () => {
+    render(
+      <Section heading="GENERAL">
+        <span>row</span>
+      </Section>,
+    );
+    expect(
+      screen.queryByRole('button', { name: /About GENERAL/ }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe('SettingRow', () => {

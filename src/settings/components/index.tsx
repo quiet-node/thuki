@@ -24,14 +24,32 @@ import type { ConfigError } from '../types';
 
 export function Section({
   heading,
+  helper,
   children,
 }: {
   heading: string;
+  /** Optional description rendered in a `?` tooltip next to the heading, for
+   * explaining what the whole section is about (scope), distinct from the
+   * per-row helpers that explain individual settings. */
+  helper?: string;
   children: ReactNode;
 }) {
   return (
     <section className={styles.section}>
-      <div className={styles.sectionHeading}>{heading}</div>
+      <div className={styles.sectionHeading}>
+        {heading}
+        {helper ? (
+          <Tooltip label={helper} multiline>
+            <button
+              type="button"
+              className={styles.infoBtn}
+              aria-label={`About ${heading}`}
+            >
+              ?
+            </button>
+          </Tooltip>
+        ) : null}
+      </div>
       {children}
     </section>
   );

@@ -19,13 +19,21 @@ interface BehaviorTabProps {
   onSaved: (next: RawAppConfig) => void;
 }
 
+/**
+ * Section-level "?" copy: what the Text Replacement group is and which commands
+ * it covers. The individual toggles explain their own behavior in their own
+ * tooltips, so this stays scoped to "what is this and what does it apply to".
+ */
+const TEXT_REPLACEMENT_HELP =
+  'Applies only to /rewrite and /refine: writing their result back into the app you were using, replacing your highlighted text.';
+
 export function BehaviorTab({
   config,
   resyncToken,
   onSaved,
 }: BehaviorTabProps) {
   return (
-    <Section heading="Text Replacement">
+    <Section heading="Text Replacement" helper={TEXT_REPLACEMENT_HELP}>
       <SaveField
         section="behavior"
         fieldKey="auto_replace"

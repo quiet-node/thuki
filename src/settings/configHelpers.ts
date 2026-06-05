@@ -72,9 +72,9 @@ const HELPERS = {
   },
   behavior: {
     auto_replace:
-      'When on, a /rewrite or /refine result is written straight back into the app you were using, replacing your highlighted text the moment the rewrite is ready, with no extra click. When off, the rewrite appears in Thuki and you press the Replace button to send it back yourself. The Replace button is always available either way. Off by default because it edits text in another app.',
+      'When on, a /rewrite or /refine result is written straight back into your app, replacing your highlighted text, with no click. When off, click the Replace button to send it back. Off by default.',
     auto_close:
-      'When on, Thuki closes itself right after a /rewrite or /refine result is replaced back into your app, whether the replace happened automatically (Auto-replace) or from clicking the Replace button. Only closes when the replace actually goes through. Turn it on for a one-shot rewrite-and-dismiss flow; leave it off to keep Thuki open and replace more than once. Off by default.',
+      'When on, Thuki closes itself after a /rewrite or /refine result is replaced into your app (via Auto-replace or the Replace button). Only if the replace succeeds. Off by default.',
   },
   debug: {
     trace_enabled:
