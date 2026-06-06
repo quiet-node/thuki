@@ -236,7 +236,7 @@ pub const DEFAULT_DEBUG_TRACE_ENABLED: bool = false;
 /// Off by default: auto-replace mutates text in another app, so the
 /// conservative default is to require an explicit click. When on, the Replace
 /// button still renders as a manual re-trigger. Toggleable from the Settings
-/// panel (AI tab).
+/// panel (Behavior tab).
 pub const DEFAULT_AUTO_REPLACE: bool = false;
 
 /// When `true`, the Thuki overlay dismisses itself immediately after a

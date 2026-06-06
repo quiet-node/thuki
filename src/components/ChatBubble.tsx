@@ -251,7 +251,7 @@ interface ChatBubbleProps {
   onImagePreview?: (path: string) => void;
   /** When set, renders a Replace button in the action bar that writes this
    * message's content back into the source app (for `/rewrite` & `/refine`). */
-  onReplace?: (text: string) => void;
+  onReplace?: (text: string) => Promise<boolean>;
   /** Source URLs forwarded from the SearXNG results. Rendered as a clickable
    * footer below the answer; clicking opens the URL in the default browser. */
   searchSources?: SearchResultPreview[];

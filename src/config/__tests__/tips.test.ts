@@ -22,6 +22,13 @@ describe('TIPS', () => {
     expect(tipText(imagesTip!).toLowerCase()).toContain('image');
   });
 
+  it('includes a tip about replacing rewritten text back into the source app', () => {
+    const replaceTip = TIPS.find((t) =>
+      tipText(t).toLowerCase().includes('replace'),
+    );
+    expect(replaceTip).toBeDefined();
+  });
+
   it('linked tips carry an https URL', () => {
     const linked = TIPS.filter((t) => typeof t !== 'string');
     expect(linked.length).toBeGreaterThan(0);

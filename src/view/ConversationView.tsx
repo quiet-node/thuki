@@ -72,7 +72,7 @@ interface ConversationViewProps {
    * Dismisses the overlay and writes a `/rewrite` or `/refine` result back into
    * the source app. Wired to the per-message Replace button on those results.
    */
-  onReplace?: (text: string) => void;
+  onReplace?: (text: string) => Promise<boolean>;
   /**
    * Current `/search` pipeline stage. When non-null and the last assistant
    * message has no content yet, a transient stage pill is rendered in place

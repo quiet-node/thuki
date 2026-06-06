@@ -463,7 +463,9 @@ function App() {
    * Mirror of `performReplace`, so the turn-completion handler (defined before
    * `performReplace`) can trigger an auto-replace without a forward reference.
    */
-  const performReplaceRef = useRef<((text: string) => void) | null>(null);
+  const performReplaceRef = useRef<((text: string) => Promise<boolean>) | null>(
+    null,
+  );
 
   /**
    * Persist a completed user/assistant turn to SQLite if the conversation
@@ -479,7 +481,7 @@ function App() {
     ) => {
       await persistTurn(userMsg, assistantMsg);
       if (shouldAutoReplace(autoReplaceRef.current, assistantMsg, userMsg)) {
-        performReplaceRef.current?.(assistantMsg.content);
+        void performReplaceRef.current?.(assistantMsg.content);
       }
     },
     [persistTurn],
@@ -1000,16 +1002,17 @@ function App() {
    * process, so the overlay can stay open and the user can Replace repeatedly.
    * When auto-close is on, the overlay dismisses itself after a *successful*
    * write (a skipped write leaves it open). Drives both the manual Replace
-   * button and the auto-replace path.
+   * button and the auto-replace path. Resolves to whether the write succeeded
+   * so the Replace button can show a confirmation tick.
    */
   const performReplace = useCallback(
-    (text: string) => {
-      void replaceSelection(text).then((replaced) => {
+    (text: string): Promise<boolean> =>
+      replaceSelection(text).then((replaced) => {
         if (replaced && autoCloseRef.current) {
           requestHideOverlay();
         }
-      });
-    },
+        return replaced;
+      }),
     [requestHideOverlay],
   );
 
