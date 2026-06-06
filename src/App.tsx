@@ -61,6 +61,7 @@ import {
   serializeForFile,
 } from './lib/exportSerializer';
 import { replaceSelection, shouldAutoReplace } from './utils/replaceSelection';
+import { cleanForRender } from './utils/sanitizeAssistantContent';
 import './App.css';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
@@ -481,7 +482,10 @@ function App() {
     ) => {
       await persistTurn(userMsg, assistantMsg);
       if (shouldAutoReplace(autoReplaceRef.current, assistantMsg, userMsg)) {
-        void performReplaceRef.current?.(assistantMsg.content);
+        // Strip any stray turn-boundary tokens so auto-replace writes back the
+        // exact bytes the bubble shows and the manual Replace button pastes
+        // (both go through `cleanForRender`); the in-memory content is raw.
+        void performReplaceRef.current?.(cleanForRender(assistantMsg.content));
       }
     },
     [persistTurn],

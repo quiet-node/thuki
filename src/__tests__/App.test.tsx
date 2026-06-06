@@ -1170,6 +1170,55 @@ describe('App', () => {
     });
   });
 
+  it('auto-replace strips stray turn-boundary tokens before writing back', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+      replace_selection: 'replaced',
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: { autoReplace: true, autoClose: false },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    act(() => {
+      getLastChannel()?.simulateMessage({
+        type: 'Token',
+        data: '<think>Polished draft</think>',
+      });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+    await act(async () => {});
+
+    // The raw in-memory content carries the markers, but auto-replace pastes the
+    // same cleaned text the bubble and manual Replace button use.
+    expect(invoke).toHaveBeenCalledWith('replace_selection', {
+      text: 'Polished draft',
+    });
+  });
+
   it('auto-closes after a successful replace when auto-close is on', async () => {
     enableChannelCaptureWithResponses({
       get_model_picker_state: {
