@@ -142,8 +142,8 @@ pub async fn search_pipeline(
     // Mirror the user-perceived turn into the chat-domain trace so the
     // `traces/chat/<conversation_id>.jsonl` file is the canonical
     // user-facing timeline regardless of whether a turn used `/search`
-    // or hit `ask_ollama` directly. Symmetric with what
-    // `commands::ask_ollama` records at its hook sites; the deep
+    // or hit `ask_model` directly. Symmetric with what
+    // `commands::ask_model` records at its hook sites; the deep
     // search-pipeline internals (LLM calls, judge verdicts, SearXNG
     // queries) stay in the search-domain file via the same conv id.
     crate::commands::record_conversation_start_if_first_turn(

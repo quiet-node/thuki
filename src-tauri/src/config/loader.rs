@@ -324,7 +324,7 @@ pub(crate) fn resolve(config: &mut AppConfig) {
 }
 
 /// Composes the user-editable base prompt with the generated slash-command
-/// appendix. The result is what `ask_ollama` actually sends to Ollama. The
+/// appendix. The result is what `ask_model` actually sends to Ollama. The
 /// file stores only the base; the appendix is never round-tripped.
 pub fn compose_system_prompt(base: &str, appendix: &str) -> String {
     let base = base.trim_end();

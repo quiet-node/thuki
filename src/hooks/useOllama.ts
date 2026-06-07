@@ -404,7 +404,7 @@ export function useOllama(
       // on no-model bails that return before `ConversationStart` fires,
       // leaving the next attempt without an opening trace event.
       try {
-        await invoke('ask_ollama', {
+        await invoke('ask_model', {
           message: promptOverride ?? displayContent,
           quotedText: quotedText ?? null,
           imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : null,

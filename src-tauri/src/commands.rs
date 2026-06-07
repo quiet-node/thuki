@@ -105,7 +105,7 @@ pub enum OllamaErrorKind {
 }
 
 /// Builds the structured error returned when `ActiveModelState` holds `None`
-/// at the time `ask_ollama` is invoked. Pulled out as a free function so the
+/// at the time `ask_model` is invoked. Pulled out as a free function so the
 /// exact title + body wording lives in one place and the branch is testable
 /// without a full Tauri runtime.
 pub fn no_model_selected_error() -> OllamaError {
@@ -471,7 +471,7 @@ pub async fn stream_ollama_chat(
 }
 
 /// Mirrors a streaming chunk into the chat-domain trace recorder. Pulled out
-/// of [`ask_ollama`] so the per-token routing logic and the token-count
+/// of [`ask_model`] so the per-token routing logic and the token-count
 /// increment are exercised by the unit-test suite rather than the
 /// coverage-off Tauri command body. `Done`, `Cancelled`, and `Error` chunks
 /// are intentionally noops here: those terminal events are summarized by
@@ -501,7 +501,7 @@ pub(crate) fn record_chunk_to_trace(
 }
 
 /// Emits `ConversationStart` to the trace recorder iff this is the first
-/// turn of the conversation. Pulled out of [`ask_ollama`] and the search
+/// turn of the conversation. Pulled out of [`ask_model`] and the search
 /// pipeline so the gate is covered by tests instead of the coverage-off
 /// Tauri command body.
 pub(crate) fn record_conversation_start_if_first_turn(
@@ -532,7 +532,7 @@ pub(crate) fn record_conversation_start_if_first_turn(
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 #[allow(clippy::too_many_arguments)]
-pub async fn ask_ollama(
+pub async fn ask_model(
     message: String,
     quoted_text: Option<String>,
     image_paths: Option<Vec<String>>,
@@ -776,7 +776,7 @@ pub async fn cancel_generation(generation: State<'_, GenerationState>) -> Result
 }
 
 /// Clears the backend conversation history and increments the epoch counter.
-/// The epoch increment prevents any in-flight `ask_ollama` from writing stale
+/// The epoch increment prevents any in-flight `ask_model` from writing stale
 /// messages into the freshly cleared history.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]

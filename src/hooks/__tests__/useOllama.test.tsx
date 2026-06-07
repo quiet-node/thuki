@@ -44,7 +44,7 @@ describe('useOllama', () => {
       });
 
       expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
+        'ask_model',
         expect.objectContaining({
           message: 'hello world',
           quotedText: null,
@@ -130,7 +130,7 @@ describe('useOllama', () => {
       });
 
       expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
+        'ask_model',
         expect.objectContaining({
           message: 'summarize',
           quotedText: 'selected text',
@@ -255,7 +255,7 @@ describe('useOllama', () => {
       });
 
       expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
+        'ask_model',
         expect.objectContaining({
           message: 'composed prompt for model',
         }),
@@ -274,7 +274,7 @@ describe('useOllama', () => {
       });
 
       expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
+        'ask_model',
         expect.objectContaining({
           message: 'hello world',
         }),
@@ -295,7 +295,7 @@ describe('useOllama', () => {
       });
 
       expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
+        'ask_model',
         expect.objectContaining({
           message: 'hello world',
         }),
@@ -323,7 +323,7 @@ describe('useOllama', () => {
         }),
       );
       expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
+        'ask_model',
         expect.objectContaining({
           message: '',
           imagePaths: ['/tmp/img1.jpg'],
@@ -371,7 +371,7 @@ describe('useOllama', () => {
         }),
       );
       expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
+        'ask_model',
         expect.objectContaining({
           message: 'describe this',
           imagePaths: ['/tmp/img1.jpg', '/tmp/img2.jpg'],
@@ -388,7 +388,7 @@ describe('useOllama', () => {
 
       expect(result.current.messages[0].imagePaths).toBeUndefined();
       expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
+        'ask_model',
         expect.objectContaining({
           imagePaths: null,
         }),
@@ -415,7 +415,7 @@ describe('useOllama', () => {
       ]);
       // Backend must NOT receive image bytes (OCR path: model only sees text).
       expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
+        'ask_model',
         expect.objectContaining({
           imagePaths: null,
         }),
@@ -589,7 +589,7 @@ describe('useOllama', () => {
           latestChannel = args.onEvent as ReturnType<typeof getChannel>;
         }
 
-        if (cmd === 'ask_ollama') {
+        if (cmd === 'ask_model') {
           askMessages.push(String(args?.message ?? ''));
           if (askMessages.length === 1) {
             return new Promise<void>((resolve) => {
@@ -652,7 +652,7 @@ describe('useOllama', () => {
       let rejectInvoke!: (error: Error) => void;
 
       invoke.mockImplementation(async (cmd, args) => {
-        if (cmd === 'ask_ollama') {
+        if (cmd === 'ask_model') {
           channel = args?.onEvent as ReturnType<typeof getChannel>;
           return new Promise<void>((_, reject) => {
             rejectInvoke = reject;
@@ -1172,7 +1172,7 @@ describe('useOllama', () => {
       });
 
       expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
+        'ask_model',
         expect.objectContaining({
           think: true,
         }),
@@ -1187,7 +1187,7 @@ describe('useOllama', () => {
       });
 
       expect(invoke).toHaveBeenCalledWith(
-        'ask_ollama',
+        'ask_model',
         expect.objectContaining({
           think: false,
         }),
@@ -2331,7 +2331,7 @@ describe('useOllama', () => {
 
   // ─── is_first_turn flag retention across pre-ConversationStart bails ────────
   //
-  // The chat backend's `ask_ollama` and the search backend's `search_pipeline`
+  // The chat backend's `ask_model` and the search backend's `search_pipeline`
   // both bail BEFORE recording `ConversationStart` on no-model and (search
   // only) sandbox-unavailable paths. Frontend must keep `isFirstTurnRef`
   // armed across those bails so the next attempt opens the trace correctly.
@@ -2349,7 +2349,7 @@ describe('useOllama', () => {
           data: { kind: 'NoModelSelected', message: 'no model' },
         });
       });
-      const firstCall = invoke.mock.calls.find(([cmd]) => cmd === 'ask_ollama');
+      const firstCall = invoke.mock.calls.find(([cmd]) => cmd === 'ask_model');
       expect(firstCall?.[1]).toMatchObject({ isFirstTurn: true });
 
       invoke.mockClear();
@@ -2357,7 +2357,7 @@ describe('useOllama', () => {
         await result.current.ask('second');
       });
       const secondCall = invoke.mock.calls.find(
-        ([cmd]) => cmd === 'ask_ollama',
+        ([cmd]) => cmd === 'ask_model',
       );
       expect(secondCall?.[1]).toMatchObject({ isFirstTurn: true });
     });
@@ -2379,7 +2379,7 @@ describe('useOllama', () => {
         await result.current.ask('second');
       });
       const secondCall = invoke.mock.calls.find(
-        ([cmd]) => cmd === 'ask_ollama',
+        ([cmd]) => cmd === 'ask_model',
       );
       expect(secondCall?.[1]).toMatchObject({ isFirstTurn: false });
     });
@@ -2413,7 +2413,7 @@ describe('useOllama', () => {
         await result.current.ask('second');
       });
       const secondCall = invoke.mock.calls.find(
-        ([cmd]) => cmd === 'ask_ollama',
+        ([cmd]) => cmd === 'ask_model',
       );
       expect(secondCall?.[1]).toMatchObject({ isFirstTurn: false });
     });
@@ -2554,7 +2554,7 @@ describe('useOllama', () => {
       await act(async () => {
         await result.current.ask('chat after search');
       });
-      const chatCall = invoke.mock.calls.find(([cmd]) => cmd === 'ask_ollama');
+      const chatCall = invoke.mock.calls.find(([cmd]) => cmd === 'ask_model');
       expect(chatCall?.[1]).toMatchObject({ isFirstTurn: false });
     });
   });

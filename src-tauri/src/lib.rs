@@ -1766,7 +1766,7 @@ pub fn run() {
             // When nothing is persisted the seed is `None`: there is no
             // compiled fallback. The Phase 3 onboarding gate refuses to
             // open the overlay until a real installed model is selected,
-            // so an unset slug never reaches `ask_ollama`.
+            // so an unset slug never reaches `ask_model`.
             let persisted_active = database::get_config(&db_conn, models::ACTIVE_MODEL_KEY)
                 .expect("failed to read active_model from app_config");
             let initial_active_model =
@@ -1792,7 +1792,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             #[cfg(not(coverage))]
-            commands::ask_ollama,
+            commands::ask_model,
             #[cfg(not(coverage))]
             commands::cancel_generation,
             #[cfg(not(coverage))]

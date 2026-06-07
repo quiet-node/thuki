@@ -255,7 +255,7 @@ pub async fn get_model_picker_state(
         Ok(installed) => installed,
         Err(_) => {
             // Mirror the `None` active into the in-memory state so downstream
-            // callers (ask_ollama, search_pipeline) see the same truth as the
+            // callers (ask_model, search_pipeline) see the same truth as the
             // frontend: with Ollama unreachable, no model is active.
             let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
             *guard = None;
@@ -415,7 +415,7 @@ pub fn derive_model_setup_state(
 ///    the case where a user removed their previously-selected model with
 ///    `ollama rm` between launches.
 /// 2. Mirror the resolved slug into the in-memory [`ActiveModelState`] so
-///    `ask_ollama` and `search_pipeline` see it on the next request
+///    `ask_model` and `search_pipeline` see it on the next request
 ///    without an extra DB read.
 ///
 /// Both writes are gated through [`should_persist_resolved`] which

@@ -53,7 +53,7 @@ use crate::config::{
 /// has been replaced. Subscribers (the main overlay's `ConfigProvider` and
 /// the Settings window) refetch via `get_config` so React state matches the
 /// authoritative `RwLock<AppConfig>` snapshot. Without this broadcast, only
-/// backend-side consumers (e.g. `ask_ollama` reading `State<RwLock<AppConfig>>` per
+/// backend-side consumers (e.g. `ask_model` reading `State<RwLock<AppConfig>>` per
 /// invocation) see config edits; frontend-driven values like window dims
 /// stay frozen at the mount-time snapshot.
 pub const CONFIG_UPDATED_EVENT: &str = "thuki://config-updated";
