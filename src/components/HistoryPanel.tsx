@@ -88,6 +88,15 @@ interface HistoryPanelProps {
   onJustNew?: () => void;
   /** Called when the user cancels the new-conversation confirmation. */
   onCancelNew?: () => void;
+  /**
+   * Conversations to seed the panel with so it renders its final content on the
+   * first paint instead of fetching on mount. When provided, the mount fetch is
+   * skipped (the caller has already loaded the list); searches still re-fetch.
+   * Used by the ask-bar drawer so its open animation measures the final height
+   * once and grows smoothly to it rather than opening empty then snapping when
+   * the async list arrives. Omit to keep the fetch-on-mount behavior.
+   */
+  initialConversations?: ConversationSummary[];
 }
 
 /**
@@ -115,8 +124,11 @@ export function HistoryPanel({
   onSaveAndNew,
   onJustNew,
   onCancelNew,
+  initialConversations,
 }: HistoryPanelProps) {
-  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [conversations, setConversations] = useState<ConversationSummary[]>(
+    initialConversations ?? [],
+  );
   const [search, setSearch] = useState('');
   const [loadError, setLoadError] = useState(false);
   /** Id of the conversation the user clicked when confirmation is needed. */
@@ -138,10 +150,14 @@ export function HistoryPanel({
     [listConversations],
   );
 
-  // Initial load on mount.
+  // Initial load on mount. Skipped when the caller seeded `initialConversations`
+  // (the list is already loaded), so the panel renders its final content on the
+  // first paint with no async height change.
   useEffect(() => {
-    void fetchList();
-  }, [fetchList]);
+    if (initialConversations === undefined) {
+      void fetchList();
+    }
+  }, [fetchList, initialConversations]);
 
   // Debounced search: fires 200 ms after the user stops typing.
   const handleSearchChange = useCallback(
