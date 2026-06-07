@@ -87,6 +87,32 @@ describe('UpdateWindow', () => {
     expect(notes).toHaveTextContent('a crash');
   });
 
+  it('renders a version accordion when the body has version headers', async () => {
+    mockState = withUpdate({
+      version: '0.12.0',
+      body:
+        '## [0.12.0](https://x/c) (2026-05-22)\n\n### Features\n\n* shiny thing\n\n' +
+        '## [0.11.0](https://x/d) (2026-05-16)\n\n### Bug Fixes\n\n* old fix',
+    });
+    render(<UpdateWindow />);
+    // getVersion resolves to 0.10.0, so both 0.11.0 and 0.12.0 are shown.
+    await screen.findByTestId('changelog-accordion');
+    expect(screen.getByText('0.12.0')).toBeInTheDocument();
+    expect(screen.getByText('0.11.0')).toBeInTheDocument();
+    // Newest expanded, older collapsed until clicked.
+    expect(screen.getByText('shiny thing')).toBeInTheDocument();
+    expect(screen.queryByText('old fix')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /0\.11\.0/ }));
+    expect(screen.getByText('old fix')).toBeInTheDocument();
+  });
+
+  it('falls back to plain markdown when the body has no version headers', () => {
+    mockState = withUpdate({ body: '## Fixed\n\n- a crash' });
+    render(<UpdateWindow />);
+    expect(screen.queryByTestId('changelog-accordion')).not.toBeInTheDocument();
+    expect(screen.getByTestId('update-notes')).toHaveTextContent('a crash');
+  });
+
   it('omits the "you have" clause when the current version lookup fails', async () => {
     getVersion.mockRejectedValueOnce(new Error('no app version'));
     mockState = withUpdate({ body: 'x' });

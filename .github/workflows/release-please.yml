@@ -120,7 +120,6 @@ jobs:
       - name: Generate updater manifest
         env:
           TAG: ${{ needs.release-please.outputs.tag_name }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         working-directory: src-tauri/target/release/bundle/macos
         run: |
           VERSION="${TAG#v}"
@@ -129,15 +128,18 @@ jobs:
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           DOWNLOAD_URL="https://github.com/quiet-node/thuki/releases/download/${TAG}/${PAYLOAD}"
 
-          # Embed the full release-please changelog (the GitHub Release body
-          # for this tag) so the in-app updater shows the real notes instead
-          # of a bare link. release-please always creates this release with a
-          # non-empty body before this job runs, so an empty body means
-          # something upstream broke: fail loudly rather than ship a manifest
-          # whose notes are blank.
-          gh release view "$TAG" --json body --jq .body > release-notes.md
+          # Embed the FULL released changelog (every version section, not just
+          # this tag's) so the in-app "What's New" window can show every release
+          # a user skipped over. The window parses these headers and slices to
+          # the user's installed version client-side. We take everything from
+          # the first `## [x.y.z]` header to EOF, which drops the document title,
+          # the preamble, and the "## Unreleased" block (all of which sit above
+          # the first version header). An empty result means CHANGELOG.md has no
+          # released sections yet: fail loudly rather than ship blank notes.
+          awk '/^## \[[0-9]+\.[0-9]+\.[0-9]+\]/ {found=1} found {print}' \
+            "$GITHUB_WORKSPACE/CHANGELOG.md" > release-notes.md
           if [ ! -s release-notes.md ]; then
-            echo "::error::GitHub Release body for ${TAG} is empty; refusing to publish a manifest with no notes." >&2
+            echo "::error::CHANGELOG.md has no released version sections; refusing to publish a manifest with no notes." >&2
             exit 1
           fi
 
