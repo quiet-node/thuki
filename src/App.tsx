@@ -48,6 +48,7 @@ import { useTips } from './hooks/useTips';
 import { useUpdater } from './hooks/useUpdater';
 import type { AttachedImage } from './types/image';
 import { MAX_IMAGE_SIZE_BYTES } from './types/image';
+import type { ConversationSummary } from './types/history';
 import { useConfig } from './contexts/ConfigContext';
 import {
   COMMANDS,
@@ -361,6 +362,21 @@ function App() {
    * but rendered differently based on `isChatMode`).
    */
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+
+  /**
+   * Conversation list for the ask-bar history drawer, pre-loaded before the
+   * drawer animates open.
+   * - `null`     → still loading; the drawer stays unmounted so its open
+   *                animation never measures against an empty list.
+   * - `'error'`  → the pre-load failed; the drawer mounts and `HistoryPanel`
+   *                re-fetches itself to surface its own error state.
+   * - an array   → loaded; seeded into `HistoryPanel` so the open animation
+   *                measures the final height once and grows smoothly to it.
+   * Only used in ask-bar mode; the chat-mode dropdown fetches on its own mount.
+   */
+  const [askBarHistory, setAskBarHistory] = useState<
+    ConversationSummary[] | 'error' | null
+  >(null);
 
   /** Whether the model picker panel is currently open. Mutually exclusive with `isHistoryOpen`. */
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
@@ -1433,10 +1449,29 @@ function App() {
    * which one the user opens next.
    */
   const handleHistoryToggle = useCallback(() => {
-    setIsHistoryOpen((prev) => !prev);
+    const willOpen = !isHistoryOpen;
+    setIsHistoryOpen(willOpen);
     setIsModelPickerOpen(false);
     setIsExportOpen(false);
-  }, []);
+
+    // Ask-bar drawer only: pre-load the conversation list BEFORE the drawer
+    // animates open. The drawer animates its height 0 → auto, and Framer Motion
+    // measures `auto` once at mount. Mounting it against an empty list (the
+    // panel fetching on its own mount) made the open animation finish at the
+    // empty height, then snap to the loaded height when the async list arrived.
+    // Loading first lets the animation measure the final height and grow to it
+    // in one smooth motion. The chat-mode dropdown grows its window via a
+    // separate min-height ResizeObserver sync and is unaffected.
+    if (isChatMode) return;
+    if (!willOpen) {
+      setAskBarHistory(null);
+      return;
+    }
+    setAskBarHistory(null);
+    void listConversations()
+      .then((list) => setAskBarHistory(list))
+      .catch(() => setAskBarHistory('error'));
+  }, [isHistoryOpen, isChatMode, listConversations]);
 
   /**
    * Close the chat-mode history dropdown when the user clicks outside it.
@@ -3394,7 +3429,7 @@ function App() {
                     so the drawer height-animates smoothly open and closed. */}
                           {!isChatMode && (
                             <AnimatePresence>
-                              {isHistoryOpen ? (
+                              {isHistoryOpen && askBarHistory !== null ? (
                                 <motion.div
                                   key="ask-bar-history"
                                   initial={{ height: 0, opacity: 0 }}
@@ -3420,6 +3455,11 @@ function App() {
                                     hasCurrentMessages={false}
                                     showNewConversation={false}
                                     currentConversationId={conversationId}
+                                    initialConversations={
+                                      Array.isArray(askBarHistory)
+                                        ? askBarHistory
+                                        : undefined
+                                    }
                                   />
                                 </motion.div>
                               ) : null}

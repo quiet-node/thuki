@@ -17,6 +17,8 @@ import {
   enableChannelCapture,
   enableChannelCaptureWithResponses,
   getLastChannel,
+  TEST_DEFAULT_MODEL_PICKER_STATE,
+  DEFAULT_UPDATER_STATE,
 } from '../testUtils/mocks/tauri';
 import {
   __mockWindow,
@@ -1734,6 +1736,68 @@ describe('App', () => {
       });
 
       expect(screen.queryByPlaceholderText(/search past chats/i)).toBeNull();
+    });
+
+    it('pre-loads the conversation list before opening the ask-bar drawer', async () => {
+      // The drawer is only mounted once the list has loaded, so the panel
+      // renders its conversations on first paint. This is what lets the open
+      // animation measure the final height once and grow smoothly to it,
+      // instead of opening empty and snapping when the async list lands.
+      enableChannelCaptureWithResponses({
+        list_conversations: [
+          {
+            id: 'c1',
+            title: 'Seeded chat',
+            model: 'gemma4:e2b',
+            updated_at: Date.now(),
+            message_count: 3,
+          },
+        ],
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+
+      expect(screen.getByText('Seeded chat')).toBeInTheDocument();
+    });
+
+    it('opens the ask-bar drawer and surfaces the error when the list pre-load fails', async () => {
+      // When the pre-load rejects, the drawer still opens (so the user is not
+      // stuck on a dead button) and HistoryPanel falls back to fetching itself,
+      // surfacing its own load-error state.
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'list_conversations') {
+            throw new Error('DB error');
+          }
+          if (cmd === 'get_model_picker_state') {
+            return TEST_DEFAULT_MODEL_PICKER_STATE;
+          }
+          if (cmd === 'get_updater_state') {
+            return DEFAULT_UPDATER_STATE;
+          }
+          if (args && 'onEvent' in args) {
+            return undefined;
+          }
+          return undefined;
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /open history/i }));
+      });
+      await act(async () => {});
+
+      expect(screen.getByText(/couldn't load history/i)).toBeInTheDocument();
     });
 
     it('shows save button in conversation view when there are messages', async () => {

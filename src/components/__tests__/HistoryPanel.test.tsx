@@ -75,6 +75,22 @@ describe('HistoryPanel', () => {
     expect(screen.getByText('React basics')).toBeInTheDocument();
   });
 
+  it('renders seeded conversations on first paint without fetching on mount', () => {
+    // When `initialConversations` is supplied the panel must render its final
+    // content synchronously and skip the async mount fetch. This is what lets
+    // the ask-bar drawer animate open to its true height in one smooth motion
+    // instead of opening to an empty height and snapping once the list loads.
+    const listFn = vi.fn(async () => CONVERSATIONS);
+    const props = makeProps({
+      listConversations: listFn,
+      initialConversations: CONVERSATIONS,
+    });
+    render(<HistoryPanel {...props} />);
+
+    expect(screen.getByText('React basics')).toBeInTheDocument();
+    expect(listFn).not.toHaveBeenCalled();
+  });
+
   it('groups conversations by date: Today and Yesterday labels appear', async () => {
     const props = makeProps();
     render(<HistoryPanel {...props} />);
