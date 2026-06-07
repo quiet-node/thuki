@@ -6009,7 +6009,9 @@ describe('App', () => {
           .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
-        expect(args.message).toContain('Lightly polish the text below');
+        expect(args.message).toContain(
+          'Rewrite the text below so it sounds like a fluent native English speaker',
+        );
         expect(args.message).toContain('fix this text');
       });
     });
@@ -6262,7 +6264,9 @@ describe('App', () => {
           .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
-        expect(args.message).toContain('Lightly polish the text below');
+        expect(args.message).toContain(
+          'Rewrite the text below so it sounds like a fluent native English speaker',
+        );
         expect(args.message).toContain('original selected text');
         expect(args.quotedText).toBe('original selected text');
       });
@@ -6409,7 +6413,9 @@ describe('App', () => {
           .mock.calls.find((c) => c[0] === 'ask_ollama');
         expect(askCall).toBeDefined();
         const args = askCall![1] as Record<string, unknown>;
-        expect(args.message).toContain('Lightly polish the text below');
+        expect(args.message).toContain(
+          'Rewrite the text below so it sounds like a fluent native English speaker',
+        );
         expect(args.message).toContain('OCR extracted prose text');
         expect(args.imagePaths).toBeNull();
       });
