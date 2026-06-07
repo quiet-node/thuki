@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ErrorCard } from './ErrorCard';
 import { CopyButton } from './CopyButton';
+import { ReplaceButton } from './ReplaceButton';
 import { ImageThumbnails } from './ImageThumbnails';
 import { ThinkingBlock } from './ThinkingBlock';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
@@ -248,6 +249,9 @@ interface ChatBubbleProps {
   imagePaths?: string[];
   /** Called when the user clicks a thumbnail to preview it. */
   onImagePreview?: (path: string) => void;
+  /** When set, renders a Replace button in the action bar that writes this
+   * message's content back into the source app (for `/rewrite` & `/refine`). */
+  onReplace?: (text: string) => Promise<boolean>;
   /** Source URLs forwarded from the SearXNG results. Rendered as a clickable
    * footer below the answer; clicking opens the URL in the default browser. */
   searchSources?: SearchResultPreview[];
@@ -303,6 +307,7 @@ export function ChatBubble({
   isStreaming = false,
   imagePaths,
   onImagePreview,
+  onReplace,
   errorKind,
   thinkingContent,
   isThinkingPending,
@@ -544,6 +549,9 @@ export function ChatBubble({
               <div className="shrink-0">
                 <CopyButton content={displayContent} align="left" />
               </div>
+              {onReplace && (
+                <ReplaceButton content={displayContent} onReplace={onReplace} />
+              )}
               {searchSources && searchSources.length > 0 && (
                 <button
                   type="button"

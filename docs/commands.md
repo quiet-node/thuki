@@ -121,7 +121,7 @@ Rewrites text to read more naturally and clearly.
 - `/rewrite` with highlighted text: rewrites the selected text
 - `/rewrite so basically what happened was i was trying to fix the bug`: rewrites typed text for clarity
 
-**Behavior:** Preserves the original meaning while improving flow and readability. Outputs only the rewritten text.
+**Behavior:** Preserves the original meaning while improving flow and readability. Outputs only the rewritten text. A Replace button on the result writes the rewritten text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too.
 
 **Composable:** `/rewrite` works with attached images or `/screen`. Vision OCR extracts the text first, then rewrites it.
 
@@ -153,7 +153,7 @@ Fixes grammar, spelling, and punctuation while preserving your voice.
 - `/refine` with highlighted text: corrects the selected text
 - `/refine hey just wanted to follow up on the thing we discussed`: cleans up typed text
 
-**Behavior:** Corrects errors and smooths rough phrasing without restructuring or adding new ideas. Your original tone and meaning stay intact.
+**Behavior:** Corrects errors and smooths rough phrasing without restructuring or adding new ideas. Your original tone and meaning stay intact. A Replace button on the result writes the refined text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too.
 
 **Composable:** `/refine` works with attached images or `/screen`. Vision OCR extracts the text first, then refines it.
 

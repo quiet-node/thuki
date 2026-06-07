@@ -35,6 +35,10 @@ export interface RawAppConfig {
     max_display_chars: number;
     max_context_length: number;
   };
+  behavior: {
+    auto_replace: boolean;
+    auto_close: boolean;
+  };
   search: {
     searxng_url: string;
     reader_url: string;
@@ -68,7 +72,12 @@ export interface CorruptMarker {
 }
 
 /** Identifier for the active Settings tab. */
-export type SettingsTabId = 'general' | 'search' | 'display' | 'about';
+export type SettingsTabId =
+  | 'general'
+  | 'behavior'
+  | 'search'
+  | 'display'
+  | 'about';
 
 /**
  * Returns a human-friendly description of a Tauri-side `ConfigError`. Used

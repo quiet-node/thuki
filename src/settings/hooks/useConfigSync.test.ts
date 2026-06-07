@@ -33,6 +33,10 @@ const CONFIG_A: RawAppConfig = {
     max_display_chars: 300,
     max_context_length: 4096,
   },
+  behavior: {
+    auto_replace: false,
+    auto_close: false,
+  },
   search: {
     searxng_url: 'http://127.0.0.1:25017',
     reader_url: 'http://127.0.0.1:25018',

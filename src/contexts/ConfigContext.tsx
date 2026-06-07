@@ -27,6 +27,15 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
  */
 const CONFIG_UPDATED_EVENT = 'thuki://config-updated';
 
+/**
+ * Overlay visibility event (mirrors `OVERLAY_VISIBILITY_EVENT` in `App.tsx`).
+ * The overlay refetches config every time it shows so a setting changed in the
+ * Settings window (a separate webview) is always reflected by the next summon,
+ * even if the `config-updated` broadcast was missed while the overlay was
+ * hidden. The payload's `state` is `'show' | 'hide-request' | 'restore'`.
+ */
+const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
+
 /** Shape returned by the Rust `get_config` command (snake_case). */
 interface RawAppConfig {
   inference: {
@@ -48,6 +57,10 @@ interface RawAppConfig {
     max_display_lines: number;
     max_display_chars: number;
     max_context_length: number;
+  };
+  behavior: {
+    auto_replace: boolean;
+    auto_close: boolean;
   };
 }
 
@@ -74,6 +87,12 @@ export interface AppConfig {
     maxDisplayChars: number;
     maxContextLength: number;
   };
+  behavior: {
+    /** Auto-write `/rewrite` & `/refine` results back into the source app. */
+    autoReplace: boolean;
+    /** Dismiss the overlay after a `/rewrite` or `/refine` result is replaced. */
+    autoClose: boolean;
+  };
 }
 
 function transform(raw: RawAppConfig): AppConfig {
@@ -97,6 +116,10 @@ function transform(raw: RawAppConfig): AppConfig {
       maxDisplayLines: raw.quote.max_display_lines,
       maxDisplayChars: raw.quote.max_display_chars,
       maxContextLength: raw.quote.max_context_length,
+    },
+    behavior: {
+      autoReplace: raw.behavior.auto_replace,
+      autoClose: raw.behavior.auto_close,
     },
   };
 }
@@ -140,26 +163,37 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
 
     refresh(true);
 
-    let unlisten: UnlistenFn | undefined;
-    void listen<unknown>(CONFIG_UPDATED_EVENT, () => {
-      refresh(false);
-    })
-      .then((fn) => {
-        if (cancelled) {
-          fn();
-          return;
-        }
-        unlisten = fn;
-      })
-      .catch(() => {
-        // Event bridge unavailable (test env, Tauri not ready). Initial
-        // hydrate still happened above; subscribers fall back to a static
-        // snapshot and pick up edits on next mount.
-      });
+    const unlisteners: UnlistenFn[] = [];
+    const subscribe = (event: string, handler: (payload: unknown) => void) => {
+      void listen<unknown>(event, ({ payload }) => handler(payload))
+        .then((fn) => {
+          if (cancelled) {
+            fn();
+            return;
+          }
+          unlisteners.push(fn);
+        })
+        .catch(() => {
+          // Event bridge unavailable (test env, Tauri not ready). Initial
+          // hydrate still happened above; subscribers fall back to a static
+          // snapshot and pick up edits on next mount.
+        });
+    };
+
+    // Re-fetch when the backend broadcasts a config write...
+    subscribe(CONFIG_UPDATED_EVENT, () => refresh(false));
+    // ...and every time the overlay shows, so a setting toggled in the
+    // Settings window is picked up by the next summon regardless of whether
+    // the broadcast above reached this (possibly hidden) window.
+    subscribe(OVERLAY_VISIBILITY_EVENT, (payload) => {
+      if ((payload as { state?: string } | null)?.state === 'show') {
+        refresh(false);
+      }
+    });
 
     return () => {
       cancelled = true;
-      unlisten?.();
+      for (const fn of unlisteners) fn();
     };
   }, []);
 
@@ -225,5 +259,9 @@ export const DEFAULT_CONFIG: AppConfig = {
     maxDisplayLines: 4,
     maxDisplayChars: 300,
     maxContextLength: 4096,
+  },
+  behavior: {
+    autoReplace: false,
+    autoClose: false,
   },
 };

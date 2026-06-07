@@ -4279,6 +4279,7 @@ version = "0.13.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "block2",
  "core-foundation 0.10.1",
  "core-graphics",
  "dirs",

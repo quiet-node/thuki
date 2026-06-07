@@ -51,6 +51,7 @@ import { MAX_IMAGE_SIZE_BYTES } from './types/image';
 import { useConfig } from './contexts/ConfigContext';
 import {
   COMMANDS,
+  REPLACEABLE_COMMANDS,
   SCREEN_CAPTURE_PLACEHOLDER,
   buildPrompt,
 } from './config/commands';
@@ -59,6 +60,8 @@ import {
   serializeForClipboard,
   serializeForFile,
 } from './lib/exportSerializer';
+import { replaceSelection, shouldAutoReplace } from './utils/replaceSelection';
+import { cleanForRender } from './utils/sanitizeAssistantContent';
 import './App.css';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
@@ -434,8 +437,43 @@ function App() {
   } = useConversationHistory();
 
   /**
+   * Latest value of the auto-replace setting, mirrored into a ref so the
+   * turn-completion handler can read it without taking `config` (created
+   * further down the component) as a dependency.
+   */
+  const autoReplaceRef = useRef(false);
+
+  /**
+   * Mirror of `config.behavior.autoClose`, read by the replace path to decide
+   * whether to dismiss the overlay after a successful write-back. Same ref
+   * indirection as `autoReplaceRef` so the handlers avoid a `config` dependency.
+   */
+  const autoCloseRef = useRef(false);
+
+  /**
+   * Sticky rewrite mode: the trigger of the most recent replaceable command
+   * (`/rewrite` or `/refine`) in this conversation, or `null`. Plain follow-up
+   * turns inherit it so refinements ("make it longer") keep the Replace button;
+   * any other command exits the mode. Mirrors `searchActive`'s lifecycle. A ref,
+   * not state, because nothing re-renders on change — each message carries its
+   * own `replaceCommand`, fixed at creation.
+   */
+  const stickyReplaceCommandRef = useRef<string | null>(null);
+
+  /**
+   * Mirror of `performReplace`, so the turn-completion handler (defined before
+   * `performReplace`) can trigger an auto-replace without a forward reference.
+   */
+  const performReplaceRef = useRef<((text: string) => Promise<boolean>) | null>(
+    null,
+  );
+
+  /**
    * Persist a completed user/assistant turn to SQLite if the conversation
-   * has been saved. Passed as `onTurnComplete` to `useOllama`.
+   * has been saved. Passed as `onTurnComplete` to `useOllama`. When
+   * auto-replace is enabled and the turn was a `/rewrite` or `/refine` over a
+   * selection, dismiss the overlay and write the result back into the source
+   * app (the same flow as the manual Replace button).
    */
   const handleTurnComplete = useCallback(
     async (
@@ -443,6 +481,12 @@ function App() {
       assistantMsg: Parameters<typeof persistTurn>[1],
     ) => {
       await persistTurn(userMsg, assistantMsg);
+      if (shouldAutoReplace(autoReplaceRef.current, assistantMsg, userMsg)) {
+        // Strip any stray turn-boundary tokens so auto-replace writes back the
+        // exact bytes the bubble shows and the manual Replace button pastes
+        // (both go through `cleanForRender`); the in-memory content is raw.
+        void performReplaceRef.current?.(cleanForRender(assistantMsg.content));
+      }
     },
     [persistTurn],
   );
@@ -556,6 +600,13 @@ function App() {
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
   const config = useConfig();
   const quote = config.quote;
+
+  // Keep the auto-replace ref in sync with the latest config so
+  // `handleTurnComplete` can read it without a `config` dependency.
+  useEffect(() => {
+    autoReplaceRef.current = config.behavior.autoReplace;
+    autoCloseRef.current = config.behavior.autoClose;
+  }, [config]);
 
   /**
    * True when the window is near the screen bottom and should grow upward.
@@ -913,6 +964,7 @@ function App() {
       setPendingUserMessage(null);
       setCaptureError(null);
       setSearchActive(false);
+      stickyReplaceCommandRef.current = null;
 
       void refreshModels();
       reset();
@@ -933,6 +985,7 @@ function App() {
     screenCapturePendingRef.current = false;
     screenCaptureInputSnapshotRef.current = null;
     setSearchActive(false);
+    stickyReplaceCommandRef.current = null;
     setSelectedContext(null);
     setPreviewImageUrl(null);
     setAttachedImages((prev) => {
@@ -946,6 +999,32 @@ function App() {
       return 'hiding';
     });
   }, [cancel]);
+
+  /**
+   * Writes a `/rewrite` or `/refine` result back into the source app, replacing
+   * the user's selection. The native paste is posted directly to the target
+   * process, so the overlay can stay open and the user can Replace repeatedly.
+   * When auto-close is on, the overlay dismisses itself after a *successful*
+   * write (a skipped write leaves it open). Drives both the manual Replace
+   * button and the auto-replace path. Resolves to whether the write succeeded
+   * so the Replace button can show a confirmation tick.
+   */
+  const performReplace = useCallback(
+    (text: string): Promise<boolean> =>
+      replaceSelection(text).then((replaced) => {
+        if (replaced && autoCloseRef.current) {
+          requestHideOverlay();
+        }
+        return replaced;
+      }),
+    [requestHideOverlay],
+  );
+
+  // Mirror `performReplace` into a ref so the earlier-defined turn-completion
+  // handler can trigger auto-replace without a forward reference.
+  useEffect(() => {
+    performReplaceRef.current = performReplace;
+  }, [performReplace]);
 
   /**
    * Restores the parked conversation. The OS window is snapped back to full
@@ -1540,6 +1619,7 @@ function App() {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
         setSearchActive(false);
+        stickyReplaceCommandRef.current = null;
       } catch {
         // Load failed - current session is preserved intact.
       } finally {
@@ -1570,6 +1650,7 @@ function App() {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
         setSearchActive(false);
+        stickyReplaceCommandRef.current = null;
       } catch {
         // Load failed - save already committed; dismiss panel, keep current view.
       } finally {
@@ -1617,6 +1698,7 @@ function App() {
     setIsSubmitPending(false);
     setPendingUserMessage(null);
     setSearchActive(false);
+    stickyReplaceCommandRef.current = null;
   }, [reset, resetHistory]);
 
   /**
@@ -1828,7 +1910,17 @@ function App() {
         .filter((img) => img.filePath !== null)
         .map((img) => img.filePath as string);
       const images = readyPaths.length > 0 ? readyPaths : undefined;
-      ask(submitQuery, context, images, think);
+      // Plain submits inherit sticky rewrite mode so refinements of a
+      // `/rewrite`/`/refine` result keep their Replace button.
+      ask(
+        submitQuery,
+        context,
+        images,
+        think,
+        undefined,
+        undefined,
+        stickyReplaceCommandRef.current ?? undefined,
+      );
       setSelectedContext(null);
       setQuery('');
       for (const img of attachedImages) {
@@ -2203,6 +2295,7 @@ function App() {
         composedPrompt,
         /* v8 ignore next -- dispatch guard ensures at least one image source; empty path is defensive */
         readyPaths.length > 0 ? readyPaths : undefined,
+        REPLACEABLE_COMMANDS.has(trigger) ? trigger : undefined,
       );
     },
     [
@@ -2562,6 +2655,16 @@ function App() {
     )
       return;
 
+    // Maintain sticky rewrite mode. A replaceable command (re)starts it; any
+    // other command exits it; a plain follow-up leaves it intact so its
+    // refinement inherits the Replace button through `executeSubmit`. Search
+    // turns have already returned above, so `/search` needs no branch here.
+    if (utilityTrigger && REPLACEABLE_COMMANDS.has(utilityTrigger)) {
+      stickyReplaceCommandRef.current = utilityTrigger;
+    } else if (utilityTrigger || hasScreen || hasThink || hasExtract) {
+      stickyReplaceCommandRef.current = null;
+    }
+
     const context = sanitizeContext(selectedContext, quote.maxContextLength);
 
     // Unified pre-flight pending-images gate. Every command that needs
@@ -2667,6 +2770,8 @@ function App() {
         undefined,
         hasThink || undefined,
         composedPrompt,
+        undefined,
+        REPLACEABLE_COMMANDS.has(utilityTrigger) ? utilityTrigger : undefined,
       );
       setSelectedContext(null);
       setQuery('');
@@ -3225,6 +3330,7 @@ function App() {
                                 onNewConversation={handleNewConversation}
                                 onHistoryOpen={handleHistoryToggle}
                                 onImagePreview={handleChatImagePreview}
+                                onReplace={performReplace}
                                 searchStage={searchStage}
                                 activeModel={activeModel}
                                 onModelPickerToggle={

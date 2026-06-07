@@ -29,6 +29,10 @@ function Probe() {
       <div data-testid="text-font-weight">{config.window.textFontWeight}</div>
       <div data-testid="max-display-lines">{config.quote.maxDisplayLines}</div>
       <div data-testid="system-prompt">{config.prompt.system}</div>
+      <div data-testid="auto-replace">
+        {String(config.behavior.autoReplace)}
+      </div>
+      <div data-testid="auto-close">{String(config.behavior.autoClose)}</div>
     </>
   );
 }
@@ -95,6 +99,10 @@ describe('ConfigContext', () => {
           max_display_chars: 500,
           max_context_length: 8192,
         },
+        behavior: {
+          auto_replace: true,
+          auto_close: true,
+        },
       });
 
       render(
@@ -120,6 +128,10 @@ describe('ConfigContext', () => {
       expect(screen.getByTestId('system-prompt').textContent).toBe(
         'custom base prompt',
       );
+      // The behavior section maps through transform() like every other
+      // section: snake_case on the wire becomes camelCase in the app config.
+      expect(screen.getByTestId('auto-replace').textContent).toBe('true');
+      expect(screen.getByTestId('auto-close').textContent).toBe('true');
     });
 
     it('falls back to DEFAULT_CONFIG when invoke returns nullish', async () => {
@@ -184,6 +196,9 @@ describe('ConfigContext', () => {
           max_display_chars: 300,
           max_context_length: 4096,
         },
+        behavior: {
+          auto_replace: false,
+        },
       };
       const updated = {
         ...initial,
@@ -211,6 +226,71 @@ describe('ConfigContext', () => {
       expect(screen.getByTestId('max-chat-height').textContent).toBe('800');
     });
 
+    it('refetches config when the overlay shows', async () => {
+      const initial = {
+        inference: { ollama_url: 'http://127.0.0.1:11434' },
+        prompt: { system: '' },
+        window: { overlay_width: 600, max_chat_height: 648, max_images: 3 },
+        quote: {
+          max_display_lines: 4,
+          max_display_chars: 300,
+          max_context_length: 4096,
+        },
+        behavior: { auto_replace: false },
+      };
+      const updated = {
+        ...initial,
+        window: { overlay_width: 950, max_chat_height: 648, max_images: 3 },
+      };
+      invoke.mockResolvedValueOnce(initial).mockResolvedValueOnce(updated);
+
+      render(
+        <ConfigProvider>
+          <Probe />
+        </ConfigProvider>,
+      );
+      await act(async () => {});
+      expect(screen.getByTestId('overlay-width').textContent).toBe('600');
+
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', { state: 'show' });
+      });
+
+      expect(screen.getByTestId('overlay-width').textContent).toBe('950');
+    });
+
+    it('does not refetch on non-show or payloadless visibility events', async () => {
+      const initial = {
+        inference: { ollama_url: 'http://127.0.0.1:11434' },
+        prompt: { system: '' },
+        window: { overlay_width: 600, max_chat_height: 648, max_images: 3 },
+        quote: {
+          max_display_lines: 4,
+          max_display_chars: 300,
+          max_context_length: 4096,
+        },
+        behavior: { auto_replace: false },
+      };
+      invoke.mockResolvedValue(initial);
+
+      render(
+        <ConfigProvider>
+          <Probe />
+        </ConfigProvider>,
+      );
+      await act(async () => {});
+      const callsAfterMount = invoke.mock.calls.length;
+
+      // A hide-request (state !== 'show') and a payloadless event must not
+      // trigger a config refetch.
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', { state: 'hide-request' });
+        emitTauriEvent('thuki://visibility', null);
+      });
+
+      expect(invoke.mock.calls.length).toBe(callsAfterMount);
+    });
+
     it('keeps last good config when a refresh invoke rejects', async () => {
       const initial = {
         inference: { ollama_url: 'http://127.0.0.1:11434' },
@@ -224,6 +304,9 @@ describe('ConfigContext', () => {
           max_display_lines: 4,
           max_display_chars: 300,
           max_context_length: 4096,
+        },
+        behavior: {
+          auto_replace: false,
         },
       };
       invoke
@@ -266,6 +349,9 @@ describe('ConfigContext', () => {
           max_display_chars: 300,
           max_context_length: 4096,
         },
+        behavior: {
+          auto_replace: false,
+        },
       });
 
       const { unmount } = render(
@@ -296,6 +382,9 @@ describe('ConfigContext', () => {
           max_display_lines: 4,
           max_display_chars: 300,
           max_context_length: 4096,
+        },
+        behavior: {
+          auto_replace: false,
         },
       });
 
@@ -382,6 +471,9 @@ describe('ConfigContext', () => {
           max_display_lines: 4,
           max_display_chars: 300,
           max_context_length: 4096,
+        },
+        behavior: {
+          auto_replace: false,
         },
       });
 

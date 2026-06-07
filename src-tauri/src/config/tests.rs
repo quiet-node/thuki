@@ -13,22 +13,23 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX,
-    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
-    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
-    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
-    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
-    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
-    DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
-    DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
+    DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
+    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
+    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
+    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT,
+    DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_TOP_K_URLS,
+    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
     SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path};
 use super::schema::{
-    AppConfig, DebugSection, InferenceSection, PromptSection, QuoteSection, SearchSection,
-    UpdaterSection, WindowSection,
+    AppConfig, BehaviorSection, DebugSection, InferenceSection, PromptSection, QuoteSection,
+    SearchSection, UpdaterSection, WindowSection,
 };
 use super::writer::atomic_write;
 
@@ -1197,6 +1198,60 @@ fn config_error_io_error_serializes_io_source_as_display_string() {
     assert_eq!(json["kind"], "io_error");
     assert_eq!(json["path"], "/tmp/nope.toml");
     assert_eq!(json["source"], "denied here");
+}
+
+// ── behavior section ────────────────────────────────────────────────────────
+
+#[test]
+fn behavior_section_default_matches_compiled_defaults() {
+    let b = BehaviorSection::default();
+    assert_eq!(b.auto_replace, DEFAULT_AUTO_REPLACE);
+    assert_eq!(b.auto_close, DEFAULT_AUTO_CLOSE);
+}
+
+#[test]
+fn app_config_default_includes_behavior_section_with_compiled_defaults() {
+    let c = AppConfig::default();
+    assert_eq!(c.behavior.auto_replace, DEFAULT_AUTO_REPLACE);
+    assert_eq!(c.behavior.auto_close, DEFAULT_AUTO_CLOSE);
+}
+
+#[test]
+fn behavior_auto_replace_round_trips_through_load() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[behavior]\nauto_replace = true\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert!(loaded.behavior.auto_replace);
+}
+
+#[test]
+fn behavior_auto_close_round_trips_through_load() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[behavior]\nauto_close = true\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert!(loaded.behavior.auto_close);
+}
+
+#[test]
+fn toml_without_behavior_section_deserializes_to_defaults() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        "[inference]\nollama_url = \"http://127.0.0.1:11434\"\n",
+    )
+    .unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.behavior.auto_replace, DEFAULT_AUTO_REPLACE,
+        "missing [behavior] section must deserialize to defaults via #[serde(default)]"
+    );
+    assert_eq!(
+        loaded.behavior.auto_close, DEFAULT_AUTO_CLOSE,
+        "missing [behavior] section must deserialize to defaults via #[serde(default)]"
+    );
 }
 
 // ── debug section ───────────────────────────────────────────────────────────

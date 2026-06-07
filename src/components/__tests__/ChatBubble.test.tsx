@@ -88,6 +88,31 @@ describe('ChatBubble', () => {
       ).toBeInTheDocument();
     });
 
+    it('renders the Replace button when onReplace is provided', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="rewritten"
+          index={0}
+          onReplace={vi.fn().mockResolvedValue(true)}
+        />,
+      );
+      expect(
+        screen.getByRole('button', {
+          name: 'Replace selection in source app',
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it('omits the Replace button when onReplace is absent', () => {
+      render(<ChatBubble role="assistant" content="response" index={0} />);
+      expect(
+        screen.queryByRole('button', {
+          name: 'Replace selection in source app',
+        }),
+      ).toBeNull();
+    });
+
     it('left-aligns assistant messages (justify-start class)', () => {
       const { container } = render(
         <ChatBubble role="assistant" content="Hi" index={0} />,

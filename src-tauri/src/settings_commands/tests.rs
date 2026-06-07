@@ -61,16 +61,16 @@ fn parse_sample() -> DocumentMut {
 #[test]
 fn allowed_fields_count_matches_schema_field_count() {
     // Hand-counted from `AppConfig`: inference(3) + prompt(1) + window(7) + quote(3)
-    // + search(11) + debug(1) + updater(3) = 29 tunable fields. The active model slug
-    // lives in the SQLite app_config table via ActiveModelState, not in TOML. The
-    // collapsed bar height and hide-commit delay are baked into the frontend (see
-    // `WindowSection` doc) because they have no perceptible effect across
+    // + behavior(2) + search(11) + debug(1) + updater(3) = 31 tunable fields. The
+    // active model slug lives in the SQLite app_config table via ActiveModelState,
+    // not in TOML. The collapsed bar height and hide-commit delay are baked into the
+    // frontend (see `WindowSection` doc) because they have no perceptible effect across
     // their usable range. `prompt.system_customized` is an internal migration flag
     // co-written by set_config_field when prompt.system is saved; it is not
     // directly user-tunable and is intentionally absent from ALLOWED_FIELDS.
     // If this assertion fails, the schema has drifted from the allowlist and
     // someone added a field without extending ALLOWED_FIELDS.
-    assert_eq!(ALLOWED_FIELDS.len(), 29);
+    assert_eq!(ALLOWED_FIELDS.len(), 31);
 }
 
 #[test]
@@ -82,6 +82,7 @@ fn allowed_sections_match_app_config_top_level_keys() {
             "prompt",
             "window",
             "quote",
+            "behavior",
             "search",
             "debug",
             "updater"
@@ -640,6 +641,25 @@ fn write_field_to_disk_persists_and_returns_resolved_config() {
 
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(on_disk.contains("http://10.0.0.1:11434"));
+}
+
+#[test]
+fn write_field_to_disk_creates_section_absent_from_older_file() {
+    // Regression: a config.toml seeded before the [behavior] section was added
+    // to the schema has no [behavior] table (SAMPLE_CONFIG reproduces this
+    // older-file shape). Toggling behavior.auto_replace must create the section
+    // rather than fail with UnknownSection; otherwise the setting can never be
+    // turned on for any user whose config predates the section.
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    let resolved = write_field_to_disk(&path, "behavior", "auto_replace", json!(true)).unwrap();
+    assert!(resolved.behavior.auto_replace);
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("[behavior]"));
+    assert!(on_disk.contains("auto_replace = true"));
 }
 
 #[test]

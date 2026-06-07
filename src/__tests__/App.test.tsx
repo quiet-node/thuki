@@ -7,7 +7,10 @@ import {
 } from '@testing-library/react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import App from '../App';
-import { DEFAULT_CONFIG } from '../contexts/ConfigContext';
+import {
+  DEFAULT_CONFIG,
+  ConfigProviderForTest,
+} from '../contexts/ConfigContext';
 import {
   invoke,
   emitTauriEvent,
@@ -1112,6 +1115,345 @@ describe('App', () => {
         quotedText: 'selected snippet',
       }),
     );
+  });
+
+  it('auto-replaces the source selection after /rewrite when the setting is on', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+      replace_selection: 'replaced',
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: { autoReplace: true, autoClose: false },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    act(() => {
+      getLastChannel()?.simulateMessage({
+        type: 'Token',
+        data: 'Polished draft',
+      });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // Auto-replace writes straight back to the source app on completion. The
+    // paste is posted to the target process and fires synchronously, with no
+    // overlay dismiss to wait on.
+    await act(async () => {});
+
+    // The completed /rewrite over a selection writes straight back to the
+    // source app because auto-replace is enabled.
+    expect(invoke).toHaveBeenCalledWith('replace_selection', {
+      text: 'Polished draft',
+    });
+  });
+
+  it('auto-replace strips stray turn-boundary tokens before writing back', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+      replace_selection: 'replaced',
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: { autoReplace: true, autoClose: false },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    act(() => {
+      getLastChannel()?.simulateMessage({
+        type: 'Token',
+        data: '<think>Polished draft</think>',
+      });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+    await act(async () => {});
+
+    // The raw in-memory content carries the markers, but auto-replace pastes the
+    // same cleaned text the bubble and manual Replace button use.
+    expect(invoke).toHaveBeenCalledWith('replace_selection', {
+      text: 'Polished draft',
+    });
+  });
+
+  it('auto-closes after a successful replace when auto-close is on', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+      replace_selection: 'replaced',
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: { autoReplace: true, autoClose: true },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+    __mockWindow.hide.mockClear();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    act(() => {
+      getLastChannel()?.simulateMessage({
+        type: 'Token',
+        data: 'Polished draft',
+      });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // The replace succeeds, so auto-close dismisses the overlay; the native
+    // window hides once the exit animation commits (HIDE_COMMIT_DELAY_MS).
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(__mockWindow.hide).toHaveBeenCalled();
+  });
+
+  it('does not auto-close when the replace is skipped', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+      replace_selection: 'skipped',
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: { autoReplace: true, autoClose: true },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+    __mockWindow.hide.mockClear();
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    act(() => {
+      getLastChannel()?.simulateMessage({
+        type: 'Token',
+        data: 'Polished draft',
+      });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // A skipped replace (no target app / secure field) must leave Thuki open.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(__mockWindow.hide).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Replace button on a plain follow-up after /rewrite', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: { autoReplace: false, autoClose: false },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Polished v1' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // The first /rewrite result is replaceable.
+    expect(
+      screen.queryAllByLabelText('Replace selection in source app'),
+    ).toHaveLength(1);
+
+    // A plain refinement inherits sticky rewrite mode, so its result is
+    // replaceable too.
+    act(() => {
+      fireEvent.change(textarea, { target: { value: 'make it longer' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Longer v2' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    expect(
+      screen.queryAllByLabelText('Replace selection in source app'),
+    ).toHaveLength(2);
+
+    // Auto-replace is off, so neither completed turn may write back on its
+    // own: the source app is only touched when the user clicks Replace.
+    expect(invoke).not.toHaveBeenCalledWith(
+      'replace_selection',
+      expect.anything(),
+    );
+  });
+
+  it('drops the Replace button when a different command interrupts the rewrite session', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b'],
+        ollamaReachable: true,
+      },
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: { autoReplace: false, autoClose: false },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+
+    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Polished v1' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // A non-replaceable command exits rewrite mode for itself and for any
+    // later plain follow-up.
+    act(() => {
+      fireEvent.change(textarea, { target: { value: '/tldr wrap this up' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Short.' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    act(() => {
+      fireEvent.change(textarea, { target: { value: 'and again' } });
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Again.' });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    // Only the original /rewrite result carries a Replace button.
+    expect(
+      screen.queryAllByLabelText('Replace selection in source app'),
+    ).toHaveLength(1);
   });
 
   it('applies justify-end when window is near screen bottom', async () => {

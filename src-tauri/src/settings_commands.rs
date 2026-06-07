@@ -41,7 +41,7 @@ use parking_lot::RwLock;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tauri::{AppHandle, Emitter, Manager, State};
-use toml_edit::{value as toml_value, Array, DocumentMut, Item, Value as TomlValue};
+use toml_edit::{value as toml_value, Array, DocumentMut, Item, Table, Value as TomlValue};
 
 use crate::config::{
     self,
@@ -176,6 +176,16 @@ pub(crate) fn write_field_to_disk(
     }
 
     let mut doc = read_document(path)?;
+    // An allowed section can be absent from an older on-disk file that was
+    // seeded before the section was added to the schema: the loader fills it
+    // from defaults in memory but never rewrites the file. Materialize an empty
+    // table so the field can be patched in. `section` is already validated
+    // against `ALLOWED_SECTIONS` above, so this can only create a real schema
+    // section, never an arbitrary one. Without this, writing any field in a
+    // not-yet-persisted section fails with `UnknownSection`.
+    if doc.get(section).and_then(Item::as_table).is_none() {
+        doc.insert(section, Item::Table(Table::new()));
+    }
     patch_document(&mut doc, section, key, value)?;
     // When the user saves the system prompt, mark it as explicitly customized
     // so the upgrade-migration path in the loader (empty + !customized →

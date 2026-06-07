@@ -307,6 +307,8 @@ pub(crate) fn resolve(config: &mut AppConfig) {
         config.search.reader_batch_timeout_s = corrected;
     }
 
+    // Behavior section: boolean flag has no resolution step (any value is valid).
+
     // Debug section: boolean flag has no resolution step (any value is valid).
 
     // Updater section.

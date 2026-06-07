@@ -69,4 +69,7 @@ export const TIPS: readonly Tip[] = [
   'The export icon in the chat header saves the current session as a Markdown file',
   'Click the export icon and pick Copy to clipboard to grab the whole conversation, ready to paste anywhere',
   'Exports include the model name, every message, /think reasoning, search sources, and inline screenshots',
+  'After /rewrite or /refine, hit Replace to send the result back into your app, replacing your selection',
+  'Turn on Auto-replace in Settings → Behavior so /rewrite and /refine results return to your app automatically',
+  'Turn on Auto-close in Settings → Behavior to dismiss Thuki automatically once /rewrite or /refine is replaced',
 ];

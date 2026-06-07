@@ -1,0 +1,77 @@
+/**
+ * Behavior tab.
+ *
+ * Settings that control how Thuki acts after you invoke it. The Text
+ * Replacement group covers the `/rewrite` and `/refine` commands: whether their
+ * result is written straight back into the source app (auto-replace), and
+ * whether Thuki dismisses itself once it has been replaced (auto-close). The
+ * per-result Replace button is always available regardless of these toggles.
+ */
+
+import { Section, Toggle } from '../components';
+import { SaveField } from '../components/SaveField';
+import { configHelp } from '../configHelpers';
+import type { RawAppConfig } from '../types';
+
+interface BehaviorTabProps {
+  config: RawAppConfig;
+  resyncToken: number;
+  onSaved: (next: RawAppConfig) => void;
+}
+
+/**
+ * Section-level "?" copy: what the Text Replacement group is and which commands
+ * it covers. The individual toggles explain their own behavior in their own
+ * tooltips, so this stays scoped to "what is this and what does it apply to".
+ */
+const TEXT_REPLACEMENT_HELP =
+  'Applies only to /rewrite and /refine: writing their result back into the app you were using, replacing your highlighted text.';
+
+export function BehaviorTab({
+  config,
+  resyncToken,
+  onSaved,
+}: BehaviorTabProps) {
+  return (
+    <Section heading="Text Replacement" helper={TEXT_REPLACEMENT_HELP}>
+      <SaveField
+        section="behavior"
+        fieldKey="auto_replace"
+        label="Auto-replace"
+        helper={configHelp('behavior', 'auto_replace')}
+        initialValue={config.behavior.auto_replace}
+        resyncToken={resyncToken}
+        onSaved={onSaved}
+        rightAlign
+        // The tab is short, so its rows sit near the window bottom; anchor the
+        // long help tooltips above the "?" so they are not clipped by the edge.
+        tooltipPlacement="top"
+        render={(value, setValue) => (
+          <Toggle
+            checked={value}
+            onChange={setValue}
+            ariaLabel="Auto-replace selected text after /rewrite or /refine"
+          />
+        )}
+      />
+      <SaveField
+        section="behavior"
+        fieldKey="auto_close"
+        label="Auto-close"
+        helper={configHelp('behavior', 'auto_close')}
+        initialValue={config.behavior.auto_close}
+        resyncToken={resyncToken}
+        onSaved={onSaved}
+        rightAlign
+        tooltipPlacement="top"
+        render={(value, setValue) => (
+          <Toggle
+            checked={value}
+            onChange={setValue}
+            ariaLabel="Close Thuki after replacing selected text"
+          />
+        )}
+      />
+    </Section>
+  );
+}
