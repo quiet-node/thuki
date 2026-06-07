@@ -2356,9 +2356,7 @@ describe('useModel', () => {
       await act(async () => {
         await result.current.ask('second');
       });
-      const secondCall = invoke.mock.calls.find(
-        ([cmd]) => cmd === 'ask_model',
-      );
+      const secondCall = invoke.mock.calls.find(([cmd]) => cmd === 'ask_model');
       expect(secondCall?.[1]).toMatchObject({ isFirstTurn: true });
     });
 
@@ -2378,9 +2376,7 @@ describe('useModel', () => {
       await act(async () => {
         await result.current.ask('second');
       });
-      const secondCall = invoke.mock.calls.find(
-        ([cmd]) => cmd === 'ask_model',
-      );
+      const secondCall = invoke.mock.calls.find(([cmd]) => cmd === 'ask_model');
       expect(secondCall?.[1]).toMatchObject({ isFirstTurn: false });
     });
 
@@ -2412,9 +2408,7 @@ describe('useModel', () => {
       await act(async () => {
         await result.current.ask('second');
       });
-      const secondCall = invoke.mock.calls.find(
-        ([cmd]) => cmd === 'ask_model',
-      );
+      const secondCall = invoke.mock.calls.find(([cmd]) => cmd === 'ask_model');
       expect(secondCall?.[1]).toMatchObject({ isFirstTurn: false });
     });
 

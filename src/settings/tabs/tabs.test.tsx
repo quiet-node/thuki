@@ -35,9 +35,25 @@ const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 const CONFIG: RawAppConfig = {
   inference: {
-    ollama_url: 'http://127.0.0.1:11434',
+    active_provider: 'ollama',
     keep_warm_inactivity_minutes: 0,
     num_ctx: 16384,
+    providers: [
+      {
+        id: 'builtin',
+        kind: 'builtin',
+        label: 'Built-in (Thuki)',
+        base_url: '',
+        model: '',
+      },
+      {
+        id: 'ollama',
+        kind: 'ollama',
+        label: 'Ollama',
+        base_url: 'http://127.0.0.1:11434',
+        model: '',
+      },
+    ],
   },
   prompt: { system: 'hello' },
   window: {
@@ -79,6 +95,9 @@ beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === 'get_loaded_model') return Promise.resolve(null);
+    if (cmd === 'get_model_picker_state') {
+      return Promise.resolve({ active: null, all: [], ollamaReachable: false });
+    }
     if (cmd === 'get_updater_state') {
       return Promise.resolve({
         last_check_at_unix: null,
@@ -107,12 +126,271 @@ async function renderModelTab() {
 }
 
 describe('ModelTab', () => {
-  it('renders Ollama and Prompt sections with the expected labels', async () => {
+  it('renders Providers and Prompt sections with the expected labels', async () => {
     await renderModelTab();
-    expect(screen.getByText('Ollama')).toBeInTheDocument();
+    expect(screen.getByText('Providers')).toBeInTheDocument();
+    expect(screen.getByText('Built-in (Thuki)')).toBeInTheDocument();
+    expect(
+      screen.getByText('Available in an upcoming version'),
+    ).toBeInTheDocument();
     expect(screen.getByText('Prompt')).toBeInTheDocument();
     expect(screen.getByText('Ollama URL')).toBeInTheDocument();
     expect(screen.getByText('System prompt')).toBeInTheDocument();
+  });
+
+  it('renders the Ollama URL field seeded from the active provider base_url', async () => {
+    await renderModelTab();
+    const input = screen.getByRole('textbox', {
+      name: 'Ollama URL',
+    }) as HTMLInputElement;
+    expect(input.value).toBe('http://127.0.0.1:11434');
+  });
+
+  it('committing a changed Ollama URL invokes set_ollama_url and lifts the config', async () => {
+    let savedUrl: unknown;
+    const onSaved = vi.fn();
+    invokeMock.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state')
+        return Promise.resolve({
+          active: null,
+          all: [],
+          ollamaReachable: false,
+        });
+      if (cmd === 'set_ollama_url') {
+        savedUrl = (args as { baseUrl: string }).baseUrl;
+        return Promise.resolve(CONFIG);
+      }
+      return Promise.resolve(CONFIG);
+    });
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={onSaved} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const input = screen.getByRole('textbox', { name: 'Ollama URL' });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'http://10.0.0.2:11434' } });
+    fireEvent.blur(input);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(savedUrl).toBe('http://10.0.0.2:11434');
+    expect(onSaved).toHaveBeenCalledWith(CONFIG);
+  });
+
+  it('committing an unchanged Ollama URL does not invoke set_ollama_url', async () => {
+    await renderModelTab();
+    const input = screen.getByRole('textbox', { name: 'Ollama URL' });
+    fireEvent.focus(input);
+    fireEvent.blur(input);
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'set_ollama_url',
+      expect.anything(),
+    );
+  });
+
+  it('Enter in the Ollama URL field commits via blur', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state')
+        return Promise.resolve({
+          active: null,
+          all: [],
+          ollamaReachable: false,
+        });
+      return Promise.resolve(CONFIG);
+    });
+    await renderModelTab();
+    const input = screen.getByRole('textbox', { name: 'Ollama URL' });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'http://10.0.0.9:11434' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    // Programmatic blur() only fires when the element is focused.
+    fireEvent.blur(input);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(invokeMock).toHaveBeenCalledWith('set_ollama_url', {
+      baseUrl: 'http://10.0.0.9:11434',
+    });
+  });
+
+  it('a non-Enter keydown in the Ollama URL field does not commit', async () => {
+    await renderModelTab();
+    const input = screen.getByRole('textbox', { name: 'Ollama URL' });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'http://10.0.0.4:11434' } });
+    fireEvent.keyDown(input, { key: 'Tab' });
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'set_ollama_url',
+      expect.anything(),
+    );
+  });
+
+  it('swallows a set_ollama_url failure without crashing', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state')
+        return Promise.resolve({
+          active: null,
+          all: [],
+          ollamaReachable: false,
+        });
+      if (cmd === 'set_ollama_url')
+        return Promise.reject(new Error('write failed'));
+      return Promise.resolve(CONFIG);
+    });
+    await renderModelTab();
+    const input = screen.getByRole('textbox', { name: 'Ollama URL' });
+    fireEvent.change(input, { target: { value: 'http://10.0.0.3:11434' } });
+    fireEvent.blur(input);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // Field still rendered; no throw.
+    expect(
+      screen.getByRole('textbox', { name: 'Ollama URL' }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the non-local warning for a remote URL and hides it for localhost', async () => {
+    await renderModelTab();
+    const input = screen.getByRole('textbox', { name: 'Ollama URL' });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'http://example.com:11434' } });
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      /responsible for securing it/,
+    );
+    fireEvent.change(input, { target: { value: 'http://127.0.0.1:11434' } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('renders the model dropdown with installed models and switches on change', async () => {
+    let switched: unknown;
+    invokeMock.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state') {
+        return Promise.resolve({
+          active: 'llama3.1:8b',
+          all: ['llama3.1:8b', 'phi4:14b'],
+          ollamaReachable: true,
+        });
+      }
+      if (cmd === 'set_active_model') {
+        switched = (args as { model: string }).model;
+        return Promise.resolve(undefined);
+      }
+      return Promise.resolve(CONFIG);
+    });
+    await renderModelTab();
+    const dropdown = screen.getByRole('combobox', {
+      name: 'Active Ollama model',
+    }) as HTMLSelectElement;
+    expect(dropdown.value).toBe('llama3.1:8b');
+    fireEvent.change(dropdown, { target: { value: 'phi4:14b' } });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(switched).toBe('phi4:14b');
+  });
+
+  it('falls back to the first installed model when none is active', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state') {
+        return Promise.resolve({
+          active: null,
+          all: ['gemma3:12b', 'phi4:14b'],
+          ollamaReachable: true,
+        });
+      }
+      return Promise.resolve(CONFIG);
+    });
+    await renderModelTab();
+    const dropdown = screen.getByRole('combobox', {
+      name: 'Active Ollama model',
+    }) as HTMLSelectElement;
+    expect(dropdown.value).toBe('gemma3:12b');
+  });
+
+  it('shows a no-models hint when the provider reports no installed models', async () => {
+    await renderModelTab();
+    expect(screen.getByText('No models installed')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('combobox', { name: 'Active Ollama model' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows an empty Ollama URL when no Ollama provider is configured', async () => {
+    const builtinOnly: RawAppConfig = {
+      ...CONFIG,
+      inference: {
+        ...CONFIG.inference,
+        providers: [CONFIG.inference.providers[0]],
+      },
+    };
+    render(
+      <ModelTab config={builtinOnly} resyncToken={0} onSaved={() => {}} />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const input = screen.getByRole('textbox', {
+      name: 'Ollama URL',
+    }) as HTMLInputElement;
+    expect(input.value).toBe('');
+  });
+
+  it('does not overwrite the Ollama URL on resync while the field is focused', async () => {
+    const { rerender } = await renderModelTab();
+    const input = screen.getByRole('textbox', {
+      name: 'Ollama URL',
+    }) as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'http://typing.in/progress' } });
+    const updatedConfig: RawAppConfig = {
+      ...CONFIG,
+      inference: {
+        ...CONFIG.inference,
+        providers: [
+          CONFIG.inference.providers[0],
+          {
+            ...CONFIG.inference.providers[1],
+            base_url: 'http://10.0.0.8:11434',
+          },
+        ],
+      },
+    };
+    rerender(
+      <ModelTab config={updatedConfig} resyncToken={1} onSaved={() => {}} />,
+    );
+    expect(input.value).toBe('http://typing.in/progress');
+  });
+
+  it('resyncs the Ollama URL field when resyncToken changes', async () => {
+    const { rerender } = await renderModelTab();
+    const input = screen.getByRole('textbox', {
+      name: 'Ollama URL',
+    }) as HTMLInputElement;
+    expect(input.value).toBe('http://127.0.0.1:11434');
+    const updatedConfig: RawAppConfig = {
+      ...CONFIG,
+      inference: {
+        ...CONFIG.inference,
+        providers: [
+          CONFIG.inference.providers[0],
+          {
+            ...CONFIG.inference.providers[1],
+            base_url: 'http://10.0.0.7:11434',
+          },
+        ],
+      },
+    };
+    rerender(
+      <ModelTab config={updatedConfig} resyncToken={1} onSaved={() => {}} />,
+    );
+    expect(input.value).toBe('http://10.0.0.7:11434');
   });
 
   it('no longer renders the auto-replace toggle (moved to the Behavior tab)', async () => {
