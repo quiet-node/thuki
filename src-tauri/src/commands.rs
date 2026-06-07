@@ -660,11 +660,12 @@ pub async fn ask_model(
     // stored history (`conv`) is never mutated. On a cache miss we leave
     // the payload untouched and trust Ollama to surface a structured error
     // through `classify_http_error`'s picker hint, which the user can act on.
+    let provider_id = config.inference.active_provider.clone();
     let cache_hit = capabilities_cache
         .0
         .lock()
         .ok()
-        .and_then(|guard| guard.get(&model_name).cloned());
+        .and_then(|guard| guard.get(&(provider_id, model_name.clone())).cloned());
     if let Some(caps) = cache_hit {
         let stats = apply_capability_filter(&mut messages, &caps);
         if stats.stripped_images > 0 {
