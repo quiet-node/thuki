@@ -1,6 +1,15 @@
-import { act, render, screen } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import {
+  act,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+} from '@testing-library/react';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
 import { MarkdownRenderer } from '../MarkdownRenderer';
+
+const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 describe('MarkdownRenderer', () => {
   describe('Basic rendering', () => {
@@ -284,6 +293,67 @@ describe('MarkdownRenderer', () => {
       );
       expect(container.querySelector('.katex')).toBeNull();
       expect(container.querySelector('code')!.textContent).toBe('echo $5');
+    });
+  });
+
+  describe('External link handling', () => {
+    beforeEach(() => {
+      invokeMock.mockReset();
+      invokeMock.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('opens a clicked link in the system browser via open_url', async () => {
+      await act(async () => {
+        render(
+          <MarkdownRenderer content="[Visit site](https://example.com)" />,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      const link = await screen.findByRole('link', { name: 'Visit site' });
+      const clickEvent = createEvent.click(link);
+      fireEvent(link, clickEvent);
+
+      expect(clickEvent.defaultPrevented).toBe(true);
+      expect(invokeMock).toHaveBeenCalledWith('open_url', {
+        url: 'https://example.com/',
+      });
+    });
+
+    it('ignores clicks on non-anchor content', () => {
+      const { container } = render(<MarkdownRenderer content="just text" />);
+      fireEvent.click(container.querySelector('span.markdown-body')!);
+      expect(invokeMock).not.toHaveBeenCalled();
+    });
+
+    it('logs when open_url rejects so failures are never swallowed', async () => {
+      const consoleError = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      invokeMock.mockRejectedValue(new Error('nope'));
+
+      await act(async () => {
+        render(
+          <MarkdownRenderer content="[Visit site](https://example.com)" />,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      const link = await screen.findByRole('link', { name: 'Visit site' });
+      await act(async () => {
+        fireEvent.click(link);
+        await Promise.resolve();
+      });
+
+      expect(consoleError).toHaveBeenCalledWith(
+        'failed to open link',
+        'https://example.com/',
+        expect.any(Error),
+      );
     });
   });
 
