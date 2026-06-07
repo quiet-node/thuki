@@ -1,11 +1,52 @@
 import React from 'react';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  act,
+  waitFor,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { AskBarView, renderHighlightedText } from '../AskBarView';
+import {
+  $createParagraphNode,
+  $createTextNode,
+  $getRoot,
+  type LexicalEditor,
+} from 'lexical';
+import { AskBarView } from '../AskBarView';
 import type { AttachedImage } from '../../types/image';
 
-function makeRef(): React.RefObject<HTMLTextAreaElement | null> {
+function makeRef(): React.RefObject<HTMLDivElement | null> {
   return { current: null };
+}
+
+/** The AskBar's Lexical contentEditable (role="textbox"). */
+function getInput(): HTMLElement {
+  return screen.getByRole('textbox');
+}
+
+/** The Lexical editor backing the input, read off the root DOM node. */
+function getEditor(): LexicalEditor {
+  return (getInput() as unknown as { __lexicalEditor: LexicalEditor })
+    .__lexicalEditor;
+}
+
+/**
+ * Replaces the editor's text, mimicking the user typing `text`. jsdom does not
+ * synthesize contentEditable input from key events, so edits are applied through
+ * the editor API; this still exercises the real value-sync path (onValueChange).
+ */
+function typeText(text: string): void {
+  const editor = getEditor();
+  act(() => {
+    editor.update(() => {
+      const root = $getRoot();
+      root.clear();
+      const paragraph = $createParagraphNode();
+      if (text) paragraph.append($createTextNode(text));
+      root.append(paragraph);
+    });
+  });
 }
 
 /** Helper to create an AttachedImage with defaults. */
@@ -29,7 +70,7 @@ const IMAGE_DEFAULTS = {
 };
 
 describe('AskBarView', () => {
-  it('renders textarea with placeholder for input bar mode', () => {
+  it('renders the input with placeholder for input bar mode', () => {
     render(
       <AskBarView
         {...IMAGE_DEFAULTS}
@@ -42,11 +83,10 @@ describe('AskBarView', () => {
         inputRef={makeRef()}
       />,
     );
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-    expect(textarea).not.toBeNull();
+    expect(screen.getByText('Ask Thuki anything...')).toBeInTheDocument();
   });
 
-  it('renders textarea with chat mode placeholder', () => {
+  it('renders the input with chat mode placeholder', () => {
     render(
       <AskBarView
         {...IMAGE_DEFAULTS}
@@ -59,11 +99,10 @@ describe('AskBarView', () => {
         inputRef={makeRef()}
       />,
     );
-    const textarea = screen.getByPlaceholderText('Reply...');
-    expect(textarea).not.toBeNull();
+    expect(screen.getByText('Reply...')).toBeInTheDocument();
   });
 
-  it('calls setQuery on textarea change', () => {
+  it('calls setQuery when the editor text changes', async () => {
     const setQuery = vi.fn();
     render(
       <AskBarView
@@ -77,12 +116,11 @@ describe('AskBarView', () => {
         inputRef={makeRef()}
       />,
     );
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-    fireEvent.change(textarea, { target: { value: 'hello' } });
-    expect(setQuery).toHaveBeenCalledWith('hello');
+    typeText('hello');
+    await waitFor(() => expect(setQuery).toHaveBeenCalledWith('hello'));
   });
 
-  it('keeps the textarea editable during generation so the next message can be drafted', () => {
+  it('keeps the input editable during generation so the next message can be drafted', async () => {
     const setQuery = vi.fn();
     render(
       <AskBarView
@@ -96,10 +134,9 @@ describe('AskBarView', () => {
         inputRef={makeRef()}
       />,
     );
-    const textarea = screen.getByPlaceholderText('Reply...');
-    expect((textarea as HTMLTextAreaElement).disabled).toBe(false);
-    fireEvent.change(textarea, { target: { value: 'next message' } });
-    expect(setQuery).toHaveBeenCalledWith('next message');
+    expect(getInput().getAttribute('contenteditable')).toBe('true');
+    typeText('next message');
+    await waitFor(() => expect(setQuery).toHaveBeenCalledWith('next message'));
   });
 
   it('calls onSubmit on Enter key', () => {
@@ -116,8 +153,7 @@ describe('AskBarView', () => {
         inputRef={makeRef()}
       />,
     );
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    fireEvent.keyDown(getInput(), { key: 'Enter', shiftKey: false });
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
@@ -135,8 +171,7 @@ describe('AskBarView', () => {
         inputRef={makeRef()}
       />,
     );
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
+    fireEvent.keyDown(getInput(), { key: 'Enter', shiftKey: true });
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -752,10 +787,11 @@ describe('AskBarView', () => {
             inputRef={makeRef()}
           />,
         );
-        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+        const textarea = getInput();
         const file = new File(['x'], 'img.png', { type: 'image/png' });
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -783,10 +819,11 @@ describe('AskBarView', () => {
             inputRef={makeRef()}
           />,
         );
-        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+        const textarea = getInput();
         const file = new File(['x'], 'img.png', { type: 'image/png' });
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -818,9 +855,10 @@ describe('AskBarView', () => {
             inputRef={makeRef()}
           />,
         );
-        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+        const textarea = getInput();
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'text/plain', getAsFile: () => null }],
           },
         });
@@ -843,9 +881,10 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       const file = new File(['fake-img'], 'test.png', { type: 'image/png' });
       const clipboardData = {
+        getData: () => '',
         items: [{ type: 'image/png', getAsFile: () => file }],
       };
       fireEvent.paste(textarea, { clipboardData });
@@ -870,8 +909,9 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       const clipboardData = {
+        getData: () => '',
         items: [{ type: 'text/plain', getAsFile: () => null }],
       };
       fireEvent.paste(textarea, { clipboardData });
@@ -893,8 +933,10 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      fireEvent.paste(textarea, { clipboardData: { items: null } });
+      const textarea = getInput();
+      fireEvent.paste(textarea, {
+        clipboardData: { getData: () => '', items: null },
+      });
       expect(onImagesAttached).not.toHaveBeenCalled();
     });
 
@@ -913,9 +955,10 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       const file = new File(['x'], 'img.png', { type: 'image/png' });
       const clipboardData = {
+        getData: () => '',
         items: [{ type: 'image/png', getAsFile: () => file }],
       };
       fireEvent.paste(textarea, { clipboardData });
@@ -937,8 +980,9 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       const clipboardData = {
+        getData: () => '',
         items: [{ type: 'image/png', getAsFile: () => null }],
       };
       fireEvent.paste(textarea, { clipboardData });
@@ -966,9 +1010,10 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       const file = new File(['x'], 'img.png', { type: 'image/png' });
       const clipboardData = {
+        getData: () => '',
         items: [{ type: 'image/png', getAsFile: () => file }],
       };
       fireEvent.paste(textarea, { clipboardData });
@@ -1243,7 +1288,7 @@ describe('AskBarView', () => {
       expect(btn.classList.contains('stop-btn-ring')).toBe(true);
     });
 
-    it('keeps the textarea editable when isSubmitPending is true', () => {
+    it('keeps the input editable when isSubmitPending is true', () => {
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
@@ -1257,8 +1302,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      expect((textarea as HTMLTextAreaElement).disabled).toBe(false);
+      expect(getInput().getAttribute('contenteditable')).toBe('true');
     });
 
     it('ignores paste when isSubmitPending', () => {
@@ -1277,9 +1321,10 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       const file = new File(['x'], 'img.png', { type: 'image/png' });
       const clipboardData = {
+        getData: () => '',
         items: [{ type: 'image/png', getAsFile: () => file }],
       };
       fireEvent.paste(textarea, { clipboardData });
@@ -1355,7 +1400,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       fireEvent.keyDown(textarea, { key: 'Tab' });
       expect(setQuery).toHaveBeenCalledWith('/screen ');
     });
@@ -1375,7 +1420,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       expect(setQuery).toHaveBeenCalledWith('/screen ');
       expect(onSubmit).not.toHaveBeenCalled();
@@ -1396,7 +1441,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       expect(onSubmit).toHaveBeenCalledOnce();
       expect(setQuery).not.toHaveBeenCalled();
@@ -1416,7 +1461,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       fireEvent.keyDown(textarea, { key: 'Escape' });
       // setQuery is NOT called (query is unchanged)
       expect(setQuery).not.toHaveBeenCalled();
@@ -1439,7 +1484,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       // Initially row 0 is highlighted (only one command, so index stays 0)
       fireEvent.keyDown(textarea, { key: 'ArrowDown' });
       // ArrowDown from index 0 moves to index 1
@@ -1460,7 +1505,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       fireEvent.keyDown(textarea, { key: 'ArrowUp' });
       // ArrowUp wraps to the last option
       const options = screen.getAllByRole('option');
@@ -1502,7 +1547,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       fireEvent.keyDown(textarea, { key: 'Tab' });
       expect(setQuery).not.toHaveBeenCalled();
       expect(onSubmit).not.toHaveBeenCalled();
@@ -1522,7 +1567,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       fireEvent.keyDown(textarea, { key: 'Escape' });
       expect(setQuery).not.toHaveBeenCalled();
     });
@@ -1546,7 +1591,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       expect(onSubmit).toHaveBeenCalledOnce();
     });
@@ -1564,7 +1609,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       // Should not throw
       fireEvent.keyDown(textarea, { key: 'ArrowDown' });
       fireEvent.keyDown(textarea, { key: 'ArrowUp' });
@@ -1586,7 +1631,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getInput();
       fireEvent.keyDown(textarea, { key: 'Tab' });
       expect(setQuery).not.toHaveBeenCalled();
     });
@@ -1665,7 +1710,7 @@ describe('AskBarView', () => {
   });
 
   describe('slash command highlighting', () => {
-    it('mirror div renders the query so colored spans show through the textarea', () => {
+    it('highlights a recognized command token in violet within the input', async () => {
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
@@ -1678,86 +1723,35 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const mirror = screen.getByTestId('askbar-mirror');
-      expect(mirror).toHaveTextContent('/search what is Rust?');
-      // The trigger token sits in its own span with the violet utility class.
-      const tokenSpan = Array.from(mirror.querySelectorAll('span')).find(
-        (s) => s.textContent === '/search',
-      );
-      expect(tokenSpan).toBeDefined();
-      expect(tokenSpan?.className).toContain('text-violet-400');
+      const input = getInput();
+      await waitFor(() => {
+        expect(input.querySelector('.text-violet-400')?.textContent).toBe(
+          '/search',
+        );
+      });
     });
 
-    it('syncs mirror scrollTop with the textarea so the highlight tracks the caret', () => {
-      const ref = makeRef();
+    it('does not highlight a trigger embedded in a longer word', async () => {
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
-          query="/think who is Elon"
+          query="/searching"
           setQuery={vi.fn()}
           isChatMode={false}
           isGenerating={false}
           onSubmit={vi.fn()}
           onCancel={vi.fn()}
-          inputRef={ref}
+          inputRef={makeRef()}
         />,
       );
-      const mirror = screen.getByTestId('askbar-mirror') as HTMLDivElement;
-      // Pretend the textarea has been scrolled.
-      Object.defineProperty(ref.current, 'scrollTop', {
-        configurable: true,
-        value: 24,
-      });
-      Object.defineProperty(ref.current, 'scrollLeft', {
-        configurable: true,
-        value: 6,
-      });
-      fireEvent.scroll(ref.current!);
-      expect(mirror.scrollTop).toBe(24);
-      expect(mirror.scrollLeft).toBe(6);
-    });
-  });
-
-  describe('renderHighlightedText (pure)', () => {
-    it('returns a single span when no command trigger is present', () => {
-      const node = renderHighlightedText('plain text only');
-      const { container } = render(<>{node}</>);
-      const violet = container.querySelector('.text-violet-400');
-      expect(violet).toBeNull();
-      expect(container).toHaveTextContent('plain text only');
-    });
-
-    it('wraps the first valid trigger occurrence in the violet utility class', () => {
-      const node = renderHighlightedText('/search what is Rust?');
-      const { container } = render(<>{node}</>);
-      const tokens = container.querySelectorAll('.text-violet-400');
-      expect(tokens.length).toBe(1);
-      expect(tokens[0].textContent).toBe('/search');
-    });
-
-    it('only highlights the first occurrence of any given trigger', () => {
-      const node = renderHighlightedText('/search foo /search bar');
-      const { container } = render(<>{node}</>);
-      const tokens = container.querySelectorAll('.text-violet-400');
-      expect(tokens.length).toBe(1);
-    });
-
-    it('does not match a trigger embedded inside a longer word', () => {
-      // /searching contains /search but is not a standalone trigger token.
-      const node = renderHighlightedText('/searching');
-      const { container } = render(<>{node}</>);
-      expect(container.querySelector('.text-violet-400')).toBeNull();
-    });
-
-    it('returns an empty fragment for an empty string without throwing', () => {
-      const node = renderHighlightedText('');
-      const { container } = render(<>{node}</>);
-      expect(container.textContent).toBe('');
+      const input = getInput();
+      await waitFor(() => expect(input.textContent).toContain('/searching'));
+      expect(input.querySelector('.text-violet-400')).toBeNull();
     });
   });
 
   describe('onFirstKeystroke', () => {
-    it('fires when textarea transitions from empty to non-empty', () => {
+    it('fires when the editor transitions from empty to non-empty', async () => {
       const onFirstKeystroke = vi.fn();
       render(
         <AskBarView
@@ -1772,18 +1766,18 @@ describe('AskBarView', () => {
           onFirstKeystroke={onFirstKeystroke}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      fireEvent.change(textarea, { target: { value: 'h' } });
-      expect(onFirstKeystroke).toHaveBeenCalledTimes(1);
+      typeText('h');
+      await waitFor(() => expect(onFirstKeystroke).toHaveBeenCalledTimes(1));
     });
 
-    it('does not fire on subsequent keystrokes when query is already non-empty', () => {
+    it('does not fire on subsequent edits when the query is already non-empty', async () => {
       const onFirstKeystroke = vi.fn();
+      const setQuery = vi.fn();
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
           query="h"
-          setQuery={vi.fn()}
+          setQuery={setQuery}
           isChatMode={false}
           isGenerating={false}
           onSubmit={vi.fn()}
@@ -1792,17 +1786,18 @@ describe('AskBarView', () => {
           onFirstKeystroke={onFirstKeystroke}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      fireEvent.change(textarea, { target: { value: 'he' } });
+      typeText('he');
+      await waitFor(() => expect(setQuery).toHaveBeenCalledWith('he'));
       expect(onFirstKeystroke).not.toHaveBeenCalled();
     });
 
-    it('does not fire when omitted', () => {
+    it('does not throw when omitted', async () => {
+      const setQuery = vi.fn();
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
           query=""
-          setQuery={vi.fn()}
+          setQuery={setQuery}
           isChatMode={false}
           isGenerating={false}
           onSubmit={vi.fn()}
@@ -1810,10 +1805,8 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      expect(() =>
-        fireEvent.change(textarea, { target: { value: 'h' } }),
-      ).not.toThrow();
+      typeText('h');
+      await waitFor(() => expect(setQuery).toHaveBeenCalledWith('h'));
     });
   });
 });
