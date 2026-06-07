@@ -1003,6 +1003,47 @@ describe('App', () => {
     expect(invoke).not.toHaveBeenCalledWith('ask_ollama', expect.anything());
   });
 
+  it('lets the user keep drafting while a response streams, without sending', async () => {
+    enableChannelCapture();
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    // First message kicks off streaming. The captured channel never sends
+    // Done, so generation stays active for the rest of the test.
+    const askBar = screen.getByPlaceholderText('Ask Thuki anything...');
+    act(() => {
+      fireEvent.change(askBar, { target: { value: 'first message' } });
+    });
+    act(() => {
+      fireEvent.keyDown(askBar, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    const askCalls = () =>
+      vi.mocked(invoke).mock.calls.filter((c) => c[0] === 'ask_ollama').length;
+    expect(askCalls()).toBe(1);
+
+    // While streaming, the composer (now in chat mode) stays editable.
+    const composer = screen.getByPlaceholderText('Reply...');
+    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
+
+    // Drafting a follow-up and pressing Enter must NOT fire a second request,
+    // and the draft must remain in the box.
+    act(() => {
+      fireEvent.change(composer, { target: { value: 'drafted mid-stream' } });
+    });
+    act(() => {
+      fireEvent.keyDown(composer, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    expect(askCalls()).toBe(1);
+    expect(
+      (screen.getByPlaceholderText('Reply...') as HTMLTextAreaElement).value,
+    ).toBe('drafted mid-stream');
+  });
+
   it('fires drag on non-interactive mousedown', async () => {
     render(<App />);
     await act(async () => {});

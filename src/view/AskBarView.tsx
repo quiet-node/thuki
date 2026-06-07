@@ -687,6 +687,11 @@ export function AskBarView({
             >
               {renderHighlightedText(query)}
             </div>
+            {/* The compose surface stays editable while a response streams or
+                a submit is pending, so the user can draft their next message
+                without waiting. Sending is gated at submit time (handleSubmit
+                no-ops while busy and the send button becomes Stop), never by
+                disabling the input. */}
             <textarea
               ref={inputRef}
               value={query}
@@ -694,11 +699,10 @@ export function AskBarView({
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               onScroll={handleTextareaScroll}
-              disabled={isBusy}
               autoFocus
               rows={1}
               placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
-              className="askbar-textarea relative w-full bg-transparent border-none outline-none text-transparent thuki-text-base placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-5"
+              className="askbar-textarea relative w-full bg-transparent border-none outline-none text-transparent thuki-text-base placeholder:text-text-secondary py-2 px-1 resize-none leading-5"
               style={{ caretColor: 'var(--color-text-primary)' }}
             />
           </div>

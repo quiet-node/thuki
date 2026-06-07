@@ -82,21 +82,24 @@ describe('AskBarView', () => {
     expect(setQuery).toHaveBeenCalledWith('hello');
   });
 
-  it('disables textarea during generation', () => {
+  it('keeps the textarea editable during generation so the next message can be drafted', () => {
+    const setQuery = vi.fn();
     render(
       <AskBarView
         {...IMAGE_DEFAULTS}
         query=""
-        setQuery={vi.fn()}
-        isChatMode={false}
+        setQuery={setQuery}
+        isChatMode={true}
         isGenerating={true}
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
         inputRef={makeRef()}
       />,
     );
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-    expect((textarea as HTMLTextAreaElement).disabled).toBe(true);
+    const textarea = screen.getByPlaceholderText('Reply...');
+    expect((textarea as HTMLTextAreaElement).disabled).toBe(false);
+    fireEvent.change(textarea, { target: { value: 'next message' } });
+    expect(setQuery).toHaveBeenCalledWith('next message');
   });
 
   it('calls onSubmit on Enter key', () => {
@@ -1240,7 +1243,7 @@ describe('AskBarView', () => {
       expect(btn.classList.contains('stop-btn-ring')).toBe(true);
     });
 
-    it('disables textarea when isSubmitPending is true', () => {
+    it('keeps the textarea editable when isSubmitPending is true', () => {
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
@@ -1255,7 +1258,7 @@ describe('AskBarView', () => {
         />,
       );
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      expect((textarea as HTMLTextAreaElement).disabled).toBe(true);
+      expect((textarea as HTMLTextAreaElement).disabled).toBe(false);
     });
 
     it('ignores paste when isSubmitPending', () => {
