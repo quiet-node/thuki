@@ -267,7 +267,10 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
             .clone();
         let endpoint = format!(
             "{}/api/chat",
-            warmup_config.inference.ollama_url.trim_end_matches('/')
+            warmup_config
+                .inference
+                .active_provider_base_url()
+                .trim_end_matches('/')
         );
         let system_prompt = warmup_config.prompt.resolved_system.clone();
         let keep_alive = if warmup_config.inference.keep_warm_inactivity_minutes == 0 {

@@ -554,7 +554,10 @@ pub async fn ask_model(
     let config = config.read().clone();
     let endpoint = format!(
         "{}/api/chat",
-        config.inference.ollama_url.trim_end_matches('/')
+        config
+            .inference
+            .active_provider_base_url()
+            .trim_end_matches('/')
     );
     // Snapshot the active model slug; drop the guard before any `.await`.
     let model_name = {

@@ -60,17 +60,20 @@ fn parse_sample() -> DocumentMut {
 
 #[test]
 fn allowed_fields_count_matches_schema_field_count() {
-    // Hand-counted from `AppConfig`: inference(3) + prompt(1) + window(7) + quote(3)
-    // + behavior(2) + search(11) + debug(1) + updater(3) = 31 tunable fields. The
-    // active model slug lives in the SQLite app_config table via ActiveModelState,
-    // not in TOML. The collapsed bar height and hide-commit delay are baked into the
-    // frontend (see `WindowSection` doc) because they have no perceptible effect across
-    // their usable range. `prompt.system_customized` is an internal migration flag
-    // co-written by set_config_field when prompt.system is saved; it is not
-    // directly user-tunable and is intentionally absent from ALLOWED_FIELDS.
-    // If this assertion fails, the schema has drifted from the allowlist and
-    // someone added a field without extending ALLOWED_FIELDS.
-    assert_eq!(ALLOWED_FIELDS.len(), 31);
+    // Hand-counted from `AppConfig`: inference(2) + prompt(1) + window(7) + quote(3)
+    // + behavior(2) + search(11) + debug(1) + updater(3) = 30 tunable flat fields.
+    // The inference section's `active_provider` and `providers` array are NOT flat
+    // fields: they are written through the dedicated `set_active_model` /
+    // `set_ollama_url` commands, not the generic `set_config_field` path, so they
+    // are intentionally absent from ALLOWED_FIELDS. The collapsed bar height and
+    // hide-commit delay are baked into the frontend (see `WindowSection` doc)
+    // because they have no perceptible effect across their usable range.
+    // `prompt.system_customized` is an internal migration flag co-written by
+    // set_config_field when prompt.system is saved; it is not directly user-tunable
+    // and is intentionally absent from ALLOWED_FIELDS. If this assertion fails, the
+    // schema has drifted from the allowlist and someone added a field without
+    // extending ALLOWED_FIELDS.
+    assert_eq!(ALLOWED_FIELDS.len(), 30);
 }
 
 #[test]
@@ -92,7 +95,7 @@ fn allowed_sections_match_app_config_top_level_keys() {
 
 #[test]
 fn is_allowed_field_accepts_known_pair() {
-    assert!(is_allowed_field("inference", "ollama_url"));
+    assert!(is_allowed_field("inference", "num_ctx"));
     assert!(is_allowed_field("search", "router_timeout_s"));
     assert!(is_allowed_field("search", "pipeline_wall_clock_budget_s"));
 }
@@ -632,15 +635,15 @@ fn write_field_to_disk_persists_and_returns_resolved_config() {
 
     let resolved = write_field_to_disk(
         &path,
-        "inference",
-        "ollama_url",
-        json!("http://10.0.0.1:11434"),
+        "search",
+        "searxng_url",
+        json!("http://10.0.0.1:25017"),
     )
     .unwrap();
-    assert_eq!(resolved.inference.ollama_url, "http://10.0.0.1:11434");
+    assert_eq!(resolved.search.searxng_url, "http://10.0.0.1:25017");
 
     let on_disk = std::fs::read_to_string(&path).unwrap();
-    assert!(on_disk.contains("http://10.0.0.1:11434"));
+    assert!(on_disk.contains("http://10.0.0.1:25017"));
 }
 
 #[test]
@@ -737,7 +740,7 @@ fn write_field_to_disk_rejects_unknown_field() {
 fn write_field_to_disk_propagates_read_error_for_missing_file() {
     let dir = tempdir();
     let path = dir.join("missing.toml");
-    let err = write_field_to_disk(&path, "inference", "ollama_url", json!("http://x")).unwrap_err();
+    let err = write_field_to_disk(&path, "search", "searxng_url", json!("http://x")).unwrap_err();
     matches!(err, ConfigError::IoError { .. });
 }
 
@@ -746,8 +749,8 @@ fn write_field_to_disk_propagates_patch_error_for_type_mismatch() {
     let dir = tempdir();
     let path = dir.join("config.toml");
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
-    let err = write_field_to_disk(&path, "inference", "ollama_url", json!(42)).unwrap_err();
-    matches_type_mismatch(&err, "inference", "ollama_url");
+    let err = write_field_to_disk(&path, "search", "searxng_url", json!(42)).unwrap_err();
+    matches_type_mismatch(&err, "search", "searxng_url");
 }
 
 #[cfg(unix)]
@@ -766,9 +769,9 @@ fn write_field_to_disk_propagates_io_error_when_parent_dir_is_readonly() {
 
     let err = write_field_to_disk(
         &path,
-        "inference",
-        "ollama_url",
-        json!("http://10.0.0.1:11434"),
+        "search",
+        "searxng_url",
+        json!("http://10.0.0.1:25017"),
     )
     .unwrap_err();
 
@@ -786,19 +789,33 @@ fn write_field_to_disk_propagates_io_error_when_parent_dir_is_readonly() {
 fn reset_section_on_disk_replaces_named_section_with_defaults() {
     let dir = tempdir();
     let path = dir.join("config.toml");
+    // SAMPLE_CONFIG's [inference] is the legacy shape (ollama_url + available,
+    // no providers). Resetting the section must restore the new providers shape:
+    // active_provider + the built-in/Ollama array-of-tables.
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
 
-    // Mutate the field first so reset has something to revert.
-    write_field_to_disk(
-        &path,
-        "inference",
-        "ollama_url",
-        json!("http://10.0.0.1:11434"),
-    )
-    .unwrap();
-
     let resolved = reset_section_on_disk(&path, Some("inference")).unwrap();
-    assert_eq!(resolved.inference.ollama_url, "http://127.0.0.1:11434");
+    assert_eq!(resolved.inference.active_provider, "ollama");
+    assert!(resolved
+        .inference
+        .providers
+        .iter()
+        .any(|p| p.id == "builtin"));
+    let ollama = resolved
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == "ollama")
+        .unwrap();
+    assert_eq!(ollama.base_url, "http://127.0.0.1:11434");
+
+    // The reset wrote a `[[inference.providers]]` array-of-tables to disk that
+    // round-trips back through the loader.
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        on_disk.contains("[[inference.providers]]"),
+        "section reset must persist the providers array-of-tables: {on_disk}"
+    );
 }
 
 #[test]
@@ -807,14 +824,7 @@ fn reset_section_on_disk_preserves_other_sections() {
     let path = dir.join("config.toml");
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
 
-    // Change two sections.
-    write_field_to_disk(
-        &path,
-        "inference",
-        "ollama_url",
-        json!("http://10.0.0.1:11434"),
-    )
-    .unwrap();
+    // Change the search section, then reset only inference.
     write_field_to_disk(&path, "search", "max_iterations", json!(7)).unwrap();
 
     // Reset only inference; search.max_iterations should still be 7.

@@ -20,12 +20,15 @@
 pub mod defaults;
 pub mod error;
 pub mod loader;
+pub mod migrate;
 pub mod schema;
 pub mod writer;
 
 pub use error::ConfigError;
 pub use loader::load_from_path;
-pub use schema::{AppConfig, InferenceSection, PromptSection, QuoteSection, WindowSection};
+pub use schema::{
+    AppConfig, InferenceSection, PromptSection, Provider, QuoteSection, WindowSection,
+};
 pub use writer::{atomic_write, atomic_write_bytes};
 
 /// File name of the user config file inside the OS config dir.

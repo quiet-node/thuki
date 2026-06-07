@@ -248,7 +248,11 @@ pub async fn get_model_picker_state(
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<serde_json::Value, String> {
-    let ollama_url = config.read().inference.ollama_url.clone();
+    let ollama_url = config
+        .read()
+        .inference
+        .active_provider_base_url()
+        .to_string();
     let fetch_result = fetch_installed_model_names(&client, &ollama_url).await;
 
     let installed = match fetch_result {
@@ -320,7 +324,11 @@ pub async fn set_active_model(
 ) -> Result<(), String> {
     validate_model_slug(&model)?;
 
-    let ollama_url = config.read().inference.ollama_url.clone();
+    let ollama_url = config
+        .read()
+        .inference
+        .active_provider_base_url()
+        .to_string();
     let installed = fetch_installed_model_names(&client, &ollama_url).await?;
     validate_model_installed(&model, &installed)?;
 
@@ -430,7 +438,11 @@ pub async fn check_model_setup(
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<ModelSetupState, String> {
-    let ollama_url = config.read().inference.ollama_url.clone();
+    let ollama_url = config
+        .read()
+        .inference
+        .active_provider_base_url()
+        .to_string();
     let installed_result = fetch_installed_model_names(&client, &ollama_url).await;
 
     let persisted = {
@@ -694,7 +706,11 @@ pub async fn get_model_capabilities(
     cache: tauri::State<'_, ModelCapabilitiesCache>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<HashMap<String, Capabilities>, String> {
-    let base_url = config.read().inference.ollama_url.clone();
+    let base_url = config
+        .read()
+        .inference
+        .active_provider_base_url()
+        .to_string();
     let installed = fetch_installed_model_names(&client, &base_url).await?;
     Ok(reconcile_capabilities(&client, &cache, &base_url, &installed).await)
 }

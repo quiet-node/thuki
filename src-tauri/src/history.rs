@@ -296,7 +296,10 @@ pub async fn generate_title(
 
     let endpoint = format!(
         "{}/api/chat",
-        app_config.inference.ollama_url.trim_end_matches('/')
+        app_config
+            .inference
+            .active_provider_base_url()
+            .trim_end_matches('/')
     );
 
     let cancel_token = tokio_util::sync::CancellationToken::new();

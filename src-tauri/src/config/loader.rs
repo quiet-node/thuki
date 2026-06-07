@@ -135,25 +135,8 @@ fn rename_corrupt(path: &Path) {
 /// and composes the system prompt appendix into `prompt.resolved_system`.
 /// After this runs, every `AppConfig` field holds a usable value.
 pub(crate) fn resolve(config: &mut AppConfig) {
-    // Inference section: only the Ollama endpoint is configurable here. The
-    // active model is runtime UI state owned by SQLite app_config, see
-    // crate::models::ActiveModelState.
-    if config.inference.ollama_url.trim().is_empty() {
-        config.inference.ollama_url = DEFAULT_OLLAMA_URL.to_string();
-    }
-    // keep_warm_inactivity_minutes: -1 = never release, 0 = disabled (Ollama
-    // default), 1..=1440 = explicit timeout. Below -1 or above 1440: reset to default.
-    clamp_keep_warm_inactivity(
-        &mut config.inference.keep_warm_inactivity_minutes,
-        DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
-        "inference.keep_warm_inactivity_minutes",
-    );
-    clamp_u32(
-        &mut config.inference.num_ctx,
-        BOUNDS_NUM_CTX,
-        DEFAULT_NUM_CTX,
-        "inference.num_ctx",
-    );
+    // Inference section: providers list, active pointer, migration, clamps.
+    resolve_inference(&mut config.inference);
 
     // Prompt section: if the user has never explicitly saved a system prompt
     // (system_customized is false) and the on-disk value is empty, restore
@@ -320,6 +303,82 @@ pub(crate) fn resolve(config: &mut AppConfig) {
     );
     if config.updater.manifest_url.trim().is_empty() {
         config.updater.manifest_url = DEFAULT_UPDATER_MANIFEST_URL.to_string();
+    }
+}
+
+/// Resolves the inference section: migrates a pre-providers `ollama_url`,
+/// clamps numerics, drops invalid providers, re-seeds the mandatory built-in
+/// and Ollama entries, and repairs an empty/dangling `active_provider`. Never
+/// panics on user input.
+fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
+    use crate::config::defaults::{
+        DEFAULT_ACTIVE_PROVIDER, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA,
+    };
+    use crate::config::schema::{builtin_provider, ollama_provider};
+
+    // num_ctx + keep_warm: unchanged clamping (Ollama-path knobs).
+    clamp_u32(
+        &mut inf.num_ctx,
+        BOUNDS_NUM_CTX,
+        DEFAULT_NUM_CTX,
+        "inference.num_ctx",
+    );
+    clamp_keep_warm_inactivity(
+        &mut inf.keep_warm_inactivity_minutes,
+        DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+        "inference.keep_warm_inactivity_minutes",
+    );
+
+    // Migration: a pre-providers file has `ollama_url` and no `providers`.
+    // Carry the URL onto a synthesized Ollama provider; the active model is
+    // attached later during startup orchestration (it lives in SQLite). The
+    // active pointer is left to the dangling-pointer repair below: a migrated
+    // config either omits `active_provider` (serde defaults it to the Phase-1
+    // default of `ollama`) or names something the repair resets to that same
+    // default, so existing Ollama users land on the Ollama provider either way.
+    if let Some(legacy) = inf.legacy_ollama_url.take() {
+        if inf.providers.is_empty() {
+            let url = if legacy.trim().is_empty() {
+                DEFAULT_OLLAMA_URL.to_string()
+            } else {
+                legacy
+            };
+            inf.providers = vec![builtin_provider(), ollama_provider(&url)];
+        }
+    }
+
+    // Drop unknown-kind providers and non-builtin providers with no base_url.
+    inf.providers.retain(|p| match p.kind.as_str() {
+        PROVIDER_KIND_BUILTIN => true,
+        PROVIDER_KIND_OLLAMA => !p.base_url.trim().is_empty(),
+        other => {
+            eprintln!("thuki: [config] dropping provider with unknown kind '{other}'");
+            false
+        }
+    });
+
+    // Built-in is mandatory: re-seed if a user file omitted it.
+    if !inf
+        .providers
+        .iter()
+        .any(|p| p.kind == PROVIDER_KIND_BUILTIN)
+    {
+        inf.providers.insert(0, builtin_provider());
+    }
+    // Ensure a functional Phase-1 provider exists: re-seed Ollama if absent.
+    if !inf.providers.iter().any(|p| p.kind == PROVIDER_KIND_OLLAMA) {
+        inf.providers.push(ollama_provider(DEFAULT_OLLAMA_URL));
+    }
+
+    // Empty/dangling active pointer -> default.
+    if !inf.providers.iter().any(|p| p.id == inf.active_provider) {
+        if !inf.active_provider.trim().is_empty() {
+            eprintln!(
+                "thuki: [config] active_provider '{}' not found; using default '{DEFAULT_ACTIVE_PROVIDER}'",
+                inf.active_provider
+            );
+        }
+        inf.active_provider = DEFAULT_ACTIVE_PROVIDER.to_string();
     }
 }
 

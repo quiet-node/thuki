@@ -115,7 +115,10 @@ pub async fn search_pipeline(
 
     let ollama_endpoint = format!(
         "{}/api/chat",
-        app_config.inference.ollama_url.trim_end_matches('/')
+        app_config
+            .inference
+            .active_provider_base_url()
+            .trim_end_matches('/')
     );
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());
