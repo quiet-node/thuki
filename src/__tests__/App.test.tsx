@@ -1377,6 +1377,13 @@ describe('App', () => {
     expect(
       screen.queryAllByLabelText('Replace selection in source app'),
     ).toHaveLength(2);
+
+    // Auto-replace is off, so neither completed turn may write back on its
+    // own: the source app is only touched when the user clicks Replace.
+    expect(invoke).not.toHaveBeenCalledWith(
+      'replace_selection',
+      expect.anything(),
+    );
   });
 
   it('drops the Replace button when a different command interrupts the rewrite session', async () => {

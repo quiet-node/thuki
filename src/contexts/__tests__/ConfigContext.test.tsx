@@ -29,6 +29,10 @@ function Probe() {
       <div data-testid="text-font-weight">{config.window.textFontWeight}</div>
       <div data-testid="max-display-lines">{config.quote.maxDisplayLines}</div>
       <div data-testid="system-prompt">{config.prompt.system}</div>
+      <div data-testid="auto-replace">
+        {String(config.behavior.autoReplace)}
+      </div>
+      <div data-testid="auto-close">{String(config.behavior.autoClose)}</div>
     </>
   );
 }
@@ -97,6 +101,7 @@ describe('ConfigContext', () => {
         },
         behavior: {
           auto_replace: true,
+          auto_close: true,
         },
       });
 
@@ -123,6 +128,10 @@ describe('ConfigContext', () => {
       expect(screen.getByTestId('system-prompt').textContent).toBe(
         'custom base prompt',
       );
+      // The behavior section maps through transform() like every other
+      // section: snake_case on the wire becomes camelCase in the app config.
+      expect(screen.getByTestId('auto-replace').textContent).toBe('true');
+      expect(screen.getByTestId('auto-close').textContent).toBe('true');
     });
 
     it('falls back to DEFAULT_CONFIG when invoke returns nullish', async () => {
