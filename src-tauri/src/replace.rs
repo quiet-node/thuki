@@ -10,14 +10,17 @@
 //!    whether that is the app you summoned Thuki from (in-place) or a different
 //!    app you clicked into afterwards (retarget).
 //!
-//! 2. **Writing (synthetic paste).** The clipboard is saved, the rewrite
-//!    written to it (tagged transient so clipboard-history managers skip it),
-//!    the target app activated, and a synthetic Cmd+V posted directly to the
-//!    target process with `CGEventPostToPid`. Posting to the process rather
-//!    than the system key window means the paste reaches the source app even
-//!    though Thuki's nonactivating panel still holds the key window, so the
-//!    overlay stays open instead of having to be dismissed first. The clipboard
-//!    is then restored. Paste is used rather than an Accessibility write
+//! 2. **Writing (synthetic paste).** The target app is activated and, only once
+//!    it is confirmed frontmost, the clipboard is saved (every type, so an
+//!    image or file copy survives), the rewrite written to it (tagged transient
+//!    so clipboard-history managers skip it), and a synthetic Cmd+V posted
+//!    directly to the target process with `CGEventPostToPid`. Posting to the
+//!    process rather than the system key window means the paste reaches the
+//!    source app even though Thuki's nonactivating panel still holds the key
+//!    window, so the overlay stays open instead of having to be dismissed
+//!    first. The clipboard is then restored. If the target never becomes
+//!    frontmost the write is skipped entirely and the clipboard left untouched.
+//!    Paste is used rather than an Accessibility write
 //!    because Cmd+V reliably *replaces* the selection. An AX selected-text
 //!    write does not: the selection range collapses when the app loses focus,
 //!    so the AX write inserts at the caret instead. Secure input (a focused
@@ -52,7 +55,8 @@ pub enum ReplaceOutcome {
     /// Text was pasted into the target app.
     Replaced,
     /// No-op: empty text, Accessibility not granted, no target app observed,
-    /// or secure input was active.
+    /// the target app could not be brought to the foreground, or secure input
+    /// was active.
     Skipped,
 }
 
@@ -136,7 +140,7 @@ mod macos {
     use objc2::rc::autoreleasepool;
     use objc2::runtime::AnyObject;
     use objc2::{class, msg_send};
-    use objc2_foundation::{ns_string, NSArray, NSString};
+    use objc2_foundation::{ns_string, NSArray, NSData, NSString};
 
     use super::{should_record_activation, LastActiveAppState, ReplaceOutcome};
 
@@ -240,21 +244,26 @@ mod macos {
     }
 
     /// Brings the app with `pid` to the foreground and waits, with bounded
-    /// backoff, for the activation to take effect, so its focused text field is
-    /// first responder and handles the synthetic Cmd+V as a paste over the
-    /// selection.
-    unsafe fn activate_and_settle(pid: i32) {
+    /// backoff, for the activation to take effect. Returns whether `pid` became
+    /// frontmost: only then is its focused text field first responder and able
+    /// to handle the synthetic Cmd+V as a paste over the selection. A `false`
+    /// return means the paste must not be posted (the app quit, is blocked by a
+    /// Spaces switch, or the PID no longer maps to a foregroundable app).
+    unsafe fn activate_and_settle(pid: i32) -> bool {
         let app: *mut AnyObject =
             msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid];
         if !app.is_null() {
             let _: bool = msg_send![app, activateWithOptions: NS_ACTIVATE_IGNORING_OTHER_APPS];
         }
-        for delay_ms in [20u64, 30, 50, 80] {
-            if frontmost_app_pid() == Some(pid) {
-                break;
+        for delay_ms in [0u64, 20, 30, 50, 80] {
+            if delay_ms != 0 {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
             }
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            if frontmost_app_pid() == Some(pid) {
+                return true;
+            }
         }
+        false
     }
 
     /// Posts a synthetic Cmd+V directly to the process `pid`. Targeting the
@@ -275,15 +284,31 @@ mod macos {
         }
     }
 
-    /// Reads the general pasteboard's plain-text string, if any.
-    unsafe fn pasteboard_string() -> Option<String> {
+    /// Snapshots every type currently on the general pasteboard as `(UTI, data)`
+    /// pairs so the user's clipboard can be restored after the synthetic paste
+    /// in full — text, image, file reference, RTF — not just its plain-text
+    /// representation. The returned pointers are autoreleased and stay valid for
+    /// the lifetime of the enclosing autorelease pool (the whole `paste_into`
+    /// call), which is where the matching [`restore_pasteboard`] runs.
+    unsafe fn snapshot_pasteboard() -> Vec<(*mut NSString, *mut NSData)> {
         let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
-        let s: *mut NSString = msg_send![pb, stringForType: plain_text_type()];
-        if s.is_null() {
-            None
-        } else {
-            Some((*s).to_string())
+        let types: *mut AnyObject = msg_send![pb, types];
+        if types.is_null() {
+            return Vec::new();
         }
+        let count: usize = msg_send![types, count];
+        let mut saved = Vec::with_capacity(count);
+        for i in 0..count {
+            let ty: *mut NSString = msg_send![types, objectAtIndex: i];
+            if ty.is_null() {
+                continue;
+            }
+            let data: *mut NSData = msg_send![pb, dataForType: ty];
+            if !data.is_null() {
+                saved.push((ty, data));
+            }
+        }
+        saved
     }
 
     /// Writes `text` to the general pasteboard, tagged transient +
@@ -305,18 +330,21 @@ mod macos {
         let _: bool = msg_send![pb, setData: empty, forType: autogen];
     }
 
-    /// Restores the general pasteboard to a previously-saved plain-text value,
-    /// or clears it when there was nothing to restore.
-    unsafe fn restore_pasteboard(saved: Option<String>) {
+    /// Restores the general pasteboard from a [`snapshot_pasteboard`] snapshot,
+    /// rewriting every saved type. Clears the pasteboard when the snapshot was
+    /// empty (nothing was on it to begin with).
+    unsafe fn restore_pasteboard(saved: Vec<(*mut NSString, *mut NSData)>) {
         let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
         let _: isize = msg_send![pb, clearContents];
-        if let Some(prev) = saved {
-            let plain = plain_text_type();
-            let types = NSArray::from_slice(&[plain]);
-            let nil: *mut AnyObject = std::ptr::null_mut();
-            let _: isize = msg_send![pb, declareTypes: &*types, owner: nil];
-            let value = NSString::from_str(&prev);
-            let _: bool = msg_send![pb, setString: &*value, forType: plain];
+        if saved.is_empty() {
+            return;
+        }
+        let type_refs: Vec<&NSString> = saved.iter().map(|(ty, _)| &**ty).collect();
+        let types = NSArray::from_slice(&type_refs);
+        let nil: *mut AnyObject = std::ptr::null_mut();
+        let _: isize = msg_send![pb, declareTypes: &*types, owner: nil];
+        for (ty, data) in saved {
+            let _: bool = msg_send![pb, setData: data, forType: ty];
         }
     }
 
@@ -327,9 +355,22 @@ mod macos {
             if is_secure_input() {
                 return ReplaceOutcome::Skipped;
             }
-            let saved = pasteboard_string();
+            // Activate the target and confirm it actually became frontmost
+            // before doing anything else. If it never does, posting Cmd+V would
+            // land nowhere or in the wrong app, so skip without touching the
+            // clipboard and report it honestly so the UI does not show a false
+            // success (and auto-close does not dismiss over a no-op).
+            if !activate_and_settle(pid) {
+                return ReplaceOutcome::Skipped;
+            }
+            // Re-check after the activation delay: secure input is a moving
+            // target (a password field may have taken focus meanwhile), and the
+            // paste must never fire into one.
+            if is_secure_input() {
+                return ReplaceOutcome::Skipped;
+            }
+            let saved = snapshot_pasteboard();
             write_pasteboard_transient(text);
-            activate_and_settle(pid);
             post_cmd_v_to_pid(pid);
             std::thread::sleep(std::time::Duration::from_millis(PASTE_SETTLE_MS));
             restore_pasteboard(saved);
