@@ -97,3 +97,56 @@ URL.createObjectURL = vi.fn(
   () => `blob:http://localhost/fake-blob-${++blobUrlCounter}`,
 );
 URL.revokeObjectURL = vi.fn();
+
+/**
+ * Mock Range.getBoundingClientRect / getClientRects: jsdom doesn't implement
+ * them. Lexical reads the range rect when syncing the DOM selection after a
+ * programmatic edit (the AskBar input's controlled value sync calls
+ * selectEnd()), which would otherwise throw "getBoundingClientRect is not a
+ * function". Layout is irrelevant in jsdom, so an empty rect is sufficient.
+ */
+const ZERO_RECT: DOMRect = {
+  x: 0,
+  y: 0,
+  width: 0,
+  height: 0,
+  top: 0,
+  right: 0,
+  bottom: 0,
+  left: 0,
+  toJSON: () => ({}),
+};
+if (!Range.prototype.getBoundingClientRect) {
+  Range.prototype.getBoundingClientRect = () => ZERO_RECT;
+}
+if (!Range.prototype.getClientRects) {
+  Range.prototype.getClientRects = () =>
+    ({
+      length: 0,
+      item: () => null,
+      [Symbol.iterator]: function* () {},
+    }) as unknown as DOMRectList;
+}
+
+/**
+ * Polyfill ClipboardEvent: jsdom doesn't define it. Lexical's plain-text paste
+ * handler references the global `ClipboardEvent` (objectKlassEquals(event,
+ * ClipboardEvent)) when the AskBar input lets a non-image paste fall through,
+ * so the bare reference throws without this stub. Paste mocks supply their own
+ * clipboardData (RTL assigns it onto the event), so this only needs to exist.
+ */
+if (typeof globalThis.ClipboardEvent === 'undefined') {
+  class ClipboardEvent extends Event {
+    clipboardData: DataTransfer | null;
+    constructor(
+      type: string,
+      eventInitDict: { clipboardData?: unknown } & EventInit = {},
+    ) {
+      super(type, eventInitDict);
+      this.clipboardData =
+        (eventInitDict.clipboardData as DataTransfer | null) ?? null;
+    }
+  }
+  globalThis.ClipboardEvent =
+    ClipboardEvent as unknown as typeof globalThis.ClipboardEvent;
+}

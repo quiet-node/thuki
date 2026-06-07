@@ -1,7 +1,9 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { formatQuotedText } from '../utils/formatQuote';
+import { LexicalAskBarInput } from './askbar/LexicalAskBarInput';
+import type { AskBarKeyHandlers } from './askbar/LexicalAskBarInput';
 import { useConfig } from '../contexts/ConfigContext';
 import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
@@ -159,8 +161,8 @@ interface AskBarViewProps {
   onSubmit: () => void;
   /** Cancel handler fired when the user stops an active generation. */
   onCancel: () => void;
-  /** Ref to the textarea input element for focus management. */
-  inputRef: React.RefObject<HTMLTextAreaElement | null>;
+  /** Ref to the contentEditable input element for focus management. */
+  inputRef: React.RefObject<HTMLDivElement | null>;
   /** Selected text from the host app captured at activation time, if any. */
   selectedText?: string;
   /**
@@ -218,58 +220,6 @@ interface AskBarViewProps {
 }
 
 /**
- * Renders text with command triggers highlighted in violet for the mirror div.
- * Only the first occurrence of each command is highlighted; duplicates render
- * as plain text. Word-boundary aware: `/searching` does not match `/search`.
- *
- * Exported for direct unit testing.
- */
-export function renderHighlightedText(text: string): React.ReactNode {
-  const parts: React.ReactNode[] = [];
-  let remaining = text;
-  const highlighted = new Set<string>();
-
-  while (remaining.length > 0) {
-    let earliest = -1;
-    let matchedTrigger = '';
-    for (const cmd of COMMANDS) {
-      if (highlighted.has(cmd.trigger)) continue;
-      const idx = remaining.indexOf(cmd.trigger);
-      if (idx !== -1 && (earliest === -1 || idx < earliest)) {
-        const before = idx === 0 || remaining[idx - 1] === ' ';
-        const after =
-          idx + cmd.trigger.length >= remaining.length ||
-          remaining[idx + cmd.trigger.length] === ' ';
-        if (before && after) {
-          earliest = idx;
-          matchedTrigger = cmd.trigger;
-        }
-      }
-    }
-
-    if (earliest === -1) {
-      parts.push(<span key={parts.length}>{remaining}</span>);
-      break;
-    }
-
-    if (earliest > 0) {
-      parts.push(
-        <span key={parts.length}>{remaining.slice(0, earliest)}</span>,
-      );
-    }
-    parts.push(
-      <span key={parts.length} className="text-violet-400">
-        {matchedTrigger}
-      </span>,
-    );
-    highlighted.add(matchedTrigger);
-    remaining = remaining.slice(earliest + matchedTrigger.length);
-  }
-
-  return <>{parts}</>;
-}
-
-/**
  * Renders the persistent bottom input bar of the application.
  *
  * Window dragging is handled by the application root container via event
@@ -301,19 +251,6 @@ export function AskBarView({
 }: AskBarViewProps) {
   /** Quote display limits resolved from the managed AppConfig. */
   const quote = useConfig().quote;
-
-  /** Ref to the mirror div behind the textarea for command highlighting. */
-  const mirrorRef = useRef<HTMLDivElement>(null);
-
-  /** Syncs the mirror div scroll position with the textarea so the colored
-   *  spans stay aligned with the caret on long inputs. */
-  const handleTextareaScroll = useCallback(() => {
-    /* v8 ignore start -- both refs are always set by React when this fires */
-    if (!mirrorRef.current || !inputRef.current) return;
-    /* v8 ignore stop */
-    mirrorRef.current.scrollTop = inputRef.current.scrollTop;
-    mirrorRef.current.scrollLeft = inputRef.current.scrollLeft;
-  }, [inputRef]);
 
   /** True when the UI should be locked - either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
@@ -438,94 +375,63 @@ export function AskBarView({
   );
 
   /**
-   * Auto-resizes the textarea to fit its content up to a maximum height.
-   * Single forced reflow per input event ensures responsive text wrapping.
-   * Also clears the dismissed-suggestion state so the popover can reopen
-   * if the user has changed the command prefix since dismissing it.
+   * Mirrors the editor's text into the host query state. Clears the dismissed
+   * suggestion so the popover can reopen when the user types a new "/" prefix
+   * after pressing Escape. First-keystroke pre-warming is handled inside the
+   * Lexical input.
    */
-  const handleTextareaChange = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const newValue = e.target.value;
-      // Any keystroke clears the dismissed state so the popover can reopen
-      // if the user types a new "/" prefix after having pressed Escape.
+  const handleValueChange = useCallback(
+    (newValue: string) => {
       setDismissedQuery('');
-      if (query.length === 0 && newValue.length > 0) {
-        onFirstKeystroke?.();
-      }
       setQuery(newValue);
-      const el = e.target;
-      el.style.height = 'auto'; // Reset to auto to trigger height recalculation
-      el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
     },
-    [setQuery, query, onFirstKeystroke],
+    [setQuery],
   );
 
   /**
-   * Catches `Enter` without `Shift` to submit the form proactively,
-   * avoiding accidental line breaks for power users.
-   *
-   * When the command suggestion popover is open, also handles:
-   * - ArrowDown / ArrowUp: move the highlighted row (wraps around)
-   * - Tab: complete the highlighted command trigger into the input
-   * - Enter: if a valid row is highlighted, complete it; otherwise submit
-   * - Escape: dismiss the popover without changing the query
+   * Keyboard handlers for the slash-command popover, wired into the Lexical
+   * input. Arrow / Tab / Escape only fire while the popover is open; Enter
+   * (without Shift) always fires and either completes the highlighted command
+   * or submits.
    */
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (showSuggestions) {
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          if (filteredCommands.length > 0) {
-            setHighlightedIndex((i) => (i + 1) % filteredCommands.length);
+  const keyHandlers = useMemo<AskBarKeyHandlers>(
+    () => ({
+      onEnterKey: () => {
+        if (
+          showSuggestions &&
+          filteredCommands.length > 0 &&
+          highlightedIndex < filteredCommands.length
+        ) {
+          const selectedTrigger = filteredCommands[highlightedIndex].trigger;
+          if (lastSlashWord !== selectedTrigger) {
+            handleCommandSelect(selectedTrigger);
+            return;
           }
-          return;
         }
-        if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          if (filteredCommands.length > 0) {
-            setHighlightedIndex(
-              (i) =>
-                (i - 1 + filteredCommands.length) % filteredCommands.length,
-            );
-          }
-          return;
-        }
-        if (e.key === 'Tab') {
-          e.preventDefault();
-          if (filteredCommands.length > 0) {
-            const idx = Math.min(highlightedIndex, filteredCommands.length - 1);
-            handleCommandSelect(filteredCommands[idx].trigger);
-          }
-          return;
-        }
-        if (e.key === 'Enter' && !e.shiftKey) {
-          if (
-            filteredCommands.length > 0 &&
-            highlightedIndex < filteredCommands.length
-          ) {
-            const selectedTrigger = filteredCommands[highlightedIndex].trigger;
-            if (lastSlashWord !== selectedTrigger) {
-              // Partial match: complete the trigger into the input.
-              e.preventDefault();
-              handleCommandSelect(selectedTrigger);
-              return;
-            }
-            // Exact match: fall through to normal submit below.
-          }
-          // No match, empty list, or exact trigger already typed: submit.
-        }
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          setDismissedQuery(lastSlashWord);
-          return;
-        }
-      }
-
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
         onSubmit();
-      }
-    },
+      },
+      onArrowDown: () => {
+        if (filteredCommands.length > 0) {
+          setHighlightedIndex((i) => (i + 1) % filteredCommands.length);
+        }
+      },
+      onArrowUp: () => {
+        if (filteredCommands.length > 0) {
+          setHighlightedIndex(
+            (i) => (i - 1 + filteredCommands.length) % filteredCommands.length,
+          );
+        }
+      },
+      onTab: () => {
+        if (filteredCommands.length > 0) {
+          const idx = Math.min(highlightedIndex, filteredCommands.length - 1);
+          handleCommandSelect(filteredCommands[idx].trigger);
+        }
+      },
+      onEscape: () => {
+        setDismissedQuery(lastSlashWord);
+      },
+    }),
     [
       showSuggestions,
       filteredCommands,
@@ -536,11 +442,15 @@ export function AskBarView({
     ],
   );
 
-  /** Handles clipboard paste - extracts image items from clipboardData. */
+  /**
+   * Extracts image files from a clipboard paste. Returns true when images were
+   * attached so the editor suppresses the default text paste; false to let the
+   * editor paste text normally.
+   */
   const handlePaste = useCallback(
-    (e: React.ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (!items || isBusy) return;
+    (clipboard: DataTransfer | null): boolean => {
+      const items = clipboard?.items;
+      if (!items || isBusy) return false;
 
       const remaining = maxImages - attachedImages.length;
       if (remaining <= 0) {
@@ -548,7 +458,7 @@ export function AskBarView({
           item.type.startsWith('image/'),
         );
         if (hasImageItem) setPasteMaxError(true);
-        return;
+        return false;
       }
 
       const imageFiles: File[] = [];
@@ -561,9 +471,9 @@ export function AskBarView({
         }
       }
 
-      if (imageFiles.length === 0) return;
-      e.preventDefault();
+      if (imageFiles.length === 0) return false;
       onImagesAttached(imageFiles);
+      return true;
     },
     [isBusy, attachedImages.length, maxImages, onImagesAttached],
   );
@@ -673,37 +583,25 @@ export function AskBarView({
             </button>
           )}
 
+          {/* Lexical-backed input. A single contentEditable means the caret is
+              native and never drifts; command triggers highlight inline via a
+              text-entity node. The host stays the source of truth for `query`. */}
           <div className="relative flex-1 min-w-0">
-            {/* Mirror div: renders the same text with highlighted slash
-                commands. Sits behind the transparent textarea so colored
-                spans show through. Metrics (font, size, padding, leading,
-                wrap) MUST mirror the textarea exactly so the caret never
-                drifts off the rendered glyphs. */}
-            <div
-              ref={mirrorRef}
-              aria-hidden="true"
-              data-testid="askbar-mirror"
-              className="askbar-mirror absolute inset-0 pointer-events-none bg-transparent text-text-primary thuki-text-base py-2 px-1 leading-5 whitespace-pre-wrap break-words overflow-hidden"
-            >
-              {renderHighlightedText(query)}
-            </div>
             {/* The compose surface stays editable while a response streams or
                 a submit is pending, so the user can draft their next message
                 without waiting. Sending is gated at submit time (handleSubmit
                 no-ops while busy and the send button becomes Stop), never by
                 disabling the input. */}
-            <textarea
-              ref={inputRef}
+            <LexicalAskBarInput
               value={query}
-              onChange={handleTextareaChange}
-              onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
-              onScroll={handleTextareaScroll}
-              autoFocus
-              rows={1}
+              onValueChange={handleValueChange}
+              onFirstKeystroke={onFirstKeystroke}
               placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
-              className="askbar-textarea relative w-full bg-transparent border-none outline-none text-transparent thuki-text-base placeholder:text-text-secondary py-2 px-1 resize-none leading-5"
-              style={{ caretColor: 'var(--color-text-primary)' }}
+              inputRef={inputRef}
+              contentEditableClassName="askbar-input thuki-text-base w-full bg-transparent outline-none text-text-primary py-2 px-1 whitespace-pre-wrap break-words"
+              suggestionsOpen={showSuggestions}
+              keyHandlers={keyHandlers}
+              onPaste={handlePaste}
             />
           </div>
 

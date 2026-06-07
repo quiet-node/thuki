@@ -541,7 +541,7 @@ function App() {
    */
   const [searchActive, setSearchActive] = useState(false);
 
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<HTMLDivElement>(null);
 
   /** Images attached to the current (unsent) message. Blob URLs render
    *  immediately; file paths are set asynchronously after Rust processing. */
@@ -1962,7 +1962,6 @@ function App() {
         URL.revokeObjectURL(img.blobUrl);
       }
       setAttachedImages([]);
-      inputRef.current!.style.height = 'auto';
     },
     [ask, attachedImages, setSelectedContext],
   );
@@ -2000,9 +1999,6 @@ function App() {
       );
       setQuery('');
       setSelectedContext(null);
-      /* v8 ignore start -- inputRef always set when overlay is visible */
-      if (inputRef.current) inputRef.current.style.height = 'auto';
-      /* v8 ignore stop */
 
       let screenshotPath: string;
       try {
@@ -2089,9 +2085,6 @@ function App() {
       );
       setQuery('');
       setSelectedContext(null);
-      /* v8 ignore start -- inputRef always set when overlay is visible */
-      if (inputRef.current) inputRef.current.style.height = 'auto';
-      /* v8 ignore stop */
 
       // Capture screen if /screen is present.
       let screenshotPath: string | undefined;
@@ -2229,9 +2222,6 @@ function App() {
       );
       setQuery('');
       setSelectedContext(null);
-      /* v8 ignore start -- inputRef always set when overlay is visible */
-      if (inputRef.current) inputRef.current.style.height = 'auto';
-      /* v8 ignore stop */
 
       // Capture screen if /screen is present.
       let screenshotPath: string | undefined;
@@ -2666,8 +2656,6 @@ function App() {
       const searchDisplay = hasSearch ? trimmedQuery : undefined;
       setQuery('');
       setSelectedContext(null);
-      /* v8 ignore next */
-      inputRef.current!.style.height = 'auto';
       setSearchActive(true);
       void askSearch(searchQuery, searchDisplay, searchContext).then(
         ({ final }) => {
@@ -2723,9 +2711,6 @@ function App() {
         }),
       );
       setQuery('');
-      /* v8 ignore start -- inputRef always set when overlay is visible */
-      if (inputRef.current) inputRef.current.style.height = 'auto';
-      /* v8 ignore stop */
 
       if (hasExtract) {
         pendingSubmitRef.current = {
@@ -2810,8 +2795,6 @@ function App() {
       );
       setSelectedContext(null);
       setQuery('');
-      /* v8 ignore next */
-      inputRef.current!.style.height = 'auto';
       return;
     }
 
@@ -3131,6 +3114,17 @@ function App() {
     // If the click occurs inside a chat bubble (which has .select-text),
     // we return early so the user can highlight and copy the text.
     if (el?.closest('.select-text')) {
+      return;
+    }
+
+    // 1b. Allow text selection / editing inside the contenteditable input.
+    // The AskBar input is a <div contenteditable>, not a <textarea>, so it is
+    // not caught by INTERACTIVE_TAGS below; without this a drag inside it would
+    // move the window instead of selecting text. Match the editable region by
+    // attribute (covers the editor element and every descendant, e.g.
+    // command-token spans) and only while editable, so dragging still works
+    // when the input is disabled during generation.
+    if (el?.closest('[contenteditable="true"]')) {
       return;
     }
 

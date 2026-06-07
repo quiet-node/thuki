@@ -26,10 +26,54 @@ import {
   __setAvailableMonitors,
 } from '../testUtils/mocks/tauri-window';
 import { useTips } from '../hooks/useTips';
+import { flushSync } from 'react-dom';
+import {
+  $createParagraphNode,
+  $createTextNode,
+  $getRoot,
+  type LexicalEditor,
+} from 'lexical';
 
 vi.mock('../hooks/useTips', () => ({
   useTips: vi.fn(() => ({ tip: '', tipKey: 0, isVisible: false })),
 }));
+
+/** The AskBar Lexical contentEditable input (role="textbox"). */
+function getAskInput(): HTMLElement {
+  return screen.getByTestId('askbar-input');
+}
+
+/**
+ * Sets the AskBar editor's text, mimicking the user typing it. jsdom does not
+ * synthesize contentEditable edits from key events, so the value is applied via
+ * the editor API; this still drives the real value-sync (onValueChange) path.
+ */
+function setAskValue(text: string): void {
+  const editor = (
+    getAskInput() as unknown as { __lexicalEditor: LexicalEditor }
+  ).__lexicalEditor;
+  // `discrete: true` commits + fires update listeners synchronously, and
+  // flushSync forces React to apply the resulting setQuery before we return, so
+  // callers can read the updated state immediately (mirrors the old synchronous
+  // fireEvent.change behavior).
+  act(() => {
+    // test-only: force the controlled value sync to apply synchronously so
+    // callers can read the updated state immediately.
+    // eslint-disable-next-line @eslint-react/dom-no-flush-sync
+    flushSync(() => {
+      editor.update(
+        () => {
+          const root = $getRoot();
+          root.clear();
+          const paragraph = $createParagraphNode();
+          if (text) paragraph.append($createTextNode(text));
+          root.append(paragraph);
+        },
+        { discrete: true },
+      );
+    });
+  });
+}
 
 async function showOverlay(selectedText: string | null = null) {
   await act(async () => {
@@ -113,9 +157,9 @@ describe('App', () => {
     await showOverlay();
 
     // Send one message + simulate Done so messages.length > 0 → chat mode.
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: 'hello' } });
+      setAskValue('hello');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -167,9 +211,9 @@ describe('App', () => {
     await act(async () => {});
     await showOverlay();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: 'hello' } });
+      setAskValue('hello');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -257,8 +301,8 @@ describe('App', () => {
       fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
     });
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-    fireEvent.change(textarea, { target: { value: 'hello there' } });
+    const textarea = getAskInput();
+    setAskValue('hello there');
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
     await act(async () => {});
 
@@ -427,8 +471,8 @@ describe('App', () => {
       screen.getByRole('option', { name: 'gemma4:e2b' }),
     ).toBeInTheDocument();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-    fireEvent.change(textarea, { target: { value: 'hi' } });
+    const textarea = getAskInput();
+    setAskValue('hi');
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
     await act(async () => {});
 
@@ -448,8 +492,8 @@ describe('App', () => {
     await showOverlay();
 
     // Transition to chat mode by submitting a message
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-    fireEvent.change(textarea, { target: { value: 'hi' } });
+    const textarea = getAskInput();
+    setAskValue('hi');
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
     await act(async () => {});
 
@@ -487,8 +531,8 @@ describe('App', () => {
     await act(async () => {});
     await showOverlay();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-    fireEvent.change(textarea, { target: { value: 'hi' } });
+    const textarea = getAskInput();
+    setAskValue('hi');
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
     await act(async () => {});
     act(() => {
@@ -520,8 +564,8 @@ describe('App', () => {
     await act(async () => {});
     await showOverlay();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-    fireEvent.change(textarea, { target: { value: 'hi' } });
+    const textarea = getAskInput();
+    setAskValue('hi');
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
     await act(async () => {});
     act(() => {
@@ -667,9 +711,9 @@ describe('App', () => {
       });
     });
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     await act(async () => {
-      fireEvent.change(textarea, { target: { value: 'hi' } });
+      setAskValue('hi');
     });
     await act(async () => {
       fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
@@ -698,9 +742,9 @@ describe('App', () => {
       });
     });
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     await act(async () => {
-      fireEvent.change(textarea, { target: { value: 'hi' } });
+      setAskValue('hi');
       fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
     });
 
@@ -739,9 +783,7 @@ describe('App', () => {
 
     await showOverlay();
 
-    expect(
-      screen.getByPlaceholderText('Ask Thuki anything...'),
-    ).toBeInTheDocument();
+    expect(getAskInput()).toBeInTheDocument();
   });
 
   it('handles a restore visibility event without wiping the conversation', async () => {
@@ -758,9 +800,9 @@ describe('App', () => {
     await act(async () => {});
     await showOverlay();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: 'hello' } });
+      setAskValue('hello');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -800,9 +842,9 @@ describe('App', () => {
     await act(async () => {});
     await showOverlay();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: 'hello' } });
+      setAskValue('hello');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -833,9 +875,7 @@ describe('App', () => {
     await showOverlay();
 
     // Confirm overlay is visible
-    expect(
-      screen.getByPlaceholderText('Ask Thuki anything...'),
-    ).toBeInTheDocument();
+    expect(getAskInput()).toBeInTheDocument();
 
     act(() => {
       fireEvent.keyDown(window, { key: 'Escape' });
@@ -852,9 +892,9 @@ describe('App', () => {
 
     await showOverlay();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: '/search rust async' } });
+      setAskValue('/search rust async');
     });
     await act(async () => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -880,12 +920,10 @@ describe('App', () => {
 
     await showOverlay();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
 
     // Type a message
-    act(() => {
-      fireEvent.change(textarea, { target: { value: 'hello there' } });
-    });
+    setAskValue('hello there');
 
     // Submit with Enter
     act(() => {
@@ -921,9 +959,7 @@ describe('App', () => {
 
     // First show overlay
     await showOverlay();
-    expect(
-      screen.getByPlaceholderText('Ask Thuki anything...'),
-    ).toBeInTheDocument();
+    expect(getAskInput()).toBeInTheDocument();
 
     // Then send hide-request - calls requestHideOverlay() (not handleCloseOverlay)
     await act(async () => {
@@ -940,9 +976,7 @@ describe('App', () => {
     await act(async () => {});
 
     await showOverlay();
-    expect(
-      screen.getByPlaceholderText('Ask Thuki anything...'),
-    ).toBeInTheDocument();
+    expect(getAskInput()).toBeInTheDocument();
 
     act(() => {
       fireEvent.keyDown(window, { key: 'w', metaKey: true });
@@ -990,7 +1024,7 @@ describe('App', () => {
 
     await showOverlay();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
 
     // Press Enter with empty textarea
     act(() => {
@@ -1011,12 +1045,9 @@ describe('App', () => {
 
     // First message kicks off streaming. The captured channel never sends
     // Done, so generation stays active for the rest of the test.
-    const askBar = screen.getByPlaceholderText('Ask Thuki anything...');
+    setAskValue('first message');
     act(() => {
-      fireEvent.change(askBar, { target: { value: 'first message' } });
-    });
-    act(() => {
-      fireEvent.keyDown(askBar, { key: 'Enter', shiftKey: false });
+      fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
     });
     await act(async () => {});
 
@@ -1025,23 +1056,18 @@ describe('App', () => {
     expect(askCalls()).toBe(1);
 
     // While streaming, the composer (now in chat mode) stays editable.
-    const composer = screen.getByPlaceholderText('Reply...');
-    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
+    expect(getAskInput().getAttribute('contenteditable')).toBe('true');
 
     // Drafting a follow-up and pressing Enter must NOT fire a second request,
     // and the draft must remain in the box.
+    setAskValue('drafted mid-stream');
     act(() => {
-      fireEvent.change(composer, { target: { value: 'drafted mid-stream' } });
-    });
-    act(() => {
-      fireEvent.keyDown(composer, { key: 'Enter', shiftKey: false });
+      fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
     });
     await act(async () => {});
 
     expect(askCalls()).toBe(1);
-    expect(
-      (screen.getByPlaceholderText('Reply...') as HTMLTextAreaElement).value,
-    ).toBe('drafted mid-stream');
+    expect(getAskInput().textContent).toBe('drafted mid-stream');
   });
 
   it('fires drag on non-interactive mousedown', async () => {
@@ -1091,9 +1117,9 @@ describe('App', () => {
     await showOverlay();
 
     // Send a message to enter chat mode so ChatBubble (with .select-text) renders
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: 'test message' } });
+      setAskValue('test message');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1116,13 +1142,13 @@ describe('App', () => {
     }
   });
 
-  it('does not fire drag when mousedown on TEXTAREA', async () => {
+  it('does not fire drag when mousedown on the contenteditable input', async () => {
     render(<App />);
     await act(async () => {});
 
     await showOverlay();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     __mockWindow.startDragging.mockClear();
 
     act(() => {
@@ -1139,9 +1165,9 @@ describe('App', () => {
     // Show with selected context
     await showOverlay('selected snippet');
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: 'my question' } });
+      setAskValue('my question');
     });
 
     act(() => {
@@ -1183,9 +1209,9 @@ describe('App', () => {
     await act(async () => {});
     await showOverlay('draft email text');
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+      setAskValue('/rewrite ');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1236,9 +1262,9 @@ describe('App', () => {
     await act(async () => {});
     await showOverlay('draft email text');
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+      setAskValue('/rewrite ');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1286,9 +1312,9 @@ describe('App', () => {
     await showOverlay('draft email text');
     __mockWindow.hide.mockClear();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+      setAskValue('/rewrite ');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1336,9 +1362,9 @@ describe('App', () => {
     await showOverlay('draft email text');
     __mockWindow.hide.mockClear();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+      setAskValue('/rewrite ');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1383,9 +1409,9 @@ describe('App', () => {
     await act(async () => {});
     await showOverlay('draft email text');
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+      setAskValue('/rewrite ');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1405,7 +1431,7 @@ describe('App', () => {
     // A plain refinement inherits sticky rewrite mode, so its result is
     // replaceable too.
     act(() => {
-      fireEvent.change(textarea, { target: { value: 'make it longer' } });
+      setAskValue('make it longer');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1451,9 +1477,9 @@ describe('App', () => {
     await act(async () => {});
     await showOverlay('draft email text');
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     act(() => {
-      fireEvent.change(textarea, { target: { value: '/rewrite ' } });
+      setAskValue('/rewrite ');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1468,7 +1494,7 @@ describe('App', () => {
     // A non-replaceable command exits rewrite mode for itself and for any
     // later plain follow-up.
     act(() => {
-      fireEvent.change(textarea, { target: { value: '/tldr wrap this up' } });
+      setAskValue('/tldr wrap this up');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1481,7 +1507,7 @@ describe('App', () => {
     await act(async () => {});
 
     act(() => {
-      fireEvent.change(textarea, { target: { value: 'and again' } });
+      setAskValue('and again');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1846,9 +1872,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'test' } });
+        setAskValue('test');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1872,9 +1898,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'question' } });
+        setAskValue('question');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1909,9 +1935,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'question' } });
+        setAskValue('question');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1963,9 +1989,9 @@ describe('App', () => {
       await showOverlay();
 
       // Send message + Done
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'hello' } });
+        setAskValue('hello');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -2003,9 +2029,9 @@ describe('App', () => {
       await showOverlay();
 
       // Get into chat mode with an unsaved turn
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'question' } });
+        setAskValue('question');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -2033,9 +2059,7 @@ describe('App', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Start New' }));
       });
 
-      expect(
-        screen.getByPlaceholderText('Ask Thuki anything...'),
-      ).toBeInTheDocument();
+      expect(getAskInput()).toBeInTheDocument();
     });
 
     it('handleNewConversation Cancel closes the history dropdown', async () => {
@@ -2048,9 +2072,9 @@ describe('App', () => {
       await showOverlay();
 
       // Get into chat mode with an unsaved turn
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'question' } });
+        setAskValue('question');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -2096,9 +2120,9 @@ describe('App', () => {
       await showOverlay();
 
       // Get into chat mode
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'question' } });
+        setAskValue('question');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -2124,9 +2148,7 @@ describe('App', () => {
       });
 
       // Should be directly back in ask-bar mode (no confirmation prompt)
-      expect(
-        screen.getByPlaceholderText('Ask Thuki anything...'),
-      ).toBeInTheDocument();
+      expect(getAskInput()).toBeInTheDocument();
     });
 
     it('handleNewConversation revokes blob URLs when images are attached', async () => {
@@ -2140,9 +2162,9 @@ describe('App', () => {
       await showOverlay();
 
       // Get into chat mode with an unsaved turn
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'question' } });
+        setAskValue('question');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -2154,11 +2176,12 @@ describe('App', () => {
       });
 
       // Paste an image while in chat mode (unsaved conversation)
-      const replyInput = screen.getByPlaceholderText('Reply...');
+      const replyInput = getAskInput();
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(replyInput, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -2202,9 +2225,9 @@ describe('App', () => {
       await showOverlay();
 
       // Get into chat mode with an unsaved turn
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'question' } });
+        setAskValue('question');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -2233,9 +2256,7 @@ describe('App', () => {
         );
       });
 
-      expect(
-        screen.getByPlaceholderText('Ask Thuki anything...'),
-      ).toBeInTheDocument();
+      expect(getAskInput()).toBeInTheDocument();
     });
 
     it('handleSaveAndNew aborts reset when save fails', async () => {
@@ -2255,9 +2276,9 @@ describe('App', () => {
       await showOverlay();
 
       // Complete a turn so isSaved = false
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'q' } });
+        setAskValue('q');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -2322,9 +2343,9 @@ describe('App', () => {
       await showOverlay();
 
       // Complete a turn (unsaved)
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'q' } });
+        setAskValue('q');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -2387,9 +2408,9 @@ describe('App', () => {
       await showOverlay();
 
       // Complete a turn so isSaved = false
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'q' } });
+        setAskValue('q');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -2456,9 +2477,9 @@ describe('App', () => {
       await showOverlay();
 
       // Complete a turn
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'q' } });
+        setAskValue('q');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -2577,9 +2598,9 @@ describe('App', () => {
       await showOverlay();
 
       // Complete a turn to enter chat mode
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'q' } });
+        setAskValue('q');
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
       await act(async () => {});
@@ -2613,9 +2634,9 @@ describe('App', () => {
       await showOverlay();
 
       // Complete a turn to enter chat mode
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'q' } });
+        setAskValue('q');
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
       await act(async () => {});
@@ -2756,9 +2777,7 @@ describe('App', () => {
 
       // Panel must close even on failure; app must still be running
       expect(screen.queryByPlaceholderText(/search past chats/i)).toBeNull();
-      expect(
-        screen.getByPlaceholderText('Ask Thuki anything...'),
-      ).toBeInTheDocument();
+      expect(getAskInput()).toBeInTheDocument();
     });
 
     it('handleDeleteConversation does not reset history when a different conversation is deleted', async () => {
@@ -2801,11 +2820,12 @@ describe('App', () => {
   describe('image integration', () => {
     /** Helper: paste an image file into the textarea and wait for thumbnails. */
     async function pasteImage() {
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['fake-img-data'], 'photo.png', {
         type: 'image/png',
       });
       const clipboardData = {
+        getData: () => '',
         items: [{ type: 'image/png', getAsFile: () => file }],
       };
       await act(async () => {
@@ -2906,9 +2926,9 @@ describe('App', () => {
       });
 
       // Type a message and submit
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'describe this' } });
+        setAskValue('describe this');
       });
 
       invoke.mockClear();
@@ -2954,7 +2974,7 @@ describe('App', () => {
       enableChannelCapture();
 
       // Submit with Enter (no text, just images)
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
@@ -3136,9 +3156,9 @@ describe('App', () => {
       await showOverlay();
 
       // Send a plain text message and complete the generation to enter chat mode
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'hello' } });
+        setAskValue('hello');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -3153,7 +3173,7 @@ describe('App', () => {
       await act(async () => {});
 
       // Confirm we are in chat mode with generation complete
-      expect(screen.getByPlaceholderText('Reply...')).toBeInTheDocument();
+      expect(screen.getByText('Reply...')).toBeInTheDocument();
 
       // Now in chat mode. Drop image onto root div (not AskBarView specifically)
       const rootDiv = document.querySelector('.h-screen')!;
@@ -3199,7 +3219,7 @@ describe('App', () => {
       await showOverlay();
 
       // Paste 3 images to reach max
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       for (let i = 0; i < 3; i++) {
         const file = new File([`data${i}`], `img${i}.png`, {
           type: 'image/png',
@@ -3207,6 +3227,7 @@ describe('App', () => {
         await act(async () => {
           fireEvent.paste(textarea, {
             clipboardData: {
+              getData: () => '',
               items: [{ type: 'image/png', getAsFile: () => file }],
             },
           });
@@ -3252,9 +3273,9 @@ describe('App', () => {
       await showOverlay();
 
       // Submit to trigger isGenerating
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'hi' } });
+        setAskValue('hi');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -3276,9 +3297,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'hi' } });
+        setAskValue('hi');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -3318,12 +3339,13 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       for (let i = 0; i < 3; i++) {
         const img = new File([`d${i}`], `i${i}.png`, { type: 'image/png' });
         await act(async () => {
           fireEvent.paste(textarea, {
             clipboardData: {
+              getData: () => '',
               items: [{ type: 'image/png', getAsFile: () => img }],
             },
           });
@@ -3383,9 +3405,9 @@ describe('App', () => {
       });
 
       // Type and submit to create a user message with image
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'what is this?' } });
+        setAskValue('what is this?');
       });
 
       invoke.mockClear();
@@ -3450,11 +3472,12 @@ describe('App', () => {
       await showOverlay();
 
       // Paste and submit while still processing → pendingUserMessage with blob URL
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -3467,7 +3490,7 @@ describe('App', () => {
       });
 
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'what is this?' } });
+        setAskValue('what is this?');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -3560,11 +3583,12 @@ describe('App', () => {
       await showOverlay();
 
       // Paste an image - thumbnail appears immediately with null filePath
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -3628,11 +3652,12 @@ describe('App', () => {
       await showOverlay();
 
       // Paste an image; thumbnail appears immediately (filePath null)
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -3645,7 +3670,7 @@ describe('App', () => {
 
       // Type and submit while image is still processing
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'describe this' } });
+        setAskValue('describe this');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -3676,9 +3701,9 @@ describe('App', () => {
       await showOverlay();
 
       // Start a normal text conversation (no images)
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'hello' } });
+        setAskValue('hello');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -3727,11 +3752,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/search what is Rust?' },
-        });
+        setAskValue('/search what is Rust?');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -3746,12 +3769,12 @@ describe('App', () => {
 
       expect(invoke).toHaveBeenCalledWith('cancel_generation');
       expect(screen.queryByRole('button', { name: /stop/i })).toBeNull();
-      expect(textarea).not.toBeDisabled();
+      expect(getAskInput().getAttribute('contenteditable')).toBe('true');
 
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'hello' } });
+        setAskValue('hello');
       });
-      expect(textarea).toHaveValue('hello');
+      expect(getAskInput().textContent).toBe('hello');
 
       await act(async () => {
         resolveCancel?.();
@@ -3798,11 +3821,12 @@ describe('App', () => {
       await showOverlay();
 
       // Paste an image
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -3814,10 +3838,8 @@ describe('App', () => {
         ).toBeInTheDocument();
       });
 
-      // Type and submit while image is still processing
-      act(() => {
-        fireEvent.change(textarea, { target: { value: 'my question' } });
-      });
+      // Type and submit while image is still processing.
+      setAskValue('my question');
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
@@ -3831,12 +3853,9 @@ describe('App', () => {
       });
 
       // Should revert to ask-bar mode with the query restored
-      const restoredTextarea = screen.getByPlaceholderText(
-        'Ask Thuki anything...',
-      );
-      expect(restoredTextarea).toBeInTheDocument();
-      expect((restoredTextarea as HTMLTextAreaElement).value).toBe(
-        'my question',
+      expect(getAskInput()).toBeInTheDocument();
+      await waitFor(() =>
+        expect(getAskInput().textContent).toBe('my question'),
       );
 
       // Images should still be visible (still processing in background)
@@ -3896,9 +3915,9 @@ describe('App', () => {
       });
 
       // Submit while both images are still processing
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'two images' } });
+        setAskValue('two images');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -3954,11 +3973,12 @@ describe('App', () => {
       await showOverlay();
 
       // Paste and submit while processing
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -3971,7 +3991,7 @@ describe('App', () => {
       });
 
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'describe' } });
+        setAskValue('describe');
       });
 
       // Wait for FileReader to complete and save_image_command to be invoked
@@ -4014,9 +4034,7 @@ describe('App', () => {
       ).toBeInTheDocument();
 
       // User's query should be restored so their text isn't lost
-      expect(screen.getByPlaceholderText('Ask Thuki anything...')).toHaveValue(
-        'describe',
-      );
+      await waitFor(() => expect(getAskInput().textContent).toBe('describe'));
     });
   });
 
@@ -4025,11 +4043,12 @@ describe('App', () => {
   describe('capability gate', () => {
     /** Helper: paste an image file into the textarea and wait for thumbnails. */
     async function pasteImage() {
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['fake-img-data'], 'photo.png', {
         type: 'image/png',
       });
       const clipboardData = {
+        getData: () => '',
         items: [{ type: 'image/png', getAsFile: () => file }],
       };
       await act(async () => {
@@ -4104,9 +4123,8 @@ describe('App', () => {
       });
 
       // Type and submit.
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'summarise these' } });
+        setAskValue('summarise these');
       });
       invoke.mockClear();
       await act(async () => {
@@ -4124,9 +4142,7 @@ describe('App', () => {
       );
       expect(askInvocations.length).toBe(0);
       // Compose state survives.
-      expect(screen.getByPlaceholderText('Ask Thuki anything...')).toHaveValue(
-        'summarise these',
-      );
+      expect(getAskInput().textContent).toBe('summarise these');
       // Wait past the 600 ms shake reset so the cleanup runs and the
       // shake state pulses back to false. This exercises the effect's
       // setTimeout/clearTimeout path that the gate relies on.
@@ -4220,11 +4236,12 @@ describe('App', () => {
 
       // Attach 3 images via paste to reach the limit.
       const pasteOneImage = async () => {
-        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+        const textarea = getAskInput();
         const file = new File(['data'], 'photo.png', { type: 'image/png' });
         await act(async () => {
           fireEvent.paste(textarea, {
             clipboardData: {
+              getData: () => '',
               items: [{ type: 'image/png', getAsFile: () => file }],
             },
           });
@@ -4283,11 +4300,12 @@ describe('App', () => {
     await showOverlay();
 
     // Paste an image so attachedImages is non-empty
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     const file = new File(['data'], 'img.png', { type: 'image/png' });
     await act(async () => {
       fireEvent.paste(textarea, {
         clipboardData: {
+          getData: () => '',
           items: [{ type: 'image/png', getAsFile: () => file }],
         },
       });
@@ -4315,11 +4333,12 @@ describe('App', () => {
     await act(async () => {});
     await showOverlay();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
     const file = new File(['data'], 'img.png', { type: 'image/png' });
     await act(async () => {
       fireEvent.paste(textarea, {
         clipboardData: {
+          getData: () => '',
           items: [{ type: 'image/png', getAsFile: () => file }],
         },
       });
@@ -4348,11 +4367,11 @@ describe('App', () => {
 
     await showOverlay();
 
-    const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+    const textarea = getAskInput();
 
     // Complete a conversation turn
     act(() => {
-      fireEvent.change(textarea, { target: { value: 'first question' } });
+      setAskValue('first question');
     });
     act(() => {
       fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -4376,9 +4395,7 @@ describe('App', () => {
     await showOverlay();
 
     // Should be back to input bar mode with placeholder
-    expect(
-      screen.getByPlaceholderText('Ask Thuki anything...'),
-    ).toBeInTheDocument();
+    expect(getAskInput()).toBeInTheDocument();
     // Old messages should be gone
     expect(screen.queryByText('First response')).toBeNull();
   });
@@ -4397,9 +4414,9 @@ describe('App', () => {
 
       // Use "/screen " (with trailing space) so the suggestion popover is dismissed
       // and Enter goes to the submit handler directly.
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen ' } });
+        setAskValue('/screen ');
       });
 
       await act(async () => {
@@ -4430,11 +4447,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/screen what is this error?' },
-        });
+        setAskValue('/screen what is this error?');
       });
 
       await act(async () => {
@@ -4461,11 +4476,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: 'hello /screen there' },
-        });
+        setAskValue('hello /screen there');
       });
 
       await act(async () => {
@@ -4506,9 +4519,9 @@ describe('App', () => {
 
       // Use "/screen " (with trailing space) so the suggestion popover is dismissed
       // and Enter goes directly to the submit handler.
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen ' } });
+        setAskValue('/screen ');
       });
 
       await act(async () => {
@@ -4546,9 +4559,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen ' } });
+        setAskValue('/screen ');
       });
 
       await act(async () => {
@@ -4581,9 +4594,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen ' } });
+        setAskValue('/screen ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -4611,10 +4624,10 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       // First attempt fails; error banner appears.
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen ' } });
+        setAskValue('/screen ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -4624,7 +4637,7 @@ describe('App', () => {
 
       // Typing a new query and submitting normal text clears the error banner.
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'hello' } });
+        setAskValue('hello');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -4646,11 +4659,12 @@ describe('App', () => {
 
       // Paste an image first. This exercises the filter/map on attachedImages inside
       // handleScreenSubmit, covering the lines for non-null filePath images.
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['img'], 'photo.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -4665,7 +4679,7 @@ describe('App', () => {
 
       // Now type /screen and submit.
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen describe' } });
+        setAskValue('/screen describe');
       });
 
       vi.useFakeTimers();
@@ -4711,9 +4725,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay('some context');
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen explain' } });
+        setAskValue('/screen explain');
       });
 
       await act(async () => {
@@ -4744,9 +4758,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen check this' } });
+        setAskValue('/screen check this');
       });
 
       // Submit; capture is now in-flight (pending)
@@ -4755,7 +4769,7 @@ describe('App', () => {
       });
 
       // Before capture resolves: query should be cleared and app in pending mode
-      expect((textarea as HTMLTextAreaElement).value).toBe('');
+      await waitFor(() => expect(getAskInput().textContent).toBe(''));
 
       // Resolve the capture and let async work settle
       await act(async () => {
@@ -4787,11 +4801,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/screen what is this?' },
-        });
+        setAskValue('/screen what is this?');
       });
 
       await act(async () => {
@@ -4800,8 +4812,8 @@ describe('App', () => {
       await act(async () => {});
 
       // Query should be restored with the full original message
-      expect((textarea as HTMLTextAreaElement).value).toBe(
-        '/screen what is this?',
+      await waitFor(() =>
+        expect(getAskInput().textContent).toBe('/screen what is this?'),
       );
       expect(screen.getByText('Screen capture timed out')).toBeInTheDocument();
     });
@@ -4825,11 +4837,12 @@ describe('App', () => {
       await showOverlay();
 
       // Paste an image; save_image_command hangs, so filePath stays null.
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['img'], 'photo.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -4837,7 +4850,7 @@ describe('App', () => {
 
       // Submit /screen while image is still processing.
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen ' } });
+        setAskValue('/screen ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -4887,9 +4900,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen ' } });
+        setAskValue('/screen ');
       });
 
       // Submit; capture is now in-flight
@@ -4923,9 +4936,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /explain ' } });
+        setAskValue('/screen /explain ');
       });
 
       await act(async () => {
@@ -4960,11 +4973,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/screen /explain this error message' },
-        });
+        setAskValue('/screen /explain this error message');
       });
 
       await act(async () => {
@@ -4999,11 +5010,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/screen what is this?' },
-        });
+        setAskValue('/screen what is this?');
       });
 
       await act(async () => {
@@ -5034,9 +5043,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay('my highlighted code');
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /explain ' } });
+        setAskValue('/screen /explain ');
       });
 
       await act(async () => {
@@ -5071,11 +5080,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/screen /translate ' },
-        });
+        setAskValue('/screen /translate ');
       });
 
       await act(async () => {
@@ -5100,11 +5107,12 @@ describe('App', () => {
 
   describe('/extract command', () => {
     async function pasteImageForExtract() {
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['fake-img-data'], 'photo.png', {
         type: 'image/png',
       });
       const clipboardData = {
+        getData: () => '',
         items: [{ type: 'image/png', getAsFile: () => file }],
       };
       await act(async () => {
@@ -5122,9 +5130,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/extract ' } });
+        setAskValue('/extract ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5163,9 +5171,9 @@ describe('App', () => {
         });
       });
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/extract ' } });
+        setAskValue('/extract ');
       });
 
       invoke.mockClear();
@@ -5193,9 +5201,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+        setAskValue('/screen /extract ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5245,9 +5253,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+        setAskValue('/screen /extract ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5294,9 +5302,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+        setAskValue('/screen /extract ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5327,9 +5335,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+        setAskValue('/screen /extract ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5367,9 +5375,8 @@ describe('App', () => {
         ).toBeInTheDocument();
       });
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/extract ' } });
+        setAskValue('/extract ');
       });
 
       // The capability mismatch strip must not appear when /extract is present.
@@ -5389,9 +5396,9 @@ describe('App', () => {
       // Show overlay with selected text to exercise the context branch.
       await showOverlay('Selected content here');
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+        setAskValue('/screen /extract ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5444,9 +5451,9 @@ describe('App', () => {
       await pasteImageForExtract();
       // Do NOT resolve save_image_command yet; image stays in-flight (filePath=null).
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/extract ' } });
+        setAskValue('/extract ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5490,9 +5497,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+        setAskValue('/screen /extract ');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5538,9 +5545,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+        setAskValue('/screen /extract ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5574,9 +5581,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+        setAskValue('/screen /extract ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5617,9 +5624,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+        setAskValue('/screen /extract ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5663,9 +5670,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+        setAskValue('/screen /extract ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5710,9 +5717,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /extract ' } });
+        setAskValue('/screen /extract ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -5737,11 +5744,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/think why is the sky blue?' },
-        });
+        setAskValue('/think why is the sky blue?');
       });
 
       await act(async () => {
@@ -5766,11 +5771,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/think explain recursion' },
-        });
+        setAskValue('/think explain recursion');
       });
 
       await act(async () => {
@@ -5808,9 +5811,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/think' } });
+        setAskValue('/think');
       });
 
       await act(async () => {
@@ -5829,11 +5832,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: 'hello /think world' },
-        });
+        setAskValue('hello /think world');
       });
 
       await act(async () => {
@@ -5858,11 +5859,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay('some selected text');
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/think explain this code' },
-        });
+        setAskValue('/think explain this code');
       });
 
       await act(async () => {
@@ -5888,9 +5887,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/think ' } });
+        setAskValue('/think ');
       });
 
       await act(async () => {
@@ -5916,11 +5915,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/screen /think explain this' },
-        });
+        setAskValue('/screen /think explain this');
       });
 
       await act(async () => {
@@ -5952,11 +5949,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/think /screen explain this' },
-        });
+        setAskValue('/think /screen explain this');
       });
 
       await act(async () => {
@@ -5990,11 +5985,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/rewrite fix this text' },
-        });
+        setAskValue('/rewrite fix this text');
       });
 
       await act(async () => {
@@ -6021,11 +6014,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/translate jpn hello world' },
-        });
+        setAskValue('/translate jpn hello world');
       });
 
       await act(async () => {
@@ -6052,11 +6043,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/think /tldr some long text' },
-        });
+        setAskValue('/think /tldr some long text');
       });
 
       await act(async () => {
@@ -6084,9 +6073,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/rewrite' } });
+        setAskValue('/rewrite');
       });
 
       act(() => {
@@ -6113,11 +6102,12 @@ describe('App', () => {
       await showOverlay();
 
       // Attach an image
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['data'], 'shot.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -6138,7 +6128,7 @@ describe('App', () => {
 
       // Submit just the command with no text: OCR path fires
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/explain' } });
+        setAskValue('/explain');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -6171,11 +6161,12 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -6193,7 +6184,7 @@ describe('App', () => {
       enableChannelCapture();
 
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/translate' } });
+        setAskValue('/translate');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -6212,9 +6203,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/translate jpn' } });
+        setAskValue('/translate jpn');
       });
 
       act(() => {
@@ -6241,13 +6232,11 @@ describe('App', () => {
       // Activate overlay with selected text as context
       await showOverlay('original selected text');
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       // Type a command with extra instruction so strippedMessage is non-empty
       // (bypasses the "no content" early guard) and selectedContext is also set.
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/rewrite make it concise' },
-        });
+        setAskValue('/rewrite make it concise');
       });
 
       await act(async () => {
@@ -6280,11 +6269,12 @@ describe('App', () => {
       await showOverlay('my selected text');
 
       // Paste an image and wait for backend resolution so hasPendingImages is false
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -6305,7 +6295,7 @@ describe('App', () => {
 
       // Submit just the command trigger (strippedMessage will be '')
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/rewrite' } });
+        setAskValue('/rewrite');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -6334,11 +6324,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/rewrite fix this text' },
-        });
+        setAskValue('/rewrite fix this text');
       });
 
       await act(async () => {
@@ -6364,13 +6352,14 @@ describe('App', () => {
       await showOverlay();
 
       // Paste an image and wait for backend resolution
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['fake-img-data'], 'photo.png', {
         type: 'image/png',
       });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -6391,9 +6380,7 @@ describe('App', () => {
 
       // Type /rewrite command and submit
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/rewrite fix this prose' },
-        });
+        setAskValue('/rewrite fix this prose');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -6456,11 +6443,12 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -6473,7 +6461,7 @@ describe('App', () => {
 
       // Submit /translate with image-only (no text) while image still loading.
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/translate' } });
+        setAskValue('/translate');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -6537,11 +6525,12 @@ describe('App', () => {
       await showOverlay();
 
       // Paste an image - thumbnail appears immediately (filePath null)
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['data'], 'img.png', { type: 'image/png' });
       await act(async () => {
         fireEvent.paste(textarea, {
           clipboardData: {
+            getData: () => '',
             items: [{ type: 'image/png', getAsFile: () => file }],
           },
         });
@@ -6554,9 +6543,7 @@ describe('App', () => {
 
       // Type /rewrite and submit while image is still processing
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/rewrite make it clearer' },
-        });
+        setAskValue('/rewrite make it clearer');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -6583,11 +6570,12 @@ describe('App', () => {
 
   describe('Utility commands with images (OCR path)', () => {
     async function pasteImageForUtility() {
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       const file = new File(['fake-img-data'], 'photo.png', {
         type: 'image/png',
       });
       const clipboardData = {
+        getData: () => '',
         items: [{ type: 'image/png', getAsFile: () => file }],
       };
       await act(async () => {
@@ -6620,9 +6608,9 @@ describe('App', () => {
         });
       });
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+        setAskValue('/tldr ');
       });
 
       invoke.mockClear();
@@ -6667,9 +6655,9 @@ describe('App', () => {
         });
       });
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/translate french ' } });
+        setAskValue('/translate french ');
       });
 
       invoke.mockClear();
@@ -6700,9 +6688,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /tldr ' } });
+        setAskValue('/screen /tldr ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -6749,9 +6737,9 @@ describe('App', () => {
         });
       });
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+        setAskValue('/tldr ');
       });
 
       invoke.mockClear();
@@ -6809,9 +6797,9 @@ describe('App', () => {
         });
       });
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+        setAskValue('/tldr ');
       });
 
       invoke.mockClear();
@@ -6868,9 +6856,9 @@ describe('App', () => {
       await pasteImageForUtility();
       // Do NOT resolve save_image_command yet — image stays in-flight (filePath=null).
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+        setAskValue('/tldr ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -6912,9 +6900,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /tldr ' } });
+        setAskValue('/screen /tldr ');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -6961,9 +6949,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/screen /tldr ' } });
+        setAskValue('/screen /tldr ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7000,9 +6988,9 @@ describe('App', () => {
         });
       });
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/translate ' } });
+        setAskValue('/translate ');
       });
 
       invoke.mockClear();
@@ -7029,11 +7017,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/tldr some long text' },
-        });
+        setAskValue('/tldr some long text');
       });
 
       await act(async () => {
@@ -7080,9 +7066,8 @@ describe('App', () => {
         ).toBeInTheDocument();
       });
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+        setAskValue('/tldr ');
       });
 
       expect(
@@ -7119,9 +7104,9 @@ describe('App', () => {
       });
 
       // Submit utility command — image is resolved, non-deferred path taken.
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+        setAskValue('/tldr ');
       });
       invoke.mockClear();
       await act(async () => {
@@ -7178,9 +7163,9 @@ describe('App', () => {
       });
 
       // Submit /tldr while image is still pending and context is present.
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/tldr ' } });
+        setAskValue('/tldr ');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7215,9 +7200,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/search rust async' } });
+        setAskValue('/search rust async');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7243,17 +7228,15 @@ describe('App', () => {
         1,
       );
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/search explain this selection' },
-        });
+        setAskValue('/search explain this selection');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
 
-      expect(textarea).toHaveValue('');
+      await waitFor(() => expect(getAskInput().textContent).toBe(''));
       expect(findSelectedSnippet()).toHaveLength(1);
       expect(container.querySelectorAll('p.text-text-secondary')).toHaveLength(
         0,
@@ -7269,9 +7252,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/search who is him' } });
+        setAskValue('/search who is him');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7300,7 +7283,7 @@ describe('App', () => {
         (c) => c[0] === 'search_pipeline',
       ).length;
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'Donald Trump' } });
+        setAskValue('Donald Trump');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7323,9 +7306,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/search who is him' } });
+        setAskValue('/search who is him');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7356,7 +7339,7 @@ describe('App', () => {
         (c) => c[0] === 'search_pipeline',
       ).length;
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'Donald Trump' } });
+        setAskValue('Donald Trump');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7379,9 +7362,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/search rust' } });
+        setAskValue('/search rust');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7399,7 +7382,7 @@ describe('App', () => {
       });
 
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'hello' } });
+        setAskValue('hello');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7419,9 +7402,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/search ambiguous' } });
+        setAskValue('/search ambiguous');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7451,7 +7434,7 @@ describe('App', () => {
         (c) => c[0] === 'search_pipeline',
       ).length;
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'Einstein' } });
+        setAskValue('Einstein');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7474,9 +7457,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/search' } });
+        setAskValue('/search');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7495,9 +7478,9 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: '/search him' } });
+        setAskValue('/search him');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7520,9 +7503,7 @@ describe('App', () => {
 
       // With searchActive still on, /screen must take precedence.
       act(() => {
-        fireEvent.change(textarea, {
-          target: { value: '/screen what is this' },
-        });
+        setAskValue('/screen what is this');
       });
       await act(async () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7567,9 +7548,7 @@ describe('App', () => {
 
       await showOverlay();
 
-      expect(
-        screen.getByPlaceholderText('Ask Thuki anything...'),
-      ).toBeInTheDocument();
+      expect(getAskInput()).toBeInTheDocument();
     });
 
     it('dismisses onboarding and shows ask bar when onComplete is called', async () => {
@@ -7635,9 +7614,9 @@ describe('App', () => {
       await showOverlay();
       // Tip visible in ask-bar mode.
       expect(screen.getByTestId('tip-text')).toBeInTheDocument();
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'hello' } });
+        setAskValue('hello');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7710,9 +7689,9 @@ describe('App', () => {
       );
 
       // Send a message to flip into chat mode.
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'hi' } });
+        setAskValue('hi');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -7816,9 +7795,9 @@ describe('App', () => {
       render(<App />);
       await act(async () => {});
       await showOverlay();
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'hello' } });
+        setAskValue('hello');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -8261,9 +8240,9 @@ describe('App', () => {
           ollamaReachable: true,
         },
       });
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'hi' } });
+        setAskValue('hi');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -8556,9 +8535,9 @@ describe('App', () => {
       render(<App />);
       await act(async () => {});
       await showOverlay();
-      const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+      const textarea = getAskInput();
       act(() => {
-        fireEvent.change(textarea, { target: { value: 'seed' } });
+        setAskValue('seed');
       });
       act(() => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -8861,9 +8840,9 @@ describe('App', () => {
         // we want to auto-dismiss. Used as the harness here because
         // the chat-header export button does not render until chat mode
         // (so it cannot trigger an empty-state error).
-        const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
+        const textarea = getAskInput();
         act(() => {
-          fireEvent.change(textarea, { target: { value: '/extract' } });
+          setAskValue('/extract');
         });
         await act(async () => {
           fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });

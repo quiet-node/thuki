@@ -182,19 +182,35 @@ body {
   scrollbar-gutter: stable;
 }
 
-/* ─── AskBar Textarea ───
- * Hide the native scrollbar so the textarea's wrapping width matches the
- * highlight mirror div behind it. Without this, once content exceeds the
- * 144px cap and the textarea begins scrolling, the system scrollbar
- * consumes a few pixels of content width, causing wrapped lines in the
- * textarea and the mirror to diverge — the caret then floats above the
- * visible text. The hook syncs scrollTop so caret-follow still works.
- */
-.askbar-textarea {
+/* ─── AskBar input (Lexical contentEditable) ───
+ * A single editable element replaces the old transparent-textarea + highlight
+ * mirror overlay. Because the caret lives in the same element as the rendered
+ * glyphs, it can never drift off the text the way the two-layer overlay did in
+ * WebKit. Caps growth at 144px and hides the scrollbar; command tokens are
+ * colored inline by CommandNode. */
+.askbar-input {
+  caret-color: var(--color-text-primary);
+  max-height: 144px;
+  overflow-y: auto;
   scrollbar-width: none;
+  /* Re-enable selection: the global `body { user-select: none }` is inherited
+   * by this <div> (the old <textarea> was exempt as a form control). Without
+   * this you cannot drag-select text to replace it. */
+  user-select: text;
+  -webkit-user-select: text;
 }
-.askbar-textarea::-webkit-scrollbar {
+.askbar-input::-webkit-scrollbar {
   display: none;
+}
+/* Placeholder overlay shown while the editor is empty. Offset matches the
+ * input's px-1 py-2 padding so it sits exactly where typed text begins. */
+.askbar-placeholder {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.25rem;
+  pointer-events: none;
+  user-select: none;
+  color: var(--color-text-secondary);
 }
 
 /* AI prose: warm cream, looser leading. Scoped to .markdown-body so UI chrome stays separate. */
@@ -208,7 +224,7 @@ body {
 }
 
 /* User-tunable text scale shared by the user chat bubble text and the AskBar
- * textarea + caret-tracking mirror. The CSS variables are set on <html> by an
+ * input. The CSS variables are set on <html> by an
  * effect in App.tsx; the fallbacks preserve the pre-tunable Tailwind metrics
  * (text-sm = 14px, leading-5 = 1.25, no letter-spacing, weight 500) when the
  * variables are unset (e.g. test environments without the effect mounted). */
