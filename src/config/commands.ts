@@ -189,25 +189,25 @@ export const COMMANDS: readonly Command[] = [
   {
     trigger: '/rewrite',
     label: '/rewrite',
-    description: 'Rewrite text for clarity and flow',
+    description: 'Rewrite text to sound natural and casual',
     docs: {
-      summary: 'Rewrites text to read more naturally and clearly.',
+      summary: 'Rewrites text to sound like natural, casual, everyday speech.',
       usage: '/rewrite [text] or /rewrite with highlighted text',
       examples: [
         '`/rewrite` with highlighted text: rewrites the selected text',
-        '`/rewrite so basically what happened was i was trying to fix the bug`: rewrites typed text for clarity',
+        '`/rewrite so basically what happened was i was trying to fix the bug`: rewrites typed text in a natural, casual voice',
       ],
       behavior:
-        'Preserves the original meaning while improving flow and readability. Outputs only the rewritten text. A Replace button on the result writes the rewritten text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too.',
+        'Rewrites text to sound like a fluent native speaker talking day to day: relaxed and casual by default, while keeping your meaning, personality, and point of view. Preserves expressive spellings, slang, and emoji you used, only stays formal when the original clearly is, and will not bolt a "we" voice onto an imperative or impersonal note. Outputs only the rewritten text. A Replace button on the result writes the rewritten text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too.',
       composability:
         '`/rewrite` works with attached images or `/screen`. Vision OCR extracts the text first, then rewrites it.',
     },
     promptHelp: {
       summary:
-        'rewrite text for clarity and flow. Also works with attached images or /screen: OCR extracts the text first, then rewrites it.',
+        'rewrite text so it sounds like natural, casual, everyday native English while keeping the meaning, personality, and point of view. Also works with attached images or /screen: OCR extracts the text first, then rewrites it.',
     },
     promptTemplate:
-      'Lightly polish the text below so it reads naturally and smoothly. Improve clarity and flow with minimal changes. Preserve the original voice, tone, and meaning. Do not restructure, paraphrase extensively, or make it sound like a different writer. No icons and no em dashes. Output only the polished text.\n\nText: $INPUT',
+      'Rewrite the text below so it sounds like a fluent native English speaker saying it naturally in everyday conversation. Make it read like a real person talking, not a corporate memo.\n\nRules:\n- Default to a relaxed, casual, conversational tone. Only keep it formal if the original is clearly formal (a legal notice, an executive email). Never make the text more formal or stiffer than the original.\n- Rewrite freely. Reorder and rephrase awkward or non-native phrasing so it sounds like how a native speaker actually talks. Keep the original meaning and every key point. Do not add new ideas or drop information.\n- Keep the writer\'s personality. Preserve expressive spellings exactly ("heyyyy", "soooo", "ugh"), casual words and contractions ("gonna", "kinda", "tbh", "yeah"), and any emoji or emoticons they used.\n- Match their energy. You may add light natural touches (contractions, small connectors like "honestly", "so", "yeah") to sound human, but do not add emoji, slang, or stretched spellings they did not use. Never sound louder or more casual than they did.\n- Keep the original point of view. Do not invent a narrator. If the text has no "I" or "we" (for example, an imperative or an impersonal directive), keep it that way and do not add one. Never turn a directive into "We need to", "We should", "We have to", or "Let\'s"; rewrite each instruction as a direct command instead. An imperative stays an imperative.\n- Use normal capitalization and punctuation.\n- Do not add em dashes. If you would write one, use a comma, colon, semicolon, or period instead. If the original text already uses em dashes, keeping them is fine.\n- No markdown, bullets, or decorative icons.\n- If the text includes an "[Additional instruction]" line, follow it; it can override these defaults (for example, "make it more formal").\n- Output only the rewritten text. No preamble, no explanation, no quotes.\n\nExample 1\nInput: I very much want that we can finish this today if it possible for us.\nOutput: Honestly, I\'d love to wrap this up today if we can.\n\nExample 2\nInput: heyyyy so the build was broken but i fixed it and the tests pass now 🎉\nOutput: Heyyyy, so the build was broken but I fixed it and the tests pass now 🎉\n\nExample 3\nInput: Prioritize industry standards and best practices above all else, seeking the most performant and secure solutions while strictly eliminating over-engineering, workarounds, and unnecessary overhead; solution selection is based purely on technical superiority, independent of implementation effort.\nOutput: Put industry standards and best practices above everything else. Go for the most performant, secure option, and cut out over-engineering, workarounds, and any unnecessary overhead. Pick the solution purely on technical merit, no matter how much effort it takes to build.\n\nNow rewrite only the following text. Do not copy anything from the examples.\n\nText: $INPUT',
   },
   {
     trigger: '/tldr',
