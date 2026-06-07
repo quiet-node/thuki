@@ -158,7 +158,7 @@ function finalizeSearchTraceSteps(
  *   attribution chip is rendered rather than a blank one.
  * @param onTurnComplete Optional callback invoked after each completed turn.
  */
-export function useOllama(
+export function useModel(
   activeModel: string | null,
   onTurnComplete?: (userMsg: Message, assistantMsg: Message) => void,
 ) {

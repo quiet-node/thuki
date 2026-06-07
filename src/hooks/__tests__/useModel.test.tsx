@@ -1,6 +1,6 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { ignoreTraceIpcError, useOllama } from '../useOllama';
+import { ignoreTraceIpcError, useModel } from '../useModel';
 import {
   invoke,
   enableChannelCapture,
@@ -26,7 +26,7 @@ describe('ignoreTraceIpcError', () => {
   });
 });
 
-describe('useOllama', () => {
+describe('useModel', () => {
   beforeEach(() => {
     invoke.mockClear();
     enableChannelCapture();
@@ -37,7 +37,7 @@ describe('useOllama', () => {
 
   describe('ask()', () => {
     it('sends message via invoke with correct command name and args', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello world');
@@ -67,7 +67,7 @@ describe('useOllama', () => {
         },
       );
 
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       // Start ask but don't await so we can read state while in-flight
       act(() => {
@@ -84,7 +84,7 @@ describe('useOllama', () => {
     });
 
     it('adds user message and empty assistant placeholder immediately on ask', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('my question');
@@ -107,7 +107,7 @@ describe('useOllama', () => {
     });
 
     it('stores quotedText on user message when provided', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('what is this?', 'code snippet');
@@ -123,7 +123,7 @@ describe('useOllama', () => {
     });
 
     it('sends quotedText to invoke when provided', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('summarize', 'selected text');
@@ -139,7 +139,7 @@ describe('useOllama', () => {
     });
 
     it('accumulates streaming tokens into the assistant message', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello');
@@ -160,7 +160,7 @@ describe('useOllama', () => {
     });
 
     it('keeps assistant message in place on Done chunk', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello');
@@ -184,7 +184,7 @@ describe('useOllama', () => {
     });
 
     it('does nothing for empty prompt', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('');
@@ -195,7 +195,7 @@ describe('useOllama', () => {
     });
 
     it('does nothing for whitespace-only prompt', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('   ');
@@ -217,7 +217,7 @@ describe('useOllama', () => {
         },
       );
 
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       // Start the first ask (stalls)
       act(() => {
@@ -242,7 +242,7 @@ describe('useOllama', () => {
     });
 
     it('sends promptOverride as message to backend when provided', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask(
@@ -267,7 +267,7 @@ describe('useOllama', () => {
     });
 
     it('sends displayContent as message when no promptOverride provided', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello world');
@@ -282,7 +282,7 @@ describe('useOllama', () => {
     });
 
     it('sends displayContent when promptOverride is undefined', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask(
@@ -307,7 +307,7 @@ describe('useOllama', () => {
 
   describe('imagePaths handling', () => {
     it('allows ask() with empty text but valid imagePaths', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('', undefined, ['/tmp/img1.jpg']);
@@ -332,7 +332,7 @@ describe('useOllama', () => {
     });
 
     it('returns early for empty text AND no imagePaths', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('', undefined, undefined);
@@ -343,7 +343,7 @@ describe('useOllama', () => {
     });
 
     it('returns early for empty text AND empty imagePaths array', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('', undefined, []);
@@ -354,7 +354,7 @@ describe('useOllama', () => {
     });
 
     it('includes imagePaths in message and invoke when text AND imagePaths are provided', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('describe this', undefined, [
@@ -380,7 +380,7 @@ describe('useOllama', () => {
     });
 
     it('sets message.imagePaths to undefined and invoke imagePaths to null when no imagePaths', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello');
@@ -396,7 +396,7 @@ describe('useOllama', () => {
     });
 
     it('displayImagePaths shows in bubble but imagePaths=undefined keeps null in backend call', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask(
@@ -427,7 +427,7 @@ describe('useOllama', () => {
 
   describe('error handling', () => {
     it('Error chunk sets isGenerating to false', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('test');
@@ -452,7 +452,7 @@ describe('useOllama', () => {
     it('invoke rejection sets isGenerating to false', async () => {
       invoke.mockRejectedValueOnce(new Error('connection refused'));
 
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('test');
@@ -462,7 +462,7 @@ describe('useOllama', () => {
     });
 
     it('Error chunk updates assistant placeholder with errorKind', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('test');
@@ -491,7 +491,7 @@ describe('useOllama', () => {
     });
 
     it('Error chunk with partial tokens replaces content with error', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('test');
@@ -518,7 +518,7 @@ describe('useOllama', () => {
     it('invoke rejection creates assistant message with Other errorKind', async () => {
       invoke.mockRejectedValueOnce(new Error('network error'));
 
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('test');
@@ -536,7 +536,7 @@ describe('useOllama', () => {
 
   describe('streaming edge cases', () => {
     it('handles Token with empty string', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello');
@@ -557,7 +557,7 @@ describe('useOllama', () => {
     });
 
     it('drops the placeholder when only an empty ThinkingToken arrives before cancellation', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello', undefined, undefined, true);
@@ -606,7 +606,7 @@ describe('useOllama', () => {
         }
       });
 
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       let secondAsk!: Promise<void>;
       let thirdAsk!: Promise<void>;
@@ -660,7 +660,7 @@ describe('useOllama', () => {
         }
       });
 
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       act(() => {
         void result.current.ask('late failure');
@@ -702,7 +702,7 @@ describe('useOllama', () => {
         },
       );
 
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       act(() => {
         void result.current.ask('hello');
@@ -747,7 +747,7 @@ describe('useOllama', () => {
         },
       );
 
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       act(() => {
         void result.current.askSearch('rust');
@@ -791,7 +791,7 @@ describe('useOllama', () => {
     });
 
     it('does nothing when not generating', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.cancel();
@@ -806,7 +806,7 @@ describe('useOllama', () => {
 
   describe('Cancelled chunk', () => {
     it('keeps partial content as assistant message on Cancelled', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello');
@@ -831,7 +831,7 @@ describe('useOllama', () => {
     });
 
     it('removes assistant placeholder when cancelled with no tokens', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello');
@@ -855,7 +855,7 @@ describe('useOllama', () => {
 
   describe('reset()', () => {
     it('clears all state', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       // Build up some state
       await act(async () => {
@@ -881,7 +881,7 @@ describe('useOllama', () => {
     });
 
     it('fires record_conversation_end with user_reset when a turn was accepted', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       await act(async () => {
         await result.current.ask('hello');
       });
@@ -908,7 +908,7 @@ describe('useOllama', () => {
   describe('onTurnComplete callback', () => {
     it('is called with user and assistant messages on Done', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
 
       await act(async () => {
         await result.current.ask('ping');
@@ -931,7 +931,7 @@ describe('useOllama', () => {
 
     it('is not called when Cancelled', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
 
       await act(async () => {
         await result.current.ask('ping');
@@ -948,7 +948,7 @@ describe('useOllama', () => {
 
     it('is not called when an Error chunk is received', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
 
       await act(async () => {
         await result.current.ask('ping');
@@ -972,7 +972,7 @@ describe('useOllama', () => {
     it('stamps the assistant message with activeModel on ask() completion', async () => {
       const onTurnComplete = vi.fn();
       const { result } = renderHook(() =>
-        useOllama('gemma4:e2b', onTurnComplete),
+        useModel('gemma4:e2b', onTurnComplete),
       );
 
       await act(async () => {
@@ -995,7 +995,7 @@ describe('useOllama', () => {
 
     it('leaves modelName undefined when activeModel is null', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama(null, onTurnComplete));
+      const { result } = renderHook(() => useModel(null, onTurnComplete));
 
       await act(async () => {
         await result.current.ask('hi');
@@ -1014,7 +1014,7 @@ describe('useOllama', () => {
     it('stamps the assistant message with activeModel on askSearch() turns', async () => {
       const onTurnComplete = vi.fn();
       const { result } = renderHook(() =>
-        useOllama('qwen2.5:7b', onTurnComplete),
+        useModel('qwen2.5:7b', onTurnComplete),
       );
 
       let pending: Promise<unknown> | undefined;
@@ -1038,7 +1038,7 @@ describe('useOllama', () => {
 
     it('leaves modelName undefined when activeModel is null on askSearch()', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama(null, onTurnComplete));
+      const { result } = renderHook(() => useModel(null, onTurnComplete));
 
       let pending: Promise<unknown> | undefined;
       await act(async () => {
@@ -1064,7 +1064,7 @@ describe('useOllama', () => {
 
   describe('loadMessages()', () => {
     it('replaces messages state with provided array', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('original question');
@@ -1089,7 +1089,7 @@ describe('useOllama', () => {
 
     it('clears generating state when loading messages', async () => {
       invoke.mockRejectedValueOnce(new Error('boom'));
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('fail');
@@ -1104,7 +1104,7 @@ describe('useOllama', () => {
     });
 
     it('fires record_conversation_end with history_load when a turn was accepted', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       await act(async () => {
         await result.current.ask('original');
       });
@@ -1131,7 +1131,7 @@ describe('useOllama', () => {
 
   describe('ThinkingToken handling', () => {
     it('marks the assistant placeholder as a /think turn when think is true', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello', undefined, undefined, true);
@@ -1144,7 +1144,7 @@ describe('useOllama', () => {
     });
 
     it('accumulates ThinkingTokens into thinkingContent', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello', undefined, undefined, true);
@@ -1165,7 +1165,7 @@ describe('useOllama', () => {
     });
 
     it('passes think parameter to invoke', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello', undefined, undefined, true);
@@ -1180,7 +1180,7 @@ describe('useOllama', () => {
     });
 
     it('passes think as false by default', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello');
@@ -1196,7 +1196,7 @@ describe('useOllama', () => {
 
     it('includes thinkingContent in onTurnComplete on Done', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
 
       await act(async () => {
         await result.current.ask('hello', undefined, undefined, true);
@@ -1221,7 +1221,7 @@ describe('useOllama', () => {
 
     it('does not set thinkingContent when no thinking happened', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
 
       await act(async () => {
         await result.current.ask('hello');
@@ -1239,7 +1239,7 @@ describe('useOllama', () => {
     });
 
     it('preserves thinking content when cancelled with thinking but no regular tokens', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
         await result.current.ask('hello', undefined, undefined, true);
@@ -1269,7 +1269,7 @@ describe('useOllama', () => {
 
   describe('history', () => {
     it('maintains message history across multiple sequential asks', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       // First ask + response
       await act(async () => {
@@ -1311,7 +1311,7 @@ describe('useOllama', () => {
 
   describe('askSearch()', () => {
     it('invokes search_pipeline with the trimmed query', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('  rust async  ');
@@ -1331,7 +1331,7 @@ describe('useOllama', () => {
     });
 
     it('stores quotedText on the /search user message when provided', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch(
@@ -1358,7 +1358,7 @@ describe('useOllama', () => {
     });
 
     it('resolves immediately with final=true on empty query', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let outcome: { final: boolean } | undefined;
       await act(async () => {
         outcome = await result.current.askSearch('   ');
@@ -1368,7 +1368,7 @@ describe('useOllama', () => {
     });
 
     it('resolves with final=true when a token is received followed by Done', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       const metadata = {
         iterations: [
           {
@@ -1411,7 +1411,7 @@ describe('useOllama', () => {
 
     it('resolves with final=false when a clarify trace is followed by question tokens and Done', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('who is him');
@@ -1448,7 +1448,7 @@ describe('useOllama', () => {
     });
 
     it('updates searchStage through the pipeline phases', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -1499,7 +1499,7 @@ describe('useOllama', () => {
     });
 
     it('handles FetchingUrl, finalizes traces on IterationComplete, and ignores empty tokens', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
 
       await act(async () => {
@@ -1561,7 +1561,7 @@ describe('useOllama', () => {
     });
 
     it('ignores IterationComplete events when no trace steps have started', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
 
       await act(async () => {
@@ -1596,7 +1596,7 @@ describe('useOllama', () => {
     });
 
     it('drops the empty placeholder on Cancelled with no content', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -1616,7 +1616,7 @@ describe('useOllama', () => {
     });
 
     it('keeps partial content on Cancelled after tokens arrived', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -1637,7 +1637,7 @@ describe('useOllama', () => {
 
     it('renders an Error event as an error bubble', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -1661,7 +1661,7 @@ describe('useOllama', () => {
     });
 
     it('guards against concurrent invocations', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let firstPending!: Promise<{ final: boolean }>;
       await act(async () => {
         firstPending = result.current.askSearch('first');
@@ -1710,7 +1710,7 @@ describe('useOllama', () => {
         }
       });
 
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       let firstPending!: Promise<{ final: boolean }>;
       let secondPending!: Promise<{ final: boolean }>;
@@ -1756,7 +1756,7 @@ describe('useOllama', () => {
       invoke.mockImplementationOnce(async () => {
         throw new Error('ipc failed');
       });
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let outcome: { final: boolean } | undefined;
       await act(async () => {
         outcome = await result.current.askSearch('q');
@@ -1789,7 +1789,7 @@ describe('useOllama', () => {
         }
       });
 
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
 
       act(() => {
@@ -1820,7 +1820,7 @@ describe('useOllama', () => {
 
     it('does not persist an empty turn on Done', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -1838,7 +1838,7 @@ describe('useOllama', () => {
 
     it('persists searchSources to the assistant message on Sources + Token + Done', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
       const metadata = {
         iterations: [
           {
@@ -1884,7 +1884,7 @@ describe('useOllama', () => {
     });
 
     it('Warning event accumulates into message.searchWarnings while streaming continues', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -1909,7 +1909,7 @@ describe('useOllama', () => {
 
     it('askSearch accumulates warnings from Warning events into the persisted turn', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -1941,7 +1941,7 @@ describe('useOllama', () => {
 
     it('askSearch passes multiple warnings through in order', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -1971,7 +1971,7 @@ describe('useOllama', () => {
     });
 
     it('Trace events accumulate steps on the assistant message', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -2018,7 +2018,7 @@ describe('useOllama', () => {
     });
 
     it('Trace updates replace earlier steps with the same id', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -2067,7 +2067,7 @@ describe('useOllama', () => {
 
     it('Trace events are passed to onTurnComplete', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -2102,7 +2102,7 @@ describe('useOllama', () => {
 
     it('preserves completed traces on Done when no running steps need finalization', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
       let pending!: Promise<{ final: boolean }>;
 
       await act(async () => {
@@ -2144,7 +2144,7 @@ describe('useOllama', () => {
 
     it('searchTraces is undefined when no Trace event is received', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -2166,7 +2166,7 @@ describe('useOllama', () => {
 
   describe('search state cleanup', () => {
     it('reset clears the search stage indicator', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -2189,7 +2189,7 @@ describe('useOllama', () => {
     });
 
     it('loadMessages clears the search stage indicator', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -2212,7 +2212,7 @@ describe('useOllama', () => {
     });
 
     it('Searching after RefiningSearch sets gap:true stage', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -2239,7 +2239,7 @@ describe('useOllama', () => {
     });
 
     it('ReadingSources after RefiningSearch sets gap:true stage', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -2267,7 +2267,7 @@ describe('useOllama', () => {
 
     it('SandboxUnavailable event sets sandboxUnavailable on assistant message', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -2288,7 +2288,7 @@ describe('useOllama', () => {
     });
 
     it('SandboxUnavailable event does not set errorKind', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -2306,7 +2306,7 @@ describe('useOllama', () => {
 
     it('NoModelSelected event renders no-model error and resolves final', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -2338,7 +2338,7 @@ describe('useOllama', () => {
 
   describe('is_first_turn flag retention across bails', () => {
     it('chat NoModelSelected error keeps the flag armed for the next turn', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       await act(async () => {
         await result.current.ask('first');
       });
@@ -2363,7 +2363,7 @@ describe('useOllama', () => {
     });
 
     it('chat TurnAccepted retires the flag for the next turn', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       await act(async () => {
         await result.current.ask('first');
       });
@@ -2391,7 +2391,7 @@ describe('useOllama', () => {
       // and a stale `Cancelled` chunk lands after `activeGenerationRef`
       // is cleared. The flag must still retire so the next turn does
       // NOT trigger a duplicate `ConversationStart`.
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       await act(async () => {
         await result.current.ask('first');
       });
@@ -2419,7 +2419,7 @@ describe('useOllama', () => {
     });
 
     it('search SandboxUnavailable keeps the flag armed for the next turn', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending1!: Promise<{ final: boolean }>;
       await act(async () => {
         pending1 = result.current.askSearch('q1');
@@ -2457,7 +2457,7 @@ describe('useOllama', () => {
     });
 
     it('search NoModelSelected keeps the flag armed for the next turn', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending1!: Promise<{ final: boolean }>;
       await act(async () => {
         pending1 = result.current.askSearch('q1');
@@ -2495,7 +2495,7 @@ describe('useOllama', () => {
       // event lands after activeGenerationRef is cleared. The flag
       // must still retire so the next /search does not duplicate
       // ConversationStart.
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('first');
@@ -2535,7 +2535,7 @@ describe('useOllama', () => {
     it('search TurnAccepted retires the flag for a follow-up chat turn (cross-domain)', async () => {
       // The flag is shared across chat and search; once /search opens
       // the trace, a subsequent chat ask() must see is_first_turn=false.
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
       let pending!: Promise<{ final: boolean }>;
       await act(async () => {
         pending = result.current.askSearch('q');
@@ -2563,7 +2563,7 @@ describe('useOllama', () => {
 
   describe('addOcrTurn', () => {
     it('appends user and assistant messages to the conversation', async () => {
-      const { result } = renderHook(() => useOllama(''));
+      const { result } = renderHook(() => useModel(''));
 
       act(() => {
         result.current.addOcrTurn(
@@ -2589,7 +2589,7 @@ describe('useOllama', () => {
 
     it('calls onTurnComplete with the user and assistant messages', async () => {
       const onTurnComplete = vi.fn();
-      const { result } = renderHook(() => useOllama('', onTurnComplete));
+      const { result } = renderHook(() => useModel('', onTurnComplete));
 
       act(() => {
         result.current.addOcrTurn(

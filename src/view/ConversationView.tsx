@@ -3,7 +3,7 @@ import { useRef, useEffect } from 'react';
 import { ChatBubble } from '../components/ChatBubble';
 import { LoadingStage } from '../components/LoadingStage';
 import { WindowControls } from '../components/WindowControls';
-import type { Message } from '../hooks/useOllama';
+import type { Message } from '../hooks/useModel';
 import type { SearchStage } from '../types/search';
 
 /**

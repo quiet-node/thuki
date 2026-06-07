@@ -11,7 +11,7 @@ import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
 import { SearchWarningIcon } from './SearchWarningIcon';
-import type { OllamaErrorKind } from '../hooks/useOllama';
+import type { OllamaErrorKind } from '../hooks/useModel';
 import type {
   SearchResultPreview,
   SearchTraceStep,
