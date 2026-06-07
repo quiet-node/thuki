@@ -53,7 +53,7 @@ Thuki is a macOS-only desktop app, a floating AI secretary activated by double-t
 The UI morphs between two states: a compact spotlight-style input bar → an expanded chat window. This morphing is driven by Framer Motion and a single `isChatMode` boolean in `App.tsx`.
 
 - **`App.tsx`** — orchestrates all state: messages, streaming, window resizing via ResizeObserver + Tauri `setSize()`
-- **`hooks/useOllama.ts`** — Tauri Channel-based streaming hook; emits `Token`, `Done`, `Cancelled`, `Error` variants
+- **`hooks/useModel.ts`** — Tauri Channel-based streaming hook (`useModel`); emits `Token`, `Done`, `Cancelled`, `Error` variants
 - **`view/ConversationView.tsx`** — smart auto-scroll (pins to bottom unless user scrolls up)
 - **`view/AskBarView.tsx`** — auto-expanding textarea (max 144px), morphs logo size, renders slash command tab-completion suggestions
 - **`components/ChatBubble.tsx`** — markdown rendering via Streamdown (rehype-sanitize for XSS protection)
@@ -67,8 +67,8 @@ User-facing reference for all commands lives in `docs/commands.md`. **Any new sl
 ### Backend (`src-tauri/src/`)
 
 - **`lib.rs`** — app setup: loads `AppConfig` via `config::load`, converts window to NSPanel (fullscreen overlay), registers tray, spawns hotkey listener, intercepts close events (hides instead of quits)
-- **`config/`** — typed TOML-backed application configuration. Loaded once at startup from `~/Library/Application Support/com.quietnode.thuki/config.toml` (seeded with defaults on first run), installed as Tauri managed state, exposed to the frontend via the `get_config` command. Every subsystem that needs model, prompt, window, activation, or quote values reads from `State<AppConfig>`. See `docs/configurations.md` for the user-facing schema.
-- **`commands.rs`** — `ask_ollama` Tauri command: streams newline-delimited JSON from Ollama, sends chunks via Tauri Channel. Reads the active model, resolved system prompt, and Ollama URL from `State<AppConfig>`.
+- **`config/`** — typed TOML-backed application configuration. Loaded once at startup from `~/Library/Application Support/com.quietnode.thuki/config.toml` (seeded with defaults on first run), installed as Tauri managed state, exposed to the frontend via the `get_config` command. Every subsystem that needs model, prompt, window, activation, or quote values reads from `State<AppConfig>`. The `[inference]` section holds the typed providers list (`active_provider` + `[[inference.providers]]`, each `{id, kind, label, base_url, model}`); the loader migrates a legacy flat `ollama_url` onto a synthesized Ollama provider and `config/migrate.rs` folds the legacy SQLite `active_model` onto it at startup. See `docs/configurations.md` for the user-facing schema.
+- **`commands.rs`** — `ask_model` Tauri command: routes by the active provider's kind (Phase 1 implements Ollama's native `/api/chat` only; a non-Ollama active provider returns a typed `EngineError`), streams newline-delimited JSON, and sends chunks via Tauri Channel. Reads the active provider (base URL + selected model) from `State<RwLock<AppConfig>>`, the resolved system prompt, and the in-memory `ActiveModelState`.
 - **`screenshot.rs`** — `capture_full_screen_command` Tauri command: uses CoreGraphics FFI (`CGWindowListCreateImage`) to capture all displays excluding Thuki's own windows, writes a JPEG to a temp dir, and returns the path
 - **`activator.rs`** — Core Graphics event tap watching for double-tap Control key (400 ms window, 600 ms cooldown; timing is a compiled constant, not yet exposed through `AppConfig` because the event-tap callback runs in a thread that cannot trivially read Tauri managed state). The tap MUST use `CGEventTapLocation::HID` and `CGEventTapOptions::Default` — see the critical constraint note in "Key Design Constraints" below.
 
