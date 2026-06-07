@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Renamed the `[model]` section in `config.toml` to `[inference]`. The section still contains a single field, `ollama_url`, but the name now reflects what it actually configures (the inference daemon endpoint, not a model). There is no backward-compatibility shim: if you had a custom `[model]` section, rename it to `[inference]` after upgrading.
 - Active model selection is now strictly Option-typed end to end. Ollama's `/api/tags` is the single source of truth: when nothing is installed and nothing is persisted, Thuki refuses to dispatch requests and surfaces a "Pick a model" prompt instead of falling back to a hardcoded slug. The previous `DEFAULT_MODEL_NAME` constant has been removed.
 
+## [0.14.0](https://github.com/quiet-node/thuki/compare/v0.13.1...v0.14.0) (2026-06-07)
+
+
+### Features
+
+* allow drafting messages while response is streaming in AskBarView ([#200](https://github.com/quiet-node/thuki/issues/200)) ([108e1eb](https://github.com/quiet-node/thuki/commit/108e1eb3e367778b24e41b6e1be096647eadbf6c))
+* migrate AskBar input to Lexical to fix WKWebView caret drift ([#202](https://github.com/quiet-node/thuki/issues/202)) ([adafe47](https://github.com/quiet-node/thuki/commit/adafe4729f55e898bba46607d527f629b60bace9))
+* pre-load conversation list before opening ask-bar history drawer ([#199](https://github.com/quiet-node/thuki/issues/199)) ([5ac73e0](https://github.com/quiet-node/thuki/commit/5ac73e0bdbcfedfef454842671b70d275d77da70))
+* redesign /rewrite for a natural, casual voice ([#201](https://github.com/quiet-node/thuki/issues/201)) ([c66519a](https://github.com/quiet-node/thuki/commit/c66519a71d3557e73b9f3f2c1e027435a8cca232))
+* write /rewrite and /refine results back into the source app ([#197](https://github.com/quiet-node/thuki/issues/197)) ([03a8fce](https://github.com/quiet-node/thuki/commit/03a8fce0c2c136a2e98638315b4cebb298e1f84d))
+
 ## [0.13.1](https://github.com/quiet-node/thuki/compare/v0.13.0...v0.13.1) (2026-05-26)
 
 
