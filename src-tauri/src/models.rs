@@ -24,8 +24,6 @@ use crate::config::defaults::{
     MAX_MODEL_SLUG_LEN, MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES,
 };
 use crate::config::AppConfig;
-use crate::database::{get_config, set_config};
-use crate::history::Database;
 
 /// `app_config` key used to persist the user's selected model slug.
 pub const ACTIVE_MODEL_KEY: &str = "active_model";
@@ -243,16 +241,12 @@ async fn fetch_installed_model_names_inner(
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn get_model_picker_state(
+    app: tauri::AppHandle,
     client: tauri::State<'_, reqwest::Client>,
-    db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<serde_json::Value, String> {
-    let ollama_url = config
-        .read()
-        .inference
-        .active_provider_base_url()
-        .to_string();
+    let (ollama_url, active_id, persisted) = read_provider_model_context(&config);
     let fetch_result = fetch_installed_model_names(&client, &ollama_url).await;
 
     let installed = match fetch_result {
@@ -260,24 +254,19 @@ pub async fn get_model_picker_state(
         Err(_) => {
             // Mirror the `None` active into the in-memory state so downstream
             // callers (ask_model, search_pipeline) see the same truth as the
-            // frontend: with Ollama unreachable, no model is active.
+            // frontend: with the provider unreachable, no model is active.
             let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
             *guard = None;
             return Ok(build_picker_state_payload(None, &[], false));
         }
     };
 
-    let resolved = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        let persisted = get_config(&conn, ACTIVE_MODEL_KEY).map_err(|e| e.to_string())?;
-        let resolved = resolve_active_model(persisted.as_deref(), &installed);
-        if let Some(slug) = resolved.as_deref() {
-            if should_persist_resolved(&installed, persisted.as_deref(), slug) {
-                set_config(&conn, ACTIVE_MODEL_KEY, slug).map_err(|e| e.to_string())?;
-            }
+    let resolved = resolve_active_model(persisted.as_deref(), &installed);
+    if let Some(slug) = resolved.as_deref() {
+        if should_persist_resolved(&installed, persisted.as_deref(), slug) {
+            persist_active_provider_model(&app, &config, &active_id, slug)?;
         }
-        resolved
-    };
+    }
 
     {
         let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
@@ -289,6 +278,44 @@ pub async fn get_model_picker_state(
         &installed,
         true,
     ))
+}
+
+/// Snapshots the active provider's base URL, id, and selected model from the
+/// shared config. Returns the model as `Option<String>` (empty -> `None`) so
+/// callers can feed it straight into the resolve helpers.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn read_provider_model_context(
+    config: &parking_lot::RwLock<AppConfig>,
+) -> (String, String, Option<String>) {
+    let c = config.read();
+    let model = c.inference.active_provider_model();
+    (
+        c.inference.active_provider_base_url().to_string(),
+        c.inference.active_provider.clone(),
+        if model.is_empty() {
+            None
+        } else {
+            Some(model.to_string())
+        },
+    )
+}
+
+/// Writes `slug` onto the active provider's `model` field in config.toml and
+/// swaps the resolved result into the shared in-memory config. Replaces the
+/// former SQLite `set_config(ACTIVE_MODEL_KEY, ...)` persistence.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn persist_active_provider_model(
+    app: &tauri::AppHandle,
+    config: &parking_lot::RwLock<AppConfig>,
+    provider_id: &str,
+    slug: &str,
+) -> Result<(), String> {
+    let path = crate::settings_commands::config_path(app).map_err(|e| e.to_string())?;
+    let resolved =
+        crate::settings_commands::write_provider_field_to_disk(&path, provider_id, "model", slug)
+            .map_err(|e| e.to_string())?;
+    *config.write() = resolved;
+    Ok(())
 }
 
 /// Pure helper that shapes the `get_model_picker_state` payload. Extracted so
@@ -317,25 +344,18 @@ pub fn build_picker_state_payload(
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn set_active_model(
     model: String,
+    app: tauri::AppHandle,
     client: tauri::State<'_, reqwest::Client>,
-    db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<(), String> {
     validate_model_slug(&model)?;
 
-    let ollama_url = config
-        .read()
-        .inference
-        .active_provider_base_url()
-        .to_string();
+    let (ollama_url, active_id, _persisted) = read_provider_model_context(&config);
     let installed = fetch_installed_model_names(&client, &ollama_url).await?;
     validate_model_installed(&model, &installed)?;
 
-    {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        set_config(&conn, ACTIVE_MODEL_KEY, &model).map_err(|e| e.to_string())?;
-    }
+    persist_active_provider_model(&app, &config, &active_id, &model)?;
 
     {
         let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
@@ -433,22 +453,13 @@ pub fn derive_model_setup_state(
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn check_model_setup(
+    app: tauri::AppHandle,
     client: tauri::State<'_, reqwest::Client>,
-    db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<ModelSetupState, String> {
-    let ollama_url = config
-        .read()
-        .inference
-        .active_provider_base_url()
-        .to_string();
+    let (ollama_url, active_id, persisted) = read_provider_model_context(&config);
     let installed_result = fetch_installed_model_names(&client, &ollama_url).await;
-
-    let persisted = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        get_config(&conn, ACTIVE_MODEL_KEY).map_err(|e| e.to_string())?
-    };
 
     let state = derive_model_setup_state(installed_result, persisted.as_deref());
 
@@ -458,8 +469,7 @@ pub async fn check_model_setup(
     } = state
     {
         if should_persist_resolved(installed, persisted.as_deref(), active_slug) {
-            let conn = db.0.lock().map_err(|e| e.to_string())?;
-            set_config(&conn, ACTIVE_MODEL_KEY, active_slug).map_err(|e| e.to_string())?;
+            persist_active_provider_model(&app, &config, &active_id, active_slug)?;
         }
         let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
         *guard = Some(active_slug.clone());
@@ -777,6 +787,10 @@ async fn reconcile_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The generic SQLite config helpers are no longer used by the production
+    // commands (model selection persists to config.toml), but the DB layer
+    // itself is still covered here via the ACTIVE_MODEL_KEY round-trip test.
+    use crate::database::{get_config, set_config};
 
     // ── build_picker_state_payload ───────────────────────────────────────────
 

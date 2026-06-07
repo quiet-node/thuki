@@ -1460,6 +1460,18 @@ fn refresh_tray(app: &tauri::AppHandle) {
 /// # Panics
 ///
 /// Panics if the Tauri runtime fails to initialise.
+/// Thin filesystem wrapper: true when the on-disk config already carries an
+/// `[[inference.providers]]` array (the new shape). Used by startup to decide
+/// whether to perform the one-time old -> new shape upgrade write. The parse
+/// logic it delegates to (`migrate::toml_has_providers`) is unit-tested; this
+/// wrapper only does the file read and is excluded from coverage.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn config_file_has_providers(path: &std::path::Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|s| crate::config::migrate::toml_has_providers(&s))
+        .unwrap_or(false)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -1762,18 +1774,39 @@ pub fn run() {
             let db_conn = database::open_database(&app_data_dir)
                 .expect("failed to initialise SQLite database");
 
-            // ── Active-model state: seed from SQLite app_config table ──
-            // The installed list isn't queried here (no async runtime yet).
-            // get_model_picker_state reconciles against the live /api/tags
-            // inventory on first picker open and may replace this seed.
-            // When nothing is persisted the seed is `None`: there is no
-            // compiled fallback. The Phase 3 onboarding gate refuses to
-            // open the overlay until a real installed model is selected,
-            // so an unset slug never reaches `ask_model`.
-            let persisted_active = database::get_config(&db_conn, models::ACTIVE_MODEL_KEY)
-                .expect("failed to read active_model from app_config");
-            let initial_active_model =
-                models::resolve_seed_active_model(persisted_active.as_deref());
+            // ── Active model: migrate the legacy SQLite slug onto the active
+            // provider, then seed the in-memory ActiveModelState ──────────
+            // Pre-providers builds persisted the active model in SQLite under
+            // ACTIVE_MODEL_KEY. It now lives on the active provider's `model`
+            // field in config.toml. Read the legacy value once; if the active
+            // provider has no model yet, fold it in, and for an old-shape file
+            // upgrade the file to the providers shape (a one-time write).
+            // After this the model persists to config and SQLite active_model
+            // is never written again. The installed list isn't queried here
+            // (no async runtime yet); get_model_picker_state reconciles against
+            // the live /api/tags inventory on first picker open.
+            let legacy_active_model = database::get_config(&db_conn, models::ACTIVE_MODEL_KEY)
+                .expect("failed to read legacy active_model from app_config");
+            let config_file_path = app
+                .path()
+                .app_config_dir()
+                .expect("failed to resolve app config dir")
+                .join(crate::config::CONFIG_FILE_NAME);
+            let initial_active_model = {
+                let state = app.state::<parking_lot::RwLock<crate::config::AppConfig>>();
+                let mut cfg = state.write();
+                let pre_providers = !config_file_has_providers(&config_file_path);
+                let attached = crate::config::migrate::attach_legacy_active_model(
+                    &mut cfg,
+                    legacy_active_model.as_deref(),
+                );
+                if pre_providers || attached {
+                    if let Err(e) = crate::config::writer::atomic_write(&config_file_path, &cfg) {
+                        eprintln!("thuki: [config] active-model migration write failed: {e}");
+                    }
+                }
+                models::resolve_seed_active_model(Some(cfg.inference.active_provider_model()))
+            };
             app.manage(models::ActiveModelState(std::sync::Mutex::new(
                 initial_active_model,
             )));
