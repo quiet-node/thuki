@@ -115,6 +115,27 @@ pub fn no_model_selected_error() -> EngineError {
     }
 }
 
+/// Returns the error to emit when the active provider's kind has no Phase-1
+/// implementation, or `None` when the kind is the native Ollama path. Pure so
+/// the routing decision is unit-tested even though `ask_model` is coverage-off.
+/// In Phase 1 the only functional kind is `ollama`; the built-in engine and
+/// the generic OpenAI-compatible kind arrive in Phase 2.
+pub(crate) fn unsupported_provider_error(kind: &str, label: &str) -> Option<EngineError> {
+    use crate::config::defaults::PROVIDER_KIND_OLLAMA;
+    if kind == PROVIDER_KIND_OLLAMA {
+        return None;
+    }
+    let who = if label.trim().is_empty() {
+        "This provider"
+    } else {
+        label
+    };
+    Some(EngineError {
+        kind: EngineErrorKind::EngineUnreachable,
+        message: format!("{who} is not available in this version of Thuki yet."),
+    })
+}
+
 /// Structured error emitted over the streaming channel.
 /// Rust owns all user-facing copy; the frontend only uses `kind` for styling.
 #[derive(Clone, Serialize, Debug)]
@@ -552,6 +573,23 @@ pub async fn ask_model(
     // Snapshot the config once so all downstream reads (endpoint, prompt, model)
     // see a consistent view even if the user edits Settings mid-stream.
     let config = config.read().clone();
+
+    // Route by provider kind. Phase 1 implements only the native Ollama path;
+    // a non-Ollama active provider (the built-in engine) cannot serve yet, so
+    // bail with a typed, provider-labeled error regardless of model selection.
+    {
+        let kind = config.inference.active_provider_kind();
+        let label = config
+            .inference
+            .active()
+            .map(|p| p.label.as_str())
+            .unwrap_or("");
+        if let Some(err) = unsupported_provider_error(kind, label) {
+            let _ = on_event.send(StreamChunk::Error(err));
+            return Ok(());
+        }
+    }
+
     let endpoint = format!(
         "{}/api/chat",
         config
@@ -1723,6 +1761,20 @@ mod tests {
             "message should steer the user to the picker, got: {}",
             err.message,
         );
+    }
+
+    #[test]
+    fn unsupported_provider_error_passes_ollama_and_flags_other_kinds() {
+        use crate::config::defaults::{PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA};
+        // The native Ollama path proceeds (no error).
+        assert!(unsupported_provider_error(PROVIDER_KIND_OLLAMA, "Ollama").is_none());
+        // The built-in kind has no Phase-1 implementation: typed error, labeled.
+        let err = unsupported_provider_error(PROVIDER_KIND_BUILTIN, "Built-in (Thuki)").unwrap();
+        assert_eq!(err.kind, EngineErrorKind::EngineUnreachable);
+        assert!(err.message.contains("Built-in (Thuki)"));
+        // An empty label falls back to a generic noun.
+        let unlabeled = unsupported_provider_error(PROVIDER_KIND_BUILTIN, "").unwrap();
+        assert!(unlabeled.message.contains("This provider"));
     }
 
     #[test]
