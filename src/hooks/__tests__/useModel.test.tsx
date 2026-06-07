@@ -475,7 +475,7 @@ describe('useModel', () => {
         channel!.simulateMessage({
           type: 'Error',
           data: {
-            kind: 'NotRunning',
+            kind: 'EngineUnreachable',
             message: "Ollama isn't running\nStart Ollama and try again.",
           },
         });
@@ -484,7 +484,7 @@ describe('useModel', () => {
       const assistantMsg = result.current.messages.find(
         (m) => m.role === 'assistant',
       );
-      expect(assistantMsg?.errorKind).toBe('NotRunning');
+      expect(assistantMsg?.errorKind).toBe('EngineUnreachable');
       expect(assistantMsg?.content).toBe(
         "Ollama isn't running\nStart Ollama and try again.",
       );

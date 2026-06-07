@@ -2646,7 +2646,7 @@ fn split_into_stream_pieces(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{OllamaError, OllamaErrorKind};
+    use crate::commands::{EngineError, EngineErrorKind};
     use crate::config::defaults::DEFAULT_NUM_CTX;
     use std::sync::{Arc, Mutex};
 
@@ -2729,8 +2729,8 @@ mod tests {
 
     #[test]
     fn translate_chunk_error_maps_to_error_event() {
-        let out = translate_chunk(StreamChunk::Error(OllamaError {
-            kind: OllamaErrorKind::Other,
+        let out = translate_chunk(StreamChunk::Error(EngineError {
+            kind: EngineErrorKind::Other,
             message: "boom".into(),
         }));
         assert_eq!(
