@@ -1,10 +1,13 @@
 /**
  * Top-level component for the "What's New" update NSWindow.
  *
- * Mounted by `rootForLabel` when the Tauri window label is `update`. Shows
- * the available version's release notes (rendered markdown from the updater
- * manifest, with a GitHub-link fallback when the manifest omits notes) and
- * three explicit actions so an install never starts on a single stray click:
+ * Mounted by `rootForLabel` when the Tauri window label is `update`. The
+ * manifest body carries the full release history, so the window shows every
+ * version between the user's installed build and the latest as a collapsible
+ * accordion (newest expanded). When the body has no parseable version headers
+ * it falls back to rendering the markdown as-is, with a GitHub-link fallback
+ * when the manifest omits notes. Three explicit actions keep an install from
+ * ever starting on a single stray click:
  *
  *   - Skip This Version : never nag for this exact version again
  *   - Remind Me Later    : snooze both surfaces for 24h
@@ -28,13 +31,15 @@
  * cheap and React state is preserved.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion } from '@tauri-apps/api/app';
 
 import { useUpdater } from '../../hooks/useUpdater';
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import { WindowControls } from '../../components/WindowControls';
+import { ChangelogAccordion } from './ChangelogAccordion';
+import { parseChangelogSections, selectSections } from './changelog';
 
 export function UpdateWindow() {
   const updater = useUpdater();
@@ -49,6 +54,19 @@ export function UpdateWindow() {
       .then(setCurrentVersion)
       .catch(() => {});
   }, []);
+
+  // The manifest body carries the full release history; show only the versions
+  // the user skipped over (newest first). Empty when the body has no version
+  // headers (old single-version manifests, or the GitHub-link fallback text),
+  // in which case the window renders the body as-is below.
+  const sections = useMemo(
+    () =>
+      selectSections(
+        parseChangelogSections(update?.body ?? ''),
+        currentVersion,
+      ),
+    [update?.body, currentVersion],
+  );
 
   const close = useCallback(() => {
     void getCurrentWindow().hide();
@@ -162,15 +180,19 @@ export function UpdateWindow() {
             className="update-notes mx-12 min-h-0 flex-1 overflow-y-auto p-4 text-[13px] leading-[1.55]"
             data-testid="update-notes"
           >
-            <MarkdownRenderer
-              content={
-                update.body && update.body.trim().length > 0
-                  ? update.body
-                  : update.notes_url
-                    ? `Release notes for this version aren't bundled in the update manifest. [View them on GitHub](${update.notes_url}).`
-                    : 'No release notes are available for this version.'
-              }
-            />
+            {sections.length > 0 ? (
+              <ChangelogAccordion sections={sections} />
+            ) : (
+              <MarkdownRenderer
+                content={
+                  update.body && update.body.trim().length > 0
+                    ? update.body
+                    : update.notes_url
+                      ? `Release notes for this version aren't bundled in the update manifest. [View them on GitHub](${update.notes_url}).`
+                      : 'No release notes are available for this version.'
+                }
+              />
+            )}
           </div>
 
           <footer className="flex flex-nowrap items-center gap-2 border-t border-[rgba(255,255,255,0.045)] px-9 pt-[16px] pb-5">

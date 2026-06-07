@@ -1,4 +1,5 @@
-import React, { memo } from 'react';
+import React, { memo, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { Streamdown, type MathPlugin } from 'streamdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -37,6 +38,13 @@ const mathPlugin: MathPlugin = {
  * relies on KaTeX's own output escaping and the default trust:false setting,
  * which blocks arbitrary-HTML LaTeX macros such as \href and \htmlClass.
  *
+ * External links: a bare `<a target="_blank">` does nothing in a Tauri
+ * WKWebView (the webview will not navigate to the system browser on its
+ * own), so anchor clicks are intercepted here and routed through the
+ * `open_url` command, which opens the URL in the user's default browser.
+ * `open_url` only accepts http/https, so non-web schemes are rejected
+ * there. This is the same mechanism `TipBar` uses for its links.
+ *
  * Currency disambiguation: `remark-math` would otherwise parse the text
  * between two currency dollars (e.g. "raise $1M ... reach $1M") as one
  * giant inline-math run. `escapeCurrencyDollars` escapes `$<digit>` before
@@ -51,8 +59,25 @@ const mathPlugin: MathPlugin = {
  */
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(
   function MarkdownRenderer({ content, className = '', isStreaming = false }) {
+    /**
+     * Delegated anchor-click handler. Streamdown renders links as native
+     * `<a target="_blank">` elements, which a Tauri WKWebView silently
+     * ignores. Intercept the click, hand the href to `open_url`, and let
+     * the backend open it in the default browser. Non-anchor clicks (text,
+     * code copy button, etc.) fall through untouched.
+     */
+    const handleClick = useCallback((e: React.MouseEvent<HTMLElement>) => {
+      const anchor = (e.target as HTMLElement).closest('a');
+      const href = anchor?.getAttribute('href');
+      if (!href) return;
+      e.preventDefault();
+      void invoke('open_url', { url: href }).catch((err: unknown) => {
+        console.error('failed to open link', href, err);
+      });
+    }, []);
+
     return (
-      <span className={`markdown-body ${className}`}>
+      <span className={`markdown-body ${className}`} onClick={handleClick}>
         <Streamdown
           mode={isStreaming ? 'streaming' : 'static'}
           /* Force dark syntax highlighting - the app has no .dark root class
