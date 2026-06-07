@@ -71,7 +71,7 @@ fn emit_config_updated(app: &AppHandle) {
 /// across the settings commands. On a successful lookup the returned path
 /// matches the path the loader uses, so writes round-trip cleanly.
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn config_path(app: &AppHandle) -> Result<PathBuf, ConfigError> {
+pub(crate) fn config_path(app: &AppHandle) -> Result<PathBuf, ConfigError> {
     let dir = app
         .path()
         .app_config_dir()
@@ -153,6 +153,34 @@ pub fn set_config_field(
     Ok(resolved)
 }
 
+/// Sets the Ollama provider's `base_url` and returns the resolved `AppConfig`.
+///
+/// The Ollama URL is not a flat `set_config_field` key: it lives on the
+/// `[[inference.providers]]` Ollama entry, so it has its own command. Mirrors
+/// `set_config_field`'s lock + persist + broadcast contract.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn set_ollama_url(
+    base_url: String,
+    app: AppHandle,
+    state: State<'_, RwLock<AppConfig>>,
+) -> Result<AppConfig, ConfigError> {
+    let path = config_path(&app)?;
+    let resolved = {
+        let mut guard = state.write();
+        let resolved = write_provider_field_to_disk(
+            &path,
+            crate::config::defaults::PROVIDER_ID_OLLAMA,
+            "base_url",
+            base_url.trim(),
+        )?;
+        *guard = resolved.clone();
+        resolved
+    };
+    emit_config_updated(&app);
+    Ok(resolved)
+}
+
 /// Patches one `(section, key)` to disk and returns the resolved `AppConfig`
 /// the loader produces from the new file. Pulled out of the Tauri wrapper so
 /// the allowlist guard, document patch, atomic write, and post-write reload
@@ -203,6 +231,57 @@ pub(crate) fn write_field_to_disk(
         }
     })?;
 
+    config::load_from_path(path)
+}
+
+/// Patches a single field (`model` or `base_url`) on the
+/// `[[inference.providers]]` entry whose `id` matches `provider_id`, preserving
+/// the rest of the file via `toml_edit`, then reloads + resolves. Backs the
+/// `set_active_model` (model) and `set_ollama_url` (base_url) write paths.
+/// Pulled out of the Tauri wrappers so the field allowlist, table lookup,
+/// atomic write, and post-write reload are exercised without an `AppHandle`.
+pub(crate) fn write_provider_field_to_disk(
+    path: &Path,
+    provider_id: &str,
+    field: &str,
+    value: &str,
+) -> Result<AppConfig, ConfigError> {
+    if !matches!(field, "model" | "base_url") {
+        return Err(ConfigError::UnknownField {
+            section: "inference.providers".to_string(),
+            key: field.to_string(),
+        });
+    }
+    let mut doc = read_document(path)?;
+    let providers = doc
+        .get_mut("inference")
+        .and_then(|i| i.get_mut("providers"))
+        .and_then(|p| p.as_array_of_tables_mut());
+    let Some(providers) = providers else {
+        return Err(ConfigError::UnknownSection {
+            section: "inference.providers".to_string(),
+        });
+    };
+    let mut patched = false;
+    for table in providers.iter_mut() {
+        if table.get("id").and_then(|v| v.as_str()) == Some(provider_id) {
+            table.insert(field, toml_value(value));
+            patched = true;
+            break;
+        }
+    }
+    if !patched {
+        return Err(ConfigError::UnknownField {
+            section: "inference.providers".to_string(),
+            key: provider_id.to_string(),
+        });
+    }
+    config::atomic_write_bytes(path, doc.to_string().as_bytes()).map_err(|source| {
+        ConfigError::IoError {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
     config::load_from_path(path)
 }
 

@@ -14,7 +14,7 @@ use toml_edit::DocumentMut;
 use super::{
     coerce_json_to_toml, is_allowed_field, is_allowed_section, json_type_name,
     json_value_to_toml_item, patch_document, read_document, reset_section_on_disk,
-    trace_enabled_changed, write_field_to_disk,
+    trace_enabled_changed, write_field_to_disk, write_provider_field_to_disk,
 };
 use crate::config::defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS};
 use crate::config::{AppConfig, ConfigError};
@@ -55,6 +55,28 @@ router_timeout_s = 45
 fn parse_sample() -> DocumentMut {
     SAMPLE_CONFIG.parse().expect("sample config parses")
 }
+
+/// New-shape config carrying an explicit `[[inference.providers]]` array, used
+/// to exercise `write_provider_field_to_disk`.
+const PROVIDERS_CONFIG: &str = r#"
+[inference]
+active_provider = "ollama"
+num_ctx = 16384
+keep_warm_inactivity_minutes = 0
+
+[[inference.providers]]
+id = "builtin"
+kind = "builtin"
+label = "Built-in (Thuki)"
+model = ""
+
+[[inference.providers]]
+id = "ollama"
+kind = "ollama"
+label = "Ollama"
+base_url = "http://127.0.0.1:11434"
+model = ""
+"#;
 
 // ─── ALLOWED_FIELDS / ALLOWED_SECTIONS ──────────────────────────────────────
 
@@ -774,6 +796,119 @@ fn write_field_to_disk_propagates_io_error_when_parent_dir_is_readonly() {
         json!("http://10.0.0.1:25017"),
     )
     .unwrap_err();
+
+    // Restore writability so the OS can clean up the tempdir later.
+    let mut restore = perms;
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&dir, restore).unwrap();
+
+    matches!(err, ConfigError::IoError { .. });
+}
+
+// ─── write_provider_field_to_disk ───────────────────────────────────────────
+
+#[test]
+fn write_provider_field_patches_base_url_and_preserves_builtin() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+
+    let resolved =
+        write_provider_field_to_disk(&path, "ollama", "base_url", "http://10.0.0.2:11434").unwrap();
+    let ollama = resolved
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == "ollama")
+        .unwrap();
+    assert_eq!(ollama.base_url, "http://10.0.0.2:11434");
+    assert!(resolved
+        .inference
+        .providers
+        .iter()
+        .any(|p| p.id == "builtin"));
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("http://10.0.0.2:11434"));
+}
+
+#[test]
+fn write_provider_field_patches_model() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+
+    let resolved = write_provider_field_to_disk(&path, "ollama", "model", "llama3.1:8b").unwrap();
+    let ollama = resolved
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == "ollama")
+        .unwrap();
+    assert_eq!(ollama.model, "llama3.1:8b");
+}
+
+#[test]
+fn write_provider_field_rejects_unknown_field() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+    let err = write_provider_field_to_disk(&path, "ollama", "label", "x").unwrap_err();
+    match err {
+        ConfigError::UnknownField { key, .. } => assert_eq!(key, "label"),
+        other => panic!("expected UnknownField, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_provider_field_rejects_unknown_provider() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+    let err = write_provider_field_to_disk(&path, "ghost", "model", "x").unwrap_err();
+    match err {
+        ConfigError::UnknownField { key, .. } => assert_eq!(key, "ghost"),
+        other => panic!("expected UnknownField, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_provider_field_errors_when_no_providers_array() {
+    // SAMPLE_CONFIG is the pre-providers shape (no [[inference.providers]]).
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+    let err = write_provider_field_to_disk(&path, "ollama", "base_url", "http://x").unwrap_err();
+    match err {
+        ConfigError::UnknownSection { section } => assert_eq!(section, "inference.providers"),
+        other => panic!("expected UnknownSection, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_provider_field_propagates_read_error_for_missing_file() {
+    let dir = tempdir();
+    let path = dir.join("missing.toml");
+    let err = write_provider_field_to_disk(&path, "ollama", "model", "x").unwrap_err();
+    matches!(err, ConfigError::IoError { .. });
+}
+
+#[cfg(unix)]
+#[test]
+fn write_provider_field_propagates_io_error_when_parent_dir_is_readonly() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+
+    // Read-only directory: the patch succeeds in memory but the atomic write
+    // cannot stage its temp file alongside the target.
+    let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+    perms.set_mode(0o500);
+    std::fs::set_permissions(&dir, perms.clone()).unwrap();
+
+    let err = write_provider_field_to_disk(&path, "ollama", "base_url", "http://10.0.0.2:11434")
+        .unwrap_err();
 
     // Restore writability so the OS can clean up the tempdir later.
     let mut restore = perms;

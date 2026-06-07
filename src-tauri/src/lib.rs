@@ -1808,6 +1808,7 @@ pub fn run() {
             commands::record_conversation_end,
             settings_commands::get_config,
             settings_commands::set_config_field,
+            settings_commands::set_ollama_url,
             settings_commands::reset_config,
             settings_commands::reload_config_from_disk,
             settings_commands::get_corrupt_marker,
