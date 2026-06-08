@@ -1,10 +1,12 @@
 /*!
  * Active-model state module.
  *
- * Single source of truth for the locally-selected Ollama model. The "active"
- * model is whichever slug the user last picked via the picker popup,
- * persisted across launches in `app_config` under [`ACTIVE_MODEL_KEY`] and
- * mirrored in [`ActiveModelState`] for fast reads from Tauri commands.
+ * The "active" model is whichever slug the user last picked via the picker
+ * popup. It is persisted across launches on the active provider's `model`
+ * field in `config.toml` (see [`crate::config::schema::Provider`]) and mirrored
+ * in [`ActiveModelState`] for fast reads from Tauri commands. The legacy SQLite
+ * [`ACTIVE_MODEL_KEY`] is read once at startup and folded onto the active
+ * provider by `crate::config::migrate`; it is no longer written.
  *
  * The backend treats Ollama's `/api/tags` response as authoritative: a
  * persisted model is only honored if it still appears in the live installed
@@ -25,7 +27,9 @@ use crate::config::defaults::{
 };
 use crate::config::AppConfig;
 
-/// `app_config` key used to persist the user's selected model slug.
+/// Legacy SQLite `app_config` key that older builds used to persist the
+/// selected model slug. Now read once at startup and folded onto the active
+/// provider's `model` field by `crate::config::migrate`; never written anymore.
 pub const ACTIVE_MODEL_KEY: &str = "active_model";
 
 /// Shared error-message prefix used when a requested slug is not present in
@@ -288,15 +292,10 @@ fn read_provider_model_context(
     config: &parking_lot::RwLock<AppConfig>,
 ) -> (String, String, Option<String>) {
     let c = config.read();
-    let model = c.inference.active_provider_model();
     (
         c.inference.active_provider_base_url().to_string(),
         c.inference.active_provider.clone(),
-        if model.is_empty() {
-            None
-        } else {
-            Some(model.to_string())
-        },
+        c.inference.active_provider_model_opt().map(str::to_string),
     )
 }
 

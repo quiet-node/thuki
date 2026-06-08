@@ -73,6 +73,26 @@ pub async fn search_pipeline(
     // Snapshot the config once so the entire pipeline sees a consistent view
     // even if the user edits Settings while a search is in flight.
     let app_config = app_config.read().clone();
+
+    // Route by provider kind, mirroring `ask_model`. Phase 1 implements only
+    // the native Ollama path; a non-Ollama active provider cannot serve a
+    // search turn, so surface the same typed "not available yet" error the
+    // chat path emits instead of building a hostless `/api/chat` endpoint.
+    {
+        let kind = app_config.inference.active_provider_kind();
+        let label = app_config
+            .inference
+            .active()
+            .map(|p| p.label.as_str())
+            .unwrap_or("");
+        if let Some(err) = crate::commands::unsupported_provider_error(kind, label) {
+            let _ = on_event.send(SearchEvent::Error {
+                message: err.message,
+            });
+            return Ok(());
+        }
+    }
+
     // Resolve the runtime search view from the loaded TOML. The single
     // source of truth lives in `config::defaults`; the loader has already
     // clamped and resolved every field by the time we read it here.

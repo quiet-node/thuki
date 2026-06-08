@@ -6,9 +6,10 @@
  * same story. When you add or change a tunable, update both this file
  * and the matching table row in the docs in the same commit.
  *
- * Indexed by the same `(section, key)` pair the backend's
- * `set_config_field` allowlist uses, so the keys here are guaranteed to
- * be the canonical TOML field names.
+ * Indexed by a `(section, key)` pair. Most keys are the canonical TOML field
+ * names from the backend `set_config_field` allowlist; a few (e.g.
+ * `inference.ollama_base_url`, `inference.keep_warm`) are display-only keys
+ * for values written through dedicated commands such as `set_ollama_url`.
  */
 
 const HELPERS = {

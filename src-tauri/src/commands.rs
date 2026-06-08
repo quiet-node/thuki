@@ -1775,15 +1775,30 @@ mod tests {
         // An empty label falls back to a generic noun.
         let unlabeled = unsupported_provider_error(PROVIDER_KIND_BUILTIN, "").unwrap();
         assert!(unlabeled.message.contains("This provider"));
+        // Any non-Ollama kind is flagged, not just the built-in: the gate keys
+        // on `kind != ollama`, so a future provider kind also bails cleanly
+        // rather than falling through to the unreachable Ollama HTTP path.
+        let other = unsupported_provider_error("openai", "Cloud").unwrap();
+        assert_eq!(other.kind, EngineErrorKind::EngineUnreachable);
+        assert!(other.message.contains("Cloud"));
     }
 
     #[test]
-    fn ollama_error_kind_no_model_selected_serializes_as_pascal_case() {
-        // Wire format check: NoModelSelected must serialize verbatim in
-        // PascalCase so the React side can match on a stable string in the
-        // EngineError discriminator.
-        let v = serde_json::to_value(EngineErrorKind::NoModelSelected).unwrap();
-        assert_eq!(v, serde_json::Value::String("NoModelSelected".to_string()));
+    fn engine_error_kinds_serialize_as_pascal_case() {
+        // Wire format contract: every kind must serialize verbatim in
+        // PascalCase so the React side (ErrorCard.barColors, useModel) can match
+        // on stable literal strings. Drift here silently breaks accent styling
+        // and error routing without failing any other test.
+        let cases = [
+            (EngineErrorKind::EngineUnreachable, "EngineUnreachable"),
+            (EngineErrorKind::ModelNotFound, "ModelNotFound"),
+            (EngineErrorKind::NoModelSelected, "NoModelSelected"),
+            (EngineErrorKind::Other, "Other"),
+        ];
+        for (kind, expected) in cases {
+            let v = serde_json::to_value(kind).unwrap();
+            assert_eq!(v, serde_json::Value::String(expected.to_string()));
+        }
     }
 
     #[tokio::test]

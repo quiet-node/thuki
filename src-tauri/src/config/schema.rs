@@ -138,6 +138,13 @@ impl InferenceSection {
     pub fn active_provider_model(&self) -> &str {
         self.active().map(|p| p.model.as_str()).unwrap_or("")
     }
+    /// The active provider's selected model as an `Option`, mapping an empty
+    /// model field to `None` so callers can feed it straight into the
+    /// active-model resolve helpers.
+    pub fn active_provider_model_opt(&self) -> Option<&str> {
+        let model = self.active_provider_model();
+        (!model.is_empty()).then_some(model)
+    }
     /// The active provider's kind (empty if unresolved).
     pub fn active_provider_kind(&self) -> &str {
         self.active().map(|p| p.kind.as_str()).unwrap_or("")

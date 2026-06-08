@@ -347,6 +347,25 @@ fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
         }
     }
 
+    // Defense-in-depth: an Ollama provider's `base_url` is concatenated into
+    // the request endpoint and POSTed by the backend. Reject anything that is
+    // not an absolute http(s) URL (file://, a scheme-less host, a typo) by
+    // resetting it to the localhost default, mirroring how every other invalid
+    // field is healed. The frontend only *warns* about remote hosts; this is
+    // the backend's own guard against malformed or abusable schemes.
+    for p in inf.providers.iter_mut() {
+        if p.kind == PROVIDER_KIND_OLLAMA
+            && !p.base_url.trim().is_empty()
+            && !is_http_url(&p.base_url)
+        {
+            eprintln!(
+                "thuki: [config] provider '{}' base_url is not an http(s) URL; using default '{DEFAULT_OLLAMA_URL}'",
+                p.id
+            );
+            p.base_url = DEFAULT_OLLAMA_URL.to_string();
+        }
+    }
+
     // Drop unknown-kind providers and non-builtin providers with no base_url.
     inf.providers.retain(|p| match p.kind.as_str() {
         PROVIDER_KIND_BUILTIN => true,
@@ -380,6 +399,15 @@ fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
         }
         inf.active_provider = DEFAULT_ACTIVE_PROVIDER.to_string();
     }
+}
+
+/// True when `url` is an absolute http(s) URL. Used to keep a malformed or
+/// non-http provider `base_url` (which the backend POSTs to) out of the
+/// resolved config; invalid values are reset to the localhost default. Mirrors
+/// the scheme guard in `commands::open_url`.
+fn is_http_url(url: &str) -> bool {
+    let url = url.trim();
+    url.starts_with("http://") || url.starts_with("https://")
 }
 
 /// Composes the user-editable base prompt with the generated slash-command

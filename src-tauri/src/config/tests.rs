@@ -1455,7 +1455,25 @@ fn active_provider_accessors_handle_missing_active() {
     assert!(inf.active().is_none());
     assert_eq!(inf.active_provider_base_url(), "");
     assert_eq!(inf.active_provider_model(), "");
+    assert_eq!(inf.active_provider_model_opt(), None);
     assert_eq!(inf.active_provider_kind(), "");
+}
+
+#[test]
+fn active_provider_model_opt_maps_empty_to_none() {
+    // Empty model field -> None; a selected model -> Some(slug). Drives the
+    // active-model resolve helpers without re-deriving the empty check.
+    let mut c = AppConfig::default();
+    assert_eq!(c.inference.active_provider_model_opt(), None);
+    if let Some(ollama) = c
+        .inference
+        .providers
+        .iter_mut()
+        .find(|p| p.id == PROVIDER_ID_OLLAMA)
+    {
+        ollama.model = "llama3.1:8b".to_string();
+    }
+    assert_eq!(c.inference.active_provider_model_opt(), Some("llama3.1:8b"));
 }
 
 // ── inference providers: migration matrix ────────────────────────────────────
@@ -1536,6 +1554,16 @@ fn legacy_ollama_url_ignored_when_explicit_providers_present() {
         .unwrap();
     assert_eq!(ollama.base_url, "http://explicit:2");
     assert_eq!(c.inference.legacy_ollama_url, None);
+    // The migration branch must be short-circuited entirely: no duplicate
+    // Ollama provider is synthesized alongside the explicit one.
+    assert_eq!(
+        c.inference
+            .providers
+            .iter()
+            .filter(|p| p.id == PROVIDER_ID_OLLAMA)
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -1622,6 +1650,62 @@ fn ollama_provider_with_empty_base_url_is_dropped_then_reseeded() {
 }
 
 #[test]
+fn ollama_provider_with_non_http_base_url_is_reset_to_default() {
+    // Defense-in-depth: a non-http(s) scheme (or a scheme-less host) would be
+    // POSTed verbatim by the backend, so the loader resets it to the default.
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            active_provider = "ollama"
+            [[inference.providers]]
+            id = "ollama"
+            kind = "ollama"
+            label = "Ollama"
+            base_url = "file:///etc/passwd"
+        "#,
+    )
+    .unwrap();
+    let c = load_from_path(&path).unwrap();
+    let ollama = c
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.kind == PROVIDER_KIND_OLLAMA)
+        .unwrap();
+    assert_eq!(ollama.base_url, DEFAULT_OLLAMA_URL);
+}
+
+#[test]
+fn ollama_provider_with_https_base_url_is_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            active_provider = "ollama"
+            [[inference.providers]]
+            id = "ollama"
+            kind = "ollama"
+            label = "Ollama"
+            base_url = "https://ollama.example.com:11434"
+        "#,
+    )
+    .unwrap();
+    let c = load_from_path(&path).unwrap();
+    let ollama = c
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.kind == PROVIDER_KIND_OLLAMA)
+        .unwrap();
+    assert_eq!(ollama.base_url, "https://ollama.example.com:11434");
+}
+
+#[test]
 fn missing_builtin_provider_is_reseeded() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
@@ -1684,6 +1768,39 @@ fn attach_legacy_active_model_sets_model_on_active_provider() {
     // idempotent: a second call with a different model does not overwrite
     assert!(!attach_legacy_active_model(&mut c, Some("other:1b")));
     assert_eq!(c.inference.active_provider_model(), "phi4:14b");
+}
+
+#[test]
+fn attach_legacy_active_model_targets_the_active_provider_only() {
+    // The legacy slug must land on the *active* provider, never on some other
+    // provider that merely happens to have an empty model. Make the built-in
+    // active (empty) and give Ollama a pre-existing model: attach writes the
+    // built-in and leaves Ollama untouched.
+    let mut c = AppConfig::default();
+    c.inference.active_provider = PROVIDER_ID_BUILTIN.to_string();
+    if let Some(ollama) = c
+        .inference
+        .providers
+        .iter_mut()
+        .find(|p| p.id == PROVIDER_ID_OLLAMA)
+    {
+        ollama.model = "existing:7b".to_string();
+    }
+    assert!(attach_legacy_active_model(&mut c, Some("legacy:1b")));
+    let builtin = c
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == PROVIDER_ID_BUILTIN)
+        .unwrap();
+    assert_eq!(builtin.model, "legacy:1b");
+    let ollama = c
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == PROVIDER_ID_OLLAMA)
+        .unwrap();
+    assert_eq!(ollama.model, "existing:7b");
 }
 
 #[test]

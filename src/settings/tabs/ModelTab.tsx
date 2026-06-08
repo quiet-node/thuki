@@ -110,11 +110,9 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
 
   // Per-provider model picker (Ollama). Mirrors the overlay picker; both read
   // get_model_picker_state, which is scoped to the active provider.
-  const { activeModel, availableModels, setActiveModel, refreshModels } =
-    useModelSelection();
-  useEffect(() => {
-    void refreshModels();
-  }, [refreshModels]);
+  // `useModelSelection` already refreshes once on mount, so no extra effect is
+  // needed here.
+  const { activeModel, availableModels, setActiveModel } = useModelSelection();
 
   useEffect(() => {
     let unlistenLoaded: (() => void) | null = null;
@@ -203,7 +201,11 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
     if (next === ollamaBaseUrl) return;
     void invoke<RawAppConfig>('set_ollama_url', { baseUrl: next })
       .then((cfg) => onSaved(cfg))
-      .catch(() => {});
+      .catch(() => {
+        // Save failed: revert the field to the persisted value so the input
+        // never shows a URL the backend did not accept.
+        setOllamaUrl(ollamaBaseUrl);
+      });
   }
 
   const modelValue =
