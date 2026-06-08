@@ -6,7 +6,7 @@ describe('ErrorCard', () => {
   it('renders the title (first line of message)', () => {
     render(
       <ErrorCard
-        kind="EngineUnreachable"
+        kind="NotRunning"
         message={"Ollama isn't running\nStart Ollama and try again."}
       />,
     );
@@ -16,7 +16,7 @@ describe('ErrorCard', () => {
   it('renders the subtitle (second line of message)', () => {
     render(
       <ErrorCard
-        kind="EngineUnreachable"
+        kind="NotRunning"
         message={"Ollama isn't running\nStart Ollama and try again."}
       />,
     );
@@ -28,16 +28,16 @@ describe('ErrorCard', () => {
     expect(screen.getByText('Something went wrong')).toBeInTheDocument();
   });
 
-  it('applies red accent bar for EngineUnreachable', () => {
+  it('applies red accent bar for NotRunning', () => {
     const { container } = render(
       <ErrorCard
-        kind="EngineUnreachable"
+        kind="NotRunning"
         message={"Ollama isn't running\nStart Ollama."}
       />,
     );
     const bar = container.querySelector('[data-error-bar]');
     expect(bar).not.toBeNull();
-    expect(bar?.getAttribute('data-kind')).toBe('EngineUnreachable');
+    expect(bar?.getAttribute('data-kind')).toBe('NotRunning');
   });
 
   it('applies amber accent bar for ModelNotFound', () => {

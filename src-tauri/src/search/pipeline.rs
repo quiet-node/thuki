@@ -535,7 +535,7 @@ pub(super) fn translate_chunk(chunk: StreamChunk) -> SearchEvent {
         StreamChunk::Cancelled => SearchEvent::Cancelled,
         StreamChunk::Error(e) => SearchEvent::Error { message: e.message },
         // `TurnAccepted` is a top-level handshake emitted by `commands::
-        // ask_model` and `search::search_pipeline` themselves; the
+        // ask_ollama` and `search::search_pipeline` themselves; the
         // synthesis-pump path that feeds `translate_chunk` only ever
         // receives the streaming variants above. Forward it as the
         // matching pipeline event so the type stays exhaustive without
@@ -2646,7 +2646,7 @@ fn split_into_stream_pieces(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{EngineError, EngineErrorKind};
+    use crate::commands::{OllamaError, OllamaErrorKind};
     use crate::config::defaults::DEFAULT_NUM_CTX;
     use std::sync::{Arc, Mutex};
 
@@ -2729,8 +2729,8 @@ mod tests {
 
     #[test]
     fn translate_chunk_error_maps_to_error_event() {
-        let out = translate_chunk(StreamChunk::Error(EngineError {
-            kind: EngineErrorKind::Other,
+        let out = translate_chunk(StreamChunk::Error(OllamaError {
+            kind: OllamaErrorKind::Other,
             message: "boom".into(),
         }));
         assert_eq!(

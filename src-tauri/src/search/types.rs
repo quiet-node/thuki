@@ -166,7 +166,7 @@ pub enum SearchEvent {
     /// generic error bubble.
     SandboxUnavailable,
     /// No active model is selected. Mirrors the chat-side
-    /// `EngineErrorKind::NoModelSelected` bail so the frontend can keep its
+    /// `OllamaErrorKind::NoModelSelected` bail so the frontend can keep its
     /// `is_first_turn` flag pristine when the backend bails before
     /// `ConversationStart` fires.
     NoModelSelected,

@@ -114,12 +114,12 @@ To mock a new module (e.g., a third-party library):
 ```typescript
 import { invoke } from '../../testUtils/mocks/tauri';
 
-it('calls ask_model on submit', async () => {
+it('calls ask_ollama on submit', async () => {
   render(<App />);
   fireEvent.change(textarea, { target: { value: 'hello' } });
   fireEvent.keyDown(textarea, { key: 'Enter' });
 
-  expect(invoke).toHaveBeenCalledWith('ask_model', expect.objectContaining({
+  expect(invoke).toHaveBeenCalledWith('ask_ollama', expect.objectContaining({
     prompt: 'hello'
   }));
 });

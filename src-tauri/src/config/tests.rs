@@ -13,24 +13,23 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_DEBUG_TRACE_ENABLED,
-    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
-    DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
     DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
     DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
     DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT,
     DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_TOP_K_URLS,
-    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN,
-    PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, SLASH_COMMAND_PROMPT_APPENDIX,
+    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
+    SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path};
-use super::migrate::{attach_legacy_active_model, toml_has_providers};
 use super::schema::{
-    AppConfig, BehaviorSection, DebugSection, InferenceSection, PromptSection, Provider,
-    QuoteSection, SearchSection, UpdaterSection, WindowSection,
+    AppConfig, BehaviorSection, DebugSection, InferenceSection, PromptSection, QuoteSection,
+    SearchSection, UpdaterSection, WindowSection,
 };
 use super::writer::atomic_write;
 
@@ -53,7 +52,7 @@ fn defaults_const_values_match_schema_defaults() {
     // Guard rail: a change to a default in defaults.rs must flow through to
     // AppConfig::default(). If this test fails, someone changed one but not both.
     let c = AppConfig::default();
-    assert_eq!(c.inference.active_provider_base_url(), DEFAULT_OLLAMA_URL);
+    assert_eq!(c.inference.ollama_url, DEFAULT_OLLAMA_URL);
     assert_eq!(
         c.inference.keep_warm_inactivity_minutes,
         DEFAULT_KEEP_WARM_INACTIVITY_MINUTES
@@ -103,8 +102,7 @@ fn defaults_prompt_base_is_nonempty() {
 #[test]
 fn section_defaults_are_sensible() {
     let m = InferenceSection::default();
-    assert_eq!(m.active_provider, DEFAULT_ACTIVE_PROVIDER);
-    assert_eq!(m.active_provider_base_url(), DEFAULT_OLLAMA_URL);
+    assert_eq!(m.ollama_url, DEFAULT_OLLAMA_URL);
 
     let p = PromptSection::default();
     assert_eq!(p.system, DEFAULT_SYSTEM_PROMPT_BASE);
@@ -136,20 +134,13 @@ fn app_config_serde_round_trip_matches_defaults() {
 
 #[test]
 fn app_config_partial_file_fills_missing_fields_with_defaults() {
-    // Only declare one field; serde(default) fills the rest. A missing
-    // `providers` key defaults to an empty Vec (field-level default), distinct
-    // from the seeded pair, so the loader can detect a pre-providers file.
+    // Only declare one field; serde(default) fills the rest.
     let partial = r#"
         [inference]
-        num_ctx = 32768
+        ollama_url = "http://localhost:9999"
     "#;
     let parsed: AppConfig = toml::from_str(partial).expect("partial file parses");
-    assert_eq!(parsed.inference.num_ctx, 32768);
-    assert_eq!(parsed.inference.active_provider, DEFAULT_ACTIVE_PROVIDER);
-    assert!(
-        parsed.inference.providers.is_empty(),
-        "a missing providers key deserializes to an empty Vec, not the seeded pair"
-    );
+    assert_eq!(parsed.inference.ollama_url, "http://localhost:9999");
     assert_eq!(parsed.window.overlay_width, DEFAULT_OVERLAY_WIDTH);
     assert_eq!(
         parsed.quote.max_display_lines,
@@ -206,10 +197,7 @@ fn load_missing_file_seeds_defaults_and_returns_them() {
     let config = load_from_path(&path).expect("seed on first run");
 
     assert!(path.exists(), "file should be seeded");
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        DEFAULT_OLLAMA_URL
-    );
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
     // Resolved system prompt composed from default base plus appendix.
     assert!(config
         .prompt
@@ -228,10 +216,7 @@ fn load_missing_file_in_missing_parent_dir_creates_dir() {
     let path = config_path_in(&nested);
     let config = load_from_path(&path).expect("creates parent dir and seeds");
     assert!(path.exists());
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        DEFAULT_OLLAMA_URL
-    );
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
 }
 
 #[test]
@@ -264,10 +249,7 @@ fn load_existing_valid_file_returns_resolved_config() {
     .unwrap();
 
     let config = load_from_path(&path).unwrap();
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        "http://localhost:99999"
-    );
+    assert_eq!(config.inference.ollama_url, "http://localhost:99999");
 }
 
 #[test]
@@ -299,10 +281,7 @@ fn load_corrupt_file_is_renamed_and_reseeded() {
     std::fs::write(&path, "this is = definitely not [ valid toml").unwrap();
 
     let config = load_from_path(&path).expect("recover from corrupt file");
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        DEFAULT_OLLAMA_URL
-    );
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
 
     // Original file renamed with .corrupt- prefix.
     let renamed_exists = std::fs::read_dir(&dir)
@@ -344,10 +323,7 @@ fn load_unreadable_file_returns_in_memory_defaults() {
     }
 
     let config = load_from_path(&path).expect("fallback to in-memory defaults");
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        DEFAULT_OLLAMA_URL
-    );
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
     // Restore so cleanup works.
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
 }
@@ -371,10 +347,7 @@ fn resolve_unknown_model_field_is_ignored() {
     )
     .unwrap();
     let config = load_from_path(&path).unwrap();
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        "http://localhost:11434"
-    );
+    assert_eq!(config.inference.ollama_url, "http://localhost:11434");
 }
 
 #[test]
@@ -545,10 +518,7 @@ fn resolve_empty_ollama_url_falls_back() {
     )
     .unwrap();
     let config = load_from_path(&path).unwrap();
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        DEFAULT_OLLAMA_URL
-    );
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
 }
 
 #[test]
@@ -894,10 +864,7 @@ fn marker_write_failure_is_logged_but_does_not_block_recovery() {
     std::fs::create_dir(&blocker).unwrap();
 
     let config = load_from_path(&path).expect("recover even when marker write fails");
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        DEFAULT_OLLAMA_URL
-    );
+    assert_eq!(config.inference.ollama_url, DEFAULT_OLLAMA_URL);
 
     // Marker squatter is still a directory: the failed write did not replace it.
     assert!(blocker.is_dir());
@@ -916,7 +883,7 @@ fn atomic_write_creates_file_with_defaults() {
     let contents = std::fs::read_to_string(&path).unwrap();
     // resolved_system is not serialized (marked #[serde(skip)]).
     assert!(!contents.contains("resolved_system"));
-    assert!(contents.contains("active_provider"));
+    assert!(contents.contains("ollama_url"));
 }
 
 #[cfg(unix)]
@@ -947,7 +914,7 @@ fn atomic_write_overwrites_existing_file_atomically() {
     std::fs::write(&path, "old contents").unwrap();
     atomic_write(&path, &AppConfig::default()).unwrap();
     let contents = std::fs::read_to_string(&path).unwrap();
-    assert!(contents.contains("active_provider"));
+    assert!(contents.contains("ollama_url"));
     assert!(!contents.contains("old contents"));
 }
 
@@ -1391,448 +1358,4 @@ fn updater_toml_roundtrip_preserves_fields() {
     let serialized = toml::to_string(&original).unwrap();
     let roundtripped: AppConfig = toml::from_str(&serialized).unwrap();
     assert_eq!(roundtripped.updater, original.updater);
-}
-
-// ── inference providers: schema defaults ─────────────────────────────────────
-
-#[test]
-fn inference_defaults_seed_builtin_and_ollama_providers() {
-    let c = AppConfig::default();
-    assert_eq!(c.inference.active_provider, DEFAULT_ACTIVE_PROVIDER);
-    assert_eq!(c.inference.active_provider_kind(), PROVIDER_KIND_OLLAMA);
-    assert_eq!(c.inference.num_ctx, DEFAULT_NUM_CTX);
-    assert_eq!(
-        c.inference.keep_warm_inactivity_minutes,
-        DEFAULT_KEEP_WARM_INACTIVITY_MINUTES
-    );
-    let ids: Vec<&str> = c
-        .inference
-        .providers
-        .iter()
-        .map(|p| p.id.as_str())
-        .collect();
-    assert_eq!(ids, vec![PROVIDER_ID_BUILTIN, PROVIDER_ID_OLLAMA]);
-    let ollama = c
-        .inference
-        .providers
-        .iter()
-        .find(|p| p.id == PROVIDER_ID_OLLAMA)
-        .unwrap();
-    assert_eq!(ollama.base_url, DEFAULT_OLLAMA_URL);
-    assert_eq!(ollama.model, "");
-    let builtin = c
-        .inference
-        .providers
-        .iter()
-        .find(|p| p.id == PROVIDER_ID_BUILTIN)
-        .unwrap();
-    assert_eq!(builtin.base_url, "");
-    assert_eq!(c.inference.legacy_ollama_url, None);
-}
-
-#[test]
-fn provider_constructors_carry_expected_fields() {
-    let b = super::schema::builtin_provider();
-    assert_eq!(b.id, PROVIDER_ID_BUILTIN);
-    assert_eq!(b.kind, PROVIDER_KIND_BUILTIN);
-    assert!(b.base_url.is_empty());
-
-    let o = super::schema::ollama_provider("http://x:1");
-    assert_eq!(o.id, PROVIDER_ID_OLLAMA);
-    assert_eq!(o.kind, PROVIDER_KIND_OLLAMA);
-    assert_eq!(o.base_url, "http://x:1");
-}
-
-#[test]
-fn active_provider_accessors_handle_missing_active() {
-    // An InferenceSection whose active pointer matches no provider returns
-    // empty strings rather than panicking.
-    let inf = InferenceSection {
-        active_provider: "ghost".to_string(),
-        providers: vec![],
-        ..InferenceSection::default()
-    };
-    assert!(inf.active().is_none());
-    assert_eq!(inf.active_provider_base_url(), "");
-    assert_eq!(inf.active_provider_model(), "");
-    assert_eq!(inf.active_provider_model_opt(), None);
-    assert_eq!(inf.active_provider_kind(), "");
-}
-
-#[test]
-fn active_provider_model_opt_maps_empty_to_none() {
-    // Empty model field -> None; a selected model -> Some(slug). Drives the
-    // active-model resolve helpers without re-deriving the empty check.
-    let mut c = AppConfig::default();
-    assert_eq!(c.inference.active_provider_model_opt(), None);
-    if let Some(ollama) = c
-        .inference
-        .providers
-        .iter_mut()
-        .find(|p| p.id == PROVIDER_ID_OLLAMA)
-    {
-        ollama.model = "llama3.1:8b".to_string();
-    }
-    assert_eq!(c.inference.active_provider_model_opt(), Some("llama3.1:8b"));
-}
-
-// ── inference providers: migration matrix ────────────────────────────────────
-
-#[test]
-fn migrates_old_ollama_url_to_ollama_provider_and_activates_it() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        "[inference]\nollama_url = \"http://192.168.1.50:11434\"\n",
-    )
-    .unwrap();
-    let c = load_from_path(&path).unwrap();
-    assert_eq!(c.inference.active_provider, PROVIDER_ID_OLLAMA);
-    let ollama = c
-        .inference
-        .providers
-        .iter()
-        .find(|p| p.id == PROVIDER_ID_OLLAMA)
-        .unwrap();
-    assert_eq!(ollama.base_url, "http://192.168.1.50:11434");
-    assert!(c
-        .inference
-        .providers
-        .iter()
-        .any(|p| p.id == PROVIDER_ID_BUILTIN));
-    // legacy field is consumed by resolve and never re-serialized.
-    assert_eq!(c.inference.legacy_ollama_url, None);
-}
-
-#[test]
-fn migrates_old_empty_ollama_url_to_localhost_default() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(&path, "[inference]\nollama_url = \"\"\n").unwrap();
-    let c = load_from_path(&path).unwrap();
-    let ollama = c
-        .inference
-        .providers
-        .iter()
-        .find(|p| p.id == PROVIDER_ID_OLLAMA)
-        .unwrap();
-    assert_eq!(ollama.base_url, DEFAULT_OLLAMA_URL);
-}
-
-#[test]
-fn legacy_ollama_url_ignored_when_explicit_providers_present() {
-    // Defensive: a hand-edited file carrying BOTH the legacy `ollama_url` and
-    // an explicit providers list keeps the explicit providers; the legacy
-    // value is consumed and dropped rather than overwriting them.
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        r#"
-            [inference]
-            active_provider = "ollama"
-            ollama_url = "http://legacy-ignored:1"
-            [[inference.providers]]
-            id = "builtin"
-            kind = "builtin"
-            label = "Built-in (Thuki)"
-            [[inference.providers]]
-            id = "ollama"
-            kind = "ollama"
-            label = "Ollama"
-            base_url = "http://explicit:2"
-        "#,
-    )
-    .unwrap();
-    let c = load_from_path(&path).unwrap();
-    let ollama = c
-        .inference
-        .providers
-        .iter()
-        .find(|p| p.id == PROVIDER_ID_OLLAMA)
-        .unwrap();
-    assert_eq!(ollama.base_url, "http://explicit:2");
-    assert_eq!(c.inference.legacy_ollama_url, None);
-    // The migration branch must be short-circuited entirely: no duplicate
-    // Ollama provider is synthesized alongside the explicit one.
-    assert_eq!(
-        c.inference
-            .providers
-            .iter()
-            .filter(|p| p.id == PROVIDER_ID_OLLAMA)
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn dangling_active_provider_falls_back_to_default() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        r#"
-            [inference]
-            active_provider = "nonexistent"
-            [[inference.providers]]
-            id = "builtin"
-            kind = "builtin"
-            label = "Built-in (Thuki)"
-            [[inference.providers]]
-            id = "ollama"
-            kind = "ollama"
-            label = "Ollama"
-            base_url = "http://127.0.0.1:11434"
-        "#,
-    )
-    .unwrap();
-    let c = load_from_path(&path).unwrap();
-    assert_eq!(c.inference.active_provider, DEFAULT_ACTIVE_PROVIDER);
-}
-
-#[test]
-fn unknown_kind_provider_is_dropped_and_builtin_reseeded() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        r#"
-            [inference]
-            active_provider = "ollama"
-            [[inference.providers]]
-            id = "weird"
-            kind = "anthropic"
-            label = "Cloud"
-            base_url = "https://example.com"
-            [[inference.providers]]
-            id = "ollama"
-            kind = "ollama"
-            label = "Ollama"
-            base_url = "http://127.0.0.1:11434"
-        "#,
-    )
-    .unwrap();
-    let c = load_from_path(&path).unwrap();
-    assert!(!c.inference.providers.iter().any(|p| p.id == "weird"));
-    assert!(c
-        .inference
-        .providers
-        .iter()
-        .any(|p| p.kind == PROVIDER_KIND_BUILTIN));
-}
-
-#[test]
-fn ollama_provider_with_empty_base_url_is_dropped_then_reseeded() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        r#"
-            [inference]
-            active_provider = "ollama"
-            [[inference.providers]]
-            id = "ollama"
-            kind = "ollama"
-            label = "Ollama"
-            base_url = "   "
-        "#,
-    )
-    .unwrap();
-    let c = load_from_path(&path).unwrap();
-    let ollama = c
-        .inference
-        .providers
-        .iter()
-        .find(|p| p.kind == PROVIDER_KIND_OLLAMA)
-        .unwrap();
-    assert_eq!(ollama.base_url, DEFAULT_OLLAMA_URL);
-}
-
-#[test]
-fn ollama_provider_with_non_http_base_url_is_reset_to_default() {
-    // Defense-in-depth: a non-http(s) scheme (or a scheme-less host) would be
-    // POSTed verbatim by the backend, so the loader resets it to the default.
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        r#"
-            [inference]
-            active_provider = "ollama"
-            [[inference.providers]]
-            id = "ollama"
-            kind = "ollama"
-            label = "Ollama"
-            base_url = "file:///etc/passwd"
-        "#,
-    )
-    .unwrap();
-    let c = load_from_path(&path).unwrap();
-    let ollama = c
-        .inference
-        .providers
-        .iter()
-        .find(|p| p.kind == PROVIDER_KIND_OLLAMA)
-        .unwrap();
-    assert_eq!(ollama.base_url, DEFAULT_OLLAMA_URL);
-}
-
-#[test]
-fn ollama_provider_with_https_base_url_is_preserved() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        r#"
-            [inference]
-            active_provider = "ollama"
-            [[inference.providers]]
-            id = "ollama"
-            kind = "ollama"
-            label = "Ollama"
-            base_url = "https://ollama.example.com:11434"
-        "#,
-    )
-    .unwrap();
-    let c = load_from_path(&path).unwrap();
-    let ollama = c
-        .inference
-        .providers
-        .iter()
-        .find(|p| p.kind == PROVIDER_KIND_OLLAMA)
-        .unwrap();
-    assert_eq!(ollama.base_url, "https://ollama.example.com:11434");
-}
-
-#[test]
-fn missing_builtin_provider_is_reseeded() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        r#"
-            [inference]
-            active_provider = "ollama"
-            [[inference.providers]]
-            id = "ollama"
-            kind = "ollama"
-            label = "Ollama"
-            base_url = "http://127.0.0.1:11434"
-        "#,
-    )
-    .unwrap();
-    let c = load_from_path(&path).unwrap();
-    assert!(c
-        .inference
-        .providers
-        .iter()
-        .any(|p| p.kind == PROVIDER_KIND_BUILTIN));
-}
-
-#[test]
-fn new_shape_with_model_roundtrips_through_toml() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    let mut c = AppConfig::default();
-    if let Some(p) = c
-        .inference
-        .providers
-        .iter_mut()
-        .find(|p| p.id == PROVIDER_ID_OLLAMA)
-    {
-        p.model = "llama3.1:8b".to_string();
-    }
-    atomic_write(&path, &c).unwrap();
-    let reloaded = load_from_path(&path).unwrap();
-    let ollama = reloaded
-        .inference
-        .providers
-        .iter()
-        .find(|p| p.id == PROVIDER_ID_OLLAMA)
-        .unwrap();
-    assert_eq!(ollama.model, "llama3.1:8b");
-    assert_eq!(
-        reloaded.inference.active_provider,
-        c.inference.active_provider
-    );
-}
-
-// ── inference providers: migrate helpers ─────────────────────────────────────
-
-#[test]
-fn attach_legacy_active_model_sets_model_on_active_provider() {
-    let mut c = AppConfig::default(); // active = ollama, model empty
-    assert!(attach_legacy_active_model(&mut c, Some("phi4:14b")));
-    assert_eq!(c.inference.active_provider_model(), "phi4:14b");
-    // idempotent: a second call with a different model does not overwrite
-    assert!(!attach_legacy_active_model(&mut c, Some("other:1b")));
-    assert_eq!(c.inference.active_provider_model(), "phi4:14b");
-}
-
-#[test]
-fn attach_legacy_active_model_targets_the_active_provider_only() {
-    // The legacy slug must land on the *active* provider, never on some other
-    // provider that merely happens to have an empty model. Make the built-in
-    // active (empty) and give Ollama a pre-existing model: attach writes the
-    // built-in and leaves Ollama untouched.
-    let mut c = AppConfig::default();
-    c.inference.active_provider = PROVIDER_ID_BUILTIN.to_string();
-    if let Some(ollama) = c
-        .inference
-        .providers
-        .iter_mut()
-        .find(|p| p.id == PROVIDER_ID_OLLAMA)
-    {
-        ollama.model = "existing:7b".to_string();
-    }
-    assert!(attach_legacy_active_model(&mut c, Some("legacy:1b")));
-    let builtin = c
-        .inference
-        .providers
-        .iter()
-        .find(|p| p.id == PROVIDER_ID_BUILTIN)
-        .unwrap();
-    assert_eq!(builtin.model, "legacy:1b");
-    let ollama = c
-        .inference
-        .providers
-        .iter()
-        .find(|p| p.id == PROVIDER_ID_OLLAMA)
-        .unwrap();
-    assert_eq!(ollama.model, "existing:7b");
-}
-
-#[test]
-fn attach_legacy_active_model_ignores_empty_and_missing_provider() {
-    let mut c = AppConfig::default();
-    assert!(!attach_legacy_active_model(&mut c, None));
-    assert!(!attach_legacy_active_model(&mut c, Some("   ")));
-    assert_eq!(c.inference.active_provider_model(), "");
-
-    // No matching active provider -> no-op (defensive).
-    let mut orphan = AppConfig::default();
-    orphan.inference.active_provider = "ghost".to_string();
-    assert!(!attach_legacy_active_model(&mut orphan, Some("x")));
-}
-
-#[test]
-fn toml_has_providers_detects_shape() {
-    assert!(!toml_has_providers(
-        "[inference]\nollama_url = \"http://x\"\n"
-    ));
-    assert!(toml_has_providers(
-        "[inference]\nactive_provider=\"ollama\"\n[[inference.providers]]\nid=\"ollama\"\nkind=\"ollama\"\nbase_url=\"http://x\"\n"
-    ));
-    assert!(!toml_has_providers("not valid toml ["));
-    assert!(!toml_has_providers("[inference]\n"));
-}
-
-#[test]
-fn provider_struct_default_is_all_empty() {
-    let p = Provider::default();
-    assert!(p.id.is_empty());
-    assert!(p.kind.is_empty());
-    assert!(p.base_url.is_empty());
-    assert!(p.model.is_empty());
 }

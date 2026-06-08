@@ -90,9 +90,9 @@ pub fn apply_capability_filter(messages: &mut [ChatMessage], caps: &Capabilities
 /// Used by the frontend to pick accent bar color and display copy.
 #[derive(Clone, Serialize, PartialEq, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub enum EngineErrorKind {
+pub enum OllamaErrorKind {
     /// Ollama process is not running (connection refused / timeout).
-    EngineUnreachable,
+    NotRunning,
     /// The requested model has not been pulled yet (HTTP 404).
     ModelNotFound,
     /// No active model has been selected. The user must pick a model from
@@ -105,42 +105,21 @@ pub enum EngineErrorKind {
 }
 
 /// Builds the structured error returned when `ActiveModelState` holds `None`
-/// at the time `ask_model` is invoked. Pulled out as a free function so the
+/// at the time `ask_ollama` is invoked. Pulled out as a free function so the
 /// exact title + body wording lives in one place and the branch is testable
 /// without a full Tauri runtime.
-pub fn no_model_selected_error() -> EngineError {
-    EngineError {
-        kind: EngineErrorKind::NoModelSelected,
+pub fn no_model_selected_error() -> OllamaError {
+    OllamaError {
+        kind: OllamaErrorKind::NoModelSelected,
         message: "No model selected\nPick a model in the picker.".to_string(),
     }
-}
-
-/// Returns the error to emit when the active provider's kind has no Phase-1
-/// implementation, or `None` when the kind is the native Ollama path. Pure so
-/// the routing decision is unit-tested even though `ask_model` is coverage-off.
-/// In Phase 1 the only functional kind is `ollama`; the built-in engine and
-/// the generic OpenAI-compatible kind arrive in Phase 2.
-pub(crate) fn unsupported_provider_error(kind: &str, label: &str) -> Option<EngineError> {
-    use crate::config::defaults::PROVIDER_KIND_OLLAMA;
-    if kind == PROVIDER_KIND_OLLAMA {
-        return None;
-    }
-    let who = if label.trim().is_empty() {
-        "This provider"
-    } else {
-        label
-    };
-    Some(EngineError {
-        kind: EngineErrorKind::EngineUnreachable,
-        message: format!("{who} is not available in this version of Thuki yet."),
-    })
 }
 
 /// Structured error emitted over the streaming channel.
 /// Rust owns all user-facing copy; the frontend only uses `kind` for styling.
 #[derive(Clone, Serialize, Debug)]
-pub struct EngineError {
-    pub kind: EngineErrorKind,
+pub struct OllamaError {
+    pub kind: OllamaErrorKind,
     /// Final user-facing string. First line is the title, remainder is the subtitle.
     pub message: String,
 }
@@ -162,15 +141,15 @@ pub fn extract_ollama_error_message(body: &str) -> Option<String> {
 }
 
 /// Maps an HTTP status code (plus the response body for non-404 paths) to a
-/// user-friendly `EngineError`. The `model_name` is woven into the
+/// user-friendly `OllamaError`. The `model_name` is woven into the
 /// `ModelNotFound` hint so the user sees the exact command to run; for every
 /// other status we surface the concrete reason Ollama returned (e.g. "this
 /// model only supports one image while more than one image requested") so
 /// the user can act on it instead of staring at a bare HTTP code.
-pub fn classify_http_error(status: u16, model_name: &str, body: &str) -> EngineError {
+pub fn classify_http_error(status: u16, model_name: &str, body: &str) -> OllamaError {
     match status {
-        404 => EngineError {
-            kind: EngineErrorKind::ModelNotFound,
+        404 => OllamaError {
+            kind: OllamaErrorKind::ModelNotFound,
             message: format!("Model not found\nRun: ollama pull {model_name} in a terminal."),
         },
         _ => {
@@ -193,24 +172,24 @@ pub fn classify_http_error(status: u16, model_name: &str, body: &str) -> EngineE
             } else {
                 format!("Something went wrong\n{detail}")
             };
-            EngineError {
-                kind: EngineErrorKind::Other,
+            OllamaError {
+                kind: OllamaErrorKind::Other,
                 message,
             }
         }
     }
 }
 
-/// Maps a reqwest connection/transport error to a user-friendly `EngineError`.
-pub fn classify_stream_error(e: &reqwest::Error) -> EngineError {
+/// Maps a reqwest connection/transport error to a user-friendly `OllamaError`.
+pub fn classify_stream_error(e: &reqwest::Error) -> OllamaError {
     if e.is_connect() || e.is_timeout() {
-        EngineError {
-            kind: EngineErrorKind::EngineUnreachable,
+        OllamaError {
+            kind: OllamaErrorKind::NotRunning,
             message: "Ollama isn't running\nStart Ollama and try again.".to_string(),
         }
     } else {
-        EngineError {
-            kind: EngineErrorKind::Other,
+        OllamaError {
+            kind: OllamaErrorKind::Other,
             message: "Something went wrong\nCould not reach Ollama.".to_string(),
         }
     }
@@ -229,7 +208,7 @@ pub enum StreamChunk {
     /// The user explicitly cancelled generation.
     Cancelled,
     /// A structured, user-friendly error occurred during processing.
-    Error(EngineError),
+    Error(OllamaError),
     /// Emitted exactly once per turn, after the backend has cleared every
     /// pre-`ConversationStart` gate (no-model bail, model lookup, etc.) and
     /// committed to opening the trace for this `conversation_id`. Carries
@@ -492,7 +471,7 @@ pub async fn stream_ollama_chat(
 }
 
 /// Mirrors a streaming chunk into the chat-domain trace recorder. Pulled out
-/// of [`ask_model`] so the per-token routing logic and the token-count
+/// of [`ask_ollama`] so the per-token routing logic and the token-count
 /// increment are exercised by the unit-test suite rather than the
 /// coverage-off Tauri command body. `Done`, `Cancelled`, and `Error` chunks
 /// are intentionally noops here: those terminal events are summarized by
@@ -522,7 +501,7 @@ pub(crate) fn record_chunk_to_trace(
 }
 
 /// Emits `ConversationStart` to the trace recorder iff this is the first
-/// turn of the conversation. Pulled out of [`ask_model`] and the search
+/// turn of the conversation. Pulled out of [`ask_ollama`] and the search
 /// pipeline so the gate is covered by tests instead of the coverage-off
 /// Tauri command body.
 pub(crate) fn record_conversation_start_if_first_turn(
@@ -553,7 +532,7 @@ pub(crate) fn record_conversation_start_if_first_turn(
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 #[allow(clippy::too_many_arguments)]
-pub async fn ask_model(
+pub async fn ask_ollama(
     message: String,
     quoted_text: Option<String>,
     image_paths: Option<Vec<String>>,
@@ -573,29 +552,9 @@ pub async fn ask_model(
     // Snapshot the config once so all downstream reads (endpoint, prompt, model)
     // see a consistent view even if the user edits Settings mid-stream.
     let config = config.read().clone();
-
-    // Route by provider kind. Phase 1 implements only the native Ollama path;
-    // a non-Ollama active provider (the built-in engine) cannot serve yet, so
-    // bail with a typed, provider-labeled error regardless of model selection.
-    {
-        let kind = config.inference.active_provider_kind();
-        let label = config
-            .inference
-            .active()
-            .map(|p| p.label.as_str())
-            .unwrap_or("");
-        if let Some(err) = unsupported_provider_error(kind, label) {
-            let _ = on_event.send(StreamChunk::Error(err));
-            return Ok(());
-        }
-    }
-
     let endpoint = format!(
         "{}/api/chat",
-        config
-            .inference
-            .active_provider_base_url()
-            .trim_end_matches('/')
+        config.inference.ollama_url.trim_end_matches('/')
     );
     // Snapshot the active model slug; drop the guard before any `.await`.
     let model_name = {
@@ -698,12 +657,11 @@ pub async fn ask_model(
     // stored history (`conv`) is never mutated. On a cache miss we leave
     // the payload untouched and trust Ollama to surface a structured error
     // through `classify_http_error`'s picker hint, which the user can act on.
-    let provider_id = config.inference.active_provider.clone();
     let cache_hit = capabilities_cache
         .0
         .lock()
         .ok()
-        .and_then(|guard| guard.get(&(provider_id, model_name.clone())).cloned());
+        .and_then(|guard| guard.get(&model_name).cloned());
     if let Some(caps) = cache_hit {
         let stats = apply_capability_filter(&mut messages, &caps);
         if stats.stripped_images > 0 {
@@ -818,7 +776,7 @@ pub async fn cancel_generation(generation: State<'_, GenerationState>) -> Result
 }
 
 /// Clears the backend conversation history and increments the epoch counter.
-/// The epoch increment prevents any in-flight `ask_model` from writing stale
+/// The epoch increment prevents any in-flight `ask_ollama` from writing stale
 /// messages into the freshly cleared history.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
@@ -962,8 +920,8 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(
             std::mem::discriminant(&chunks[0]),
-            std::mem::discriminant(&StreamChunk::Error(EngineError {
-                kind: EngineErrorKind::Other,
+            std::mem::discriminant(&StreamChunk::Error(OllamaError {
+                kind: OllamaErrorKind::Other,
                 message: String::new(),
             }))
         );
@@ -995,8 +953,8 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(
             std::mem::discriminant(&chunks[0]),
-            std::mem::discriminant(&StreamChunk::Error(EngineError {
-                kind: EngineErrorKind::Other,
+            std::mem::discriminant(&StreamChunk::Error(OllamaError {
+                kind: OllamaErrorKind::Other,
                 message: String::new(),
             }))
         );
@@ -1205,7 +1163,7 @@ mod tests {
             _ => None,
         });
         assert!(error.is_some());
-        assert_eq!(error.unwrap().kind, EngineErrorKind::Other);
+        assert_eq!(error.unwrap().kind, OllamaErrorKind::Other);
         assert!(chunks
             .iter()
             .all(|chunk| !matches!(chunk, StreamChunk::Done)));
@@ -1245,7 +1203,7 @@ mod tests {
         let chunks = chunks.lock().unwrap();
         assert_eq!(chunks.len(), 1);
         assert!(
-            matches!(&chunks[0], StreamChunk::Error(e) if e.kind == EngineErrorKind::Other && e.message.contains("500"))
+            matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::Other && e.message.contains("500"))
         );
     }
 
@@ -1668,26 +1626,26 @@ mod tests {
         assert!(h.messages.lock().unwrap().is_empty());
     }
 
-    // ─── EngineError classification ───────────────────────────────────────────
+    // ─── OllamaError classification ───────────────────────────────────────────
 
     #[test]
     fn classify_http_404_returns_model_not_found() {
         let err = classify_http_error(404, "gemma4:e2b", "");
-        assert_eq!(err.kind, EngineErrorKind::ModelNotFound);
+        assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
         assert!(err.message.contains("gemma4:e2b"));
     }
 
     #[test]
     fn classify_http_404_includes_requested_model_name_in_hint() {
         let err = classify_http_error(404, "custom:model", "");
-        assert_eq!(err.kind, EngineErrorKind::ModelNotFound);
+        assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
         assert!(err.message.contains("custom:model"));
     }
 
     #[test]
     fn classify_http_500_with_empty_body_falls_back_to_status_code() {
         let err = classify_http_error(500, "gemma4:e2b", "");
-        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("500"));
     }
 
@@ -1696,7 +1654,7 @@ mod tests {
         let body =
             r#"{"error":"this model only supports one image while more than one image requested"}"#;
         let err = classify_http_error(500, "llama3.2-vision:11b", body);
-        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err
             .message
             .contains("only supports one image while more than one image requested"));
@@ -1706,21 +1664,21 @@ mod tests {
     #[test]
     fn classify_http_500_falls_back_to_status_when_body_is_not_json() {
         let err = classify_http_error(500, "any", "<html>oops</html>");
-        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("500"));
     }
 
     #[test]
     fn classify_http_500_falls_back_to_status_when_error_field_is_missing() {
         let err = classify_http_error(500, "any", r#"{"detail":"nope"}"#);
-        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("500"));
     }
 
     #[test]
     fn classify_http_500_falls_back_to_status_when_error_field_is_blank() {
         let err = classify_http_error(500, "any", r#"{"error":"   "}"#);
-        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("500"));
     }
 
@@ -1744,7 +1702,7 @@ mod tests {
     #[test]
     fn classify_http_401_returns_other_with_status() {
         let err = classify_http_error(401, "gemma4:e2b", "");
-        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("401"));
     }
 
@@ -1755,7 +1713,7 @@ mod tests {
         // them down so accidental wording drift does not silently break
         // the recovery path.
         let err = no_model_selected_error();
-        assert_eq!(err.kind, EngineErrorKind::NoModelSelected);
+        assert_eq!(err.kind, OllamaErrorKind::NoModelSelected);
         assert!(
             err.message.contains("Pick a model"),
             "message should steer the user to the picker, got: {}",
@@ -1764,41 +1722,12 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_provider_error_passes_ollama_and_flags_other_kinds() {
-        use crate::config::defaults::{PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA};
-        // The native Ollama path proceeds (no error).
-        assert!(unsupported_provider_error(PROVIDER_KIND_OLLAMA, "Ollama").is_none());
-        // The built-in kind has no Phase-1 implementation: typed error, labeled.
-        let err = unsupported_provider_error(PROVIDER_KIND_BUILTIN, "Built-in (Thuki)").unwrap();
-        assert_eq!(err.kind, EngineErrorKind::EngineUnreachable);
-        assert!(err.message.contains("Built-in (Thuki)"));
-        // An empty label falls back to a generic noun.
-        let unlabeled = unsupported_provider_error(PROVIDER_KIND_BUILTIN, "").unwrap();
-        assert!(unlabeled.message.contains("This provider"));
-        // Any non-Ollama kind is flagged, not just the built-in: the gate keys
-        // on `kind != ollama`, so a future provider kind also bails cleanly
-        // rather than falling through to the unreachable Ollama HTTP path.
-        let other = unsupported_provider_error("openai", "Cloud").unwrap();
-        assert_eq!(other.kind, EngineErrorKind::EngineUnreachable);
-        assert!(other.message.contains("Cloud"));
-    }
-
-    #[test]
-    fn engine_error_kinds_serialize_as_pascal_case() {
-        // Wire format contract: every kind must serialize verbatim in
-        // PascalCase so the React side (ErrorCard.barColors, useModel) can match
-        // on stable literal strings. Drift here silently breaks accent styling
-        // and error routing without failing any other test.
-        let cases = [
-            (EngineErrorKind::EngineUnreachable, "EngineUnreachable"),
-            (EngineErrorKind::ModelNotFound, "ModelNotFound"),
-            (EngineErrorKind::NoModelSelected, "NoModelSelected"),
-            (EngineErrorKind::Other, "Other"),
-        ];
-        for (kind, expected) in cases {
-            let v = serde_json::to_value(kind).unwrap();
-            assert_eq!(v, serde_json::Value::String(expected.to_string()));
-        }
+    fn ollama_error_kind_no_model_selected_serializes_as_pascal_case() {
+        // Wire format check: NoModelSelected must serialize verbatim in
+        // PascalCase so the React side can match on a stable string in the
+        // OllamaError discriminator.
+        let v = serde_json::to_value(OllamaErrorKind::NoModelSelected).unwrap();
+        assert_eq!(v, serde_json::Value::String("NoModelSelected".to_string()));
     }
 
     #[tokio::test]
@@ -1825,7 +1754,7 @@ mod tests {
         let chunks = chunks.lock().unwrap();
         assert_eq!(chunks.len(), 1);
         assert!(
-            matches!(&chunks[0], StreamChunk::Error(e) if e.kind == EngineErrorKind::EngineUnreachable)
+            matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::NotRunning)
         );
     }
 
@@ -1862,7 +1791,7 @@ mod tests {
         let chunks = chunks.lock().unwrap();
         assert_eq!(chunks.len(), 1);
         assert!(
-            matches!(&chunks[0], StreamChunk::Error(e) if e.kind == EngineErrorKind::ModelNotFound)
+            matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::ModelNotFound)
         );
     }
 
@@ -1961,7 +1890,7 @@ mod tests {
         let chunks = chunks.lock().unwrap();
         assert_eq!(chunks.len(), 1);
         assert!(
-            matches!(&chunks[0], StreamChunk::Error(e) if e.kind == EngineErrorKind::Other && e.message.contains("500"))
+            matches!(&chunks[0], StreamChunk::Error(e) if e.kind == OllamaErrorKind::Other && e.message.contains("500"))
         );
     }
 
@@ -2003,7 +1932,7 @@ mod tests {
         assert!(matches!(
             &chunks[0],
             StreamChunk::Error(e)
-                if e.kind == EngineErrorKind::Other
+                if e.kind == OllamaErrorKind::Other
                 && e.message.contains("only supports one image")
                 && !e.message.contains("HTTP 500")
         ));
@@ -2314,7 +2243,7 @@ mod tests {
     fn classify_http_500_appends_picker_hint_when_body_mentions_image() {
         let body = r#"{"error":"this model only supports one image"}"#;
         let err = classify_http_error(500, "any", body);
-        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("only supports one image"));
         assert!(err.message.contains("picker chip"));
     }
@@ -2323,7 +2252,7 @@ mod tests {
     fn classify_http_500_appends_picker_hint_when_body_mentions_vision() {
         let body = r#"{"error":"vision capability required"}"#;
         let err = classify_http_error(500, "any", body);
-        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("vision capability required"));
         assert!(err.message.contains("picker chip"));
     }
@@ -2345,7 +2274,7 @@ mod tests {
     #[test]
     fn classify_http_404_does_not_append_picker_hint() {
         let err = classify_http_error(404, "vision-model", "image required");
-        assert_eq!(err.kind, EngineErrorKind::ModelNotFound);
+        assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
         assert!(!err.message.contains("picker chip"));
     }
 

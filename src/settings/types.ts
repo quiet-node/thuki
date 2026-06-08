@@ -12,21 +12,11 @@
  * shapes are not interchangeable.
  */
 
-/** One entry in the `[[inference.providers]]` array (snake_case, from TOML). */
-export interface RawProvider {
-  id: string;
-  kind: string;
-  label: string;
-  base_url: string;
-  model: string;
-}
-
 export interface RawAppConfig {
   inference: {
-    active_provider: string;
+    ollama_url: string;
     keep_warm_inactivity_minutes: number;
     num_ctx: number;
-    providers: RawProvider[];
   };
   prompt: {
     system: string;

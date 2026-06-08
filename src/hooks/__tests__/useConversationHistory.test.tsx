@@ -2,7 +2,7 @@ import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useConversationHistory } from '../useConversationHistory';
 import { invoke } from '../../testUtils/mocks/tauri';
-import type { Message } from '../useModel';
+import type { Message } from '../useOllama';
 
 const MODEL = 'gemma4:e2b';
 

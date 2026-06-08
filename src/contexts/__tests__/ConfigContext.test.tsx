@@ -64,7 +64,6 @@ describe('ConfigContext', () => {
       const custom: AppConfig = {
         ...DEFAULT_CONFIG,
         inference: {
-          activeProvider: 'ollama',
           ollamaUrl: 'http://example.test:11434',
         },
       };
@@ -83,14 +82,7 @@ describe('ConfigContext', () => {
     it('hydrates from the backend and transforms snake_case to camelCase', async () => {
       invoke.mockResolvedValueOnce({
         inference: {
-          active_provider: 'ollama',
-          providers: [
-            {
-              id: 'ollama',
-              kind: 'ollama',
-              base_url: 'http://127.0.0.1:11434',
-            },
-          ],
+          ollama_url: 'http://127.0.0.1:11434',
         },
         prompt: { system: 'custom base prompt' },
         window: {
@@ -140,40 +132,6 @@ describe('ConfigContext', () => {
       // section: snake_case on the wire becomes camelCase in the app config.
       expect(screen.getByTestId('auto-replace').textContent).toBe('true');
       expect(screen.getByTestId('auto-close').textContent).toBe('true');
-    });
-
-    it('derives an empty Ollama URL when no Ollama provider is configured', async () => {
-      invoke.mockResolvedValueOnce({
-        inference: {
-          active_provider: 'builtin',
-          providers: [{ id: 'builtin', kind: 'builtin', base_url: '' }],
-        },
-        prompt: { system: '' },
-        window: {
-          overlay_width: 600,
-          max_chat_height: 648,
-          max_images: 3,
-          text_base_px: 15,
-          text_line_height: 1.5,
-          text_letter_spacing_px: 0,
-          text_font_weight: 500,
-        },
-        quote: {
-          max_display_lines: 4,
-          max_display_chars: 300,
-          max_context_length: 4096,
-        },
-        behavior: { auto_replace: false, auto_close: false },
-      });
-
-      render(
-        <ConfigProvider>
-          <Probe />
-        </ConfigProvider>,
-      );
-      await act(async () => {});
-
-      expect(screen.getByTestId('ollama-url').textContent).toBe('');
     });
 
     it('falls back to DEFAULT_CONFIG when invoke returns nullish', async () => {
@@ -226,16 +184,7 @@ describe('ConfigContext', () => {
 
     it('refetches and updates state when thuki://config-updated fires', async () => {
       const initial = {
-        inference: {
-          active_provider: 'ollama',
-          providers: [
-            {
-              id: 'ollama',
-              kind: 'ollama',
-              base_url: 'http://127.0.0.1:11434',
-            },
-          ],
-        },
+        inference: { ollama_url: 'http://127.0.0.1:11434' },
         prompt: { system: '' },
         window: {
           overlay_width: 600,
@@ -279,16 +228,7 @@ describe('ConfigContext', () => {
 
     it('refetches config when the overlay shows', async () => {
       const initial = {
-        inference: {
-          active_provider: 'ollama',
-          providers: [
-            {
-              id: 'ollama',
-              kind: 'ollama',
-              base_url: 'http://127.0.0.1:11434',
-            },
-          ],
-        },
+        inference: { ollama_url: 'http://127.0.0.1:11434' },
         prompt: { system: '' },
         window: { overlay_width: 600, max_chat_height: 648, max_images: 3 },
         quote: {
@@ -321,16 +261,7 @@ describe('ConfigContext', () => {
 
     it('does not refetch on non-show or payloadless visibility events', async () => {
       const initial = {
-        inference: {
-          active_provider: 'ollama',
-          providers: [
-            {
-              id: 'ollama',
-              kind: 'ollama',
-              base_url: 'http://127.0.0.1:11434',
-            },
-          ],
-        },
+        inference: { ollama_url: 'http://127.0.0.1:11434' },
         prompt: { system: '' },
         window: { overlay_width: 600, max_chat_height: 648, max_images: 3 },
         quote: {
@@ -362,16 +293,7 @@ describe('ConfigContext', () => {
 
     it('keeps last good config when a refresh invoke rejects', async () => {
       const initial = {
-        inference: {
-          active_provider: 'ollama',
-          providers: [
-            {
-              id: 'ollama',
-              kind: 'ollama',
-              base_url: 'http://127.0.0.1:11434',
-            },
-          ],
-        },
+        inference: { ollama_url: 'http://127.0.0.1:11434' },
         prompt: { system: 'p' },
         window: {
           overlay_width: 700,
@@ -415,16 +337,7 @@ describe('ConfigContext', () => {
 
     it('unsubscribes on unmount', async () => {
       invoke.mockResolvedValue({
-        inference: {
-          active_provider: 'ollama',
-          providers: [
-            {
-              id: 'ollama',
-              kind: 'ollama',
-              base_url: 'http://127.0.0.1:11434',
-            },
-          ],
-        },
+        inference: { ollama_url: 'http://127.0.0.1:11434' },
         prompt: { system: '' },
         window: {
           overlay_width: 600,
@@ -458,16 +371,7 @@ describe('ConfigContext', () => {
     it('survives a listen() rejection without crashing initial hydrate', async () => {
       listen.mockRejectedValueOnce(new Error('event bridge missing'));
       invoke.mockResolvedValueOnce({
-        inference: {
-          active_provider: 'ollama',
-          providers: [
-            {
-              id: 'ollama',
-              kind: 'ollama',
-              base_url: 'http://127.0.0.1:11434',
-            },
-          ],
-        },
+        inference: { ollama_url: 'http://127.0.0.1:11434' },
         prompt: { system: '' },
         window: {
           overlay_width: 600,
@@ -512,16 +416,7 @@ describe('ConfigContext', () => {
       // No assertion on output (provider gone); the run is the coverage signal.
       await act(async () => {
         resolveInvoke!({
-          inference: {
-            active_provider: 'ollama',
-            providers: [
-              {
-                id: 'ollama',
-                kind: 'ollama',
-                base_url: 'http://127.0.0.1:11434',
-              },
-            ],
-          },
+          inference: { ollama_url: 'http://127.0.0.1:11434' },
           prompt: { system: '' },
           window: {
             overlay_width: 600,
@@ -566,16 +461,7 @@ describe('ConfigContext', () => {
           }),
       );
       invoke.mockResolvedValueOnce({
-        inference: {
-          active_provider: 'ollama',
-          providers: [
-            {
-              id: 'ollama',
-              kind: 'ollama',
-              base_url: 'http://127.0.0.1:11434',
-            },
-          ],
-        },
+        inference: { ollama_url: 'http://127.0.0.1:11434' },
         prompt: { system: '' },
         window: {
           overlay_width: 600,

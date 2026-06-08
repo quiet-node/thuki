@@ -439,7 +439,7 @@ describe('ChatBubble', () => {
           role="assistant"
           content={"Ollama isn't running\nStart Ollama and try again."}
           index={0}
-          errorKind="EngineUnreachable"
+          errorKind="NotRunning"
         />,
       );
       expect(container.querySelector('[data-error-bar]')).not.toBeNull();
@@ -451,7 +451,7 @@ describe('ChatBubble', () => {
           role="assistant"
           content={"Ollama isn't running\nStart Ollama and try again."}
           index={0}
-          errorKind="EngineUnreachable"
+          errorKind="NotRunning"
         />,
       );
       // MarkdownRenderer would produce a <p> or streamdown elements; ErrorCard does not
