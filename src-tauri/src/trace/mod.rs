@@ -36,7 +36,7 @@ pub use registry::RegistryRecorder;
 /// `Arc<dyn TraceRecorder>` so call sites can emit events without
 /// threading the conversation id through every function signature.
 ///
-/// Constructed by `commands::ask_ollama` and `search::search_pipeline`
+/// Constructed by `commands::ask_model` and `search::search_pipeline`
 /// once at the start of each turn from managed state, then handed down
 /// through the streaming or pipeline machinery as
 /// `Arc<BoundRecorder>`. Cheap to clone (single `Arc`).

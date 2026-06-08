@@ -25,7 +25,7 @@
  */
 
 import { convertFileSrc } from '@tauri-apps/api/core';
-import type { Message } from '../hooks/useOllama';
+import type { Message } from '../hooks/useModel';
 
 /** Configuration relevant to a file export. */
 export interface FileExportContext {

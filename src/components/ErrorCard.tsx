@@ -1,16 +1,12 @@
-export type OllamaErrorKind =
-  | 'NotRunning'
-  | 'ModelNotFound'
-  | 'NoModelSelected'
-  | 'Other';
+import type { EngineErrorKind } from '../hooks/useModel';
 
 interface ErrorCardProps {
-  kind: OllamaErrorKind;
+  kind: EngineErrorKind;
   message: string;
 }
 
-const barColors: Record<OllamaErrorKind, string> = {
-  NotRunning: '#ef4444',
+const barColors: Record<EngineErrorKind, string> = {
+  EngineUnreachable: '#ef4444',
   ModelNotFound: '#f59e0b',
   // Same accent as ModelNotFound: this is a configuration/setup nudge,
   // not a daemon failure, so the warning hue (amber) is the right read.

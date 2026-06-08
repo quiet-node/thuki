@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Message } from '../hooks/useOllama';
+import type { Message } from '../hooks/useModel';
 
 /**
  * Writes a `/rewrite` or `/refine` result back into the source app, replacing
