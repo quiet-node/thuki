@@ -165,6 +165,12 @@ describe('buildPrompt', () => {
     expect(buildPrompt('/rewrite', '  ', '  ')).toBeNull();
   });
 
+  it('/rewrite prompt instructs the model to preserve @mentions and #channels verbatim', () => {
+    const result = buildPrompt('/rewrite', '@alex ping me when ready');
+    expect(result).toContain('Preserve @mentions, #channels');
+    expect(result).toContain('never drop them');
+  });
+
   it('/translate parses full language name from typed text', () => {
     const result = buildPrompt('/translate', 'Vietnamese hello world');
     expect(result).toContain('Target language: Vietnamese');

@@ -121,7 +121,7 @@ Rewrites text to sound like natural, casual, everyday speech.
 - `/rewrite` with highlighted text: rewrites the selected text
 - `/rewrite so basically what happened was i was trying to fix the bug`: rewrites typed text in a natural, casual voice
 
-**Behavior:** Rewrites text to sound like a fluent native speaker talking day to day: relaxed and casual by default, while keeping your meaning, personality, and point of view. Preserves expressive spellings, slang, and emoji you used, only stays formal when the original clearly is, and will not bolt a "we" voice onto an imperative or impersonal note. Outputs only the rewritten text. A Replace button on the result writes the rewritten text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too.
+**Behavior:** Rewrites text to sound like a fluent native speaker talking day to day: relaxed and casual by default, while keeping your meaning, personality, and point of view. Preserves expressive spellings, slang, emoji, and any @mentions or #channels you used, only stays formal when the original clearly is, and will not bolt a "we" voice onto an imperative or impersonal note. Outputs only the rewritten text. A Replace button on the result writes the rewritten text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too.
 
 **Composable:** `/rewrite` works with attached images or `/screen`. Vision OCR extracts the text first, then rewrites it.
 
