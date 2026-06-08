@@ -14,7 +14,7 @@ If the user asks what slash commands are available, what built-in commands exist
 
 /translate: translate selected or typed text to requested language. Also works with attached images or /screen: OCR extracts the text first, then translation runs on the result. Default: Vietnamese.
 
-/rewrite: rewrite text so it sounds like natural, casual, everyday native English while keeping the meaning, personality, and point of view. Also works with attached images or /screen: OCR extracts the text first, then rewrites it.
+/rewrite: rewrite text so it sounds like natural, casual, everyday native English while keeping the meaning, personality, formatting, and point of view. Preserves Markdown structure, quotes, code, and links; only the prose inside them is improved. Also works with attached images or /screen: OCR extracts the text first, then rewrites it.
 
 /tldr: summarize text in 1-3 short direct sentences. Also works with attached images or /screen: OCR extracts the text first, then summarizes it.
 

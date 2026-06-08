@@ -165,10 +165,25 @@ describe('buildPrompt', () => {
     expect(buildPrompt('/rewrite', '  ', '  ')).toBeNull();
   });
 
-  it('/rewrite prompt instructs the model to preserve @mentions and #channels verbatim', () => {
-    const result = buildPrompt('/rewrite', '@alex ping me when ready');
-    expect(result).toContain('Preserve @mentions, #channels');
-    expect(result).toContain('never drop them');
+  it('/rewrite prompt instructs the model to mirror the original formatting', () => {
+    const result = buildPrompt('/rewrite', '**Resources:**\n- one\n- two');
+    expect(result).toContain("Mirror the original's formatting");
+    expect(result).toContain('never flatten a list');
+  });
+
+  it('/rewrite prompt instructs the model to keep verbatim zones and handles intact', () => {
+    const result = buildPrompt('/rewrite', '> quoted line');
+    // Quotes, code, URLs, mentions, and channels are all preserved verbatim.
+    expect(result).toContain('blockquotes');
+    expect(result).toContain('fenced code and inline code');
+    expect(result).toContain('@mentions');
+    expect(result).toContain('#channels');
+  });
+
+  it('/rewrite prompt no longer strips Markdown', () => {
+    const result = buildPrompt('/rewrite', 'anything');
+    // Regression guard: the old rule that flattened structured input is gone.
+    expect(result).not.toContain('No markdown, bullets, or decorative icons');
   });
 
   it('/translate parses full language name from typed text', () => {
