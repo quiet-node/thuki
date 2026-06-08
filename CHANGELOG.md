@@ -21,19 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.14.2](https://github.com/quiet-node/thuki/compare/v0.14.1...v0.14.2) (2026-06-08)
 
 
-### Features
-
-* add a Providers setting to connect Thuki to a local or remote Ollama ([#205](https://github.com/quiet-node/thuki/issues/205)) ([a0c8952](https://github.com/quiet-node/thuki/commit/a0c8952aa9a65511354f305b0723d4e30db55239))
-
-
 ### Bug Fixes
 
 * make /rewrite preserve formatting, structure, and verbatim content ([#207](https://github.com/quiet-node/thuki/issues/207)) ([d3d2edb](https://github.com/quiet-node/thuki/commit/d3d2edb36728dcb5664711f3034bf70cb749aec0))
-
-
-### Reverts
-
-* hold Providers setting out of the next release ([#208](https://github.com/quiet-node/thuki/issues/208)) ([8f5e6d1](https://github.com/quiet-node/thuki/commit/8f5e6d1a175deafb927c10309bf6e1a83502ab9f))
 
 ## [0.14.1](https://github.com/quiet-node/thuki/compare/v0.14.0...v0.14.1) (2026-06-07)
 
