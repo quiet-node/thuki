@@ -73,26 +73,6 @@ pub async fn search_pipeline(
     // Snapshot the config once so the entire pipeline sees a consistent view
     // even if the user edits Settings while a search is in flight.
     let app_config = app_config.read().clone();
-
-    // Route by provider kind, mirroring `ask_model`. Phase 1 implements only
-    // the native Ollama path; a non-Ollama active provider cannot serve a
-    // search turn, so surface the same typed "not available yet" error the
-    // chat path emits instead of building a hostless `/api/chat` endpoint.
-    {
-        let kind = app_config.inference.active_provider_kind();
-        let label = app_config
-            .inference
-            .active()
-            .map(|p| p.label.as_str())
-            .unwrap_or("");
-        if let Some(err) = crate::commands::unsupported_provider_error(kind, label) {
-            let _ = on_event.send(SearchEvent::Error {
-                message: err.message,
-            });
-            return Ok(());
-        }
-    }
-
     // Resolve the runtime search view from the loaded TOML. The single
     // source of truth lives in `config::defaults`; the loader has already
     // clamped and resolved every field by the time we read it here.
@@ -135,10 +115,7 @@ pub async fn search_pipeline(
 
     let ollama_endpoint = format!(
         "{}/api/chat",
-        app_config
-            .inference
-            .active_provider_base_url()
-            .trim_end_matches('/')
+        app_config.inference.ollama_url.trim_end_matches('/')
     );
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());
@@ -165,8 +142,8 @@ pub async fn search_pipeline(
     // Mirror the user-perceived turn into the chat-domain trace so the
     // `traces/chat/<conversation_id>.jsonl` file is the canonical
     // user-facing timeline regardless of whether a turn used `/search`
-    // or hit `ask_model` directly. Symmetric with what
-    // `commands::ask_model` records at its hook sites; the deep
+    // or hit `ask_ollama` directly. Symmetric with what
+    // `commands::ask_ollama` records at its hook sites; the deep
     // search-pipeline internals (LLM calls, judge verdicts, SearXNG
     // queries) stay in the search-domain file via the same conv id.
     crate::commands::record_conversation_start_if_first_turn(

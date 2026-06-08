@@ -14,25 +14,9 @@ const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 const CONFIG_A: RawAppConfig = {
   inference: {
-    active_provider: 'ollama',
+    ollama_url: 'http://127.0.0.1:11434',
     keep_warm_inactivity_minutes: 0,
     num_ctx: 16384,
-    providers: [
-      {
-        id: 'builtin',
-        kind: 'builtin',
-        label: 'Built-in (Thuki)',
-        base_url: '',
-        model: '',
-      },
-      {
-        id: 'ollama',
-        kind: 'ollama',
-        label: 'Ollama',
-        base_url: 'http://127.0.0.1:11434',
-        model: '',
-      },
-    ],
   },
   prompt: { system: '' },
   window: {
@@ -72,13 +56,7 @@ const CONFIG_A: RawAppConfig = {
 
 const CONFIG_B: RawAppConfig = {
   ...CONFIG_A,
-  inference: {
-    ...CONFIG_A.inference,
-    providers: [
-      CONFIG_A.inference.providers[0],
-      { ...CONFIG_A.inference.providers[1], base_url: 'http://10.0.0.1:11434' },
-    ],
-  },
+  inference: { ...CONFIG_A.inference, ollama_url: 'http://10.0.0.1:11434' },
 };
 
 beforeEach(() => {

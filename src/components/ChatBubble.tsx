@@ -11,7 +11,7 @@ import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
 import { SearchWarningIcon } from './SearchWarningIcon';
-import type { EngineErrorKind } from '../hooks/useModel';
+import type { OllamaErrorKind } from '../hooks/useOllama';
 import type {
   SearchResultPreview,
   SearchTraceStep,
@@ -238,7 +238,7 @@ interface ChatBubbleProps {
   /** Whether this bubble is actively streaming content from the LLM. */
   isStreaming?: boolean;
   /** When set, renders an ErrorCard callout instead of markdown. */
-  errorKind?: EngineErrorKind;
+  errorKind?: OllamaErrorKind;
   /** Accumulated thinking/reasoning content from the model, if thinking mode was used. */
   thinkingContent?: string;
   /** Whether a `/think` turn is waiting for the first thinking tokens. */

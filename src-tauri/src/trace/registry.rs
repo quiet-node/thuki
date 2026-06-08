@@ -19,7 +19,7 @@
 //! The `Arc<FileRecorder>` returned from the registry can be cached by
 //! callers in their per-conversation context to skip the registry
 //! lookup entirely on hot paths (e.g., per-token `AssistantTokens`
-//! emission). `commands::ask_model` does exactly this.
+//! emission). `commands::ask_ollama` does exactly this.
 //!
 //! # Eviction and late-event tolerance
 //!
@@ -80,7 +80,7 @@ impl RegistryRecorder {
 
     /// Returns the recorder for `(domain, conversation_id)`, creating
     /// it lazily if needed. Public for hot-path callers (e.g.
-    /// `commands::ask_model`) that want to cache the `Arc` once and
+    /// `commands::ask_ollama`) that want to cache the `Arc` once and
     /// skip the registry lookup on every subsequent emit.
     ///
     /// Equivalent to a `record()` of `()`: read-locks the map, returns
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn recorder_for_can_be_cached_for_hot_path() {
         // Simulates the per-streaming-task caching pattern that
-        // `commands::ask_model` uses to bypass per-token registry
+        // `commands::ask_ollama` uses to bypass per-token registry
         // lookup.
         let root = fresh_dir();
         let reg = RegistryRecorder::new(&root);

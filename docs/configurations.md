@@ -27,36 +27,19 @@ open ~/Library/Application\ Support/com.quietnode.thuki/config.toml
 
 ```toml
 [inference]
-# The provider Thuki sends inference to. Phase 1 ships the Ollama provider;
-# the Built-in (Thuki) engine arrives in a later version.
-active_provider = "ollama"
-# Context window size in tokens sent to the active provider with every request.
-# Warmup and chat share this value so Ollama reuses the same runner and its
-# cached KV prefix for the system prompt. Raise to fit longer conversations;
-# lower to reduce GPU memory use. Valid range: 2048-1048576.
-num_ctx = 16384
+# Where Thuki finds your local Ollama server. The active model itself is
+# selected from the in-app picker (which lists whatever is installed in
+# Ollama via /api/tags) and is stored in Thuki's local database, not here.
+ollama_url = "http://127.0.0.1:11434"
 # Minutes of inactivity before Thuki tells Ollama to release the model.
 # 0 = let Ollama manage (its own 5-minute default applies).
-# -1 = never release. Applies to the Ollama provider only.
+# -1 = never release (keep loaded until Ollama itself exits or you unload manually).
 keep_warm_inactivity_minutes = 0
-
-# One block per provider. The built-in entry is always present. A provider's
-# selected model lives on its own `model` field (empty until you pick one in
-# the model picker).
-[[inference.providers]]
-id = "builtin"
-kind = "builtin"
-label = "Built-in (Thuki)"
-model = ""
-
-[[inference.providers]]
-id = "ollama"
-kind = "ollama"
-label = "Ollama"
-# Where Thuki reaches your Ollama server. Defaults to this Mac; point it at
-# another machine to use Ollama running elsewhere (one server at a time).
-base_url = "http://127.0.0.1:11434"
-model = ""
+# Context window size in tokens sent to Ollama with every request.
+# Warmup and chat share this value so Ollama reuses the same runner and its
+# cached KV prefix for the system prompt. Raise to fit longer conversations;
+# lower to reduce GPU memory use. Valid range: 2048–1048576.
+num_ctx = 16384
 
 [prompt]
 # The full secretary persona prompt. Seeded on first run so this file is the
@@ -132,27 +115,15 @@ Every domain below is shown as a single table that lists **all** constants Thuki
 
 ### `[inference]`
 
-Thuki reaches a model through a **provider**. `active_provider` names which one is used; each provider is described by a `[[inference.providers]]` block. Phase 1 ships two providers: **Ollama** (reached over HTTP at a configurable URL, local or remote) and a **Built-in (Thuki)** entry reserved for an upcoming bundled engine. A fresh install defaults to the Ollama provider.
+Where to find your local Ollama server. The active model itself is **not** a TOML setting: Thuki discovers installed models live from Ollama's `/api/tags` endpoint, lets you pick one from the in-app model picker, and stores that selection in its local SQLite database (`app_config` table). Storing the active slug in TOML would duplicate ground truth from Ollama and break the moment you remove a model with `ollama rm`, so it lives next to the conversation history instead.
 
-Each provider keeps its own selected `model`. Thuki discovers installed models live from Ollama's `/api/tags` endpoint and lets you pick one from the in-app model picker (or the Providers section of Settings); the choice is written to that provider's `model` field. When no model is installed and none has been chosen, Thuki refuses to dispatch a chat request and surfaces a "Pick a model" prompt. Pull a model with `ollama pull <slug>` and select it.
+When no model is installed and no choice has been persisted, Thuki refuses to dispatch a chat request and surfaces a "Pick a model" prompt in the input area. Pull a model with `ollama pull <slug>` and select it from the picker chip in the top-right of the overlay.
 
-Upgrading from an older version is automatic: a pre-providers config with a flat `ollama_url` is migrated to an Ollama provider seeded with that URL, and the previously selected model (kept in SQLite) is moved onto it, so existing Ollama users are unaffected.
-
-| Constant          | Default    | Tunable? | Bounds              | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| :---------------- | :--------- | :------- | :------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `active_provider` | `"ollama"` | Yes      | id of a provider    | Which provider receives inference. Must match the `id` of one of the `[[inference.providers]]` entries; an empty or dangling value resets to `ollama`. Phase 1: leave this on `ollama` (the Built-in engine is not available yet).                                                                                                                                                                                                                                                                                              |
-| `num_ctx`         | `16384`    | Yes      | `[2048, 1048576]`   | Context window size in tokens sent to the active provider with every request. Warmup and chat share this value so Ollama reuses the same runner instance and its cached KV prefix for the system prompt: they must match or Ollama creates a second runner and the warmup saves nothing. Ollama silently clamps this to the model's physical maximum. Raise to fit longer conversations: each doubling roughly doubles VRAM for the KV cache; lower to reclaim GPU memory. See [Tuning the Context Window](./tuning-context-window.md). |
-| `keep_warm_inactivity_minutes` | `0` | Yes | `-1` or `[0, 1440]` | Minutes of inactivity before Thuki tells Ollama to release the model from VRAM. Applies to the Ollama provider only. `0` means do not manage: Ollama's own 5-minute default applies. `-1` means never release. Raise for longer sessions between uses; lower to reclaim VRAM sooner.                                                                                                                                                                                                                                            |
-
-Each `[[inference.providers]]` block has these fields:
-
-| Field      | Description                                                                                                                                                  |
-| :--------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`       | Stable identifier referenced by `active_provider`. The `builtin` and `ollama` ids are seeded automatically.                                                  |
-| `kind`     | `builtin` or `ollama`. Any other kind is dropped on load. Determines how Thuki talks to the provider (the Ollama kind uses Ollama's native API).             |
-| `label`    | Human-readable name shown in Settings.                                                                                                                       |
-| `base_url` | For the Ollama kind: where Thuki reaches the server (defaults to `http://127.0.0.1:11434`; point it at another machine to use remote Ollama). Empty for the built-in kind. A provider of kind `ollama` with an empty `base_url` is dropped and re-seeded at the localhost default. |
-| `model`    | The model selected for this provider, written when you pick one. Empty means "none chosen yet".                                                              |
+| Constant     | Default                    | Tunable? | Why not tunable | Bounds        | Description                                                                                                                                                                                                          |
+| :----------- | :------------------------- | :------- | :-------------- | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ollama_url` | `"http://127.0.0.1:11434"` | Yes      | —               | non-empty URL | The web address where Thuki finds your local Ollama server. The default works if you run Ollama on this machine with its standard port. Change this only if you moved Ollama to a different port or another machine. |
+| `keep_warm_inactivity_minutes` | `0` | Yes | — | `-1` or `[0, 1440]` | Minutes of inactivity before Thuki tells Ollama to release the model from VRAM. `0` means do not manage: Ollama's own 5-minute default applies. `-1` means never release (stays until Ollama exits or you unload manually). Raise for longer sessions between uses; lower to reclaim VRAM sooner. |
+| `num_ctx` | `16384` | Yes | — | `[2048, 1048576]` | Context window size in tokens sent to Ollama with every request. Warmup and chat share this value so Ollama reuses the same runner instance and its cached KV prefix for the system prompt: they must match or Ollama creates a second runner and the warmup saves nothing. Ollama silently clamps this to the model's physical maximum, so values above the model's capacity are accepted but have no extra effect. Raise to fit longer conversations without the model forgetting early messages: each doubling roughly doubles VRAM for the KV cache; lower to reclaim GPU memory at the cost of a shorter effective history. 16384 is the default because it comfortably holds the full system prompt (~4000 tokens) plus many turns while staying within 8 GB GPU budgets. See [Tuning the Context Window](./tuning-context-window.md) for a 5-minute benchmark recipe to find the right value for your hardware. |
 
 If the active model has been removed from Ollama between launches, Thuki silently falls back to the first installed model the next time you open the picker. If no models are installed at all, the next request surfaces a "Model not found" error with the exact `ollama pull <name>` command to run.
 

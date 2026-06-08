@@ -1545,36 +1545,3 @@
   border-color: rgba(94, 201, 138, 0.25);
   background: rgba(94, 201, 138, 0.06);
 }
-
-/* ─── Providers section (AI tab) ─────────────────────────────────────────── */
-.providerRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 0;
-}
-.providerName {
-  font-size: 13px;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.92);
-}
-.providerBadge {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.5);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  padding: 2px 8px;
-  white-space: nowrap;
-}
-.providerWarning {
-  margin: 4px 0 8px;
-  font-size: 12px;
-  line-height: 1.45;
-  color: #f0b27a;
-}
-.providerHint {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.5);
-}

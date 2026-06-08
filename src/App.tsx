@@ -17,8 +17,8 @@ import {
   availableMonitors,
 } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
-import { useModel } from './hooks/useModel';
-import type { Message } from './hooks/useModel';
+import { useOllama } from './hooks/useOllama';
+import type { Message } from './hooks/useOllama';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { useModelSelection } from './hooks/useModelSelection';
 import { useModelCapabilities } from './hooks/useModelCapabilities';
@@ -486,7 +486,7 @@ function App() {
 
   /**
    * Persist a completed user/assistant turn to SQLite if the conversation
-   * has been saved. Passed as `onTurnComplete` to `useModel`. When
+   * has been saved. Passed as `onTurnComplete` to `useOllama`. When
    * auto-replace is enabled and the turn was a `/rewrite` or `/refine` over a
    * selection, dismiss the overlay and write the result back into the source
    * app (the same flow as the manual Replace button).
@@ -518,7 +518,7 @@ function App() {
     loadMessages,
     getTraceConversationId,
     addOcrTurn,
-  } = useModel(activeModel, handleTurnComplete);
+  } = useOllama(activeModel, handleTurnComplete);
 
   /**
    * Mirror of `messages` as a ref so export handlers (and any future
