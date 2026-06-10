@@ -17,6 +17,7 @@
 
 pub mod download;
 pub mod manifest;
+pub mod registry;
 pub mod storage;
 
 use std::collections::HashMap;
