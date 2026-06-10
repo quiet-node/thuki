@@ -18,6 +18,7 @@
 pub mod commands;
 pub mod config;
 pub mod database;
+pub mod engine;
 pub mod export;
 pub mod history;
 pub mod images;
