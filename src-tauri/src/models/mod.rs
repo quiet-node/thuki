@@ -16,6 +16,7 @@
  */
 
 pub mod manifest;
+pub mod storage;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
