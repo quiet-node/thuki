@@ -63,6 +63,42 @@ pub const BOUNDS_KEEP_WARM_INACTIVITY_MINUTES: (i32, i32) = (-1, 1440);
 pub const DEFAULT_IDLE_UNLOAD_MINUTES: u32 = 0;
 pub const BOUNDS_IDLE_UNLOAD_MINUTES: (u32, u32) = (0, 1440);
 
+// Built-in engine lifecycle constants: baked in because they define the
+// engine runner's startup and idle-check contract, not a user preference.
+
+/// Wall-clock deadline (seconds) for a freshly spawned built-in engine to
+/// pass its `/health` check before the spawn is declared failed. Large GGUF
+/// models on a cold disk can take minutes to load, so the deadline is
+/// generous. Not user-tunable: it bounds the worst-case "warming up" wait the
+/// UI can present, so changing it alters the UX contract.
+pub const ENGINE_HEALTH_DEADLINE_SECS: u64 = 300;
+
+/// Interval (milliseconds) between `/health` probes while the built-in
+/// engine starts up. Not user-tunable: pure loopback-load tuning; 250 ms
+/// detects readiness promptly without hammering the local server while it is
+/// busy loading the model.
+pub const ENGINE_HEALTH_POLL_INTERVAL_MS: u64 = 250;
+
+/// Timeout (seconds) for a single `/health` GET inside the poll loop. Bounds
+/// a server that has accepted the TCP connection but stopped responding: a
+/// wedged-but-connected server would otherwise park the poll loop indefinitely.
+/// Loopback health probes are normally instant; 5 s is generous. Not
+/// user-tunable: internal lifecycle contract between the runner and the engine
+/// process; the poll interval and deadline are the user-facing knobs.
+pub const ENGINE_HEALTH_PROBE_TIMEOUT_SECS: u64 = 5;
+
+/// Interval (seconds) between idle-unload checks in the engine runner. Not
+/// user-tunable: internal timer granularity behind the user-facing
+/// `idle_unload_minutes` knob; 30 s keeps the unload within a minute-scale
+/// setting's precision at negligible cost.
+pub const ENGINE_IDLE_CHECK_INTERVAL_SECS: u64 = 30;
+
+/// Capacity of the engine runner command queue. Not user-tunable: bounds
+/// memory under command bursts; 64 slots is ample for all UI-driven traffic
+/// (Ensure, Touch, SetIdleMinutes, Shutdown) with no back-pressure under
+/// normal use.
+pub const ENGINE_COMMAND_QUEUE_CAPACITY: usize = 64;
+
 /// Built-in secretary persona prompt. User overrides via `[prompt] system` in
 /// the config file. The slash-command appendix is composed on top at load time
 /// and is never written back to the file.
