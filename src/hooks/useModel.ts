@@ -9,9 +9,9 @@ import type {
   SearchWarning,
 } from '../types/search';
 
-/** Mirrors the Rust OllamaErrorKind enum sent over IPC. */
-export type OllamaErrorKind =
-  | 'NotRunning'
+/** Mirrors the Rust EngineErrorKind enum sent over IPC. */
+export type EngineErrorKind =
+  | 'EngineUnreachable'
   | 'ModelNotFound'
   | 'NoModelSelected'
   | 'Other';
@@ -31,7 +31,7 @@ export interface Message {
   /** Absolute file paths of images attached to this message, if any. */
   imagePaths?: string[];
   /** Present on assistant messages that represent an Ollama error callout. */
-  errorKind?: OllamaErrorKind;
+  errorKind?: EngineErrorKind;
   /** Accumulated thinking content from the model, if thinking mode was used. */
   thinkingContent?: string;
   /** Marks an assistant message produced through the `/search` pipeline. */
@@ -60,7 +60,7 @@ type RawStreamChunk =
   | { type: 'ThinkingToken'; data: string }
   | { type: 'Done' }
   | { type: 'Cancelled' }
-  | { type: 'Error'; data: { kind: OllamaErrorKind; message: string } }
+  | { type: 'Error'; data: { kind: EngineErrorKind; message: string } }
   | { type: 'TurnAccepted' };
 
 /**
@@ -75,7 +75,7 @@ type StreamChunk =
   | { type: 'ThinkingToken'; content: string }
   | { type: 'Done' }
   | { type: 'Cancelled' }
-  | { type: 'Error'; error: { kind: OllamaErrorKind; message: string } }
+  | { type: 'Error'; error: { kind: EngineErrorKind; message: string } }
   | { type: 'TurnAccepted' };
 
 /**
@@ -158,7 +158,7 @@ function finalizeSearchTraceSteps(
  *   attribution chip is rendered rather than a blank one.
  * @param onTurnComplete Optional callback invoked after each completed turn.
  */
-export function useOllama(
+export function useModel(
   activeModel: string | null,
   onTurnComplete?: (userMsg: Message, assistantMsg: Message) => void,
 ) {
@@ -404,7 +404,7 @@ export function useOllama(
       // on no-model bails that return before `ConversationStart` fires,
       // leaving the next attempt without an opening trace event.
       try {
-        await invoke('ask_ollama', {
+        await invoke('ask_model', {
           message: promptOverride ?? displayContent,
           quotedText: quotedText ?? null,
           imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : null,
@@ -658,7 +658,7 @@ export function useOllama(
             }
             case 'NoModelSelected': {
               errored = true;
-              // Mirror the chat path's `OllamaErrorKind::NoModelSelected`
+              // Mirror the chat path's `EngineErrorKind::NoModelSelected`
               // bubble copy verbatim so the user sees a single canonical
               // call-to-action regardless of which command tripped the gate.
               updateAssistant({

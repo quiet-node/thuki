@@ -14,9 +14,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{
-    DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
-    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
-    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_BUILTIN_LABEL,
+    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX,
+    DEFAULT_OLLAMA_LABEL, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
     DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
     DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
     DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
@@ -24,43 +25,129 @@ use super::defaults::{
     DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_CUSTOMIZED, DEFAULT_SYSTEM_PROMPT_BASE,
     DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX,
     DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_AUTO_CHECK,
-    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
+    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN,
+    PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA,
 };
 
-/// Static, user-tunable inference daemon configuration.
+/// A single configured inference provider. Exactly one is active at a time
+/// (see [`InferenceSection::active_provider`]). The built-in entry is always
+/// present and cannot be removed; the loader re-seeds it if a user file omits
+/// it. Per-provider `model` replaces the former single SQLite `active_model`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct Provider {
+    /// Stable identifier referenced by `active_provider`.
+    pub id: String,
+    /// Provider kind: `"builtin"` or `"ollama"`. Unknown kinds are dropped by
+    /// the loader.
+    pub kind: String,
+    /// Human-readable name shown in Settings.
+    pub label: String,
+    /// Base URL for network providers (Ollama). Empty for the built-in engine.
+    pub base_url: String,
+    /// The model selected for this provider. Empty means "none chosen yet".
+    pub model: String,
+}
+
+/// The built-in provider record (Thuki's own engine; no URL).
+pub fn builtin_provider() -> Provider {
+    Provider {
+        id: PROVIDER_ID_BUILTIN.to_string(),
+        kind: PROVIDER_KIND_BUILTIN.to_string(),
+        label: DEFAULT_BUILTIN_LABEL.to_string(),
+        base_url: String::new(),
+        model: String::new(),
+    }
+}
+
+/// An Ollama provider record seeded with the given base URL.
+pub fn ollama_provider(base_url: &str) -> Provider {
+    Provider {
+        id: PROVIDER_ID_OLLAMA.to_string(),
+        kind: PROVIDER_KIND_OLLAMA.to_string(),
+        label: DEFAULT_OLLAMA_LABEL.to_string(),
+        base_url: base_url.to_string(),
+        model: String::new(),
+    }
+}
+
+/// The default provider list: built-in first, then Ollama at localhost.
+pub fn default_providers() -> Vec<Provider> {
+    vec![builtin_provider(), ollama_provider(DEFAULT_OLLAMA_URL)]
+}
+
+/// Static, user-tunable inference configuration.
 ///
-/// The active model selection is NOT stored here. Active-model state is
-/// runtime UI state owned by [`crate::models::ActiveModelState`] and
-/// persisted in the SQLite `app_config` table under
-/// [`crate::models::ACTIVE_MODEL_KEY`]. Storing a model slug in TOML would
-/// duplicate ground truth from Ollama's `/api/tags` and create a staleness
-/// trap: the file would happily reference a model the user has since
-/// removed. This section keeps only the truly static knob, the Ollama
-/// endpoint URL.
+/// Inference targets one of several `providers`; `active_provider` selects
+/// which. Per-provider model selection lives on each [`Provider`] record
+/// (replacing the former single SQLite `active_model`). `num_ctx` and
+/// `keep_warm_inactivity_minutes` remain universal Ollama-path knobs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct InferenceSection {
-    /// HTTP base URL of the local Ollama instance.
-    pub ollama_url: String,
-    /// Minutes of inactivity before Thuki tells Ollama to release the model.
-    /// 0 means do not manage (Ollama's 5-minute default applies).
-    /// -1 means keep indefinitely. Valid range: -1 or 0..=1440.
-    pub keep_warm_inactivity_minutes: i32,
-    /// Context window size (in tokens) sent to Ollama with every request.
-    /// Warmup and chat use the same value so Ollama reuses the same runner
-    /// instance and its cached KV prefix for the system prompt. Raise to fit
-    /// longer conversations in a single context; lower to use less VRAM.
+    /// Id of the provider Thuki currently sends inference to. The loader
+    /// repairs an empty or dangling pointer to `DEFAULT_ACTIVE_PROVIDER`.
+    pub active_provider: String,
+    /// Context window size (in tokens) sent to the active provider with every
+    /// request. Warmup and chat use the same value so Ollama reuses the same
+    /// runner instance and its cached KV prefix for the system prompt. Raise to
+    /// fit longer conversations in a single context; lower to use less VRAM.
     /// Valid range: 2048..=1048576.
     pub num_ctx: u32,
+    /// Minutes of inactivity before Thuki tells Ollama to release the model.
+    /// Applies to the Ollama provider only. 0 means do not manage (Ollama's
+    /// 5-minute default applies). -1 means keep indefinitely. Valid range: -1
+    /// or 0..=1440.
+    pub keep_warm_inactivity_minutes: i32,
+    /// The configured providers. Always contains the built-in entry after
+    /// resolution. The field-level `#[serde(default)]` defaults a *missing*
+    /// `providers` key to an empty Vec (not the seeded pair), so the loader can
+    /// distinguish a pre-providers file (empty -> migrate from `ollama_url`)
+    /// from a new-shape file with an explicit list. `resolve` always re-seeds
+    /// the mandatory built-in and Ollama entries.
+    #[serde(default)]
+    pub providers: Vec<Provider>,
+    /// Migration-only: the pre-providers `[inference] ollama_url` value. Read
+    /// from old config files, consumed by `loader::resolve`, never written back.
+    #[serde(default, rename = "ollama_url", skip_serializing)]
+    pub legacy_ollama_url: Option<String>,
 }
 
 impl Default for InferenceSection {
     fn default() -> Self {
         Self {
-            ollama_url: DEFAULT_OLLAMA_URL.to_string(),
-            keep_warm_inactivity_minutes: DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+            active_provider: DEFAULT_ACTIVE_PROVIDER.to_string(),
             num_ctx: DEFAULT_NUM_CTX,
+            keep_warm_inactivity_minutes: DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+            providers: default_providers(),
+            legacy_ollama_url: None,
         }
+    }
+}
+
+impl InferenceSection {
+    /// The active provider record, if `active_provider` resolves to one.
+    pub fn active(&self) -> Option<&Provider> {
+        self.providers.iter().find(|p| p.id == self.active_provider)
+    }
+    /// Base URL of the active provider (empty for the built-in / unresolved).
+    pub fn active_provider_base_url(&self) -> &str {
+        self.active().map(|p| p.base_url.as_str()).unwrap_or("")
+    }
+    /// The active provider's selected model (empty if none).
+    pub fn active_provider_model(&self) -> &str {
+        self.active().map(|p| p.model.as_str()).unwrap_or("")
+    }
+    /// The active provider's selected model as an `Option`, mapping an empty
+    /// model field to `None` so callers can feed it straight into the
+    /// active-model resolve helpers.
+    pub fn active_provider_model_opt(&self) -> Option<&str> {
+        let model = self.active_provider_model();
+        (!model.is_empty()).then_some(model)
+    }
+    /// The active provider's kind (empty if unresolved).
+    pub fn active_provider_kind(&self) -> &str {
+        self.active().map(|p| p.kind.as_str()).unwrap_or("")
     }
 }
 

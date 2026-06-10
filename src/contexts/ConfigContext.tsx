@@ -36,10 +36,17 @@ const CONFIG_UPDATED_EVENT = 'thuki://config-updated';
  */
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 
-/** Shape returned by the Rust `get_config` command (snake_case). */
+/** Shape returned by the Rust `get_config` command (snake_case). Only the
+ * fields the runtime tree consumes are declared. */
+interface RawProvider {
+  id: string;
+  kind: string;
+  base_url: string;
+}
 interface RawAppConfig {
   inference: {
-    ollama_url: string;
+    active_provider: string;
+    providers: RawProvider[];
   };
   prompt: {
     system: string;
@@ -67,6 +74,9 @@ interface RawAppConfig {
 /** Camel-cased, frontend-friendly view of the configuration. */
 export interface AppConfig {
   inference: {
+    /** Id of the active provider (e.g. `'ollama'`). */
+    activeProvider: string;
+    /** Base URL of the Ollama provider, derived from the providers list. */
     ollamaUrl: string;
   };
   prompt: {
@@ -95,10 +105,20 @@ export interface AppConfig {
   };
 }
 
+/** Derives the Ollama provider's base URL from the providers list. Empty when
+ * no Ollama provider is configured (the loader always seeds one, so this only
+ * falls back in test contexts with a partial list). */
+function ollamaBaseUrl(raw: RawAppConfig): string {
+  return (
+    raw.inference.providers.find((p) => p.kind === 'ollama')?.base_url ?? ''
+  );
+}
+
 function transform(raw: RawAppConfig): AppConfig {
   return {
     inference: {
-      ollamaUrl: raw.inference.ollama_url,
+      activeProvider: raw.inference.active_provider,
+      ollamaUrl: ollamaBaseUrl(raw),
     },
     prompt: {
       system: raw.prompt.system,
@@ -243,6 +263,7 @@ export function ConfigProviderForTest({
  */
 export const DEFAULT_CONFIG: AppConfig = {
   inference: {
+    activeProvider: 'ollama',
     ollamaUrl: 'http://127.0.0.1:11434',
   },
   prompt: { system: '' },

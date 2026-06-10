@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import type { Message } from '../../hooks/useOllama';
+import type { Message } from '../../hooks/useModel';
 import {
   defaultExportFilename,
   defaultImageLoader,

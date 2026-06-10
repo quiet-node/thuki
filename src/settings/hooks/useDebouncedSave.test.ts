@@ -11,9 +11,25 @@ const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 const SAMPLE_CONFIG: RawAppConfig = {
   inference: {
-    ollama_url: 'http://127.0.0.1:11434',
+    active_provider: 'ollama',
     keep_warm_inactivity_minutes: 0,
     num_ctx: 16384,
+    providers: [
+      {
+        id: 'builtin',
+        kind: 'builtin',
+        label: 'Built-in (Thuki)',
+        base_url: '',
+        model: '',
+      },
+      {
+        id: 'ollama',
+        kind: 'ollama',
+        label: 'Ollama',
+        base_url: 'http://127.0.0.1:11434',
+        model: '',
+      },
+    ],
   },
   prompt: { system: '' },
   window: {

@@ -6,15 +6,16 @@
  * same story. When you add or change a tunable, update both this file
  * and the matching table row in the docs in the same commit.
  *
- * Indexed by the same `(section, key)` pair the backend's
- * `set_config_field` allowlist uses, so the keys here are guaranteed to
- * be the canonical TOML field names.
+ * Indexed by a `(section, key)` pair. Most keys are the canonical TOML field
+ * names from the backend `set_config_field` allowlist; a few (e.g.
+ * `inference.ollama_base_url`, `inference.keep_warm`) are display-only keys
+ * for values written through dedicated commands such as `set_ollama_url`.
  */
 
 const HELPERS = {
   inference: {
-    ollama_url:
-      'The web address where Thuki finds your local Ollama server. The default works if you run Ollama on this machine with its standard port. Change this only if you moved Ollama to a different port or another machine.',
+    ollama_base_url:
+      'The address where Thuki reaches your Ollama server. The default works if you run Ollama on this Mac with its standard port. Point it at another machine to use Ollama running elsewhere (one server at a time).',
     keep_warm:
       'When on, Thuki tells Ollama to keep the active model loaded in GPU memory between conversations, saving the cold-load wait on every open. Set "Release after" to −1 to keep it warm indefinitely, or pick a timeout in minutes so GPU memory is reclaimed when you stop using Thuki for a while.',
     num_ctx:
