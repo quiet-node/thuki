@@ -15,6 +15,7 @@
  * the active model is `None` and the user is prompted to pick one.
  */
 
+pub mod download;
 pub mod manifest;
 pub mod storage;
 

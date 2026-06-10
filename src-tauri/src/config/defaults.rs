@@ -99,6 +99,12 @@ pub const ENGINE_IDLE_CHECK_INTERVAL_SECS: u64 = 30;
 /// normal use.
 pub const ENGINE_COMMAND_QUEUE_CAPACITY: usize = 64;
 
+/// Minimum interval between Progress events emitted during a model download.
+/// Bounds IPC channel traffic: a fast local connection can deliver thousands
+/// of chunks per second and the UI only needs a few updates per second. Not
+/// user-tunable: pure IPC hygiene, invisible below the UI refresh rate.
+pub const DOWNLOAD_PROGRESS_MIN_INTERVAL_MS: u64 = 500;
+
 /// Built-in secretary persona prompt. User overrides via `[prompt] system` in
 /// the config file. The slash-command appendix is composed on top at load time
 /// and is never written back to the file.
