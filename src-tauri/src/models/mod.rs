@@ -15,6 +15,8 @@
  * the active model is `None` and the user is prompted to pick one.
  */
 
+pub mod manifest;
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 
