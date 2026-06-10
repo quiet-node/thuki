@@ -935,49 +935,32 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
                 let stage = onboarding::get_stage(&conn)
                     .unwrap_or(onboarding::OnboardingStage::Permissions);
 
-                // The "intro" stage means the user already cleared both the
-                // permissions and the model-check gates on a previous launch.
-                // Skip the live permission re-check here: on macOS 15+
-                // CGPreflightScreenCaptureAccess can return a stale false
-                // negative immediately after a restart, which would wrongly
-                // loop the user back to the permissions screen.
-                if matches!(stage, onboarding::OnboardingStage::Intro) {
-                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
-                    return;
-                }
-
-                // For "permissions", "model_check", and "complete" stages,
-                // re-validate live macOS permissions. "complete" detects
-                // revocation after onboarding finished. "model_check" detects
-                // mid-onboarding revocation. "permissions" is the first-launch
-                // path. All three must restart the flow at Permissions if
-                // either grant has been withdrawn.
+                // Trust the persisted onboarding stage for every in-progress
+                // stage; consult the live macOS permission grants only to
+                // detect a revocation once onboarding is `Complete`. The live
+                // APIs (`AXIsProcessTrusted`, `CGPreflightScreenCaptureAccess`)
+                // return false negatives for a short settle window after a
+                // process restart on macOS 15+, so re-gating an in-progress
+                // stage here would bounce a user who just granted Screen
+                // Recording and accepted macOS's "Quit & Reopen" prompt back to
+                // step 1. PermissionsStep / ModelCheckStep own live detection
+                // via their own polling and persist forward progress through
+                // `advance_past_permissions` / `advance_past_model_check`. See
+                // `onboarding::decide_startup_action`.
                 let ax = permissions::is_accessibility_granted();
                 let sr = permissions::is_screen_recording_granted();
-                if !ax || !sr {
-                    let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Permissions);
-                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
-                    return;
+                match onboarding::decide_startup_action(stage.clone(), ax, sr) {
+                    onboarding::StartupAction::ShowOnboarding(target) => {
+                        if target != stage {
+                            let _ = onboarding::set_stage(&conn, &target);
+                        }
+                        show_onboarding_window(&app_handle, target);
+                        return;
+                    }
+                    // Onboarding complete and permissions intact: fall through
+                    // to show the overlay below.
+                    onboarding::StartupAction::ShowOverlay => {}
                 }
-
-                // Permissions granted. If the user has not yet cleared the
-                // model-check gate, route them there. The frontend probes
-                // Ollama via `check_model_setup` and either renders the gate
-                // (Ollama unreachable / no models) or fires
-                // `advance_past_model_check` to skip straight to Intro on
-                // Ready. We do not probe here because /api/tags requires the
-                // async runtime and notify_frontend_ready is invoked
-                // synchronously from a Tauri command worker.
-                if matches!(
-                    stage,
-                    onboarding::OnboardingStage::Permissions
-                        | onboarding::OnboardingStage::ModelCheck
-                ) {
-                    let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::ModelCheck);
-                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::ModelCheck);
-                    return;
-                }
-                // Complete: fall through to show the overlay.
             } else {
                 // Mutex poisoned; safe fallback.
                 show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
@@ -1014,6 +997,40 @@ fn advance_past_model_check(
         ONBOARDING_EVENT,
         OnboardingPayload {
             stage: onboarding::OnboardingStage::Intro,
+        },
+    );
+    Ok(())
+}
+
+/// Advances the onboarding stage from `permissions` to `model_check` and emits
+/// the onboarding event so the frontend swaps to `ModelCheckStep` without a
+/// window flicker.
+///
+/// Called by `PermissionsStep` once it confirms, after the Screen Recording
+/// restart, that both required permissions are now granted. Persisting the
+/// advance here (rather than re-deriving it from the live permission re-check
+/// in `notify_frontend_ready`) is what keeps a macOS-initiated "Quit & Reopen"
+/// from bouncing the user back to the start of onboarding: the live APIs read
+/// stale-false in the settle window right after a restart, but the persisted
+/// stage is authoritative.
+///
+/// Idempotent: writing `model_check` over `model_check` is a harmless no-op, so
+/// a double-fire from a frontend race cannot corrupt the stage.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn advance_past_permissions(
+    db: tauri::State<history::Database>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| format!("db lock poisoned: {e}"))?;
+    onboarding::set_stage(&conn, &onboarding::OnboardingStage::ModelCheck)
+        .map_err(|e| format!("db write failed: {e}"))?;
+    drop(conn);
+
+    let _ = app_handle.emit(
+        ONBOARDING_EVENT,
+        OnboardingPayload {
+            stage: onboarding::OnboardingStage::ModelCheck,
         },
     );
     Ok(())
@@ -1868,6 +1885,7 @@ pub fn run() {
             permissions::quit_and_relaunch,
             finish_onboarding,
             advance_past_model_check,
+            advance_past_permissions,
             #[cfg(not(coverage))]
             warmup::warm_up_model,
             #[cfg(not(coverage))]

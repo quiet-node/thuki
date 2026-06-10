@@ -140,20 +140,25 @@ pub fn check_screen_recording_tcc_granted() -> bool {
 
 /// Quits Thuki and immediately relaunches it.
 ///
-/// Called after the user grants Screen Recording permission. macOS requires
-/// a full process restart before the new permission takes effect.
+/// Called after the user grants Screen Recording permission via the in-app
+/// "Quit & Reopen Thuki" button. macOS requires a full process restart before
+/// the new permission takes effect.
 ///
-/// Writes "intro" to the DB before restarting so `notify_frontend_ready`
-/// shows the intro screen on the next launch without calling any permission
-/// API. Permission APIs (CGPreflightScreenCaptureAccess) can return stale
-/// results immediately after a restart on macOS 15+; trusting the DB stage
-/// avoids that unreliability entirely.
+/// Writes "model_check" to the DB before restarting so `notify_frontend_ready`
+/// shows the model-check gate on the next launch without calling any permission
+/// API. This is the same stage the macOS-initiated "Quit & Reopen" path lands
+/// on (via `advance_past_permissions`), so both restart routes behave
+/// identically and the model-check gate cannot be skipped by choosing one
+/// restart button over the other. Permission APIs (CGPreflightScreenCaptureAccess)
+/// can return stale results immediately after a restart on macOS 15+; trusting
+/// the DB stage avoids that unreliability entirely.
 #[tauri::command]
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn quit_and_relaunch(app_handle: tauri::AppHandle, db: tauri::State<crate::history::Database>) {
     if let Ok(conn) = db.0.lock() {
-        let _ = crate::onboarding::set_stage(&conn, &crate::onboarding::OnboardingStage::Intro);
+        let _ =
+            crate::onboarding::set_stage(&conn, &crate::onboarding::OnboardingStage::ModelCheck);
     }
     app_handle.restart();
 }

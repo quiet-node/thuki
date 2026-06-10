@@ -65,18 +65,46 @@ pub fn set_stage(conn: &Connection, stage: &OnboardingStage) -> rusqlite::Result
     set_config(conn, STAGE_KEY, value)
 }
 
-/// Returns which onboarding stage to show at startup, or `None` if onboarding
-/// is complete.
+/// What `notify_frontend_ready` should do at startup.
+#[derive(Debug, PartialEq)]
+pub enum StartupAction {
+    /// Show the given onboarding step.
+    ShowOnboarding(OnboardingStage),
+    /// Onboarding is finished and both permissions are intact: show the overlay.
+    ShowOverlay,
+}
+
+/// Decides what to show at startup from the persisted stage and the live
+/// permission grants.
 ///
-/// Reads only the persisted stage: no permission API calls. Permission APIs
-/// (CGPreflightScreenCaptureAccess) can return stale results immediately after
-/// a process restart on macOS 15+. PermissionsStep owns live permission
-/// detection via its own polling checks. quit_and_relaunch writes "intro" to
-/// the DB before restarting so this path sees the correct stage on next launch.
-pub fn compute_startup_stage(conn: &Connection) -> rusqlite::Result<Option<OnboardingStage>> {
-    match get_stage(conn)? {
-        OnboardingStage::Complete => Ok(None),
-        stage => Ok(Some(stage)),
+/// In-progress stages (`Permissions`, `ModelCheck`, `Intro`) are trusted as-is
+/// and never re-gated on the live permission APIs. `AXIsProcessTrusted` and
+/// `CGPreflightScreenCaptureAccess` return false negatives for a short settle
+/// window after a process restart on macOS 15+, so re-checking them here would
+/// bounce a user who just granted a permission and restarted back to the start
+/// of onboarding. This is exactly what happens when the user accepts macOS's
+/// own "Quit & Reopen" prompt after toggling Screen Recording on: the restart
+/// does not advance the stage, and a flaky post-restart check would loop them
+/// to step 1. The step components own live permission detection via their own
+/// polling, and `advance_past_permissions` / `advance_past_model_check` persist
+/// the forward progress, so trusting the stage here is safe.
+///
+/// Only `Complete` consults the live grants, to catch a genuine permission
+/// revocation after onboarding has finished and re-run the flow.
+pub fn decide_startup_action(
+    stage: OnboardingStage,
+    accessibility: bool,
+    screen_recording: bool,
+) -> StartupAction {
+    match stage {
+        OnboardingStage::Complete => {
+            if crate::permissions::needs_onboarding(accessibility, screen_recording) {
+                StartupAction::ShowOnboarding(OnboardingStage::Permissions)
+            } else {
+                StartupAction::ShowOverlay
+            }
+        }
+        in_progress => StartupAction::ShowOnboarding(in_progress),
     }
 }
 
@@ -141,16 +169,6 @@ mod tests {
     }
 
     #[test]
-    fn compute_startup_stage_shows_model_check_when_stage_is_model_check() {
-        let conn = open_in_memory().unwrap();
-        set_stage(&conn, &OnboardingStage::ModelCheck).unwrap();
-        assert_eq!(
-            compute_startup_stage(&conn).unwrap(),
-            Some(OnboardingStage::ModelCheck)
-        );
-    }
-
-    #[test]
     fn stage_serializes_to_snake_case_for_frontend() {
         // Wire format must match the TypeScript OnboardingStage union exactly.
         // Frontend routes on these strings, so any drift breaks the dispatch.
@@ -196,38 +214,68 @@ mod tests {
     }
 
     #[test]
-    fn compute_startup_stage_returns_none_when_complete() {
-        let conn = open_in_memory().unwrap();
-        set_stage(&conn, &OnboardingStage::Complete).unwrap();
-        assert_eq!(compute_startup_stage(&conn).unwrap(), None);
+    fn decide_startup_action_shows_overlay_when_complete_and_granted() {
+        assert_eq!(
+            decide_startup_action(OnboardingStage::Complete, true, true),
+            StartupAction::ShowOverlay
+        );
     }
 
     #[test]
-    fn compute_startup_stage_shows_permissions_when_not_granted() {
-        let conn = open_in_memory().unwrap();
-        // Default stage is "permissions" on first launch.
-        let result = compute_startup_stage(&conn).unwrap();
-        assert_eq!(result, Some(OnboardingStage::Permissions));
-        // Stage must not have been modified.
-        assert_eq!(get_stage(&conn).unwrap(), OnboardingStage::Permissions);
+    fn decide_startup_action_reruns_onboarding_when_complete_but_accessibility_revoked() {
+        // Genuine post-onboarding revocation: the only stage that consults the
+        // live grants. A revoked permission must restart the flow at step 1.
+        assert_eq!(
+            decide_startup_action(OnboardingStage::Complete, false, true),
+            StartupAction::ShowOnboarding(OnboardingStage::Permissions)
+        );
     }
 
     #[test]
-    fn compute_startup_stage_shows_intro_when_stage_is_intro() {
-        let conn = open_in_memory().unwrap();
-        set_stage(&conn, &OnboardingStage::Intro).unwrap();
-        let result = compute_startup_stage(&conn).unwrap();
-        assert_eq!(result, Some(OnboardingStage::Intro));
+    fn decide_startup_action_reruns_onboarding_when_complete_but_screen_recording_revoked() {
+        assert_eq!(
+            decide_startup_action(OnboardingStage::Complete, true, false),
+            StartupAction::ShowOnboarding(OnboardingStage::Permissions)
+        );
     }
 
     #[test]
-    fn compute_startup_stage_trusts_intro_stage_even_if_permissions_check_fails() {
-        let conn = open_in_memory().unwrap();
-        // Startup trusts the persisted stage entirely. No permission API is
-        // called. CGPreflightScreenCaptureAccess can return false on macOS 15
-        // even after a successful grant+restart, so startup never gates on it.
-        set_stage(&conn, &OnboardingStage::Intro).unwrap();
-        let result = compute_startup_stage(&conn).unwrap();
-        assert_eq!(result, Some(OnboardingStage::Intro));
+    fn decide_startup_action_shows_permissions_on_first_launch() {
+        assert_eq!(
+            decide_startup_action(OnboardingStage::Permissions, false, false),
+            StartupAction::ShowOnboarding(OnboardingStage::Permissions)
+        );
+    }
+
+    #[test]
+    fn decide_startup_action_trusts_model_check_stage_even_if_live_checks_fail() {
+        // The macOS-initiated "Quit & Reopen" after a Screen Recording grant
+        // restarts us without advancing the stage, and the live permission
+        // APIs read stale-false in the settle window right after. Trusting the
+        // persisted stage is what stops the user being bounced back to step 1.
+        assert_eq!(
+            decide_startup_action(OnboardingStage::ModelCheck, false, false),
+            StartupAction::ShowOnboarding(OnboardingStage::ModelCheck)
+        );
+    }
+
+    #[test]
+    fn decide_startup_action_trusts_intro_stage_even_if_live_checks_fail() {
+        assert_eq!(
+            decide_startup_action(OnboardingStage::Intro, false, false),
+            StartupAction::ShowOnboarding(OnboardingStage::Intro)
+        );
+    }
+
+    #[test]
+    fn decide_startup_action_trusts_permissions_stage_even_when_both_granted() {
+        // When perms are already granted at the permissions stage we still show
+        // PermissionsStep; it auto-advances via `advance_past_permissions`
+        // rather than the startup path re-deriving the advance from a flaky
+        // live check.
+        assert_eq!(
+            decide_startup_action(OnboardingStage::Permissions, true, true),
+            StartupAction::ShowOnboarding(OnboardingStage::Permissions)
+        );
     }
 }

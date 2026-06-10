@@ -122,7 +122,9 @@ describe('OnboardingView', () => {
     ).toBeInTheDocument();
   });
 
-  it('auto-resumes the screen recording flow when consume returns ScreenCapture', async () => {
+  it('auto-resumes the screen recording flow when consume returns ScreenCapture and grant not yet active', async () => {
+    // The reset+relaunch resumes before the user has toggled the permission on,
+    // so it is not active yet: reopen Settings and poll rather than advancing.
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'consume_pending_grant_resume') return 'ScreenCapture';
       if (cmd === 'reset_and_relaunch_for_grant') return false;
@@ -136,9 +138,67 @@ describe('OnboardingView', () => {
     render(<PermissionsStep />);
     await act(async () => {});
     await act(async () => {});
+    await act(async () => {});
 
     expect(invoke).toHaveBeenCalledWith('request_screen_recording_access');
     expect(invoke).toHaveBeenCalledWith('open_screen_recording_settings');
+    // The permission is not active yet, so we must not advance past it.
+    expect(invoke).not.toHaveBeenCalledWith('advance_past_permissions');
+  });
+
+  it('advances past permissions when resuming ScreenCapture and recording is already granted', async () => {
+    // Reproduces the reported bug: the user granted Screen Recording, accepted
+    // macOS's "Quit & Reopen", and on the next launch the permission is active.
+    // The resume path must advance straight to the model-check step rather than
+    // bouncing the user back to the start of onboarding or asking for another
+    // restart.
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'consume_pending_grant_resume') return 'ScreenCapture';
+      if (cmd === 'check_accessibility_permission') return true;
+      if (cmd === 'check_screen_recording_tcc_granted') return true;
+      if (cmd === 'advance_past_permissions') return;
+    });
+
+    render(<PermissionsStep />);
+    await act(async () => {});
+    await act(async () => {});
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith('advance_past_permissions');
+    // Must not fall back to the open-Settings + second-restart flow.
+    expect(invoke).not.toHaveBeenCalledWith('request_screen_recording_access');
+  });
+
+  it('ignores the ScreenCapture resume result when unmounted during the recording check', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let resolveTcc!: (v: boolean) => void;
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'consume_pending_grant_resume')
+        return Promise.resolve('ScreenCapture');
+      if (cmd === 'check_accessibility_permission')
+        return Promise.resolve(true);
+      if (cmd === 'check_screen_recording_tcc_granted')
+        return new Promise((r) => {
+          resolveTcc = r;
+        });
+      return Promise.resolve();
+    });
+
+    const { unmount } = render(<PermissionsStep />);
+    // Drain consume + ax awaits so the IIFE suspends on the tcc check.
+    await act(async () => {});
+    await act(async () => {});
+
+    act(() => unmount()); // mountedRef → false
+
+    await act(async () => {
+      resolveTcc(true); // post-tcc mountedRef guard fires; IIFE returns early
+    });
+
+    // The unmount guard must prevent the advance from firing.
+    expect(invoke).not.toHaveBeenCalledWith('advance_past_permissions');
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 
   it('does not auto-resume screen recording when accessibility is not yet granted', async () => {

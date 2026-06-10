@@ -221,6 +221,21 @@ pub fn reset_and_relaunch_for_grant(
         // running binary's csreq already owns whatever TCC entries (if
         // any) System Settings will display. A second reset+relaunch
         // would only add a jarring quit on every grant click.
+        //
+        // Screen Recording still requires a restart to take effect, and the
+        // user may accept macOS's own "Quit & Reopen" prompt instead of the
+        // in-app button. Persist the resume marker even though we are not
+        // scheduling the restart ourselves, so that restart resumes (and
+        // advances past) the Screen Recording grant on the next launch rather
+        // than dropping the user back at the start of onboarding. Accessibility
+        // grants are inline and never restart, so they need no marker.
+        if canonical == "ScreenCapture" {
+            let mut snooze = snooze;
+            prepare_pending_reregister(&mut snooze, canonical)?;
+            let path = sidecar_path(&app)?;
+            snooze.save(&path).map_err(|e| e.to_string())?;
+            state.set_pending_reregister(Some(canonical.to_string()));
+        }
         return Ok(false);
     }
 

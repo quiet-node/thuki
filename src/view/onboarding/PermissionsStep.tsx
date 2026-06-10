@@ -259,7 +259,23 @@ export function PermissionsStep() {
         // have to click Grant a second time.
         void startAccessibilityFlow();
       } else if (resume === 'ScreenCapture' && accessibilityGranted) {
-        void startScreenRecordingFlow();
+        // We were restarted in the middle of a Screen Recording grant: either
+        // our own reset+relaunch, or macOS's "Quit & Reopen" prompt after the
+        // user toggled the permission on. Screen Recording only takes effect
+        // after this restart, so check whether it is now active. If it is, both
+        // permissions are in place: advance straight to the model-check step
+        // instead of forcing a second restart or making the user re-grant. If
+        // not (the reset+relaunch resumes before the user has toggled it),
+        // fall back to opening Settings and polling.
+        const screenGrantedNow = await invoke<boolean>(
+          'check_screen_recording_tcc_granted',
+        );
+        if (!mountedRef.current) return;
+        if (screenGrantedNow) {
+          await invoke('advance_past_permissions');
+        } else {
+          void startScreenRecordingFlow();
+        }
       }
     })();
 
