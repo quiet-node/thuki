@@ -1,10 +1,12 @@
 /*!
  * Active-model state module.
  *
- * Single source of truth for the locally-selected Ollama model. The "active"
- * model is whichever slug the user last picked via the picker popup,
- * persisted across launches in `app_config` under [`ACTIVE_MODEL_KEY`] and
- * mirrored in [`ActiveModelState`] for fast reads from Tauri commands.
+ * The "active" model is whichever slug the user last picked via the picker
+ * popup. It is persisted across launches on the active provider's `model`
+ * field in `config.toml` (see [`crate::config::schema::Provider`]) and mirrored
+ * in [`ActiveModelState`] for fast reads from Tauri commands. The legacy SQLite
+ * [`ACTIVE_MODEL_KEY`] is read once at startup and folded onto the active
+ * provider by `crate::config::migrate`; it is no longer written.
  *
  * The backend treats Ollama's `/api/tags` response as authoritative: a
  * persisted model is only honored if it still appears in the live installed
@@ -24,10 +26,10 @@ use crate::config::defaults::{
     MAX_MODEL_SLUG_LEN, MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES,
 };
 use crate::config::AppConfig;
-use crate::database::{get_config, set_config};
-use crate::history::Database;
 
-/// `app_config` key used to persist the user's selected model slug.
+/// Legacy SQLite `app_config` key that older builds used to persist the
+/// selected model slug. Now read once at startup and folded onto the active
+/// provider's `model` field by `crate::config::migrate`; never written anymore.
 pub const ACTIVE_MODEL_KEY: &str = "active_model";
 
 /// Shared error-message prefix used when a requested slug is not present in
@@ -243,37 +245,32 @@ async fn fetch_installed_model_names_inner(
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn get_model_picker_state(
+    app: tauri::AppHandle,
     client: tauri::State<'_, reqwest::Client>,
-    db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<serde_json::Value, String> {
-    let ollama_url = config.read().inference.ollama_url.clone();
+    let (ollama_url, active_id, persisted) = read_provider_model_context(&config);
     let fetch_result = fetch_installed_model_names(&client, &ollama_url).await;
 
     let installed = match fetch_result {
         Ok(installed) => installed,
         Err(_) => {
             // Mirror the `None` active into the in-memory state so downstream
-            // callers (ask_ollama, search_pipeline) see the same truth as the
-            // frontend: with Ollama unreachable, no model is active.
+            // callers (ask_model, search_pipeline) see the same truth as the
+            // frontend: with the provider unreachable, no model is active.
             let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
             *guard = None;
             return Ok(build_picker_state_payload(None, &[], false));
         }
     };
 
-    let resolved = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        let persisted = get_config(&conn, ACTIVE_MODEL_KEY).map_err(|e| e.to_string())?;
-        let resolved = resolve_active_model(persisted.as_deref(), &installed);
-        if let Some(slug) = resolved.as_deref() {
-            if should_persist_resolved(&installed, persisted.as_deref(), slug) {
-                set_config(&conn, ACTIVE_MODEL_KEY, slug).map_err(|e| e.to_string())?;
-            }
+    let resolved = resolve_active_model(persisted.as_deref(), &installed);
+    if let Some(slug) = resolved.as_deref() {
+        if should_persist_resolved(&installed, persisted.as_deref(), slug) {
+            persist_active_provider_model(&app, &config, &active_id, slug)?;
         }
-        resolved
-    };
+    }
 
     {
         let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
@@ -285,6 +282,39 @@ pub async fn get_model_picker_state(
         &installed,
         true,
     ))
+}
+
+/// Snapshots the active provider's base URL, id, and selected model from the
+/// shared config. Returns the model as `Option<String>` (empty -> `None`) so
+/// callers can feed it straight into the resolve helpers.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn read_provider_model_context(
+    config: &parking_lot::RwLock<AppConfig>,
+) -> (String, String, Option<String>) {
+    let c = config.read();
+    (
+        c.inference.active_provider_base_url().to_string(),
+        c.inference.active_provider.clone(),
+        c.inference.active_provider_model_opt().map(str::to_string),
+    )
+}
+
+/// Writes `slug` onto the active provider's `model` field in config.toml and
+/// swaps the resolved result into the shared in-memory config. Replaces the
+/// former SQLite `set_config(ACTIVE_MODEL_KEY, ...)` persistence.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn persist_active_provider_model(
+    app: &tauri::AppHandle,
+    config: &parking_lot::RwLock<AppConfig>,
+    provider_id: &str,
+    slug: &str,
+) -> Result<(), String> {
+    let path = crate::settings_commands::config_path(app).map_err(|e| e.to_string())?;
+    let resolved =
+        crate::settings_commands::write_provider_field_to_disk(&path, provider_id, "model", slug)
+            .map_err(|e| e.to_string())?;
+    *config.write() = resolved;
+    Ok(())
 }
 
 /// Pure helper that shapes the `get_model_picker_state` payload. Extracted so
@@ -313,21 +343,18 @@ pub fn build_picker_state_payload(
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn set_active_model(
     model: String,
+    app: tauri::AppHandle,
     client: tauri::State<'_, reqwest::Client>,
-    db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<(), String> {
     validate_model_slug(&model)?;
 
-    let ollama_url = config.read().inference.ollama_url.clone();
+    let (ollama_url, active_id, _persisted) = read_provider_model_context(&config);
     let installed = fetch_installed_model_names(&client, &ollama_url).await?;
     validate_model_installed(&model, &installed)?;
 
-    {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        set_config(&conn, ACTIVE_MODEL_KEY, &model).map_err(|e| e.to_string())?;
-    }
+    persist_active_provider_model(&app, &config, &active_id, &model)?;
 
     {
         let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
@@ -415,7 +442,7 @@ pub fn derive_model_setup_state(
 ///    the case where a user removed their previously-selected model with
 ///    `ollama rm` between launches.
 /// 2. Mirror the resolved slug into the in-memory [`ActiveModelState`] so
-///    `ask_ollama` and `search_pipeline` see it on the next request
+///    `ask_model` and `search_pipeline` see it on the next request
 ///    without an extra DB read.
 ///
 /// Both writes are gated through [`should_persist_resolved`] which
@@ -425,18 +452,13 @@ pub fn derive_model_setup_state(
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn check_model_setup(
+    app: tauri::AppHandle,
     client: tauri::State<'_, reqwest::Client>,
-    db: tauri::State<'_, Database>,
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<ModelSetupState, String> {
-    let ollama_url = config.read().inference.ollama_url.clone();
+    let (ollama_url, active_id, persisted) = read_provider_model_context(&config);
     let installed_result = fetch_installed_model_names(&client, &ollama_url).await;
-
-    let persisted = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        get_config(&conn, ACTIVE_MODEL_KEY).map_err(|e| e.to_string())?
-    };
 
     let state = derive_model_setup_state(installed_result, persisted.as_deref());
 
@@ -446,8 +468,7 @@ pub async fn check_model_setup(
     } = state
     {
         if should_persist_resolved(installed, persisted.as_deref(), active_slug) {
-            let conn = db.0.lock().map_err(|e| e.to_string())?;
-            set_config(&conn, ACTIVE_MODEL_KEY, active_slug).map_err(|e| e.to_string())?;
+            persist_active_provider_model(&app, &config, &active_id, active_slug)?;
         }
         let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
         *guard = Some(active_slug.clone());
@@ -667,14 +688,14 @@ async fn fetch_model_capabilities_inner(
     Ok(caps)
 }
 
-/// In-memory cache of capabilities keyed by model slug. Populated lazily
-/// the first time a model is queried. Cleared on app restart, which is
-/// the simplest valid invalidation strategy: re-pulling a model under the
-/// same slug requires a process restart anyway because Tauri's reqwest
-/// client is process-scoped, and capabilities for a given (slug, digest)
-/// pair never change.
+/// In-memory cache of capabilities keyed by `(provider_id, model)`. The same
+/// model slug can resolve to different capabilities on different providers, so
+/// the provider id is part of the key. Populated lazily the first time a model
+/// is queried; cleared on app restart, which is the simplest valid invalidation
+/// strategy (capabilities for a given provider+slug pair never change during a
+/// process lifetime).
 #[derive(Default)]
-pub struct ModelCapabilitiesCache(pub Mutex<HashMap<String, Capabilities>>);
+pub struct ModelCapabilitiesCache(pub Mutex<HashMap<(String, String), Capabilities>>);
 
 /// Fetches `/api/tags` for the installed list, then returns a map of
 /// `model name -> Capabilities` covering every installed model. Uses the
@@ -694,9 +715,15 @@ pub async fn get_model_capabilities(
     cache: tauri::State<'_, ModelCapabilitiesCache>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
 ) -> Result<HashMap<String, Capabilities>, String> {
-    let base_url = config.read().inference.ollama_url.clone();
+    let (provider_id, base_url) = {
+        let c = config.read();
+        (
+            c.inference.active_provider.clone(),
+            c.inference.active_provider_base_url().to_string(),
+        )
+    };
     let installed = fetch_installed_model_names(&client, &base_url).await?;
-    Ok(reconcile_capabilities(&client, &cache, &base_url, &installed).await)
+    Ok(reconcile_capabilities(&client, &cache, &provider_id, &base_url, &installed).await)
 }
 
 /// Pure-ish helper extracted so tests can drive the cache + fetch loop
@@ -721,6 +748,7 @@ pub async fn get_model_capabilities(
 async fn reconcile_capabilities(
     client: &reqwest::Client,
     cache: &ModelCapabilitiesCache,
+    provider_id: &str,
     base_url: &str,
     installed: &[String],
 ) -> HashMap<String, Capabilities> {
@@ -729,7 +757,7 @@ async fn reconcile_capabilities(
     match cache.0.lock() {
         Ok(guard) => {
             for name in installed {
-                if let Some(c) = guard.get(name) {
+                if let Some(c) = guard.get(&(provider_id.to_string(), name.clone())) {
                     hits.insert(name.clone(), c.clone());
                 } else {
                     misses.push(name.clone());
@@ -748,7 +776,7 @@ async fn reconcile_capabilities(
         }
         if let Ok(caps) = fetch_model_capabilities(client, base_url, name).await {
             if let Ok(mut guard) = cache.0.lock() {
-                guard.insert(name.clone(), caps.clone());
+                guard.insert((provider_id.to_string(), name.clone()), caps.clone());
             }
             hits.insert(name.clone(), caps);
         }
@@ -761,6 +789,10 @@ async fn reconcile_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The generic SQLite config helpers are no longer used by the production
+    // commands (model selection persists to config.toml), but the DB layer
+    // itself is still covered here via the ACTIVE_MODEL_KEY round-trip test.
+    use crate::database::{get_config, set_config};
 
     // ── build_picker_state_payload ───────────────────────────────────────────
 
@@ -1851,14 +1883,14 @@ mod tests {
     async fn reconcile_returns_cached_entries_without_network() {
         let cache = ModelCapabilitiesCache::default();
         cache.0.lock().unwrap().insert(
-            "a".to_string(),
+            ("ollama".to_string(), "a".to_string()),
             Capabilities {
                 vision: true,
                 ..Default::default()
             },
         );
         cache.0.lock().unwrap().insert(
-            "b".to_string(),
+            ("ollama".to_string(), "b".to_string()),
             Capabilities {
                 thinking: true,
                 ..Default::default()
@@ -1866,7 +1898,8 @@ mod tests {
         );
         let client = reqwest::Client::new();
         let installed = vec!["a".to_string(), "b".to_string()];
-        let result = reconcile_capabilities(&client, &cache, "http://unused", &installed).await;
+        let result =
+            reconcile_capabilities(&client, &cache, "ollama", "http://unused", &installed).await;
         assert_eq!(result.len(), 2);
         assert!(result["a"].vision);
         assert!(result["b"].thinking);
@@ -1876,7 +1909,7 @@ mod tests {
     async fn reconcile_with_empty_installed_returns_empty_map() {
         let cache = ModelCapabilitiesCache::default();
         let client = reqwest::Client::new();
-        let result = reconcile_capabilities(&client, &cache, "http://unused", &[]).await;
+        let result = reconcile_capabilities(&client, &cache, "ollama", "http://unused", &[]).await;
         assert!(result.is_empty());
     }
 
@@ -1893,19 +1926,20 @@ mod tests {
         let cache = ModelCapabilitiesCache::default();
         let client = reqwest::Client::new();
         let installed = vec!["fresh".to_string()];
-        let result = reconcile_capabilities(&client, &cache, &server.url(), &installed).await;
+        let result =
+            reconcile_capabilities(&client, &cache, "ollama", &server.url(), &installed).await;
         assert!(result["fresh"].vision);
         // Cache must now hold the fetched entry.
         let guard = cache.0.lock().unwrap();
-        assert!(guard.contains_key("fresh"));
-        assert!(guard["fresh"].vision);
+        assert!(guard.contains_key(&("ollama".to_string(), "fresh".to_string())));
+        assert!(guard[&("ollama".to_string(), "fresh".to_string())].vision);
     }
 
     #[tokio::test]
     async fn reconcile_drops_unreachable_misses_without_failing() {
         let cache = ModelCapabilitiesCache::default();
         cache.0.lock().unwrap().insert(
-            "cached".to_string(),
+            ("ollama".to_string(), "cached".to_string()),
             Capabilities {
                 vision: true,
                 ..Default::default()
@@ -1915,7 +1949,8 @@ mod tests {
         let installed = vec!["cached".to_string(), "missing".to_string()];
         // Point base_url at a port nothing listens on so misses fail fast.
         let result =
-            reconcile_capabilities(&client, &cache, "http://127.0.0.1:1", &installed).await;
+            reconcile_capabilities(&client, &cache, "ollama", "http://127.0.0.1:1", &installed)
+                .await;
         assert!(result.contains_key("cached"));
         assert!(!result.contains_key("missing"));
     }
@@ -1936,7 +1971,8 @@ mod tests {
         let cache = ModelCapabilitiesCache::default();
         let client = reqwest::Client::new();
         let installed = vec!["bad name".to_string(), "bad$(whoami)".to_string()];
-        let result = reconcile_capabilities(&client, &cache, &server.url(), &installed).await;
+        let result =
+            reconcile_capabilities(&client, &cache, "ollama", &server.url(), &installed).await;
         assert!(result.is_empty());
         m.assert_async().await;
     }
@@ -1960,9 +1996,39 @@ mod tests {
         });
         let client = reqwest::Client::new();
         let installed = vec!["x".to_string()];
-        let result = reconcile_capabilities(&client, &cache, &server.url(), &installed).await;
+        let result =
+            reconcile_capabilities(&client, &cache, "ollama", &server.url(), &installed).await;
         // Cache writes silently fail on the poisoned lock, but the
         // result map still carries the freshly-fetched value.
         assert!(result["x"].vision);
+    }
+
+    #[tokio::test]
+    async fn reconcile_keys_capabilities_by_provider() {
+        // The same slug under two providers holds two distinct cache entries;
+        // a reconcile scoped to one provider only sees that provider's entry.
+        let cache = ModelCapabilitiesCache::default();
+        cache.0.lock().unwrap().insert(
+            ("ollama".to_string(), "shared:slug".to_string()),
+            Capabilities {
+                vision: true,
+                ..Default::default()
+            },
+        );
+        cache.0.lock().unwrap().insert(
+            ("builtin".to_string(), "shared:slug".to_string()),
+            Capabilities {
+                thinking: true,
+                ..Default::default()
+            },
+        );
+        let client = reqwest::Client::new();
+        let installed = vec!["shared:slug".to_string()];
+        let ollama =
+            reconcile_capabilities(&client, &cache, "ollama", "http://unused", &installed).await;
+        let builtin =
+            reconcile_capabilities(&client, &cache, "builtin", "http://unused", &installed).await;
+        assert!(ollama["shared:slug"].vision && !ollama["shared:slug"].thinking);
+        assert!(builtin["shared:slug"].thinking && !builtin["shared:slug"].vision);
     }
 }

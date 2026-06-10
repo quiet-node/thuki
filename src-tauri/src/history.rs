@@ -182,7 +182,7 @@ pub fn list_conversations(
 }
 
 /// Loads all messages for a conversation and syncs them into the backend
-/// `ConversationHistory` so subsequent `ask_ollama` calls include context.
+/// `ConversationHistory` so subsequent `ask_model` calls include context.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn load_conversation(
@@ -194,7 +194,7 @@ pub fn load_conversation(
     let persisted = database::load_messages(&conn, &conversation_id).map_err(|e| e.to_string())?;
 
     // Bump the epoch before replacing messages - same invariant as
-    // `reset_conversation`. This prevents any in-flight `ask_ollama`
+    // `reset_conversation`. This prevents any in-flight `ask_model`
     // stream from appending stale tokens into the freshly loaded history.
     history
         .epoch
@@ -296,7 +296,10 @@ pub async fn generate_title(
 
     let endpoint = format!(
         "{}/api/chat",
-        app_config.inference.ollama_url.trim_end_matches('/')
+        app_config
+            .inference
+            .active_provider_base_url()
+            .trim_end_matches('/')
     );
 
     let cancel_token = tokio_util::sync::CancellationToken::new();

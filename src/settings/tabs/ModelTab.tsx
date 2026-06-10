@@ -12,9 +12,11 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
-import { Section, TextField, Textarea, Toggle } from '../components';
+import { Section, SettingRow, Dropdown, Textarea, Toggle } from '../components';
 import { SaveField } from '../components/SaveField';
 import { useDebouncedSave } from '../hooks/useDebouncedSave';
+import { useModelSelection } from '../../hooks/useModelSelection';
+import { isNonLocalUrl } from '../../utils/isNonLocalUrl';
 import { configHelp } from '../configHelpers';
 import { DrawCheckIcon } from '../../components/DrawCheckIcon';
 import { Tooltip } from '../../components/Tooltip';
@@ -98,6 +100,20 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
 
   const [devOpen, setDevOpen] = useState(false);
 
+  // Ollama provider URL: local editable copy committed on blur / Enter via
+  // the dedicated set_ollama_url command (the URL lives on the providers array,
+  // not a flat set_config_field key).
+  const ollamaBaseUrl =
+    config.inference.providers.find((p) => p.kind === 'ollama')?.base_url ?? '';
+  const [ollamaUrl, setOllamaUrl] = useState(ollamaBaseUrl);
+  const ollamaUrlFocusedRef = useRef(false);
+
+  // Per-provider model picker (Ollama). Mirrors the overlay picker; both read
+  // get_model_picker_state, which is scoped to the active provider.
+  // `useModelSelection` already refreshes once on mount, so no extra effect is
+  // needed here.
+  const { activeModel, availableModels, setActiveModel } = useModelSelection();
+
   useEffect(() => {
     let unlistenLoaded: (() => void) | null = null;
     let unlistenEvicted: (() => void) | null = null;
@@ -160,6 +176,9 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
     setCtxPos(ctxToPos(nextCtx));
     setCtxChip(String(nextCtx));
     resetNumCtx(nextCtx);
+    if (!ollamaUrlFocusedRef.current) {
+      setOllamaUrl(ollamaBaseUrl);
+    }
   }
 
   function commitCtx(v: number) {
@@ -177,30 +196,83 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
       .catch(() => setEjecting(false));
   }
 
+  function commitOllamaUrl() {
+    const next = ollamaUrl.trim();
+    if (next === ollamaBaseUrl) return;
+    void invoke<RawAppConfig>('set_ollama_url', { baseUrl: next })
+      .then((cfg) => onSaved(cfg))
+      .catch(() => {
+        // Save failed: revert the field to the persisted value so the input
+        // never shows a URL the backend did not accept.
+        setOllamaUrl(ollamaBaseUrl);
+      });
+  }
+
+  const modelValue =
+    activeModel && availableModels.includes(activeModel)
+      ? activeModel
+      : (availableModels[0] ?? '');
+
   const ctxTurns = Math.round(numCtx / TOKENS_PER_TURN_ESTIMATE);
   const fillPct = `${ctxPos / 10}%`;
 
   return (
     <>
-      <Section heading="Ollama">
-        <SaveField
-          section="inference"
-          fieldKey="ollama_url"
+      <Section heading="Providers">
+        <div className={styles.providerRow}>
+          <span className={styles.providerName}>Built-in (Thuki)</span>
+          <span className={styles.providerBadge}>
+            Available in an upcoming version
+          </span>
+        </div>
+
+        <div className={styles.providerName}>Ollama</div>
+        <SettingRow
           label="Ollama URL"
-          helper={configHelp('inference', 'ollama_url')}
-          initialValue={config.inference.ollama_url}
-          resyncToken={resyncToken}
-          onSaved={onSaved}
-          render={(value, setValue, errored) => (
-            <TextField
-              value={value}
-              onChange={setValue}
-              placeholder={config.inference.ollama_url}
-              errored={errored}
-              ariaLabel="Ollama URL"
+          helper={configHelp('inference', 'ollama_base_url')}
+        >
+          <input
+            type="text"
+            className={styles.input}
+            value={ollamaUrl}
+            aria-label="Ollama URL"
+            spellCheck={false}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            placeholder="http://127.0.0.1:11434"
+            onFocus={() => {
+              ollamaUrlFocusedRef.current = true;
+            }}
+            onChange={(e) => setOllamaUrl(e.target.value)}
+            onBlur={() => {
+              ollamaUrlFocusedRef.current = false;
+              commitOllamaUrl();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            }}
+          />
+        </SettingRow>
+        {isNonLocalUrl(ollamaUrl) && (
+          <p className={styles.providerWarning} role="alert">
+            This points Thuki at a non-local Ollama server. You are responsible
+            for securing it: prefer a VPN/Tailscale or SSH tunnel over exposing
+            the port directly.
+          </p>
+        )}
+        <SettingRow label="Model">
+          {availableModels.length > 0 ? (
+            <Dropdown
+              value={modelValue}
+              options={availableModels}
+              onChange={(m) => void setActiveModel(m)}
+              ariaLabel="Active Ollama model"
             />
+          ) : (
+            <span className={styles.providerHint}>No models installed</span>
           )}
-        />
+        </SettingRow>
       </Section>
 
       <Section heading="Keep Warm">

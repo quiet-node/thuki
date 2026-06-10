@@ -157,7 +157,9 @@ pub fn warm_up_model(
         let cfg = config.read();
         let endpoint = format!(
             "{}/api/chat",
-            cfg.inference.ollama_url.trim_end_matches('/')
+            cfg.inference
+                .active_provider_base_url()
+                .trim_end_matches('/')
         );
         let system_prompt = cfg.prompt.resolved_system.clone();
         let keep_alive = if cfg.inference.keep_warm_inactivity_minutes == 0 {
@@ -227,7 +229,11 @@ pub async fn get_loaded_model(
     if let Some(model) = model {
         let endpoint = format!(
             "{}/api/ps",
-            config.read().inference.ollama_url.trim_end_matches('/')
+            config
+                .read()
+                .inference
+                .active_provider_base_url()
+                .trim_end_matches('/')
         );
         get_loaded_model_request(&endpoint, &model, client.inner()).await
     } else {
@@ -276,7 +282,11 @@ pub async fn evict_model(
     if let Some(model) = model {
         let endpoint = format!(
             "{}/api/generate",
-            config.read().inference.ollama_url.trim_end_matches('/')
+            config
+                .read()
+                .inference
+                .active_provider_base_url()
+                .trim_end_matches('/')
         );
         evict_model_request(&endpoint, &model, client.inner()).await?;
         // Suppress any in-flight warmup callback so a slow warmup that
@@ -322,7 +332,7 @@ pub fn spawn_vram_poller(app_handle: tauri::AppHandle) {
                             .state::<parking_lot::RwLock<crate::config::AppConfig>>()
                             .read()
                             .inference
-                            .ollama_url
+                            .active_provider_base_url()
                             .trim_end_matches('/')
                     );
                     let client = app_handle.state::<reqwest::Client>().inner().clone();

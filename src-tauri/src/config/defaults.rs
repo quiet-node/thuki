@@ -5,8 +5,29 @@
 //! Changing a default here propagates to a fresh first-run config file and to
 //! any field a user has left unset or left empty in their existing file.
 
-/// Default Ollama HTTP endpoint (loopback, standard port).
+/// Default Ollama HTTP endpoint (loopback, standard port). Seed value for the
+/// Ollama provider's `base_url` on a fresh install or after a migration.
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
+
+/// Stable provider ids. `active_provider` references one of these.
+pub const PROVIDER_ID_BUILTIN: &str = "builtin";
+pub const PROVIDER_ID_OLLAMA: &str = "ollama";
+
+/// Provider kinds understood by the loader. Providers with any other kind are
+/// dropped during resolution.
+pub const PROVIDER_KIND_BUILTIN: &str = "builtin";
+pub const PROVIDER_KIND_OLLAMA: &str = "ollama";
+
+/// Human-readable provider labels shown in Settings.
+pub const DEFAULT_BUILTIN_LABEL: &str = "Built-in (Thuki)";
+pub const DEFAULT_OLLAMA_LABEL: &str = "Ollama";
+
+/// Provider Thuki sends inference to on a fresh install.
+///
+/// Phase 1 ships no built-in engine, so a new install defaults to the Ollama
+/// provider (the only functional kind in this phase). Phase 2 flips this to
+/// `PROVIDER_ID_BUILTIN` when the bundled engine lands.
+pub const DEFAULT_ACTIVE_PROVIDER: &str = PROVIDER_ID_OLLAMA;
 
 /// Default inactivity window before Thuki tells Ollama to release the model.
 /// 0 means do not manage: Ollama's own 5-minute default applies.
@@ -298,8 +319,8 @@ pub const MAX_MODEL_SLUG_LEN: usize = 256;
 ///
 /// Order matches `AppConfig` field ordering for review-friendliness.
 pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
-    // [inference]
-    ("inference", "ollama_url"),
+    // [inference] — active_provider and the providers array are not flat fields;
+    // they are written via set_active_model / set_ollama_url, not set_config_field.
     ("inference", "keep_warm_inactivity_minutes"),
     ("inference", "num_ctx"),
     // [prompt]

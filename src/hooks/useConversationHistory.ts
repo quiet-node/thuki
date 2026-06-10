@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { Message } from './useOllama';
+import type { Message } from './useModel';
 import type {
   IterationTrace,
   SearchMetadata,
@@ -252,7 +252,7 @@ function fromPersisted(msg: PersistedMessage): Message {
  * Tracks whether the active conversation has been saved to SQLite and provides
  * typed wrappers around all history-related Tauri commands. Intentionally has
  * no knowledge of streaming state or window management - those live in App.tsx
- * and `useOllama`.
+ * and `useModel`.
  *
  * @returns An object containing the current persistence state and all
  *   history operation callbacks.
@@ -422,7 +422,7 @@ export function useConversationHistory() {
    * Clears the local persistence state, marking the session as unsaved.
    *
    * Does NOT call `reset_conversation` on the backend. When clearing the
-   * full session (new conversation), call `useOllama.reset()` alongside this
+   * full session (new conversation), call `useModel.reset()` alongside this
    * so the backend history is also wiped. When only marking a conversation as
    * unsaved while keeping messages visible (e.g. after deletion from history),
    * calling this alone is correct - `persistTurn` will no-op and the backend
