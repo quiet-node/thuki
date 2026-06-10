@@ -39,6 +39,10 @@ num_ctx = 16384
 # 0 = let Ollama manage (its own 5-minute default applies).
 # -1 = never release. Applies to the Ollama provider only.
 keep_warm_inactivity_minutes = 0
+# Minutes of inactivity before Thuki stops the built-in engine to free RAM.
+# 0 keeps the model loaded indefinitely for instant first tokens (default).
+# Applies to the built-in engine only. Valid range: 0-1440.
+idle_unload_minutes = 0
 
 # One block per provider. The built-in entry is always present. A provider's
 # selected model lives on its own `model` field (empty until you pick one in
@@ -143,6 +147,7 @@ Upgrading from an older version is automatic: a pre-providers config with a flat
 | `active_provider` | `"ollama"` | Yes      | id of a provider    | Which provider receives inference. Must match the `id` of one of the `[[inference.providers]]` entries; an empty or dangling value resets to `ollama`. Phase 1: leave this on `ollama` (the Built-in engine is not available yet).                                                                                                                                                                                                                                                                                              |
 | `num_ctx`         | `16384`    | Yes      | `[2048, 1048576]`   | Context window size in tokens sent to the active provider with every request. Warmup and chat share this value so Ollama reuses the same runner instance and its cached KV prefix for the system prompt: they must match or Ollama creates a second runner and the warmup saves nothing. Ollama silently clamps this to the model's physical maximum. Raise to fit longer conversations: each doubling roughly doubles VRAM for the KV cache; lower to reclaim GPU memory. See [Tuning the Context Window](./tuning-context-window.md). |
 | `keep_warm_inactivity_minutes` | `0` | Yes | `-1` or `[0, 1440]` | Minutes of inactivity before Thuki tells Ollama to release the model from VRAM. Applies to the Ollama provider only. `0` means do not manage: Ollama's own 5-minute default applies. `-1` means never release. Raise for longer sessions between uses; lower to reclaim VRAM sooner.                                                                                                                                                                                                                                            |
+| `idle_unload_minutes`          | `0` | Yes | `[0, 1440]`         | Minutes of inactivity before Thuki stops the built-in engine to free RAM. Applies to the built-in engine only; the Ollama provider uses `keep_warm_inactivity_minutes` instead. `0` keeps the model loaded indefinitely so the first token after a pause stays instant. Raise to free RAM on an idle Mac; keep `0` for instant first tokens.                                                                                                                                                                                   |
 
 Each `[[inference.providers]]` block has these fields:
 

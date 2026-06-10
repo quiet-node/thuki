@@ -54,6 +54,15 @@ pub const BOUNDS_NUM_CTX: (u32, u32) = (2048, 1_048_576);
 /// Values below -1 or above 1440 are clamped to the compiled default.
 pub const BOUNDS_KEEP_WARM_INACTIVITY_MINUTES: (i32, i32) = (-1, 1440);
 
+/// Minutes of inactivity before Thuki stops the built-in engine to free RAM.
+/// 0 disables auto-unload: the model stays loaded and the first token stays
+/// instant (the default). Positive values free RAM after N idle minutes at
+/// the cost of a cold reload on the next message. Applies to the built-in engine only; the
+/// Ollama provider keeps `keep_warm_inactivity_minutes` (note the different
+/// meaning of 0 there: "use Ollama's own default").
+pub const DEFAULT_IDLE_UNLOAD_MINUTES: u32 = 0;
+pub const BOUNDS_IDLE_UNLOAD_MINUTES: (u32, u32) = (0, 1440);
+
 /// Built-in secretary persona prompt. User overrides via `[prompt] system` in
 /// the config file. The slash-command appendix is composed on top at load time
 /// and is never written back to the file.
@@ -322,6 +331,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     // [inference] — active_provider and the providers array are not flat fields;
     // they are written via set_active_model / set_ollama_url, not set_config_field.
     ("inference", "keep_warm_inactivity_minutes"),
+    ("inference", "idle_unload_minutes"),
     ("inference", "num_ctx"),
     // [prompt]
     ("prompt", "system"),

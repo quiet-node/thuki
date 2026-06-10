@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 
 use super::defaults::{
     DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_BUILTIN_LABEL,
-    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX,
-    DEFAULT_OLLAMA_LABEL, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_IDLE_UNLOAD_MINUTES, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_LABEL, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
     DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
     DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
     DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
@@ -99,6 +99,10 @@ pub struct InferenceSection {
     /// 5-minute default applies). -1 means keep indefinitely. Valid range: -1
     /// or 0..=1440.
     pub keep_warm_inactivity_minutes: i32,
+    /// Minutes of inactivity before the built-in engine is stopped to free
+    /// RAM. 0 keeps the model loaded indefinitely (default). Built-in only;
+    /// Ollama keeps `keep_warm_inactivity_minutes`. Valid range: 0..=1440.
+    pub idle_unload_minutes: u32,
     /// The configured providers. Always contains the built-in entry after
     /// resolution. The field-level `#[serde(default)]` defaults a *missing*
     /// `providers` key to an empty Vec (not the seeded pair), so the loader can
@@ -119,6 +123,7 @@ impl Default for InferenceSection {
             active_provider: DEFAULT_ACTIVE_PROVIDER.to_string(),
             num_ctx: DEFAULT_NUM_CTX,
             keep_warm_inactivity_minutes: DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+            idle_unload_minutes: DEFAULT_IDLE_UNLOAD_MINUTES,
             providers: default_providers(),
             legacy_ollama_url: None,
         }
