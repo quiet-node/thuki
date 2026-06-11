@@ -936,12 +936,15 @@ pub async fn ask_model(
         }
     };
 
-    // Snapshot the active model slug; drop the guard before any `.await`.
-    let model_name = {
+    // Snapshot the picker-backed active model; drop the guard before any
+    // `.await`. It is only a fallback: `Builtin` routes carry their model in
+    // the provider config (kept fresh by `persist_active_provider_model`), so
+    // a builtin chat must not depend on this snapshot.
+    let snapshot = {
         let guard = active_model.0.lock().map_err(|e| e.to_string())?;
         guard.clone()
     };
-    let Some(model_name) = model_name else {
+    let Some(model_name) = model_for_route(&route, snapshot) else {
         // Defense in depth: the onboarding gate already refuses to open the
         // overlay without a selected model, so this branch only fires if the
         // user removed their last installed model with `ollama rm` between

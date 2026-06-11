@@ -309,7 +309,10 @@ fn read_provider_model_context(
 
 /// Writes `slug` onto the active provider's `model` field in config.toml and
 /// swaps the resolved result into the shared in-memory config. Replaces the
-/// former SQLite `set_config(ACTIVE_MODEL_KEY, ...)` persistence.
+/// former SQLite `set_config(ACTIVE_MODEL_KEY, ...)` persistence. When the
+/// written provider is the active one, also refreshes the managed
+/// [`ActiveModelState`] mirror so chat sees the new selection without a
+/// restart (e.g. a builtin download finishing via `finalize_install`).
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn persist_active_provider_model(
     app: &tauri::AppHandle,
@@ -321,8 +324,35 @@ fn persist_active_provider_model(
     let resolved =
         crate::settings_commands::write_provider_field_to_disk(&path, provider_id, "model", slug)
             .map_err(|e| e.to_string())?;
+    let mirror = should_refresh_active_model(provider_id, &resolved);
     *config.write() = resolved;
+    if let Some(mirror) = mirror {
+        let active = app.state::<ActiveModelState>();
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        *guard = mirror;
+    }
     Ok(())
+}
+
+/// Decides whether a provider-model write must be mirrored into the managed
+/// [`ActiveModelState`]. Returns `Some(new_value)` only when `provider_id` is
+/// the resolved config's active provider (the mirror tracks the active
+/// provider only); the value is the resolved model with empty mapped to
+/// `None` (the delete-model clear path writes ""). Pure so the decision is
+/// unit-tested even though the persisting wrapper is coverage-off.
+pub(crate) fn should_refresh_active_model(
+    provider_id: &str,
+    resolved: &AppConfig,
+) -> Option<Option<String>> {
+    if resolved.inference.active_provider != provider_id {
+        return None;
+    }
+    Some(
+        resolved
+            .inference
+            .active_provider_model_opt()
+            .map(str::to_string),
+    )
 }
 
 /// Pure helper that shapes the `get_model_picker_state` payload. Extracted so
@@ -3547,6 +3577,51 @@ mod tests {
         // No builtin entry at all: empty.
         cfg.inference.providers.clear();
         assert_eq!(builtin_provider_model(&cfg), "");
+    }
+
+    // ── should_refresh_active_model ──────────────────────────────────────────
+
+    /// Helper: an `AppConfig` whose single provider `id` is active with `model`.
+    fn config_with_active_provider(id: &str, model: &str) -> AppConfig {
+        use crate::config::schema::Provider;
+        let mut cfg = AppConfig::default();
+        cfg.inference.active_provider = id.to_string();
+        cfg.inference.providers = vec![Provider {
+            id: id.to_string(),
+            kind: PROVIDER_KIND_BUILTIN.to_string(),
+            label: "Test".to_string(),
+            base_url: String::new(),
+            model: model.to_string(),
+            vision: false,
+        }];
+        cfg
+    }
+
+    #[test]
+    fn should_refresh_active_model_mirrors_active_provider_write() {
+        // Writing the active provider's model refreshes the mirror with the
+        // resolved slug (the download-finished path).
+        let cfg = config_with_active_provider("builtin", "o/r:w.gguf");
+        assert_eq!(
+            should_refresh_active_model("builtin", &cfg),
+            Some(Some("o/r:w.gguf".to_string()))
+        );
+    }
+
+    #[test]
+    fn should_refresh_active_model_clears_mirror_on_empty_slug() {
+        // The delete-model path writes "": the mirror must clear, not keep a
+        // stale slug.
+        let cfg = config_with_active_provider("builtin", "");
+        assert_eq!(should_refresh_active_model("builtin", &cfg), Some(None));
+    }
+
+    #[test]
+    fn should_refresh_active_model_ignores_non_active_provider() {
+        // A write to a provider that is not active never touches the mirror;
+        // it tracks the active provider only.
+        let cfg = config_with_active_provider("ollama", "gemma3:12b");
+        assert_eq!(should_refresh_active_model("builtin", &cfg), None);
     }
 
     // ── Model library: system RAM probe ──────────────────────────────────────
