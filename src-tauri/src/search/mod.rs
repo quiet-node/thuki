@@ -69,29 +69,26 @@ pub async fn search_pipeline(
     app_config: State<'_, parking_lot::RwLock<AppConfig>>,
     active_model_state: State<'_, ActiveModelState>,
     trace_recorder: State<'_, Arc<LiveTraceRecorder>>,
+    db: State<'_, crate::history::Database>,
+    model_store: State<'_, crate::models::storage::ModelStore>,
+    engine: State<'_, crate::engine::runner::EngineHandle>,
+    secrets: State<'_, crate::keychain::Secrets>,
 ) -> Result<(), String> {
     // Snapshot the config once so the entire pipeline sees a consistent view
     // even if the user edits Settings while a search is in flight.
     let app_config = app_config.read().clone();
 
-    // Route by provider kind, mirroring `ask_model`. Phase 1 implements only
-    // the native Ollama path; a non-Ollama active provider cannot serve a
-    // search turn, so surface the same typed "not available yet" error the
-    // chat path emits instead of building a hostless `/api/chat` endpoint.
-    {
-        let kind = app_config.inference.active_provider_kind();
-        let label = app_config
-            .inference
-            .active()
-            .map(|p| p.label.as_str())
-            .unwrap_or("");
-        if let Some(err) = crate::commands::unsupported_provider_error(kind, label) {
-            let _ = on_event.send(SearchEvent::Error {
-                message: err.message,
-            });
+    // Route by the active provider's kind, mirroring `ask_model`. A builtin
+    // provider with no model picked surfaces as `NoModelSelected` here, so
+    // the frontend keeps `is_first_turn` armed exactly like the
+    // ActiveModelState bail below.
+    let route = match crate::commands::resolve_chat_route(&app_config.inference) {
+        Ok(route) => route,
+        Err(err) => {
+            let _ = on_event.send(route_failure_event(err));
             return Ok(());
         }
-    }
+    };
 
     // Resolve the runtime search view from the loaded TOML. The single
     // source of truth lives in `config::defaults`; the loader has already
@@ -101,12 +98,13 @@ pub async fn search_pipeline(
 
     // Snapshot the active model slug once from the picker-backed
     // ActiveModelState; drop the guard before any `.await` so we never
-    // hold a `MutexGuard` across an await point.
-    let model_name = {
+    // hold a `MutexGuard` across an await point. Builtin routes carry their
+    // model in the provider config instead (see `commands::model_for_route`).
+    let active_model = {
         let guard = active_model_state.0.lock().map_err(|e| e.to_string())?;
         guard.clone()
     };
-    let Some(model_name) = model_name else {
+    let Some(model_name) = crate::commands::model_for_route(&route, active_model) else {
         // Mirrors the chat-path gate: refuse to dispatch with no active
         // model. The frontend strip already steers the user to the picker
         // before this point, so this branch is defense-in-depth for the
@@ -133,13 +131,25 @@ pub async fn search_pipeline(
         return Ok(());
     }
 
-    let ollama_endpoint = format!(
-        "{}/api/chat",
-        app_config
-            .inference
-            .active_provider_base_url()
-            .trim_end_matches('/')
-    );
+    // Resolve the wire transport. For the builtin route this marks engine
+    // activity and ensures the sidecar serves the selected model before any
+    // pipeline stage issues an LLM call.
+    let transport = match crate::commands::resolve_llm_transport(
+        route,
+        &db,
+        &model_store,
+        &engine,
+        secrets.0.as_ref(),
+        app_config.inference.num_ctx,
+    )
+    .await
+    {
+        Ok(transport) => transport,
+        Err(err) => {
+            let _ = on_event.send(transport_failure_event(err));
+            return Ok(());
+        }
+    };
     let cancel_token = CancellationToken::new();
     generation.set_token(cancel_token.clone());
 
@@ -197,7 +207,7 @@ pub async fn search_pipeline(
     let token_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let router = pipeline::DefaultRouterJudge::new(
-        ollama_endpoint.clone(),
+        transport.clone(),
         model_name.clone(),
         (*client).clone(),
         cancel_token.clone(),
@@ -207,7 +217,7 @@ pub async fn search_pipeline(
         Arc::clone(&recorder),
     );
     let judge = pipeline::DefaultJudge::new(
-        ollama_endpoint.clone(),
+        transport.clone(),
         model_name.clone(),
         (*client).clone(),
         cancel_token.clone(),
@@ -219,7 +229,7 @@ pub async fn search_pipeline(
     let recorder_for_pump = Arc::clone(&recorder);
     let token_count_for_pump = Arc::clone(&token_count);
     let result = pipeline::run_agentic(
-        &ollama_endpoint,
+        &transport,
         &searxng_endpoint,
         &runtime_config.reader_url,
         &model_name,
@@ -286,4 +296,77 @@ pub async fn search_pipeline(
 
     generation.clear_token();
     Ok(())
+}
+
+/// Maps a [`crate::commands::resolve_chat_route`] failure onto the search
+/// event stream. A builtin provider with no model picked must surface as the
+/// typed `NoModelSelected` event (keeping the frontend's `is_first_turn`
+/// armed), not as a generic error bubble; every other route failure carries
+/// its user-facing message.
+fn route_failure_event(err: crate::commands::EngineError) -> SearchEvent {
+    if err.kind == crate::commands::EngineErrorKind::NoModelSelected {
+        SearchEvent::NoModelSelected
+    } else {
+        SearchEvent::Error {
+            message: err.message,
+        }
+    }
+}
+
+/// Maps a [`crate::commands::resolve_llm_transport`] failure onto the search
+/// event stream. `Superseded` means a newer settings change preempted the
+/// engine ensure: a cancellation, never an error. Engine failures (start
+/// failure, missing manifest row) carry their user-facing message.
+fn transport_failure_event(err: crate::commands::TransportError) -> SearchEvent {
+    match err {
+        crate::commands::TransportError::Superseded => SearchEvent::Cancelled,
+        crate::commands::TransportError::Engine(e) => SearchEvent::Error { message: e.message },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::{ChatRoute, EngineError, EngineErrorKind, TransportError};
+
+    #[test]
+    fn route_failure_event_maps_no_model_to_typed_event() {
+        let event = route_failure_event(EngineError {
+            kind: EngineErrorKind::NoModelSelected,
+            message: "No model selected\nPick or download a model in Settings.".to_string(),
+        });
+        assert!(matches!(event, SearchEvent::NoModelSelected));
+    }
+
+    #[test]
+    fn route_failure_event_maps_other_kinds_to_error_message() {
+        let event = route_failure_event(EngineError {
+            kind: EngineErrorKind::Other,
+            message: "Something went wrong\nThe active provider has an unknown kind.".to_string(),
+        });
+        assert!(matches!(
+            event,
+            SearchEvent::Error { message } if message.contains("unknown kind")
+        ));
+    }
+
+    #[test]
+    fn transport_failure_event_maps_superseded_to_cancelled() {
+        assert!(matches!(
+            transport_failure_event(TransportError::Superseded),
+            SearchEvent::Cancelled
+        ));
+    }
+
+    #[test]
+    fn transport_failure_event_maps_engine_error_to_message() {
+        let event = transport_failure_event(TransportError::Engine(EngineError {
+            kind: EngineErrorKind::EngineStartFailed,
+            message: "Thuki's engine could not start.\nspawn boom".to_string(),
+        }));
+        assert!(matches!(
+            event,
+            SearchEvent::Error { message } if message.contains("could not start")
+        ));
+    }
 }
