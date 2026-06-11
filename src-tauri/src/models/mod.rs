@@ -25,10 +25,12 @@ use std::sync::Mutex;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 
 use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
-    MAX_MODEL_SLUG_LEN, MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES,
+    HF_API_TIMEOUT_SECS, HF_BASE_URL, MAX_HF_API_BODY_BYTES, MAX_MODEL_SLUG_LEN,
+    MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES, PROVIDER_ID_BUILTIN,
 };
 use crate::config::AppConfig;
 
@@ -787,6 +789,706 @@ async fn reconcile_capabilities(
         }
     }
     hits
+}
+
+// ─── Model library (built-in engine downloads) ──────────────────────────────
+
+/// Stable error returned when a repo id fails [`is_valid_repo_id`].
+const INVALID_REPO_ID_ERR: &str = "invalid Hugging Face repo id";
+
+/// Cancellation handle for the (at most one) in-flight model download.
+/// `Some` while a download is running; `None` otherwise. Claimed atomically
+/// via [`claim_download`] so a second download cannot start until the first
+/// completes, fails, or is cancelled.
+#[derive(Default)]
+pub struct DownloadState(pub std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>);
+
+/// Atomically claims the single download slot. Returns a fresh cancellation
+/// token on success; an error when another download already holds the slot
+/// (or the lock is poisoned).
+pub fn claim_download(
+    state: &DownloadState,
+) -> Result<tokio_util::sync::CancellationToken, String> {
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    if guard.is_some() {
+        return Err("a download is already in progress".to_string());
+    }
+    let token = tokio_util::sync::CancellationToken::new();
+    *guard = Some(token.clone());
+    Ok(token)
+}
+
+/// Clears the download slot. Best-effort: a poisoned lock is ignored because
+/// release runs on the task teardown path where there is nothing left to do.
+pub fn release_download(state: &DownloadState) {
+    if let Ok(mut guard) = state.0.lock() {
+        *guard = None;
+    }
+}
+
+/// Cancels the in-flight download's token, if one is claimed. Does NOT clear
+/// the slot: the download task notices the cancellation, emits `Cancelled`,
+/// and releases the slot itself.
+pub fn cancel_active_download(state: &DownloadState) {
+    if let Ok(guard) = state.0.lock() {
+        if let Some(token) = guard.as_ref() {
+            token.cancel();
+        }
+    }
+}
+
+/// True when a finished download should be recorded as installed: the run
+/// succeeded AND the user did not cancel between the last event and teardown.
+pub fn should_finalize(result_ok: bool, cancelled: bool) -> bool {
+    result_ok && !cancelled
+}
+
+/// One starter row for the download picker: the compile-time registry entry
+/// plus the machine-specific runtime facts the UI renders next to it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StarterOption {
+    /// The curated registry entry (tier, repo, sizes, license).
+    pub starter: registry::Starter,
+    /// RAM-fit badge for this machine.
+    pub fit: registry::RamFit,
+    /// Whether the starter is already recorded in the installed manifest.
+    pub installed: bool,
+    /// Length of an interrupted download's partial file, when one exists.
+    pub partial_bytes: Option<u64>,
+}
+
+/// Builds the starter picker rows from the manifest, the blob store's partial
+/// slots, and the machine's RAM. A manifest read error degrades to "not
+/// installed" rather than failing the whole picker.
+pub fn build_starter_options(
+    conn: &rusqlite::Connection,
+    store: &storage::ModelStore,
+    ram_bytes: u64,
+) -> Vec<StarterOption> {
+    registry::STARTERS
+        .iter()
+        .map(|s| StarterOption {
+            starter: s.clone(),
+            fit: registry::ram_fit(s.est_runtime_gb, ram_bytes),
+            installed: matches!(
+                manifest::get(conn, &registry::to_installed_model(s).id),
+                Ok(Some(_))
+            ),
+            partial_bytes: store.existing_partial_len(s.sha256),
+        })
+        .collect()
+}
+
+/// Maps a frontend tier string (`"fast" | "balanced" | "smartest"`) onto its
+/// curated starter. Every [`registry::Tier`] has exactly one `STARTERS`
+/// entry (asserted by registry tests), so the lookup is total.
+pub fn starter_for_tier(tier: &str) -> Result<&'static registry::Starter, String> {
+    let tier = match tier {
+        "fast" => registry::Tier::Fast,
+        "balanced" => registry::Tier::Balanced,
+        "smartest" => registry::Tier::Smartest,
+        other => return Err(format!("unknown starter tier: {other}")),
+    };
+    Ok(registry::STARTERS
+        .iter()
+        .find(|s| s.tier == tier)
+        .expect("every tier has a starter"))
+}
+
+/// The builtin provider's currently configured model id (empty when none).
+pub fn builtin_provider_model(config: &AppConfig) -> String {
+    config
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == PROVIDER_ID_BUILTIN)
+        .map(|p| p.model.clone())
+        .unwrap_or_default()
+}
+
+/// True when `repo` is a well-formed Hugging Face repo id: exactly two
+/// non-empty segments of `[A-Za-z0-9_.-]` joined by one `/`. Validated before
+/// the id is embedded in any URL so it cannot smuggle path or query syntax.
+pub fn is_valid_repo_id(repo: &str) -> bool {
+    let mut parts = repo.split('/');
+    let (Some(org), Some(name), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    let segment_ok = |s: &str| {
+        !s.is_empty()
+            && s != "."
+            && s != ".."
+            && s.bytes().any(|b| b.is_ascii_alphanumeric())
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    };
+    segment_ok(org) && segment_ok(name)
+}
+
+/// Quantisation token extracted from a GGUF file name: the first `-`/`.`
+/// separated token that contains `Q` and is made of uppercase letters,
+/// digits, and underscores (e.g. `Q4_K_M`, `IQ4_XS`). Empty when none.
+pub fn quant_from_filename(file: &str) -> String {
+    let stem = file.strip_suffix(".gguf").unwrap_or(file);
+    stem.split(['-', '.'])
+        .find(|t| {
+            !t.is_empty()
+                && t.contains('Q')
+                && t.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        })
+        .map(str::to_string)
+        .unwrap_or_default()
+}
+
+/// A `.gguf` entry in a Hugging Face repo listing, for the paste-a-repo UI.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HfGgufFile {
+    /// File name within the repo (`rfilename`).
+    pub file: String,
+    /// File size in bytes; 0 when the API reports no size.
+    pub size_bytes: u64,
+}
+
+/// Subset of the HF `/api/models/<repo>?blobs=true` response Thuki consumes.
+#[derive(Deserialize)]
+struct HfRepoInfo {
+    /// Current commit SHA of the repo's default branch; pinned as the
+    /// manifest revision so later repo pushes cannot change what was vetted.
+    #[serde(default)]
+    sha: Option<String>,
+    #[serde(default)]
+    siblings: Vec<HfSibling>,
+}
+
+/// One repo file in the HF listing. Only LFS-backed `.gguf` files matter.
+#[derive(Deserialize)]
+struct HfSibling {
+    #[serde(default)]
+    rfilename: String,
+    /// Plain (non-LFS) size; fallback for the file browser listing.
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    lfs: Option<HfLfs>,
+}
+
+/// LFS pointer metadata: the digest the downloader verifies against.
+#[derive(Deserialize)]
+struct HfLfs {
+    #[serde(default)]
+    sha256: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+/// The sibling's LFS digest and size, when both are present.
+fn lfs_digest(s: &HfSibling) -> Option<(String, u64)> {
+    let lfs = s.lfs.as_ref()?;
+    Some((lfs.sha256.clone()?, lfs.size?))
+}
+
+/// What a pasted repo id + file resolves to: the pinned commit, the weights
+/// digest, and the vision companion when the repo ships an mmproj file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoResolved {
+    /// 40-hex commit SHA reported by the API at resolve time.
+    pub revision: String,
+    /// Lowercase hex SHA-256 of the weights blob.
+    pub weights_sha256: String,
+    /// Weights file size in bytes.
+    pub weights_size_bytes: u64,
+    /// Vision projection companion, when present in the repo.
+    pub mmproj: Option<MmprojCompanion>,
+}
+
+/// An `mmproj*.gguf` sibling shipped next to the weights file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MmprojCompanion {
+    pub file: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+}
+
+/// Pure parse of an HF repo listing into the spec for one target `file`.
+/// Capability rule for pasted repos: vision = an `mmproj*.gguf` sibling with
+/// complete LFS metadata exists; thinking = false (full detection is Phase 3).
+pub fn resolve_listing(body: &[u8], file: &str) -> Result<RepoResolved, String> {
+    let info: HfRepoInfo = serde_json::from_slice(body)
+        .map_err(|e| format!("failed to decode Hugging Face API response: {e}"))?;
+    let revision = info.sha.unwrap_or_default();
+    if !(revision.len() == 40
+        && revision
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+    {
+        return Err("Hugging Face API response carries no valid commit sha".to_string());
+    }
+    let target = info
+        .siblings
+        .iter()
+        .find(|s| s.rfilename == file)
+        .ok_or_else(|| format!("file not found in repo: {file}"))?;
+    let (weights_sha256, weights_size_bytes) =
+        lfs_digest(target).ok_or_else(|| format!("file has no LFS digest metadata: {file}"))?;
+    let mmproj = info
+        .siblings
+        .iter()
+        .filter(|s| s.rfilename.starts_with("mmproj") && s.rfilename.ends_with(".gguf"))
+        .find_map(|s| {
+            lfs_digest(s).map(|(sha256, size_bytes)| MmprojCompanion {
+                file: s.rfilename.clone(),
+                sha256,
+                size_bytes,
+            })
+        });
+    Ok(RepoResolved {
+        revision,
+        weights_sha256,
+        weights_size_bytes,
+        mmproj,
+    })
+}
+
+/// Pure parse of an HF repo listing into the `.gguf` file browser rows.
+/// Excludes `mmproj*` companions: they download alongside their weights file
+/// and are never picked directly.
+pub fn parse_gguf_listing(body: &[u8]) -> Result<Vec<HfGgufFile>, String> {
+    let info: HfRepoInfo = serde_json::from_slice(body)
+        .map_err(|e| format!("failed to decode Hugging Face API response: {e}"))?;
+    Ok(info
+        .siblings
+        .into_iter()
+        .filter(|s| s.rfilename.ends_with(".gguf") && !s.rfilename.starts_with("mmproj"))
+        .map(|s| {
+            let size_bytes = s.lfs.as_ref().and_then(|l| l.size).or(s.size).unwrap_or(0);
+            HfGgufFile {
+                file: s.rfilename,
+                size_bytes,
+            }
+        })
+        .collect())
+}
+
+/// GETs `<base>/api/models/<repo>?blobs=true` with the production timeout and
+/// body cap and returns the raw body bytes.
+async fn fetch_hf_repo_listing(
+    client: &reqwest::Client,
+    base_url: &str,
+    repo: &str,
+) -> Result<Vec<u8>, String> {
+    fetch_hf_repo_listing_inner(
+        client,
+        base_url,
+        repo,
+        std::time::Duration::from_secs(HF_API_TIMEOUT_SECS),
+        MAX_HF_API_BODY_BYTES,
+    )
+    .await
+}
+
+/// Innermost HF metadata fetcher with timeout and body cap configurable so
+/// the cap branches are testable. The cap is enforced incrementally during
+/// the streaming read, mirroring [`fetch_installed_model_names_inner`].
+async fn fetch_hf_repo_listing_inner(
+    client: &reqwest::Client,
+    base_url: &str,
+    repo: &str,
+    timeout: std::time::Duration,
+    max_body_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let url = format!(
+        "{}/api/models/{}?blobs=true",
+        base_url.trim_end_matches('/'),
+        repo
+    );
+    let response = client
+        .get(&url)
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach Hugging Face: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Hugging Face API returned HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+
+    if let Some(declared_len) = response.content_length() {
+        if declared_len as usize > max_body_bytes {
+            return Err(format!(
+                "Hugging Face API response exceeded {max_body_bytes} bytes"
+            ));
+        }
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("failed to read Hugging Face API body: {e}"))?;
+        if buf.len() + chunk.len() > max_body_bytes {
+            return Err(format!(
+                "Hugging Face API response exceeded {max_body_bytes} bytes"
+            ));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    Ok(buf)
+}
+
+/// Validates `repo`, fetches its listing from `base_url`, and resolves the
+/// download spec for `file` (plus the mmproj companion when present).
+/// `base_url` is parameterized so tests point at a mock server; production
+/// passes [`HF_BASE_URL`].
+pub async fn resolve_repo_spec(
+    client: &reqwest::Client,
+    base_url: &str,
+    repo: &str,
+    file: &str,
+) -> Result<RepoResolved, String> {
+    if !is_valid_repo_id(repo) {
+        return Err(INVALID_REPO_ID_ERR.to_string());
+    }
+    let body = fetch_hf_repo_listing(client, base_url, repo).await?;
+    resolve_listing(&body, file)
+}
+
+/// Validates `repo` and returns its `.gguf` file rows for the paste-a-repo
+/// browser. Same API call as [`resolve_repo_spec`].
+pub async fn fetch_repo_gguf_listing(
+    client: &reqwest::Client,
+    base_url: &str,
+    repo: &str,
+) -> Result<Vec<HfGgufFile>, String> {
+    if !is_valid_repo_id(repo) {
+        return Err(INVALID_REPO_ID_ERR.to_string());
+    }
+    let body = fetch_hf_repo_listing(client, base_url, repo).await?;
+    parse_gguf_listing(&body)
+}
+
+/// Download specs for a resolved repo model: weights first, then the mmproj
+/// companion. URL shape matches [`registry::download_specs`]:
+/// `<base>/<repo>/resolve/<revision>/<file>`.
+pub fn repo_download_specs(
+    base_url: &str,
+    repo: &str,
+    file: &str,
+    resolved: &RepoResolved,
+) -> Vec<download::DownloadSpec> {
+    let url = |f: &str| {
+        format!(
+            "{}/{}/resolve/{}/{}",
+            base_url.trim_end_matches('/'),
+            repo,
+            resolved.revision,
+            f
+        )
+    };
+    let mut specs = vec![download::DownloadSpec {
+        url: url(file),
+        file: file.to_string(),
+        sha256: resolved.weights_sha256.clone(),
+        total_bytes: resolved.weights_size_bytes,
+    }];
+    if let Some(mm) = &resolved.mmproj {
+        specs.push(download::DownloadSpec {
+            url: url(&mm.file),
+            file: mm.file.clone(),
+            sha256: mm.sha256.clone(),
+            total_bytes: mm.size_bytes,
+        });
+    }
+    specs
+}
+
+/// Manifest row for a resolved repo model. id = `"<repo>:<file>"`;
+/// display name = the file stem; revision pins the resolve-time commit.
+pub fn repo_installed_model(
+    repo: &str,
+    file: &str,
+    resolved: &RepoResolved,
+) -> manifest::InstalledModel {
+    manifest::InstalledModel {
+        id: format!("{repo}:{file}"),
+        display_name: file.strip_suffix(".gguf").unwrap_or(file).to_string(),
+        repo: repo.to_string(),
+        revision: resolved.revision.clone(),
+        file_name: file.to_string(),
+        sha256: resolved.weights_sha256.clone(),
+        size_bytes: resolved.weights_size_bytes,
+        quant: quant_from_filename(file),
+        vision: resolved.mmproj.is_some(),
+        thinking: false,
+        mmproj_file: resolved.mmproj.as_ref().map(|m| m.file.clone()),
+        mmproj_sha256: resolved.mmproj.as_ref().map(|m| m.sha256.clone()),
+    }
+}
+
+/// Deletion outcome consumed by the thin Tauri wrapper.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeleteOutcome {
+    /// True when the deleted model was the builtin provider's configured
+    /// model, so the wrapper must clear that provider's `model` field.
+    pub clear_builtin: bool,
+}
+
+/// Deletes a model from the manifest and removes the blobs no other row
+/// references. `builtin_model` is the builtin provider's currently configured
+/// model id; deleting it flags `clear_builtin` for the caller.
+pub fn delete_installed_model_inner(
+    conn: &rusqlite::Connection,
+    store: &storage::ModelStore,
+    id: &str,
+    builtin_model: &str,
+) -> Result<DeleteOutcome, String> {
+    let orphans = manifest::delete(conn, id).map_err(|e| e.to_string())?;
+    store.remove_blobs(&orphans).map_err(|e| e.to_string())?;
+    Ok(DeleteOutcome {
+        clear_builtin: builtin_model == id,
+    })
+}
+
+/// Removes the partial file for `sha256` so the next download starts fresh.
+/// Refuses malformed digests (the digest doubles as a file name) and refuses
+/// while a download is running (it may be writing that very partial). Holds
+/// the download-state lock across the removal so a concurrent claim cannot
+/// race the delete.
+pub fn discard_partial_inner(
+    state: &DownloadState,
+    store: &storage::ModelStore,
+    sha256: &str,
+) -> Result<(), String> {
+    if !download::is_valid_sha256(sha256) {
+        return Err("invalid sha256".to_string());
+    }
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    if guard.is_some() {
+        return Err("a download is already in progress".to_string());
+    }
+    match std::fs::remove_file(store.partial_path(sha256)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("failed to remove partial download: {e}")),
+    }
+}
+
+/// Total physical RAM in bytes via `sysctlbyname("hw.memsize")`; 0 when the
+/// syscall fails.
+///
+/// Not covered by the cargo coverage gate: this is a direct OS syscall with
+/// no branching logic beyond error propagation, making instrumentation
+/// meaningless here (mirrors `storage::free_disk_bytes`).
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn system_ram_bytes() -> u64 {
+    let mut value: u64 = 0;
+    let mut len: libc::size_t = std::mem::size_of::<u64>();
+    // SAFETY: `value` is a valid 8-byte buffer and `len` carries its exact
+    // size; `sysctlbyname` writes at most `len` bytes into it on success
+    // (return value 0). The name is a static NUL-terminated literal.
+    unsafe {
+        if libc::sysctlbyname(
+            c"hw.memsize".as_ptr(),
+            &mut value as *mut u64 as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        ) == 0
+        {
+            value
+        } else {
+            0
+        }
+    }
+}
+
+// ─── Model library Tauri commands (thin wrappers) ───────────────────────────
+
+/// Returns the starter picker rows: registry entries annotated with RAM fit,
+/// installed state, and resumable-partial size.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn get_starter_options(
+    db: tauri::State<'_, crate::history::Database>,
+    store: tauri::State<'_, storage::ModelStore>,
+) -> Result<Vec<StarterOption>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(build_starter_options(&conn, &store, system_ram_bytes()))
+}
+
+/// Total physical RAM in bytes, for frontend sizing copy.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn get_system_ram_bytes() -> u64 {
+    system_ram_bytes()
+}
+
+/// Starts downloading a curated starter (`tier` = "fast" | "balanced" |
+/// "smartest"). Progress streams over `on_event`; on success the model is
+/// recorded in the manifest and set as the builtin provider's model.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn download_starter(
+    tier: String,
+    on_event: tauri::ipc::Channel<download::DownloadEvent>,
+    app: tauri::AppHandle,
+    download_state: tauri::State<'_, DownloadState>,
+) -> Result<(), String> {
+    let starter = starter_for_tier(&tier)?;
+    let token = claim_download(&download_state)?;
+    spawn_model_download(
+        app,
+        registry::download_specs(starter),
+        registry::to_installed_model(starter),
+        token,
+        on_event,
+    );
+    Ok(())
+}
+
+/// Starts downloading a pasted-repo model after resolving its digest, size,
+/// pinned revision, and optional mmproj companion from the Hugging Face API.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn download_repo_model(
+    repo: String,
+    file: String,
+    on_event: tauri::ipc::Channel<download::DownloadEvent>,
+    app: tauri::AppHandle,
+    client: tauri::State<'_, reqwest::Client>,
+    download_state: tauri::State<'_, DownloadState>,
+) -> Result<(), String> {
+    let resolved = resolve_repo_spec(&client, HF_BASE_URL, &repo, &file).await?;
+    let token = claim_download(&download_state)?;
+    spawn_model_download(
+        app,
+        repo_download_specs(HF_BASE_URL, &repo, &file, &resolved),
+        repo_installed_model(&repo, &file, &resolved),
+        token,
+        on_event,
+    );
+    Ok(())
+}
+
+/// Lists the `.gguf` files in a Hugging Face repo for the paste-a-repo UI.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn list_hf_repo_ggufs(
+    repo: String,
+    client: tauri::State<'_, reqwest::Client>,
+) -> Result<Vec<HfGgufFile>, String> {
+    fetch_repo_gguf_listing(&client, HF_BASE_URL, &repo).await
+}
+
+/// Cancels the in-flight model download, if any. The download task emits
+/// `Cancelled` and keeps the partial for a later resume.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn cancel_model_download(download_state: tauri::State<'_, DownloadState>) {
+    cancel_active_download(&download_state);
+}
+
+/// Removes the partial file for `sha256` (the user chose Discard over Resume).
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn discard_partial_download(
+    sha256: String,
+    download_state: tauri::State<'_, DownloadState>,
+    store: tauri::State<'_, storage::ModelStore>,
+) -> Result<(), String> {
+    discard_partial_inner(&download_state, &store, &sha256)
+}
+
+/// Returns every installed model from the manifest.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn list_installed_models(
+    db: tauri::State<'_, crate::history::Database>,
+) -> Result<Vec<manifest::InstalledModel>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    manifest::list(&conn).map_err(|e| e.to_string())
+}
+
+/// Deletes an installed model: manifest row, orphaned blobs, and (when it was
+/// the builtin provider's selected model) the provider's `model` field.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn delete_installed_model(
+    id: String,
+    app: tauri::AppHandle,
+    db: tauri::State<'_, crate::history::Database>,
+    store: tauri::State<'_, storage::ModelStore>,
+    config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+) -> Result<(), String> {
+    let builtin_model = builtin_provider_model(&config.read());
+    let outcome = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        delete_installed_model_inner(&conn, &store, &id, &builtin_model)?
+    };
+    if outcome.clear_builtin {
+        persist_active_provider_model(&app, &config, PROVIDER_ID_BUILTIN, "")?;
+    }
+    Ok(())
+}
+
+/// Converts a `finalize_install` error string into the `Failed` event that
+/// should be emitted over the download channel. Pure function; testable without
+/// Tauri state.
+pub(crate) fn finalize_error_event(message: String) -> download::DownloadEvent {
+    download::DownloadEvent::Failed {
+        kind: download::DownloadFailKind::Other,
+        message,
+    }
+}
+
+/// Runs the claimed download on the async runtime: streams events to the
+/// channel, records the manifest row + builtin provider model on success,
+/// and releases the download slot in every outcome.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn spawn_model_download(
+    app: tauri::AppHandle,
+    specs: Vec<download::DownloadSpec>,
+    model: manifest::InstalledModel,
+    token: tokio_util::sync::CancellationToken,
+    on_event: tauri::ipc::Channel<download::DownloadEvent>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let client = app.state::<reqwest::Client>().inner().clone();
+        let on_event_finalize = on_event.clone();
+        let result = {
+            let store = app.state::<storage::ModelStore>();
+            let emit = move |event: download::DownloadEvent| {
+                let _ = on_event.send(event);
+            };
+            download::run_download(&specs, store.inner(), &client, token.clone(), emit).await
+        };
+        if should_finalize(result.is_ok(), token.is_cancelled()) {
+            if let Err(e) = finalize_install(&app, &model) {
+                eprintln!("thuki: [models] failed to record installed model: {e}");
+                let _ = on_event_finalize.send(finalize_error_event(e));
+            }
+        }
+        release_download(&app.state::<DownloadState>());
+    });
+}
+
+/// Records a completed download: manifest insert, then the builtin provider's
+/// `model` field (the active provider is never changed here).
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn finalize_install(
+    app: &tauri::AppHandle,
+    model: &manifest::InstalledModel,
+) -> Result<(), String> {
+    {
+        let db = app.state::<crate::history::Database>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        manifest::insert(&conn, model).map_err(|e| e.to_string())?;
+    }
+    let config = app.state::<parking_lot::RwLock<AppConfig>>();
+    persist_active_provider_model(app, &config, PROVIDER_ID_BUILTIN, &model.id)
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -2006,6 +2708,678 @@ mod tests {
         // Cache writes silently fail on the poisoned lock, but the
         // result map still carries the freshly-fetched value.
         assert!(result["x"].vision);
+    }
+
+    // ── Model library: starter options ───────────────────────────────────────
+
+    /// Build a fresh store rooted at a temporary directory.
+    fn make_store() -> (tempfile::TempDir, storage::ModelStore) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = storage::ModelStore::new(dir.path().to_path_buf()).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn build_starter_options_marks_installed_and_partial() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let (_dir, store) = make_store();
+
+        // First starter is installed (manifest row present); second has an
+        // in-flight partial; third is untouched.
+        let starters = registry::STARTERS;
+        manifest::insert(&conn, &registry::to_installed_model(&starters[0])).unwrap();
+        std::fs::write(store.partial_path(starters[1].sha256), [0u8; 10]).unwrap();
+
+        const GIB: u64 = 1 << 30;
+        let opts = build_starter_options(&conn, &store, 16 * GIB);
+
+        assert_eq!(opts.len(), starters.len());
+        assert_eq!(opts[0].starter, starters[0]);
+        assert!(opts[0].installed);
+        assert_eq!(opts[0].partial_bytes, None);
+        assert!(!opts[1].installed);
+        assert_eq!(opts[1].partial_bytes, Some(10));
+        assert!(!opts[2].installed);
+        assert_eq!(opts[2].partial_bytes, None);
+        // Fit hints come straight from registry::ram_fit at the given RAM.
+        for (opt, s) in opts.iter().zip(starters) {
+            assert_eq!(opt.fit, registry::ram_fit(s.est_runtime_gb, 16 * GIB));
+        }
+    }
+
+    #[test]
+    fn build_starter_options_treats_sql_error_as_not_installed() {
+        let conn = crate::database::open_in_memory().unwrap();
+        conn.execute_batch("DROP TABLE installed_models;").unwrap();
+        let (_dir, store) = make_store();
+        let opts = build_starter_options(&conn, &store, 16 * (1 << 30));
+        assert!(opts.iter().all(|o| !o.installed));
+    }
+
+    #[test]
+    fn starter_option_serializes_for_frontend() {
+        let opt = StarterOption {
+            starter: registry::STARTERS[0].clone(),
+            fit: registry::RamFit::Fits,
+            installed: false,
+            partial_bytes: Some(42),
+        };
+        let v = serde_json::to_value(&opt).unwrap();
+        assert_eq!(v["fit"], serde_json::json!("fits"));
+        assert_eq!(v["installed"], serde_json::json!(false));
+        assert_eq!(v["partial_bytes"], serde_json::json!(42));
+        assert_eq!(v["starter"]["tier"], serde_json::json!("fast"));
+    }
+
+    // ── Model library: tier parsing ──────────────────────────────────────────
+
+    #[test]
+    fn starter_for_tier_parses_and_rejects() {
+        assert_eq!(starter_for_tier("fast").unwrap().tier, registry::Tier::Fast);
+        assert_eq!(
+            starter_for_tier("balanced").unwrap().tier,
+            registry::Tier::Balanced
+        );
+        assert_eq!(
+            starter_for_tier("smartest").unwrap().tier,
+            registry::Tier::Smartest
+        );
+        assert!(starter_for_tier("Fast").is_err());
+        assert!(starter_for_tier("").is_err());
+        assert!(starter_for_tier("turbo").is_err());
+    }
+
+    // ── Model library: download claim ────────────────────────────────────────
+
+    #[test]
+    fn download_claim_rejects_second_concurrent() {
+        let state = DownloadState::default();
+        let token = claim_download(&state).unwrap();
+        assert!(!token.is_cancelled());
+        let err = claim_download(&state).unwrap_err();
+        assert_eq!(err, "a download is already in progress");
+        // Release clears the claim so a new download can start.
+        release_download(&state);
+        assert!(claim_download(&state).is_ok());
+    }
+
+    #[test]
+    fn cancel_active_download_cancels_claimed_token_and_tolerates_idle() {
+        let state = DownloadState::default();
+        // No claim yet: cancelling is a harmless no-op.
+        cancel_active_download(&state);
+        let token = claim_download(&state).unwrap();
+        cancel_active_download(&state);
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn poisoned_download_state_surfaces_errors_and_tolerates_best_effort_ops() {
+        let state = DownloadState::default();
+        let state_ref = std::panic::AssertUnwindSafe(&state.0);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = state_ref.0.lock().unwrap();
+            panic!("poison");
+        });
+        assert!(claim_download(&state).is_err());
+        let (_dir, store) = make_store();
+        assert!(discard_partial_inner(&state, &store, &"a".repeat(64)).is_err());
+        // Best-effort operations must not panic on the poisoned lock.
+        cancel_active_download(&state);
+        release_download(&state);
+    }
+
+    #[test]
+    fn should_finalize_requires_ok_and_not_cancelled() {
+        assert!(should_finalize(true, false));
+        assert!(!should_finalize(true, true));
+        assert!(!should_finalize(false, false));
+        assert!(!should_finalize(false, true));
+    }
+
+    #[test]
+    fn finalize_error_event_produces_failed_other_with_message() {
+        let event = finalize_error_event("disk full".to_string());
+        assert_eq!(
+            event,
+            download::DownloadEvent::Failed {
+                kind: download::DownloadFailKind::Other,
+                message: "disk full".to_string(),
+            }
+        );
+    }
+
+    // ── Model library: repo id validation ────────────────────────────────────
+
+    #[test]
+    fn repo_id_validation_accepts_two_clean_segments_only() {
+        assert!(is_valid_repo_id("ggml-org/gemma-3-4b-it-GGUF"));
+        assert!(is_valid_repo_id("bartowski/phi-4-GGUF"));
+        assert!(is_valid_repo_id("a_b.c-d/e.f_g-h"));
+        assert!(!is_valid_repo_id(""));
+        assert!(!is_valid_repo_id("no-slash"));
+        assert!(!is_valid_repo_id("a/b/c"));
+        assert!(!is_valid_repo_id("/name"));
+        assert!(!is_valid_repo_id("org/"));
+        assert!(!is_valid_repo_id("org/na me"));
+        assert!(!is_valid_repo_id("org/$(whoami)"));
+        assert!(!is_valid_repo_id("org/name?x=1"));
+        assert!(!is_valid_repo_id("örg/name"));
+        // dot and dotdot segments are path-traversal risks; reject them
+        assert!(!is_valid_repo_id("org/.."));
+        assert!(!is_valid_repo_id("../repo"));
+        assert!(!is_valid_repo_id("org/."));
+        assert!(!is_valid_repo_id("./repo"));
+    }
+
+    // ── Model library: quant extraction ──────────────────────────────────────
+
+    #[test]
+    fn quant_from_filename_variants() {
+        assert_eq!(quant_from_filename("phi-4-Q4_K_M.gguf"), "Q4_K_M");
+        assert_eq!(quant_from_filename("gemma-3-4b-it-Q4_K_M.gguf"), "Q4_K_M");
+        assert_eq!(quant_from_filename("model.Q8_0.gguf"), "Q8_0");
+        assert_eq!(quant_from_filename("model-IQ4_XS.gguf"), "IQ4_XS");
+        assert_eq!(quant_from_filename("model-f16.gguf"), "");
+        assert_eq!(quant_from_filename("model-q4_k_m.gguf"), "");
+        assert_eq!(quant_from_filename("no-extension-Q4_0"), "Q4_0");
+        assert_eq!(quant_from_filename(""), "");
+    }
+
+    // ── Model library: HF listing parse ──────────────────────────────────────
+
+    /// Canonical HF `/api/models/<repo>?blobs=true` fixture used across the
+    /// resolve/listing tests. `c…` is the pinned commit; `a…`/`b…` are the
+    /// weights and mmproj digests.
+    fn hf_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "sha": "c".repeat(40),
+            "siblings": [
+                {"rfilename": "README.md", "size": 10},
+                {"rfilename": "model-Q4_K_M.gguf",
+                 "lfs": {"sha256": "a".repeat(64), "size": 1000}},
+                {"rfilename": "mmproj-model-f16.gguf",
+                 "lfs": {"sha256": "b".repeat(64), "size": 200}},
+                {"rfilename": "extra.gguf", "size": 7},
+                {"rfilename": "bare.gguf"}
+            ]
+        })
+    }
+
+    #[test]
+    fn parse_gguf_listing_filters_mmproj_and_non_gguf() {
+        let body = hf_fixture().to_string();
+        let files = parse_gguf_listing(body.as_bytes()).unwrap();
+        assert_eq!(
+            files,
+            vec![
+                HfGgufFile {
+                    file: "model-Q4_K_M.gguf".to_string(),
+                    size_bytes: 1000
+                },
+                HfGgufFile {
+                    file: "extra.gguf".to_string(),
+                    size_bytes: 7
+                },
+                HfGgufFile {
+                    file: "bare.gguf".to_string(),
+                    size_bytes: 0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_gguf_listing_rejects_invalid_json() {
+        let err = parse_gguf_listing(b"not json").unwrap_err();
+        assert!(err.contains("failed to decode"), "got: {err}");
+    }
+
+    #[test]
+    fn hf_gguf_file_serializes_for_frontend() {
+        let v = serde_json::to_value(HfGgufFile {
+            file: "x.gguf".to_string(),
+            size_bytes: 5,
+        })
+        .unwrap();
+        assert_eq!(v, serde_json::json!({"file": "x.gguf", "size_bytes": 5}));
+    }
+
+    // ── Model library: resolve_listing (pure) ───────────────────────────────
+
+    #[test]
+    fn resolve_listing_extracts_weights_revision_and_mmproj() {
+        let body = hf_fixture().to_string();
+        let r = resolve_listing(body.as_bytes(), "model-Q4_K_M.gguf").unwrap();
+        assert_eq!(r.revision, "c".repeat(40));
+        assert_eq!(r.weights_sha256, "a".repeat(64));
+        assert_eq!(r.weights_size_bytes, 1000);
+        let mm = r.mmproj.unwrap();
+        assert_eq!(mm.file, "mmproj-model-f16.gguf");
+        assert_eq!(mm.sha256, "b".repeat(64));
+        assert_eq!(mm.size_bytes, 200);
+    }
+
+    #[test]
+    fn resolve_listing_rejects_invalid_json() {
+        let err = resolve_listing(b"not json", "f.gguf").unwrap_err();
+        assert!(err.contains("failed to decode"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_listing_errors_when_file_missing() {
+        let body = hf_fixture().to_string();
+        let err = resolve_listing(body.as_bytes(), "nope.gguf").unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_listing_errors_when_file_has_no_lfs_digest() {
+        let body = hf_fixture().to_string();
+        // `extra.gguf` exists but carries no lfs block.
+        let err = resolve_listing(body.as_bytes(), "extra.gguf").unwrap_err();
+        assert!(err.contains("LFS"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_listing_errors_on_missing_or_malformed_revision() {
+        for sha in [serde_json::Value::Null, serde_json::json!("main")] {
+            let mut fixture = hf_fixture();
+            fixture["sha"] = sha;
+            let body = fixture.to_string();
+            let err = resolve_listing(body.as_bytes(), "model-Q4_K_M.gguf").unwrap_err();
+            assert!(err.contains("commit"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn resolve_listing_skips_mmproj_without_lfs_and_non_gguf_mmproj() {
+        let body = serde_json::json!({
+            "sha": "c".repeat(40),
+            "siblings": [
+                {"rfilename": "w.gguf", "lfs": {"sha256": "a".repeat(64), "size": 9}},
+                {"rfilename": "mmproj-no-lfs.gguf", "size": 5},
+                {"rfilename": "mmproj-wrong-ext.bin",
+                 "lfs": {"sha256": "b".repeat(64), "size": 5}}
+            ]
+        })
+        .to_string();
+        let r = resolve_listing(body.as_bytes(), "w.gguf").unwrap();
+        assert_eq!(r.mmproj, None);
+    }
+
+    #[test]
+    fn resolve_listing_errors_when_lfs_lacks_sha256() {
+        let body = serde_json::json!({
+            "sha": "c".repeat(40),
+            "siblings": [
+                {"rfilename": "w.gguf", "lfs": {"size": 9}}
+            ]
+        })
+        .to_string();
+        let err = resolve_listing(body.as_bytes(), "w.gguf").unwrap_err();
+        assert!(err.contains("LFS"), "got: {err}");
+    }
+
+    // ── Model library: resolve_repo_spec (HTTP) ──────────────────────────────
+
+    #[tokio::test]
+    async fn resolve_repo_spec_finds_file_and_mmproj() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/models/test-org/test-repo?blobs=true")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(hf_fixture().to_string())
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let r = resolve_repo_spec(
+            &client,
+            &server.url(),
+            "test-org/test-repo",
+            "model-Q4_K_M.gguf",
+        )
+        .await
+        .unwrap();
+
+        mock.assert_async().await;
+        assert_eq!(r.revision, "c".repeat(40));
+        assert_eq!(r.weights_sha256, "a".repeat(64));
+        assert!(r.mmproj.is_some());
+    }
+
+    #[tokio::test]
+    async fn resolve_repo_spec_missing_file_errors() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/models/test-org/test-repo?blobs=true")
+            .with_status(200)
+            .with_body(hf_fixture().to_string())
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let err = resolve_repo_spec(&client, &server.url(), "test-org/test-repo", "nope.gguf")
+            .await
+            .unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn resolve_repo_spec_rejects_bad_repo_id() {
+        // Validation fires before any network work: the bogus base URL would
+        // fail loudly if a request were issued.
+        let client = reqwest::Client::new();
+        let err = resolve_repo_spec(&client, "http://127.0.0.1:9", "no-slash", "w.gguf")
+            .await
+            .unwrap_err();
+        assert!(err.contains("repo id"), "got: {err}");
+    }
+
+    // ── Model library: HF fetch failure modes ────────────────────────────────
+
+    #[tokio::test]
+    async fn hf_fetch_maps_http_error_to_err_string() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/models/o/r?blobs=true")
+            .with_status(500)
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let err = fetch_hf_repo_listing(&client, &server.url(), "o/r")
+            .await
+            .unwrap_err();
+        assert!(err.contains("500"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn hf_fetch_maps_transport_error_to_err_string() {
+        let client = reqwest::Client::new();
+        let err = fetch_hf_repo_listing(&client, "http://127.0.0.1:1", "o/r")
+            .await
+            .unwrap_err();
+        assert!(err.contains("failed to reach Hugging Face"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn hf_fetch_rejects_body_exceeding_size_cap_via_content_length() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/models/o/r?blobs=true")
+            .with_status(200)
+            .with_body("x".repeat(100))
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let err = fetch_hf_repo_listing_inner(
+            &client,
+            &server.url(),
+            "o/r",
+            std::time::Duration::from_secs(5),
+            32,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeded"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn hf_fetch_rejects_body_exceeding_size_cap_when_no_content_length() {
+        // Chunked-encoding response (no Content-Length); the incremental
+        // stream cap must reject when the running total exceeds the limit.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut request_buf = [0u8; 1024];
+            let _ = conn.read(&mut request_buf);
+            let _ = conn.write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0\r\n\r\n",
+            );
+        });
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let err = fetch_hf_repo_listing_inner(
+            &client,
+            &base,
+            "o/r",
+            std::time::Duration::from_secs(5),
+            20,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeded"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn hf_fetch_maps_body_read_error_to_err_string() {
+        // Headers promise 100 body bytes, then the server hangs up.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
+            );
+        });
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let err = fetch_hf_repo_listing(&client, &base, "o/r")
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("failed to read Hugging Face API body"),
+            "got: {err}"
+        );
+    }
+
+    // ── Model library: repo listing wrapper ──────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_repo_gguf_listing_validates_then_lists() {
+        let client = reqwest::Client::new();
+        // Invalid repo id: rejected before any network work.
+        let err = fetch_repo_gguf_listing(&client, "http://127.0.0.1:9", "no-slash")
+            .await
+            .unwrap_err();
+        assert!(err.contains("repo id"), "got: {err}");
+
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/models/o/r?blobs=true")
+            .with_status(200)
+            .with_body(hf_fixture().to_string())
+            .create_async()
+            .await;
+        let files = fetch_repo_gguf_listing(&client, &server.url(), "o/r")
+            .await
+            .unwrap();
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].file, "model-Q4_K_M.gguf");
+    }
+
+    // ── Model library: repo spec/model mapping ───────────────────────────────
+
+    fn sample_resolved(with_mmproj: bool) -> RepoResolved {
+        RepoResolved {
+            revision: "c".repeat(40),
+            weights_sha256: "a".repeat(64),
+            weights_size_bytes: 1000,
+            mmproj: with_mmproj.then(|| MmprojCompanion {
+                file: "mmproj-model-f16.gguf".to_string(),
+                sha256: "b".repeat(64),
+                size_bytes: 200,
+            }),
+        }
+    }
+
+    #[test]
+    fn repo_download_specs_builds_urls_and_optional_mmproj() {
+        let r = sample_resolved(true);
+        let specs = repo_download_specs("https://huggingface.co/", "o/r", "w-Q4_K_M.gguf", &r);
+        assert_eq!(specs.len(), 2);
+        assert_eq!(
+            specs[0].url,
+            format!(
+                "https://huggingface.co/o/r/resolve/{}/w-Q4_K_M.gguf",
+                r.revision
+            )
+        );
+        assert_eq!(specs[0].file, "w-Q4_K_M.gguf");
+        assert_eq!(specs[0].sha256, r.weights_sha256);
+        assert_eq!(specs[0].total_bytes, 1000);
+        assert_eq!(
+            specs[1].url,
+            format!(
+                "https://huggingface.co/o/r/resolve/{}/mmproj-model-f16.gguf",
+                r.revision
+            )
+        );
+        assert_eq!(specs[1].sha256, "b".repeat(64));
+        assert_eq!(specs[1].total_bytes, 200);
+
+        let text_only = sample_resolved(false);
+        let specs = repo_download_specs("https://huggingface.co", "o/r", "w.gguf", &text_only);
+        assert_eq!(specs.len(), 1);
+    }
+
+    #[test]
+    fn repo_installed_model_maps_fields() {
+        let r = sample_resolved(true);
+        let m = repo_installed_model("o/r", "w-Q4_K_M.gguf", &r);
+        assert_eq!(m.id, "o/r:w-Q4_K_M.gguf");
+        assert_eq!(m.display_name, "w-Q4_K_M");
+        assert_eq!(m.repo, "o/r");
+        assert_eq!(m.revision, r.revision);
+        assert_eq!(m.file_name, "w-Q4_K_M.gguf");
+        assert_eq!(m.sha256, r.weights_sha256);
+        assert_eq!(m.size_bytes, 1000);
+        assert_eq!(m.quant, "Q4_K_M");
+        assert!(m.vision);
+        assert!(!m.thinking);
+        assert_eq!(m.mmproj_file.as_deref(), Some("mmproj-model-f16.gguf"));
+        assert_eq!(m.mmproj_sha256.as_deref(), Some(&*"b".repeat(64)));
+
+        let text_only = sample_resolved(false);
+        let m = repo_installed_model("o/r", "w.gguf", &text_only);
+        assert!(!m.vision);
+        assert_eq!(m.mmproj_file, None);
+        assert_eq!(m.mmproj_sha256, None);
+    }
+
+    // ── Model library: delete ────────────────────────────────────────────────
+
+    #[test]
+    fn delete_installed_model_inner_removes_orphans_and_flags_builtin_clear() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let (_dir, store) = make_store();
+
+        let r = sample_resolved(true);
+        let m = repo_installed_model("o/r", "w-Q4_K_M.gguf", &r);
+        manifest::insert(&conn, &m).unwrap();
+        std::fs::write(store.blob_path(&m.sha256), b"w").unwrap();
+        std::fs::write(store.blob_path(m.mmproj_sha256.as_ref().unwrap()), b"m").unwrap();
+
+        // The builtin provider currently points at this model: deletion must
+        // flag the clear so the wrapper resets the provider's model field.
+        let out = delete_installed_model_inner(&conn, &store, &m.id, &m.id).unwrap();
+        assert!(out.clear_builtin);
+        assert!(!store.blob_path(&m.sha256).exists());
+        assert!(!store.blob_path(m.mmproj_sha256.as_ref().unwrap()).exists());
+        assert!(manifest::get(&conn, &m.id).unwrap().is_none());
+
+        // Builtin points elsewhere: no clear.
+        let m2 = repo_installed_model("o/r2", "x.gguf", &sample_resolved(false));
+        manifest::insert(&conn, &m2).unwrap();
+        std::fs::write(store.blob_path(&m2.sha256), b"x").unwrap();
+        let out = delete_installed_model_inner(&conn, &store, &m2.id, "other:model.gguf").unwrap();
+        assert!(!out.clear_builtin);
+    }
+
+    #[test]
+    fn delete_installed_model_inner_propagates_sql_and_io_errors() {
+        // SQL failure: table dropped.
+        let conn = crate::database::open_in_memory().unwrap();
+        conn.execute_batch("DROP TABLE installed_models;").unwrap();
+        let (_dir, store) = make_store();
+        assert!(delete_installed_model_inner(&conn, &store, "x:y.gguf", "").is_err());
+
+        // I/O failure: a directory sits where the orphaned blob should be.
+        let conn = crate::database::open_in_memory().unwrap();
+        let m = repo_installed_model("o/r", "w.gguf", &sample_resolved(false));
+        manifest::insert(&conn, &m).unwrap();
+        std::fs::create_dir_all(store.blob_path(&m.sha256)).unwrap();
+        assert!(delete_installed_model_inner(&conn, &store, &m.id, "").is_err());
+    }
+
+    // ── Model library: discard partial ───────────────────────────────────────
+
+    #[test]
+    fn discard_partial_validates_hex_and_running_state() {
+        let (_dir, store) = make_store();
+        let state = DownloadState::default();
+        let sha = "a".repeat(64);
+
+        // Invalid digest shapes are rejected before any filesystem use.
+        assert!(discard_partial_inner(&state, &store, "short").is_err());
+        assert!(discard_partial_inner(&state, &store, &"Z".repeat(64)).is_err());
+
+        // Rejected while a download is claimed.
+        let _token = claim_download(&state).unwrap();
+        let err = discard_partial_inner(&state, &store, &sha).unwrap_err();
+        assert!(err.contains("in progress"), "got: {err}");
+        release_download(&state);
+
+        // Removes an existing partial; a missing partial is fine (idempotent).
+        std::fs::write(store.partial_path(&sha), b"bytes").unwrap();
+        discard_partial_inner(&state, &store, &sha).unwrap();
+        assert!(!store.partial_path(&sha).exists());
+        discard_partial_inner(&state, &store, &sha).unwrap();
+    }
+
+    #[test]
+    fn discard_partial_propagates_unexpected_io_error() {
+        let (_dir, store) = make_store();
+        let state = DownloadState::default();
+        let sha = "b".repeat(64);
+        // A directory at the partial path makes remove_file fail with a
+        // non-NotFound error which must be propagated.
+        std::fs::create_dir_all(store.partial_path(&sha)).unwrap();
+        assert!(discard_partial_inner(&state, &store, &sha).is_err());
+    }
+
+    // ── Model library: builtin provider model ───────────────────────────────
+
+    #[test]
+    fn builtin_provider_model_reads_builtin_entry() {
+        let mut cfg = AppConfig::default();
+        assert_eq!(builtin_provider_model(&cfg), "");
+        for p in &mut cfg.inference.providers {
+            if p.id == crate::config::defaults::PROVIDER_ID_BUILTIN {
+                p.model = "o/r:w.gguf".to_string();
+            }
+        }
+        assert_eq!(builtin_provider_model(&cfg), "o/r:w.gguf");
+        // No builtin entry at all: empty.
+        cfg.inference.providers.clear();
+        assert_eq!(builtin_provider_model(&cfg), "");
+    }
+
+    // ── Model library: system RAM probe ──────────────────────────────────────
+
+    #[test]
+    fn system_ram_bytes_returns_positive_on_real_hardware() {
+        assert!(system_ram_bytes() > 0);
     }
 
     #[tokio::test]

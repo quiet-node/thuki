@@ -12,6 +12,7 @@
  * matches the pinned commit, not whatever `main` later points to.
  */
 
+use crate::config::defaults::HF_BASE_URL;
 use crate::models::download::DownloadSpec;
 use crate::models::manifest::InstalledModel;
 
@@ -143,15 +144,10 @@ pub fn ram_fit(est_runtime_gb: f64, ram_bytes: u64) -> RamFit {
     }
 }
 
-/// Download URL: `https://huggingface.co/<repo>/resolve/<revision>/<file>`.
+/// Download URL: `{HF_BASE_URL}/<repo>/resolve/<revision>/<file>`.
 /// One spec for the weights, plus one for the mmproj when present.
 pub fn download_specs(s: &Starter) -> Vec<DownloadSpec> {
-    let url = |file: &str| {
-        format!(
-            "https://huggingface.co/{}/resolve/{}/{}",
-            s.repo, s.revision, file
-        )
-    };
+    let url = |file: &str| format!("{}/{}/resolve/{}/{}", HF_BASE_URL, s.repo, s.revision, file);
     let mut specs = vec![DownloadSpec {
         url: url(s.file_name),
         file: s.file_name.to_string(),

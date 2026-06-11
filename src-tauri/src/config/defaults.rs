@@ -350,6 +350,20 @@ pub const MAX_OLLAMA_TAGS_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// any real model and bounds attacker-controlled inputs.
 pub const MAX_OLLAMA_SHOW_BODY_BYTES: usize = 4 * 1024 * 1024;
 
+/// Maximum accepted body size for Hugging Face API responses (repo file
+/// listings). Bounds attacker-controlled data from a remote service,
+/// mirroring MAX_OLLAMA_TAGS_BODY_BYTES.
+pub const MAX_HF_API_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Per-request timeout (seconds) for Hugging Face API metadata calls.
+pub const HF_API_TIMEOUT_SECS: u64 = 15;
+
+/// Canonical Hugging Face origin used for both model metadata calls and blob
+/// downloads. Not user-tunable: the sha256-pinning + provenance model assumes
+/// the canonical Hub; pointing downloads at an arbitrary mirror would bypass
+/// the integrity guarantees that make the curated starter registry safe.
+pub const HF_BASE_URL: &str = "https://huggingface.co";
+
 /// Maximum accepted byte length for a model slug passed to `set_active_model`.
 /// Real Ollama slugs are a handful of characters; 256 is generous while still
 /// capping adversarial inputs long before any network or database work.

@@ -340,7 +340,7 @@ fn map_storage_error(e: StorageError) -> DownloadIoError {
 
 /// True when `s` is exactly 64 lowercase ASCII hex chars: the only shape a
 /// sha256 may have before it is used as a file name in the store.
-fn is_valid_sha256(s: &str) -> bool {
+pub(crate) fn is_valid_sha256(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
