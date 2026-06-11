@@ -20,8 +20,9 @@ const TIER_LABELS: Record<StarterTier, string> = {
   smartest: 'Smartest',
 };
 
-/** RAM-fit badge copy. Exact strings; consumed verbatim by tests. */
-const FIT_COPY: Record<RamFit, string> = {
+/** RAM-fit badge copy. Exact strings; consumed verbatim by tests. Exported so
+ * onboarding can pass the same caution into the confirm card's RAM warning. */
+export const FIT_COPY: Record<RamFit, string> = {
   fits: 'Runs comfortably on this Mac',
   tight: "Will run, but close to this Mac's memory limit",
   too_big:

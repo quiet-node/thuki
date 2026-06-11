@@ -2050,6 +2050,7 @@ pub fn run() {
             settings_commands::get_config,
             settings_commands::set_config_field,
             settings_commands::set_ollama_url,
+            settings_commands::set_active_provider,
             settings_commands::reset_config,
             settings_commands::reload_config_from_disk,
             settings_commands::get_corrupt_marker,
@@ -2061,6 +2062,8 @@ pub fn run() {
             models::set_active_model,
             #[cfg(not(coverage))]
             models::check_model_setup,
+            #[cfg(not(coverage))]
+            models::detect_ollama,
             #[cfg(not(coverage))]
             models::get_model_capabilities,
             #[cfg(not(coverage))]
