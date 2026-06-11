@@ -19,6 +19,8 @@ export interface RawProvider {
   label: string;
   base_url: string;
   model: string;
+  /** Manual vision flag for `openai`-kind providers. Always `false` for `builtin` and `ollama`. */
+  vision: boolean;
 }
 
 export interface RawAppConfig {

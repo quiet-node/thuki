@@ -14,9 +14,15 @@ pub const PROVIDER_ID_BUILTIN: &str = "builtin";
 pub const PROVIDER_ID_OLLAMA: &str = "ollama";
 
 /// Provider kinds understood by the loader. Providers with any other kind are
-/// dropped during resolution.
+/// dropped during resolution. Recognized kinds: `"builtin"`, `"ollama"`,
+/// `"openai"`.
 pub const PROVIDER_KIND_BUILTIN: &str = "builtin";
 pub const PROVIDER_KIND_OLLAMA: &str = "ollama";
+/// Any OpenAI-compatible local or remote inference server (LM Studio, Jan,
+/// llama-server, etc.). Requires a valid http(s) `base_url`; providers with
+/// an empty or non-http(s) URL are dropped rather than healed (unlike Ollama,
+/// there is no sensible localhost default for arbitrary /v1 servers).
+pub const PROVIDER_KIND_OPENAI: &str = "openai";
 
 /// Human-readable provider labels shown in Settings.
 pub const DEFAULT_BUILTIN_LABEL: &str = "Built-in (Thuki)";

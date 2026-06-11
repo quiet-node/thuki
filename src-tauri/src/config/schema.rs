@@ -26,7 +26,7 @@ use super::defaults::{
     DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX,
     DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_AUTO_CHECK,
     DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN,
-    PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA,
+    PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
 };
 
 /// A single configured inference provider. Exactly one is active at a time
@@ -38,15 +38,23 @@ use super::defaults::{
 pub struct Provider {
     /// Stable identifier referenced by `active_provider`.
     pub id: String,
-    /// Provider kind: `"builtin"` or `"ollama"`. Unknown kinds are dropped by
-    /// the loader.
+    /// Provider kind: `"builtin"`, `"ollama"`, or `"openai"`. Unknown kinds
+    /// are dropped by the loader.
     pub kind: String,
     /// Human-readable name shown in Settings.
     pub label: String,
-    /// Base URL for network providers (Ollama). Empty for the built-in engine.
+    /// Base URL for network providers (Ollama, OpenAI-compatible). Empty for
+    /// the built-in engine.
     pub base_url: String,
     /// The model selected for this provider. Empty means "none chosen yet".
     pub model: String,
+    /// Manual vision flag for `openai`-kind providers. OpenAI-compatible local
+    /// servers expose no capability probe, so the user declares whether the
+    /// selected model accepts image inputs. Ignored for `builtin` and `ollama`,
+    /// whose capabilities are resolved from the manifest or Ollama's
+    /// `/api/show` response.
+    #[serde(default)]
+    pub vision: bool,
 }
 
 /// The built-in provider record (Thuki's own engine; no URL).
@@ -57,6 +65,7 @@ pub fn builtin_provider() -> Provider {
         label: DEFAULT_BUILTIN_LABEL.to_string(),
         base_url: String::new(),
         model: String::new(),
+        vision: false,
     }
 }
 
@@ -68,6 +77,21 @@ pub fn ollama_provider(base_url: &str) -> Provider {
         label: DEFAULT_OLLAMA_LABEL.to_string(),
         base_url: base_url.to_string(),
         model: String::new(),
+        vision: false,
+    }
+}
+
+/// An OpenAI-compatible provider record with the given id, label, and base URL.
+/// `vision` defaults to `false`; the caller or user sets it to `true` when the
+/// selected model accepts image inputs.
+pub fn openai_provider(id: &str, label: &str, base_url: &str) -> Provider {
+    Provider {
+        id: id.to_string(),
+        kind: PROVIDER_KIND_OPENAI.to_string(),
+        label: label.to_string(),
+        base_url: base_url.to_string(),
+        model: String::new(),
+        vision: false,
     }
 }
 
