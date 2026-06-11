@@ -1443,6 +1443,14 @@ pub fn get_system_ram_bytes() -> u64 {
     system_ram_bytes()
 }
 
+/// Free bytes on the volume holding the models directory, for the
+/// pre-download disk-space line. `None` means unknown; the UI skips the line.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn get_models_dir_free_bytes(store: tauri::State<'_, storage::ModelStore>) -> Option<u64> {
+    store.free_bytes()
+}
+
 /// Starts downloading a curated starter (`tier` = "fast" | "balanced" |
 /// "smartest"). Progress streams over `on_event`; on success the model is
 /// recorded in the manifest and set as the builtin provider's model.

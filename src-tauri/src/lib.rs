@@ -1974,6 +1974,8 @@ pub fn run() {
             #[cfg(not(coverage))]
             models::get_system_ram_bytes,
             #[cfg(not(coverage))]
+            models::get_models_dir_free_bytes,
+            #[cfg(not(coverage))]
             models::download_starter,
             #[cfg(not(coverage))]
             models::download_repo_model,
