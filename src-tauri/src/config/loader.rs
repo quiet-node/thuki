@@ -312,9 +312,16 @@ pub(crate) fn resolve(config: &mut AppConfig) {
 /// panics on user input.
 fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
     use crate::config::defaults::{
-        DEFAULT_ACTIVE_PROVIDER, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+        DEFAULT_ACTIVE_PROVIDER, PROVIDER_ID_BUILTIN, PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN,
+        PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
     };
     use crate::config::schema::{builtin_provider, ollama_provider};
+
+    // Snapshot the file shape before any provider synthesis or reseed: a
+    // pre-providers file (no [[inference.providers]] array) deserializes to
+    // an empty list, while fresh-seeded defaults and new-shape files always
+    // carry providers. Consumed by the active-pointer pin at the end.
+    let is_pre_providers_file = inf.providers.is_empty();
 
     // num_ctx + keep_warm: unchanged clamping (Ollama-path knobs).
     clamp_u32(
@@ -338,10 +345,8 @@ fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
     // Migration: a pre-providers file has `ollama_url` and no `providers`.
     // Carry the URL onto a synthesized Ollama provider; the active model is
     // attached later during startup orchestration (it lives in SQLite). The
-    // active pointer is left to the dangling-pointer repair below: a migrated
-    // config either omits `active_provider` (serde defaults it to the Phase-1
-    // default of `ollama`) or names something the repair resets to that same
-    // default, so existing Ollama users land on the Ollama provider either way.
+    // active pointer is handled by the pre-providers pin at the end of this
+    // function.
     if let Some(legacy) = inf.legacy_ollama_url.take() {
         if inf.providers.is_empty() {
             let url = if legacy.trim().is_empty() {
@@ -421,6 +426,23 @@ fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
             );
         }
         inf.active_provider = DEFAULT_ACTIVE_PROVIDER.to_string();
+    }
+
+    // A pre-providers file (no [[inference.providers]] array) predates the
+    // built-in engine: that user runs Ollama. Pin the pointer explicitly so
+    // the compiled default (which favors the built-in engine from Phase 2 on)
+    // only ever applies to fresh installs and new-shape files. Covers both
+    // legacy shapes: with an ollama_url key and without one. An explicit
+    // active_provider equal to the compiled default, or naming the built-in
+    // provider, is also overridden here: in a pre-providers file neither
+    // value can refer to a working built-in provider (none existed when the
+    // file was written).
+    if is_pre_providers_file
+        && (inf.active_provider.trim().is_empty()
+            || inf.active_provider == PROVIDER_ID_BUILTIN
+            || inf.active_provider == DEFAULT_ACTIVE_PROVIDER)
+    {
+        inf.active_provider = PROVIDER_ID_OLLAMA.to_string();
     }
 }
 
