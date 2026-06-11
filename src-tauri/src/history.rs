@@ -247,11 +247,66 @@ pub fn delete_conversation(
     Ok(())
 }
 
-/// Generates a short AI title for a saved conversation by asking Ollama.
-/// Runs as a fire-and-forget background task - the frontend polls or
-/// refreshes the list to see the updated title.
+/// Runs the title-generation LLM call against the resolved transport and
+/// returns the accumulated raw response. The native Ollama arm keeps the
+/// exact `stream_ollama_chat` parameters the title path has always sent;
+/// `/v1` transports accumulate through `openai::stream_openai_chat`, which
+/// honors the same `StreamChunk` contract.
+///
+/// `num_ctx` feeds only the native arm: it is NOT sent on `/v1` (a launch
+/// property of the builtin engine; informational for openai-kind servers).
+///
+/// Deliberately does NOT share the search pipeline's streaming branch: title
+/// generation has no per-chunk side effects, trace recording, or search
+/// events, so it shares only the `stream_*` primitives.
+pub(crate) async fn generate_title_text(
+    transport: &crate::commands::LlmTransport,
+    model: String,
+    title_messages: Vec<ChatMessage>,
+    client: &reqwest::Client,
+    num_ctx: u32,
+) -> String {
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    match transport {
+        crate::commands::LlmTransport::OllamaNative { endpoint } => {
+            crate::commands::stream_ollama_chat(
+                crate::commands::OllamaChatParams {
+                    endpoint: endpoint.clone(),
+                    model,
+                    messages: title_messages,
+                    think: false,
+                    keep_alive: None,
+                    num_ctx,
+                },
+                client,
+                cancel_token,
+                |_| {}, // No per-chunk side effects; we use the accumulated return value.
+            )
+            .await
+        }
+        crate::commands::LlmTransport::V1 { base_url, api_key } => {
+            crate::openai::stream_openai_chat(
+                crate::openai::OpenAiChatParams {
+                    base_url: base_url.clone(),
+                    model,
+                    messages: title_messages,
+                    api_key: api_key.clone(),
+                },
+                client,
+                cancel_token,
+                |_| {}, // No per-chunk side effects; we use the accumulated return value.
+            )
+            .await
+        }
+    }
+}
+
+/// Generates a short AI title for a saved conversation by asking the active
+/// provider. Runs as a fire-and-forget background task - the frontend polls
+/// or refreshes the list to see the updated title.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_title(
     conversation_id: String,
     messages: Vec<SaveMessagePayload>,
@@ -259,6 +314,9 @@ pub async fn generate_title(
     db: State<'_, Database>,
     client: State<'_, reqwest::Client>,
     app_config: State<'_, parking_lot::RwLock<AppConfig>>,
+    model_store: State<'_, crate::models::storage::ModelStore>,
+    engine: State<'_, crate::engine::runner::EngineHandle>,
+    secrets: State<'_, crate::keychain::Secrets>,
 ) -> Result<(), String> {
     let app_config = app_config.read().clone();
     // Build a condensed context for title generation.
@@ -294,27 +352,37 @@ pub async fn generate_title(
         },
     ];
 
-    let endpoint = format!(
-        "{}/api/chat",
-        app_config
-            .inference
-            .active_provider_base_url()
-            .trim_end_matches('/')
-    );
+    // Route by the active provider's kind, mirroring `ask_model`. Title
+    // generation is best-effort background work, so a route or transport
+    // failure (no model picked, engine start failure, ensure superseded)
+    // skips the title silently rather than surfacing an error.
+    let Ok(route) = crate::commands::resolve_chat_route(&app_config.inference) else {
+        return Ok(());
+    };
+    // The builtin route carries its model in the provider config; the
+    // sidecar serves that manifest id, not the frontend-stamped slug.
+    let Some(model) = crate::commands::model_for_route(&route, Some(model)) else {
+        return Ok(());
+    };
+    let Ok(transport) = crate::commands::resolve_llm_transport(
+        route,
+        &db,
+        &model_store,
+        &engine,
+        secrets.0.as_ref(),
+        app_config.inference.num_ctx,
+    )
+    .await
+    else {
+        return Ok(());
+    };
 
-    let cancel_token = tokio_util::sync::CancellationToken::new();
-    let accumulated = crate::commands::stream_ollama_chat(
-        crate::commands::OllamaChatParams {
-            endpoint,
-            model,
-            messages: title_messages,
-            think: false,
-            keep_alive: None,
-            num_ctx: app_config.inference.num_ctx,
-        },
+    let accumulated = generate_title_text(
+        &transport,
+        model,
+        title_messages,
         &client,
-        cancel_token,
-        |_| {}, // No per-chunk side effects; we use the accumulated return value.
+        app_config.inference.num_ctx,
     )
     .await;
 
@@ -498,6 +566,105 @@ mod tests {
         let title = format!("{}...", &trimmed[..end]);
         // Should not panic on unicode boundary.
         assert!(title.ends_with("..."));
+    }
+
+    fn title_messages() -> Vec<ChatMessage> {
+        vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: "sys".to_string(),
+                images: None,
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: "summarize".to_string(),
+                images: None,
+            },
+        ]
+    }
+
+    /// Locks the native title-generation wire contract across the transport
+    /// change: the exact `/api/chat` body (stream, think, options, no
+    /// keep_alive) must be identical to the pre-routing payload.
+    #[tokio::test]
+    async fn title_gen_on_ollama_unchanged() {
+        use crate::config::defaults::DEFAULT_NUM_CTX;
+        let mut server = mockito::Server::new_async().await;
+        let expected_body = serde_json::json!({
+            "model": "gemma3:12b",
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "summarize"}
+            ],
+            "stream": true,
+            "think": false,
+            "options": {
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "top_k": 64,
+                "num_ctx": DEFAULT_NUM_CTX
+            }
+        });
+        let mock = server
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::Json(expected_body))
+            .with_body("{\"message\":{\"content\":\"My Title\"},\"done\":true}\n")
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let transport = crate::commands::LlmTransport::OllamaNative {
+            endpoint: format!("{}/api/chat", server.url()),
+        };
+        let accumulated = generate_title_text(
+            &transport,
+            "gemma3:12b".to_string(),
+            title_messages(),
+            &client,
+            DEFAULT_NUM_CTX,
+        )
+        .await;
+
+        mock.assert_async().await;
+        assert_eq!(accumulated, "My Title");
+    }
+
+    /// A `/v1` transport accumulates the title through the OpenAI-compatible
+    /// streaming client, honoring the provider's API key.
+    #[tokio::test]
+    async fn title_gen_on_v1() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"V1\"}}]}\n\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\" Title\"}}]}\n\n\
+                    data: [DONE]\n";
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("authorization", "Bearer sk-test"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(body.as_bytes(), "text/event-stream"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let transport = crate::commands::LlmTransport::V1 {
+            base_url: server.uri(),
+            api_key: Some("sk-test".to_string()),
+        };
+        let accumulated = generate_title_text(
+            &transport,
+            "any-model".to_string(),
+            title_messages(),
+            &client,
+            crate::config::defaults::DEFAULT_NUM_CTX,
+        )
+        .await;
+
+        assert_eq!(accumulated, "V1 Title");
     }
 
     #[test]

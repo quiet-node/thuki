@@ -27,7 +27,8 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::{
-    stream_ollama_chat, ChatMessage, ConversationHistory, OllamaChatParams, StreamChunk,
+    stream_ollama_chat, ChatMessage, ConversationHistory, LlmTransport, OllamaChatParams,
+    StreamChunk,
 };
 
 use super::chunker;
@@ -425,16 +426,22 @@ fn can_answer_from_history(history_snapshot: &[ChatMessage]) -> bool {
     !history_snapshot.is_empty()
 }
 
-/// Runs a streaming Ollama call, translating `StreamChunk` events into
-/// `SearchEvent` events and persisting the completed assistant turn on normal
-/// completion (or partial completion via cancellation).
+/// Runs a streaming chat call against the active transport, translating
+/// `StreamChunk` events into `SearchEvent` events and persisting the
+/// completed assistant turn on normal completion (or partial completion via
+/// cancellation).
+///
+/// The native Ollama path keeps its exact `stream_ollama_chat` parameters;
+/// `/v1` transports stream through `openai::stream_openai_chat`, which emits
+/// the same `StreamChunk` contract, so one callback pump (and its `saw_done`
+/// terminal accounting) serves both arms.
 ///
 /// `warnings` and `metadata` are forwarded to `persist_turn`; the DB columns
 /// for these fields were added in Task 17. The frontend serializes and passes
 /// them back via `persist_message` when saving the turn.
 #[allow(clippy::too_many_arguments)]
 async fn run_streaming_branch(
-    endpoint: &str,
+    transport: &LlmTransport,
     model: &str,
     client: &reqwest::Client,
     cancel_token: CancellationToken,
@@ -449,10 +456,11 @@ async fn run_streaming_branch(
     recorder: &Arc<BoundRecorder>,
     stage: &str,
 ) {
+    let endpoint_label = transport.endpoint_label();
     // Snapshot the request body before streaming starts so the trace can show
     // exactly what prompt the synthesis call was sent.
     let request_body = serde_json::json!({
-        "endpoint": endpoint,
+        "endpoint": endpoint_label,
         "model": model,
         "messages": messages.iter().map(|m| serde_json::json!({
             "role": m.role,
@@ -465,35 +473,57 @@ async fn run_streaming_branch(
     let token_count_for_callback = token_count.clone();
     let saw_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let saw_done_for_callback = saw_done.clone();
-    let accumulated = stream_ollama_chat(
-        OllamaChatParams {
-            endpoint: endpoint.to_string(),
-            model: model.to_string(),
-            messages,
-            think: false,
-            keep_alive: None,
-            num_ctx,
-        },
-        client,
-        cancel_token,
-        |chunk| match chunk {
-            StreamChunk::Done => {
-                saw_done_for_callback.store(true, Ordering::SeqCst);
+    let pump = |chunk: StreamChunk| match chunk {
+        StreamChunk::Done => {
+            saw_done_for_callback.store(true, Ordering::SeqCst);
+        }
+        other => {
+            if matches!(other, StreamChunk::Token(_)) {
+                token_count_for_callback.fetch_add(1, Ordering::SeqCst);
             }
-            other => {
-                if matches!(other, StreamChunk::Token(_)) {
-                    token_count_for_callback.fetch_add(1, Ordering::SeqCst);
-                }
-                on_event(translate_chunk(other))
-            }
-        },
-    )
-    .await;
+            on_event(translate_chunk(other))
+        }
+    };
+    let accumulated = match transport {
+        LlmTransport::OllamaNative { endpoint } => {
+            stream_ollama_chat(
+                OllamaChatParams {
+                    endpoint: endpoint.to_string(),
+                    model: model.to_string(),
+                    messages,
+                    think: false,
+                    keep_alive: None,
+                    num_ctx,
+                },
+                client,
+                cancel_token,
+                pump,
+            )
+            .await
+        }
+        // num_ctx is NOT sent on /v1: for the builtin engine it is a launch
+        // property of the llama-server process, and for openai-kind servers
+        // it is informational only (spec 6.5).
+        LlmTransport::V1 { base_url, api_key } => {
+            crate::openai::stream_openai_chat(
+                crate::openai::OpenAiChatParams {
+                    base_url: base_url.clone(),
+                    model: model.to_string(),
+                    messages,
+                    api_key: api_key.clone(),
+                },
+                client,
+                cancel_token,
+                pump,
+            )
+            .await
+        }
+    };
 
     record_streaming_llm_call(
         recorder,
         stage,
-        endpoint,
+        &endpoint_label,
         request_body,
         &accumulated,
         token_count.load(Ordering::SeqCst),
@@ -616,7 +646,7 @@ pub trait JudgeCaller: Send + Sync {
 /// Tests must NOT use this struct directly as it would hit a real Ollama
 /// instance. Inject a mock [`RouterJudgeCaller`] instead.
 pub struct DefaultRouterJudge {
-    endpoint: String,
+    transport: LlmTransport,
     model: String,
     client: reqwest::Client,
     cancel: CancellationToken,
@@ -630,9 +660,9 @@ impl DefaultRouterJudge {
     /// Constructs a `DefaultRouterJudge` that delegates to
     /// [`llm::call_router_merged`].
     ///
-    /// - `endpoint`: fully-qualified `/api/chat` URL (e.g.
-    ///   `http://127.0.0.1:11434/api/chat`).
-    /// - `model`: Ollama model identifier (e.g. `"mistral"`).
+    /// - `transport`: the resolved wire target (native `/api/chat` endpoint
+    ///   or a `/v1` server).
+    /// - `model`: model identifier (e.g. `"mistral"`).
     /// - `client`: shared `reqwest::Client`; the Tauri command clones it from
     ///   `AppState`.
     /// - `cancel`: the pipeline's cancellation token; races against the HTTP
@@ -645,7 +675,7 @@ impl DefaultRouterJudge {
     #[cfg_attr(coverage_nightly, coverage(off))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        endpoint: String,
+        transport: LlmTransport,
         model: String,
         client: reqwest::Client,
         cancel: CancellationToken,
@@ -655,7 +685,7 @@ impl DefaultRouterJudge {
         recorder: Arc<BoundRecorder>,
     ) -> Self {
         Self {
-            endpoint,
+            transport,
             model,
             client,
             cancel,
@@ -676,7 +706,7 @@ impl RouterJudgeCaller for DefaultRouterJudge {
         query: &str,
     ) -> Result<RouterJudgeOutput, SearchError> {
         call_router_merged(
-            &self.endpoint,
+            &self.transport,
             &self.model,
             &self.client,
             history,
@@ -699,7 +729,7 @@ impl RouterJudgeCaller for DefaultRouterJudge {
 ///
 /// Tests must NOT use this struct directly. Inject a mock [`JudgeCaller`].
 pub struct DefaultJudge {
-    endpoint: String,
+    transport: LlmTransport,
     model: String,
     client: reqwest::Client,
     cancel: CancellationToken,
@@ -711,8 +741,9 @@ pub struct DefaultJudge {
 impl DefaultJudge {
     /// Constructs a `DefaultJudge` that delegates to [`llm::call_judge`].
     ///
-    /// - `endpoint`: fully-qualified `/api/chat` URL.
-    /// - `model`: Ollama model identifier.
+    /// - `transport`: the resolved wire target (native `/api/chat` endpoint
+    ///   or a `/v1` server).
+    /// - `model`: model identifier.
     /// - `client`: shared `reqwest::Client`.
     /// - `cancel`: the pipeline's cancellation token; races against the HTTP
     ///   call inside `call_judge`.
@@ -722,7 +753,7 @@ impl DefaultJudge {
     #[cfg_attr(coverage_nightly, coverage(off))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        endpoint: String,
+        transport: LlmTransport,
         model: String,
         client: reqwest::Client,
         cancel: CancellationToken,
@@ -731,7 +762,7 @@ impl DefaultJudge {
         recorder: Arc<BoundRecorder>,
     ) -> Self {
         Self {
-            endpoint,
+            transport,
             model,
             client,
             cancel,
@@ -752,7 +783,7 @@ impl JudgeCaller for DefaultJudge {
         stage: JudgeStage,
     ) -> Result<JudgeVerdict, SearchError> {
         call_judge(
-            &self.endpoint,
+            &self.transport,
             &self.model,
             &self.client,
             query,
@@ -800,7 +831,7 @@ fn lock_or_recover<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, 
 
 /// Shared immutable inputs used by the extracted search-pipeline stages.
 struct SearchExecutionContext<'a> {
-    ollama_endpoint: &'a str,
+    transport: &'a LlmTransport,
     searxng_endpoint: &'a str,
     model: &'a str,
     client: &'a reqwest::Client,
@@ -1058,7 +1089,7 @@ async fn stream_synthesis_from_sources(
     (shared.on_event)(SearchEvent::Composing);
 
     run_streaming_branch(
-        shared.ollama_endpoint,
+        shared.transport,
         shared.model,
         shared.client,
         shared.cancel_token.clone(),
@@ -1165,7 +1196,7 @@ async fn run_history_answer_branch(
     );
 
     run_streaming_branch(
-        shared.ollama_endpoint,
+        shared.transport,
         shared.model,
         shared.client,
         shared.cancel_token.clone(),
@@ -1790,7 +1821,7 @@ async fn run_gap_refinement_loop(
 /// immediately on cancel rather than waiting for round-trips to complete.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_agentic(
-    ollama_endpoint: &str,
+    transport: &LlmTransport,
     searxng_endpoint: &str,
     reader_base_url: &str,
     model: &str,
@@ -1861,7 +1892,7 @@ pub async fn run_agentic(
     };
 
     let shared = SearchExecutionContext {
-        ollama_endpoint,
+        transport,
         searxng_endpoint,
         model,
         client,
@@ -2186,7 +2217,7 @@ pub async fn run_agentic(
                     emit_trace(on_event, compose_step);
                     on_event(SearchEvent::Composing);
                     run_streaming_branch(
-                        ollama_endpoint,
+                        transport,
                         model,
                         client,
                         cancel_token,
@@ -2667,6 +2698,14 @@ mod tests {
         }
     }
 
+    /// Call-shape helper: wraps a bare `/api/chat` endpoint into the native
+    /// transport `run_agentic` and the streaming branch now take.
+    fn native(endpoint: impl Into<String>) -> LlmTransport {
+        LlmTransport::OllamaNative {
+            endpoint: endpoint.into(),
+        }
+    }
+
     // ── today_iso ───────────────────────────────────────────────────────────
 
     #[test]
@@ -2841,7 +2880,7 @@ mod tests {
         let (_, cb) = collect_events();
 
         run_streaming_branch(
-            &format!("{}/api/chat", server.url()),
+            &native(format!("{}/api/chat", server.url())),
             "m",
             &client,
             token,
@@ -2864,6 +2903,79 @@ mod tests {
         assert!(h.messages.lock().unwrap().is_empty());
     }
 
+    // ── run_streaming_branch: /v1 transport ──────────────────────────────────
+
+    /// A `/v1` transport must stream through `openai::stream_openai_chat` and
+    /// drive the exact same pump contract as the native arm: Token events,
+    /// `saw_done` accounting that yields a terminal `Done`, and persistence
+    /// of the accumulated turn.
+    #[tokio::test]
+    async fn synthesis_on_v1_streams() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\" there\"}}]}\n\n\
+                    data: [DONE]\n";
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(body.as_bytes(), "text/event-stream"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let h = ConversationHistory::new();
+        let (events, cb) = collect_events();
+        let transport = LlmTransport::V1 {
+            base_url: server.uri(),
+            api_key: None,
+        };
+
+        run_streaming_branch(
+            &transport,
+            "m",
+            &client,
+            token,
+            vec![make_user_msg("q")],
+            &h,
+            0,
+            make_user_msg("q"),
+            Vec::new(),
+            None,
+            &cb,
+            DEFAULT_NUM_CTX,
+            &(Arc::new(crate::trace::BoundRecorder::noop_for(
+                crate::trace::ConversationId::new("test-conv-pipeline"),
+            ))),
+            "synthesis",
+        )
+        .await;
+
+        let events = events.lock().unwrap();
+        assert!(matches!(
+            &events[0],
+            SearchEvent::Token { content } if content == "Hi"
+        ));
+        assert!(matches!(
+            &events[1],
+            SearchEvent::Token { content } if content == " there"
+        ));
+        assert!(
+            matches!(&events[2], SearchEvent::Done { .. }),
+            "saw_done must surface as a terminal Done event"
+        );
+        assert_eq!(events.len(), 3);
+
+        let conv = h.messages.lock().unwrap();
+        assert_eq!(conv.len(), 2, "user + assistant turn persisted");
+        assert_eq!(conv[1].content, "Hi there");
+    }
+
     // ── DefaultRouterJudge / DefaultJudge construction ───────────────────────
 
     #[test]
@@ -2873,7 +2985,7 @@ mod tests {
             crate::trace::ConversationId::new("test-conv-pipeline"),
         ));
         let _judge = DefaultRouterJudge::new(
-            "http://127.0.0.1:11434/api/chat".into(),
+            native("http://127.0.0.1:11434/api/chat"),
             "mistral".into(),
             reqwest::Client::new(),
             cancel,
@@ -2891,7 +3003,7 @@ mod tests {
             crate::trace::ConversationId::new("test-conv-pipeline"),
         ));
         let _judge = DefaultJudge::new(
-            "http://127.0.0.1:11434/api/chat".into(),
+            native("http://127.0.0.1:11434/api/chat"),
             "mistral".into(),
             reqwest::Client::new(),
             cancel,
@@ -3187,6 +3299,14 @@ mod agentic_tests {
         Arc::new(BoundRecorder::noop_for(ConversationId::new(TEST_CONV_ID)))
     }
 
+    /// Call-shape helper: wraps a bare `/api/chat` endpoint into the native
+    /// transport `run_agentic` now takes.
+    fn native(endpoint: impl Into<String>) -> LlmTransport {
+        LlmTransport::OllamaNative {
+            endpoint: endpoint.into(),
+        }
+    }
+
     /// Constructs a mock recorder + an `Arc<BoundRecorder>` wrapping it
     /// that the pipeline needs. Returns both so tests can pass the
     /// bound recorder to `run_agentic` while still introspecting the
@@ -3442,7 +3562,7 @@ mod agentic_tests {
         let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
 
         let err = run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             "http://127.0.0.1:1/search",
             "http://127.0.0.1:1",
             "m",
@@ -3484,7 +3604,7 @@ mod agentic_tests {
         let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
 
         let err = run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             "http://127.0.0.1:1/search",
             "http://127.0.0.1:1",
             "m",
@@ -3527,7 +3647,7 @@ mod agentic_tests {
         let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             "http://127.0.0.1:1/search",
             "http://127.0.0.1:1",
             "m",
@@ -3623,7 +3743,7 @@ mod agentic_tests {
         let (mock_recorder, recorder_view) = mock_recorder_pair();
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             "http://127.0.0.1:1/search",
             "http://127.0.0.1:1",
             "m",
@@ -3685,7 +3805,7 @@ mod agentic_tests {
         let (mock_recorder, recorder_view) = mock_recorder_pair();
 
         let _ = run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             "http://127.0.0.1:1/search",
             "http://127.0.0.1:1",
             "m",
@@ -3736,7 +3856,7 @@ mod agentic_tests {
         let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             "http://127.0.0.1:1/search",
             "http://127.0.0.1:1",
             "m",
@@ -3805,7 +3925,7 @@ mod agentic_tests {
         let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             "http://127.0.0.1:1/search",
             "http://127.0.0.1:1",
             "m",
@@ -3886,7 +4006,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             "http://127.0.0.1:1",
             "m",
@@ -3975,7 +4095,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             "http://127.0.0.1:1",
             "m",
@@ -4033,7 +4153,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             "http://127.0.0.1:1",
             "m",
@@ -4112,7 +4232,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx.url()),
             "http://127.0.0.1:1",
             "m",
@@ -4212,7 +4332,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx.url()),
             &reader_server.uri(),
             "m",
@@ -4304,7 +4424,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx.url()),
             &reader_server.uri(),
             "m",
@@ -4397,7 +4517,7 @@ mod agentic_tests {
         runtime.pipeline_wall_clock_budget_s = 0;
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx.url()),
             &reader_server.uri(),
             "m",
@@ -4507,7 +4627,7 @@ mod agentic_tests {
         runtime.pipeline_input_char_budget = 10;
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -4637,7 +4757,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -4758,7 +4878,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -4842,7 +4962,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx.url()),
             "http://127.0.0.1:1",
             "m",
@@ -4894,7 +5014,7 @@ mod agentic_tests {
         let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
 
         let err = run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx.url()),
             "http://127.0.0.1:1",
             "m",
@@ -4966,7 +5086,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx.url()),
             "http://127.0.0.1:1",
             "m",
@@ -5041,7 +5161,7 @@ mod agentic_tests {
         let (events, cb) = collect_events();
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             "http://127.0.0.1:1/search",
             "http://127.0.0.1:1",
             "m",
@@ -5087,7 +5207,7 @@ mod agentic_tests {
         let (events, cb) = collect_events();
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             "http://127.0.0.1:1/search",
             "http://127.0.0.1:1",
             "m",
@@ -5134,7 +5254,7 @@ mod agentic_tests {
         let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
 
         let err = run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx.url()),
             "http://127.0.0.1:1",
             "m",
@@ -5167,7 +5287,7 @@ mod agentic_tests {
         let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
 
         let err = run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             "http://127.0.0.1:1/search",
             "http://127.0.0.1:1",
             "m",
@@ -5208,7 +5328,7 @@ mod agentic_tests {
         let judge = QueueJudge(std::sync::Mutex::new(VecDeque::new()));
 
         let err = run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx.url()),
             "http://127.0.0.1:1",
             "m",
@@ -5266,7 +5386,7 @@ mod agentic_tests {
         ));
 
         let err = run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx.url()),
             &reader_server.uri(),
             "m",
@@ -5331,7 +5451,7 @@ mod agentic_tests {
         };
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx.url()),
             "http://127.0.0.1:1",
             "m",
@@ -5406,7 +5526,7 @@ mod agentic_tests {
         });
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx.url()),
             &reader_server.uri(),
             "m",
@@ -5490,7 +5610,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx.url()),
             &reader_server.uri(),
             "m",
@@ -5595,7 +5715,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx.url()),
             &reader_server.uri(),
             "m",
@@ -5678,7 +5798,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx.url()),
             &reader_server.uri(),
             "m",
@@ -5787,7 +5907,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -5941,7 +6061,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -6064,7 +6184,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -6217,7 +6337,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -6336,7 +6456,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -6469,7 +6589,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -6585,7 +6705,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             reader_base_url,
             "m",
@@ -6663,7 +6783,7 @@ mod agentic_tests {
         });
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx_server.uri()),
             "http://127.0.0.1:1",
             "m",
@@ -6781,7 +6901,7 @@ mod agentic_tests {
         );
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx.url()),
             &reader_server.uri(),
             "m",
@@ -6873,7 +6993,7 @@ mod agentic_tests {
         ));
 
         let err = run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -6961,7 +7081,7 @@ mod agentic_tests {
         });
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -7081,7 +7201,7 @@ mod agentic_tests {
         };
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -7216,7 +7336,7 @@ mod agentic_tests {
         // The gap reader is slow; after CancelsAfterGapSearxng fires, the reader
         // call sees the cancelled token.
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx_server.uri()),
             &gap_reader_server.uri(),
             "m",
@@ -7323,7 +7443,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -7443,7 +7563,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -7566,7 +7686,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_base,
             "m",
@@ -7689,7 +7809,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -7825,7 +7945,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -7950,7 +8070,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -8058,7 +8178,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -8151,7 +8271,7 @@ mod agentic_tests {
         );
 
         run_agentic(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -8233,7 +8353,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx.url()),
             "http://127.0.0.1:1",
             "m",
@@ -8382,7 +8502,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx.url()),
             &reader_server.uri(),
             "m",
@@ -8455,7 +8575,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama.url()),
+            &native(format!("{}/api/chat", ollama.url())),
             &format!("{}/search", searx.url()),
             &reader_server.uri(),
             "m",
@@ -8574,7 +8694,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",
@@ -8673,7 +8793,7 @@ mod agentic_tests {
         ));
 
         run_agentic(
-            &format!("{}/api/chat", ollama_server.uri()),
+            &native(format!("{}/api/chat", ollama_server.uri())),
             &format!("{}/search", searx_server.uri()),
             &reader_server.uri(),
             "m",

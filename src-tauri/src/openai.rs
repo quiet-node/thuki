@@ -304,6 +304,29 @@ pub async fn stream_openai_chat(
 
 // ─── Non-streaming structured output ─────────────────────────────────────────
 
+/// Builds the `/v1/chat/completions` request body for a structured-output
+/// (non-streaming, temperature 0) call. Used by both [`request_openai_json`]
+/// (the live wire call) and the search pipeline's trace helper so the logged
+/// body always mirrors the wire exactly.
+pub(crate) fn json_request_body(
+    model: &str,
+    messages: &[ChatMessage],
+    schema: serde_json::Value,
+    max_tokens: i32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "messages": messages.iter().map(to_openai_message).collect::<Vec<_>>(),
+        "stream": false,
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "out", "strict": true, "schema": schema},
+        },
+    })
+}
+
 /// Sends a single non-streaming `/v1/chat/completions` request with a strict
 /// json-schema `response_format` and returns `choices[0].message.content`.
 /// The structured-output twin of the search pipeline's `request_json`:
@@ -321,17 +344,7 @@ pub async fn request_openai_json(
     max_tokens: i32,
     cancel_token: &CancellationToken,
 ) -> Result<String, OpenAiError> {
-    let body = serde_json::json!({
-        "model": model,
-        "messages": messages.iter().map(to_openai_message).collect::<Vec<_>>(),
-        "stream": false,
-        "temperature": 0,
-        "max_tokens": max_tokens,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": "out", "strict": true, "schema": schema},
-        },
-    });
+    let body = json_request_body(model, &messages, schema, max_tokens);
     let mut request = client
         .post(format!("{base_url}/v1/chat/completions"))
         .json(&body)

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::commands::ChatMessage;
+use crate::commands::{ChatMessage, LlmTransport};
 
 use super::types::{
     Action, JudgeVerdict, RouterJudgeOutput, SearchError, SearxResult, Sufficiency,
@@ -336,6 +336,126 @@ fn transport_error(
     Err(SearchError::LlmUnavailable)
 }
 
+/// Maps a [`crate::openai::OpenAiError`] from the `/v1` structured-output
+/// client onto the search-pipeline error vocabulary, mirroring the
+/// classification [`request_json`] applies on the native path.
+fn map_openai_error(err: crate::openai::OpenAiError) -> SearchError {
+    match err {
+        crate::openai::OpenAiError::Cancelled => SearchError::Cancelled,
+        crate::openai::OpenAiError::Unreachable(_) => SearchError::LlmUnavailable,
+        crate::openai::OpenAiError::Http(status, _) => SearchError::LlmHttp(status),
+        crate::openai::OpenAiError::BadBody(_) => SearchError::LlmBadJson,
+    }
+}
+
+/// `/v1` twin of [`request_json`]: sends the structured-output request via
+/// [`crate::openai::request_openai_json`] and emits the same forensic
+/// [`RecorderEvent::LlmCall`] record.
+///
+/// `num_predict` translates to the wire's `max_tokens`. `num_ctx` is NOT
+/// sent on `/v1`: for the built-in engine the context size is a launch
+/// property of the llama-server process, and for `openai`-kind servers it is
+/// informational only (spec 6.5).
+#[allow(clippy::too_many_arguments)]
+async fn request_json_v1(
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    client: &reqwest::Client,
+    messages: Vec<ChatMessage>,
+    format: serde_json::Value,
+    cancel_token: &CancellationToken,
+    timeout_secs: u64,
+    num_predict: i32,
+    recorder: &Arc<BoundRecorder>,
+    stage: &str,
+) -> Result<String, SearchError> {
+    let endpoint = format!("{base_url}/v1/chat/completions");
+    // Build the trace body via the same helper request_openai_json uses so
+    // the recorded body always mirrors the actual wire shape.
+    let request_body_value =
+        crate::openai::json_request_body(model, &messages, format.clone(), num_predict);
+    let started = std::time::Instant::now();
+    let result = crate::openai::request_openai_json(
+        base_url,
+        model,
+        client,
+        messages,
+        format,
+        api_key,
+        timeout_secs,
+        num_predict,
+        cancel_token,
+    )
+    .await;
+    let (response_raw, error) = match &result {
+        Ok(content) => (Some(content.clone()), None),
+        Err(e) => (None, Some(format!("{e:?}"))),
+    };
+    recorder.record(RecorderEvent::LlmCall {
+        stage: stage.to_string(),
+        endpoint,
+        request_body: request_body_value,
+        response_raw,
+        latency_ms: started.elapsed().as_millis() as u64,
+        error,
+    });
+    result.map_err(map_openai_error)
+}
+
+/// Dispatches a structured-output request to the active transport: the
+/// native Ollama path keeps the exact [`request_json`] wire body; `/v1`
+/// servers go through [`request_json_v1`].
+#[allow(clippy::too_many_arguments)]
+async fn request_structured(
+    transport: &LlmTransport,
+    model: &str,
+    client: &reqwest::Client,
+    messages: Vec<ChatMessage>,
+    format: serde_json::Value,
+    cancel_token: &CancellationToken,
+    timeout_secs: u64,
+    num_ctx: u32,
+    num_predict: i32,
+    recorder: &Arc<BoundRecorder>,
+    stage: &str,
+) -> Result<String, SearchError> {
+    match transport {
+        LlmTransport::OllamaNative { endpoint } => {
+            request_json(
+                endpoint,
+                model,
+                client,
+                messages,
+                format,
+                cancel_token,
+                timeout_secs,
+                num_ctx,
+                num_predict,
+                recorder,
+                stage,
+            )
+            .await
+        }
+        LlmTransport::V1 { base_url, api_key } => {
+            request_json_v1(
+                base_url,
+                api_key.as_deref(),
+                model,
+                client,
+                messages,
+                format,
+                cancel_token,
+                timeout_secs,
+                num_predict,
+                recorder,
+                stage,
+            )
+            .await
+        }
+    }
+}
+
 // ─── Merged router+judge call ────────────────────────────────────────────────
 
 /// Merged router+judge call that returns [`RouterJudgeOutput`] in a single
@@ -361,7 +481,7 @@ fn transport_error(
 /// web search, because malformed router output should fail closed.
 #[allow(clippy::too_many_arguments)]
 pub async fn call_router_merged(
-    endpoint: &str,
+    transport: &LlmTransport,
     model: &str,
     client: &reqwest::Client,
     history: &[ChatMessage],
@@ -380,8 +500,8 @@ pub async fn call_router_merged(
 
     // First attempt: standard prompt.
     let messages = build_router_messages(&system, history, query);
-    let raw = request_json(
-        endpoint,
+    let raw = request_structured(
+        transport,
         model,
         client,
         messages,
@@ -406,8 +526,8 @@ pub async fn call_router_merged(
         "{query}\n\nReply with ONLY the JSON object described by the system prompt. No prose, no markdown fences, no explanation."
     );
     let retry_messages = build_router_messages(&system, history, &strict_query);
-    let retry_raw = request_json(
-        endpoint,
+    let retry_raw = request_structured(
+        transport,
         model,
         client,
         retry_messages,
@@ -544,7 +664,7 @@ fn parse_router_sufficiency(value: &str) -> Option<Sufficiency> {
 /// parse error.
 #[allow(clippy::too_many_arguments)]
 pub async fn call_judge(
-    endpoint: &str,
+    transport: &LlmTransport,
     model: &str,
     client: &reqwest::Client,
     query: &str,
@@ -581,8 +701,8 @@ pub async fn call_judge(
             images: None,
         },
     ];
-    let raw = request_json(
-        endpoint,
+    let raw = request_structured(
+        transport,
         model,
         client,
         messages,
@@ -628,8 +748,8 @@ pub async fn call_judge(
             images: None,
         },
     ];
-    let retry_raw = request_json(
-        endpoint,
+    let retry_raw = request_structured(
+        transport,
         model,
         client,
         retry_messages,
@@ -1086,6 +1206,14 @@ mod router_judge_tests {
         )))
     }
 
+    /// Call-shape helper: wraps a bare `/api/chat` endpoint into the native
+    /// transport the router/judge callers now take.
+    fn native(endpoint: impl Into<String>) -> LlmTransport {
+        LlmTransport::OllamaNative {
+            endpoint: endpoint.into(),
+        }
+    }
+
     // ── build_judge_user_message ─────────────────────────────────────────────
 
     #[test]
@@ -1279,7 +1407,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let output = call_router_merged(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             &[],
@@ -1314,7 +1442,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let output = call_router_merged(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             &[],
@@ -1361,7 +1489,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let output = call_router_merged(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             &[],
@@ -1407,7 +1535,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let output = call_router_merged(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             &[],
@@ -1432,7 +1560,7 @@ mod router_judge_tests {
         let token = CancellationToken::new();
         token.cancel();
         let err = call_router_merged(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             "m",
             &client,
             &[],
@@ -1463,7 +1591,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let err = call_router_merged(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             &[],
@@ -1494,7 +1622,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let err = call_router_merged(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             &[],
@@ -1534,7 +1662,7 @@ mod router_judge_tests {
 
         let client = reqwest::Client::new();
         let err = call_router_merged(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             &[],
@@ -1581,7 +1709,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let output = call_router_merged(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             &[],
@@ -1630,7 +1758,7 @@ mod router_judge_tests {
             text: "s".into(),
         }];
         let verdict = call_judge(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             "q",
@@ -1674,7 +1802,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let verdict = call_judge(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             "q",
@@ -1729,7 +1857,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let verdict = call_judge(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             "q",
@@ -1760,7 +1888,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let err = call_judge(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             "m",
             &client,
             "q",
@@ -1791,7 +1919,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let err = call_judge(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             "q",
@@ -1825,7 +1953,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let verdict = call_judge(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             "q",
@@ -1855,7 +1983,7 @@ mod router_judge_tests {
         let token = CancellationToken::new();
         token.cancel();
         let err = call_judge(
-            "http://127.0.0.1:1/api/chat",
+            &native("http://127.0.0.1:1/api/chat"),
             "m",
             &client,
             "q",
@@ -1886,7 +2014,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let verdict = call_judge(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             "q",
@@ -1929,7 +2057,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let verdict = call_judge(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             "q",
@@ -2001,7 +2129,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         call_judge(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             "q",
@@ -2050,7 +2178,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let verdict = call_judge(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             "q",
@@ -2092,7 +2220,7 @@ mod router_judge_tests {
 
         let client = reqwest::Client::new();
         let err = call_judge(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             "q",
@@ -2122,7 +2250,7 @@ mod router_judge_tests {
         // call_router_merged calls request_json internally; a 503 maps to
         // SearchError::LlmHttp(503).
         let err = call_router_merged(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             &[],
@@ -2159,7 +2287,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let output = call_router_merged(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             &[],
@@ -2199,7 +2327,7 @@ mod router_judge_tests {
         let client = reqwest::Client::new();
         let token = CancellationToken::new();
         let _ = call_judge(
-            &format!("{}/api/chat", server.uri()),
+            &native(format!("{}/api/chat", server.uri())),
             "m",
             &client,
             "q",
@@ -2212,5 +2340,297 @@ mod router_judge_tests {
         )
         .await
         .unwrap();
+    }
+
+    // ── native body regression ───────────────────────────────────────────────
+
+    /// Locks the native structured-output wire body across the transport
+    /// change: `format` must carry the JSON schema and `options` must still
+    /// carry `num_predict` and `num_ctx` exactly as before.
+    #[tokio::test]
+    async fn native_request_body_carries_format_and_options() {
+        let server = MockServer::start().await;
+        let captured: std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured_clone = captured.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(move |req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                *captured_clone.lock().unwrap() = Some(body);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "message": {
+                        "role": "assistant",
+                        "content": "{\"action\":\"proceed\",\"clarifying_question\":null,\"history_sufficiency\":\"sufficient\",\"optimized_query\":\"q\"}"
+                    },
+                    "done": true
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        call_router_merged(
+            &native(format!("{}/api/chat", server.uri())),
+            "m",
+            &client,
+            &[],
+            "q",
+            "2026-04-18",
+            &token,
+            ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
+        )
+        .await
+        .unwrap();
+
+        let body = captured.lock().unwrap().clone().expect("body captured");
+        assert_eq!(body["format"], router_output_schema());
+        assert_eq!(body["stream"], serde_json::json!(false));
+        assert_eq!(
+            body["options"]["num_predict"],
+            serde_json::json!(ROUTER_MAX_TOKENS)
+        );
+        assert_eq!(
+            body["options"]["num_ctx"],
+            serde_json::json!(crate::config::defaults::DEFAULT_NUM_CTX)
+        );
+        assert_eq!(body["options"]["temperature"], serde_json::json!(0.0));
+        assert_eq!(body["options"]["top_p"], serde_json::json!(1.0));
+        assert_eq!(body["options"]["top_k"], serde_json::json!(1));
+    }
+
+    // ── /v1 transport ────────────────────────────────────────────────────────
+
+    /// Call-shape helper: a `/v1` transport pointing at a wiremock server.
+    fn v1(base_url: impl Into<String>, api_key: Option<&str>) -> LlmTransport {
+        LlmTransport::V1 {
+            base_url: base_url.into(),
+            api_key: api_key.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn router_on_v1_uses_response_format() {
+        let server = MockServer::start().await;
+        let captured: std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured_clone = captured.clone();
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(move |req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                *captured_clone.lock().unwrap() = Some(body);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "{\"action\":\"proceed\",\"clarifying_question\":null,\"history_sufficiency\":\"insufficient\",\"optimized_query\":\"curl CVE\"}"
+                        }
+                    }]
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let output = call_router_merged(
+            &v1(server.uri(), None),
+            "m",
+            &client,
+            &[],
+            "tell me about curl CVE",
+            "2026-04-18",
+            &token,
+            ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(output.action, Action::Proceed));
+        assert_eq!(output.optimized_query.as_deref(), Some("curl CVE"));
+
+        let body = captured.lock().unwrap().clone().expect("body captured");
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"],
+            router_output_schema()
+        );
+        assert_eq!(body["temperature"], serde_json::json!(0));
+        // num_predict translates to max_tokens; num_ctx is NOT sent on /v1.
+        assert_eq!(body["max_tokens"], serde_json::json!(ROUTER_MAX_TOKENS));
+        assert!(body.get("options").is_none());
+        assert!(body.get("num_ctx").is_none());
+    }
+
+    #[tokio::test]
+    async fn judge_on_v1_sends_bearer() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer sk-test",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "{\"sufficiency\":\"sufficient\",\"reasoning\":\"covered\",\"gap_queries\":[]}"
+                    }
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let verdict = call_judge(
+            &v1(server.uri(), Some("sk-test")),
+            "m",
+            &client,
+            "q",
+            &[],
+            &token,
+            crate::config::defaults::DEFAULT_JUDGE_TIMEOUT_S,
+            crate::config::defaults::DEFAULT_NUM_CTX,
+            JudgeStage::Snippet,
+            &noop_recorder(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            verdict.sufficiency,
+            crate::search::types::Sufficiency::Sufficient
+        ));
+    }
+
+    #[tokio::test]
+    async fn v1_http_error_maps_to_llm_http() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        let err = call_router_merged(
+            &v1(server.uri(), None),
+            "m",
+            &client,
+            &[],
+            "q",
+            "2026-04-18",
+            &token,
+            ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
+            &noop_recorder(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, SearchError::LlmHttp(503));
+    }
+
+    #[test]
+    fn map_openai_error_covers_every_variant() {
+        use crate::openai::OpenAiError;
+        assert_eq!(
+            map_openai_error(OpenAiError::Cancelled),
+            SearchError::Cancelled
+        );
+        assert_eq!(
+            map_openai_error(OpenAiError::Unreachable("refused".into())),
+            SearchError::LlmUnavailable
+        );
+        assert_eq!(
+            map_openai_error(OpenAiError::Http(429, "slow down".into())),
+            SearchError::LlmHttp(429)
+        );
+        assert_eq!(
+            map_openai_error(OpenAiError::BadBody("not json".into())),
+            SearchError::LlmBadJson
+        );
+    }
+
+    /// The trace body recorded by `request_json_v1` must mirror the actual
+    /// wire shape sent by `request_openai_json`: same keys, same structure,
+    /// no hand-built approximations (e.g. the old non-wire key
+    /// "response_format_schema" or the missing "temperature").
+    #[tokio::test]
+    async fn v1_trace_body_mirrors_wire_shape() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "{\"action\":\"proceed\",\"clarifying_question\":null,\"history_sufficiency\":\"insufficient\",\"optimized_query\":\"q\"}"
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let mock = std::sync::Arc::new(crate::trace::recorder::MockRecorder::new());
+        let inner: std::sync::Arc<dyn crate::trace::TraceRecorder> = mock.clone();
+        let bound = std::sync::Arc::new(crate::trace::BoundRecorder::new(
+            inner,
+            ConversationId::new("test-v1-trace"),
+        ));
+
+        let client = reqwest::Client::new();
+        let token = CancellationToken::new();
+        call_router_merged(
+            &v1(server.uri(), None),
+            "the-model",
+            &client,
+            &[],
+            "q",
+            "2026-04-18",
+            &token,
+            ROUTER_TIMEOUT_SECS,
+            crate::config::defaults::DEFAULT_NUM_CTX,
+            &bound,
+        )
+        .await
+        .unwrap();
+
+        // The mock recorder captures exactly the events request_json_v1 emits.
+        // call_router_merged emits exactly one LlmCall (no retry needed).
+        let snapshot = mock.snapshot();
+        assert_eq!(snapshot.len(), 1, "exactly one LlmCall event expected");
+        let body = snapshot[0]
+            .1
+            .llm_call_request_body()
+            .expect("snapshot[0] must be an LlmCall event")
+            .clone();
+
+        // Wire-shape keys that must be present.
+        assert_eq!(body["model"], serde_json::json!("the-model"));
+        assert_eq!(body["stream"], serde_json::json!(false));
+        assert_eq!(body["temperature"], serde_json::json!(0));
+        assert_eq!(body["max_tokens"], serde_json::json!(ROUTER_MAX_TOKENS));
+        assert_eq!(
+            body["response_format"]["type"],
+            serde_json::json!("json_schema")
+        );
+        assert_eq!(
+            body["response_format"]["json_schema"]["name"],
+            serde_json::json!("out")
+        );
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"],
+            router_output_schema()
+        );
+
+        // Non-wire key from the old approximation must not be present.
+        assert!(body.get("response_format_schema").is_none());
     }
 }

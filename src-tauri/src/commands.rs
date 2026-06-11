@@ -118,30 +118,9 @@ pub fn no_model_selected_error() -> EngineError {
     }
 }
 
-/// Returns the error to emit when the active provider's kind has no Phase-1
-/// implementation, or `None` when the kind is the native Ollama path. Pure so
-/// the routing decision is unit-tested even though the callers are
-/// coverage-off. Sole remaining caller is the search gate; deleted when
-/// search routes by kind.
-pub(crate) fn unsupported_provider_error(kind: &str, label: &str) -> Option<EngineError> {
-    use crate::config::defaults::PROVIDER_KIND_OLLAMA;
-    if kind == PROVIDER_KIND_OLLAMA {
-        return None;
-    }
-    let who = if label.trim().is_empty() {
-        "This provider"
-    } else {
-        label
-    };
-    Some(EngineError {
-        kind: EngineErrorKind::EngineUnreachable,
-        message: format!("{who} is not available in this version of Thuki yet."),
-    })
-}
-
 /// Structured error emitted over the streaming channel.
 /// Rust owns all user-facing copy; the frontend only uses `kind` for styling.
-#[derive(Clone, Serialize, Debug)]
+#[derive(Clone, Serialize, Debug, PartialEq)]
 pub struct EngineError {
     pub kind: EngineErrorKind,
     /// Final user-facing string. First line is the title, remainder is the subtitle.
@@ -313,6 +292,137 @@ pub(crate) fn resolve_provider_api_key(
         Err(e) => {
             eprintln!("thuki: [keychain] failed to read the api key for provider '{id}': {e}");
             None
+        }
+    }
+}
+
+/// How LLM calls reach the active provider, decided once per pipeline turn.
+///
+/// Downstream of [`ChatRoute`]: the route names the provider kind, the
+/// transport is the resolved wire target. `Builtin` routes collapse into
+/// `V1` here because once the engine sidecar is serving, it is just another
+/// keyless OpenAI-compatible server at a loopback port.
+#[derive(Clone, PartialEq)]
+pub enum LlmTransport {
+    /// Native Ollama `/api/chat` at the provider's base URL.
+    OllamaNative {
+        /// Full `<base>/api/chat` endpoint.
+        endpoint: String,
+    },
+    /// Generic OpenAI-compatible `/v1` server: an `openai`-kind provider
+    /// (key already resolved) or the built-in engine (keyless, engine port).
+    V1 {
+        base_url: String,
+        api_key: Option<String>,
+    },
+}
+
+impl LlmTransport {
+    /// Human-readable endpoint label for forensic trace records.
+    pub fn endpoint_label(&self) -> String {
+        match self {
+            LlmTransport::OllamaNative { endpoint } => endpoint.clone(),
+            LlmTransport::V1 { base_url, .. } => format!("{base_url}/v1/chat/completions"),
+        }
+    }
+}
+
+impl std::fmt::Debug for LlmTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LlmTransport::OllamaNative { endpoint } => f
+                .debug_struct("OllamaNative")
+                .field("endpoint", endpoint)
+                .finish(),
+            LlmTransport::V1 { base_url, api_key } => f
+                .debug_struct("V1")
+                .field("base_url", base_url)
+                .field("api_key", &api_key.as_ref().map(|_| "<redacted>"))
+                .finish(),
+        }
+    }
+}
+
+/// Picks the model slug for a pipeline turn. `Builtin` routes carry their
+/// model in the provider config (already validated non-empty by
+/// `resolve_chat_route`); every other kind keeps the picker-backed fallback
+/// whose `None` means "no model selected".
+///
+/// Used by both the search pipeline and title generation so the selection
+/// logic stays in one place.
+pub fn model_for_route(route: &ChatRoute, fallback: Option<String>) -> Option<String> {
+    match route {
+        ChatRoute::Builtin { model_id } => Some(model_id.clone()),
+        _ => fallback,
+    }
+}
+
+/// Error from [`resolve_llm_transport`]. Splits the engine-ensure outcomes so
+/// each caller can map them into its own vocabulary: `Superseded` is a
+/// cancellation (a newer settings change preempted the request, never a
+/// failure), `Engine` carries a typed user-facing error.
+#[derive(Debug, PartialEq)]
+pub enum TransportError {
+    /// A newer settings change preempted the engine ensure.
+    Superseded,
+    /// A typed engine error (start failure, missing manifest row, ...).
+    Engine(EngineError),
+}
+
+/// Resolves a [`ChatRoute`] into the [`LlmTransport`] a pipeline turn streams
+/// through. `OllamaNative` passes through; `V1` resolves the provider's API
+/// key; `Builtin` maps the manifest row to an engine [`Target`], marks
+/// activity, and ensures the sidecar serves it, yielding a keyless `V1`
+/// transport at the engine's loopback port.
+///
+/// `num_ctx` is consumed only by the builtin arm: the context size is a
+/// launch property of the llama-server process, not a per-request knob.
+///
+/// [`Target`]: crate::engine::state::Target
+pub(crate) async fn resolve_llm_transport(
+    route: ChatRoute,
+    db: &crate::history::Database,
+    store: &crate::models::storage::ModelStore,
+    engine: &crate::engine::runner::EngineHandle,
+    secrets: &dyn crate::keychain::SecretStore,
+    num_ctx: u32,
+) -> Result<LlmTransport, TransportError> {
+    match route {
+        ChatRoute::OllamaNative { endpoint } => Ok(LlmTransport::OllamaNative { endpoint }),
+        ChatRoute::V1 {
+            base_url,
+            api_key_provider,
+        } => Ok(LlmTransport::V1 {
+            base_url,
+            api_key: resolve_provider_api_key(secrets, api_key_provider.as_deref()),
+        }),
+        ChatRoute::Builtin { model_id } => {
+            // Resolve the manifest row inside a scope so the connection guard
+            // drops before the ensure await. A poisoned lock is recovered:
+            // the connection itself is not invalidated by an unrelated panic.
+            let target = {
+                let conn = match db.0.lock() {
+                    Ok(conn) => conn,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                builtin_target(&conn, store, &model_id, num_ctx).map_err(TransportError::Engine)?
+            };
+            engine.touch();
+            match engine.ensure_loaded(target).await {
+                Ok(port) => Ok(LlmTransport::V1 {
+                    base_url: format!("http://127.0.0.1:{port}"),
+                    api_key: None,
+                }),
+                Err(crate::engine::runner::EnsureError::Superseded) => {
+                    Err(TransportError::Superseded)
+                }
+                Err(crate::engine::runner::EnsureError::StartFailed(detail)) => {
+                    Err(TransportError::Engine(EngineError {
+                        kind: EngineErrorKind::EngineStartFailed,
+                        message: format!("Thuki's engine could not start.\n{detail}"),
+                    }))
+                }
+            }
         }
     }
 }
@@ -2066,26 +2176,6 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_provider_error_passes_ollama_and_flags_other_kinds() {
-        use crate::config::defaults::{PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA};
-        // The native Ollama path proceeds (no error).
-        assert!(unsupported_provider_error(PROVIDER_KIND_OLLAMA, "Ollama").is_none());
-        // The built-in kind has no Phase-1 implementation: typed error, labeled.
-        let err = unsupported_provider_error(PROVIDER_KIND_BUILTIN, "Built-in (Thuki)").unwrap();
-        assert_eq!(err.kind, EngineErrorKind::EngineUnreachable);
-        assert!(err.message.contains("Built-in (Thuki)"));
-        // An empty label falls back to a generic noun.
-        let unlabeled = unsupported_provider_error(PROVIDER_KIND_BUILTIN, "").unwrap();
-        assert!(unlabeled.message.contains("This provider"));
-        // Any non-Ollama kind is flagged, not just the built-in: the gate keys
-        // on `kind != ollama`, so a future provider kind also bails cleanly
-        // rather than falling through to the unreachable Ollama HTTP path.
-        let other = unsupported_provider_error("openai", "Cloud").unwrap();
-        assert_eq!(other.kind, EngineErrorKind::EngineUnreachable);
-        assert!(other.message.contains("Cloud"));
-    }
-
-    #[test]
     fn engine_error_kinds_serialize_as_pascal_case() {
         // Wire format contract: every kind must serialize verbatim in
         // PascalCase so the React side (ErrorCard.barColors, useModel) can match
@@ -3220,6 +3310,376 @@ mod tests {
                 && e.message.starts_with("Thuki's engine could not start.\n")
                 && e.message.contains("spawn boom")
         ));
+        engine.shutdown().await;
+    }
+
+    // ─── LlmTransport / resolve_llm_transport ───────────────────────────
+
+    #[test]
+    fn llm_transport_endpoint_label_names_the_wire_target() {
+        let native = LlmTransport::OllamaNative {
+            endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+        };
+        assert_eq!(native.endpoint_label(), "http://127.0.0.1:11434/api/chat");
+        let v1 = LlmTransport::V1 {
+            base_url: "http://localhost:8080".to_string(),
+            api_key: None,
+        };
+        assert_eq!(
+            v1.endpoint_label(),
+            "http://localhost:8080/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn llm_transport_debug_redacts_api_key() {
+        let with_key = LlmTransport::V1 {
+            base_url: "https://api.openai.com".to_string(),
+            api_key: Some("sk-supersecret".to_string()),
+        };
+        let debug = format!("{with_key:?}");
+        assert!(
+            !debug.contains("sk-supersecret"),
+            "key must not appear in Debug output"
+        );
+        assert!(
+            debug.contains("<redacted>"),
+            "redacted placeholder must be present"
+        );
+
+        let no_key = LlmTransport::V1 {
+            base_url: "http://127.0.0.1:8080".to_string(),
+            api_key: None,
+        };
+        let debug_none = format!("{no_key:?}");
+        assert!(debug_none.contains("None"), "None key must show as None");
+
+        // OllamaNative has no key field; just verify it formats without panic.
+        let native = LlmTransport::OllamaNative {
+            endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+        };
+        let debug_native = format!("{native:?}");
+        assert!(debug_native.contains("OllamaNative"));
+    }
+
+    // ─── model_for_route ────────────────────────────────────────────────────
+
+    #[test]
+    fn model_for_route_prefers_builtin_provider_model() {
+        let route = ChatRoute::Builtin {
+            model_id: "org/repo:m.gguf".to_string(),
+        };
+        assert_eq!(
+            model_for_route(&route, Some("gemma3:12b".to_string())),
+            Some("org/repo:m.gguf".to_string())
+        );
+        assert_eq!(
+            model_for_route(&route, None),
+            Some("org/repo:m.gguf".to_string())
+        );
+    }
+
+    #[test]
+    fn model_for_route_keeps_fallback_for_non_builtin_routes() {
+        let ollama = ChatRoute::OllamaNative {
+            endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+        };
+        assert_eq!(
+            model_for_route(&ollama, Some("gemma3:12b".to_string())),
+            Some("gemma3:12b".to_string())
+        );
+        assert_eq!(model_for_route(&ollama, None), None);
+
+        let v1 = ChatRoute::V1 {
+            base_url: "http://localhost:8080".to_string(),
+            api_key_provider: None,
+        };
+        assert_eq!(
+            model_for_route(&v1, Some("gpt-4o".to_string())),
+            Some("gpt-4o".to_string())
+        );
+        assert_eq!(model_for_route(&v1, None), None);
+    }
+
+    /// Helper: a `Database` over a fresh in-memory schema.
+    fn test_db() -> crate::history::Database {
+        crate::history::Database(StdMutex::new(crate::database::open_in_memory().unwrap()))
+    }
+
+    /// Helper: a `ModelStore` rooted in a fresh temp dir, plus the dir guard.
+    fn test_store() -> (tempfile::TempDir, crate::models::storage::ModelStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::models::storage::ModelStore::new(dir.path().to_path_buf()).unwrap();
+        (dir, store)
+    }
+
+    #[tokio::test]
+    async fn resolve_llm_transport_passes_ollama_endpoint_through() {
+        let db = test_db();
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let transport = resolve_llm_transport(
+            ChatRoute::OllamaNative {
+                endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            transport,
+            LlmTransport::OllamaNative {
+                endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+            }
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resolve_llm_transport_v1_resolves_api_key() {
+        use crate::keychain::SecretStore;
+        let db = test_db();
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        secrets.set("p1", "sk-test").unwrap();
+        let transport = resolve_llm_transport(
+            ChatRoute::V1 {
+                base_url: "http://localhost:8080".to_string(),
+                api_key_provider: Some("p1".to_string()),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            transport,
+            LlmTransport::V1 {
+                base_url: "http://localhost:8080".to_string(),
+                api_key: Some("sk-test".to_string()),
+            }
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resolve_llm_transport_builtin_ensures_engine() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(
+                &conn,
+                &installed_model("org/repo:m.gguf", "sha_w", None),
+            )
+            .unwrap();
+        }
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 4242,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let transport = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:m.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            transport,
+            LlmTransport::V1 {
+                base_url: "http://127.0.0.1:4242".to_string(),
+                api_key: None,
+            }
+        );
+        // The ensure landed: the engine reports the loaded model.
+        assert_eq!(engine.status().borrow().state, "loaded");
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resolve_llm_transport_builtin_missing_row_is_engine_error() {
+        let db = test_db();
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let err = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:gone.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            TransportError::Engine(e) if e.kind == EngineErrorKind::ModelNotFound
+        ));
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resolve_llm_transport_recovers_poisoned_db_lock() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(
+                &conn,
+                &installed_model("org/repo:m.gguf", "sha_w", None),
+            )
+            .unwrap();
+        }
+        // Poison the connection mutex with an unrelated panic; the resolver
+        // must recover the guard rather than fail the turn.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = db.0.lock().unwrap();
+            panic!("poison");
+        }));
+        assert!(db.0.lock().is_err(), "mutex must be poisoned");
+
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 4243,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let transport = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:m.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            transport,
+            LlmTransport::V1 {
+                base_url: "http://127.0.0.1:4243".to_string(),
+                api_key: None,
+            }
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resolve_llm_transport_superseded_and_start_failed_map() {
+        // StartFailed: every spawn errors out.
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(
+                &conn,
+                &installed_model("org/repo:m.gguf", "sha_w", None),
+            )
+            .unwrap();
+        }
+        let (_dir, store) = test_store();
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: Some("spawn boom".to_string()),
+            healthy: true,
+        });
+        let err = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:m.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            TransportError::Engine(ref e)
+                if e.kind == EngineErrorKind::EngineStartFailed
+                && e.message.starts_with("Thuki's engine could not start.\n")
+                && e.message.contains("spawn boom")
+        ));
+        engine.shutdown().await;
+
+        // Superseded: health probes hang, so the in-flight ensure can be
+        // preempted by an unload.
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: false,
+        });
+        let task = {
+            let engine = engine.clone();
+            let db = test_db();
+            {
+                let conn = db.0.lock().unwrap();
+                crate::models::manifest::insert(
+                    &conn,
+                    &installed_model("org/repo:m.gguf", "sha_w", None),
+                )
+                .unwrap();
+            }
+            let (_dir2, store2) = test_store();
+            tokio::spawn(async move {
+                let secrets = crate::keychain::FakeSecretStore::new();
+                resolve_llm_transport(
+                    ChatRoute::Builtin {
+                        model_id: "org/repo:m.gguf".to_string(),
+                    },
+                    &db,
+                    &store2,
+                    &engine,
+                    &secrets,
+                    DEFAULT_NUM_CTX,
+                )
+                .await
+            })
+        };
+        let mut status = engine.status();
+        status
+            .wait_for(|s| s.state == "starting")
+            .await
+            .expect("actor is running");
+        engine.unload().await;
+        let err = task.await.unwrap().unwrap_err();
+        assert_eq!(err, TransportError::Superseded);
         engine.shutdown().await;
     }
 }

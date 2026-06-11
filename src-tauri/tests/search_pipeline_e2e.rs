@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use thuki_agent_lib::commands::ConversationHistory;
+use thuki_agent_lib::commands::{ConversationHistory, LlmTransport};
 use thuki_agent_lib::config::defaults::DEFAULT_NUM_CTX;
 use thuki_agent_lib::search::{
     run_agentic, Action, JudgeCaller, JudgeSource, JudgeVerdict, RouterJudgeCaller,
@@ -47,6 +47,14 @@ fn opt_trace_recorder(label: &str) -> Arc<BoundRecorder> {
 }
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
+
+/// Call-shape helper: wraps a bare `/api/chat` endpoint into the native
+/// transport `run_agentic` now takes.
+fn native(endpoint: impl Into<String>) -> LlmTransport {
+    LlmTransport::OllamaNative {
+        endpoint: endpoint.into(),
+    }
+}
 
 /// Collects events emitted by the pipeline via a closure.
 fn collect_events() -> (Arc<Mutex<Vec<SearchEvent>>>, impl Fn(SearchEvent)) {
@@ -242,7 +250,7 @@ async fn happy_path_snippets_sufficient_streams_answer() {
     let judge = QueueJudge(Mutex::new(vec![verdict_sufficient()].into_iter().collect()));
 
     run_agentic(
-        &format!("{}/api/chat", ollama.url()),
+        &native(format!("{}/api/chat", ollama.url())),
         &format!("{}/search", searx.url()),
         &reader_server.uri(),
         "m",
@@ -379,7 +387,7 @@ async fn reader_escalation_with_chunks_sufficient() {
     ));
 
     run_agentic(
-        &format!("{}/api/chat", ollama.url()),
+        &native(format!("{}/api/chat", ollama.url())),
         &format!("{}/search", searx.url()),
         &reader_server.uri(),
         "m",
@@ -464,7 +472,7 @@ async fn reader_unavailable_degrades_to_snippets_and_warns() {
 
     // Deliberately pass a reader base URL that nothing is listening on.
     run_agentic(
-        &format!("{}/api/chat", ollama.url()),
+        &native(format!("{}/api/chat", ollama.url())),
         &format!("{}/search", searx.url()),
         "http://127.0.0.1:1",
         "m",
@@ -567,7 +575,7 @@ async fn exhausted_gap_loop_warns_iteration_cap_and_streams_fallback() {
 
     let searx_endpoint = format!("{}/search", searx_server.uri());
     run_agentic(
-        &format!("{}/api/chat", ollama.url()),
+        &native(format!("{}/api/chat", ollama.url())),
         &searx_endpoint,
         &reader_server.uri(),
         "m",
@@ -663,7 +671,7 @@ async fn cancel_midloop_does_not_persist_and_emits_cancelled() {
     });
 
     run_agentic(
-        "http://127.0.0.1:1/api/chat",
+        &native("http://127.0.0.1:1/api/chat"),
         &format!("{}/search", searx.url()),
         &reader_server.uri(),
         "m",

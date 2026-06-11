@@ -327,6 +327,17 @@ impl RecorderEvent {
     pub fn is_turn_end(&self) -> bool {
         matches!(self, RecorderEvent::TurnEnd { .. })
     }
+
+    /// Returns the `request_body` from an [`RecorderEvent::LlmCall`] event,
+    /// or `None` for any other variant. Provides a branch-free extraction
+    /// path for tests that assert on the recorded wire body.
+    #[cfg(test)]
+    pub(crate) fn llm_call_request_body(&self) -> Option<&serde_json::Value> {
+        match self {
+            RecorderEvent::LlmCall { request_body, .. } => Some(request_body),
+            _ => None,
+        }
+    }
 }
 
 /// Per-URL outcome inside a [`RecorderEvent::ReaderBatch`].
@@ -970,6 +981,22 @@ mod tests {
         .is_turn_end());
         assert!(!RecorderEvent::ConversationEnd { reason: "x".into() }.is_turn_end());
         assert!(!RecorderEvent::AssistantTokens { chunk: "x".into() }.is_turn_end());
+    }
+
+    #[test]
+    fn llm_call_request_body_returns_body_for_llm_call_and_none_for_others() {
+        let ev = RecorderEvent::LlmCall {
+            stage: "router".into(),
+            endpoint: "http://x/v1/chat/completions".into(),
+            request_body: json!({"model": "m"}),
+            response_raw: None,
+            latency_ms: 1,
+            error: None,
+        };
+        assert_eq!(ev.llm_call_request_body(), Some(&json!({"model": "m"})));
+
+        let other = RecorderEvent::AssistantTokens { chunk: "hi".into() };
+        assert!(other.llm_call_request_body().is_none());
     }
 
     #[test]
