@@ -120,9 +120,9 @@ pub fn no_model_selected_error() -> EngineError {
 
 /// Returns the error to emit when the active provider's kind has no Phase-1
 /// implementation, or `None` when the kind is the native Ollama path. Pure so
-/// the routing decision is unit-tested even though `ask_model` is coverage-off.
-/// In Phase 1 the only functional kind is `ollama`; the built-in engine and
-/// the generic OpenAI-compatible kind arrive in Phase 2.
+/// the routing decision is unit-tested even though the callers are
+/// coverage-off. Sole remaining caller is the search gate; deleted when
+/// search routes by kind.
 pub(crate) fn unsupported_provider_error(kind: &str, label: &str) -> Option<EngineError> {
     use crate::config::defaults::PROVIDER_KIND_OLLAMA;
     if kind == PROVIDER_KIND_OLLAMA {
@@ -146,6 +146,175 @@ pub struct EngineError {
     pub kind: EngineErrorKind,
     /// Final user-facing string. First line is the title, remainder is the subtitle.
     pub message: String,
+}
+
+/// How a chat turn reaches its inference backend, decided once per request
+/// from the active provider's kind.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ChatRoute {
+    /// Native Ollama `/api/chat` streaming at the provider's base URL.
+    OllamaNative {
+        /// Full `<base>/api/chat` endpoint.
+        endpoint: String,
+    },
+    /// Generic OpenAI-compatible `/v1` streaming at the provider's base URL.
+    /// The API key is fetched later by provider id so the Keychain read
+    /// happens only on the path that needs it.
+    V1 {
+        base_url: String,
+        api_key_provider: Option<String>,
+    },
+    /// The bundled engine: resolve the installed model, ensure the sidecar
+    /// serves it, then stream via the `/v1` client at the engine's port.
+    Builtin {
+        /// The active provider's `model` field: the manifest id.
+        model_id: String,
+    },
+}
+
+/// Decides the chat route from the resolved config. Pure so the routing
+/// decision is unit-tested even though `ask_model` is coverage-off.
+///
+/// Errors:
+/// - unknown/empty kind (defensive; the loader drops unknown kinds and
+///   repairs a dangling `active_provider` pointer),
+/// - `builtin` with an empty model (`NoModelSelected`, pointing the user at
+///   the Settings model pick).
+pub fn resolve_chat_route(
+    inference: &crate::config::schema::InferenceSection,
+) -> Result<ChatRoute, EngineError> {
+    use crate::config::defaults::{
+        PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+    };
+    match inference.active_provider_kind() {
+        PROVIDER_KIND_OLLAMA => Ok(ChatRoute::OllamaNative {
+            endpoint: format!(
+                "{}/api/chat",
+                inference.active_provider_base_url().trim_end_matches('/')
+            ),
+        }),
+        PROVIDER_KIND_OPENAI => Ok(ChatRoute::V1 {
+            base_url: inference
+                .active_provider_base_url()
+                .trim_end_matches('/')
+                .to_string(),
+            api_key_provider: Some(inference.active_provider.clone()),
+        }),
+        PROVIDER_KIND_BUILTIN => {
+            let model = inference.active_provider_model();
+            if model.is_empty() {
+                return Err(EngineError {
+                    kind: EngineErrorKind::NoModelSelected,
+                    message: "No model selected\nPick or download a model in Settings.".to_string(),
+                });
+            }
+            Ok(ChatRoute::Builtin {
+                model_id: model.to_string(),
+            })
+        }
+        _ => Err(EngineError {
+            kind: EngineErrorKind::Other,
+            message: "Something went wrong\nThe active provider has an unknown kind.".to_string(),
+        }),
+    }
+}
+
+/// Maps an installed-model manifest row onto the engine [`Target`] the
+/// runner spawns: blob-store paths for the weights and optional mmproj plus
+/// the configured context size.
+///
+/// [`Target`]: crate::engine::state::Target
+pub fn builtin_target(
+    conn: &rusqlite::Connection,
+    store: &crate::models::storage::ModelStore,
+    model_id: &str,
+    num_ctx: u32,
+) -> Result<crate::engine::state::Target, EngineError> {
+    let row = crate::models::manifest::get(conn, model_id).map_err(|e| EngineError {
+        kind: EngineErrorKind::Other,
+        message: format!("Something went wrong\nCould not read the installed-model manifest: {e}"),
+    })?;
+    let Some(model) = row else {
+        return Err(EngineError {
+            kind: EngineErrorKind::ModelNotFound,
+            message: "The selected model is not installed.\nPick or download a model in Settings."
+                .to_string(),
+        });
+    };
+    Ok(crate::engine::state::Target {
+        model_path: store.blob_path(&model.sha256),
+        mmproj_path: model
+            .mmproj_sha256
+            .as_deref()
+            .map(|sha| store.blob_path(sha)),
+        num_ctx,
+    })
+}
+
+/// Runs the built-in-engine stage of a chat turn: mark activity, ensure the
+/// engine serves `target`, then stream via the `/v1` client at the engine's
+/// port. Pulled out of [`ask_model`] so the ensure-error mapping is covered
+/// by tests:
+/// - `Superseded` becomes a terminal `Cancelled` (a newer settings change
+///   preempted this request; never an engine-start failure),
+/// - `StartFailed` becomes a typed `EngineStartFailed` error.
+///
+/// Returns the accumulated assistant content (empty on the error paths) so
+/// the caller's persistence tail treats every route identically.
+pub(crate) async fn stream_builtin_chat(
+    engine: &crate::engine::runner::EngineHandle,
+    target: crate::engine::state::Target,
+    model_id: String,
+    messages: Vec<ChatMessage>,
+    client: &reqwest::Client,
+    cancel_token: CancellationToken,
+    on_chunk: impl Fn(StreamChunk),
+) -> String {
+    engine.touch();
+    match engine.ensure_loaded(target).await {
+        Ok(port) => {
+            crate::openai::stream_openai_chat(
+                crate::openai::OpenAiChatParams {
+                    base_url: format!("http://127.0.0.1:{port}"),
+                    model: model_id,
+                    messages,
+                    api_key: None,
+                },
+                client,
+                cancel_token,
+                on_chunk,
+            )
+            .await
+        }
+        Err(crate::engine::runner::EnsureError::Superseded) => {
+            on_chunk(StreamChunk::Cancelled);
+            String::new()
+        }
+        Err(crate::engine::runner::EnsureError::StartFailed(detail)) => {
+            on_chunk(StreamChunk::Error(EngineError {
+                kind: EngineErrorKind::EngineStartFailed,
+                message: format!("Thuki's engine could not start.\n{detail}"),
+            }));
+            String::new()
+        }
+    }
+}
+
+/// Reads the API key for an `openai`-kind provider from the secret store.
+/// Errors degrade to `None` with a stderr log: a missing or unreadable key
+/// must not block a keyless local `/v1` server.
+pub(crate) fn resolve_provider_api_key(
+    store: &dyn crate::keychain::SecretStore,
+    provider_id: Option<&str>,
+) -> Option<String> {
+    let id = provider_id?;
+    match store.get(id) {
+        Ok(key) => key,
+        Err(e) => {
+            eprintln!("thuki: [keychain] failed to read the api key for provider '{id}': {e}");
+            None
+        }
+    }
 }
 
 /// Pulls the human-readable reason out of an Ollama error payload. Ollama
@@ -589,34 +758,26 @@ pub async fn ask_model(
     active_model: State<'_, crate::models::ActiveModelState>,
     capabilities_cache: State<'_, ModelCapabilitiesCache>,
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
+    db: State<'_, crate::history::Database>,
+    model_store: State<'_, crate::models::storage::ModelStore>,
+    engine: State<'_, crate::engine::runner::EngineHandle>,
+    secrets: State<'_, crate::keychain::Secrets>,
 ) -> Result<(), String> {
     // Snapshot the config once so all downstream reads (endpoint, prompt, model)
     // see a consistent view even if the user edits Settings mid-stream.
     let config = config.read().clone();
 
-    // Route by provider kind. Phase 1 implements only the native Ollama path;
-    // a non-Ollama active provider (the built-in engine) cannot serve yet, so
-    // bail with a typed, provider-labeled error regardless of model selection.
-    {
-        let kind = config.inference.active_provider_kind();
-        let label = config
-            .inference
-            .active()
-            .map(|p| p.label.as_str())
-            .unwrap_or("");
-        if let Some(err) = unsupported_provider_error(kind, label) {
+    // Route by the active provider's kind: native Ollama, the built-in
+    // engine, or a generic OpenAI-compatible server. The decision is made
+    // once here; the streaming dispatch below consumes it.
+    let route = match resolve_chat_route(&config.inference) {
+        Ok(route) => route,
+        Err(err) => {
             let _ = on_event.send(StreamChunk::Error(err));
             return Ok(());
         }
-    }
+    };
 
-    let endpoint = format!(
-        "{}/api/chat",
-        config
-            .inference
-            .active_provider_base_url()
-            .trim_end_matches('/')
-    );
     // Snapshot the active model slug; drop the guard before any `.await`.
     let model_name = {
         let guard = active_model.0.lock().map_err(|e| e.to_string())?;
@@ -755,27 +916,81 @@ pub async fn ask_model(
     let token_count_for_pump = std::sync::Arc::clone(&token_count_atomic);
     let recorder_for_pump = std::sync::Arc::clone(&bound_recorder);
 
-    let accumulated = stream_ollama_chat(
-        OllamaChatParams {
-            endpoint,
-            model: model_name,
-            messages,
-            think,
-            keep_alive,
-            num_ctx: config.inference.num_ctx,
-        },
-        &client,
-        cancel_token.clone(),
-        |chunk| {
-            // Mirror the user-visible chunk into the trace before
-            // forwarding it to the frontend. Token / ThinkingToken
-            // chunks land as discrete trace events; terminal chunks are
-            // summarized below by `AssistantComplete`.
-            record_chunk_to_trace(&chunk, &recorder_for_pump, &token_count_for_pump);
-            let _ = on_event.send(chunk);
-        },
-    )
-    .await;
+    // Mirror every user-visible chunk into the trace before forwarding it
+    // to the frontend. Token / ThinkingToken chunks land as discrete trace
+    // events; terminal chunks are summarized below by `AssistantComplete`.
+    // Captures by reference only, so the closure is Copy and each route arm
+    // can consume it.
+    let pump = |chunk: StreamChunk| {
+        record_chunk_to_trace(&chunk, &recorder_for_pump, &token_count_for_pump);
+        let _ = on_event.send(chunk);
+    };
+
+    // Every arm returns the accumulated assistant content (empty when the
+    // turn ended in a pre-stream error), so the persistence tail below is
+    // identical for all three routes.
+    let accumulated = match route {
+        ChatRoute::OllamaNative { endpoint } => {
+            stream_ollama_chat(
+                OllamaChatParams {
+                    endpoint,
+                    model: model_name,
+                    messages,
+                    think,
+                    keep_alive,
+                    num_ctx: config.inference.num_ctx,
+                },
+                &client,
+                cancel_token.clone(),
+                pump,
+            )
+            .await
+        }
+        ChatRoute::Builtin { model_id } => {
+            // Resolve the manifest row to blob-store paths inside a scope so
+            // the connection guard drops before any `.await`.
+            let target = {
+                let conn = db.0.lock().map_err(|e| e.to_string())?;
+                builtin_target(&conn, &model_store, &model_id, config.inference.num_ctx)
+            };
+            match target {
+                Ok(target) => {
+                    stream_builtin_chat(
+                        &engine,
+                        target,
+                        model_id,
+                        messages,
+                        &client,
+                        cancel_token.clone(),
+                        pump,
+                    )
+                    .await
+                }
+                Err(err) => {
+                    pump(StreamChunk::Error(err));
+                    String::new()
+                }
+            }
+        }
+        ChatRoute::V1 {
+            base_url,
+            api_key_provider,
+        } => {
+            let api_key = resolve_provider_api_key(secrets.0.as_ref(), api_key_provider.as_deref());
+            crate::openai::stream_openai_chat(
+                crate::openai::OpenAiChatParams {
+                    base_url,
+                    model: model_name,
+                    messages,
+                    api_key,
+                },
+                &client,
+                cancel_token.clone(),
+                pump,
+            )
+            .await
+        }
+    };
 
     let stream_ended_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2541,5 +2756,470 @@ mod tests {
             "ignored".to_string(),
         );
         assert_eq!(mock.snapshot().len(), 0);
+    }
+
+    // ─── resolve_chat_route ─────────────────────────────────────────────
+
+    /// Helper: an `InferenceSection` whose single provider `p1` is active.
+    fn inference_with_provider(
+        kind: &str,
+        base_url: &str,
+        model: &str,
+    ) -> crate::config::schema::InferenceSection {
+        use crate::config::schema::{InferenceSection, Provider};
+        InferenceSection {
+            active_provider: "p1".to_string(),
+            providers: vec![Provider {
+                id: "p1".to_string(),
+                kind: kind.to_string(),
+                label: "Test".to_string(),
+                base_url: base_url.to_string(),
+                model: model.to_string(),
+                vision: false,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_chat_route_ollama() {
+        use crate::config::defaults::PROVIDER_KIND_OLLAMA;
+        let inference =
+            inference_with_provider(PROVIDER_KIND_OLLAMA, "http://127.0.0.1:11434/", "");
+        assert_eq!(
+            resolve_chat_route(&inference).unwrap(),
+            ChatRoute::OllamaNative {
+                endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_chat_route_openai() {
+        use crate::config::defaults::PROVIDER_KIND_OPENAI;
+        let inference =
+            inference_with_provider(PROVIDER_KIND_OPENAI, "http://localhost:8080/", "qwen3");
+        assert_eq!(
+            resolve_chat_route(&inference).unwrap(),
+            ChatRoute::V1 {
+                base_url: "http://localhost:8080".to_string(),
+                api_key_provider: Some("p1".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_chat_route_builtin() {
+        use crate::config::defaults::PROVIDER_KIND_BUILTIN;
+        let inference = inference_with_provider(PROVIDER_KIND_BUILTIN, "", "org/repo:m.gguf");
+        assert_eq!(
+            resolve_chat_route(&inference).unwrap(),
+            ChatRoute::Builtin {
+                model_id: "org/repo:m.gguf".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_chat_route_no_model_selected() {
+        use crate::config::defaults::PROVIDER_KIND_BUILTIN;
+        let inference = inference_with_provider(PROVIDER_KIND_BUILTIN, "", "");
+        let err = resolve_chat_route(&inference).unwrap_err();
+        assert_eq!(err.kind, EngineErrorKind::NoModelSelected);
+        assert!(err.message.contains("Settings"));
+    }
+
+    #[test]
+    fn resolve_chat_route_unknown_kind() {
+        let inference = inference_with_provider("weird", "http://x", "m");
+        let err = resolve_chat_route(&inference).unwrap_err();
+        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert!(err.message.contains("unknown kind"));
+    }
+
+    // ─── builtin_target ─────────────────────────────────────────────────
+
+    /// Helper: a complete manifest row keyed by `id` with the given hashes.
+    fn installed_model(
+        id: &str,
+        sha256: &str,
+        mmproj_sha256: Option<&str>,
+    ) -> crate::models::manifest::InstalledModel {
+        crate::models::manifest::InstalledModel {
+            id: id.to_string(),
+            display_name: format!("Model {id}"),
+            repo: "org/repo".to_string(),
+            revision: "a".repeat(40),
+            file_name: format!("{id}.gguf"),
+            sha256: sha256.to_string(),
+            size_bytes: 1_000_000,
+            quant: "Q4_K_M".to_string(),
+            vision: mmproj_sha256.is_some(),
+            thinking: false,
+            mmproj_file: mmproj_sha256.map(|_| format!("{id}-mmproj.gguf")),
+            mmproj_sha256: mmproj_sha256.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn builtin_target_maps_manifest_row() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::models::storage::ModelStore::new(dir.path().to_path_buf()).unwrap();
+        crate::models::manifest::insert(
+            &conn,
+            &installed_model("org/repo:v.gguf", "sha_w", Some("sha_mm")),
+        )
+        .unwrap();
+        crate::models::manifest::insert(&conn, &installed_model("org/repo:t.gguf", "sha_t", None))
+            .unwrap();
+
+        let vision = builtin_target(&conn, &store, "org/repo:v.gguf", 4096).unwrap();
+        assert_eq!(vision.model_path, store.blob_path("sha_w"));
+        assert_eq!(vision.mmproj_path, Some(store.blob_path("sha_mm")));
+        assert_eq!(vision.num_ctx, 4096);
+
+        let text = builtin_target(&conn, &store, "org/repo:t.gguf", DEFAULT_NUM_CTX).unwrap();
+        assert_eq!(text.model_path, store.blob_path("sha_t"));
+        assert_eq!(text.mmproj_path, None);
+        assert_eq!(text.num_ctx, DEFAULT_NUM_CTX);
+    }
+
+    #[test]
+    fn builtin_target_missing_row_is_model_not_found() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::models::storage::ModelStore::new(dir.path().to_path_buf()).unwrap();
+        let err = builtin_target(&conn, &store, "org/repo:gone.gguf", 4096).unwrap_err();
+        assert_eq!(err.kind, EngineErrorKind::ModelNotFound);
+        assert!(err.message.contains("Settings"));
+    }
+
+    #[test]
+    fn builtin_target_manifest_read_error_is_other() {
+        // A bare connection without the schema makes `manifest::get` fail.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::models::storage::ModelStore::new(dir.path().to_path_buf()).unwrap();
+        let err = builtin_target(&conn, &store, "org/repo:m.gguf", 4096).unwrap_err();
+        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert!(err.message.contains("manifest"));
+    }
+
+    // ─── resolve_provider_api_key ───────────────────────────────────────
+
+    #[test]
+    fn resolve_provider_api_key_reads_key_and_misses_to_none() {
+        use crate::keychain::SecretStore;
+        let store = crate::keychain::FakeSecretStore::new();
+        store.set("p1", "sk-test").unwrap();
+        assert_eq!(
+            resolve_provider_api_key(&store, Some("p1")),
+            Some("sk-test".to_string())
+        );
+        assert_eq!(resolve_provider_api_key(&store, Some("absent")), None);
+        assert_eq!(resolve_provider_api_key(&store, None), None);
+    }
+
+    /// A secret store whose reads always fail, for the degrade-to-None path.
+    struct FailingSecretStore;
+
+    impl crate::keychain::SecretStore for FailingSecretStore {
+        fn set(&self, _provider_id: &str, _secret: &str) -> Result<(), String> {
+            Err("locked".to_string())
+        }
+        fn get(&self, _provider_id: &str) -> Result<Option<String>, String> {
+            Err("locked".to_string())
+        }
+        fn delete(&self, _provider_id: &str) -> Result<(), String> {
+            Err("locked".to_string())
+        }
+    }
+
+    #[test]
+    fn resolve_provider_api_key_error_degrades_to_none() {
+        use crate::keychain::SecretStore;
+        assert_eq!(
+            resolve_provider_api_key(&FailingSecretStore, Some("p1")),
+            None
+        );
+        // The other trait methods fail too; the chat path never calls them.
+        assert!(FailingSecretStore.set("p1", "sk").is_err());
+        assert!(FailingSecretStore.delete("p1").is_err());
+    }
+
+    // ─── Ollama native path regression ──────────────────────────────────
+
+    /// Locks the native `/api/chat` wire contract across the routing change:
+    /// the exact request body (model, messages, stream, think, options
+    /// {temperature, top_p, top_k, num_ctx}, keep_alive) must be identical
+    /// to the pre-routing Phase 1 payload.
+    #[tokio::test]
+    async fn ollama_request_body_unchanged() {
+        use crate::config::defaults::PROVIDER_KIND_OLLAMA;
+        let mut server = mockito::Server::new_async().await;
+
+        // The endpoint comes from the route resolver, exactly as `ask_model`
+        // dispatches it.
+        let inference =
+            inference_with_provider(PROVIDER_KIND_OLLAMA, &format!("{}/", server.url()), "");
+        let endpoint = format!("{}/api/chat", server.url());
+        assert_eq!(
+            resolve_chat_route(&inference).unwrap(),
+            ChatRoute::OllamaNative {
+                endpoint: endpoint.clone(),
+            }
+        );
+
+        let expected_body = serde_json::json!({
+            "model": "gemma3:12b",
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"}
+            ],
+            "stream": true,
+            "think": false,
+            "options": {
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "top_k": 64,
+                "num_ctx": DEFAULT_NUM_CTX
+            },
+            "keep_alive": "10m"
+        });
+        let mock = server
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::Json(expected_body))
+            .with_body(chat_line("", true))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (_, callback) = collect_chunks();
+        stream_ollama_chat(
+            OllamaChatParams {
+                endpoint,
+                model: "gemma3:12b".to_string(),
+                messages: vec![
+                    ChatMessage {
+                        role: "system".to_string(),
+                        content: "sys".to_string(),
+                        images: None,
+                    },
+                    ChatMessage {
+                        role: "user".to_string(),
+                        content: "hi".to_string(),
+                        images: None,
+                    },
+                ],
+                think: false,
+                keep_alive: Some("10m".to_string()),
+                num_ctx: DEFAULT_NUM_CTX,
+            },
+            &client,
+            CancellationToken::new(),
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+    }
+
+    // ─── stream_builtin_chat ────────────────────────────────────────────
+
+    /// Scriptable [`crate::engine::process::EngineProcess`] for the built-in
+    /// route tests: hands out a fixed port, optionally fails every spawn,
+    /// and either answers health probes with 200 or hangs them forever so a
+    /// test can preempt the in-flight ensure.
+    struct ScriptedEngineProcess {
+        port: u16,
+        spawn_error: Option<String>,
+        healthy: bool,
+    }
+
+    struct ScriptedChild {
+        exit_tx: tokio::sync::watch::Sender<bool>,
+        exit_rx: tokio::sync::watch::Receiver<bool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::engine::process::EngineChild for ScriptedChild {
+        async fn wait_exit(&mut self) {
+            let _ = self.exit_rx.wait_for(|exited| *exited).await;
+        }
+        async fn kill(&mut self) {
+            let _ = self.exit_tx.send(true);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::engine::process::EngineProcess for ScriptedEngineProcess {
+        async fn spawn(
+            &self,
+            _args: &crate::engine::process::SpawnArgs,
+        ) -> Result<Box<dyn crate::engine::process::EngineChild>, String> {
+            if let Some(ref message) = self.spawn_error {
+                return Err(message.clone());
+            }
+            let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
+            Ok(Box::new(ScriptedChild { exit_tx, exit_rx }))
+        }
+        fn free_port(&self) -> Result<u16, String> {
+            Ok(self.port)
+        }
+        async fn health_probe(&self, _port: u16) -> Result<u16, String> {
+            if !self.healthy {
+                // Hangs until the poll task is dropped by a kill; the
+                // answer below is only ever reached on the healthy path.
+                std::future::pending::<()>().await;
+            }
+            Ok(200)
+        }
+    }
+
+    /// Helper: an [`crate::engine::state::Target`] with placeholder paths.
+    fn engine_target() -> crate::engine::state::Target {
+        crate::engine::state::Target {
+            model_path: std::path::PathBuf::from("/tmp/m.gguf"),
+            mmproj_path: None,
+            num_ctx: DEFAULT_NUM_CTX,
+        }
+    }
+
+    /// Helper: an [`crate::engine::runner::EngineHandle`] over a scripted
+    /// process with idle unload disabled.
+    fn spawn_engine(process: ScriptedEngineProcess) -> crate::engine::runner::EngineHandle {
+        crate::engine::runner::EngineHandle::spawn(
+            Arc::new(process),
+            0,
+            std::time::Duration::from_secs(3600),
+        )
+    }
+
+    #[tokio::test]
+    async fn stream_builtin_chat_streams_from_engine_port() {
+        let mut server = mockito::Server::new_async().await;
+        let port: u16 = server
+            .url()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse()
+            .expect("mockito url ends in a port");
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_header("content-type", "text/event-stream")
+            .with_body("data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\ndata: [DONE]\n")
+            .create_async()
+            .await;
+
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port,
+            spawn_error: None,
+            healthy: true,
+        });
+        let client = reqwest::Client::new();
+        let (chunks, callback) = collect_chunks();
+        let accumulated = stream_builtin_chat(
+            &engine,
+            engine_target(),
+            "org/repo:m.gguf".to_string(),
+            vec![],
+            &client,
+            CancellationToken::new(),
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+        assert_eq!(accumulated, "Hi");
+        let chunks = chunks.lock().unwrap();
+        assert!(matches!(&chunks[0], StreamChunk::Token(t) if t == "Hi"));
+        assert_eq!(
+            std::mem::discriminant(&chunks[1]),
+            std::mem::discriminant(&StreamChunk::Done)
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn superseded_ensure_emits_cancelled() {
+        // Health probes hang, so the ensure stays in flight until the
+        // unload preempts it.
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: false,
+        });
+        let client = reqwest::Client::new();
+        let (chunks, callback) = collect_chunks();
+
+        let task = {
+            let engine = engine.clone();
+            tokio::spawn(async move {
+                stream_builtin_chat(
+                    &engine,
+                    engine_target(),
+                    "org/repo:m.gguf".to_string(),
+                    vec![],
+                    &client,
+                    CancellationToken::new(),
+                    callback,
+                )
+                .await
+            })
+        };
+
+        // Wait until the spawn landed and the health poll is in flight,
+        // then preempt the waiting ensure.
+        let mut status = engine.status();
+        status
+            .wait_for(|s| s.state == "starting")
+            .await
+            .expect("actor is running");
+        engine.unload().await;
+
+        let accumulated = task.await.unwrap();
+        assert_eq!(accumulated, "");
+        let chunks = chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1, "exactly one terminal chunk");
+        assert_eq!(
+            std::mem::discriminant(&chunks[0]),
+            std::mem::discriminant(&StreamChunk::Cancelled)
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn start_failed_maps_engine_start_failed() {
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: Some("spawn boom".to_string()),
+            healthy: true,
+        });
+        let client = reqwest::Client::new();
+        let (chunks, callback) = collect_chunks();
+        let accumulated = stream_builtin_chat(
+            &engine,
+            engine_target(),
+            "org/repo:m.gguf".to_string(),
+            vec![],
+            &client,
+            CancellationToken::new(),
+            callback,
+        )
+        .await;
+
+        assert_eq!(accumulated, "");
+        let chunks = chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1, "exactly one terminal chunk");
+        assert!(matches!(
+            &chunks[0],
+            StreamChunk::Error(e)
+                if e.kind == EngineErrorKind::EngineStartFailed
+                && e.message.starts_with("Thuki's engine could not start.\n")
+                && e.message.contains("spawn boom")
+        ));
+        engine.shutdown().await;
     }
 }

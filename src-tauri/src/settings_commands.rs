@@ -102,6 +102,32 @@ pub(crate) fn trace_enabled_changed(prior_enabled: bool, resolved: &AppConfig) -
     resolved.debug.trace_enabled != prior_enabled
 }
 
+/// Returns the new `[inference] idle_unload_minutes` value when the post-write
+/// `AppConfig` changed it relative to the pre-write snapshot, `None` when it
+/// is unchanged. Pulled out so the predicate is covered by tests instead of
+/// riding inside the coverage-off Tauri command bodies that forward the new
+/// value to the running engine actor.
+pub(crate) fn idle_unload_minutes_changed(prior_minutes: u32, resolved: &AppConfig) -> Option<u32> {
+    let new_minutes = resolved.inference.idle_unload_minutes;
+    (new_minutes != prior_minutes).then_some(new_minutes)
+}
+
+/// Forwards a changed `[inference] idle_unload_minutes` value to the engine
+/// runner actor so the new idle-unload policy applies without a restart.
+/// Spawned because the config commands are synchronous while the actor's
+/// mailbox is async. Thin dispatch; the predicate and the actor's
+/// `SetIdleMinutes` handling are both tested on their own.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn forward_idle_unload_minutes(app: &AppHandle, prior_minutes: u32, resolved: &AppConfig) {
+    if let Some(minutes) = idle_unload_minutes_changed(prior_minutes, resolved) {
+        let engine = app
+            .state::<crate::engine::runner::EngineHandle>()
+            .inner()
+            .clone();
+        tauri::async_runtime::spawn(async move { engine.set_idle_minutes(minutes).await });
+    }
+}
+
 // ─── Tauri command surface ──────────────────────────────────────────────────
 
 /// Returns the current resolved `AppConfig` snapshot.
@@ -131,7 +157,13 @@ pub fn set_config_field(
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let prior_trace_enabled = state.read().debug.trace_enabled;
+    let (prior_trace_enabled, prior_idle_unload_minutes) = {
+        let guard = state.read();
+        (
+            guard.debug.trace_enabled,
+            guard.inference.idle_unload_minutes,
+        )
+    };
     let resolved = {
         let mut guard = state.write();
         let resolved = write_field_to_disk(&path, &section, &key, value)?;
@@ -149,6 +181,9 @@ pub fn set_config_field(
         let new_inner = crate::build_trace_inner(&app, resolved.debug.trace_enabled);
         trace_recorder.replace(new_inner);
     }
+    // Forward an `[inference] idle_unload_minutes` change to the engine
+    // runner so the new idle policy applies without restarting Thuki.
+    forward_idle_unload_minutes(&app, prior_idle_unload_minutes, &resolved);
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -304,7 +339,13 @@ pub fn reset_config(
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let prior_trace_enabled = state.read().debug.trace_enabled;
+    let (prior_trace_enabled, prior_idle_unload_minutes) = {
+        let guard = state.read();
+        (
+            guard.debug.trace_enabled,
+            guard.inference.idle_unload_minutes,
+        )
+    };
     let resolved = {
         let mut guard = state.write();
         let resolved = reset_section_on_disk(&path, section.as_deref())?;
@@ -319,6 +360,9 @@ pub fn reset_config(
         let new_inner = crate::build_trace_inner(&app, resolved.debug.trace_enabled);
         trace_recorder.replace(new_inner);
     }
+    // A whole-file or `[inference]` reset restores the default idle-unload
+    // policy; forward it so the engine runner picks it up immediately.
+    forward_idle_unload_minutes(&app, prior_idle_unload_minutes, &resolved);
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -385,7 +429,13 @@ pub fn reload_config_from_disk(
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let prior_trace_enabled = state.read().debug.trace_enabled;
+    let (prior_trace_enabled, prior_idle_unload_minutes) = {
+        let guard = state.read();
+        (
+            guard.debug.trace_enabled,
+            guard.inference.idle_unload_minutes,
+        )
+    };
     let resolved = {
         let mut guard = state.write();
         let resolved = config::load_from_path(&path)?;
@@ -399,6 +449,9 @@ pub fn reload_config_from_disk(
         let new_inner = crate::build_trace_inner(&app, resolved.debug.trace_enabled);
         trace_recorder.replace(new_inner);
     }
+    // Manual edits to `[inference] idle_unload_minutes` reach the engine
+    // runner through the same refresh path.
+    forward_idle_unload_minutes(&app, prior_idle_unload_minutes, &resolved);
     emit_config_updated(&app);
     Ok(resolved)
 }
