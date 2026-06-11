@@ -111,6 +111,11 @@ pub const ENGINE_COMMAND_QUEUE_CAPACITY: usize = 64;
 /// user-tunable: pure IPC hygiene, invisible below the UI refresh rate.
 pub const DOWNLOAD_PROGRESS_MIN_INTERVAL_MS: u64 = 500;
 
+/// Maximum accepted length of a single Server-Sent-Events line from a /v1
+/// streaming response. Bounds attacker-controlled data from a chat server
+/// (a malicious or broken server cannot grow a single line unboundedly).
+pub const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
+
 /// Built-in secretary persona prompt. User overrides via `[prompt] system` in
 /// the config file. The slash-command appendix is composed on top at load time
 /// and is never written back to the file.
