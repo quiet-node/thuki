@@ -25,6 +25,7 @@ pub mod images;
 pub mod models;
 pub mod ocr;
 pub mod onboarding;
+pub mod openai;
 pub mod screenshot;
 pub mod search;
 pub mod settings_commands;
