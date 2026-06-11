@@ -230,6 +230,35 @@ pub fn builtin_target(
     })
 }
 
+/// Parses llama-server's `GET /props` response and reports whether the
+/// loaded model accepts image input. The flag lives at `modalities.vision`;
+/// an absent field, a non-boolean value, or a malformed body all collapse to
+/// `false` so the gate fails closed (images are stripped rather than letting
+/// llama-server reject the whole request).
+pub(crate) fn parse_props_vision(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("modalities")
+                .and_then(|m| m.get("vision"))
+                .and_then(|b| b.as_bool())
+        })
+        .unwrap_or(false)
+}
+
+/// Asks the serving llama-server whether the loaded model accepts images
+/// (`GET /props`). Any transport or read failure collapses to `false`,
+/// matching [`parse_props_vision`]'s fail-closed contract.
+async fn fetch_builtin_vision(client: &reqwest::Client, base_url: &str) -> bool {
+    match client.get(format!("{base_url}/props")).send().await {
+        Ok(resp) => match resp.bytes().await {
+            Ok(bytes) => parse_props_vision(&bytes),
+            Err(_) => false,
+        },
+        Err(_) => false,
+    }
+}
+
 /// Runs the built-in-engine stage of a chat turn: mark activity, ensure the
 /// engine serves `target`, then stream via the `/v1` client at the engine's
 /// port. Pulled out of [`ask_model`] so the ensure-error mapping is covered
@@ -238,13 +267,19 @@ pub fn builtin_target(
 ///   preempted this request; never an engine-start failure),
 /// - `StartFailed` becomes a typed `EngineStartFailed` error.
 ///
+/// When the outgoing messages carry images, the serving llama-server is asked
+/// whether the loaded model actually accepts them (`/props` runtime gate);
+/// a non-vision model gets the images stripped through the same
+/// [`apply_capability_filter`] path and stderr notice the cache-driven filter
+/// uses, instead of letting the whole request fail.
+///
 /// Returns the accumulated assistant content (empty on the error paths) so
 /// the caller's persistence tail treats every route identically.
 pub(crate) async fn stream_builtin_chat(
     engine: &crate::engine::runner::EngineHandle,
     target: crate::engine::state::Target,
     model_id: String,
-    messages: Vec<ChatMessage>,
+    mut messages: Vec<ChatMessage>,
     client: &reqwest::Client,
     cancel_token: CancellationToken,
     on_chunk: impl Fn(StreamChunk),
@@ -252,9 +287,22 @@ pub(crate) async fn stream_builtin_chat(
     engine.touch();
     match engine.ensure_loaded(target).await {
         Ok(port) => {
+            let base_url = format!("http://127.0.0.1:{port}");
+            let carries_images = messages
+                .iter()
+                .any(|m| m.images.as_ref().is_some_and(|imgs| !imgs.is_empty()));
+            if carries_images && !fetch_builtin_vision(client, &base_url).await {
+                let stats = apply_capability_filter(&mut messages, &Capabilities::default());
+                if stats.stripped_images > 0 {
+                    eprintln!(
+                        "thuki: [capability filter] model={} stripped_images={}",
+                        model_id, stats.stripped_images
+                    );
+                }
+            }
             crate::openai::stream_openai_chat(
                 crate::openai::OpenAiChatParams {
-                    base_url: format!("http://127.0.0.1:{port}"),
+                    base_url,
                     model: model_id,
                     messages,
                     api_key: None,
@@ -3311,6 +3359,132 @@ mod tests {
                 && e.message.contains("spawn boom")
         ));
         engine.shutdown().await;
+    }
+
+    // ─── /props runtime vision gate ─────────────────────────────────────
+
+    #[test]
+    fn parse_props_vision_true_false_absent_malformed() {
+        assert!(parse_props_vision(br#"{"modalities":{"vision":true}}"#));
+        assert!(!parse_props_vision(br#"{"modalities":{"vision":false}}"#));
+        assert!(!parse_props_vision(br#"{"modalities":{}}"#), "absent flag");
+        assert!(!parse_props_vision(br#"{}"#), "absent modalities");
+        assert!(
+            !parse_props_vision(br#"{"modalities":{"vision":"yes"}}"#),
+            "non-boolean flag fails closed"
+        );
+        assert!(!parse_props_vision(b"not json"), "malformed body");
+    }
+
+    #[tokio::test]
+    async fn fetch_builtin_vision_transport_error_fails_closed() {
+        let client = reqwest::Client::new();
+        assert!(!fetch_builtin_vision(&client, "http://127.0.0.1:1").await);
+    }
+
+    /// A 2xx `/props` response whose body dies mid-read (connection closed
+    /// before the promised Content-Length) fails closed, like every other
+    /// gate failure mode.
+    #[tokio::test]
+    async fn fetch_builtin_vision_body_read_failure_fails_closed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut req_buf = [0u8; 8192];
+            let _ = stream.read(&mut req_buf).await;
+            // Promise more bytes than are sent, then shut down.
+            let response =
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"modalities\"";
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+
+        let client = reqwest::Client::new();
+        assert!(!fetch_builtin_vision(&client, &format!("http://127.0.0.1:{port}")).await);
+    }
+
+    /// Messages carrying one image, as the gate sees them after the
+    /// capability snapshot is built.
+    fn image_message() -> Vec<ChatMessage> {
+        vec![ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+            images: Some(vec!["QUJD".to_string()]),
+        }]
+    }
+
+    /// Drives `stream_builtin_chat` against a mockito server acting as the
+    /// engine port, with `/props` scripted to report `vision` and the chat
+    /// mock matching `expected_chat_body`. Returns once both mocks assert.
+    async fn run_props_gate_case(vision: bool, expected_chat_body: &str) {
+        let mut server = mockito::Server::new_async().await;
+        let port: u16 = server
+            .url()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse()
+            .expect("mockito url ends in a port");
+        let props_mock = server
+            .mock("GET", "/props")
+            .with_status(200)
+            .with_body(format!(r#"{{"modalities":{{"vision":{vision}}}}}"#))
+            .create_async()
+            .await;
+        let chat_mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(mockito::Matcher::PartialJsonString(
+                expected_chat_body.to_string(),
+            ))
+            .with_header("content-type", "text/event-stream")
+            .with_body("data: [DONE]\n")
+            .create_async()
+            .await;
+
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port,
+            spawn_error: None,
+            healthy: true,
+        });
+        let client = reqwest::Client::new();
+        let (_chunks, callback) = collect_chunks();
+        stream_builtin_chat(
+            &engine,
+            engine_target(),
+            "org/repo:m.gguf".to_string(),
+            image_message(),
+            &client,
+            CancellationToken::new(),
+            callback,
+        )
+        .await;
+
+        props_mock.assert_async().await;
+        chat_mock.assert_async().await;
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn props_gate_strips_images_when_vision_unloaded() {
+        // vision:false -> the image part is stripped, so the wire message
+        // collapses to the plain-string content shape.
+        run_props_gate_case(false, r#"{"messages":[{"role":"user","content":"hi"}]}"#).await;
+    }
+
+    #[tokio::test]
+    async fn props_gate_keeps_images_when_vision_supported() {
+        // vision:true -> the multipart content shape with the image part
+        // reaches the wire untouched.
+        run_props_gate_case(
+            true,
+            r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,QUJD"}}]}]}"#,
+        )
+        .await;
     }
 
     // ─── LlmTransport / resolve_llm_transport ───────────────────────────

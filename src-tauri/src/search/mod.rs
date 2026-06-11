@@ -327,7 +327,7 @@ fn transport_failure_event(err: crate::commands::TransportError) -> SearchEvent 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{ChatRoute, EngineError, EngineErrorKind, TransportError};
+    use crate::commands::{EngineError, EngineErrorKind, TransportError};
 
     #[test]
     fn route_failure_event_maps_no_model_to_typed_event() {

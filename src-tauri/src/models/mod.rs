@@ -31,6 +31,7 @@ use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
     HF_API_TIMEOUT_SECS, HF_BASE_URL, MAX_HF_API_BODY_BYTES, MAX_MODEL_SLUG_LEN,
     MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES, PROVIDER_ID_BUILTIN,
+    PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OPENAI,
 };
 use crate::config::AppConfig;
 
@@ -715,22 +716,108 @@ pub struct ModelCapabilitiesCache(pub Mutex<HashMap<(String, String), Capabiliti
 /// fetch failures are skipped (the offending entry is just absent from
 /// the result map) so a single bad model cannot blank out the whole
 /// picker.
+///
+/// Non-Ollama kinds never touch the network: the built-in provider reads the
+/// curated vision/thinking flags from the installed-model manifest and an
+/// `openai` provider maps its manual vision flag onto its configured model.
+/// Both write through to the cache under the same `(provider_id, model)` keys
+/// as the Ollama path so `ask_model`'s per-request capability filter sees one
+/// cache shape for every kind.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn get_model_capabilities(
     client: tauri::State<'_, reqwest::Client>,
     cache: tauri::State<'_, ModelCapabilitiesCache>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+    db: tauri::State<'_, crate::history::Database>,
 ) -> Result<HashMap<String, Capabilities>, String> {
-    let (provider_id, base_url) = {
+    let (provider_id, base_url, kind, provider_model, provider_vision) = {
         let c = config.read();
         (
             c.inference.active_provider.clone(),
             c.inference.active_provider_base_url().to_string(),
+            c.inference.active_provider_kind().to_string(),
+            c.inference.active_provider_model().to_string(),
+            c.inference.active().map(|p| p.vision).unwrap_or(false),
         )
     };
-    let installed = fetch_installed_model_names(&client, &base_url).await?;
-    Ok(reconcile_capabilities(&client, &cache, &provider_id, &base_url, &installed).await)
+    match kind.as_str() {
+        PROVIDER_KIND_BUILTIN => {
+            let rows = {
+                let conn = db.0.lock().map_err(|e| e.to_string())?;
+                manifest::list(&conn).map_err(|e| e.to_string())?
+            };
+            let caps = builtin_capabilities_from_manifest(&rows);
+            cache_capabilities(&cache, &provider_id, &caps);
+            Ok(caps)
+        }
+        PROVIDER_KIND_OPENAI => {
+            let caps = openai_capabilities(&provider_model, provider_vision);
+            cache_capabilities(&cache, &provider_id, &caps);
+            Ok(caps)
+        }
+        _ => {
+            let installed = fetch_installed_model_names(&client, &base_url).await?;
+            Ok(reconcile_capabilities(&client, &cache, &provider_id, &base_url, &installed).await)
+        }
+    }
+}
+
+/// Capability map for the built-in provider, derived from the installed-model
+/// manifest. Each row carries the curated vision/thinking flags recorded at
+/// download time; `max_images` stays `None` because llama-server imposes no
+/// fixed per-request image cap.
+pub(crate) fn builtin_capabilities_from_manifest(
+    rows: &[manifest::InstalledModel],
+) -> HashMap<String, Capabilities> {
+    rows.iter()
+        .map(|row| {
+            (
+                row.id.clone(),
+                Capabilities {
+                    vision: row.vision,
+                    thinking: row.thinking,
+                    max_images: None,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Capability map for an `openai`-kind provider: a single entry for the
+/// configured model, driven by the provider's manual vision flag (generic
+/// `/v1` servers expose no capability probe). Thinking stays `false`: there
+/// is no declared reasoning-token contract to honor. An empty model (none
+/// configured yet) yields an empty map.
+pub(crate) fn openai_capabilities(model: &str, vision: bool) -> HashMap<String, Capabilities> {
+    if model.is_empty() {
+        return HashMap::new();
+    }
+    HashMap::from([(
+        model.to_string(),
+        Capabilities {
+            vision,
+            thinking: false,
+            max_images: None,
+        },
+    )])
+}
+
+/// Writes a resolved capability map through to the cache under
+/// `(provider_id, model)` keys, mirroring the Ollama reconcile path's
+/// write-through so `ask_model`'s per-request filter finds the entries.
+/// Best-effort: a poisoned lock skips the write (the map is still returned
+/// to the caller).
+pub(crate) fn cache_capabilities(
+    cache: &ModelCapabilitiesCache,
+    provider_id: &str,
+    caps: &HashMap<String, Capabilities>,
+) {
+    if let Ok(mut guard) = cache.0.lock() {
+        for (model, c) in caps {
+            guard.insert((provider_id.to_string(), model.clone()), c.clone());
+        }
+    }
 }
 
 /// Pure-ish helper extracted so tests can drive the cache + fetch loop
@@ -2708,6 +2795,93 @@ mod tests {
         // Cache writes silently fail on the poisoned lock, but the
         // result map still carries the freshly-fetched value.
         assert!(result["x"].vision);
+    }
+
+    // ── Non-Ollama capability resolution ─────────────────────────────────────
+
+    /// Manifest row literal with the given capability flags.
+    fn manifest_row(id: &str, vision: bool, thinking: bool) -> manifest::InstalledModel {
+        manifest::InstalledModel {
+            id: id.to_string(),
+            display_name: format!("Model {id}"),
+            repo: "org/repo".to_string(),
+            revision: "a".repeat(40),
+            file_name: format!("{id}.gguf"),
+            sha256: "b".repeat(64),
+            size_bytes: 1_000_000,
+            quant: "Q4_K_M".to_string(),
+            vision,
+            thinking,
+            mmproj_file: None,
+            mmproj_sha256: None,
+        }
+    }
+
+    #[test]
+    fn builtin_capabilities_come_from_manifest() {
+        // Round-trip through a real in-memory manifest so the rows carry
+        // exactly what the download recorded.
+        let conn = crate::database::open_in_memory().unwrap();
+        manifest::insert(&conn, &manifest_row("org/repo:vis.gguf", true, false)).unwrap();
+        manifest::insert(&conn, &manifest_row("org/repo:think.gguf", false, true)).unwrap();
+        let rows = manifest::list(&conn).unwrap();
+
+        let caps = builtin_capabilities_from_manifest(&rows);
+
+        assert_eq!(caps.len(), 2);
+        assert!(caps["org/repo:vis.gguf"].vision);
+        assert!(!caps["org/repo:vis.gguf"].thinking);
+        assert!(!caps["org/repo:think.gguf"].vision);
+        assert!(caps["org/repo:think.gguf"].thinking);
+        assert!(caps.values().all(|c| c.max_images.is_none()));
+    }
+
+    #[test]
+    fn builtin_capabilities_empty_manifest_yields_empty_map() {
+        assert!(builtin_capabilities_from_manifest(&[]).is_empty());
+    }
+
+    #[test]
+    fn openai_capabilities_use_provider_vision_flag() {
+        let with_vision = openai_capabilities("gpt-4o", true);
+        assert_eq!(with_vision.len(), 1);
+        assert!(with_vision["gpt-4o"].vision);
+        assert!(!with_vision["gpt-4o"].thinking);
+        assert_eq!(with_vision["gpt-4o"].max_images, None);
+
+        let without_vision = openai_capabilities("local-llm", false);
+        assert!(!without_vision["local-llm"].vision);
+
+        assert!(
+            openai_capabilities("", true).is_empty(),
+            "no configured model means nothing to report"
+        );
+    }
+
+    #[test]
+    fn cache_capabilities_writes_through_under_provider_key() {
+        let cache = ModelCapabilitiesCache::default();
+        let caps =
+            builtin_capabilities_from_manifest(&[manifest_row("org/repo:vis.gguf", true, true)]);
+
+        cache_capabilities(&cache, "builtin", &caps);
+
+        let guard = cache.0.lock().unwrap();
+        let entry = &guard[&("builtin".to_string(), "org/repo:vis.gguf".to_string())];
+        assert!(entry.vision);
+        assert!(entry.thinking);
+    }
+
+    #[test]
+    fn cache_capabilities_poisoned_lock_is_best_effort() {
+        let cache = ModelCapabilitiesCache::default();
+        let cache_ref = std::panic::AssertUnwindSafe(&cache.0);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = cache_ref.0.lock().unwrap();
+            panic!("poison");
+        });
+        // Must not panic; the write is silently skipped.
+        cache_capabilities(&cache, "builtin", &openai_capabilities("m", true));
     }
 
     // ── Model library: starter options ───────────────────────────────────────
