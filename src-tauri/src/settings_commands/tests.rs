@@ -14,7 +14,8 @@ use toml_edit::DocumentMut;
 use super::{
     coerce_json_to_toml, idle_unload_minutes_changed, is_allowed_field, is_allowed_section,
     json_type_name, json_value_to_toml_item, patch_document, read_document, reset_section_on_disk,
-    trace_enabled_changed, write_field_to_disk, write_provider_field_to_disk,
+    trace_enabled_changed, write_active_provider_to_disk, write_field_to_disk,
+    write_provider_field_to_disk,
 };
 use crate::config::defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS};
 use crate::config::{AppConfig, ConfigError};
@@ -890,6 +891,92 @@ fn write_provider_field_propagates_read_error_for_missing_file() {
     let dir = tempdir();
     let path = dir.join("missing.toml");
     let err = write_provider_field_to_disk(&path, "ollama", "model", "x").unwrap_err();
+    matches!(err, ConfigError::IoError { .. });
+}
+
+// ─── write_active_provider_to_disk ──────────────────────────────────────────
+
+#[test]
+fn set_active_provider_updates_active_and_mirror() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+
+    // Give the builtin provider a model first, so the mirror decision below
+    // exercises the Some(non-empty) arm the command relies on.
+    write_provider_field_to_disk(&path, "builtin", "model", "org/repo:w.gguf").unwrap();
+
+    let resolved = write_active_provider_to_disk(&path, "builtin").unwrap();
+    assert_eq!(resolved.inference.active_provider, "builtin");
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("active_provider = \"builtin\""));
+
+    // The command refreshes the ActiveModelState mirror through this exact
+    // decision helper: the new active provider's model, empty mapped to None.
+    assert_eq!(
+        crate::models::should_refresh_active_model("builtin", &resolved),
+        Some(Some("org/repo:w.gguf".to_string()))
+    );
+
+    // Switching back to a provider with no model clears the mirror.
+    let resolved = write_active_provider_to_disk(&path, "ollama").unwrap();
+    assert_eq!(resolved.inference.active_provider, "ollama");
+    assert_eq!(
+        crate::models::should_refresh_active_model("ollama", &resolved),
+        Some(None)
+    );
+}
+
+#[test]
+fn set_active_provider_rejects_unknown_id() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+    let err = write_active_provider_to_disk(&path, "ghost").unwrap_err();
+    match err {
+        ConfigError::UnknownField { section, key } => {
+            assert_eq!(section, "inference.providers");
+            assert_eq!(key, "ghost");
+        }
+        other => panic!("expected UnknownField, got {other:?}"),
+    }
+    // The file is untouched: the active provider pointer keeps its old value.
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("active_provider = \"ollama\""));
+}
+
+#[test]
+fn set_active_provider_errors_when_no_providers_array() {
+    // SAMPLE_CONFIG is the pre-providers shape (no [[inference.providers]]).
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+    let err = write_active_provider_to_disk(&path, "ollama").unwrap_err();
+    match err {
+        ConfigError::UnknownSection { section } => assert_eq!(section, "inference.providers"),
+        other => panic!("expected UnknownSection, got {other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn set_active_provider_propagates_io_error_when_parent_dir_is_readonly() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+
+    let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+    perms.set_mode(0o500);
+    std::fs::set_permissions(&dir, perms.clone()).unwrap();
+
+    let err = write_active_provider_to_disk(&path, "builtin").unwrap_err();
+
+    // Restore writability so the OS can clean up the tempdir later.
+    let mut restore = perms;
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&dir, restore).unwrap();
+
     matches!(err, ConfigError::IoError { .. });
 }
 

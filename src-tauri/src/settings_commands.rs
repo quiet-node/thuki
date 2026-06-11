@@ -269,6 +269,79 @@ pub(crate) fn write_field_to_disk(
     config::load_from_path(path)
 }
 
+/// Switches the active inference provider and returns the resolved `AppConfig`.
+///
+/// Validates that `provider_id` names an entry in the on-disk
+/// `[[inference.providers]]` list, persists `[inference] active_provider`,
+/// refreshes the managed config, and re-mirrors the in-memory
+/// [`crate::models::ActiveModelState`] onto the new active provider's model
+/// (Some when non-empty, None otherwise) so chat routes correctly without a
+/// restart. Mirrors `set_ollama_url`'s lock + persist + broadcast contract.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn set_active_provider(
+    provider_id: String,
+    app: AppHandle,
+    state: State<'_, RwLock<AppConfig>>,
+    active_model: State<'_, crate::models::ActiveModelState>,
+) -> Result<AppConfig, ConfigError> {
+    let path = config_path(&app)?;
+    let resolved = {
+        let mut guard = state.write();
+        let resolved = write_active_provider_to_disk(&path, &provider_id)?;
+        *guard = resolved.clone();
+        resolved
+    };
+    if let Some(mirror) = crate::models::should_refresh_active_model(&provider_id, &resolved) {
+        if let Ok(mut guard) = active_model.0.lock() {
+            *guard = mirror;
+        }
+    }
+    emit_config_updated(&app);
+    Ok(resolved)
+}
+
+/// Persists `[inference] active_provider = provider_id` after validating that
+/// the id names an entry in the on-disk `[[inference.providers]]` list,
+/// preserving the rest of the file via `toml_edit`, then reloads + resolves.
+/// Sibling of [`write_provider_field_to_disk`]; pulled out of the Tauri
+/// wrapper so the validation, atomic write, and post-write reload are
+/// exercised without an `AppHandle`.
+pub(crate) fn write_active_provider_to_disk(
+    path: &Path,
+    provider_id: &str,
+) -> Result<AppConfig, ConfigError> {
+    let mut doc = read_document(path)?;
+    let providers = doc
+        .get("inference")
+        .and_then(|i| i.get("providers"))
+        .and_then(|p| p.as_array_of_tables());
+    let Some(providers) = providers else {
+        return Err(ConfigError::UnknownSection {
+            section: "inference.providers".to_string(),
+        });
+    };
+    let known = providers
+        .iter()
+        .any(|t| t.get("id").and_then(|v| v.as_str()) == Some(provider_id));
+    if !known {
+        return Err(ConfigError::UnknownField {
+            section: "inference.providers".to_string(),
+            key: provider_id.to_string(),
+        });
+    }
+    if let Some(table) = doc.get_mut("inference").and_then(Item::as_table_mut) {
+        table.insert("active_provider", toml_value(provider_id));
+    }
+    config::atomic_write_bytes(path, doc.to_string().as_bytes()).map_err(|source| {
+        ConfigError::IoError {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    config::load_from_path(path)
+}
+
 /// Patches a single field (`model` or `base_url`) on the
 /// `[[inference.providers]]` entry whose `id` matches `provider_id`, preserving
 /// the rest of the file via `toml_edit`, then reloads + resolves. Backs the

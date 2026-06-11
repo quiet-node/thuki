@@ -31,7 +31,7 @@ use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
     HF_API_TIMEOUT_SECS, HF_BASE_URL, MAX_HF_API_BODY_BYTES, MAX_MODEL_SLUG_LEN,
     MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES, PROVIDER_ID_BUILTIN,
-    PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OPENAI,
+    PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
 };
 use crate::config::AppConfig;
 
@@ -420,6 +420,10 @@ pub enum ModelSetupState {
     /// `/api/tags` responded successfully but the installed list is empty.
     /// The UI must guide the user to `ollama pull <slug>`.
     NoModelsInstalled,
+    /// The active provider has no usable model yet (built-in engine with no
+    /// downloaded starter, or an `openai` provider with no model configured).
+    /// The UI must offer the starter download picker.
+    NeedsDownload,
     /// Ollama is running with at least one installed model. `active_slug`
     /// is the slug we resolved (persisted preference if still installed,
     /// else first installed) and `installed` is the live list for the
@@ -469,8 +473,77 @@ pub fn derive_model_setup_state(
     }
 }
 
-/// Probes Ollama for setup readiness and returns the typed
+/// Pure setup gate for the built-in engine: Ready when the provider has a
+/// model selected AND that model is recorded in the installed manifest;
+/// NeedsDownload otherwise (no model chosen yet, or the manifest row was
+/// removed out from under a stale provider pointer).
+///
+/// `installed` carries every manifest id so the Ready payload mirrors the
+/// Ollama arm's shape (active slug + full inventory).
+pub fn derive_builtin_setup_state(
+    provider_model: Option<&str>,
+    manifest_ids: &[String],
+) -> ModelSetupState {
+    match provider_model {
+        Some(model) if manifest_ids.iter().any(|id| id == model) => ModelSetupState::Ready {
+            active_slug: model.to_string(),
+            installed: manifest_ids.to_vec(),
+        },
+        _ => ModelSetupState::NeedsDownload,
+    }
+}
+
+/// Defensive setup gate for an `openai`-kind active provider. Onboarding never
+/// sets one active, but if a hand-edited config does, a configured model is
+/// treated as Ready (there is no probe surface to verify against) and an
+/// unconfigured one falls back to the download picker.
+pub fn derive_openai_setup_state(provider_model: Option<&str>) -> ModelSetupState {
+    match provider_model {
+        Some(model) => ModelSetupState::Ready {
+            active_slug: model.to_string(),
+            installed: vec![model.to_string()],
+        },
+        None => ModelSetupState::NeedsDownload,
+    }
+}
+
+/// Base URL of the configured Ollama provider, regardless of which provider
+/// is active. Empty when no Ollama-kind provider exists (the loader always
+/// seeds one, so the fallback is defensive).
+pub fn ollama_provider_base_url(config: &AppConfig) -> String {
+    config
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.kind == PROVIDER_KIND_OLLAMA)
+        .map(|p| p.base_url.clone())
+        .unwrap_or_default()
+}
+
+/// True when a local Ollama daemon answered `/api/tags` on the configured
+/// Ollama provider's base URL, regardless of how many models it reports.
+/// Backs onboarding's "Use my existing Ollama instead" escape hatch while
+/// the built-in provider is active (so `get_model_picker_state`, which
+/// probes the ACTIVE provider and mutates the active-model mirror, cannot
+/// be reused here).
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn detect_ollama(
+    client: tauri::State<'_, reqwest::Client>,
+    config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+) -> Result<bool, String> {
+    let base_url = ollama_provider_base_url(&config.read());
+    Ok(fetch_installed_model_names(&client, &base_url)
+        .await
+        .is_ok())
+}
+
+/// Probes the active provider for setup readiness and returns the typed
 /// [`ModelSetupState`] for the frontend onboarding gate.
+///
+/// Routing is by provider kind: `builtin` consults the installed-model
+/// manifest, `openai` trusts its configured model, and Ollama probes
+/// `/api/tags` exactly as before.
 ///
 /// Idempotent: safe to call on every overlay open. The Ready arm also
 /// commits two side effects, both intentionally bounded:
@@ -494,11 +567,29 @@ pub async fn check_model_setup(
     client: tauri::State<'_, reqwest::Client>,
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+    db: tauri::State<'_, crate::history::Database>,
 ) -> Result<ModelSetupState, String> {
     let (ollama_url, active_id, persisted) = read_provider_model_context(&config);
-    let installed_result = fetch_installed_model_names(&client, &ollama_url).await;
+    let kind = config.read().inference.active_provider_kind().to_string();
 
-    let state = derive_model_setup_state(installed_result, persisted.as_deref());
+    let state = match kind.as_str() {
+        PROVIDER_KIND_BUILTIN => {
+            let ids: Vec<String> = {
+                let conn = db.0.lock().map_err(|e| e.to_string())?;
+                manifest::list(&conn)
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .map(|m| m.id)
+                    .collect()
+            };
+            derive_builtin_setup_state(persisted.as_deref(), &ids)
+        }
+        PROVIDER_KIND_OPENAI => derive_openai_setup_state(persisted.as_deref()),
+        _ => {
+            let installed_result = fetch_installed_model_names(&client, &ollama_url).await;
+            derive_model_setup_state(installed_result, persisted.as_deref())
+        }
+    };
 
     if let ModelSetupState::Ready {
         ref active_slug,
@@ -2254,6 +2345,109 @@ mod tests {
                 "installed": ["gemma4:e2b"],
             })
         );
+
+        let needs_download = serde_json::to_value(ModelSetupState::NeedsDownload).unwrap();
+        assert_eq!(
+            needs_download,
+            serde_json::json!({"state": "needs_download"})
+        );
+    }
+
+    // ── derive_builtin_setup_state / derive_openai_setup_state ───────────────
+
+    #[test]
+    fn builtin_ready_when_model_and_manifest() {
+        // Round-trip through a real in-memory manifest so the ids carry
+        // exactly what a finished download recorded.
+        let conn = crate::database::open_in_memory().unwrap();
+        manifest::insert(&conn, &manifest_row("org/repo:w.gguf", false, false)).unwrap();
+        manifest::insert(&conn, &manifest_row("org/repo:x.gguf", false, false)).unwrap();
+        let ids: Vec<String> = manifest::list(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+
+        let state = derive_builtin_setup_state(Some("org/repo:w.gguf"), &ids);
+        assert_eq!(
+            state,
+            ModelSetupState::Ready {
+                active_slug: "org/repo:w.gguf".to_string(),
+                installed: ids,
+            }
+        );
+    }
+
+    #[test]
+    fn builtin_needs_download_when_no_model() {
+        // Fresh install: nothing selected, nothing downloaded.
+        let conn = crate::database::open_in_memory().unwrap();
+        let ids: Vec<String> = manifest::list(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            derive_builtin_setup_state(None, &ids),
+            ModelSetupState::NeedsDownload
+        );
+    }
+
+    #[test]
+    fn builtin_needs_download_when_manifest_row_missing() {
+        // The provider points at a model whose manifest row is gone (e.g.
+        // deleted between launches). The gate must re-engage, not trust the
+        // stale pointer.
+        let conn = crate::database::open_in_memory().unwrap();
+        manifest::insert(&conn, &manifest_row("org/repo:other.gguf", false, false)).unwrap();
+        let ids: Vec<String> = manifest::list(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            derive_builtin_setup_state(Some("org/repo:gone.gguf"), &ids),
+            ModelSetupState::NeedsDownload
+        );
+    }
+
+    #[test]
+    fn openai_ready_when_model_configured() {
+        assert_eq!(
+            derive_openai_setup_state(Some("gpt-4o")),
+            ModelSetupState::Ready {
+                active_slug: "gpt-4o".to_string(),
+                installed: vec!["gpt-4o".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn openai_needs_download_when_no_model_configured() {
+        assert_eq!(
+            derive_openai_setup_state(None),
+            ModelSetupState::NeedsDownload
+        );
+    }
+
+    // ── ollama_provider_base_url (detect_ollama's config read) ──────────────
+
+    #[test]
+    fn ollama_provider_base_url_reads_ollama_kind_entry() {
+        // The default config seeds builtin first, Ollama second; the lookup
+        // must key on kind, not position or active_provider.
+        let cfg = AppConfig::default();
+        assert_eq!(
+            ollama_provider_base_url(&cfg),
+            crate::config::defaults::DEFAULT_OLLAMA_URL
+        );
+    }
+
+    #[test]
+    fn ollama_provider_base_url_empty_when_no_ollama_provider() {
+        let mut cfg = AppConfig::default();
+        cfg.inference.providers.retain(|p| p.kind != "ollama");
+        assert_eq!(ollama_provider_base_url(&cfg), "");
     }
 
     // ── capabilities_from_strings ────────────────────────────────────────────

@@ -76,6 +76,8 @@ export interface AppConfig {
   inference: {
     /** Id of the active provider (e.g. `'ollama'`). */
     activeProvider: string;
+    /** Kind of the active provider (`'builtin' | 'ollama' | 'openai'`). */
+    activeProviderKind: string;
     /** Base URL of the Ollama provider, derived from the providers list. */
     ollamaUrl: string;
   };
@@ -114,10 +116,21 @@ function ollamaBaseUrl(raw: RawAppConfig): string {
   );
 }
 
+/** Derives the active provider's kind from the providers list. Falls back to
+ * `'ollama'` when the pointer does not resolve (the loader repairs dangling
+ * pointers, so this only fires in test contexts with a partial list). */
+function activeProviderKind(raw: RawAppConfig): string {
+  return (
+    raw.inference.providers.find((p) => p.id === raw.inference.active_provider)
+      ?.kind ?? 'ollama'
+  );
+}
+
 function transform(raw: RawAppConfig): AppConfig {
   return {
     inference: {
       activeProvider: raw.inference.active_provider,
+      activeProviderKind: activeProviderKind(raw),
       ollamaUrl: ollamaBaseUrl(raw),
     },
     prompt: {
@@ -264,6 +277,7 @@ export function ConfigProviderForTest({
 export const DEFAULT_CONFIG: AppConfig = {
   inference: {
     activeProvider: 'ollama',
+    activeProviderKind: 'ollama',
     ollamaUrl: 'http://127.0.0.1:11434',
   },
   prompt: { system: '' },
