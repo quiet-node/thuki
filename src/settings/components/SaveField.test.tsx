@@ -21,6 +21,7 @@ const SAMPLE: RawAppConfig = {
         label: 'Built-in (Thuki)',
         base_url: '',
         model: '',
+        vision: false,
       },
       {
         id: 'ollama',
@@ -28,6 +29,7 @@ const SAMPLE: RawAppConfig = {
         label: 'Ollama',
         base_url: 'http://127.0.0.1:11434',
         model: '',
+        vision: false,
       },
     ],
   },

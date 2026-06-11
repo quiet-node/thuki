@@ -136,7 +136,7 @@ Every domain below is shown as a single table that lists **all** constants Thuki
 
 ### `[inference]`
 
-Thuki reaches a model through a **provider**. `active_provider` names which one is used; each provider is described by a `[[inference.providers]]` block. Phase 1 ships two providers: **Ollama** (reached over HTTP at a configurable URL, local or remote) and a **Built-in (Thuki)** entry reserved for an upcoming bundled engine. A fresh install defaults to the Ollama provider.
+Thuki reaches a model through a **provider**. `active_provider` names which one is used; each provider is described by a `[[inference.providers]]` block. Phase 1 ships two providers: **Ollama** (reached over HTTP at a configurable URL, local or remote) and a **Built-in (Thuki)** entry reserved for an upcoming bundled engine. A fresh install defaults to the Ollama provider. You can also add **OpenAI-compatible** providers (LM Studio, Jan, llama-server, etc.) by specifying `kind = "openai"` and a valid `base_url`.
 
 Each provider keeps its own selected `model`. Thuki discovers installed models live from Ollama's `/api/tags` endpoint and lets you pick one from the in-app model picker (or the Providers section of Settings); the choice is written to that provider's `model` field. When no model is installed and none has been chosen, Thuki refuses to dispatch a chat request and surfaces a "Pick a model" prompt. Pull a model with `ollama pull <slug>` and select it.
 
@@ -154,10 +154,11 @@ Each `[[inference.providers]]` block has these fields:
 | Field      | Description                                                                                                                                                  |
 | :--------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`       | Stable identifier referenced by `active_provider`. The `builtin` and `ollama` ids are seeded automatically.                                                  |
-| `kind`     | `builtin` or `ollama`. Any other kind is dropped on load. Determines how Thuki talks to the provider (the Ollama kind uses Ollama's native API).             |
+| `kind`     | `"builtin"`, `"ollama"`, or `"openai"`. Any other kind is dropped on load. Determines how Thuki talks to the provider.                                       |
 | `label`    | Human-readable name shown in Settings.                                                                                                                       |
-| `base_url` | For the Ollama kind: where Thuki reaches the server (defaults to `http://127.0.0.1:11434`; point it at another machine to use remote Ollama). Empty for the built-in kind. A provider of kind `ollama` with an empty `base_url` is dropped and re-seeded at the localhost default. |
+| `base_url` | For the `ollama` and `openai` kinds: the server's base URL. For `ollama`, defaults to `http://127.0.0.1:11434` if empty (then re-seeded). For `openai`, must be a valid `http://` or `https://` URL; a provider with an empty or non-http(s) URL is dropped without healing. Empty for the `builtin` kind. |
 | `model`    | The model selected for this provider, written when you pick one. Empty means "none chosen yet".                                                              |
+| `vision`   | For `openai`-kind providers only: set to `true` if the selected model accepts image inputs. OpenAI-compatible local servers expose no capability probe, so this is declared manually. Ignored for `builtin` and `ollama` (capabilities are resolved from the manifest or Ollama's `/api/show`). Defaults to `false`. |
 
 If the active model has been removed from Ollama between launches, Thuki silently falls back to the first installed model the next time you open the picker. If no models are installed at all, the next request surfaces a "Model not found" error with the exact `ollama pull <name>` command to run.
 

@@ -312,7 +312,7 @@ pub(crate) fn resolve(config: &mut AppConfig) {
 /// panics on user input.
 fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
     use crate::config::defaults::{
-        DEFAULT_ACTIVE_PROVIDER, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA,
+        DEFAULT_ACTIVE_PROVIDER, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
     };
     use crate::config::schema::{builtin_provider, ollama_provider};
 
@@ -372,10 +372,27 @@ fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
         }
     }
 
-    // Drop unknown-kind providers and non-builtin providers with no base_url.
+    // Drop unknown-kind providers and network providers with no valid base_url.
+    // builtin: always kept (URL not required).
+    // ollama:  kept when base_url is non-empty (Ollama heal loop above already
+    //          reset bad schemes; an empty URL is dropped and the reseed below
+    //          restores the localhost default).
+    // openai:  kept only when base_url is a valid http(s) URL. Unlike Ollama
+    //          there is no sensible localhost default for arbitrary /v1 servers,
+    //          so an empty or non-http(s) URL is dropped without healing.
     inf.providers.retain(|p| match p.kind.as_str() {
         PROVIDER_KIND_BUILTIN => true,
         PROVIDER_KIND_OLLAMA => !p.base_url.trim().is_empty(),
+        PROVIDER_KIND_OPENAI => {
+            let ok = is_http_url(&p.base_url);
+            if !ok {
+                eprintln!(
+                    "thuki: [config] dropping openai provider '{}': base_url must be a non-empty http(s) URL",
+                    p.id
+                );
+            }
+            ok
+        }
         other => {
             eprintln!("thuki: [config] dropping provider with unknown kind '{other}'");
             false
