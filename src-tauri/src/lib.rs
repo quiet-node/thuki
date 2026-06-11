@@ -1475,6 +1475,28 @@ fn config_file_has_providers(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Path to the bundled `llama-server` sidecar binary.
+///
+/// Debug builds run straight from the repo, so the target-triple-suffixed
+/// binary in `src-tauri/binaries/` is used directly. Bundled builds rely on
+/// Tauri's `externalBin` handling, which installs the sidecar next to the
+/// app executable (`Contents/MacOS`) with the target-triple suffix stripped,
+/// so it resolves relative to `current_exe()`. Verified manually against the
+/// packaged app layout (see the release checklist).
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn engine_sidecar_path() -> std::path::PathBuf {
+    if cfg!(debug_assertions) {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join("llama-server-aarch64-apple-darwin")
+    } else {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("llama-server")))
+            .unwrap_or_else(|| std::path::PathBuf::from("llama-server"))
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -1827,6 +1849,43 @@ pub fn run() {
                 keychain::KeyringStore,
             )));
 
+            // ── Built-in inference engine runner ───────────────────
+            // One actor owns the bundled llama-server lifecycle: at most one
+            // process, kill-then-start on model switch, idle unload. Spawned
+            // inside block_on so the actor task lands on Tauri's tokio
+            // runtime (setup itself runs outside a runtime context).
+            let engine_idle_minutes = app
+                .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                .read()
+                .inference
+                .idle_unload_minutes;
+            let engine_client = app.state::<reqwest::Client>().inner().clone();
+            let engine = tauri::async_runtime::block_on(async move {
+                engine::runner::EngineHandle::spawn(
+                    std::sync::Arc::new(engine::process::TokioEngineProcess {
+                        binary: engine_sidecar_path(),
+                        client: engine_client,
+                    }),
+                    engine_idle_minutes,
+                    std::time::Duration::from_secs(
+                        crate::config::defaults::ENGINE_IDLE_CHECK_INTERVAL_SECS,
+                    ),
+                )
+            });
+            // Forward every engine lifecycle change to the frontend,
+            // mirroring how warmup events are emitted.
+            {
+                let status_handle = app.handle().clone();
+                let mut status_rx = engine.status();
+                tauri::async_runtime::spawn(async move {
+                    while status_rx.changed().await.is_ok() {
+                        let status = status_rx.borrow_and_update().clone();
+                        let _ = status_handle.emit("engine:status", status);
+                    }
+                });
+            }
+            app.manage(engine);
+
             // ── Orphaned image cleanup (startup + periodic) ─────────
             run_image_cleanup(app.handle());
             spawn_periodic_image_cleanup(app.handle().clone());
@@ -1969,13 +2028,12 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let RunEvent::WindowEvent {
+        .run(|app_handle, event| match event {
+            RunEvent::WindowEvent {
                 label,
                 event: tauri::WindowEvent::CloseRequested { api, .. },
                 ..
-            } = event
-            {
+            } => {
                 if label == "main" {
                     api.prevent_close();
 
@@ -1997,6 +2055,17 @@ pub fn run() {
                     }
                 }
             }
+            RunEvent::Exit => {
+                // Kill the built-in engine sidecar and confirm its exit so
+                // no orphan llama-server survives quit. The actor runs on
+                // the tokio runtime, so block_on here cannot deadlock.
+                let engine = app_handle
+                    .state::<engine::runner::EngineHandle>()
+                    .inner()
+                    .clone();
+                tauri::async_runtime::block_on(async move { engine.shutdown().await });
+            }
+            _ => {}
         });
 }
 
