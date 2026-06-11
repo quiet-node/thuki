@@ -45,6 +45,7 @@ async-trait = "0.1"
 semver = "1"
 sha2 = "0.10"
 libc = "0.2"
+keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }

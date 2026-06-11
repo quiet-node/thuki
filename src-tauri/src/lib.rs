@@ -37,6 +37,7 @@ mod activator;
 #[cfg(target_os = "macos")]
 mod cg_displays;
 pub mod context;
+pub mod keychain;
 pub mod permissions;
 pub mod replace;
 
@@ -1820,6 +1821,11 @@ pub fn run() {
             app.manage(model_store);
             app.manage(models::DownloadState::default());
 
+            // ── Keychain secret store ──────────────────────────────
+            app.manage(keychain::Secrets(std::sync::Arc::new(
+                keychain::KeyringStore,
+            )));
+
             // ── Orphaned image cleanup (startup + periodic) ─────────
             run_image_cleanup(app.handle());
             spawn_periodic_image_cleanup(app.handle().clone());
@@ -1952,7 +1958,13 @@ pub fn run() {
             #[cfg(not(coverage))]
             updater::commands::reset_and_relaunch_for_grant,
             #[cfg(not(coverage))]
-            updater::commands::consume_pending_grant_resume
+            updater::commands::consume_pending_grant_resume,
+            #[cfg(not(coverage))]
+            keychain::set_provider_api_key,
+            #[cfg(not(coverage))]
+            keychain::clear_provider_api_key,
+            #[cfg(not(coverage))]
+            keychain::has_provider_api_key
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
