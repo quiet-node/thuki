@@ -256,43 +256,84 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 
     // Pre-load the active model so the user's first message does not pay
     // the cold-start penalty. Fires on all show paths: double-tap, tray,
-    // and first-launch auto-show.
-    let warmup_model = app_handle
-        .state::<models::ActiveModelState>()
-        .0
-        .lock()
-        .ok()
-        .and_then(|g| g.clone());
-    if let Some(model) = warmup_model {
-        let warmup_config = app_handle
-            .state::<parking_lot::RwLock<crate::config::AppConfig>>()
-            .read()
-            .clone();
-        let endpoint = format!(
-            "{}/api/chat",
-            warmup_config
-                .inference
-                .active_provider_base_url()
-                .trim_end_matches('/')
-        );
-        let system_prompt = warmup_config.prompt.resolved_system.clone();
-        let keep_alive = if warmup_config.inference.keep_warm_inactivity_minutes == 0 {
-            None
-        } else {
-            Some(warmup::keep_alive_string(
-                warmup_config.inference.keep_warm_inactivity_minutes,
-            ))
-        };
-        let num_ctx = warmup_config.inference.num_ctx;
-        let client = app_handle.state::<reqwest::Client>().inner().clone();
-        app_handle.state::<warmup::WarmupState>().fire(
-            endpoint,
-            model,
-            system_prompt,
-            client,
-            keep_alive,
-            num_ctx,
-        );
+    // and first-launch auto-show. Branches by the active provider's kind:
+    // Ollama keeps its native /api/chat warmup, the built-in engine gets a
+    // /v1 prime ONLY when it is already serving (summoning the overlay must
+    // never load a model implicitly), and openai providers get no warmup
+    // (nothing local to warm).
+    let warmup_kind = app_handle
+        .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+        .read()
+        .inference
+        .active_provider_kind()
+        .to_string();
+    match warmup_kind.as_str() {
+        crate::config::defaults::PROVIDER_KIND_OLLAMA => {
+            let warmup_model = app_handle
+                .state::<models::ActiveModelState>()
+                .0
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
+            if let Some(model) = warmup_model {
+                let warmup_config = app_handle
+                    .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                    .read()
+                    .clone();
+                let endpoint = format!(
+                    "{}/api/chat",
+                    warmup_config
+                        .inference
+                        .active_provider_base_url()
+                        .trim_end_matches('/')
+                );
+                let system_prompt = warmup_config.prompt.resolved_system.clone();
+                let keep_alive = if warmup_config.inference.keep_warm_inactivity_minutes == 0 {
+                    None
+                } else {
+                    Some(warmup::keep_alive_string(
+                        warmup_config.inference.keep_warm_inactivity_minutes,
+                    ))
+                };
+                let num_ctx = warmup_config.inference.num_ctx;
+                let client = app_handle.state::<reqwest::Client>().inner().clone();
+                app_handle.state::<warmup::WarmupState>().fire(
+                    endpoint,
+                    model,
+                    system_prompt,
+                    client,
+                    keep_alive,
+                    num_ctx,
+                );
+            }
+        }
+        crate::config::defaults::PROVIDER_KIND_BUILTIN => {
+            let status = app_handle
+                .state::<engine::runner::EngineHandle>()
+                .status()
+                .borrow()
+                .clone();
+            if let Some(port) = warmup::builtin_prime_port(&status) {
+                let (model, system_prompt) = {
+                    let cfg = app_handle
+                        .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                        .read()
+                        .clone();
+                    (
+                        cfg.inference.active_provider_model().to_string(),
+                        cfg.prompt.resolved_system.clone(),
+                    )
+                };
+                let client = app_handle.state::<reqwest::Client>().inner().clone();
+                tauri::async_runtime::spawn(warmup::prime_builtin(
+                    port,
+                    model,
+                    system_prompt,
+                    client,
+                ));
+            }
+        }
+        _ => {}
     }
 
     // Extract before building local_ctx to avoid an extra clone.
