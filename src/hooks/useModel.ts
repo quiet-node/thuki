@@ -12,6 +12,7 @@ import type {
 /** Mirrors the Rust EngineErrorKind enum sent over IPC. */
 export type EngineErrorKind =
   | 'EngineUnreachable'
+  | 'EngineStartFailed'
   | 'ModelNotFound'
   | 'NoModelSelected'
   | 'Other';

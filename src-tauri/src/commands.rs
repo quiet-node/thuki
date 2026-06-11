@@ -93,6 +93,9 @@ pub fn apply_capability_filter(messages: &mut [ChatMessage], caps: &Capabilities
 pub enum EngineErrorKind {
     /// Ollama process is not running (connection refused / timeout).
     EngineUnreachable,
+    /// The bundled engine's sidecar process failed to launch or crashed before
+    /// passing its health check.
+    EngineStartFailed,
     /// The requested model has not been pulled yet (HTTP 404).
     ModelNotFound,
     /// No active model has been selected. The user must pick a model from
@@ -1875,6 +1878,7 @@ mod tests {
         // and error routing without failing any other test.
         let cases = [
             (EngineErrorKind::EngineUnreachable, "EngineUnreachable"),
+            (EngineErrorKind::EngineStartFailed, "EngineStartFailed"),
             (EngineErrorKind::ModelNotFound, "ModelNotFound"),
             (EngineErrorKind::NoModelSelected, "NoModelSelected"),
             (EngineErrorKind::Other, "Other"),
