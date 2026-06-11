@@ -30,6 +30,12 @@ A backup copy of both keys lives in the private `quiet-node/thuki-confidential` 
 
 There is nothing to set up on your laptop. No env vars, no key files, no `.zshrc.local` overrides. New contributors clone the repo and start working.
 
+## Bundled inference engine
+
+Every build embeds llama.cpp's `llama-server` as a Tauri sidecar. The binary and the dylibs it links are fetched and verified by `scripts/ensure-llama-server.ts`, which pins an exact llama.cpp release tag and the sha256 of its macOS arm64 asset; a hash mismatch aborts the build. The script runs automatically in front of `dev`, `build:backend`, and `build:release`, and is an instant no-op once the pinned version is installed under `src-tauri/binaries/` (gitignored, never committed). CI caches that directory with a key derived from the pinned version and hash, so release builds only hit GitHub's release CDN when the pin changes. Because the script adds an `@loader_path/../Frameworks` rpath for bundle-time dylib resolution, it ad-hoc re-signs the binary and each dylib after the edit.
+
+Deferred: Developer ID re-signing, deep-signing of the nested dylibs, and notarization land as a release-please workflow step when the Apple Developer certificate exists.
+
 ## Cutting a release manually (rare)
 
 If for some reason a release must be cut outside of CI (incident response, rolling back a bad release-please commit, etc.), the procedure is:
