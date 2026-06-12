@@ -1195,6 +1195,38 @@ describe('ModelCheckStep (builtin flow)', () => {
     ).toHaveLength(2);
   });
 
+  it('Choose a different model on the failed card returns to the picker', async () => {
+    builtinResponses();
+
+    const { container } = renderBuiltin();
+    await act(async () => {});
+    await startDownload(container as HTMLElement, 'balanced');
+
+    const channel = getLastChannel()!;
+    await act(async () => {
+      channel.simulateMessage({
+        type: 'Failed',
+        data: { kind: 'disk_full', message: 'no space left' },
+      });
+    });
+    expect(
+      screen.getByText('Not enough disk space. Free up space and retry.'),
+    ).toBeInTheDocument();
+    // The picker hides while the failed card is up; a user who now wants
+    // the smaller Fast tier needs this explicit way back.
+    expect(container.querySelector('[data-tier="fast"]')).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Choose a different model' }),
+      );
+    });
+    expect(container.querySelector('[data-tier="fast"]')).not.toBeNull();
+    expect(
+      screen.queryByText('Not enough disk space. Free up space and retry.'),
+    ).not.toBeInTheDocument();
+  });
+
   it('drops probe results that resolve after unmount', async () => {
     let resolveSetup: (v: unknown) => void = () => {};
     let resolveDetect: (v: unknown) => void = () => {};

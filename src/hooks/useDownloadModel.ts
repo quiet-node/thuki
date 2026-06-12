@@ -15,7 +15,9 @@
  *
  * The backend emits `AllDone` only after the install is recorded; a finalize
  * failure (the manifest write failed) emits `Failed` instead of `AllDone`.
- * `Failed` is terminal from any state.
+ * `Failed` is terminal from any state. Terminal means no *event* moves the
+ * machine out of it; the user can still leave through `reset`, an explicit
+ * action that returns the terminal `failed`/`ready` cards to the picker.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -113,6 +115,13 @@ export interface UseDownloadModel {
   discard: (sha256: string) => Promise<void>;
   /** Caller sets this when starter options show partial_bytes. */
   enterResumePending: () => void;
+  /**
+   * failed -> idle and ready -> idle; no-op in every other phase. A user
+   * action, not an event transition, so the terminal-Failed contract is
+   * intact: no backend event ever leaves `failed`, but the user may step
+   * back to the picker to choose a different model.
+   */
+  reset: () => void;
 }
 
 export interface UseDownloadModelOptions {
@@ -303,6 +312,18 @@ export function useDownloadModel(
     setState({ phase: 'resume_pending' });
   }, []);
 
+  const reset = useCallback(() => {
+    setState((prev) =>
+      prev.phase === 'failed' || prev.phase === 'ready'
+        ? { phase: 'idle' }
+        : prev,
+    );
+    // Stale byte counts from the run that just ended; the next start
+    // reseeds them. Callers only invoke reset from the terminal cards.
+    setProgress(null);
+    setEtaSeconds(null);
+  }, []);
+
   return {
     state,
     progress,
@@ -316,5 +337,6 @@ export function useDownloadModel(
     resume: start,
     discard,
     enterResumePending,
+    reset,
   };
 }

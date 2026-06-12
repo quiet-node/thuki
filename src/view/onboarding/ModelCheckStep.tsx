@@ -203,6 +203,7 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
     resume,
     discard,
     enterResumePending,
+    reset,
   } = useDownloadModel();
   const [selected, setSelected] = useState<StarterTier>('balanced');
   const [ollamaDetected, setOllamaDetected] = useState(false);
@@ -322,6 +323,10 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
             onCancelConfirm={cancelConfirm}
             onCancel={() => void cancel()}
             onRetry={() => void retry()}
+            // A failed download (disk full, checksum) must not trap the
+            // user on Retry: this steps back to the picker so a smaller
+            // tier stays reachable.
+            onChooseAnother={reset}
           />
           {hatchBesideProgress ? (
             <button

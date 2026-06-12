@@ -313,6 +313,21 @@ pub(crate) async fn get_loaded_model_request(
     Ok(if found { Some(model.to_string()) } else { None })
 }
 
+/// Returns the engine runner's current lifecycle snapshot, the same payload
+/// the `engine:status` event carries. The Settings panel calls this on mount
+/// to seed its residency line: the backend emits `engine:status` only on
+/// transitions, so without this query an already-loaded engine would read as
+/// "stopped" (and Unload now would stay disabled) until the next transition.
+/// Thin wrapper over [`crate::engine::runner::EngineHandle::current_status`],
+/// which the runner tests cover.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn get_engine_status(
+    engine: tauri::State<'_, crate::engine::runner::EngineHandle>,
+) -> crate::engine::runner::EngineStatus {
+    engine.current_status()
+}
+
 /// Returns the active model's name if it is currently loaded, `None` if no
 /// model is selected or nothing is running. Branches by the active provider's
 /// kind: Ollama queries `/api/ps`, the built-in engine reads its own status

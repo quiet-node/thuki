@@ -2147,6 +2147,8 @@ pub fn run() {
             warmup::evict_model,
             #[cfg(not(coverage))]
             warmup::get_loaded_model,
+            #[cfg(not(coverage))]
+            warmup::get_engine_status,
             updater::commands::get_updater_state,
             #[cfg(not(coverage))]
             updater::commands::check_for_update,

@@ -279,5 +279,28 @@ describe('DownloadProgress', () => {
       ).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
     });
+
+    it('renders Choose a different model when onChooseAnother is wired', () => {
+      const onChooseAnother = vi.fn();
+      renderProgress(
+        { phase: 'failed', kind: 'disk_full', message: 'no space left' },
+        { onChooseAnother },
+      );
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Choose a different model' }),
+      );
+      expect(onChooseAnother).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits Choose a different model when onChooseAnother is absent', () => {
+      renderProgress({
+        phase: 'failed',
+        kind: 'disk_full',
+        message: 'no space left',
+      });
+      expect(
+        screen.queryByRole('button', { name: 'Choose a different model' }),
+      ).not.toBeInTheDocument();
+    });
   });
 });
