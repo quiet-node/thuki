@@ -360,6 +360,41 @@ describe('ModelTab', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('hides the Ollama model row entirely when the built-in provider is active', async () => {
+    // get_model_picker_state is scoped to the ACTIVE provider, so with the
+    // built-in active it returns builtin manifest ids. The Ollama card must
+    // not render that inventory (or the no-models hint) as its own.
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state') {
+        return Promise.resolve({
+          active: 'thuki-starter-4b',
+          all: ['thuki-starter-4b'],
+          ollamaReachable: true,
+        });
+      }
+      return Promise.resolve(BUILTIN_ACTIVE_CONFIG);
+    });
+    render(
+      <ModelTab
+        config={BUILTIN_ACTIVE_CONFIG}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      screen.queryByRole('combobox', { name: 'Active Ollama model' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('No models installed')).not.toBeInTheDocument();
+    // The rest of the Ollama card stays.
+    expect(
+      screen.getByRole('textbox', { name: 'Ollama URL' }),
+    ).toBeInTheDocument();
+  });
+
   it('shows an empty Ollama URL when no Ollama provider is configured', async () => {
     const builtinOnly: RawAppConfig = {
       ...CONFIG,

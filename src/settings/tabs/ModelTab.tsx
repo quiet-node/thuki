@@ -363,18 +363,23 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
               over exposing the port directly.
             </p>
           )}
-          <SettingRow label="Model">
-            {availableModels.length > 0 ? (
-              <Dropdown
-                value={modelValue}
-                options={availableModels}
-                onChange={(m) => void setActiveModel(m)}
-                ariaLabel="Active Ollama model"
-              />
-            ) : (
-              <span className={styles.providerHint}>No models installed</span>
-            )}
-          </SettingRow>
+          {/* get_model_picker_state is scoped to the ACTIVE provider, so this
+              inventory only describes Ollama while Ollama is active. Hide the
+              row otherwise to avoid listing another provider's models here. */}
+          {activeKind === 'ollama' ? (
+            <SettingRow label="Model">
+              {availableModels.length > 0 ? (
+                <Dropdown
+                  value={modelValue}
+                  options={availableModels}
+                  onChange={(m) => void setActiveModel(m)}
+                  ariaLabel="Active Ollama model"
+                />
+              ) : (
+                <span className={styles.providerHint}>No models installed</span>
+              )}
+            </SettingRow>
+          ) : null}
         </div>
 
         {openaiProvider ? (
