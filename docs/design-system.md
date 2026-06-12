@@ -28,9 +28,9 @@ switching apps, creating accounts, or sending data to a server.
 any text first and Thuki opens with it pre-filled as context. Your favorite AI chat
 apps can't do either of those things.
 
-**Tech:** Runs locally via Ollama, ships with Gemma 4 (Google's latest open-source
-model) by default. No API keys, no subscriptions, no telemetry. Conversations stored
-in a local SQLite database. Free and open source under Apache 2.0.
+**Tech:** Ships its own local AI engine (bundled llama.cpp) and downloads a starter
+model during onboarding. No API keys, no subscriptions, no telemetry. Conversations
+stored in a local SQLite database. Free and open source under Apache 2.0.
 
 ---
 

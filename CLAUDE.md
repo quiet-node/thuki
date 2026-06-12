@@ -23,6 +23,11 @@ bun run format           # Prettier + cargo fmt
 bun run format:check     # Dry-run format validation
 bun run typecheck        # tsc --noEmit
 
+bun run engine:ensure    # Fetch + verify + re-sign the pinned llama-server sidecar (auto-runs before dev/build)
+
+bun run search-box:start # Docker Compose up for the /search services (SearXNG + reader)
+bun run search-box:stop  # docker compose down for the /search services
+
 bun run test             # Vitest run (frontend tests only)
 bun run test:watch       # Vitest watch mode
 bun run test:coverage    # Vitest with coverage report
@@ -43,7 +48,7 @@ Tests use **Vitest** for the frontend (React/TypeScript with React Testing Libra
 
 ## Architecture
 
-Thuki is a macOS-only desktop app, a floating AI secretary activated by double-tapping the Control key. Project homepage: [thuki.app](https://www.thuki.app/). It is a **Tauri v2** app (Rust backend + React/TypeScript frontend) that interfaces with a locally running **Ollama** instance at `http://127.0.0.1:11434`.
+Thuki is a macOS-only desktop app, a floating AI secretary activated by double-tapping the Control key. Project homepage: [thuki.app](https://www.thuki.app/). It is a **Tauri v2** app (Rust backend + React/TypeScript frontend) that ships its own inference engine: a bundled **llama.cpp** `llama-server` sidecar spawned and supervised by the backend (the default provider on fresh installs). It can instead talk to a locally running **Ollama** instance (default `http://127.0.0.1:11434`) or any OpenAI-compatible `/v1` server.
 
 ### Frontend (`src/`)
 
@@ -63,12 +68,34 @@ User-facing reference for all commands lives in `docs/commands.md`. **Any new sl
 
 ### Backend (`src-tauri/src/`)
 
-- **`lib.rs`** — app setup: loads `AppConfig` via `config::load`, converts window to NSPanel (fullscreen overlay), registers tray, spawns hotkey listener, intercepts close events (hides instead of quits)
-- **`config/`** — typed TOML-backed application configuration. Loaded once at startup from `~/Library/Application Support/com.quietnode.thuki/config.toml` (seeded with defaults on first run), installed as Tauri managed state, exposed to the frontend via the `get_config` command. Every subsystem that needs model, prompt, window, activation, or quote values reads from `State<AppConfig>`. The `[inference]` section holds the typed providers list (`active_provider` + `[[inference.providers]]`, each `{id, kind, label, base_url, model}`); the loader migrates a legacy flat `ollama_url` onto a synthesized Ollama provider and `config/migrate.rs` folds the legacy SQLite `active_model` onto it at startup. See `docs/configurations.md` for the user-facing schema.
-- **`commands.rs`** — `ask_model` Tauri command: routes by the active provider's kind (Phase 1 implements Ollama's native `/api/chat` only; a non-Ollama active provider returns a typed `EngineError`), streams newline-delimited JSON, and sends chunks via Tauri Channel. Reads the active provider (base URL + selected model) from `State<RwLock<AppConfig>>`, the resolved system prompt, and the in-memory `ActiveModelState`.
+- **`lib.rs`**: app setup: loads `AppConfig` via `config::load`, converts window to NSPanel (fullscreen overlay), registers tray, spawns hotkey listener, spawns the engine runner actor, intercepts close events (hides instead of quits), and on `RunEvent::Exit` kills the engine sidecar and awaits its confirmed exit so no orphan `llama-server` survives quit
+- **`config/`**: typed TOML-backed application configuration. Loaded once at startup from `~/Library/Application Support/com.quietnode.thuki/config.toml` (seeded with defaults on first run), installed as Tauri managed state, exposed to the frontend via the `get_config` command. Every subsystem that needs model, prompt, window, activation, or quote values reads from `State<AppConfig>`. The `[inference]` section holds `active_provider`, `num_ctx`, `keep_warm_inactivity_minutes` (Ollama only), `idle_unload_minutes` (built-in engine only), and the typed providers list (`[[inference.providers]]`, each `{id, kind, label, base_url, model, vision}`; `kind` is `builtin`, `ollama`, or `openai`, anything else is dropped on load). Fresh installs default `active_provider` to `builtin`; the loader pins any pre-providers config (no `[[inference.providers]]` array) to `ollama`, because no working built-in provider existed when that file was written. The loader also migrates a legacy flat `ollama_url` onto a synthesized Ollama provider, and `config/migrate.rs` folds the legacy SQLite `active_model` onto the active provider when it is Ollama-kind. See `docs/configurations.md` for the user-facing schema.
+- **`commands.rs`**: `ask_model` Tauri command: routes by the active provider's kind. `builtin` resolves the installed model from the manifest, ensures the sidecar is loaded via the engine runner, and streams OpenAI-compatible `/v1/chat/completions` SSE through `openai.rs` (`V1Flavor::Builtin`); `ollama` streams the native `/api/chat` newline-delimited JSON; `openai` streams `/v1` SSE against the provider's `base_url` (`V1Flavor::Remote`). All paths emit the same `StreamChunk` contract via Tauri Channel and read the active provider, the resolved system prompt, and the in-memory `ActiveModelState` from managed state.
+- **`keychain.rs`**: write-only storage for `openai`-provider API keys in the macOS Keychain via the `keyring` crate. The Keychain is the only place keys ever live: they are never written to the TOML config and never returned to the frontend (only existence is queryable via `has_provider_api_key`); the `SecretStore` trait decouples callers from the real Keychain for tests.
 - **`screenshot.rs`** — `capture_full_screen_command` Tauri command: uses CoreGraphics FFI (`CGWindowListCreateImage`) to capture all displays excluding Thuki's own windows, writes a JPEG to a temp dir, and returns the path
 - **`activator.rs`** — Core Graphics event tap watching for double-tap Control key (400 ms window, 600 ms cooldown; timing is a compiled constant, not yet exposed through `AppConfig` because the event-tap callback runs in a thread that cannot trivially read Tauri managed state). The tap MUST use `CGEventTapLocation::HID` and `CGEventTapOptions::Default` — see the critical constraint note in "Key Design Constraints" below.
 
+### Built-in engine (`src-tauri/src/engine/`)
+
+Thuki bundles llama.cpp's `llama-server` and manages its lifecycle: at most one engine process exists, never two models are resident, and a model or context-size switch always kills the old process and waits for a confirmed exit before spawning the new one.
+
+- **`state.rs`**: pure, side-effect-free residency state machine: `Stopped`, `Starting(Target)`, `Loaded { target, port }`, `Stopping { next }`, `Failed(String)`. A `Target` is `{model_path, mmproj_path, num_ctx}`; two targets are interchangeable only when **every** field is equal, so a `num_ctx` change is a different target and forces a restart exactly like a model switch (the context size is fixed at `llama-server` startup).
+- **`runner.rs`**: async actor that owns the live child process. Commands (`Ensure`, `Touch`, `SetIdleMinutes`, `Unload`, `Shutdown`) arrive on a bounded mpsc channel (`ENGINE_COMMAND_QUEUE_CAPACITY`); every transition is published on a `watch` channel for the frontend status. Startup readiness is a `/health` poll loop governed by the `ENGINE_HEALTH_*` constants; `idle_unload_minutes` of inactivity (checked every `ENGINE_IDLE_CHECK_INTERVAL_SECS`) stops the engine to free RAM.
+- **`process.rs`**: the real `EngineProcess` backed by `tokio::process` + reqwest. Spawn line: `-m <model> [--mmproj <p>] --ctx-size <n> --host 127.0.0.1 --port <p> --no-webui`. The bind is localhost-only and the web UI is disabled; do not change either.
+
+Sidecar constraints: the binary ships through tauri.conf `externalBin` (`binaries/llama-server`) and its dylib closure is bundled via the macOS `frameworks` list, resolved at runtime through the `@loader_path/../Frameworks` rpath that `scripts/ensure-llama-server.ts` adds (the script fetches the pinned llama.cpp release, verifies its sha256, prunes the dylib closure, and ad-hoc re-signs everything; it auto-runs in front of `dev` and the build scripts). The process is spawned with `tokio::process`, not Tauri's shell plugin, so the runner owns kill/wait directly; `lib.rs` shuts the sidecar down on app quit (kill-on-quit, see above).
+
+### Model library (`src-tauri/src/models/`)
+
+- **`mod.rs`**: active-model state (`ActiveModelState`, picker plumbing, persistence onto the active provider's `model` field) plus the public download/cancel API with a single-download-at-a-time slot.
+- **`registry.rs`**: curated starters in three tiers (Fast / Balanced / Smartest). Every entry pins a Hugging Face repo at an exact git revision and carries each blob's sha256, size, capability flags (vision/thinking, mmproj companion), and license note.
+- **`download.rs`**: resumable downloader: streams from Hugging Face into blob-store partials, resumes via HTTP `Range`, emits `DownloadEvent`s throttled by `DOWNLOAD_PROGRESS_MIN_INTERVAL_MS`, and verifies sha256 on completion. The hash check is an integrity check only (truncation, bit rot, resume corruption), never a supply-chain/provenance control; provenance comes from the pinned repo revisions.
+- **`storage.rs`**: content-addressed blob store: `root/tmp/<sha256>.partial` during download, streaming SHA-256 verify, then atomic rename into `root/blobs/<sha256>`.
+- **`manifest.rs`**: CRUD over the `installed_models` SQLite table; row id is `"<repo>:<file_name>"`, content addresses shared across rows (two models can reference the same mmproj blob).
+
+### Sandbox (`sandbox/`)
+
+`sandbox/search-box/` runs the SearXNG + reader services behind `/search` as a Docker Compose stack.
 ### IPC Pattern
 
 Frontend calls Tauri commands via `@tauri-apps/api/core`. Streaming uses Tauri's **Channel API** — the Rust side sends typed `StreamChunk` enum variants, the hook accumulates tokens into React state.
@@ -162,7 +189,7 @@ Workflow:
 ## Key Design Constraints
 
 - **macOS only** — uses NSPanel, Core Graphics event taps, macOS Control key
-- **Privacy-first**: Ollama runs locally
+- **Privacy-first**: all inference is local (bundled llama.cpp engine by default; optional local Ollama or OpenAI-compatible servers)
 - **Two permissions required** — Accessibility (CGEventTap creation), Screen Recording (/screen command)
 
 ### CGEventTap configuration — DO NOT CHANGE these two settings
