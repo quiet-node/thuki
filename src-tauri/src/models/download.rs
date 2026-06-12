@@ -50,7 +50,9 @@ pub enum DownloadEvent {
     Verifying { file: String },
     /// The file verified and was installed into the blob store.
     FileDone { file: String },
-    /// Every spec finished; the model is fully installed.
+    /// Every spec finished AND the install was recorded (manifest row +
+    /// provider model). Emitted by the orchestration in `models::mod`, not by
+    /// `run_download`, so the frontend never advances past a failed finalize.
     AllDone,
     /// The user cancelled; the partial is kept for a later resume.
     Cancelled,
@@ -90,8 +92,12 @@ pub struct DownloadSpec {
 /// whose length already equals total_bytes skips the network entirely and goes
 /// straight to verify (no Range request; a 416 is therefore unreachable).
 /// Verifies + installs each file on completion (Verifying then FileDone).
-/// Emits AllDone after the last file. Cancellation: checked between chunks;
-/// emits Cancelled and returns; the partial is KEPT for resume.
+/// Does NOT emit AllDone: a successful return means every file is verified
+/// and installed, and the caller emits AllDone once the install is recorded
+/// (manifest + provider model), so the frontend cannot advance past a failed
+/// finalize. Cancellation: raced against the initial send and every body
+/// chunk, so a stalled connection cannot mask it; emits Cancelled and
+/// returns; the partial is KEPT for resume.
 /// Every failure is emitted as a Failed event; the partial is kept except
 /// where verify_and_install already deleted it (checksum mismatch).
 #[allow(clippy::result_unit_err)] // Err carries no detail by design: every failure reaches the UI as a Failed event.
@@ -131,7 +137,6 @@ pub async fn run_download(
         }
     }
 
-    emit(DownloadEvent::AllDone);
     Ok(())
 }
 
@@ -206,10 +211,15 @@ async fn fetch_into_partial(
     if ranged {
         request = request.header(reqwest::header::RANGE, format!("bytes={resumed_from}-"));
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|e| DownloadIoError::Connect(e.to_string()))?;
+    // Race cancellation against the send so a stalled connection (sleep/wake,
+    // NAT drop) cannot keep the download slot wedged: the shared client has
+    // no timeouts, so an unraced await here could park forever.
+    let sent = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Ok(FileOutcome::Cancelled),
+        sent = request.send() => sent,
+    };
+    let response = sent.map_err(|e| DownloadIoError::Connect(e.to_string()))?;
 
     // 206 continues the partial; 200 carries the full body (fresh download,
     // or a server that ignored the range). Anything else is an HTTP failure.
@@ -234,11 +244,16 @@ async fn fetch_into_partial(
     let mut written = start;
     let mut throttle = ProgressThrottle::new(spec.total_bytes, written);
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        // Checked between chunks: the partial is kept for a later resume.
-        if cancel.is_cancelled() {
-            return Ok(FileOutcome::Cancelled);
-        }
+    loop {
+        // Race cancellation against every chunk await, not just between
+        // chunks: a mid-body stall would otherwise swallow the cancel and
+        // never emit Cancelled. The partial is kept for a later resume.
+        let next = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Ok(FileOutcome::Cancelled),
+            next = stream.next() => next,
+        };
+        let Some(chunk) = next else { break };
         let chunk = chunk.map_err(|e| DownloadIoError::MidStream(e.to_string()))?;
         file.write_all(&chunk).map_err(DownloadIoError::Write)?;
         written += chunk.len() as u64;
@@ -459,13 +474,15 @@ mod tests {
                 total_bytes: 4096
             }
         );
+        // FileDone is the terminal event: AllDone is the orchestration's
+        // (it fires only after the install is recorded).
         assert_eq!(
-            events[verifying_at + 1],
+            *events.last().unwrap(),
             DownloadEvent::FileDone {
                 file: "w.gguf".to_string()
             }
         );
-        assert_eq!(*events.last().unwrap(), DownloadEvent::AllDone);
+        assert_eq!(events.len(), verifying_at + 2);
         assert_eq!(std::fs::read(store.blob_path(&sha)).unwrap(), body);
     }
 
@@ -596,7 +613,6 @@ mod tests {
                 DownloadEvent::FileDone {
                     file: "w.gguf".to_string()
                 },
-                DownloadEvent::AllDone,
             ]
         );
         assert_eq!(std::fs::read(store.blob_path(&sha)).unwrap(), body);
@@ -632,6 +648,111 @@ mod tests {
         // Partial is KEPT with the already-downloaded bytes for resume.
         assert_eq!(store.existing_partial_len(&sha), Some(100));
         assert!(!store.blob_path(&sha).exists());
+    }
+
+    #[tokio::test]
+    async fn cancel_during_stalled_send_emits_cancelled() {
+        use tokio::io::AsyncReadExt;
+
+        // Server that accepts the connection and reads the request but never
+        // answers: `send()` parks forever, so only the cancel race can free
+        // the download.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_seen_tx, request_seen) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = request_seen_tx.send(());
+            // Hold the socket open without responding until the test is done.
+            let _ = release_rx.await;
+        });
+
+        let (_dir, store) = make_store();
+        let body = body_of(1024);
+        let specs = [spec_for(format!("http://{addr}/w.gguf"), "w.gguf", &body)];
+        let client = reqwest::Client::new();
+        let (events, emit) = collector();
+
+        let cancel = CancellationToken::new();
+        let canceller = {
+            let cancel = cancel.clone();
+            async move {
+                request_seen.await.unwrap();
+                cancel.cancel();
+            }
+        };
+        let (result, ()) = tokio::join!(
+            run_download(&specs, &store, &client, cancel, emit),
+            canceller
+        );
+        assert_eq!(result, Err(()));
+        assert_eq!(last_event(&events), DownloadEvent::Cancelled);
+        let _ = release_tx.send(());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancel_during_stalled_stream_emits_cancelled_and_keeps_partial() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Server that sends headers plus a body prefix, then stalls with the
+        // connection open: the chunk await parks, so only the cancel race can
+        // free the download. The partial stays on disk for resume.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (prefix_sent_tx, prefix_sent) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 4096\r\n\r\npartial")
+                .await
+                .unwrap();
+            sock.flush().await.unwrap();
+            let _ = prefix_sent_tx.send(());
+            // Hold the socket open, never sending the rest of the body,
+            // until the test is done.
+            let _ = release_rx.await;
+        });
+
+        let (_dir, store) = make_store();
+        let body = body_of(4096);
+        let specs = [spec_for(format!("http://{addr}/w.gguf"), "w.gguf", &body)];
+        let sha = specs[0].sha256.clone();
+        let client = reqwest::Client::new();
+        let (events, emit) = collector();
+
+        let cancel = CancellationToken::new();
+        let canceller = {
+            let cancel = cancel.clone();
+            // Cancel only once the partial exists: that proves the response
+            // headers were consumed and the download is parked inside the
+            // chunk loop, so the cancel exercises the stream race, not the
+            // send race.
+            let partial = store.partial_path(&sha);
+            async move {
+                prefix_sent.await.unwrap();
+                while !partial.exists() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                cancel.cancel();
+            }
+        };
+        let (result, ()) = tokio::join!(
+            run_download(&specs, &store, &client, cancel, emit),
+            canceller
+        );
+        assert_eq!(result, Err(()));
+        assert_eq!(last_event(&events), DownloadEvent::Cancelled);
+        // The partial was opened (and possibly fed the prefix) and is KEPT.
+        assert!(store.existing_partial_len(&sha).is_some());
+        assert!(!store.blob_path(&sha).exists());
+        let _ = release_tx.send(());
+        server.await.unwrap();
     }
 
     // ── Failure mapping (end to end) ─────────────────────────────────────────
@@ -844,7 +965,12 @@ mod tests {
             weights_done < mmproj_started,
             "mmproj must start only after the weights file is done"
         );
-        assert_eq!(*events.last().unwrap(), DownloadEvent::AllDone);
+        assert_eq!(
+            *events.last().unwrap(),
+            DownloadEvent::FileDone {
+                file: "mmproj.gguf".to_string()
+            }
+        );
         assert_eq!(
             std::fs::read(store.blob_path(&weights_sha)).unwrap(),
             weights

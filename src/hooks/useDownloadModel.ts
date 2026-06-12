@@ -13,8 +13,9 @@
  * `engine:status` listener advances `installing -> warming_up -> ready`
  * (or `failed` with kind `engine`).
  *
- * A `Failed` event can arrive AFTER `AllDone` (finalize failure: the
- * manifest write failed), so `Failed` is terminal from any state.
+ * The backend emits `AllDone` only after the install is recorded; a finalize
+ * failure (the manifest write failed) emits `Failed` instead of `AllDone`.
+ * `Failed` is terminal from any state.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -194,8 +195,8 @@ export function useDownloadModel(
           setState({ phase: 'idle' });
           break;
         case 'Failed':
-          // Terminal from ANY state, including after AllDone (finalize
-          // failure: the manifest write failed).
+          // Terminal from ANY state, including verifying (finalize failure:
+          // the manifest write failed, so AllDone never arrives).
           setState({
             phase: 'failed',
             kind: event.data.kind,
