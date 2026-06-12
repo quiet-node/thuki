@@ -30,8 +30,8 @@ use tauri::Manager;
 use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
     HF_API_TIMEOUT_SECS, HF_BASE_URL, MAX_HF_API_BODY_BYTES, MAX_MODEL_SLUG_LEN,
-    MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES, PROVIDER_ID_BUILTIN,
-    PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+    MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES, OPENAI_MODELS_TIMEOUT_SECS,
+    PROVIDER_ID_BUILTIN, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
 };
 use crate::config::AppConfig;
 
@@ -1378,6 +1378,116 @@ pub async fn fetch_repo_gguf_listing(
     parse_gguf_listing(&body)
 }
 
+// ─── OpenAI-compatible model listing ─────────────────────────────────────────
+
+/// Subset of an OpenAI-compatible `/v1/models` response Thuki consumes.
+#[derive(Deserialize)]
+struct OpenAiModelsResponse {
+    #[serde(default)]
+    data: Vec<OpenAiModelEntry>,
+}
+
+/// One model row in the `/v1/models` listing.
+#[derive(Deserialize)]
+struct OpenAiModelEntry {
+    #[serde(default)]
+    id: String,
+}
+
+/// Pure parse of a `/v1/models` body into model ids. Rows with an empty or
+/// missing `id` are dropped rather than surfaced as blank dropdown entries.
+pub fn parse_openai_models(body: &[u8]) -> Result<Vec<String>, String> {
+    let parsed: OpenAiModelsResponse = serde_json::from_slice(body)
+        .map_err(|e| format!("failed to decode /v1/models response: {e}"))?;
+    Ok(parsed
+        .data
+        .into_iter()
+        .map(|m| m.id)
+        .filter(|id| !id.is_empty())
+        .collect())
+}
+
+/// The configured OpenAI-compatible provider's `(id, base_url)`. Errors when
+/// no `openai`-kind provider exists so the UI shows a stable message instead
+/// of probing an empty URL.
+pub fn openai_provider_target(config: &AppConfig) -> Result<(String, String), String> {
+    config
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.kind == PROVIDER_KIND_OPENAI)
+        .map(|p| (p.id.clone(), p.base_url.clone()))
+        .ok_or_else(|| "no OpenAI-compatible provider is configured".to_string())
+}
+
+/// GETs `<base_url>/v1/models` with the production timeout and body cap and
+/// returns the listed model ids. `api_key` is sent as a bearer token when
+/// present (keyless local servers are common, so it is optional).
+pub async fn fetch_openai_models(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<String>, String> {
+    fetch_openai_models_inner(
+        client,
+        base_url,
+        api_key,
+        std::time::Duration::from_secs(OPENAI_MODELS_TIMEOUT_SECS),
+        MAX_HF_API_BODY_BYTES,
+    )
+    .await
+}
+
+/// Innermost `/v1/models` fetcher with timeout and body cap configurable so
+/// the cap branches are testable. The cap is enforced incrementally during
+/// the streaming read, mirroring [`fetch_installed_model_names_inner`].
+async fn fetch_openai_models_inner(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    timeout: std::time::Duration,
+    max_body_bytes: usize,
+) -> Result<Vec<String>, String> {
+    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+    let mut request = client.get(&url).timeout(timeout);
+    if let Some(key) = api_key {
+        request = request.bearer_auth(key);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach the server: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "/v1/models returned HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+
+    if let Some(declared_len) = response.content_length() {
+        if declared_len as usize > max_body_bytes {
+            return Err(format!(
+                "/v1/models response exceeded {max_body_bytes} bytes"
+            ));
+        }
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("failed to read /v1/models body: {e}"))?;
+        if buf.len() + chunk.len() > max_body_bytes {
+            return Err(format!(
+                "/v1/models response exceeded {max_body_bytes} bytes"
+            ));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    parse_openai_models(&buf)
+}
+
 /// Download specs for a resolved repo model: weights first, then the mmproj
 /// companion. URL shape matches [`registry::download_specs`]:
 /// `<base>/<repo>/resolve/<revision>/<file>`.
@@ -1597,6 +1707,22 @@ pub async fn list_hf_repo_ggufs(
     client: tauri::State<'_, reqwest::Client>,
 ) -> Result<Vec<HfGgufFile>, String> {
     fetch_repo_gguf_listing(&client, HF_BASE_URL, &repo).await
+}
+
+/// Lists the models served by the configured OpenAI-compatible provider via
+/// its `/v1/models` endpoint, using the Keychain API key when one is stored.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn list_openai_models(
+    config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+    secrets: tauri::State<'_, crate::keychain::Secrets>,
+    client: tauri::State<'_, reqwest::Client>,
+) -> Result<Vec<String>, String> {
+    let (provider_id, base_url) = openai_provider_target(&config.read())?;
+    // A Keychain read failure degrades to "no key": keyless local servers
+    // must keep listing even when the Keychain is unavailable.
+    let api_key = secrets.0.get(&provider_id).ok().flatten();
+    fetch_openai_models(&client, &base_url, api_key.as_deref()).await
 }
 
 /// Cancels the in-flight model download, if any. The download task emits
@@ -2201,6 +2327,204 @@ mod tests {
             err.contains("exceeded"),
             "expected incremental abort error, got: {err}"
         );
+    }
+
+    // ── OpenAI-compatible model listing ──────────────────────────────────────
+
+    #[test]
+    fn parse_openai_models_extracts_ids_and_drops_blank_rows() {
+        let body = br#"{"object":"list","data":[
+            {"id":"llama-3.1-8b","object":"model"},
+            {"id":"","object":"model"},
+            {"object":"model"},
+            {"id":"qwen2.5-7b"}
+        ]}"#;
+        assert_eq!(
+            parse_openai_models(body).unwrap(),
+            vec!["llama-3.1-8b".to_string(), "qwen2.5-7b".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_openai_models_tolerates_missing_data_field() {
+        assert_eq!(parse_openai_models(b"{}").unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_openai_models_maps_malformed_json_to_err() {
+        let err = parse_openai_models(b"not json").unwrap_err();
+        assert!(err.contains("failed to decode /v1/models response"));
+    }
+
+    #[test]
+    fn openai_provider_target_returns_id_and_base_url() {
+        let mut cfg = AppConfig::default();
+        cfg.inference
+            .providers
+            .push(crate::config::schema::openai_provider(
+                "openai",
+                "LM Studio",
+                "http://127.0.0.1:1234",
+            ));
+        assert_eq!(
+            openai_provider_target(&cfg).unwrap(),
+            ("openai".to_string(), "http://127.0.0.1:1234".to_string())
+        );
+    }
+
+    #[test]
+    fn openai_provider_target_errors_when_absent() {
+        let cfg = AppConfig::default();
+        let err = openai_provider_target(&cfg).unwrap_err();
+        assert!(err.contains("no OpenAI-compatible provider"));
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_sends_bearer_key_and_parses_ids() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", "Bearer sk-test")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":[{"id":"m1"},{"id":"m2"}]}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let result = fetch_openai_models(&client, &server.url(), Some("sk-test")).await;
+
+        mock.assert_async().await;
+        assert_eq!(result.unwrap(), vec!["m1".to_string(), "m2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_omits_authorization_without_key() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_body(r#"{"data":[{"id":"m1"}]}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        // Trailing slash also exercises the base-url trim.
+        let base = format!("{}/", server.url());
+        let result = fetch_openai_models(&client, &base, None).await;
+
+        mock.assert_async().await;
+        assert_eq!(result.unwrap(), vec!["m1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_maps_http_error_to_err_string() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/v1/models")
+            .with_status(401)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let err = fetch_openai_models(&client, &server.url(), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("/v1/models returned HTTP 401"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_maps_transport_error_to_err_string() {
+        // Bind then drop a listener so the port is closed.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let client = reqwest::Client::new();
+        let err = fetch_openai_models(&client, &format!("http://{addr}"), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("failed to reach the server"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_rejects_body_exceeding_cap_via_content_length() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/v1/models")
+            .with_status(200)
+            .with_body("x".repeat(100))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let err = fetch_openai_models_inner(
+            &client,
+            &server.url(),
+            None,
+            std::time::Duration::from_secs(5),
+            32,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeded"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_rejects_body_exceeding_cap_when_no_content_length() {
+        // Chunked response (no Content-Length); the incremental stream cap
+        // must reject when the running total exceeds the limit.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0\r\n\r\n",
+            );
+        });
+
+        let client = reqwest::Client::new();
+        let err = fetch_openai_models_inner(
+            &client,
+            &format!("http://{addr}"),
+            None,
+            std::time::Duration::from_secs(5),
+            20,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeded"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_maps_body_read_error_to_err_string() {
+        // Headers advertise Content-Length but the server hangs up before
+        // sending the body, so the streaming read fails mid-flight.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
+            );
+        });
+
+        let client = reqwest::Client::new();
+        let err = fetch_openai_models(&client, &format!("http://{addr}"), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("failed to read /v1/models body"), "got: {err}");
     }
 
     // ── ActiveModelState ─────────────────────────────────────────────────────

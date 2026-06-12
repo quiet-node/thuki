@@ -67,6 +67,24 @@ export type DownloadEvent =
   | { type: 'Cancelled' }
   | { type: 'Failed'; data: { kind: DownloadFailKind; message: string } };
 
+/** One installed-model manifest row (`list_installed_models`). Mirrors the
+ * serde output of `models::manifest::InstalledModel`; only the fields the
+ * Settings UI consumes are declared. */
+export interface InstalledModel {
+  /** Stable key: `"<repo>:<file_name>"`. Written to the builtin provider's `model` field. */
+  id: string;
+  /** Human-readable label (e.g. the GGUF file stem). */
+  display_name: string;
+  /** Quantisation label (e.g. "Q4_K_M"); empty when unknown. */
+  quant: string;
+}
+
+/** One `.gguf` row from `list_hf_repo_ggufs`, for the paste-a-repo browser. */
+export interface HfGgufFile {
+  file: string;
+  size_bytes: number;
+}
+
 /** Engine lifecycle snapshot published on the `engine:status` event. */
 export interface EngineStatus {
   state: 'stopped' | 'starting' | 'loaded' | 'stopping' | 'failed';

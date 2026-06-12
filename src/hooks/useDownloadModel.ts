@@ -90,6 +90,11 @@ export interface UseDownloadModel {
   /** confirming -> downloading; invokes `download_starter` with a channel. */
   start: (tier: StarterTier) => Promise<void>;
   /**
+   * idle -> downloading for a pasted-repo model; invokes `download_repo_model`
+   * with a channel. Same event stream and terminal states as `start`.
+   */
+  startRepo: (repo: string, file: string) => Promise<void>;
+  /**
    * Invokes `cancel_model_download`. The state flips back to idle when the
    * backend's Cancelled event lands; the partial is KEPT, so the caller
    * refreshes options to surface resume_pending.
@@ -97,7 +102,8 @@ export interface UseDownloadModel {
   cancel: () => Promise<void>;
   /**
    * failed -> downloading. A checksum failure already deleted the partial
-   * on the backend, so retrying is just starting the same tier again.
+   * on the backend, so retrying is just starting the same download (starter
+   * tier or pasted repo, whichever ran last) again.
    */
   retry: () => Promise<void>;
   /** resume_pending -> downloading; the backend resumes via Range. */
@@ -128,7 +134,8 @@ export function useDownloadModel(
 
   const samplesRef = useRef<EtaSample[]>([]);
   const startedCountRef = useRef(0);
-  const lastTierRef = useRef<StarterTier | null>(null);
+  /** Replays the most recent start (tier or repo) for `retry`. */
+  const lastStartRef = useRef<(() => Promise<void>) | null>(null);
 
   const handleEvent = useCallback(
     (event: DownloadEvent) => {
@@ -233,9 +240,10 @@ export function useDownloadModel(
     setState({ phase: 'idle' });
   }, []);
 
-  const start = useCallback(
-    async (tier: StarterTier) => {
-      lastTierRef.current = tier;
+  /** Shared start path: resets per-run trackers, wires the event channel,
+   * and invokes the given download command. */
+  const run = useCallback(
+    async (command: string, args: Record<string, unknown>) => {
       startedCountRef.current = 0;
       samplesRef.current = [];
       setProgress(null);
@@ -244,7 +252,7 @@ export function useDownloadModel(
       const channel = new Channel<DownloadEvent>();
       channel.onmessage = handleEvent;
       try {
-        await invoke('download_starter', { tier, onEvent: channel });
+        await invoke(command, { ...args, onEvent: channel });
       } catch (err) {
         setState({ phase: 'failed', kind: 'other', message: String(err) });
       }
@@ -252,15 +260,33 @@ export function useDownloadModel(
     [handleEvent],
   );
 
+  const start = useCallback(
+    async (tier: StarterTier) => {
+      const replay = () => run('download_starter', { tier });
+      lastStartRef.current = replay;
+      await replay();
+    },
+    [run],
+  );
+
+  const startRepo = useCallback(
+    async (repo: string, file: string) => {
+      const replay = () => run('download_repo_model', { repo, file });
+      lastStartRef.current = replay;
+      await replay();
+    },
+    [run],
+  );
+
   const cancel = useCallback(async () => {
     await invoke('cancel_model_download');
   }, []);
 
   const retry = useCallback(async () => {
-    const tier = lastTierRef.current;
-    if (tier === null) return;
-    await start(tier);
-  }, [start]);
+    const replay = lastStartRef.current;
+    if (replay === null) return;
+    await replay();
+  }, []);
 
   const discard = useCallback(async (sha256: string) => {
     try {
@@ -283,6 +309,7 @@ export function useDownloadModel(
     beginConfirm,
     cancelConfirm,
     start,
+    startRepo,
     cancel,
     retry,
     resume: start,
