@@ -511,6 +511,9 @@ async fn run_streaming_branch(
                     model: model.to_string(),
                     messages,
                     api_key: api_key.clone(),
+                    // The transport collapses builtin into a generic /v1
+                    // server, so the neutral remote copy applies here.
+                    flavor: crate::openai::V1Flavor::Remote,
                 },
                 client,
                 cancel_token,
