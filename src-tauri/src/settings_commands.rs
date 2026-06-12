@@ -142,6 +142,35 @@ fn forward_idle_unload_minutes(app: &AppHandle, prior_minutes: u32, resolved: &A
     }
 }
 
+/// True when a config write moved the ACTIVE provider away from the built-in
+/// engine (builtin -> ollama/openai). Switching between non-builtin kinds or
+/// onto builtin never matches. Pulled out so the predicate is covered by
+/// tests instead of riding inside the coverage-off Tauri command bodies that
+/// fire the engine unload.
+pub(crate) fn builtin_deactivated(prior_kind: &str, resolved: &AppConfig) -> bool {
+    prior_kind == crate::config::defaults::PROVIDER_KIND_BUILTIN
+        && resolved.inference.active_provider_kind()
+            != crate::config::defaults::PROVIDER_KIND_BUILTIN
+}
+
+/// Fires a best-effort engine unload when a config write switched the active
+/// provider away from the built-in engine. Without it, a multi-GB
+/// llama-server stays resident until quit: the eviction UI branches by the
+/// NEW provider kind (the builtin arm becomes unreachable) and the default
+/// idle policy of 0 never unloads. Spawned so the switch neither blocks on
+/// nor can fail because of the engine actor; an in-flight builtin request is
+/// deliberately interrupted, matching an explicit user eviction.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn unload_engine_if_builtin_deactivated(app: &AppHandle, prior_kind: &str, resolved: &AppConfig) {
+    if builtin_deactivated(prior_kind, resolved) {
+        let engine = app
+            .state::<crate::engine::runner::EngineHandle>()
+            .inner()
+            .clone();
+        tauri::async_runtime::spawn(async move { engine.unload().await });
+    }
+}
+
 // ─── Tauri command surface ──────────────────────────────────────────────────
 
 /// Returns the current resolved `AppConfig` snapshot.
@@ -300,6 +329,7 @@ pub fn set_active_provider(
     active_model: State<'_, crate::models::ActiveModelState>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
+    let prior_kind = state.read().inference.active_provider_kind().to_string();
     let resolved = {
         let mut guard = state.write();
         let resolved = write_active_provider_to_disk(&path, &provider_id)?;
@@ -311,6 +341,9 @@ pub fn set_active_provider(
             *guard = mirror;
         }
     }
+    // Switching away from the built-in engine releases its memory; the
+    // sidecar would otherwise stay resident with no unload affordance.
+    unload_engine_if_builtin_deactivated(&app, &prior_kind, &resolved);
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -819,11 +852,12 @@ pub fn reload_config_from_disk(
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let (prior_trace_enabled, prior_idle_unload_minutes) = {
+    let (prior_trace_enabled, prior_idle_unload_minutes, prior_kind) = {
         let guard = state.read();
         (
             guard.debug.trace_enabled,
             guard.inference.idle_unload_minutes,
+            guard.inference.active_provider_kind().to_string(),
         )
     };
     let resolved = {
@@ -842,6 +876,9 @@ pub fn reload_config_from_disk(
     // Manual edits to `[inference] idle_unload_minutes` reach the engine
     // runner through the same refresh path.
     forward_idle_unload_minutes(&app, prior_idle_unload_minutes, &resolved);
+    // A hand-edited `active_provider` that moved away from the built-in
+    // engine releases the sidecar, mirroring the Settings radio path.
+    unload_engine_if_builtin_deactivated(&app, &prior_kind, &resolved);
     emit_config_updated(&app);
     Ok(resolved)
 }

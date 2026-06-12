@@ -12,11 +12,12 @@ use serde_json::json;
 use toml_edit::DocumentMut;
 
 use super::{
-    add_openai_provider_to_disk, cleanup_provider_secrets, coerce_json_to_toml,
-    idle_unload_minutes_changed, is_allowed_field, is_allowed_section, is_http_url, json_type_name,
-    json_value_to_toml_item, patch_document, read_document, remove_openai_provider_from_disk,
-    reset_section_on_disk, trace_enabled_changed, validate_provider_value,
-    write_active_provider_to_disk, write_field_to_disk, write_provider_field_to_disk,
+    add_openai_provider_to_disk, builtin_deactivated, cleanup_provider_secrets,
+    coerce_json_to_toml, idle_unload_minutes_changed, is_allowed_field, is_allowed_section,
+    is_http_url, json_type_name, json_value_to_toml_item, patch_document, read_document,
+    remove_openai_provider_from_disk, reset_section_on_disk, trace_enabled_changed,
+    validate_provider_value, write_active_provider_to_disk, write_field_to_disk,
+    write_provider_field_to_disk,
 };
 use crate::config::defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS};
 use crate::config::{AppConfig, ConfigError};
@@ -1589,6 +1590,48 @@ fn idle_unload_minutes_changed_returns_none_when_unchanged() {
     let mut cfg = AppConfig::default();
     cfg.inference.idle_unload_minutes = 45;
     assert_eq!(idle_unload_minutes_changed(45, &cfg), None);
+}
+
+// ─── builtin_deactivated ─────────────────────────────────────────────────────
+
+/// `AppConfig::default()` with the active provider pointed at `id` (the
+/// default providers list carries `builtin` and `ollama`).
+fn config_with_active(id: &str) -> AppConfig {
+    let mut cfg = AppConfig::default();
+    cfg.inference.active_provider = id.to_string();
+    cfg
+}
+
+#[test]
+fn builtin_deactivated_detects_switch_away_from_builtin() {
+    assert!(builtin_deactivated(
+        "builtin",
+        &config_with_active("ollama")
+    ));
+}
+
+#[test]
+fn builtin_deactivated_ignores_switch_onto_builtin() {
+    assert!(!builtin_deactivated(
+        "ollama",
+        &config_with_active("builtin")
+    ));
+}
+
+#[test]
+fn builtin_deactivated_ignores_non_builtin_transitions_and_no_ops() {
+    // ollama -> ollama: nothing changed.
+    assert!(!builtin_deactivated(
+        "ollama",
+        &config_with_active("ollama")
+    ));
+    // builtin -> builtin: still active; must not unload.
+    assert!(!builtin_deactivated(
+        "builtin",
+        &config_with_active("builtin")
+    ));
+    // Unresolved prior kind (empty) never counts as builtin.
+    assert!(!builtin_deactivated("", &config_with_active("ollama")));
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

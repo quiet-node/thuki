@@ -117,6 +117,14 @@ pub async fn search_pipeline(
         return Ok(());
     };
 
+    // Register the cancel token BEFORE the sandbox probe and the engine
+    // ensure: a Stop press while the sidecar is still cold-loading must
+    // find a live token, otherwise `cancel_generation` is a no-op and the
+    // search runs to completion. A later submission still supersedes this
+    // token through `set_token`'s replace semantics.
+    let cancel_token = CancellationToken::new();
+    generation.set_token(cancel_token.clone());
+
     // Pre-flight: verify both sandbox services are reachable before touching
     // the LLM or SearXNG. A 2-second probe prevents a long wait when the
     // containers are simply not running.
@@ -128,12 +136,19 @@ pub async fn search_pipeline(
     .await
     {
         let _ = on_event.send(SearchEvent::SandboxUnavailable);
+        generation.clear_token();
         return Ok(());
     }
 
+    // Pin the engine as active for the entire pipeline turn (router, judge,
+    // and synthesis calls plus the gaps between them): the idle sweep must
+    // not kill the sidecar mid-search. No-op for non-builtin routes.
+    let _activity_guard = crate::commands::route_activity_guard(&route, &engine);
+
     // Resolve the wire transport. For the builtin route this marks engine
     // activity and ensures the sidecar serves the selected model before any
-    // pipeline stage issues an LLM call.
+    // pipeline stage issues an LLM call; the ensure is raced against the
+    // cancel token so Stop works during a cold load.
     let transport = match crate::commands::resolve_llm_transport(
         route,
         &db,
@@ -141,17 +156,17 @@ pub async fn search_pipeline(
         &engine,
         secrets.0.as_ref(),
         app_config.inference.num_ctx,
+        &cancel_token,
     )
     .await
     {
         Ok(transport) => transport,
         Err(err) => {
             let _ = on_event.send(transport_failure_event(err));
+            generation.clear_token();
             return Ok(());
         }
     };
-    let cancel_token = CancellationToken::new();
-    generation.set_token(cancel_token.clone());
 
     let today = pipeline::today_iso();
 
@@ -314,12 +329,14 @@ fn route_failure_event(err: crate::commands::EngineError) -> SearchEvent {
 }
 
 /// Maps a [`crate::commands::resolve_llm_transport`] failure onto the search
-/// event stream. `Superseded` means a newer settings change preempted the
-/// engine ensure: a cancellation, never an error. Engine failures (start
-/// failure, missing manifest row) carry their user-facing message.
+/// event stream. `Cancelled` (the user pressed Stop during the engine
+/// ensure) and `Superseded` (a newer settings change preempted the ensure)
+/// are both cancellations, never errors. Engine failures (start failure,
+/// missing manifest row) carry their user-facing message.
 fn transport_failure_event(err: crate::commands::TransportError) -> SearchEvent {
     match err {
-        crate::commands::TransportError::Superseded => SearchEvent::Cancelled,
+        crate::commands::TransportError::Cancelled
+        | crate::commands::TransportError::Superseded => SearchEvent::Cancelled,
         crate::commands::TransportError::Engine(e) => SearchEvent::Error { message: e.message },
     }
 }
@@ -354,6 +371,14 @@ mod tests {
     fn transport_failure_event_maps_superseded_to_cancelled() {
         assert!(matches!(
             transport_failure_event(TransportError::Superseded),
+            SearchEvent::Cancelled
+        ));
+    }
+
+    #[test]
+    fn transport_failure_event_maps_cancelled_to_cancelled() {
+        assert!(matches!(
+            transport_failure_event(TransportError::Cancelled),
             SearchEvent::Cancelled
         ));
     }

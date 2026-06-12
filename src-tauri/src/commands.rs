@@ -261,8 +261,13 @@ async fn fetch_builtin_vision(client: &reqwest::Client, base_url: &str) -> bool 
 
 /// Runs the built-in-engine stage of a chat turn: mark activity, ensure the
 /// engine serves `target`, then stream via the `/v1` client at the engine's
-/// port. Pulled out of [`ask_model`] so the ensure-error mapping is covered
-/// by tests:
+/// port. An engine activity guard is held for the whole turn (ensure,
+/// `/props` gate, and body streaming) so the idle sweep never kills the
+/// sidecar mid-generation. Pulled out of [`ask_model`] so the ensure-error
+/// mapping is covered by tests:
+/// - a cancel while the engine is still loading becomes a terminal
+///   `Cancelled` (the load itself continues in the background so the next
+///   message reuses the warm engine),
 /// - `Superseded` becomes a terminal `Cancelled` (a newer settings change
 ///   preempted this request; never an engine-start failure),
 /// - `StartFailed` becomes a typed `EngineStartFailed` error.
@@ -285,8 +290,22 @@ pub(crate) async fn stream_builtin_chat(
     on_chunk: impl Fn(StreamChunk),
 ) -> String {
     engine.touch();
-    match engine.ensure_loaded(target).await {
-        Ok(port) => {
+    let _activity = engine.activity_guard();
+    // Race the engine ensure against the user's cancel: a Stop press during
+    // a cold model load must end the turn immediately, not after the load
+    // completes. The runner tolerates dropped reply waiters, so the load
+    // keeps running in the background and the next message reuses it.
+    let ensured = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => None,
+        result = engine.ensure_loaded(target) => Some(result),
+    };
+    match ensured {
+        None => {
+            on_chunk(StreamChunk::Cancelled);
+            String::new()
+        }
+        Some(Ok(port)) => {
             let base_url = format!("http://127.0.0.1:{port}");
             let carries_images = messages
                 .iter()
@@ -314,11 +333,11 @@ pub(crate) async fn stream_builtin_chat(
             )
             .await
         }
-        Err(crate::engine::runner::EnsureError::Superseded) => {
+        Some(Err(crate::engine::runner::EnsureError::Superseded)) => {
             on_chunk(StreamChunk::Cancelled);
             String::new()
         }
-        Err(crate::engine::runner::EnsureError::StartFailed(detail)) => {
+        Some(Err(crate::engine::runner::EnsureError::StartFailed(detail))) => {
             on_chunk(StreamChunk::Error(EngineError {
                 kind: EngineErrorKind::EngineStartFailed,
                 message: format!("Thuki's engine could not start.\n{detail}"),
@@ -415,12 +434,28 @@ pub fn model_for_route(route: &ChatRoute, fallback: Option<String>) -> Option<St
     }
 }
 
+/// Acquires an engine activity guard when (and only when) the route targets
+/// the built-in engine. The caller holds the returned guard across every LLM
+/// call of the turn (the search pipeline issues several with gaps between
+/// them; title generation issues one) so the idle sweep treats the whole
+/// turn as continuous activity. Non-builtin routes get `None`: they must not
+/// pin a possibly-loaded sidecar in memory.
+pub(crate) fn route_activity_guard(
+    route: &ChatRoute,
+    engine: &crate::engine::runner::EngineHandle,
+) -> Option<crate::engine::runner::ActivityGuard> {
+    matches!(route, ChatRoute::Builtin { .. }).then(|| engine.activity_guard())
+}
+
 /// Error from [`resolve_llm_transport`]. Splits the engine-ensure outcomes so
-/// each caller can map them into its own vocabulary: `Superseded` is a
-/// cancellation (a newer settings change preempted the request, never a
-/// failure), `Engine` carries a typed user-facing error.
+/// each caller can map them into its own vocabulary: `Cancelled` and
+/// `Superseded` are cancellations (the user stopped the turn, or a newer
+/// settings change preempted the request; never failures), `Engine` carries
+/// a typed user-facing error.
 #[derive(Debug, PartialEq)]
 pub enum TransportError {
+    /// The caller's cancel token fired while the engine ensure was in flight.
+    Cancelled,
     /// A newer settings change preempted the engine ensure.
     Superseded,
     /// A typed engine error (start failure, missing manifest row, ...).
@@ -435,6 +470,10 @@ pub enum TransportError {
 ///
 /// `num_ctx` is consumed only by the builtin arm: the context size is a
 /// launch property of the llama-server process, not a per-request knob.
+/// `cancel_token` is also builtin-only: the ensure is raced against it so a
+/// Stop press during a cold model load ends the turn immediately (the load
+/// continues in the background and the next request reuses it). Callers with
+/// no cancel affordance pass a fresh, never-cancelled token.
 ///
 /// [`Target`]: crate::engine::state::Target
 pub(crate) async fn resolve_llm_transport(
@@ -444,6 +483,7 @@ pub(crate) async fn resolve_llm_transport(
     engine: &crate::engine::runner::EngineHandle,
     secrets: &dyn crate::keychain::SecretStore,
     num_ctx: u32,
+    cancel_token: &CancellationToken,
 ) -> Result<LlmTransport, TransportError> {
     match route {
         ChatRoute::OllamaNative { endpoint } => Ok(LlmTransport::OllamaNative { endpoint }),
@@ -467,16 +507,25 @@ pub(crate) async fn resolve_llm_transport(
                 builtin_target(&conn, store, &model_id, num_ctx).map_err(TransportError::Engine)?
             };
             engine.touch();
-            match engine.ensure_loaded(target).await {
-                Ok(port) => Ok(LlmTransport::V1 {
+            // Race the ensure against the caller's cancel token, mirroring
+            // `stream_builtin_chat`: the load is not aborted, only this
+            // turn's wait for it.
+            let ensured = tokio::select! {
+                biased;
+                _ = cancel_token.cancelled() => None,
+                result = engine.ensure_loaded(target) => Some(result),
+            };
+            match ensured {
+                None => Err(TransportError::Cancelled),
+                Some(Ok(port)) => Ok(LlmTransport::V1 {
                     base_url: format!("http://127.0.0.1:{port}"),
                     api_key: None,
                     flavor: crate::openai::V1Flavor::Builtin,
                 }),
-                Err(crate::engine::runner::EnsureError::Superseded) => {
+                Some(Err(crate::engine::runner::EnsureError::Superseded)) => {
                     Err(TransportError::Superseded)
                 }
-                Err(crate::engine::runner::EnsureError::StartFailed(detail)) => {
+                Some(Err(crate::engine::runner::EnsureError::StartFailed(detail))) => {
                     Err(TransportError::Engine(EngineError {
                         kind: EngineErrorKind::EngineStartFailed,
                         message: format!("Thuki's engine could not start.\n{detail}"),
@@ -3379,6 +3428,61 @@ mod tests {
         engine.shutdown().await;
     }
 
+    /// A Stop press while the engine is still cold-loading must terminate
+    /// the chat turn immediately with a terminal `Cancelled`, not after the
+    /// load completes. The load itself keeps running in the background so
+    /// the next message reuses it.
+    #[tokio::test]
+    async fn cancel_during_ensure_emits_cancelled_and_keeps_load_running() {
+        // Health probes hang, so the ensure stays in flight until cancelled.
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: false,
+        });
+        let client = reqwest::Client::new();
+        let (chunks, callback) = collect_chunks();
+        let cancel_token = CancellationToken::new();
+
+        let task = {
+            let engine = engine.clone();
+            let cancel_token = cancel_token.clone();
+            tokio::spawn(async move {
+                stream_builtin_chat(
+                    &engine,
+                    engine_target(),
+                    "org/repo:m.gguf".to_string(),
+                    vec![],
+                    &client,
+                    cancel_token,
+                    callback,
+                )
+                .await
+            })
+        };
+
+        // Wait until the spawn landed and the health poll is in flight,
+        // then cancel the turn.
+        let mut status = engine.status();
+        status
+            .wait_for(|s| s.state == "starting")
+            .await
+            .expect("actor is running");
+        cancel_token.cancel();
+
+        let accumulated = task.await.unwrap();
+        assert_eq!(accumulated, "");
+        let chunks = chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1, "exactly one terminal chunk");
+        assert_eq!(
+            std::mem::discriminant(&chunks[0]),
+            std::mem::discriminant(&StreamChunk::Cancelled)
+        );
+        // The load was not aborted: the engine is still starting.
+        assert_eq!(engine.status().borrow().state, "starting");
+        engine.shutdown().await;
+    }
+
     #[tokio::test]
     async fn start_failed_maps_engine_start_failed() {
         let engine = spawn_engine(ScriptedEngineProcess {
@@ -3664,6 +3768,7 @@ mod tests {
             &engine,
             &secrets,
             DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -3698,6 +3803,7 @@ mod tests {
             &engine,
             &secrets,
             DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -3739,6 +3845,7 @@ mod tests {
             &engine,
             &secrets,
             DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -3774,6 +3881,7 @@ mod tests {
             &engine,
             &secrets,
             DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
         )
         .await
         .unwrap_err();
@@ -3819,6 +3927,7 @@ mod tests {
             &engine,
             &secrets,
             DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -3861,6 +3970,7 @@ mod tests {
             &engine,
             &secrets,
             DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
         )
         .await
         .unwrap_err();
@@ -3903,6 +4013,7 @@ mod tests {
                     &engine,
                     &secrets,
                     DEFAULT_NUM_CTX,
+                    &CancellationToken::new(),
                 )
                 .await
             })
@@ -3915,6 +4026,86 @@ mod tests {
         engine.unload().await;
         let err = task.await.unwrap().unwrap_err();
         assert_eq!(err, TransportError::Superseded);
+        engine.shutdown().await;
+    }
+
+    /// A Stop press while the builtin ensure is in flight resolves the
+    /// transport as `Cancelled` immediately; the load keeps running in the
+    /// background so the next pipeline turn reuses it.
+    #[tokio::test]
+    async fn resolve_llm_transport_cancel_during_ensure_maps_cancelled() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(
+                &conn,
+                &installed_model("org/repo:m.gguf", "sha_w", None),
+            )
+            .unwrap();
+        }
+        let (_dir, store) = test_store();
+        // Health probes hang, so the ensure stays in flight until cancelled.
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: false,
+        });
+        let cancel_token = CancellationToken::new();
+        let task = {
+            let engine = engine.clone();
+            let cancel_token = cancel_token.clone();
+            tokio::spawn(async move {
+                let secrets = crate::keychain::FakeSecretStore::new();
+                resolve_llm_transport(
+                    ChatRoute::Builtin {
+                        model_id: "org/repo:m.gguf".to_string(),
+                    },
+                    &db,
+                    &store,
+                    &engine,
+                    &secrets,
+                    DEFAULT_NUM_CTX,
+                    &cancel_token,
+                )
+                .await
+            })
+        };
+        let mut status = engine.status();
+        status
+            .wait_for(|s| s.state == "starting")
+            .await
+            .expect("actor is running");
+        cancel_token.cancel();
+        let err = task.await.unwrap().unwrap_err();
+        assert_eq!(err, TransportError::Cancelled);
+        // The load was not aborted: the engine is still starting.
+        assert_eq!(engine.status().borrow().state, "starting");
+        engine.shutdown().await;
+    }
+
+    /// Only builtin routes pin the engine: a guard for any other kind would
+    /// keep a previously loaded sidecar resident while the user chats
+    /// through Ollama or a remote `/v1` server.
+    #[tokio::test]
+    async fn route_activity_guard_acquires_for_builtin_routes_only() {
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: true,
+        });
+        let builtin = ChatRoute::Builtin {
+            model_id: "org/repo:m.gguf".to_string(),
+        };
+        let ollama = ChatRoute::OllamaNative {
+            endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+        };
+        let v1 = ChatRoute::V1 {
+            base_url: "http://localhost:8080".to_string(),
+            api_key_provider: None,
+        };
+        assert!(route_activity_guard(&builtin, &engine).is_some());
+        assert!(route_activity_guard(&ollama, &engine).is_none());
+        assert!(route_activity_guard(&v1, &engine).is_none());
         engine.shutdown().await;
     }
 }

@@ -13,6 +13,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -62,11 +63,28 @@ enum Command {
     },
 }
 
+/// RAII marker for an in-flight LLM request against the engine. While at
+/// least one guard is alive the idle sweep treats the engine as active, so
+/// `idle_unload_minutes` can never kill the sidecar mid-generation (cold
+/// ensure, prefill, and body streaming included). Explicit `unload` and
+/// `shutdown` are deliberately NOT blocked by guards: a user-driven eviction
+/// or app quit always wins over an in-flight request.
+pub struct ActivityGuard {
+    in_flight: Arc<AtomicUsize>,
+}
+
+impl Drop for ActivityGuard {
+    fn drop(&mut self) {
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Cloneable handle to the engine runner actor.
 #[derive(Clone)]
 pub struct EngineHandle {
     cmd_tx: mpsc::Sender<Command>,
     status_rx: watch::Receiver<EngineStatus>,
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl EngineHandle {
@@ -87,8 +105,30 @@ impl EngineHandle {
             waiters: Vec::new(),
             status_tx,
         };
-        tokio::spawn(run_actor(core, cmd_rx, idle_minutes, idle_check_interval));
-        Self { cmd_tx, status_rx }
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        tokio::spawn(run_actor(
+            core,
+            cmd_rx,
+            Arc::clone(&in_flight),
+            idle_minutes,
+            idle_check_interval,
+        ));
+        Self {
+            cmd_tx,
+            status_rx,
+            in_flight,
+        }
+    }
+
+    /// Marks an LLM request as in flight for the returned guard's lifetime.
+    /// Acquire it before `ensure_loaded` and hold it across the whole
+    /// streamed response (body read included); dropping it on any exit path
+    /// re-arms idle unload.
+    pub fn activity_guard(&self) -> ActivityGuard {
+        self.in_flight.fetch_add(1, Ordering::SeqCst);
+        ActivityGuard {
+            in_flight: Arc::clone(&self.in_flight),
+        }
     }
 
     /// Resolves with the port once the target is loaded; waits through any
@@ -306,6 +346,7 @@ enum Wake {
 async fn run_actor(
     mut core: Core,
     mut cmd_rx: mpsc::Receiver<Command>,
+    in_flight: Arc<AtomicUsize>,
     mut idle_minutes: u32,
     idle_check_interval: Duration,
 ) {
@@ -395,7 +436,14 @@ async fn run_actor(
                 .await;
             }
             Wake::Tick => {
-                if idle_minutes > 0
+                if in_flight.load(Ordering::SeqCst) > 0 {
+                    // An LLM request is in flight (cold ensure, prefill, or
+                    // body streaming): treat it as continuous activity so
+                    // the idle sweep can never kill the engine
+                    // mid-generation. The idle window restarts from the
+                    // last tick that observed the request.
+                    last_activity = tokio::time::Instant::now();
+                } else if idle_minutes > 0
                     && matches!(core.state, EngineState::Loaded { .. })
                     && last_activity.elapsed() >= Duration::from_secs(u64::from(idle_minutes) * 60)
                 {
@@ -1048,6 +1096,49 @@ mod tests {
         let mut rx = handle.status();
         wait_for_state(&mut rx, "stopped").await;
         assert_eq!(process.snapshot(|i| i.kills), 1);
+    }
+
+    /// An in-flight request (activity guard alive) blocks idle unload for
+    /// arbitrarily long: a one-minute idle policy must not SIGKILL the
+    /// engine mid-generation. Dropping the guard re-arms the sweep.
+    #[tokio::test(start_paused = true)]
+    async fn activity_guard_blocks_idle_unload_until_dropped() {
+        let process = FakeProcess::new();
+        let handle = spawn_handle(&process, 1);
+
+        load(&handle, &process, "a").await;
+        let guard = handle.activity_guard();
+
+        // Far past the 60 s idle threshold; the guard keeps it loaded.
+        tokio::time::advance(Duration::from_secs(300)).await;
+        drain_actor().await;
+        assert_eq!(handle.status().borrow().state, "loaded");
+        assert_eq!(process.snapshot(|i| i.kills), 0);
+
+        drop(guard);
+        let mut rx = handle.status();
+        wait_for_state(&mut rx, "stopped").await;
+        assert_eq!(process.snapshot(|i| i.kills), 1);
+    }
+
+    /// Explicit unload and shutdown are user-driven and always win over an
+    /// in-flight request: the guard only blocks the idle sweep.
+    #[tokio::test(start_paused = true)]
+    async fn explicit_unload_and_shutdown_ignore_activity_guard() {
+        let process = FakeProcess::new();
+        let handle = spawn_handle(&process, 1);
+
+        load(&handle, &process, "a").await;
+        let _guard = handle.activity_guard();
+        handle.unload().await;
+        assert_eq!(handle.status().borrow().state, "stopped");
+        assert_eq!(process.snapshot(|i| i.kills), 1);
+
+        load(&handle, &process, "a").await;
+        let _guard2 = handle.activity_guard();
+        handle.shutdown().await;
+        assert_eq!(handle.status().borrow().state, "stopped");
+        assert_eq!(process.snapshot(|i| i.kills), 2);
     }
 
     // ── Runner: shutdown and teardown ──────────────────────────────────
