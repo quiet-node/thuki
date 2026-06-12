@@ -66,6 +66,8 @@ export function BuiltinProviderCard({
     config.inference.providers.find((p) => p.kind === 'builtin')?.model ?? '';
 
   const [installed, setInstalled] = useState<InstalledModel[]>([]);
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [downloadOpen, setDownloadOpen] = useState(false);
   const [selected, setSelected] = useState<StarterTier>('balanced');
   const [freeDiskBytes, setFreeDiskBytes] = useState<number | null>(null);
@@ -152,6 +154,28 @@ export function BuiltinProviderCard({
       });
   }
 
+  // Deletion is refcounted server-side (shared blobs survive); the backend
+  // also clears the builtin provider's model field when the deleted model
+  // was the selected one, so the lifted snapshot is the source of truth.
+  async function handleDelete(id: string) {
+    setConfirmingDelete(null);
+    try {
+      await invoke('delete_installed_model', { id });
+    } catch (err) {
+      setDeleteError(String(err));
+      return;
+    }
+    setDeleteError(null);
+    // A deleted starter flips back to downloadable in the picker rows.
+    await refresh();
+    await refreshInstalled();
+    try {
+      onSaved(await invoke<RawAppConfig>('get_config'));
+    } catch {
+      // The focus-driven resync picks the change up on next activation.
+    }
+  }
+
   async function handleLookup() {
     setRepoError(null);
     setRepoFiles(null);
@@ -204,6 +228,50 @@ export function BuiltinProviderCard({
           <span className={styles.providerHint}>No models downloaded yet</span>
         )}
       </SettingRow>
+
+      {installed.map((m) => (
+        <div className={styles.providerInlineRow} key={m.id}>
+          <span className={styles.providerHint}>
+            {m.display_name} · {gb(m.size_bytes)} GB
+            {m.quant !== '' ? ` · ${m.quant}` : ''}
+          </span>
+          {confirmingDelete === m.id ? (
+            <>
+              <span className={styles.providerHint}>
+                Delete {m.display_name}? Its files are removed from disk.
+              </span>
+              <button
+                type="button"
+                className={`${styles.button} ${styles.buttonDestructive}`}
+                onClick={() => void handleDelete(m.id)}
+              >
+                Delete
+              </button>
+              <button
+                type="button"
+                className={`${styles.button} ${styles.buttonGhost}`}
+                onClick={() => setConfirmingDelete(null)}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className={`${styles.button} ${styles.buttonGhost}`}
+              aria-label={`Delete ${m.display_name}`}
+              onClick={() => setConfirmingDelete(m.id)}
+            >
+              Delete
+            </button>
+          )}
+        </div>
+      ))}
+      {deleteError !== null ? (
+        <p className={styles.providerError} role="alert">
+          {deleteError}
+        </p>
+      ) : null}
 
       <button
         type="button"

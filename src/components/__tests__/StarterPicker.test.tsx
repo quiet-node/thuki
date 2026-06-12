@@ -127,6 +127,28 @@ describe('StarterPicker', () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  it('renders the per-tier license notes: two Gemma Terms and one MIT', () => {
+    // Mirrors the backend registry: both Gemma tiers carry the Gemma Terms
+    // of Use; the Phi-4 tier is MIT. Each card links out via open_url.
+    renderPicker([
+      makeOption('fast', {}, { license_note: 'Gemma Terms of Use' }),
+      makeOption('balanced', {}, { license_note: 'Gemma Terms of Use' }),
+      makeOption('smartest', {}, { license_note: 'MIT' }),
+    ]);
+    expect(screen.getAllByText('Gemma Terms of Use')).toHaveLength(2);
+    expect(screen.getByText('MIT')).toBeInTheDocument();
+    for (const tier of ['fast', 'balanced', 'smartest']) {
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: `Open Model ${tier} on Hugging Face`,
+        }),
+      );
+      expect(invoke).toHaveBeenCalledWith('open_url', {
+        url: `https://huggingface.co/org/${tier}-repo`,
+      });
+    }
+  });
+
   it('marks the selected tier card', () => {
     const { container } = renderPicker(THREE_TIERS);
     const cards = container.querySelectorAll('[data-starter-card]');

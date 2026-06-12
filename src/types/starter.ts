@@ -75,6 +75,8 @@ export interface InstalledModel {
   id: string;
   /** Human-readable label (e.g. the GGUF file stem). */
   display_name: string;
+  /** Weights file size in bytes, for the installed-list size column. */
+  size_bytes: number;
   /** Quantisation label (e.g. "Q4_K_M"); empty when unknown. */
   quant: string;
 }
