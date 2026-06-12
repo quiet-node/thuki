@@ -43,13 +43,15 @@ rustup toolchain install nightly-2026-03-30 --component llvm-tools
 
 ### Optional
 
-**Docker:** only needed if you want to run the isolated Docker sandbox instead of a local Ollama install
+No AI backend setup is required: Thuki bundles its own llama.cpp inference engine, and the dev/build scripts fetch the pinned `llama-server` sidecar automatically (see Development Setup below). Install these only if you want to develop against an alternative provider:
 
-- Install via [docker.com](https://www.docker.com/get-started)
-
-**Ollama:** if you're not using the Docker sandbox, install Ollama directly
+**Ollama:** to test the Ollama provider against a native install
 
 - Install via [ollama.com](https://ollama.com)
+
+**Docker:** to run the Ollama provider in the isolated Docker sandbox instead of natively
+
+- Install via [docker.com](https://www.docker.com/get-started)
 
 ---
 
@@ -68,25 +70,19 @@ rustup toolchain install nightly-2026-03-30 --component llvm-tools
    bun install
    ```
 
-3. **Set up your AI backend** (choose one):
+3. **AI engine: nothing to set up**
 
-   **Option A: Docker sandbox (recommended for isolation)**
+   Thuki bundles its own inference engine (llama.cpp's `llama-server`). On a fresh clone, the first `bun run dev` (or `build:backend` / `build:release`) automatically runs `bun run engine:ensure`, which downloads the pinned llama.cpp release, verifies its sha256, and installs the binary and its dylibs under `src-tauri/binaries/` (gitignored). This happens once; later runs are an instant no-op until the pin changes. You pick and download a starter model inside the app's onboarding flow.
 
-   ```bash
-   bun run sandbox:start
-   ```
+   **Optional: develop against an alternative provider**
 
-   This pulls the default model (`gemma4:e2b`) and starts the hardened container. It may take a few minutes on first run.
-
-   **Option B: Local Ollama**
-
-   Make sure Ollama is running and you have a model pulled:
+   To test the Ollama provider, either run a native Ollama install with a model pulled (`ollama pull gemma4:e2b`; Thuki's Ollama provider defaults to `http://127.0.0.1:11434`) or start the hardened Docker sandbox:
 
    ```bash
-   ollama pull gemma4:e2b
+   bun run llm-box:start
    ```
 
-   Thuki connects to `http://127.0.0.1:11434` by default.
+   The sandbox pulls the default model inside the container on first run, which may take a few minutes. See [sandbox/llm-box/README.md](sandbox/llm-box/README.md).
 
 4. **Configuration** (optional)
 
