@@ -377,6 +377,12 @@ pub enum SearchError {
     LlmHttp(u16),
     /// Ollama returned content that could not be decoded as JSON.
     LlmBadJson,
+    /// A `/v1` provider call failed (unreachable server or non-2xx status).
+    /// Carries the [`crate::commands::EngineError`] composed by the shared
+    /// `/v1` classifiers in [`crate::openai`], so the copy matches the active
+    /// provider's flavor (builtin vs remote) and the search pipeline never
+    /// grows a second `/v1` copy table.
+    Engine(crate::commands::EngineError),
     /// Merged router+judge call failed: either no JSON was found in the
     /// response, or the JSON could not be deserialized as RouterJudgeOutput.
     /// The inner string carries diagnostic detail for logging; do not surface
@@ -419,6 +425,7 @@ impl SearchError {
             Self::LlmBadJson => {
                 "Search routing failed\nThe model returned an invalid response.".to_string()
             }
+            Self::Engine(e) => e.message.clone(),
             Self::Router(_) => {
                 "Search routing failed\nThe model returned an invalid response.".to_string()
             }
@@ -557,10 +564,27 @@ mod tests {
 
     #[test]
     fn error_messages_are_user_facing() {
-        assert!(SearchError::LlmUnavailable
-            .user_message()
-            .contains("Ollama isn't running"));
-        assert!(SearchError::LlmHttp(500).user_message().contains("500"));
+        // The native-path Ollama copy is pinned byte-for-byte so the
+        // flavor-aware /v1 work never drifts it.
+        assert_eq!(
+            SearchError::LlmUnavailable.user_message(),
+            "Ollama isn't running\nStart Ollama and try again."
+        );
+        assert_eq!(
+            SearchError::LlmHttp(500).user_message(),
+            "Ollama request failed\nHTTP 500"
+        );
+        // Engine carries copy already composed by the /v1 classifiers;
+        // user_message surfaces it verbatim.
+        assert_eq!(
+            SearchError::Engine(crate::commands::EngineError {
+                kind: crate::commands::EngineErrorKind::EngineUnreachable,
+                message: "Thuki's engine isn't running\nSend your message again to restart it."
+                    .to_string(),
+            })
+            .user_message(),
+            "Thuki's engine isn't running\nSend your message again to restart it."
+        );
         assert!(SearchError::LlmBadJson
             .user_message()
             .contains("invalid response"));

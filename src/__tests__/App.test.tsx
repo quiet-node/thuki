@@ -744,7 +744,7 @@ describe('App', () => {
       }
       if (cmd === 'set_active_model') {
         rejectionSeen = true;
-        throw new Error('Model is not installed in Ollama: qwen2.5:7b');
+        throw new Error('Model is not installed: qwen2.5:7b');
       }
       return undefined;
     });

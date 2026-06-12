@@ -337,13 +337,24 @@ fn transport_error(
 }
 
 /// Maps a [`crate::openai::OpenAiError`] from the `/v1` structured-output
-/// client onto the search-pipeline error vocabulary, mirroring the
-/// classification [`request_json`] applies on the native path.
-fn map_openai_error(err: crate::openai::OpenAiError) -> SearchError {
+/// client onto the search-pipeline error vocabulary. Unreachable and HTTP
+/// failures route through the shared `/v1` classifiers in [`crate::openai`]
+/// so the user-facing copy matches the active provider's flavor (builtin vs
+/// remote); the remaining variants mirror the classification
+/// [`request_json`] applies on the native path.
+fn map_openai_error(
+    err: crate::openai::OpenAiError,
+    flavor: crate::openai::V1Flavor,
+    model: &str,
+) -> SearchError {
     match err {
         crate::openai::OpenAiError::Cancelled => SearchError::Cancelled,
-        crate::openai::OpenAiError::Unreachable(_) => SearchError::LlmUnavailable,
-        crate::openai::OpenAiError::Http(status, _) => SearchError::LlmHttp(status),
+        crate::openai::OpenAiError::Unreachable(detail) => {
+            SearchError::Engine(crate::openai::v1_unreachable_error(&detail, flavor))
+        }
+        crate::openai::OpenAiError::Http(status, _) => {
+            SearchError::Engine(crate::openai::classify_v1_http_error(status, model, flavor))
+        }
         crate::openai::OpenAiError::BadBody(_) => SearchError::LlmBadJson,
     }
 }
@@ -360,6 +371,7 @@ fn map_openai_error(err: crate::openai::OpenAiError) -> SearchError {
 async fn request_json_v1(
     base_url: &str,
     api_key: Option<&str>,
+    flavor: crate::openai::V1Flavor,
     model: &str,
     client: &reqwest::Client,
     messages: Vec<ChatMessage>,
@@ -400,7 +412,7 @@ async fn request_json_v1(
         latency_ms: started.elapsed().as_millis() as u64,
         error,
     });
-    result.map_err(map_openai_error)
+    result.map_err(|e| map_openai_error(e, flavor, model))
 }
 
 /// Dispatches a structured-output request to the active transport: the
@@ -437,10 +449,15 @@ async fn request_structured(
             )
             .await
         }
-        LlmTransport::V1 { base_url, api_key } => {
+        LlmTransport::V1 {
+            base_url,
+            api_key,
+            flavor,
+        } => {
             request_json_v1(
                 base_url,
                 api_key.as_deref(),
+                *flavor,
                 model,
                 client,
                 messages,
@@ -472,8 +489,10 @@ async fn request_structured(
 ///
 /// # Errors
 /// - [`SearchError::Cancelled`] - token cancelled before or during the request.
-/// - [`SearchError::LlmUnavailable`] - transport failure.
-/// - [`SearchError::LlmHttp`] - non-2xx status from Ollama.
+/// - [`SearchError::LlmUnavailable`] - transport failure (native path).
+/// - [`SearchError::LlmHttp`] - non-2xx status from Ollama (native path).
+/// - [`SearchError::Engine`] - transport or HTTP failure on the `/v1` path,
+///   carrying flavor-aware copy from the shared classifiers.
 ///
 /// Note: this function retries once with a stricter user-message suffix when
 /// the first router response cannot be parsed. If the schema still cannot be
@@ -653,8 +672,10 @@ fn parse_router_sufficiency(value: &str) -> Option<Sufficiency> {
 ///
 /// # Errors
 /// - [`SearchError::Cancelled`] - token cancelled before or during the request.
-/// - [`SearchError::LlmUnavailable`] - transport failure.
-/// - [`SearchError::LlmHttp`] - non-2xx status from Ollama.
+/// - [`SearchError::LlmUnavailable`] - transport failure (native path).
+/// - [`SearchError::LlmHttp`] - non-2xx status from Ollama (native path).
+/// - [`SearchError::Engine`] - transport or HTTP failure on the `/v1` path,
+///   carrying flavor-aware copy from the shared classifiers.
 ///
 /// Note: this function never returns [`SearchError::Judge`]. If the first
 /// attempt produces output that does not parse as [`JudgeVerdict`], we retry
@@ -2409,6 +2430,7 @@ mod router_judge_tests {
         LlmTransport::V1 {
             base_url: base_url.into(),
             api_key: api_key.map(str::to_string),
+            flavor: crate::openai::V1Flavor::Remote,
         }
     }
 
@@ -2510,7 +2532,7 @@ mod router_judge_tests {
     }
 
     #[tokio::test]
-    async fn v1_http_error_maps_to_llm_http() {
+    async fn v1_http_error_maps_to_flavored_engine_error() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
@@ -2534,27 +2556,77 @@ mod router_judge_tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(err, SearchError::LlmHttp(503));
+        // The /v1 path classifies HTTP failures per flavor instead of the
+        // native path's "Ollama request failed" copy.
+        assert_eq!(
+            err,
+            SearchError::Engine(crate::openai::classify_v1_http_error(
+                503,
+                "m",
+                crate::openai::V1Flavor::Remote,
+            ))
+        );
+        assert!(!err.user_message().contains("Ollama"));
     }
 
     #[test]
     fn map_openai_error_covers_every_variant() {
-        use crate::openai::OpenAiError;
+        use crate::openai::{classify_v1_http_error, v1_unreachable_error, OpenAiError, V1Flavor};
         assert_eq!(
-            map_openai_error(OpenAiError::Cancelled),
+            map_openai_error(OpenAiError::Cancelled, V1Flavor::Remote, "m"),
             SearchError::Cancelled
         );
+        // Unreachable and HTTP failures route through the shared /v1
+        // classifiers, so the copy is flavor-keyed instead of the fixed
+        // Ollama wording of the native path.
         assert_eq!(
-            map_openai_error(OpenAiError::Unreachable("refused".into())),
-            SearchError::LlmUnavailable
+            map_openai_error(
+                OpenAiError::Unreachable("refused".into()),
+                V1Flavor::Builtin,
+                "m"
+            ),
+            SearchError::Engine(v1_unreachable_error("refused", V1Flavor::Builtin))
         );
         assert_eq!(
-            map_openai_error(OpenAiError::Http(429, "slow down".into())),
-            SearchError::LlmHttp(429)
+            map_openai_error(
+                OpenAiError::Unreachable("refused".into()),
+                V1Flavor::Remote,
+                "m"
+            ),
+            SearchError::Engine(v1_unreachable_error("refused", V1Flavor::Remote))
         );
         assert_eq!(
-            map_openai_error(OpenAiError::BadBody("not json".into())),
+            map_openai_error(
+                OpenAiError::Http(404, "missing".into()),
+                V1Flavor::Builtin,
+                "m"
+            ),
+            SearchError::Engine(classify_v1_http_error(404, "m", V1Flavor::Builtin))
+        );
+        assert_eq!(
+            map_openai_error(
+                OpenAiError::BadBody("not json".into()),
+                V1Flavor::Remote,
+                "m"
+            ),
             SearchError::LlmBadJson
+        );
+    }
+
+    /// End-to-end pin for the builtin flavor: an unreachable builtin engine
+    /// surfaces Thuki's own copy in chat, never the Ollama wording. The full
+    /// string is pinned: it is rendered verbatim by ErrorCard.
+    #[test]
+    fn map_openai_error_builtin_unreachable_user_message_names_thukis_engine() {
+        use crate::openai::{OpenAiError, V1Flavor};
+        let err = map_openai_error(
+            OpenAiError::Unreachable("refused".into()),
+            V1Flavor::Builtin,
+            "m",
+        );
+        assert_eq!(
+            err.user_message(),
+            "Thuki's engine isn't running\nSend your message again to restart it."
         );
     }
 

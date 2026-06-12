@@ -363,6 +363,10 @@ pub enum LlmTransport {
     V1 {
         base_url: String,
         api_key: Option<String>,
+        /// Which `/v1` flavor this transport targets, decided where the
+        /// provider kind is known so downstream error copy matches the
+        /// provider (builtin vs remote).
+        flavor: crate::openai::V1Flavor,
     },
 }
 
@@ -383,10 +387,15 @@ impl std::fmt::Debug for LlmTransport {
                 .debug_struct("OllamaNative")
                 .field("endpoint", endpoint)
                 .finish(),
-            LlmTransport::V1 { base_url, api_key } => f
+            LlmTransport::V1 {
+                base_url,
+                api_key,
+                flavor,
+            } => f
                 .debug_struct("V1")
                 .field("base_url", base_url)
                 .field("api_key", &api_key.as_ref().map(|_| "<redacted>"))
+                .field("flavor", flavor)
                 .finish(),
         }
     }
@@ -444,6 +453,7 @@ pub(crate) async fn resolve_llm_transport(
         } => Ok(LlmTransport::V1 {
             base_url,
             api_key: resolve_provider_api_key(secrets, api_key_provider.as_deref()),
+            flavor: crate::openai::V1Flavor::Remote,
         }),
         ChatRoute::Builtin { model_id } => {
             // Resolve the manifest row inside a scope so the connection guard
@@ -461,6 +471,7 @@ pub(crate) async fn resolve_llm_transport(
                 Ok(port) => Ok(LlmTransport::V1 {
                     base_url: format!("http://127.0.0.1:{port}"),
                     api_key: None,
+                    flavor: crate::openai::V1Flavor::Builtin,
                 }),
                 Err(crate::engine::runner::EnsureError::Superseded) => {
                     Err(TransportError::Superseded)
@@ -3538,6 +3549,7 @@ mod tests {
         let v1 = LlmTransport::V1 {
             base_url: "http://localhost:8080".to_string(),
             api_key: None,
+            flavor: crate::openai::V1Flavor::Remote,
         };
         assert_eq!(
             v1.endpoint_label(),
@@ -3550,6 +3562,7 @@ mod tests {
         let with_key = LlmTransport::V1 {
             base_url: "https://api.openai.com".to_string(),
             api_key: Some("sk-supersecret".to_string()),
+            flavor: crate::openai::V1Flavor::Remote,
         };
         let debug = format!("{with_key:?}");
         assert!(
@@ -3564,9 +3577,14 @@ mod tests {
         let no_key = LlmTransport::V1 {
             base_url: "http://127.0.0.1:8080".to_string(),
             api_key: None,
+            flavor: crate::openai::V1Flavor::Builtin,
         };
         let debug_none = format!("{no_key:?}");
         assert!(debug_none.contains("None"), "None key must show as None");
+        assert!(
+            debug_none.contains("Builtin"),
+            "flavor must appear in Debug output"
+        );
 
         // OllamaNative has no key field; just verify it formats without panic.
         let native = LlmTransport::OllamaNative {
@@ -3688,6 +3706,7 @@ mod tests {
             LlmTransport::V1 {
                 base_url: "http://localhost:8080".to_string(),
                 api_key: Some("sk-test".to_string()),
+                flavor: crate::openai::V1Flavor::Remote,
             }
         );
         engine.shutdown().await;
@@ -3728,6 +3747,7 @@ mod tests {
             LlmTransport::V1 {
                 base_url: "http://127.0.0.1:4242".to_string(),
                 api_key: None,
+                flavor: crate::openai::V1Flavor::Builtin,
             }
         );
         // The ensure landed: the engine reports the loaded model.
@@ -3807,6 +3827,7 @@ mod tests {
             LlmTransport::V1 {
                 base_url: "http://127.0.0.1:4243".to_string(),
                 api_key: None,
+                flavor: crate::openai::V1Flavor::Builtin,
             }
         );
         engine.shutdown().await;

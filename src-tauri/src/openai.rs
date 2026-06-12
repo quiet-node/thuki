@@ -19,7 +19,7 @@ use crate::config::defaults::MAX_SSE_LINE_BYTES;
 /// classifiers so user-facing copy matches the provider: the bundled engine
 /// speaks about "Thuki's engine" and points at Settings, while any other
 /// OpenAI-compatible server keeps provider-neutral wording.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum V1Flavor {
     /// The bundled llama-server sidecar at a loopback port.
     Builtin,
@@ -137,16 +137,7 @@ pub(crate) fn to_openai_message(msg: &ChatMessage) -> serde_json::Value {
 /// next message re-ensures it), while a remote server keeps neutral wording.
 fn classify_v1_transport_error(e: &reqwest::Error, flavor: V1Flavor) -> EngineError {
     if e.is_connect() || e.is_timeout() {
-        EngineError {
-            kind: EngineErrorKind::EngineUnreachable,
-            message: match flavor {
-                V1Flavor::Builtin => {
-                    "Thuki's engine isn't running\nSend your message again to restart it."
-                        .to_string()
-                }
-                V1Flavor::Remote => format!("The inference server could not be reached.\n{e}"),
-            },
-        }
+        v1_unreachable_error(&e.to_string(), flavor)
     } else {
         EngineError {
             kind: EngineErrorKind::Other,
@@ -157,11 +148,34 @@ fn classify_v1_transport_error(e: &reqwest::Error, flavor: V1Flavor) -> EngineEr
     }
 }
 
+/// Copy for an unreachable `/v1` server, keyed by flavor. Shared by the
+/// streaming classifier above and the search pipeline's structured-output
+/// error mapping so each flavor's unreachable copy lives in exactly one
+/// place. The bundled engine is Thuki's own process (the next message
+/// re-ensures it); a remote server keeps neutral wording plus the transport
+/// detail.
+pub(crate) fn v1_unreachable_error(detail: &str, flavor: V1Flavor) -> EngineError {
+    EngineError {
+        kind: EngineErrorKind::EngineUnreachable,
+        message: match flavor {
+            V1Flavor::Builtin => {
+                "Thuki's engine isn't running\nSend your message again to restart it.".to_string()
+            }
+            V1Flavor::Remote => format!("The inference server could not be reached.\n{detail}"),
+        },
+    }
+}
+
 /// Maps a non-2xx HTTP status from a `/v1` server to an [`EngineError`],
 /// mirroring `classify_http_error` on the native path. The 404 copy branches
 /// on `flavor`: the bundled engine steers the user to the Settings download
-/// flow, a remote server names the model it is missing.
-fn classify_v1_http_error(status: u16, model_name: &str, flavor: V1Flavor) -> EngineError {
+/// flow, a remote server names the model it is missing. Shared with the
+/// search pipeline's structured-output error mapping.
+pub(crate) fn classify_v1_http_error(
+    status: u16,
+    model_name: &str,
+    flavor: V1Flavor,
+) -> EngineError {
     match status {
         404 => EngineError {
             kind: EngineErrorKind::ModelNotFound,
