@@ -30,10 +30,16 @@
 //!    edits and hand-edits. The loader is the single source of truth for what
 //!    constitutes a valid `AppConfig`; the GUI cannot bypass it.
 //!
-//! Concurrency: serialized via the `parking_lot::RwLock<AppConfig>` write
-//! guard. Concurrent invokes execute in order; last-write-wins on the same
-//! field is the intended semantic (matches user expectation when rapidly
-//! tabbing between fields).
+//! Concurrency: every disk-mutating config path in the app serializes on the
+//! `parking_lot::RwLock<AppConfig>` write guard, taken BEFORE the on-disk
+//! read-modify-write and held until the in-memory snapshot is replaced. The
+//! disk I/O is synchronous `std::fs`, so no `.await` ever runs under the
+//! guard. This applies to every mutating command in this module and to
+//! `crate::models::persist_provider_model_locked`, the one config writer
+//! outside it; any new writer must follow the same pattern or a concurrent
+//! writer's stale re-read can revert its change. Concurrent invokes execute
+//! in order; last-write-wins on the same field is the intended semantic
+//! (matches user expectation when rapidly tabbing between fields).
 
 use std::path::{Path, PathBuf};
 
@@ -369,10 +375,10 @@ pub fn add_openai_provider(
 
 /// Removes the OpenAI-compatible provider and returns the resolved
 /// `AppConfig`. When it was active, the active pointer falls back to the
-/// built-in provider in the same atomic edit. Best-effort cleanup: the
-/// provider's Keychain API key is deleted (a Keychain failure never undoes
-/// the config removal), and the in-memory active-model mirror is refreshed
-/// onto whatever provider is active after the removal.
+/// built-in provider in the same atomic edit. Best-effort cleanup: each
+/// removed provider id's Keychain API key is deleted (a Keychain failure
+/// never undoes the config removal), and the in-memory active-model mirror
+/// is refreshed onto whatever provider is active after the removal.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn remove_openai_provider(
@@ -382,15 +388,13 @@ pub fn remove_openai_provider(
     secrets: State<'_, crate::keychain::Secrets>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let resolved = {
+    let (resolved, removed_ids) = {
         let mut guard = state.write();
-        let resolved = remove_openai_provider_from_disk(&path)?;
+        let (resolved, removed_ids) = remove_openai_provider_from_disk(&path)?;
         *guard = resolved.clone();
-        resolved
+        (resolved, removed_ids)
     };
-    let _ = secrets
-        .0
-        .delete(crate::config::defaults::PROVIDER_ID_OPENAI);
+    cleanup_provider_secrets(secrets.0.as_ref(), &removed_ids);
     let active_id = resolved.inference.active_provider.clone();
     if let Some(mirror) = crate::models::should_refresh_active_model(&active_id, &resolved) {
         if let Ok(mut guard) = active_model.0.lock() {
@@ -626,13 +630,36 @@ pub(crate) fn add_openai_provider_to_disk(
     config::load_from_path(path)
 }
 
-/// Removes the `openai`-kind entry from the on-disk `[[inference.providers]]`
-/// array. When the removed provider was active, `active_provider` falls back
-/// to the built-in provider in the same atomic edit. Errors when no
-/// OpenAI-compatible provider exists. Pulled out of the Tauri wrapper so the
-/// removal, fallback, atomic write, and post-write reload are exercised
-/// without an `AppHandle`.
-pub(crate) fn remove_openai_provider_from_disk(path: &Path) -> Result<AppConfig, ConfigError> {
+/// Best-effort Keychain cleanup after a provider removal: deletes the API-key
+/// secret stored under each removed provider id. Hand-edited files can carry
+/// an arbitrary id on an `openai`-kind row (the loader preserves it, and the
+/// frontend stores the key under `provider.id`), so cleanup must follow the
+/// ids actually removed rather than the fixed default id. Failures are
+/// ignored: a Keychain error never undoes the config removal. Rows missing
+/// an `id` collapse to an empty string in `removed_ids` and are skipped.
+pub(crate) fn cleanup_provider_secrets(
+    store: &dyn crate::keychain::SecretStore,
+    removed_ids: &[String],
+) {
+    for id in removed_ids {
+        if id.is_empty() {
+            continue;
+        }
+        let _ = store.delete(id);
+    }
+}
+
+/// Removes every `openai`-kind entry from the on-disk
+/// `[[inference.providers]]` array, returning the resolved `AppConfig` and
+/// the ids of the removed entries (for Keychain cleanup). When a removed
+/// provider was active, `active_provider` falls back to the built-in
+/// provider in the same atomic edit. Errors when no OpenAI-compatible
+/// provider exists. Pulled out of the Tauri wrapper so the removal,
+/// fallback, atomic write, and post-write reload are exercised without an
+/// `AppHandle`.
+pub(crate) fn remove_openai_provider_from_disk(
+    path: &Path,
+) -> Result<(AppConfig, Vec<String>), ConfigError> {
     use crate::config::defaults::{PROVIDER_ID_BUILTIN, PROVIDER_ID_OPENAI, PROVIDER_KIND_OPENAI};
 
     let mut doc = read_document(path)?;
@@ -680,7 +707,7 @@ pub(crate) fn remove_openai_provider_from_disk(path: &Path) -> Result<AppConfig,
             source,
         }
     })?;
-    config::load_from_path(path)
+    Ok((config::load_from_path(path)?, removed_ids))
 }
 
 /// Resets one section (or the whole file when `section` is `None`) to the

@@ -384,17 +384,39 @@ fn persist_active_provider_model(
     slug: &str,
 ) -> Result<(), String> {
     let path = crate::settings_commands::config_path(app).map_err(|e| e.to_string())?;
-    let resolved =
-        crate::settings_commands::write_provider_field_to_disk(&path, provider_id, "model", slug)
-            .map_err(|e| e.to_string())?;
-    let mirror = should_refresh_active_model(provider_id, &resolved);
-    *config.write() = resolved;
+    let mirror = persist_provider_model_locked(&path, config, provider_id, slug)?;
     if let Some(mirror) = mirror {
         let active = app.state::<ActiveModelState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         *guard = mirror;
     }
     Ok(())
+}
+
+/// Serialized core of [`persist_active_provider_model`]: takes the config
+/// write guard BEFORE the on-disk read-modify-write and holds it until the
+/// in-memory snapshot is replaced. Every config disk writer serializes on
+/// this same lock (see the `settings_commands` module docs), so a background
+/// persist (e.g. a download finalizing) can never interleave with a
+/// Settings-UI write: the loser of an unserialized race would re-read a
+/// stale file and revert the other writer's change. The disk I/O is
+/// synchronous `std::fs`, so holding the `parking_lot` guard across it is
+/// safe (no `.await` runs under the guard). Returns the
+/// [`should_refresh_active_model`] decision for the caller to apply to the
+/// [`ActiveModelState`] mirror outside the guard.
+pub(crate) fn persist_provider_model_locked(
+    path: &std::path::Path,
+    config: &parking_lot::RwLock<AppConfig>,
+    provider_id: &str,
+    slug: &str,
+) -> Result<Option<Option<String>>, String> {
+    let mut guard = config.write();
+    let resolved =
+        crate::settings_commands::write_provider_field_to_disk(path, provider_id, "model", slug)
+            .map_err(|e| e.to_string())?;
+    let mirror = should_refresh_active_model(provider_id, &resolved);
+    *guard = resolved;
+    Ok(mirror)
 }
 
 /// Decides whether a provider-model write must be mirrored into the managed
@@ -4351,6 +4373,91 @@ mod tests {
         // it tracks the active provider only.
         let cfg = config_with_active_provider("ollama", "gemma3:12b");
         assert_eq!(should_refresh_active_model("builtin", &cfg), None);
+    }
+
+    // ── persist_provider_model_locked ────────────────────────────────────────
+
+    /// On-disk providers config used by the serialized-persist tests:
+    /// builtin + ollama, with ollama active.
+    const LOCKED_PERSIST_CONFIG: &str = r#"
+[inference]
+active_provider = "ollama"
+
+[[inference.providers]]
+id = "builtin"
+kind = "builtin"
+label = "Built-in (Thuki)"
+model = ""
+
+[[inference.providers]]
+id = "ollama"
+kind = "ollama"
+label = "Ollama"
+base_url = "http://127.0.0.1:11434"
+model = ""
+"#;
+
+    #[test]
+    fn persist_provider_model_locked_composes_with_guarded_settings_writes() {
+        // Three writers through the shared lock-then-read-modify-write
+        // pattern: a background model persist, a Settings-UI style provider
+        // patch, and a persist on the active provider. No write may be lost,
+        // in memory or on disk.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, LOCKED_PERSIST_CONFIG).unwrap();
+        let lock = parking_lot::RwLock::new(crate::config::load_from_path(&path).unwrap());
+
+        // Writer 1: background persist (download-finalize path) on the
+        // non-active builtin provider: no mirror refresh.
+        let mirror =
+            persist_provider_model_locked(&path, &lock, PROVIDER_ID_BUILTIN, "org/repo:w.gguf")
+                .unwrap();
+        assert_eq!(mirror, None);
+
+        // Writer 2: a Settings-UI write through the same guard pattern the
+        // settings commands use.
+        {
+            let mut guard = lock.write();
+            let resolved = crate::settings_commands::write_provider_field_to_disk(
+                &path,
+                "ollama",
+                "base_url",
+                "http://127.0.0.1:9999",
+            )
+            .unwrap();
+            *guard = resolved;
+        }
+
+        // Writer 3: persist on the ACTIVE provider: mirror refreshes.
+        let mirror = persist_provider_model_locked(&path, &lock, "ollama", "gemma3:4b").unwrap();
+        assert_eq!(mirror, Some(Some("gemma3:4b".to_string())));
+
+        // Every writer's change survives in the shared in-memory config...
+        let assert_composed = |cfg: &AppConfig| {
+            let provider = |id: &str| cfg.inference.providers.iter().find(|p| p.id == id).unwrap();
+            assert_eq!(provider(PROVIDER_ID_BUILTIN).model, "org/repo:w.gguf");
+            assert_eq!(provider("ollama").base_url, "http://127.0.0.1:9999");
+            assert_eq!(provider("ollama").model, "gemma3:4b");
+        };
+        assert_composed(&lock.read());
+        // ...and in the file a fresh load resolves.
+        assert_composed(&crate::config::load_from_path(&path).unwrap());
+    }
+
+    #[test]
+    fn persist_provider_model_locked_propagates_write_error() {
+        // An unknown provider id fails the disk patch; the in-memory config
+        // must stay untouched.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, LOCKED_PERSIST_CONFIG).unwrap();
+        let lock = parking_lot::RwLock::new(crate::config::load_from_path(&path).unwrap());
+        let before = lock.read().clone();
+
+        let err = persist_provider_model_locked(&path, &lock, "no-such-provider", "m").unwrap_err();
+        assert!(err.contains("no-such-provider"));
+        assert_eq!(*lock.read(), before);
     }
 
     // ── Model library: system RAM probe ──────────────────────────────────────
