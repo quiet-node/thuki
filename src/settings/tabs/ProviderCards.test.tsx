@@ -110,8 +110,18 @@ function makeConfig(builtinModel: string): RawAppConfig {
 }
 
 const INSTALLED: InstalledModel[] = [
-  { id: 'org/gemma:gemma.gguf', display_name: 'gemma', quant: 'Q4_K_M' },
-  { id: 'org/qwen:qwen.gguf', display_name: 'qwen', quant: '' },
+  {
+    id: 'org/gemma:gemma.gguf',
+    display_name: 'gemma',
+    size_bytes: 2_489_757_856,
+    quant: 'Q4_K_M',
+  },
+  {
+    id: 'org/qwen:qwen.gguf',
+    display_name: 'qwen',
+    size_bytes: 9_000_000_000,
+    quant: '',
+  },
 ];
 
 const STARTER_OPTION: StarterOption = {
@@ -173,6 +183,17 @@ function StatefulOpenAiCard() {
       }}
     />
   );
+}
+
+/**
+ * Wraps the builtin card the way ModelTab does: `onSaved` lifts the returned
+ * config snapshot so a backend-side model clear reaches the dropdown.
+ */
+function StatefulBuiltinCard({ initialModel }: { initialModel: string }) {
+  const [config, setConfig] = useState<RawAppConfig>(() =>
+    makeConfig(initialModel),
+  );
+  return <BuiltinProviderCard config={config} onSaved={setConfig} />;
 }
 
 type MockChannel = { simulateMessage: (msg: unknown) => void };
@@ -544,6 +565,139 @@ describe('BuiltinProviderCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
     await flush();
     expect(screen.getByRole('alert')).toHaveTextContent('repo not found');
+  });
+
+  it('lists each installed model with size, quant, and a delete affordance', async () => {
+    mockCommands(builtinResponses());
+    await renderCard();
+    expect(screen.getByText('gemma · 2.5 GB · Q4_K_M')).toBeInTheDocument();
+    // Empty quant omits the trailing separator.
+    expect(screen.getByText('qwen · 9.0 GB')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Delete gemma' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Delete qwen' }),
+    ).toBeInTheDocument();
+  });
+
+  it('delete asks for confirmation and Cancel backs out without deleting', async () => {
+    mockCommands(builtinResponses());
+    await renderCard();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete gemma' }));
+    expect(
+      screen.getByText('Delete gemma? Its files are removed from disk.'),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(
+      screen.queryByText('Delete gemma? Its files are removed from disk.'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Delete gemma' }),
+    ).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'delete_installed_model',
+      expect.anything(),
+    );
+  });
+
+  it('confirmed delete invokes delete_installed_model and refreshes the rows', async () => {
+    let deleted = false;
+    mockCommands(
+      builtinResponses({
+        list_installed_models: () => (deleted ? [INSTALLED[1]] : INSTALLED),
+        delete_installed_model: () => {
+          deleted = true;
+          return undefined;
+        },
+      }),
+    );
+    const onSaved = vi.fn();
+    await renderCard('', onSaved);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await flush();
+    expect(invokeMock).toHaveBeenCalledWith('delete_installed_model', {
+      id: 'org/gemma:gemma.gguf',
+    });
+    expect(
+      screen.queryByText('gemma · 2.5 GB · Q4_K_M'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText('qwen · 9.0 GB')).toBeInTheDocument();
+    // The deletion also re-fetches the starter rows (an installed starter
+    // flips back to downloadable) and lifts the fresh config snapshot.
+    expect(invokeMock).toHaveBeenCalledWith('get_starter_options');
+    expect(onSaved).toHaveBeenCalledWith(NEW_CONFIG);
+  });
+
+  it('deleting the active model clears the selection and shows the picker affordance', async () => {
+    let deleted = false;
+    mockCommands(
+      builtinResponses({
+        list_installed_models: () => (deleted ? [INSTALLED[1]] : INSTALLED),
+        delete_installed_model: () => {
+          deleted = true;
+          return undefined;
+        },
+        // The backend cleared the builtin provider's model field itself.
+        get_config: () => makeConfig(''),
+      }),
+    );
+    render(<StatefulBuiltinCard initialModel="org/gemma:gemma.gguf" />);
+    await flush();
+    const select = screen.getByRole('combobox', {
+      name: 'Built-in model',
+    }) as HTMLSelectElement;
+    expect(select.value).toBe('org/gemma:gemma.gguf');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await flush();
+    expect(select.value).toBe('');
+    expect(screen.getByText('Choose a model')).toBeInTheDocument();
+  });
+
+  it('surfaces a delete failure and keeps the row', async () => {
+    mockCommands(
+      builtinResponses({
+        delete_installed_model: new Reject('file busy'),
+      }),
+    );
+    await renderCard();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent('file busy');
+    expect(screen.getByText('gemma · 2.5 GB · Q4_K_M')).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith('get_config');
+    // A later successful delete clears the stale error.
+    mockCommands(
+      builtinResponses({
+        list_installed_models: [INSTALLED[1]],
+        delete_installed_model: undefined,
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await flush();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('leaves the lift to the focus resync when get_config fails post-delete', async () => {
+    mockCommands(
+      builtinResponses({
+        delete_installed_model: undefined,
+        get_config: new Reject(new Error('read failed')),
+      }),
+    );
+    const onSaved = vi.fn();
+    await renderCard('', onSaved);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete qwen' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await flush();
+    expect(invokeMock).toHaveBeenCalledWith('delete_installed_model', {
+      id: 'org/qwen:qwen.gguf',
+    });
+    expect(onSaved).not.toHaveBeenCalled();
   });
 });
 
