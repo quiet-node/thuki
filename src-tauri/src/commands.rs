@@ -306,6 +306,7 @@ pub(crate) async fn stream_builtin_chat(
                     model: model_id,
                     messages,
                     api_key: None,
+                    flavor: crate::openai::V1Flavor::Builtin,
                 },
                 client,
                 cancel_token,
@@ -1144,6 +1145,7 @@ pub async fn ask_model(
                     model: model_name,
                     messages,
                     api_key,
+                    flavor: crate::openai::V1Flavor::Remote,
                 },
                 &client,
                 cancel_token.clone(),
@@ -2138,6 +2140,41 @@ mod tests {
         let err = classify_http_error(404, "gemma4:e2b", "");
         assert_eq!(err.kind, EngineErrorKind::ModelNotFound);
         assert!(err.message.contains("gemma4:e2b"));
+    }
+
+    /// The exact Ollama 404 copy is part of the IPC contract with ErrorCard
+    /// (the `ollama pull` substring is wrapped in a code element). Pinned
+    /// byte-for-byte so provider-aware copy work never drifts it.
+    #[test]
+    fn classify_http_404_pins_exact_ollama_copy() {
+        let err = classify_http_error(404, "gemma4:e2b", "");
+        assert_eq!(
+            err.message,
+            "Model not found\nRun: ollama pull gemma4:e2b in a terminal."
+        );
+    }
+
+    /// The exact Ollama unreachable copy is rendered verbatim by ErrorCard.
+    /// Pinned byte-for-byte so provider-aware copy work never drifts it.
+    #[tokio::test]
+    async fn classify_stream_error_pins_exact_ollama_copy() {
+        // Bind then drop a listener so the port is closed; the resulting
+        // reqwest error is a real connect failure.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let e = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .unwrap_err();
+        let err = classify_stream_error(&e);
+        assert_eq!(err.kind, EngineErrorKind::EngineUnreachable);
+        assert_eq!(
+            err.message,
+            "Ollama isn't running\nStart Ollama and try again."
+        );
     }
 
     #[test]

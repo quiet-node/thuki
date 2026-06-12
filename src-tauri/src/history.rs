@@ -291,6 +291,10 @@ pub(crate) async fn generate_title_text(
                     model,
                     messages: title_messages,
                     api_key: api_key.clone(),
+                    // The transport collapses builtin into a generic /v1
+                    // server; errors here are discarded anyway (title
+                    // generation has no user-facing error surface).
+                    flavor: crate::openai::V1Flavor::Remote,
                 },
                 client,
                 cancel_token,
