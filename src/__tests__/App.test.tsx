@@ -280,6 +280,103 @@ describe('App', () => {
     expect(strip.textContent).toContain('ollama pull <model>');
   });
 
+  it('submits normally when the builtin provider is active with a downloaded model', async () => {
+    // Regression guard for the builtin gate bug: with the builtin provider
+    // active, the picker payload reports reachable=true and the manifest
+    // inventory, so the env gate must let the message through instead of
+    // blocking with the Ollama copy.
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'tinyllama-1.1b',
+        all: ['tinyllama-1.1b'],
+        ollamaReachable: true,
+      },
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          inference: {
+            ...DEFAULT_CONFIG.inference,
+            activeProvider: 'builtin',
+            activeProviderKind: 'builtin',
+          },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = getAskInput();
+    act(() => {
+      setAskValue('hello from the builtin engine');
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith(
+      'ask_model',
+      expect.objectContaining({ message: 'hello from the builtin engine' }),
+    );
+  });
+
+  it('blocks submit with the builtin download copy when no model is downloaded', async () => {
+    // Builtin provider active, manifest empty: the strip must point at the
+    // Settings download flow, never at Ollama, and the submit stays gated.
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: null,
+        all: [],
+        ollamaReachable: true,
+      },
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          inference: {
+            ...DEFAULT_CONFIG.inference,
+            activeProvider: 'builtin',
+            activeProviderKind: 'builtin',
+          },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay();
+
+    const strip = screen.getByTestId('capability-mismatch-strip');
+    expect(strip.textContent).toContain('No model downloaded yet');
+    expect(strip.textContent).not.toContain('Ollama');
+
+    const textarea = getAskInput();
+    act(() => {
+      setAskValue('hello');
+    });
+    invoke.mockClear();
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    const askInvocations = invoke.mock.calls.filter(
+      (call) => call[0] === 'ask_model',
+    );
+    expect(askInvocations.length).toBe(0);
+    // Wait past the 600 ms shake reset so the gate's timeout cleanup runs.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 650));
+    });
+  });
+
   it('saves the conversation with the currently selected model', async () => {
     enableChannelCaptureWithResponses({
       get_model_picker_state: {

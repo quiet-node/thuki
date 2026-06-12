@@ -236,20 +236,78 @@ async fn fetch_installed_model_names_inner(
     Ok(body.models.into_iter().map(|m| m.name).collect())
 }
 
+/// Installed-model inventory for the active provider, plus a reachability
+/// flag, routed by provider kind:
+///
+/// - `builtin`: the manifest ids passed in by the caller, no network probe.
+///   The engine starts on demand per request, so the inventory is always
+///   trustworthy and `reachable` is always `true`.
+/// - `openai`: the provider's configured model as a single-element list
+///   (empty when none is configured yet). No probe either: errors surface
+///   at request time, and model management lives in Settings.
+/// - anything else (Ollama): probes `{base_url}/api/tags`. A fetch failure
+///   collapses into `(empty, false)` so the caller can emit the structured
+///   unreachable payload instead of an error string.
+///
+/// Extracted from `get_model_picker_state` so the kind routing is testable
+/// without a Tauri runtime; the command wrapper only does state plumbing.
+pub async fn picker_inventory_for_kind(
+    client: &reqwest::Client,
+    kind: &str,
+    base_url: &str,
+    provider_model: Option<&str>,
+    builtin_installed: &[String],
+) -> (Vec<String>, bool) {
+    match kind {
+        PROVIDER_KIND_BUILTIN => (builtin_installed.to_vec(), true),
+        PROVIDER_KIND_OPENAI => (
+            provider_model
+                .map(|m| vec![m.to_string()])
+                .unwrap_or_default(),
+            true,
+        ),
+        _ => match fetch_installed_model_names(client, base_url).await {
+            Ok(installed) => (installed, true),
+            Err(_) => (Vec::new(), false),
+        },
+    }
+}
+
+/// Reads every installed-model id from the manifest. Thin DB wrapper shared
+/// by the commands that need the builtin inventory (`get_model_picker_state`,
+/// `set_active_model`, `check_model_setup`); the underlying `manifest::list`
+/// carries the tested logic.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn manifest_model_ids(db: &crate::history::Database) -> Result<Vec<String>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(manifest::list(&conn)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|m| m.id)
+        .collect())
+}
+
 /// Returns the currently active model, the full list of installed models, and
-/// a flag telling the frontend whether Ollama itself is reachable.
+/// a flag telling the frontend whether the active provider's inventory could
+/// be read.
 ///
 /// Shape: `{ "active": "<slug>" | null, "all": ["<slug>", ...], "ollamaReachable": bool }`.
+/// The wire key stays the legacy camelCase `ollamaReachable` even though the
+/// flag is provider-generic now: renaming it would churn the frontend
+/// contract for zero behavioral gain. For `builtin` and `openai` providers
+/// the flag is always `true` (see [`picker_inventory_for_kind`]).
 ///
 /// The command intentionally never propagates a transport / fetch error to
 /// the frontend. Instead, an unreachable Ollama collapses into a structured
 /// `{ active: null, all: [], ollamaReachable: false }` payload so the UI can
 /// distinguish "Ollama is down" from "Ollama is up but has no models" without
-/// parsing error strings. The Ok branch coalesces the read + conditional
-/// write into a single database critical section to avoid a TOCTOU window
-/// where a concurrent `set_active_model` could be clobbered, and refuses to
-/// persist when Ollama reports an empty inventory so a partially-up daemon
-/// cannot corrupt the persisted choice.
+/// parsing error strings. Resolution + conditional persist go through
+/// [`resolve_active_model`] and [`should_persist_resolved`], which refuse to
+/// persist when the provider reports an empty inventory so a partially-up
+/// daemon cannot corrupt the persisted choice. The resolved value (possibly
+/// `None` when unreachable or empty) is always mirrored into the in-memory
+/// [`ActiveModelState`] so downstream callers (ask_model, search_pipeline)
+/// see the same truth as the frontend.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn get_model_picker_state(
@@ -257,21 +315,22 @@ pub async fn get_model_picker_state(
     client: tauri::State<'_, reqwest::Client>,
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+    db: tauri::State<'_, crate::history::Database>,
 ) -> Result<serde_json::Value, String> {
-    let (ollama_url, active_id, persisted) = read_provider_model_context(&config);
-    let fetch_result = fetch_installed_model_names(&client, &ollama_url).await;
-
-    let installed = match fetch_result {
-        Ok(installed) => installed,
-        Err(_) => {
-            // Mirror the `None` active into the in-memory state so downstream
-            // callers (ask_model, search_pipeline) see the same truth as the
-            // frontend: with the provider unreachable, no model is active.
-            let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
-            *guard = None;
-            return Ok(build_picker_state_payload(None, &[], false));
-        }
+    let (base_url, active_id, persisted, kind) = read_provider_model_context(&config);
+    let manifest_ids = if kind == PROVIDER_KIND_BUILTIN {
+        manifest_model_ids(&db)?
+    } else {
+        Vec::new()
     };
+    let (installed, reachable) = picker_inventory_for_kind(
+        &client,
+        &kind,
+        &base_url,
+        persisted.as_deref(),
+        &manifest_ids,
+    )
+    .await;
 
     let resolved = resolve_active_model(persisted.as_deref(), &installed);
     if let Some(slug) = resolved.as_deref() {
@@ -288,22 +347,25 @@ pub async fn get_model_picker_state(
     Ok(build_picker_state_payload(
         resolved.as_deref(),
         &installed,
-        true,
+        reachable,
     ))
 }
 
-/// Snapshots the active provider's base URL, id, and selected model from the
-/// shared config. Returns the model as `Option<String>` (empty -> `None`) so
-/// callers can feed it straight into the resolve helpers.
+/// Snapshots the active provider's base URL, id, selected model, and kind
+/// from the shared config under a single lock read so a concurrent provider
+/// switch can never pair fields from different providers. Returns the model
+/// as `Option<String>` (empty -> `None`) so callers can feed it straight into
+/// the resolve helpers.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn read_provider_model_context(
     config: &parking_lot::RwLock<AppConfig>,
-) -> (String, String, Option<String>) {
+) -> (String, String, Option<String>, String) {
     let c = config.read();
     (
         c.inference.active_provider_base_url().to_string(),
         c.inference.active_provider.clone(),
         c.inference.active_provider_model_opt().map(str::to_string),
+        c.inference.active_provider_kind().to_string(),
     )
 }
 
@@ -375,8 +437,12 @@ pub fn build_picker_state_payload(
 }
 
 /// Persists `model` as the active model after validating its shape and
-/// confirming Ollama still reports it as installed. Rejects uninstalled
-/// slugs with an error that starts with [`MODEL_NOT_INSTALLED_ERR_PREFIX`].
+/// confirming the active provider still serves it. The validation source is
+/// routed by provider kind exactly like [`picker_inventory_for_kind`]: the
+/// builtin manifest and the openai configured model never touch the network,
+/// while the Ollama arm keeps probing `/api/tags` and propagating fetch
+/// errors verbatim. Rejects unserved slugs with an error that starts with
+/// [`MODEL_NOT_INSTALLED_ERR_PREFIX`].
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn set_active_model(
@@ -385,11 +451,16 @@ pub async fn set_active_model(
     client: tauri::State<'_, reqwest::Client>,
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+    db: tauri::State<'_, crate::history::Database>,
 ) -> Result<(), String> {
     validate_model_slug(&model)?;
 
-    let (ollama_url, active_id, _persisted) = read_provider_model_context(&config);
-    let installed = fetch_installed_model_names(&client, &ollama_url).await?;
+    let (ollama_url, active_id, persisted, kind) = read_provider_model_context(&config);
+    let installed: Vec<String> = match kind.as_str() {
+        PROVIDER_KIND_BUILTIN => manifest_model_ids(&db)?,
+        PROVIDER_KIND_OPENAI => persisted.into_iter().collect(),
+        _ => fetch_installed_model_names(&client, &ollama_url).await?,
+    };
     validate_model_installed(&model, &installed)?;
 
     persist_active_provider_model(&app, &config, &active_id, &model)?;
@@ -569,19 +640,11 @@ pub async fn check_model_setup(
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
     db: tauri::State<'_, crate::history::Database>,
 ) -> Result<ModelSetupState, String> {
-    let (ollama_url, active_id, persisted) = read_provider_model_context(&config);
-    let kind = config.read().inference.active_provider_kind().to_string();
+    let (ollama_url, active_id, persisted, kind) = read_provider_model_context(&config);
 
     let state = match kind.as_str() {
         PROVIDER_KIND_BUILTIN => {
-            let ids: Vec<String> = {
-                let conn = db.0.lock().map_err(|e| e.to_string())?;
-                manifest::list(&conn)
-                    .map_err(|e| e.to_string())?
-                    .into_iter()
-                    .map(|m| m.id)
-                    .collect()
-            };
+            let ids = manifest_model_ids(&db)?;
             derive_builtin_setup_state(persisted.as_deref(), &ids)
         }
         PROVIDER_KIND_OPENAI => derive_openai_setup_state(persisted.as_deref()),
@@ -1879,6 +1942,103 @@ mod tests {
             serde_json::json!(["gemma4:e2b", "gemma4:e4b"])
         );
         assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(true));
+    }
+
+    // ── picker_inventory_for_kind ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn picker_inventory_builtin_serves_manifest_without_probing() {
+        // The base URL is unroutable on purpose: if the builtin arm ever
+        // probed the network it would collapse into the unreachable shape.
+        // Getting the manifest back with reachable=true proves the builtin
+        // inventory never leaves the process.
+        let client = reqwest::Client::new();
+        let ids = vec!["tinyllama-1.1b".to_string(), "qwen2.5-0.5b".to_string()];
+        let (installed, reachable) = picker_inventory_for_kind(
+            &client,
+            PROVIDER_KIND_BUILTIN,
+            "http://127.0.0.1:1",
+            Some("tinyllama-1.1b"),
+            &ids,
+        )
+        .await;
+        assert_eq!(installed, ids);
+        assert!(reachable);
+    }
+
+    #[tokio::test]
+    async fn picker_inventory_builtin_empty_manifest_stays_reachable() {
+        // Zero downloaded models is a "go download one" state, never an
+        // "engine down" state: the frontend routes on the flag.
+        let client = reqwest::Client::new();
+        let (installed, reachable) =
+            picker_inventory_for_kind(&client, PROVIDER_KIND_BUILTIN, "", None, &[]).await;
+        assert!(installed.is_empty());
+        assert!(reachable);
+    }
+
+    #[tokio::test]
+    async fn picker_inventory_openai_lists_configured_model() {
+        // The unroutable base URL doubles as the no-probe assertion for the
+        // openai arm too.
+        let client = reqwest::Client::new();
+        let (installed, reachable) = picker_inventory_for_kind(
+            &client,
+            PROVIDER_KIND_OPENAI,
+            "http://127.0.0.1:1",
+            Some("gpt-4o-mini"),
+            &[],
+        )
+        .await;
+        assert_eq!(installed, vec!["gpt-4o-mini".to_string()]);
+        assert!(reachable);
+    }
+
+    #[tokio::test]
+    async fn picker_inventory_openai_empty_when_no_model_configured() {
+        let client = reqwest::Client::new();
+        let (installed, reachable) =
+            picker_inventory_for_kind(&client, PROVIDER_KIND_OPENAI, "", None, &[]).await;
+        assert!(installed.is_empty());
+        assert!(reachable);
+    }
+
+    #[tokio::test]
+    async fn picker_inventory_ollama_probes_tags_endpoint() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/tags")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"models":[{"name":"gemma4:e2b"}]}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (installed, reachable) =
+            picker_inventory_for_kind(&client, PROVIDER_KIND_OLLAMA, &server.url(), None, &[])
+                .await;
+
+        mock.assert_async().await;
+        assert_eq!(installed, vec!["gemma4:e2b".to_string()]);
+        assert!(reachable);
+    }
+
+    #[tokio::test]
+    async fn picker_inventory_ollama_unreachable_collapses_to_empty_and_false() {
+        // Port 1 refuses connections. The persisted model must not leak into
+        // the inventory: with the daemon down nothing can be trusted.
+        let client = reqwest::Client::new();
+        let (installed, reachable) = picker_inventory_for_kind(
+            &client,
+            PROVIDER_KIND_OLLAMA,
+            "http://127.0.0.1:1",
+            Some("gemma4:e2b"),
+            &[],
+        )
+        .await;
+        assert!(installed.is_empty());
+        assert!(!reachable);
     }
 
     // ── resolve_active_model ─────────────────────────────────────────────────
