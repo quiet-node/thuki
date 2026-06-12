@@ -262,11 +262,54 @@ describe('useDownloadModel', () => {
     });
   });
 
-  it('ignores retry before any start recorded a tier', async () => {
+  it('ignores retry before any start recorded a download', async () => {
     const { result } = renderHook(() => useDownloadModel());
     await act(() => result.current.retry());
     expect(result.current.state).toEqual({ phase: 'idle' });
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('starts a pasted-repo download through download_repo_model', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.startRepo('owner/repo', 'w.gguf'));
+    expect(result.current.state).toEqual({ phase: 'downloading' });
+    expect(invoke).toHaveBeenCalledWith('download_repo_model', {
+      repo: 'owner/repo',
+      file: 'w.gguf',
+      onEvent: expect.anything(),
+    });
+    act(() => channel().simulateMessage({ type: 'AllDone' }));
+    expect(result.current.state).toEqual({ phase: 'ready' });
+  });
+
+  it('retries the last repo download after a failure', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.startRepo('owner/repo', 'w.gguf'));
+    act(() =>
+      channel().simulateMessage({
+        type: 'Failed',
+        data: { kind: 'http', message: 'HTTP 500' },
+      }),
+    );
+
+    await act(() => result.current.retry());
+    expect(result.current.state).toEqual({ phase: 'downloading' });
+    expect(invoke).toHaveBeenLastCalledWith('download_repo_model', {
+      repo: 'owner/repo',
+      file: 'w.gguf',
+      onEvent: expect.anything(),
+    });
+  });
+
+  it('maps a rejected download_repo_model invoke to failed/other', async () => {
+    invoke.mockRejectedValueOnce('invalid Hugging Face repo id');
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.startRepo('bad', 'w.gguf'));
+    expect(result.current.state).toEqual({
+      phase: 'failed',
+      kind: 'other',
+      message: 'invalid Hugging Face repo id',
+    });
   });
 
   it('resumes through the same start call', async () => {

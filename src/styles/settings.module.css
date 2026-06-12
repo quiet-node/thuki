@@ -1578,3 +1578,57 @@
   font-size: 12px;
   color: rgba(255, 255, 255, 0.5);
 }
+.providerCard {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+}
+.providerCard + .providerCard {
+  margin-top: 10px;
+}
+.providerCardActive {
+  border-color: rgba(255, 141, 92, 0.4);
+  background: rgba(255, 141, 92, 0.05);
+}
+.providerSelectRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.providerRadio {
+  accent-color: #ff8d5c;
+  margin: 0;
+}
+.providerInlineRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.providerError {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #ef8585;
+}
+.keySavedChip {
+  font-size: 11px;
+  font-weight: 600;
+  color: #5ec98a;
+  background: rgba(94, 201, 138, 0.1);
+  border: 1px solid rgba(94, 201, 138, 0.25);
+  border-radius: 6px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.engineStatusLine {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+}
+.ctxApplyingHint {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: #f0b27a;
+}

@@ -1957,6 +1957,9 @@ pub fn run() {
             settings_commands::set_config_field,
             settings_commands::set_ollama_url,
             settings_commands::set_active_provider,
+            settings_commands::update_provider_field,
+            settings_commands::add_openai_provider,
+            settings_commands::remove_openai_provider,
             settings_commands::reset_config,
             settings_commands::reload_config_from_disk,
             settings_commands::get_corrupt_marker,
@@ -1984,6 +1987,8 @@ pub fn run() {
             models::download_repo_model,
             #[cfg(not(coverage))]
             models::list_hf_repo_ggufs,
+            #[cfg(not(coverage))]
+            models::list_openai_models,
             #[cfg(not(coverage))]
             models::cancel_model_download,
             #[cfg(not(coverage))]
