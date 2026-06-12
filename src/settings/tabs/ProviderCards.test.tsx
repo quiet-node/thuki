@@ -393,6 +393,65 @@ describe('BuiltinProviderCard', () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith(NEW_CONFIG));
   });
 
+  it('returns to the picker once the Ready card dwell elapses', async () => {
+    vi.useFakeTimers();
+    try {
+      mockCommands(builtinResponses());
+      await renderCard();
+      fireEvent.click(screen.getByRole('button', { name: 'Download a model' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+      fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[1]);
+      await flush();
+      act(() => {
+        lastChannel?.simulateMessage({ type: 'AllDone' });
+      });
+      await flush();
+      // Success card up, starter rows hidden.
+      expect(screen.getByText('Ready')).toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: 'Download' }),
+      ).not.toBeInTheDocument();
+
+      await act(async () => {
+        vi.advanceTimersByTime(2500);
+      });
+      expect(screen.queryByText('Ready')).not.toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Download' }),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Choose a different model on the failed card returns to the picker', async () => {
+    mockCommands(builtinResponses());
+    await renderCard();
+    fireEvent.click(screen.getByRole('button', { name: 'Download a model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[1]);
+    await flush();
+    act(() => {
+      lastChannel?.simulateMessage({
+        type: 'Failed',
+        data: { kind: 'disk_full', message: 'no space left' },
+      });
+    });
+    expect(
+      screen.getByText('Not enough disk space. Free up space and retry.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Download' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Choose a different model' }),
+    );
+    expect(
+      screen.getByRole('button', { name: 'Download' }),
+    ).toBeInTheDocument();
+  });
+
   it('leaves the lift to the focus resync when get_config fails post-download', async () => {
     mockCommands(
       builtinResponses({ get_config: new Reject(new Error('read failed')) }),

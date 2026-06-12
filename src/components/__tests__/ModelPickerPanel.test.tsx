@@ -7,6 +7,10 @@ import {
   OLLAMA_PILL_TOOLTIP,
 } from '../ModelPickerPanel';
 import type { ModelCapabilitiesMap } from '../../types/model';
+import {
+  BUILTIN_NO_MODELS_MESSAGE,
+  OPENAI_NO_MODEL_MESSAGE,
+} from '../../utils/capabilityConflicts';
 import { invoke } from '@tauri-apps/api/core';
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -115,6 +119,31 @@ describe('ModelPickerPanel', () => {
     expect(empty.textContent).toContain('No models installed');
     expect(empty.textContent).toContain('ollama pull <model>');
     expect(screen.queryByRole('option')).toBeNull();
+  });
+
+  it('routes a builtin user to the Settings download picker in the empty state', () => {
+    renderPanel({ models: [], providerKind: 'builtin' });
+    const empty = screen.getByTestId('model-picker-empty');
+    expect(empty.textContent).toBe(BUILTIN_NO_MODELS_MESSAGE);
+    expect(empty.textContent).not.toContain('ollama pull');
+  });
+
+  it('routes an openai user to the Settings provider model in the empty state', () => {
+    renderPanel({ models: [], providerKind: 'openai' });
+    const empty = screen.getByTestId('model-picker-empty');
+    expect(empty.textContent).toBe(OPENAI_NO_MODEL_MESSAGE);
+    expect(empty.textContent).not.toContain('ollama pull');
+  });
+
+  it('keeps the ollama-pull empty state when providerKind is ollama', () => {
+    renderPanel({ models: [], providerKind: 'ollama' });
+    const empty = screen.getByTestId('model-picker-empty');
+    expect(empty.textContent).toContain('ollama pull <model>');
+  });
+
+  it('hides the Browse Ollama pill for non-ollama providers', () => {
+    renderPanel({ providerKind: 'builtin' });
+    expect(screen.queryByTestId('model-picker-ollama-link')).toBeNull();
   });
 
   it('renders no row as active when activeModel is null', () => {

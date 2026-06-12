@@ -41,6 +41,13 @@ function gb(bytes: number): string {
   return (bytes / 1e9).toFixed(1);
 }
 
+/**
+ * How long the post-download "Ready" card stays up before the kit returns
+ * to the picker. Long enough to read, short enough to need no dismiss
+ * affordance; mirrors the eject button's 2.5 s confirmation in ModelTab.
+ */
+const READY_CARD_DWELL_MS = 2500;
+
 /** Shared remote-URL caution, same mechanism as the Ollama URL warning. */
 function NonLocalWarning() {
   return (
@@ -92,6 +99,7 @@ export function BuiltinProviderCard({
     resume,
     discard,
     enterResumePending,
+    reset,
   } = useDownloadModel();
 
   const refreshInstalled = useCallback(async () => {
@@ -129,6 +137,9 @@ export function BuiltinProviderCard({
 
   // Download finished: the backend already wrote the builtin provider's
   // model field, so refresh the rows and lift the new config snapshot.
+  // After a short dwell the Ready card has served its purpose; reset to
+  // idle so the starter rows (now marked Installed) come back without a
+  // tab remount.
   useEffect(() => {
     if (state.phase !== 'ready') return;
     void (async () => {
@@ -140,7 +151,9 @@ export function BuiltinProviderCard({
         // The focus-driven resync picks the change up on next activation.
       }
     })();
-  }, [state.phase, refresh, refreshInstalled, onSaved]);
+    const timer = window.setTimeout(reset, READY_CARD_DWELL_MS);
+    return () => window.clearTimeout(timer);
+  }, [state.phase, refresh, refreshInstalled, onSaved, reset]);
 
   function commitModel(id: string) {
     void invoke<RawAppConfig>('update_provider_field', {
@@ -311,6 +324,9 @@ export function BuiltinProviderCard({
             onCancelConfirm={cancelConfirm}
             onCancel={() => void cancel()}
             onRetry={() => void retry()}
+            // Same trap-avoidance as onboarding: a terminal failure must
+            // leave a path back to the starter rows, not just Retry.
+            onChooseAnother={reset}
           />
 
           <div className={styles.providerInlineRow}>

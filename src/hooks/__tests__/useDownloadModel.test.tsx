@@ -314,6 +314,48 @@ describe('useDownloadModel', () => {
     });
   });
 
+  it('reset returns failed to idle and clears the stale progress', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.start('smartest'));
+    act(() =>
+      channel().simulateMessage({
+        type: 'Started',
+        data: { file: 'w.gguf', total_bytes: 100, resumed_from: 40 },
+      }),
+    );
+    act(() =>
+      channel().simulateMessage({
+        type: 'Failed',
+        data: { kind: 'disk_full', message: 'no space left' },
+      }),
+    );
+    expect(result.current.progress?.bytes).toBe(40);
+
+    act(() => result.current.reset());
+    expect(result.current.state).toEqual({ phase: 'idle' });
+    expect(result.current.progress).toBeNull();
+    expect(result.current.etaSeconds).toBeNull();
+  });
+
+  it('reset returns ready to idle', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.start('fast'));
+    act(() => channel().simulateMessage({ type: 'AllDone' }));
+    expect(result.current.state).toEqual({ phase: 'ready' });
+
+    act(() => result.current.reset());
+    expect(result.current.state).toEqual({ phase: 'idle' });
+  });
+
+  it('reset is a no-op outside the terminal phases', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.start('fast'));
+    expect(result.current.state).toEqual({ phase: 'downloading' });
+
+    act(() => result.current.reset());
+    expect(result.current.state).toEqual({ phase: 'downloading' });
+  });
+
   it('resumes through the same start call', async () => {
     const { result } = renderHook(() => useDownloadModel());
     act(() => result.current.enterResumePending());

@@ -134,22 +134,17 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
   const { activeModel, availableModels, setActiveModel } = useModelSelection();
 
   useEffect(() => {
-    let unlistenLoaded: (() => void) | null = null;
-    let unlistenEvicted: (() => void) | null = null;
-
-    async function setup() {
-      unlistenLoaded = await listen<string>('warmup:model-loaded', (e) => {
-        setLoadedModel(e.payload);
-      });
-      unlistenEvicted = await listen<null>('warmup:model-evicted', () => {
-        setLoadedModel(null);
-      });
-      invoke<string | null>('get_loaded_model')
-        .then(setLoadedModel)
-        .catch(() => {});
-    }
-
-    setup();
+    // Cleanup chains on the listen promises (not a captured variable) so an
+    // unmount that races the registration still detaches every listener.
+    const unlistenLoaded = listen<string>('warmup:model-loaded', (e) => {
+      setLoadedModel(e.payload);
+    });
+    const unlistenEvicted = listen<null>('warmup:model-evicted', () => {
+      setLoadedModel(null);
+    });
+    invoke<string | null>('get_loaded_model')
+      .then(setLoadedModel)
+      .catch(() => {});
 
     function handleVisibilityChange() {
       if (!document.hidden) {
@@ -161,21 +156,27 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      unlistenLoaded?.();
-      unlistenEvicted?.();
+      void unlistenLoaded.then((unlisten) => unlisten());
+      void unlistenEvicted.then((unlisten) => unlisten());
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    void listen<EngineStatus>('engine:status', (e) => {
+    // Seed from the runner's current snapshot: the backend only emits
+    // engine:status on transitions, so without this an already-loaded
+    // engine would read "stopped" (and Unload now would stay dead) until
+    // the next transition.
+    invoke<EngineStatus>('get_engine_status')
+      .then((status) => setEngineState(status.state))
+      .catch(() => {
+        // Keep the stopped default; the event stream corrects it.
+      });
+    const unlistenPromise = listen<EngineStatus>('engine:status', (e) => {
       setEngineState(e.payload.state);
-    }).then((fn) => {
-      unlisten = fn;
     });
     return () => {
-      unlisten?.();
+      void unlistenPromise.then((unlisten) => unlisten());
     };
   }, []);
 
@@ -656,7 +657,11 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
           <div className={styles.ctxHelper}>
             ~{ctxTurns.toLocaleString()} turns of context
             {' · '}
-            Ollama caps to your model&apos;s trained maximum.
+            {activeKind === 'builtin'
+              ? 'Passed to the engine as --ctx-size at start; changing it restarts the engine.'
+              : activeKind === 'openai'
+                ? 'Informational only; your server controls the actual context.'
+                : "Ollama caps to your model's trained maximum."}
           </div>
 
           <div className={styles.ctxVramNote}>

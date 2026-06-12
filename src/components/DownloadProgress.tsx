@@ -33,6 +33,13 @@ export interface DownloadProgressProps {
   onCancelConfirm: () => void;
   onCancel: () => void;
   onRetry: () => void;
+  /**
+   * Renders a "Choose a different model" button on the failed card. Hosts
+   * wire it to the hook's `reset` so a user stuck on a terminal failure
+   * (disk full, checksum) can get back to the picker instead of being
+   * limited to retrying the same download.
+   */
+  onChooseAnother?: () => void;
 }
 
 /** Seconds rendered as a compact countdown: "45s", "5m", "2h 1m". */
@@ -80,6 +87,7 @@ export function DownloadProgress({
   onCancelConfirm,
   onCancel,
   onRetry,
+  onChooseAnother,
 }: DownloadProgressProps) {
   switch (state.phase) {
     case 'confirming':
@@ -194,6 +202,12 @@ export function DownloadProgress({
           {state.kind === 'http' ? <Detail>{state.message}</Detail> : null}
           <ButtonRow>
             <FlowButton label="Retry" primary onClick={onRetry} />
+            {onChooseAnother ? (
+              <FlowButton
+                label="Choose a different model"
+                onClick={onChooseAnother}
+              />
+            ) : null}
           </ButtonRow>
         </Card>
       );

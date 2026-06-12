@@ -19,6 +19,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import {
   clearEventHandlers,
   emitTauriEvent,
@@ -130,6 +131,9 @@ beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === 'get_loaded_model') return Promise.resolve(null);
+    if (cmd === 'get_engine_status') {
+      return Promise.resolve(engineStatus('stopped'));
+    }
     if (cmd === 'get_model_picker_state') {
       return Promise.resolve({ active: null, all: [], ollamaReachable: false });
     }
@@ -1288,6 +1292,118 @@ describe('ModelTab', () => {
       emitTauriEvent('engine:status', engineStatus('loaded'));
     });
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  // ─── Engine status mount seeding + listener cleanup ─────────────────────
+
+  it('seeds the residency line from get_engine_status on mount', async () => {
+    // The backend emits engine:status only on transitions; an engine that
+    // is already loaded must be reflected (and Unload now enabled) without
+    // waiting for the next event.
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_engine_status') {
+        return Promise.resolve(engineStatus('loaded'));
+      }
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state') {
+        return Promise.resolve({
+          active: null,
+          all: [],
+          ollamaReachable: false,
+        });
+      }
+      return Promise.resolve(CONFIG);
+    });
+    await renderBuiltinActive();
+    expect(screen.getByText('Engine: loaded')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeEnabled();
+  });
+
+  it('keeps the stopped default when the get_engine_status seed rejects', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_engine_status') {
+        return Promise.reject(new Error('runner not managed'));
+      }
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state') {
+        return Promise.resolve({
+          active: null,
+          all: [],
+          ollamaReachable: false,
+        });
+      }
+      return Promise.resolve(CONFIG);
+    });
+    await renderBuiltinActive();
+    expect(screen.getByText('Engine: stopped')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+  });
+
+  it('detaches every listener even when unmount races the listen promise', async () => {
+    // Regression for the leak where cleanup ran before listen() resolved
+    // and the captured unlisten was still null, leaving the handler
+    // registered forever. The promise-chained cleanup must detach all of
+    // them once the registrations resolve.
+    const listenMock = listen as unknown as ReturnType<typeof vi.fn>;
+    const original = listenMock.getMockImplementation();
+    let removed = 0;
+    listenMock.mockImplementation(async () => () => {
+      removed += 1;
+    });
+    try {
+      const before = listenMock.mock.calls.length;
+      const view = render(
+        <ModelTab
+          config={BUILTIN_ACTIVE_CONFIG}
+          resyncToken={0}
+          onSaved={() => {}}
+        />,
+      );
+      const registered = listenMock.mock.calls.length - before;
+      expect(registered).toBe(3); // engine:status + the warmup pair
+      // Unmount before the listen promises are flushed.
+      view.unmount();
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(removed).toBe(registered);
+    } finally {
+      listenMock.mockImplementation(original!);
+    }
+  });
+
+  // ─── Context Window helper copy per provider kind ────────────────────────
+
+  it('shows the builtin ctx helper while the built-in provider is active', async () => {
+    await renderBuiltinActive();
+    expect(
+      screen.getByText(/--ctx-size at start; changing it restarts the engine/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Ollama caps/)).not.toBeInTheDocument();
+  });
+
+  it('shows the server-controlled ctx helper for an openai provider', async () => {
+    const cfg: RawAppConfig = {
+      ...OPENAI_CONFIG,
+      inference: { ...OPENAI_CONFIG.inference, active_provider: 'openai' },
+    };
+    render(<ModelTab config={cfg} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByText(
+        /Informational only; your server controls the actual context/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Ollama caps/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the Ollama ctx helper for the ollama provider', async () => {
+    await renderModelTab();
+    expect(
+      screen.getByText(/Ollama caps to your model's trained maximum\./),
+    ).toBeInTheDocument();
   });
 });
 

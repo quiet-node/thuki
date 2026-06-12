@@ -3410,6 +3410,9 @@ function App() {
                                     onSelect={handleModelSelect}
                                     onClose={handleModelPickerClose}
                                     capabilities={modelCapabilities}
+                                    providerKind={
+                                      config.inference.activeProviderKind
+                                    }
                                   />
                                 </motion.div>
                               ) : null}
@@ -3626,6 +3629,7 @@ function App() {
                       onSelect={handleModelSelect}
                       onClose={handleModelPickerClose}
                       capabilities={modelCapabilities}
+                      providerKind={config.inference.activeProviderKind}
                       compact
                     />
                   </motion.div>

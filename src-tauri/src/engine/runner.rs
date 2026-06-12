@@ -179,6 +179,14 @@ impl EngineHandle {
     pub fn status(&self) -> watch::Receiver<EngineStatus> {
         self.status_rx.clone()
     }
+
+    /// The current lifecycle snapshot: the status watch's latest value.
+    /// Backs the `get_engine_status` command so the Settings panel can seed
+    /// its residency line on mount instead of assuming "stopped" until the
+    /// next transition event.
+    pub fn current_status(&self) -> EngineStatus {
+        self.status_rx.borrow().clone()
+    }
 }
 
 /// Pure projection of the machine state into the published status.
@@ -754,6 +762,20 @@ mod tests {
                 port: 40000,
             }]
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn current_status_reports_the_latest_snapshot() {
+        let process = FakeProcess::new();
+        let handle = spawn_handle(&process, 0);
+
+        assert_eq!(handle.current_status().state, "stopped");
+
+        let port = load(&handle, &process, "a").await;
+        let status = handle.current_status();
+        assert_eq!(status.state, "loaded");
+        assert_eq!(status.port, Some(port));
+        assert_eq!(status.model_path, "/models/a.gguf");
     }
 
     #[tokio::test(start_paused = true)]
