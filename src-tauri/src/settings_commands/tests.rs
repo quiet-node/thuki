@@ -12,11 +12,11 @@ use serde_json::json;
 use toml_edit::DocumentMut;
 
 use super::{
-    add_openai_provider_to_disk, coerce_json_to_toml, idle_unload_minutes_changed,
-    is_allowed_field, is_allowed_section, is_http_url, json_type_name, json_value_to_toml_item,
-    patch_document, read_document, remove_openai_provider_from_disk, reset_section_on_disk,
-    trace_enabled_changed, validate_provider_value, write_active_provider_to_disk,
-    write_field_to_disk, write_provider_field_to_disk,
+    add_openai_provider_to_disk, cleanup_provider_secrets, coerce_json_to_toml,
+    idle_unload_minutes_changed, is_allowed_field, is_allowed_section, is_http_url, json_type_name,
+    json_value_to_toml_item, patch_document, read_document, remove_openai_provider_from_disk,
+    reset_section_on_disk, trace_enabled_changed, validate_provider_value,
+    write_active_provider_to_disk, write_field_to_disk, write_provider_field_to_disk,
 };
 use crate::config::defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS};
 use crate::config::{AppConfig, ConfigError};
@@ -1279,7 +1279,7 @@ fn remove_openai_deletes_entry_and_keeps_active_pointer() {
     let path = dir.join("config.toml");
     std::fs::write(&path, OPENAI_PROVIDERS_CONFIG).unwrap();
 
-    let resolved = remove_openai_provider_from_disk(&path).unwrap();
+    let (resolved, removed_ids) = remove_openai_provider_from_disk(&path).unwrap();
     assert!(!resolved
         .inference
         .providers
@@ -1287,9 +1287,53 @@ fn remove_openai_deletes_entry_and_keeps_active_pointer() {
         .any(|p| p.kind == "openai"));
     // Active was "ollama" and stays "ollama".
     assert_eq!(resolved.inference.active_provider, "ollama");
+    // The removed ids feed the Keychain cleanup in the command wrapper.
+    assert_eq!(removed_ids, vec!["openai".to_string()]);
 
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(!on_disk.contains("kind = \"openai\""));
+}
+
+#[test]
+fn remove_openai_returns_custom_id_for_keychain_cleanup() {
+    // A hand-edited file can carry an arbitrary id on the openai-kind row;
+    // the frontend stores the API key under that id, so the removal must
+    // surface it for cleanup instead of assuming the fixed default id.
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    let custom = OPENAI_PROVIDERS_CONFIG.replace("id = \"openai\"", "id = \"my-llm\"");
+    std::fs::write(&path, custom).unwrap();
+
+    let (resolved, removed_ids) = remove_openai_provider_from_disk(&path).unwrap();
+    assert!(!resolved
+        .inference
+        .providers
+        .iter()
+        .any(|p| p.kind == "openai"));
+    assert_eq!(removed_ids, vec!["my-llm".to_string()]);
+
+    // Feeding the removed ids through the cleanup helper deletes exactly
+    // that id's secret and leaves unrelated entries alone.
+    let store = crate::keychain::FakeSecretStore::new();
+    use crate::keychain::SecretStore;
+    store.set("my-llm", "sk-custom").unwrap();
+    store.set("unrelated", "sk-keep").unwrap();
+    cleanup_provider_secrets(&store, &removed_ids);
+    assert_eq!(store.get("my-llm").unwrap(), None);
+    assert_eq!(store.get("unrelated").unwrap(), Some("sk-keep".to_string()));
+}
+
+#[test]
+fn cleanup_provider_secrets_skips_empty_ids() {
+    // A removed row missing an `id` collapses to "" in removed_ids; cleanup
+    // must skip it rather than issuing a delete for an empty account name.
+    let store = crate::keychain::FakeSecretStore::new();
+    use crate::keychain::SecretStore;
+    store.set("", "sentinel").unwrap();
+    store.set("openai", "sk-gone").unwrap();
+    cleanup_provider_secrets(&store, &[String::new(), "openai".to_string()]);
+    assert_eq!(store.get("").unwrap(), Some("sentinel".to_string()));
+    assert_eq!(store.get("openai").unwrap(), None);
 }
 
 #[test]
@@ -1299,7 +1343,7 @@ fn remove_openai_falls_back_to_builtin_when_it_was_active() {
     std::fs::write(&path, OPENAI_PROVIDERS_CONFIG).unwrap();
     write_active_provider_to_disk(&path, "openai").unwrap();
 
-    let resolved = remove_openai_provider_from_disk(&path).unwrap();
+    let (resolved, _removed_ids) = remove_openai_provider_from_disk(&path).unwrap();
     assert_eq!(resolved.inference.active_provider, "builtin");
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(on_disk.contains("active_provider = \"builtin\""));
