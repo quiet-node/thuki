@@ -248,6 +248,15 @@ mod tests {
     }
 
     #[test]
+    fn license_notes_per_tier() {
+        // The picker surfaces these verbatim: both Gemma tiers carry the
+        // Gemma Terms of Use, the Phi-4 tier is MIT.
+        assert_eq!(starter(Tier::Fast).license_note, "Gemma Terms of Use");
+        assert_eq!(starter(Tier::Balanced).license_note, "Gemma Terms of Use");
+        assert_eq!(starter(Tier::Smartest).license_note, "MIT");
+    }
+
+    #[test]
     fn mmproj_hashes_are_distinct_between_gemma_tiers() {
         let fast = starter(Tier::Fast);
         let balanced = starter(Tier::Balanced);

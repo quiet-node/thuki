@@ -1,6 +1,6 @@
 # Thuki Sandbox
 
-This directory contains the infrastructure-as-code for running the generative engine in an isolated, secure Docker sandbox. Visit [thuki.app](https://www.thuki.app/) for the project homepage.
+This directory contains the infrastructure-as-code for running an **optional Ollama-in-Docker provider** in an isolated, secure Docker sandbox. Thuki ships its own built-in inference engine and does not need this sandbox; use it when you want to run models through Ollama with the strongest possible isolation from your host. Visit [thuki.app](https://www.thuki.app/) for the project homepage.
 
 ## Architecture
 
@@ -33,7 +33,7 @@ The sandbox is intended for:
 - Environments where strong process isolation and zero host-filesystem writes are required
 - Preventing long-term persistence of model weights on the host disk
 
-> **Optional component:** If you already have [Ollama](https://ollama.com) installed and a model pulled on port `11434`, you can skip the sandbox entirely. Thuki connects to `http://127.0.0.1:11434` regardless of whether the server is native or sandboxed.
+> **Optional component:** Thuki's built-in engine covers the default experience without any of this. If you already have [Ollama](https://ollama.com) installed and a model pulled on port `11434`, you can also skip the sandbox: the Ollama provider connects to `http://127.0.0.1:11434` regardless of whether the server is native or sandboxed.
 
 **Start the sandbox:**
 

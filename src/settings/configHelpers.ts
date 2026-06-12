@@ -18,8 +18,18 @@ const HELPERS = {
       'The address where Thuki reaches your Ollama server. The default works if you run Ollama on this Mac with its standard port. Point it at another machine to use Ollama running elsewhere (one server at a time).',
     keep_warm:
       'When on, Thuki tells Ollama to keep the active model loaded in GPU memory between conversations, saving the cold-load wait on every open. Set "Release after" to −1 to keep it warm indefinitely, or pick a timeout in minutes so GPU memory is reclaimed when you stop using Thuki for a while.',
+    builtin_model:
+      'The downloaded model Thuki\'s built-in engine runs. Pick from the models you have downloaded, or use "Download a model" below to grab a curated starter or any GGUF file from a Hugging Face repo.',
+    idle_unload_minutes:
+      'How many minutes of inactivity before Thuki stops its built-in engine to free memory. 0 (the default) keeps the model loaded so the first token of your next message stays instant. A positive value frees memory after that many idle minutes, at the cost of a cold reload on the next message.',
+    openai_base_url:
+      'The address of your OpenAI-compatible server (LM Studio, Jan, llama-server, and similar all expose one). Thuki calls its /v1 endpoints for chat and model listing. Must start with http:// or https://.',
+    openai_api_key:
+      "The API key sent as a Bearer token to your OpenAI-compatible server, stored only in the macOS Keychain. It is never written to config.toml and never shown again after saving; leave it empty for local servers that don't require one.",
+    openai_vision:
+      'Whether the selected model accepts image inputs. OpenAI-compatible servers expose no capability probe, so you declare it yourself. Turn it on only if the model truly supports images; otherwise requests with attachments will fail.',
     num_ctx:
-      "The size of the context window sent to Ollama with every request, in tokens. This value must match between warmup and chat so Ollama can reuse the same runner and its cached key-value prefix for the system prompt. Raise to fit longer conversations without the model forgetting early messages; lower to reduce GPU memory use. Ollama caps the effective value at the model's trained maximum, so anything beyond that is silently clamped, not used. Valid range: 2048–1048576. The default (16384) comfortably fits the system prompt plus several long turns.",
+      "The size of the context window in tokens, applied to whichever provider is active. For the built-in engine the value becomes --ctx-size when llama-server starts, so changing it restarts the engine (a few seconds). For Ollama it is sent with every request, shared between warmup and chat so the same runner and its cached system-prompt prefix are reused, and silently capped at the model's trained maximum. For OpenAI-compatible servers it is informational only; the server controls the actual context. Raise to fit longer conversations without the model forgetting early messages; lower to reduce memory use. Valid range: 2048–1048576. The default (16384) comfortably fits the system prompt plus several long turns.",
   },
   prompt: {
     system:

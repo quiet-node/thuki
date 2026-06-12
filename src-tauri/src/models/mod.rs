@@ -30,8 +30,8 @@ use tauri::Manager;
 use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
     HF_API_TIMEOUT_SECS, HF_BASE_URL, MAX_HF_API_BODY_BYTES, MAX_MODEL_SLUG_LEN,
-    MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES, PROVIDER_ID_BUILTIN,
-    PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OPENAI,
+    MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES, OPENAI_MODELS_TIMEOUT_SECS,
+    PROVIDER_ID_BUILTIN, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
 };
 use crate::config::AppConfig;
 
@@ -41,9 +41,10 @@ use crate::config::AppConfig;
 pub const ACTIVE_MODEL_KEY: &str = "active_model";
 
 /// Shared error-message prefix used when a requested slug is not present in
-/// the live Ollama inventory. Exported so the frontend and tests can match
-/// against a stable constant instead of a prose string.
-pub const MODEL_NOT_INSTALLED_ERR_PREFIX: &str = "Model is not installed in Ollama: ";
+/// the active provider's inventory (the live Ollama tags, the builtin
+/// manifest, or the openai configured model). Exported so the frontend and
+/// tests can match against a stable constant instead of a prose string.
+pub const MODEL_NOT_INSTALLED_ERR_PREFIX: &str = "Model is not installed: ";
 
 /// In-memory cache of the currently active model slug. Written once at
 /// startup (after `resolve_seed_active_model`) and updated every time the
@@ -236,20 +237,78 @@ async fn fetch_installed_model_names_inner(
     Ok(body.models.into_iter().map(|m| m.name).collect())
 }
 
+/// Installed-model inventory for the active provider, plus a reachability
+/// flag, routed by provider kind:
+///
+/// - `builtin`: the manifest ids passed in by the caller, no network probe.
+///   The engine starts on demand per request, so the inventory is always
+///   trustworthy and `reachable` is always `true`.
+/// - `openai`: the provider's configured model as a single-element list
+///   (empty when none is configured yet). No probe either: errors surface
+///   at request time, and model management lives in Settings.
+/// - anything else (Ollama): probes `{base_url}/api/tags`. A fetch failure
+///   collapses into `(empty, false)` so the caller can emit the structured
+///   unreachable payload instead of an error string.
+///
+/// Extracted from `get_model_picker_state` so the kind routing is testable
+/// without a Tauri runtime; the command wrapper only does state plumbing.
+pub async fn picker_inventory_for_kind(
+    client: &reqwest::Client,
+    kind: &str,
+    base_url: &str,
+    provider_model: Option<&str>,
+    builtin_installed: &[String],
+) -> (Vec<String>, bool) {
+    match kind {
+        PROVIDER_KIND_BUILTIN => (builtin_installed.to_vec(), true),
+        PROVIDER_KIND_OPENAI => (
+            provider_model
+                .map(|m| vec![m.to_string()])
+                .unwrap_or_default(),
+            true,
+        ),
+        _ => match fetch_installed_model_names(client, base_url).await {
+            Ok(installed) => (installed, true),
+            Err(_) => (Vec::new(), false),
+        },
+    }
+}
+
+/// Reads every installed-model id from the manifest. Thin DB wrapper shared
+/// by the commands that need the builtin inventory (`get_model_picker_state`,
+/// `set_active_model`, `check_model_setup`); the underlying `manifest::list`
+/// carries the tested logic.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn manifest_model_ids(db: &crate::history::Database) -> Result<Vec<String>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(manifest::list(&conn)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|m| m.id)
+        .collect())
+}
+
 /// Returns the currently active model, the full list of installed models, and
-/// a flag telling the frontend whether Ollama itself is reachable.
+/// a flag telling the frontend whether the active provider's inventory could
+/// be read.
 ///
 /// Shape: `{ "active": "<slug>" | null, "all": ["<slug>", ...], "ollamaReachable": bool }`.
+/// The wire key stays the legacy camelCase `ollamaReachable` even though the
+/// flag is provider-generic now: renaming it would churn the frontend
+/// contract for zero behavioral gain. For `builtin` and `openai` providers
+/// the flag is always `true` (see [`picker_inventory_for_kind`]).
 ///
 /// The command intentionally never propagates a transport / fetch error to
 /// the frontend. Instead, an unreachable Ollama collapses into a structured
 /// `{ active: null, all: [], ollamaReachable: false }` payload so the UI can
 /// distinguish "Ollama is down" from "Ollama is up but has no models" without
-/// parsing error strings. The Ok branch coalesces the read + conditional
-/// write into a single database critical section to avoid a TOCTOU window
-/// where a concurrent `set_active_model` could be clobbered, and refuses to
-/// persist when Ollama reports an empty inventory so a partially-up daemon
-/// cannot corrupt the persisted choice.
+/// parsing error strings. Resolution + conditional persist go through
+/// [`resolve_active_model`] and [`should_persist_resolved`], which refuse to
+/// persist when the provider reports an empty inventory so a partially-up
+/// daemon cannot corrupt the persisted choice. The resolved value (possibly
+/// `None` when unreachable or empty) is always mirrored into the in-memory
+/// [`ActiveModelState`] so downstream callers (ask_model, search_pipeline)
+/// see the same truth as the frontend.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn get_model_picker_state(
@@ -257,21 +316,22 @@ pub async fn get_model_picker_state(
     client: tauri::State<'_, reqwest::Client>,
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+    db: tauri::State<'_, crate::history::Database>,
 ) -> Result<serde_json::Value, String> {
-    let (ollama_url, active_id, persisted) = read_provider_model_context(&config);
-    let fetch_result = fetch_installed_model_names(&client, &ollama_url).await;
-
-    let installed = match fetch_result {
-        Ok(installed) => installed,
-        Err(_) => {
-            // Mirror the `None` active into the in-memory state so downstream
-            // callers (ask_model, search_pipeline) see the same truth as the
-            // frontend: with the provider unreachable, no model is active.
-            let mut guard = active_model.0.lock().map_err(|e| e.to_string())?;
-            *guard = None;
-            return Ok(build_picker_state_payload(None, &[], false));
-        }
+    let (base_url, active_id, persisted, kind) = read_provider_model_context(&config);
+    let manifest_ids = if kind == PROVIDER_KIND_BUILTIN {
+        manifest_model_ids(&db)?
+    } else {
+        Vec::new()
     };
+    let (installed, reachable) = picker_inventory_for_kind(
+        &client,
+        &kind,
+        &base_url,
+        persisted.as_deref(),
+        &manifest_ids,
+    )
+    .await;
 
     let resolved = resolve_active_model(persisted.as_deref(), &installed);
     if let Some(slug) = resolved.as_deref() {
@@ -288,22 +348,25 @@ pub async fn get_model_picker_state(
     Ok(build_picker_state_payload(
         resolved.as_deref(),
         &installed,
-        true,
+        reachable,
     ))
 }
 
-/// Snapshots the active provider's base URL, id, and selected model from the
-/// shared config. Returns the model as `Option<String>` (empty -> `None`) so
-/// callers can feed it straight into the resolve helpers.
+/// Snapshots the active provider's base URL, id, selected model, and kind
+/// from the shared config under a single lock read so a concurrent provider
+/// switch can never pair fields from different providers. Returns the model
+/// as `Option<String>` (empty -> `None`) so callers can feed it straight into
+/// the resolve helpers.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn read_provider_model_context(
     config: &parking_lot::RwLock<AppConfig>,
-) -> (String, String, Option<String>) {
+) -> (String, String, Option<String>, String) {
     let c = config.read();
     (
         c.inference.active_provider_base_url().to_string(),
         c.inference.active_provider.clone(),
         c.inference.active_provider_model_opt().map(str::to_string),
+        c.inference.active_provider_kind().to_string(),
     )
 }
 
@@ -321,17 +384,39 @@ fn persist_active_provider_model(
     slug: &str,
 ) -> Result<(), String> {
     let path = crate::settings_commands::config_path(app).map_err(|e| e.to_string())?;
-    let resolved =
-        crate::settings_commands::write_provider_field_to_disk(&path, provider_id, "model", slug)
-            .map_err(|e| e.to_string())?;
-    let mirror = should_refresh_active_model(provider_id, &resolved);
-    *config.write() = resolved;
+    let mirror = persist_provider_model_locked(&path, config, provider_id, slug)?;
     if let Some(mirror) = mirror {
         let active = app.state::<ActiveModelState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         *guard = mirror;
     }
     Ok(())
+}
+
+/// Serialized core of [`persist_active_provider_model`]: takes the config
+/// write guard BEFORE the on-disk read-modify-write and holds it until the
+/// in-memory snapshot is replaced. Every config disk writer serializes on
+/// this same lock (see the `settings_commands` module docs), so a background
+/// persist (e.g. a download finalizing) can never interleave with a
+/// Settings-UI write: the loser of an unserialized race would re-read a
+/// stale file and revert the other writer's change. The disk I/O is
+/// synchronous `std::fs`, so holding the `parking_lot` guard across it is
+/// safe (no `.await` runs under the guard). Returns the
+/// [`should_refresh_active_model`] decision for the caller to apply to the
+/// [`ActiveModelState`] mirror outside the guard.
+pub(crate) fn persist_provider_model_locked(
+    path: &std::path::Path,
+    config: &parking_lot::RwLock<AppConfig>,
+    provider_id: &str,
+    slug: &str,
+) -> Result<Option<Option<String>>, String> {
+    let mut guard = config.write();
+    let resolved =
+        crate::settings_commands::write_provider_field_to_disk(path, provider_id, "model", slug)
+            .map_err(|e| e.to_string())?;
+    let mirror = should_refresh_active_model(provider_id, &resolved);
+    *guard = resolved;
+    Ok(mirror)
 }
 
 /// Decides whether a provider-model write must be mirrored into the managed
@@ -375,8 +460,12 @@ pub fn build_picker_state_payload(
 }
 
 /// Persists `model` as the active model after validating its shape and
-/// confirming Ollama still reports it as installed. Rejects uninstalled
-/// slugs with an error that starts with [`MODEL_NOT_INSTALLED_ERR_PREFIX`].
+/// confirming the active provider still serves it. The validation source is
+/// routed by provider kind exactly like [`picker_inventory_for_kind`]: the
+/// builtin manifest and the openai configured model never touch the network,
+/// while the Ollama arm keeps probing `/api/tags` and propagating fetch
+/// errors verbatim. Rejects unserved slugs with an error that starts with
+/// [`MODEL_NOT_INSTALLED_ERR_PREFIX`].
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn set_active_model(
@@ -385,11 +474,16 @@ pub async fn set_active_model(
     client: tauri::State<'_, reqwest::Client>,
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+    db: tauri::State<'_, crate::history::Database>,
 ) -> Result<(), String> {
     validate_model_slug(&model)?;
 
-    let (ollama_url, active_id, _persisted) = read_provider_model_context(&config);
-    let installed = fetch_installed_model_names(&client, &ollama_url).await?;
+    let (ollama_url, active_id, persisted, kind) = read_provider_model_context(&config);
+    let installed: Vec<String> = match kind.as_str() {
+        PROVIDER_KIND_BUILTIN => manifest_model_ids(&db)?,
+        PROVIDER_KIND_OPENAI => persisted.into_iter().collect(),
+        _ => fetch_installed_model_names(&client, &ollama_url).await?,
+    };
     validate_model_installed(&model, &installed)?;
 
     persist_active_provider_model(&app, &config, &active_id, &model)?;
@@ -420,6 +514,10 @@ pub enum ModelSetupState {
     /// `/api/tags` responded successfully but the installed list is empty.
     /// The UI must guide the user to `ollama pull <slug>`.
     NoModelsInstalled,
+    /// The active provider has no usable model yet (built-in engine with no
+    /// downloaded starter, or an `openai` provider with no model configured).
+    /// The UI must offer the starter download picker.
+    NeedsDownload,
     /// Ollama is running with at least one installed model. `active_slug`
     /// is the slug we resolved (persisted preference if still installed,
     /// else first installed) and `installed` is the live list for the
@@ -469,8 +567,77 @@ pub fn derive_model_setup_state(
     }
 }
 
-/// Probes Ollama for setup readiness and returns the typed
+/// Pure setup gate for the built-in engine: Ready when the provider has a
+/// model selected AND that model is recorded in the installed manifest;
+/// NeedsDownload otherwise (no model chosen yet, or the manifest row was
+/// removed out from under a stale provider pointer).
+///
+/// `installed` carries every manifest id so the Ready payload mirrors the
+/// Ollama arm's shape (active slug + full inventory).
+pub fn derive_builtin_setup_state(
+    provider_model: Option<&str>,
+    manifest_ids: &[String],
+) -> ModelSetupState {
+    match provider_model {
+        Some(model) if manifest_ids.iter().any(|id| id == model) => ModelSetupState::Ready {
+            active_slug: model.to_string(),
+            installed: manifest_ids.to_vec(),
+        },
+        _ => ModelSetupState::NeedsDownload,
+    }
+}
+
+/// Defensive setup gate for an `openai`-kind active provider. Onboarding never
+/// sets one active, but if a hand-edited config does, a configured model is
+/// treated as Ready (there is no probe surface to verify against) and an
+/// unconfigured one falls back to the download picker.
+pub fn derive_openai_setup_state(provider_model: Option<&str>) -> ModelSetupState {
+    match provider_model {
+        Some(model) => ModelSetupState::Ready {
+            active_slug: model.to_string(),
+            installed: vec![model.to_string()],
+        },
+        None => ModelSetupState::NeedsDownload,
+    }
+}
+
+/// Base URL of the configured Ollama provider, regardless of which provider
+/// is active. Empty when no Ollama-kind provider exists (the loader always
+/// seeds one, so the fallback is defensive).
+pub fn ollama_provider_base_url(config: &AppConfig) -> String {
+    config
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.kind == PROVIDER_KIND_OLLAMA)
+        .map(|p| p.base_url.clone())
+        .unwrap_or_default()
+}
+
+/// True when a local Ollama daemon answered `/api/tags` on the configured
+/// Ollama provider's base URL, regardless of how many models it reports.
+/// Backs onboarding's "Use my existing Ollama instead" escape hatch while
+/// the built-in provider is active (so `get_model_picker_state`, which
+/// probes the ACTIVE provider and mutates the active-model mirror, cannot
+/// be reused here).
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn detect_ollama(
+    client: tauri::State<'_, reqwest::Client>,
+    config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+) -> Result<bool, String> {
+    let base_url = ollama_provider_base_url(&config.read());
+    Ok(fetch_installed_model_names(&client, &base_url)
+        .await
+        .is_ok())
+}
+
+/// Probes the active provider for setup readiness and returns the typed
 /// [`ModelSetupState`] for the frontend onboarding gate.
+///
+/// Routing is by provider kind: `builtin` consults the installed-model
+/// manifest, `openai` trusts its configured model, and Ollama probes
+/// `/api/tags` exactly as before.
 ///
 /// Idempotent: safe to call on every overlay open. The Ready arm also
 /// commits two side effects, both intentionally bounded:
@@ -494,11 +661,21 @@ pub async fn check_model_setup(
     client: tauri::State<'_, reqwest::Client>,
     active_model: tauri::State<'_, ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+    db: tauri::State<'_, crate::history::Database>,
 ) -> Result<ModelSetupState, String> {
-    let (ollama_url, active_id, persisted) = read_provider_model_context(&config);
-    let installed_result = fetch_installed_model_names(&client, &ollama_url).await;
+    let (ollama_url, active_id, persisted, kind) = read_provider_model_context(&config);
 
-    let state = derive_model_setup_state(installed_result, persisted.as_deref());
+    let state = match kind.as_str() {
+        PROVIDER_KIND_BUILTIN => {
+            let ids = manifest_model_ids(&db)?;
+            derive_builtin_setup_state(persisted.as_deref(), &ids)
+        }
+        PROVIDER_KIND_OPENAI => derive_openai_setup_state(persisted.as_deref()),
+        _ => {
+            let installed_result = fetch_installed_model_names(&client, &ollama_url).await;
+            derive_model_setup_state(installed_result, persisted.as_deref())
+        }
+    };
 
     if let ModelSetupState::Ready {
         ref active_slug,
@@ -954,12 +1131,6 @@ pub fn cancel_active_download(state: &DownloadState) {
     }
 }
 
-/// True when a finished download should be recorded as installed: the run
-/// succeeded AND the user did not cancel between the last event and teardown.
-pub fn should_finalize(result_ok: bool, cancelled: bool) -> bool {
-    result_ok && !cancelled
-}
-
 /// One starter row for the download picker: the compile-time registry entry
 /// plus the machine-specific runtime facts the UI renders next to it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1287,6 +1458,116 @@ pub async fn fetch_repo_gguf_listing(
     parse_gguf_listing(&body)
 }
 
+// ─── OpenAI-compatible model listing ─────────────────────────────────────────
+
+/// Subset of an OpenAI-compatible `/v1/models` response Thuki consumes.
+#[derive(Deserialize)]
+struct OpenAiModelsResponse {
+    #[serde(default)]
+    data: Vec<OpenAiModelEntry>,
+}
+
+/// One model row in the `/v1/models` listing.
+#[derive(Deserialize)]
+struct OpenAiModelEntry {
+    #[serde(default)]
+    id: String,
+}
+
+/// Pure parse of a `/v1/models` body into model ids. Rows with an empty or
+/// missing `id` are dropped rather than surfaced as blank dropdown entries.
+pub fn parse_openai_models(body: &[u8]) -> Result<Vec<String>, String> {
+    let parsed: OpenAiModelsResponse = serde_json::from_slice(body)
+        .map_err(|e| format!("failed to decode /v1/models response: {e}"))?;
+    Ok(parsed
+        .data
+        .into_iter()
+        .map(|m| m.id)
+        .filter(|id| !id.is_empty())
+        .collect())
+}
+
+/// The configured OpenAI-compatible provider's `(id, base_url)`. Errors when
+/// no `openai`-kind provider exists so the UI shows a stable message instead
+/// of probing an empty URL.
+pub fn openai_provider_target(config: &AppConfig) -> Result<(String, String), String> {
+    config
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.kind == PROVIDER_KIND_OPENAI)
+        .map(|p| (p.id.clone(), p.base_url.clone()))
+        .ok_or_else(|| "no OpenAI-compatible provider is configured".to_string())
+}
+
+/// GETs `<base_url>/v1/models` with the production timeout and body cap and
+/// returns the listed model ids. `api_key` is sent as a bearer token when
+/// present (keyless local servers are common, so it is optional).
+pub async fn fetch_openai_models(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<String>, String> {
+    fetch_openai_models_inner(
+        client,
+        base_url,
+        api_key,
+        std::time::Duration::from_secs(OPENAI_MODELS_TIMEOUT_SECS),
+        MAX_HF_API_BODY_BYTES,
+    )
+    .await
+}
+
+/// Innermost `/v1/models` fetcher with timeout and body cap configurable so
+/// the cap branches are testable. The cap is enforced incrementally during
+/// the streaming read, mirroring [`fetch_installed_model_names_inner`].
+async fn fetch_openai_models_inner(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    timeout: std::time::Duration,
+    max_body_bytes: usize,
+) -> Result<Vec<String>, String> {
+    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+    let mut request = client.get(&url).timeout(timeout);
+    if let Some(key) = api_key {
+        request = request.bearer_auth(key);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach the server: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "/v1/models returned HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+
+    if let Some(declared_len) = response.content_length() {
+        if declared_len as usize > max_body_bytes {
+            return Err(format!(
+                "/v1/models response exceeded {max_body_bytes} bytes"
+            ));
+        }
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("failed to read /v1/models body: {e}"))?;
+        if buf.len() + chunk.len() > max_body_bytes {
+            return Err(format!(
+                "/v1/models response exceeded {max_body_bytes} bytes"
+            ));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    parse_openai_models(&buf)
+}
+
 /// Download specs for a resolved repo model: weights first, then the mmproj
 /// companion. URL shape matches [`registry::download_specs`]:
 /// `<base>/<repo>/resolve/<revision>/<file>`.
@@ -1355,13 +1636,21 @@ pub struct DeleteOutcome {
 
 /// Deletes a model from the manifest and removes the blobs no other row
 /// references. `builtin_model` is the builtin provider's currently configured
-/// model id; deleting it flags `clear_builtin` for the caller.
+/// model id; deleting it flags `clear_builtin` for the caller. Refuses while
+/// a download is in flight (it may be about to insert or share the very blobs
+/// being refcounted), holding the download-state lock across the removal so a
+/// concurrent claim cannot race the delete (mirrors `discard_partial_inner`).
 pub fn delete_installed_model_inner(
+    state: &DownloadState,
     conn: &rusqlite::Connection,
     store: &storage::ModelStore,
     id: &str,
     builtin_model: &str,
 ) -> Result<DeleteOutcome, String> {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    if guard.is_some() {
+        return Err("a download is already in progress".to_string());
+    }
     let orphans = manifest::delete(conn, id).map_err(|e| e.to_string())?;
     store.remove_blobs(&orphans).map_err(|e| e.to_string())?;
     Ok(DeleteOutcome {
@@ -1443,6 +1732,14 @@ pub fn get_system_ram_bytes() -> u64 {
     system_ram_bytes()
 }
 
+/// Free bytes on the volume holding the models directory, for the
+/// pre-download disk-space line. `None` means unknown; the UI skips the line.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn get_models_dir_free_bytes(store: tauri::State<'_, storage::ModelStore>) -> Option<u64> {
+    store.free_bytes()
+}
+
 /// Starts downloading a curated starter (`tier` = "fast" | "balanced" |
 /// "smartest"). Progress streams over `on_event`; on success the model is
 /// recorded in the manifest and set as the builtin provider's model.
@@ -1500,6 +1797,22 @@ pub async fn list_hf_repo_ggufs(
     fetch_repo_gguf_listing(&client, HF_BASE_URL, &repo).await
 }
 
+/// Lists the models served by the configured OpenAI-compatible provider via
+/// its `/v1/models` endpoint, using the Keychain API key when one is stored.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn list_openai_models(
+    config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+    secrets: tauri::State<'_, crate::keychain::Secrets>,
+    client: tauri::State<'_, reqwest::Client>,
+) -> Result<Vec<String>, String> {
+    let (provider_id, base_url) = openai_provider_target(&config.read())?;
+    // A Keychain read failure degrades to "no key": keyless local servers
+    // must keep listing even when the Keychain is unavailable.
+    let api_key = secrets.0.get(&provider_id).ok().flatten();
+    fetch_openai_models(&client, &base_url, api_key.as_deref()).await
+}
+
 /// Cancels the in-flight model download, if any. The download task emits
 /// `Cancelled` and keeps the partial for a later resume.
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -1531,6 +1844,7 @@ pub fn list_installed_models(
 
 /// Deletes an installed model: manifest row, orphaned blobs, and (when it was
 /// the builtin provider's selected model) the provider's `model` field.
+/// Refused while a download is in flight.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn delete_installed_model(
@@ -1539,11 +1853,12 @@ pub fn delete_installed_model(
     db: tauri::State<'_, crate::history::Database>,
     store: tauri::State<'_, storage::ModelStore>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+    download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     let builtin_model = builtin_provider_model(&config.read());
     let outcome = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        delete_installed_model_inner(&conn, &store, &id, &builtin_model)?
+        delete_installed_model_inner(&download_state, &conn, &store, &id, &builtin_model)?
     };
     if outcome.clear_builtin {
         persist_active_provider_model(&app, &config, PROVIDER_ID_BUILTIN, "")?;
@@ -1551,19 +1866,27 @@ pub fn delete_installed_model(
     Ok(())
 }
 
-/// Converts a `finalize_install` error string into the `Failed` event that
-/// should be emitted over the download channel. Pure function; testable without
-/// Tauri state.
-pub(crate) fn finalize_error_event(message: String) -> download::DownloadEvent {
-    download::DownloadEvent::Failed {
-        kind: download::DownloadFailKind::Other,
-        message,
+/// Maps the `finalize_install` outcome onto the terminal download event:
+/// `AllDone` once the install is recorded, `Failed` otherwise. AllDone is
+/// emitted here (after finalize) rather than from `run_download` so the
+/// frontend can never advance past an install that was not recorded. Pure
+/// function; testable without Tauri state.
+pub(crate) fn finalize_outcome_event(result: Result<(), String>) -> download::DownloadEvent {
+    match result {
+        Ok(()) => download::DownloadEvent::AllDone,
+        Err(message) => download::DownloadEvent::Failed {
+            kind: download::DownloadFailKind::Other,
+            message,
+        },
     }
 }
 
 /// Runs the claimed download on the async runtime: streams events to the
-/// channel, records the manifest row + builtin provider model on success,
-/// and releases the download slot in every outcome.
+/// channel, records the manifest row + builtin provider model on success
+/// (then emits AllDone, or Failed when recording fails), and releases the
+/// download slot in every outcome. A cancellation that lands after the run
+/// already succeeded is too late to mean anything: every byte is verified
+/// and installed, so the install is recorded unconditionally.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn spawn_model_download(
     app: tauri::AppHandle,
@@ -1580,29 +1903,37 @@ fn spawn_model_download(
             let emit = move |event: download::DownloadEvent| {
                 let _ = on_event.send(event);
             };
-            download::run_download(&specs, store.inner(), &client, token.clone(), emit).await
+            download::run_download(&specs, store.inner(), &client, token, emit).await
         };
-        if should_finalize(result.is_ok(), token.is_cancelled()) {
-            if let Err(e) = finalize_install(&app, &model) {
+        if result.is_ok() {
+            let finalized = finalize_install(&app, &model);
+            if let Err(e) = &finalized {
                 eprintln!("thuki: [models] failed to record installed model: {e}");
-                let _ = on_event_finalize.send(finalize_error_event(e));
             }
+            let _ = on_event_finalize.send(finalize_outcome_event(finalized));
         }
         release_download(&app.state::<DownloadState>());
     });
 }
 
-/// Records a completed download: manifest insert, then the builtin provider's
-/// `model` field (the active provider is never changed here).
+/// Records a completed download: manifest insert, removal of blobs the
+/// replaced row no longer references (a re-download whose upstream content
+/// changed must not strand the old multi-GB blob), then the builtin
+/// provider's `model` field (the active provider is never changed here).
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn finalize_install(
     app: &tauri::AppHandle,
     model: &manifest::InstalledModel,
 ) -> Result<(), String> {
-    {
+    let orphans = {
         let db = app.state::<crate::history::Database>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        manifest::insert(&conn, model).map_err(|e| e.to_string())?;
+        manifest::insert(&conn, model).map_err(|e| e.to_string())?
+    };
+    // Best-effort: the install itself succeeded, so a failure to reclaim the
+    // superseded blobs must not fail the download; it only leaks disk space.
+    if let Err(e) = app.state::<storage::ModelStore>().remove_blobs(&orphans) {
+        eprintln!("thuki: [models] failed to remove superseded blobs: {e}");
     }
     let config = app.state::<parking_lot::RwLock<AppConfig>>();
     persist_active_provider_model(app, &config, PROVIDER_ID_BUILTIN, &model.id)
@@ -1654,6 +1985,103 @@ mod tests {
             serde_json::json!(["gemma4:e2b", "gemma4:e4b"])
         );
         assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(true));
+    }
+
+    // ── picker_inventory_for_kind ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn picker_inventory_builtin_serves_manifest_without_probing() {
+        // The base URL is unroutable on purpose: if the builtin arm ever
+        // probed the network it would collapse into the unreachable shape.
+        // Getting the manifest back with reachable=true proves the builtin
+        // inventory never leaves the process.
+        let client = reqwest::Client::new();
+        let ids = vec!["tinyllama-1.1b".to_string(), "qwen2.5-0.5b".to_string()];
+        let (installed, reachable) = picker_inventory_for_kind(
+            &client,
+            PROVIDER_KIND_BUILTIN,
+            "http://127.0.0.1:1",
+            Some("tinyllama-1.1b"),
+            &ids,
+        )
+        .await;
+        assert_eq!(installed, ids);
+        assert!(reachable);
+    }
+
+    #[tokio::test]
+    async fn picker_inventory_builtin_empty_manifest_stays_reachable() {
+        // Zero downloaded models is a "go download one" state, never an
+        // "engine down" state: the frontend routes on the flag.
+        let client = reqwest::Client::new();
+        let (installed, reachable) =
+            picker_inventory_for_kind(&client, PROVIDER_KIND_BUILTIN, "", None, &[]).await;
+        assert!(installed.is_empty());
+        assert!(reachable);
+    }
+
+    #[tokio::test]
+    async fn picker_inventory_openai_lists_configured_model() {
+        // The unroutable base URL doubles as the no-probe assertion for the
+        // openai arm too.
+        let client = reqwest::Client::new();
+        let (installed, reachable) = picker_inventory_for_kind(
+            &client,
+            PROVIDER_KIND_OPENAI,
+            "http://127.0.0.1:1",
+            Some("gpt-4o-mini"),
+            &[],
+        )
+        .await;
+        assert_eq!(installed, vec!["gpt-4o-mini".to_string()]);
+        assert!(reachable);
+    }
+
+    #[tokio::test]
+    async fn picker_inventory_openai_empty_when_no_model_configured() {
+        let client = reqwest::Client::new();
+        let (installed, reachable) =
+            picker_inventory_for_kind(&client, PROVIDER_KIND_OPENAI, "", None, &[]).await;
+        assert!(installed.is_empty());
+        assert!(reachable);
+    }
+
+    #[tokio::test]
+    async fn picker_inventory_ollama_probes_tags_endpoint() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/tags")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"models":[{"name":"gemma4:e2b"}]}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (installed, reachable) =
+            picker_inventory_for_kind(&client, PROVIDER_KIND_OLLAMA, &server.url(), None, &[])
+                .await;
+
+        mock.assert_async().await;
+        assert_eq!(installed, vec!["gemma4:e2b".to_string()]);
+        assert!(reachable);
+    }
+
+    #[tokio::test]
+    async fn picker_inventory_ollama_unreachable_collapses_to_empty_and_false() {
+        // Port 1 refuses connections. The persisted model must not leak into
+        // the inventory: with the daemon down nothing can be trusted.
+        let client = reqwest::Client::new();
+        let (installed, reachable) = picker_inventory_for_kind(
+            &client,
+            PROVIDER_KIND_OLLAMA,
+            "http://127.0.0.1:1",
+            Some("gemma4:e2b"),
+            &[],
+        )
+        .await;
+        assert!(installed.is_empty());
+        assert!(!reachable);
     }
 
     // ── resolve_active_model ─────────────────────────────────────────────────
@@ -2104,6 +2532,204 @@ mod tests {
         );
     }
 
+    // ── OpenAI-compatible model listing ──────────────────────────────────────
+
+    #[test]
+    fn parse_openai_models_extracts_ids_and_drops_blank_rows() {
+        let body = br#"{"object":"list","data":[
+            {"id":"llama-3.1-8b","object":"model"},
+            {"id":"","object":"model"},
+            {"object":"model"},
+            {"id":"qwen2.5-7b"}
+        ]}"#;
+        assert_eq!(
+            parse_openai_models(body).unwrap(),
+            vec!["llama-3.1-8b".to_string(), "qwen2.5-7b".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_openai_models_tolerates_missing_data_field() {
+        assert_eq!(parse_openai_models(b"{}").unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_openai_models_maps_malformed_json_to_err() {
+        let err = parse_openai_models(b"not json").unwrap_err();
+        assert!(err.contains("failed to decode /v1/models response"));
+    }
+
+    #[test]
+    fn openai_provider_target_returns_id_and_base_url() {
+        let mut cfg = AppConfig::default();
+        cfg.inference
+            .providers
+            .push(crate::config::schema::openai_provider(
+                "openai",
+                "LM Studio",
+                "http://127.0.0.1:1234",
+            ));
+        assert_eq!(
+            openai_provider_target(&cfg).unwrap(),
+            ("openai".to_string(), "http://127.0.0.1:1234".to_string())
+        );
+    }
+
+    #[test]
+    fn openai_provider_target_errors_when_absent() {
+        let cfg = AppConfig::default();
+        let err = openai_provider_target(&cfg).unwrap_err();
+        assert!(err.contains("no OpenAI-compatible provider"));
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_sends_bearer_key_and_parses_ids() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", "Bearer sk-test")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":[{"id":"m1"},{"id":"m2"}]}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let result = fetch_openai_models(&client, &server.url(), Some("sk-test")).await;
+
+        mock.assert_async().await;
+        assert_eq!(result.unwrap(), vec!["m1".to_string(), "m2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_omits_authorization_without_key() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_body(r#"{"data":[{"id":"m1"}]}"#)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        // Trailing slash also exercises the base-url trim.
+        let base = format!("{}/", server.url());
+        let result = fetch_openai_models(&client, &base, None).await;
+
+        mock.assert_async().await;
+        assert_eq!(result.unwrap(), vec!["m1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_maps_http_error_to_err_string() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/v1/models")
+            .with_status(401)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let err = fetch_openai_models(&client, &server.url(), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("/v1/models returned HTTP 401"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_maps_transport_error_to_err_string() {
+        // Bind then drop a listener so the port is closed.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let client = reqwest::Client::new();
+        let err = fetch_openai_models(&client, &format!("http://{addr}"), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("failed to reach the server"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_rejects_body_exceeding_cap_via_content_length() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/v1/models")
+            .with_status(200)
+            .with_body("x".repeat(100))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let err = fetch_openai_models_inner(
+            &client,
+            &server.url(),
+            None,
+            std::time::Duration::from_secs(5),
+            32,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeded"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_rejects_body_exceeding_cap_when_no_content_length() {
+        // Chunked response (no Content-Length); the incremental stream cap
+        // must reject when the running total exceeds the limit.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0\r\n\r\n",
+            );
+        });
+
+        let client = reqwest::Client::new();
+        let err = fetch_openai_models_inner(
+            &client,
+            &format!("http://{addr}"),
+            None,
+            std::time::Duration::from_secs(5),
+            20,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeded"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_openai_models_maps_body_read_error_to_err_string() {
+        // Headers advertise Content-Length but the server hangs up before
+        // sending the body, so the streaming read fails mid-flight.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
+            );
+        });
+
+        let client = reqwest::Client::new();
+        let err = fetch_openai_models(&client, &format!("http://{addr}"), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("failed to read /v1/models body"), "got: {err}");
+    }
+
     // ── ActiveModelState ─────────────────────────────────────────────────────
 
     #[test]
@@ -2139,10 +2765,9 @@ mod tests {
 
     #[test]
     fn model_not_installed_err_prefix_is_stable() {
-        assert_eq!(
-            MODEL_NOT_INSTALLED_ERR_PREFIX,
-            "Model is not installed in Ollama: "
-        );
+        // Provider-neutral: reachable on builtin (chip click racing a model
+        // delete) and openai providers, not only Ollama.
+        assert_eq!(MODEL_NOT_INSTALLED_ERR_PREFIX, "Model is not installed: ");
     }
 
     // ── derive_model_setup_state (Phase 3 onboarding gate) ──────────────────
@@ -2246,6 +2871,109 @@ mod tests {
                 "installed": ["gemma4:e2b"],
             })
         );
+
+        let needs_download = serde_json::to_value(ModelSetupState::NeedsDownload).unwrap();
+        assert_eq!(
+            needs_download,
+            serde_json::json!({"state": "needs_download"})
+        );
+    }
+
+    // ── derive_builtin_setup_state / derive_openai_setup_state ───────────────
+
+    #[test]
+    fn builtin_ready_when_model_and_manifest() {
+        // Round-trip through a real in-memory manifest so the ids carry
+        // exactly what a finished download recorded.
+        let conn = crate::database::open_in_memory().unwrap();
+        manifest::insert(&conn, &manifest_row("org/repo:w.gguf", false, false)).unwrap();
+        manifest::insert(&conn, &manifest_row("org/repo:x.gguf", false, false)).unwrap();
+        let ids: Vec<String> = manifest::list(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+
+        let state = derive_builtin_setup_state(Some("org/repo:w.gguf"), &ids);
+        assert_eq!(
+            state,
+            ModelSetupState::Ready {
+                active_slug: "org/repo:w.gguf".to_string(),
+                installed: ids,
+            }
+        );
+    }
+
+    #[test]
+    fn builtin_needs_download_when_no_model() {
+        // Fresh install: nothing selected, nothing downloaded.
+        let conn = crate::database::open_in_memory().unwrap();
+        let ids: Vec<String> = manifest::list(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            derive_builtin_setup_state(None, &ids),
+            ModelSetupState::NeedsDownload
+        );
+    }
+
+    #[test]
+    fn builtin_needs_download_when_manifest_row_missing() {
+        // The provider points at a model whose manifest row is gone (e.g.
+        // deleted between launches). The gate must re-engage, not trust the
+        // stale pointer.
+        let conn = crate::database::open_in_memory().unwrap();
+        manifest::insert(&conn, &manifest_row("org/repo:other.gguf", false, false)).unwrap();
+        let ids: Vec<String> = manifest::list(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            derive_builtin_setup_state(Some("org/repo:gone.gguf"), &ids),
+            ModelSetupState::NeedsDownload
+        );
+    }
+
+    #[test]
+    fn openai_ready_when_model_configured() {
+        assert_eq!(
+            derive_openai_setup_state(Some("gpt-4o")),
+            ModelSetupState::Ready {
+                active_slug: "gpt-4o".to_string(),
+                installed: vec!["gpt-4o".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn openai_needs_download_when_no_model_configured() {
+        assert_eq!(
+            derive_openai_setup_state(None),
+            ModelSetupState::NeedsDownload
+        );
+    }
+
+    // ── ollama_provider_base_url (detect_ollama's config read) ──────────────
+
+    #[test]
+    fn ollama_provider_base_url_reads_ollama_kind_entry() {
+        // The default config seeds builtin first, Ollama second; the lookup
+        // must key on kind, not position or active_provider.
+        let cfg = AppConfig::default();
+        assert_eq!(
+            ollama_provider_base_url(&cfg),
+            crate::config::defaults::DEFAULT_OLLAMA_URL
+        );
+    }
+
+    #[test]
+    fn ollama_provider_base_url_empty_when_no_ollama_provider() {
+        let mut cfg = AppConfig::default();
+        cfg.inference.providers.retain(|p| p.kind != "ollama");
+        assert_eq!(ollama_provider_base_url(&cfg), "");
     }
 
     // ── capabilities_from_strings ────────────────────────────────────────────
@@ -3028,24 +3756,21 @@ mod tests {
         assert!(claim_download(&state).is_err());
         let (_dir, store) = make_store();
         assert!(discard_partial_inner(&state, &store, &"a".repeat(64)).is_err());
+        let conn = crate::database::open_in_memory().unwrap();
+        assert!(delete_installed_model_inner(&state, &conn, &store, "x:y.gguf", "").is_err());
         // Best-effort operations must not panic on the poisoned lock.
         cancel_active_download(&state);
         release_download(&state);
     }
 
     #[test]
-    fn should_finalize_requires_ok_and_not_cancelled() {
-        assert!(should_finalize(true, false));
-        assert!(!should_finalize(true, true));
-        assert!(!should_finalize(false, false));
-        assert!(!should_finalize(false, true));
-    }
-
-    #[test]
-    fn finalize_error_event_produces_failed_other_with_message() {
-        let event = finalize_error_event("disk full".to_string());
+    fn finalize_outcome_event_maps_ok_to_all_done_and_err_to_failed() {
         assert_eq!(
-            event,
+            finalize_outcome_event(Ok(())),
+            download::DownloadEvent::AllDone
+        );
+        assert_eq!(
+            finalize_outcome_event(Err("disk full".to_string())),
             download::DownloadEvent::Failed {
                 kind: download::DownloadFailKind::Other,
                 message: "disk full".to_string(),
@@ -3487,6 +4212,7 @@ mod tests {
     fn delete_installed_model_inner_removes_orphans_and_flags_builtin_clear() {
         let conn = crate::database::open_in_memory().unwrap();
         let (_dir, store) = make_store();
+        let state = DownloadState::default();
 
         let r = sample_resolved(true);
         let m = repo_installed_model("o/r", "w-Q4_K_M.gguf", &r);
@@ -3496,7 +4222,7 @@ mod tests {
 
         // The builtin provider currently points at this model: deletion must
         // flag the clear so the wrapper resets the provider's model field.
-        let out = delete_installed_model_inner(&conn, &store, &m.id, &m.id).unwrap();
+        let out = delete_installed_model_inner(&state, &conn, &store, &m.id, &m.id).unwrap();
         assert!(out.clear_builtin);
         assert!(!store.blob_path(&m.sha256).exists());
         assert!(!store.blob_path(m.mmproj_sha256.as_ref().unwrap()).exists());
@@ -3506,24 +4232,49 @@ mod tests {
         let m2 = repo_installed_model("o/r2", "x.gguf", &sample_resolved(false));
         manifest::insert(&conn, &m2).unwrap();
         std::fs::write(store.blob_path(&m2.sha256), b"x").unwrap();
-        let out = delete_installed_model_inner(&conn, &store, &m2.id, "other:model.gguf").unwrap();
+        let out = delete_installed_model_inner(&state, &conn, &store, &m2.id, "other:model.gguf")
+            .unwrap();
         assert!(!out.clear_builtin);
     }
 
     #[test]
+    fn delete_installed_model_inner_refuses_while_download_in_flight() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let (_dir, store) = make_store();
+        let state = DownloadState::default();
+
+        let m = repo_installed_model("o/r", "w.gguf", &sample_resolved(false));
+        manifest::insert(&conn, &m).unwrap();
+        std::fs::write(store.blob_path(&m.sha256), b"w").unwrap();
+
+        // A claimed download slot must refuse the delete and leave the row
+        // and blob untouched.
+        let _token = claim_download(&state).unwrap();
+        let err = delete_installed_model_inner(&state, &conn, &store, &m.id, "").unwrap_err();
+        assert_eq!(err, "a download is already in progress");
+        assert!(manifest::get(&conn, &m.id).unwrap().is_some());
+        assert!(store.blob_path(&m.sha256).exists());
+
+        // Releasing the slot lets the delete proceed.
+        release_download(&state);
+        assert!(delete_installed_model_inner(&state, &conn, &store, &m.id, "").is_ok());
+    }
+
+    #[test]
     fn delete_installed_model_inner_propagates_sql_and_io_errors() {
+        let state = DownloadState::default();
         // SQL failure: table dropped.
         let conn = crate::database::open_in_memory().unwrap();
         conn.execute_batch("DROP TABLE installed_models;").unwrap();
         let (_dir, store) = make_store();
-        assert!(delete_installed_model_inner(&conn, &store, "x:y.gguf", "").is_err());
+        assert!(delete_installed_model_inner(&state, &conn, &store, "x:y.gguf", "").is_err());
 
         // I/O failure: a directory sits where the orphaned blob should be.
         let conn = crate::database::open_in_memory().unwrap();
         let m = repo_installed_model("o/r", "w.gguf", &sample_resolved(false));
         manifest::insert(&conn, &m).unwrap();
         std::fs::create_dir_all(store.blob_path(&m.sha256)).unwrap();
-        assert!(delete_installed_model_inner(&conn, &store, &m.id, "").is_err());
+        assert!(delete_installed_model_inner(&state, &conn, &store, &m.id, "").is_err());
     }
 
     // ── Model library: discard partial ───────────────────────────────────────
@@ -3622,6 +4373,91 @@ mod tests {
         // it tracks the active provider only.
         let cfg = config_with_active_provider("ollama", "gemma3:12b");
         assert_eq!(should_refresh_active_model("builtin", &cfg), None);
+    }
+
+    // ── persist_provider_model_locked ────────────────────────────────────────
+
+    /// On-disk providers config used by the serialized-persist tests:
+    /// builtin + ollama, with ollama active.
+    const LOCKED_PERSIST_CONFIG: &str = r#"
+[inference]
+active_provider = "ollama"
+
+[[inference.providers]]
+id = "builtin"
+kind = "builtin"
+label = "Built-in (Thuki)"
+model = ""
+
+[[inference.providers]]
+id = "ollama"
+kind = "ollama"
+label = "Ollama"
+base_url = "http://127.0.0.1:11434"
+model = ""
+"#;
+
+    #[test]
+    fn persist_provider_model_locked_composes_with_guarded_settings_writes() {
+        // Three writers through the shared lock-then-read-modify-write
+        // pattern: a background model persist, a Settings-UI style provider
+        // patch, and a persist on the active provider. No write may be lost,
+        // in memory or on disk.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, LOCKED_PERSIST_CONFIG).unwrap();
+        let lock = parking_lot::RwLock::new(crate::config::load_from_path(&path).unwrap());
+
+        // Writer 1: background persist (download-finalize path) on the
+        // non-active builtin provider: no mirror refresh.
+        let mirror =
+            persist_provider_model_locked(&path, &lock, PROVIDER_ID_BUILTIN, "org/repo:w.gguf")
+                .unwrap();
+        assert_eq!(mirror, None);
+
+        // Writer 2: a Settings-UI write through the same guard pattern the
+        // settings commands use.
+        {
+            let mut guard = lock.write();
+            let resolved = crate::settings_commands::write_provider_field_to_disk(
+                &path,
+                "ollama",
+                "base_url",
+                "http://127.0.0.1:9999",
+            )
+            .unwrap();
+            *guard = resolved;
+        }
+
+        // Writer 3: persist on the ACTIVE provider: mirror refreshes.
+        let mirror = persist_provider_model_locked(&path, &lock, "ollama", "gemma3:4b").unwrap();
+        assert_eq!(mirror, Some(Some("gemma3:4b".to_string())));
+
+        // Every writer's change survives in the shared in-memory config...
+        let assert_composed = |cfg: &AppConfig| {
+            let provider = |id: &str| cfg.inference.providers.iter().find(|p| p.id == id).unwrap();
+            assert_eq!(provider(PROVIDER_ID_BUILTIN).model, "org/repo:w.gguf");
+            assert_eq!(provider("ollama").base_url, "http://127.0.0.1:9999");
+            assert_eq!(provider("ollama").model, "gemma3:4b");
+        };
+        assert_composed(&lock.read());
+        // ...and in the file a fresh load resolves.
+        assert_composed(&crate::config::load_from_path(&path).unwrap());
+    }
+
+    #[test]
+    fn persist_provider_model_locked_propagates_write_error() {
+        // An unknown provider id fails the disk patch; the in-memory config
+        // must stay untouched.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, LOCKED_PERSIST_CONFIG).unwrap();
+        let lock = parking_lot::RwLock::new(crate::config::load_from_path(&path).unwrap());
+        let before = lock.read().clone();
+
+        let err = persist_provider_model_locked(&path, &lock, "no-such-provider", "m").unwrap_err();
+        assert!(err.contains("no-such-provider"));
+        assert_eq!(*lock.read(), before);
     }
 
     // ── Model library: system RAM probe ──────────────────────────────────────

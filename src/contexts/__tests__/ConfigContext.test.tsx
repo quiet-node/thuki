@@ -19,6 +19,9 @@ function Probe() {
   return (
     <>
       <div data-testid="ollama-url">{config.inference.ollamaUrl}</div>
+      <div data-testid="active-provider-kind">
+        {config.inference.activeProviderKind}
+      </div>
       <div data-testid="overlay-width">{config.window.overlayWidth}</div>
       <div data-testid="max-chat-height">{config.window.maxChatHeight}</div>
       <div data-testid="text-base-px">{config.window.textBasePx}</div>
@@ -65,6 +68,7 @@ describe('ConfigContext', () => {
         ...DEFAULT_CONFIG,
         inference: {
           activeProvider: 'ollama',
+          activeProviderKind: 'ollama',
           ollamaUrl: 'http://example.test:11434',
         },
       };
@@ -124,6 +128,9 @@ describe('ConfigContext', () => {
       expect(screen.getByTestId('ollama-url').textContent).toBe(
         'http://127.0.0.1:11434',
       );
+      expect(screen.getByTestId('active-provider-kind').textContent).toBe(
+        'ollama',
+      );
       expect(screen.getByTestId('overlay-width').textContent).toBe('800');
       expect(screen.getByTestId('max-chat-height').textContent).toBe('700');
       expect(screen.getByTestId('text-base-px').textContent).toBe('17');
@@ -174,6 +181,51 @@ describe('ConfigContext', () => {
       await act(async () => {});
 
       expect(screen.getByTestId('ollama-url').textContent).toBe('');
+      expect(screen.getByTestId('active-provider-kind').textContent).toBe(
+        'builtin',
+      );
+    });
+
+    it('falls back to the ollama kind when the active provider pointer dangles', async () => {
+      invoke.mockResolvedValueOnce({
+        inference: {
+          active_provider: 'ghost',
+          providers: [
+            {
+              id: 'ollama',
+              kind: 'ollama',
+              base_url: 'http://127.0.0.1:11434',
+            },
+          ],
+        },
+        prompt: { system: '' },
+        window: {
+          overlay_width: 600,
+          max_chat_height: 648,
+          max_images: 3,
+          text_base_px: 15,
+          text_line_height: 1.5,
+          text_letter_spacing_px: 0,
+          text_font_weight: 500,
+        },
+        quote: {
+          max_display_lines: 4,
+          max_display_chars: 300,
+          max_context_length: 4096,
+        },
+        behavior: { auto_replace: false, auto_close: false },
+      });
+
+      render(
+        <ConfigProvider>
+          <Probe />
+        </ConfigProvider>,
+      );
+      await act(async () => {});
+
+      expect(screen.getByTestId('active-provider-kind').textContent).toBe(
+        'ollama',
+      );
     });
 
     it('falls back to DEFAULT_CONFIG when invoke returns nullish', async () => {

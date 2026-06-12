@@ -30,10 +30,16 @@
 //!    edits and hand-edits. The loader is the single source of truth for what
 //!    constitutes a valid `AppConfig`; the GUI cannot bypass it.
 //!
-//! Concurrency: serialized via the `parking_lot::RwLock<AppConfig>` write
-//! guard. Concurrent invokes execute in order; last-write-wins on the same
-//! field is the intended semantic (matches user expectation when rapidly
-//! tabbing between fields).
+//! Concurrency: every disk-mutating config path in the app serializes on the
+//! `parking_lot::RwLock<AppConfig>` write guard, taken BEFORE the on-disk
+//! read-modify-write and held until the in-memory snapshot is replaced. The
+//! disk I/O is synchronous `std::fs`, so no `.await` ever runs under the
+//! guard. This applies to every mutating command in this module and to
+//! `crate::models::persist_provider_model_locked`, the one config writer
+//! outside it; any new writer must follow the same pattern or a concurrent
+//! writer's stale re-read can revert its change. Concurrent invokes execute
+//! in order; last-write-wins on the same field is the intended semantic
+//! (matches user expectation when rapidly tabbing between fields).
 
 use std::path::{Path, PathBuf};
 
@@ -94,6 +100,14 @@ fn is_allowed_section(section: &str) -> bool {
     ALLOWED_SECTIONS.contains(&section)
 }
 
+/// True when `url` is an absolute http(s) URL. Same rule as the loader's
+/// private `is_http_url`: provider base URLs the backend will POST to must
+/// be rejected at write time rather than silently dropped at the next load.
+pub(crate) fn is_http_url(url: &str) -> bool {
+    let url = url.trim();
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
 /// Returns true when the post-write `AppConfig` flips `[debug] trace_enabled`
 /// relative to the pre-write snapshot. Pulled out so the predicate is
 /// covered by tests instead of riding inside the coverage-off Tauri command
@@ -125,6 +139,35 @@ fn forward_idle_unload_minutes(app: &AppHandle, prior_minutes: u32, resolved: &A
             .inner()
             .clone();
         tauri::async_runtime::spawn(async move { engine.set_idle_minutes(minutes).await });
+    }
+}
+
+/// True when a config write moved the ACTIVE provider away from the built-in
+/// engine (builtin -> ollama/openai). Switching between non-builtin kinds or
+/// onto builtin never matches. Pulled out so the predicate is covered by
+/// tests instead of riding inside the coverage-off Tauri command bodies that
+/// fire the engine unload.
+pub(crate) fn builtin_deactivated(prior_kind: &str, resolved: &AppConfig) -> bool {
+    prior_kind == crate::config::defaults::PROVIDER_KIND_BUILTIN
+        && resolved.inference.active_provider_kind()
+            != crate::config::defaults::PROVIDER_KIND_BUILTIN
+}
+
+/// Fires a best-effort engine unload when a config write switched the active
+/// provider away from the built-in engine. Without it, a multi-GB
+/// llama-server stays resident until quit: the eviction UI branches by the
+/// NEW provider kind (the builtin arm becomes unreachable) and the default
+/// idle policy of 0 never unloads. Spawned so the switch neither blocks on
+/// nor can fail because of the engine actor; an in-flight builtin request is
+/// deliberately interrupted, matching an explicit user eviction.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn unload_engine_if_builtin_deactivated(app: &AppHandle, prior_kind: &str, resolved: &AppConfig) {
+    if builtin_deactivated(prior_kind, resolved) {
+        let engine = app
+            .state::<crate::engine::runner::EngineHandle>()
+            .inner()
+            .clone();
+        tauri::async_runtime::spawn(async move { engine.unload().await });
     }
 }
 
@@ -269,19 +312,187 @@ pub(crate) fn write_field_to_disk(
     config::load_from_path(path)
 }
 
-/// Patches a single field (`model` or `base_url`) on the
+/// Switches the active inference provider and returns the resolved `AppConfig`.
+///
+/// Validates that `provider_id` names an entry in the on-disk
+/// `[[inference.providers]]` list, persists `[inference] active_provider`,
+/// refreshes the managed config, and re-mirrors the in-memory
+/// [`crate::models::ActiveModelState`] onto the new active provider's model
+/// (Some when non-empty, None otherwise) so chat routes correctly without a
+/// restart. Mirrors `set_ollama_url`'s lock + persist + broadcast contract.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn set_active_provider(
+    provider_id: String,
+    app: AppHandle,
+    state: State<'_, RwLock<AppConfig>>,
+    active_model: State<'_, crate::models::ActiveModelState>,
+) -> Result<AppConfig, ConfigError> {
+    let path = config_path(&app)?;
+    let prior_kind = state.read().inference.active_provider_kind().to_string();
+    let resolved = {
+        let mut guard = state.write();
+        let resolved = write_active_provider_to_disk(&path, &provider_id)?;
+        *guard = resolved.clone();
+        resolved
+    };
+    if let Some(mirror) = crate::models::should_refresh_active_model(&provider_id, &resolved) {
+        if let Ok(mut guard) = active_model.0.lock() {
+            *guard = mirror;
+        }
+    }
+    // Switching away from the built-in engine releases its memory; the
+    // sidecar would otherwise stay resident with no unload affordance.
+    unload_engine_if_builtin_deactivated(&app, &prior_kind, &resolved);
+    emit_config_updated(&app);
+    Ok(resolved)
+}
+
+/// Patches one field (`model`, `base_url`, `label`, or `vision`) on the
+/// provider whose id is `provider_id` and returns the resolved `AppConfig`.
+///
+/// Generalizes `set_ollama_url` to every editable provider field. A `model`
+/// write on the active provider also re-mirrors the in-memory
+/// [`crate::models::ActiveModelState`] so chat routes to the new selection
+/// without a restart. Mirrors `set_ollama_url`'s lock + persist + broadcast
+/// contract.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn update_provider_field(
+    provider_id: String,
+    field: String,
+    value: String,
+    app: AppHandle,
+    state: State<'_, RwLock<AppConfig>>,
+    active_model: State<'_, crate::models::ActiveModelState>,
+) -> Result<AppConfig, ConfigError> {
+    let path = config_path(&app)?;
+    let resolved = {
+        let mut guard = state.write();
+        let resolved = write_provider_field_to_disk(&path, &provider_id, &field, &value)?;
+        *guard = resolved.clone();
+        resolved
+    };
+    if field == "model" {
+        if let Some(mirror) = crate::models::should_refresh_active_model(&provider_id, &resolved) {
+            if let Ok(mut guard) = active_model.0.lock() {
+                *guard = mirror;
+            }
+        }
+    }
+    emit_config_updated(&app);
+    Ok(resolved)
+}
+
+/// Adds the single OpenAI-compatible provider (fixed id `"openai"`) and
+/// returns the resolved `AppConfig`. Empty label falls back to the compiled
+/// default. Mirrors `set_ollama_url`'s lock + persist + broadcast contract.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn add_openai_provider(
+    label: String,
+    base_url: String,
+    app: AppHandle,
+    state: State<'_, RwLock<AppConfig>>,
+) -> Result<AppConfig, ConfigError> {
+    let path = config_path(&app)?;
+    let resolved = {
+        let mut guard = state.write();
+        let resolved = add_openai_provider_to_disk(&path, &label, &base_url)?;
+        *guard = resolved.clone();
+        resolved
+    };
+    emit_config_updated(&app);
+    Ok(resolved)
+}
+
+/// Removes the OpenAI-compatible provider and returns the resolved
+/// `AppConfig`. When it was active, the active pointer falls back to the
+/// built-in provider in the same atomic edit. Best-effort cleanup: each
+/// removed provider id's Keychain API key is deleted (a Keychain failure
+/// never undoes the config removal), and the in-memory active-model mirror
+/// is refreshed onto whatever provider is active after the removal.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn remove_openai_provider(
+    app: AppHandle,
+    state: State<'_, RwLock<AppConfig>>,
+    active_model: State<'_, crate::models::ActiveModelState>,
+    secrets: State<'_, crate::keychain::Secrets>,
+) -> Result<AppConfig, ConfigError> {
+    let path = config_path(&app)?;
+    let (resolved, removed_ids) = {
+        let mut guard = state.write();
+        let (resolved, removed_ids) = remove_openai_provider_from_disk(&path)?;
+        *guard = resolved.clone();
+        (resolved, removed_ids)
+    };
+    cleanup_provider_secrets(secrets.0.as_ref(), &removed_ids);
+    let active_id = resolved.inference.active_provider.clone();
+    if let Some(mirror) = crate::models::should_refresh_active_model(&active_id, &resolved) {
+        if let Ok(mut guard) = active_model.0.lock() {
+            *guard = mirror;
+        }
+    }
+    emit_config_updated(&app);
+    Ok(resolved)
+}
+
+/// Persists `[inference] active_provider = provider_id` after validating that
+/// the id names an entry in the on-disk `[[inference.providers]]` list,
+/// preserving the rest of the file via `toml_edit`, then reloads + resolves.
+/// Sibling of [`write_provider_field_to_disk`]; pulled out of the Tauri
+/// wrapper so the validation, atomic write, and post-write reload are
+/// exercised without an `AppHandle`.
+pub(crate) fn write_active_provider_to_disk(
+    path: &Path,
+    provider_id: &str,
+) -> Result<AppConfig, ConfigError> {
+    let mut doc = read_document(path)?;
+    let providers = doc
+        .get("inference")
+        .and_then(|i| i.get("providers"))
+        .and_then(|p| p.as_array_of_tables());
+    let Some(providers) = providers else {
+        return Err(ConfigError::UnknownSection {
+            section: "inference.providers".to_string(),
+        });
+    };
+    let known = providers
+        .iter()
+        .any(|t| t.get("id").and_then(|v| v.as_str()) == Some(provider_id));
+    if !known {
+        return Err(ConfigError::UnknownField {
+            section: "inference.providers".to_string(),
+            key: provider_id.to_string(),
+        });
+    }
+    if let Some(table) = doc.get_mut("inference").and_then(Item::as_table_mut) {
+        table.insert("active_provider", toml_value(provider_id));
+    }
+    config::atomic_write_bytes(path, doc.to_string().as_bytes()).map_err(|source| {
+        ConfigError::IoError {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    config::load_from_path(path)
+}
+
+/// Patches a single field (`model`, `base_url`, `label`, or `vision`) on the
 /// `[[inference.providers]]` entry whose `id` matches `provider_id`, preserving
 /// the rest of the file via `toml_edit`, then reloads + resolves. Backs the
-/// `set_active_model` (model) and `set_ollama_url` (base_url) write paths.
-/// Pulled out of the Tauri wrappers so the field allowlist, table lookup,
-/// atomic write, and post-write reload are exercised without an `AppHandle`.
+/// `set_active_model` (model), `set_ollama_url` (base_url), and
+/// `update_provider_field` write paths. Pulled out of the Tauri wrappers so
+/// the field allowlist, per-field validation, table lookup, atomic write, and
+/// post-write reload are exercised without an `AppHandle`.
 pub(crate) fn write_provider_field_to_disk(
     path: &Path,
     provider_id: &str,
     field: &str,
     value: &str,
 ) -> Result<AppConfig, ConfigError> {
-    if !matches!(field, "model" | "base_url") {
+    if !matches!(field, "model" | "base_url" | "label" | "vision") {
         return Err(ConfigError::UnknownField {
             section: "inference.providers".to_string(),
             key: field.to_string(),
@@ -300,7 +511,13 @@ pub(crate) fn write_provider_field_to_disk(
     let mut patched = false;
     for table in providers.iter_mut() {
         if table.get("id").and_then(|v| v.as_str()) == Some(provider_id) {
-            table.insert(field, toml_value(value));
+            let kind = table
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let item = validate_provider_value(&kind, field, value)?;
+            table.insert(field, item);
             patched = true;
             break;
         }
@@ -318,6 +535,212 @@ pub(crate) fn write_provider_field_to_disk(
         }
     })?;
     config::load_from_path(path)
+}
+
+/// Validates and coerces one provider field value into a TOML item.
+///
+/// Per-field rules:
+/// - `model`: free-form string, trimmed.
+/// - `label`: trimmed; a trimmed-empty value on an `openai`-kind provider
+///   heals to the compiled default label, mirroring the add path so the card
+///   heading never renders blank.
+/// - `base_url`: rejected for the built-in provider (it has no URL); must be
+///   an absolute http(s) URL for the network kinds.
+/// - `vision`: the strings `"true"` / `"false"`, stored as a TOML boolean so
+///   the schema's typed `bool` round-trips.
+///
+/// Validation errors come back as `TypeMismatch` whose message the Settings
+/// UI surfaces verbatim in the inline error pill.
+pub(crate) fn validate_provider_value(
+    kind: &str,
+    field: &str,
+    value: &str,
+) -> Result<Item, ConfigError> {
+    let mismatch = |message: &str| ConfigError::TypeMismatch {
+        section: "inference.providers".to_string(),
+        key: field.to_string(),
+        message: message.to_string(),
+    };
+    match field {
+        "model" => Ok(toml_value(value.trim())),
+        "label" => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() && kind == crate::config::defaults::PROVIDER_KIND_OPENAI {
+                // Mirrors `add_openai_provider_to_disk`: an empty label heals
+                // to the compiled default instead of persisting a blank
+                // heading.
+                return Ok(toml_value(crate::config::defaults::DEFAULT_OPENAI_LABEL));
+            }
+            Ok(toml_value(trimmed))
+        }
+        "base_url" => {
+            if kind == crate::config::defaults::PROVIDER_KIND_BUILTIN {
+                return Err(mismatch("The built-in provider has no base URL."));
+            }
+            if !is_http_url(value) {
+                return Err(mismatch("Base URL must start with http:// or https://."));
+            }
+            Ok(toml_value(value.trim()))
+        }
+        "vision" => match value {
+            "true" => Ok(toml_value(true)),
+            "false" => Ok(toml_value(false)),
+            _ => Err(mismatch("vision must be \"true\" or \"false\".")),
+        },
+        other => Err(ConfigError::UnknownField {
+            section: "inference.providers".to_string(),
+            key: other.to_string(),
+        }),
+    }
+}
+
+/// Appends the single OpenAI-compatible provider record to the on-disk
+/// `[[inference.providers]]` array, then reloads + resolves. At most one
+/// `openai`-kind record may exist (fixed id `"openai"`, mirroring the single
+/// Ollama URL); a second add is rejected. An empty `label` falls back to
+/// [`crate::config::defaults::DEFAULT_OPENAI_LABEL`]. Pulled out of the Tauri
+/// wrapper so the validation, duplicate guard, atomic write, and post-write
+/// reload are exercised without an `AppHandle`.
+pub(crate) fn add_openai_provider_to_disk(
+    path: &Path,
+    label: &str,
+    base_url: &str,
+) -> Result<AppConfig, ConfigError> {
+    use crate::config::defaults::{DEFAULT_OPENAI_LABEL, PROVIDER_ID_OPENAI, PROVIDER_KIND_OPENAI};
+
+    if !is_http_url(base_url) {
+        return Err(ConfigError::TypeMismatch {
+            section: "inference.providers".to_string(),
+            key: "base_url".to_string(),
+            message: "Base URL must start with http:// or https://.".to_string(),
+        });
+    }
+    let mut doc = read_document(path)?;
+    let providers = doc
+        .get_mut("inference")
+        .and_then(|i| i.get_mut("providers"))
+        .and_then(|p| p.as_array_of_tables_mut());
+    let Some(providers) = providers else {
+        return Err(ConfigError::UnknownSection {
+            section: "inference.providers".to_string(),
+        });
+    };
+    let already_exists = providers
+        .iter()
+        .any(|t| t.get("kind").and_then(|v| v.as_str()) == Some(PROVIDER_KIND_OPENAI));
+    if already_exists {
+        return Err(ConfigError::TypeMismatch {
+            section: "inference.providers".to_string(),
+            key: PROVIDER_ID_OPENAI.to_string(),
+            message: "An OpenAI-compatible provider already exists.".to_string(),
+        });
+    }
+    let label = label.trim();
+    let label = if label.is_empty() {
+        DEFAULT_OPENAI_LABEL
+    } else {
+        label
+    };
+    // The typed constructor is the single source of truth for the record's
+    // shape (kind, empty model, vision off); this just transcribes it to TOML.
+    let provider =
+        crate::config::schema::openai_provider(PROVIDER_ID_OPENAI, label, base_url.trim());
+    let mut table = Table::new();
+    table.insert("id", toml_value(provider.id.as_str()));
+    table.insert("kind", toml_value(provider.kind.as_str()));
+    table.insert("label", toml_value(provider.label.as_str()));
+    table.insert("base_url", toml_value(provider.base_url.as_str()));
+    table.insert("model", toml_value(provider.model.as_str()));
+    table.insert("vision", toml_value(provider.vision));
+    providers.push(table);
+
+    config::atomic_write_bytes(path, doc.to_string().as_bytes()).map_err(|source| {
+        ConfigError::IoError {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    config::load_from_path(path)
+}
+
+/// Best-effort Keychain cleanup after a provider removal: deletes the API-key
+/// secret stored under each removed provider id. Hand-edited files can carry
+/// an arbitrary id on an `openai`-kind row (the loader preserves it, and the
+/// frontend stores the key under `provider.id`), so cleanup must follow the
+/// ids actually removed rather than the fixed default id. Failures are
+/// ignored: a Keychain error never undoes the config removal. Rows missing
+/// an `id` collapse to an empty string in `removed_ids` and are skipped.
+pub(crate) fn cleanup_provider_secrets(
+    store: &dyn crate::keychain::SecretStore,
+    removed_ids: &[String],
+) {
+    for id in removed_ids {
+        if id.is_empty() {
+            continue;
+        }
+        let _ = store.delete(id);
+    }
+}
+
+/// Removes every `openai`-kind entry from the on-disk
+/// `[[inference.providers]]` array, returning the resolved `AppConfig` and
+/// the ids of the removed entries (for Keychain cleanup). When a removed
+/// provider was active, `active_provider` falls back to the built-in
+/// provider in the same atomic edit. Errors when no OpenAI-compatible
+/// provider exists. Pulled out of the Tauri wrapper so the removal,
+/// fallback, atomic write, and post-write reload are exercised without an
+/// `AppHandle`.
+pub(crate) fn remove_openai_provider_from_disk(
+    path: &Path,
+) -> Result<(AppConfig, Vec<String>), ConfigError> {
+    use crate::config::defaults::{PROVIDER_ID_BUILTIN, PROVIDER_ID_OPENAI, PROVIDER_KIND_OPENAI};
+
+    let mut doc = read_document(path)?;
+    let providers = doc
+        .get_mut("inference")
+        .and_then(|i| i.get_mut("providers"))
+        .and_then(|p| p.as_array_of_tables_mut());
+    let Some(providers) = providers else {
+        return Err(ConfigError::UnknownSection {
+            section: "inference.providers".to_string(),
+        });
+    };
+    let removed_ids: Vec<String> = providers
+        .iter()
+        .filter(|t| t.get("kind").and_then(|v| v.as_str()) == Some(PROVIDER_KIND_OPENAI))
+        .map(|t| {
+            t.get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect();
+    if removed_ids.is_empty() {
+        return Err(ConfigError::UnknownField {
+            section: "inference.providers".to_string(),
+            key: PROVIDER_ID_OPENAI.to_string(),
+        });
+    }
+    providers.retain(|t| t.get("kind").and_then(|v| v.as_str()) != Some(PROVIDER_KIND_OPENAI));
+
+    let active_removed = doc
+        .get("inference")
+        .and_then(|i| i.get("active_provider"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|active| removed_ids.iter().any(|id| id == active));
+    if active_removed {
+        if let Some(table) = doc.get_mut("inference").and_then(Item::as_table_mut) {
+            table.insert("active_provider", toml_value(PROVIDER_ID_BUILTIN));
+        }
+    }
+
+    config::atomic_write_bytes(path, doc.to_string().as_bytes()).map_err(|source| {
+        ConfigError::IoError {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok((config::load_from_path(path)?, removed_ids))
 }
 
 /// Resets one section (or the whole file when `section` is `None`) to the
@@ -429,11 +852,12 @@ pub fn reload_config_from_disk(
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let (prior_trace_enabled, prior_idle_unload_minutes) = {
+    let (prior_trace_enabled, prior_idle_unload_minutes, prior_kind) = {
         let guard = state.read();
         (
             guard.debug.trace_enabled,
             guard.inference.idle_unload_minutes,
+            guard.inference.active_provider_kind().to_string(),
         )
     };
     let resolved = {
@@ -452,6 +876,9 @@ pub fn reload_config_from_disk(
     // Manual edits to `[inference] idle_unload_minutes` reach the engine
     // runner through the same refresh path.
     forward_idle_unload_minutes(&app, prior_idle_unload_minutes, &resolved);
+    // A hand-edited `active_provider` that moved away from the built-in
+    // engine releases the sidecar, mirroring the Settings radio path.
+    unload_engine_if_builtin_deactivated(&app, &prior_kind, &resolved);
     emit_config_updated(&app);
     Ok(resolved)
 }

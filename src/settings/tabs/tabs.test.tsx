@@ -19,6 +19,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import {
   clearEventHandlers,
   emitTauriEvent,
@@ -94,10 +95,45 @@ const CONFIG: RawAppConfig = {
   },
 };
 
+/** CONFIG with the built-in provider active (Idle Unload replaces Keep Warm). */
+const BUILTIN_ACTIVE_CONFIG: RawAppConfig = {
+  ...CONFIG,
+  inference: { ...CONFIG.inference, active_provider: 'builtin' },
+};
+
+/** CONFIG plus the single OpenAI-compatible provider record. */
+const OPENAI_CONFIG: RawAppConfig = {
+  ...CONFIG,
+  inference: {
+    ...CONFIG.inference,
+    providers: [
+      ...CONFIG.inference.providers,
+      {
+        id: 'openai',
+        kind: 'openai',
+        label: 'LM Studio',
+        base_url: 'http://127.0.0.1:1234',
+        model: '',
+        vision: false,
+      },
+    ],
+  },
+};
+
+/** Full engine lifecycle payload for `engine:status` emissions. */
+function engineStatus(
+  state: 'stopped' | 'starting' | 'loaded' | 'stopping' | 'failed',
+) {
+  return { state, model_path: '', port: null, error: null };
+}
+
 beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === 'get_loaded_model') return Promise.resolve(null);
+    if (cmd === 'get_engine_status') {
+      return Promise.resolve(engineStatus('stopped'));
+    }
     if (cmd === 'get_model_picker_state') {
       return Promise.resolve({ active: null, all: [], ollamaReachable: false });
     }
@@ -133,9 +169,12 @@ describe('ModelTab', () => {
     await renderModelTab();
     expect(screen.getByText('Providers')).toBeInTheDocument();
     expect(screen.getByText('Built-in (Thuki)')).toBeInTheDocument();
+    // Built-in is selectable (no more "upcoming version" badge); Ollama is
+    // the active provider in this config.
     expect(
-      screen.getByText('Available in an upcoming version'),
-    ).toBeInTheDocument();
+      screen.getByRole('radio', { name: 'Use Built-in (Thuki)' }),
+    ).not.toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Use Ollama' })).toBeChecked();
     expect(screen.getByText('Prompt')).toBeInTheDocument();
     expect(screen.getByText('Ollama URL')).toBeInTheDocument();
     expect(screen.getByText('System prompt')).toBeInTheDocument();
@@ -323,6 +362,41 @@ describe('ModelTab', () => {
     expect(
       screen.queryByRole('combobox', { name: 'Active Ollama model' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('hides the Ollama model row entirely when the built-in provider is active', async () => {
+    // get_model_picker_state is scoped to the ACTIVE provider, so with the
+    // built-in active it returns builtin manifest ids. The Ollama card must
+    // not render that inventory (or the no-models hint) as its own.
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state') {
+        return Promise.resolve({
+          active: 'thuki-starter-4b',
+          all: ['thuki-starter-4b'],
+          ollamaReachable: true,
+        });
+      }
+      return Promise.resolve(BUILTIN_ACTIVE_CONFIG);
+    });
+    render(
+      <ModelTab
+        config={BUILTIN_ACTIVE_CONFIG}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      screen.queryByRole('combobox', { name: 'Active Ollama model' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('No models installed')).not.toBeInTheDocument();
+    // The rest of the Ollama card stays.
+    expect(
+      screen.getByRole('textbox', { name: 'Ollama URL' }),
+    ).toBeInTheDocument();
   });
 
   it('shows an empty Ollama URL when no Ollama provider is configured', async () => {
@@ -960,6 +1034,376 @@ describe('ModelTab', () => {
       name: 'Enable trace recording',
     });
     expect(toggle).toHaveAttribute('aria-checked', 'true');
+  });
+
+  // ─── Providers panel: radio selection ───────────────────────────────────
+
+  it('selecting the Built-in radio invokes set_active_provider and lifts the config', async () => {
+    const onSaved = vi.fn();
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={onSaved} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.click(
+      screen.getByRole('radio', { name: 'Use Built-in (Thuki)' }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(invokeMock).toHaveBeenCalledWith('set_active_provider', {
+      providerId: 'builtin',
+    });
+    expect(onSaved).toHaveBeenCalledWith(CONFIG);
+  });
+
+  it('falls back to the literal builtin id and label when no builtin provider is configured', async () => {
+    const noBuiltin: RawAppConfig = {
+      ...CONFIG,
+      inference: {
+        ...CONFIG.inference,
+        providers: [CONFIG.inference.providers[1]],
+      },
+    };
+    render(<ModelTab config={noBuiltin} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText('Built-in (Thuki)')).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('radio', { name: 'Use Built-in (Thuki)' }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(invokeMock).toHaveBeenCalledWith('set_active_provider', {
+      providerId: 'builtin',
+    });
+  });
+
+  it('selecting the Ollama radio invokes set_active_provider with the ollama id', async () => {
+    const onSaved = vi.fn();
+    render(
+      <ModelTab
+        config={BUILTIN_ACTIVE_CONFIG}
+        resyncToken={0}
+        onSaved={onSaved}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole('radio', { name: 'Use Ollama' }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(invokeMock).toHaveBeenCalledWith('set_active_provider', {
+      providerId: 'ollama',
+    });
+    expect(onSaved).toHaveBeenCalledWith(CONFIG);
+  });
+
+  it('swallows a set_active_provider failure without crashing', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state')
+        return Promise.resolve({
+          active: null,
+          all: [],
+          ollamaReachable: false,
+        });
+      if (cmd === 'set_active_provider')
+        return Promise.reject(new Error('write failed'));
+      return Promise.resolve(CONFIG);
+    });
+    const onSaved = vi.fn();
+    render(<ModelTab config={CONFIG} resyncToken={0} onSaved={onSaved} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.click(
+      screen.getByRole('radio', { name: 'Use Built-in (Thuki)' }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole('radio', { name: 'Use Built-in (Thuki)' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the OpenAI-compatible card when configured and selects it via its radio', async () => {
+    render(
+      <ModelTab config={OPENAI_CONFIG} resyncToken={0} onSaved={() => {}} />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText('LM Studio')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Add OpenAI-compatible server' }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('radio', { name: 'Use OpenAI-compatible server' }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(invokeMock).toHaveBeenCalledWith('set_active_provider', {
+      providerId: 'openai',
+    });
+  });
+
+  // ─── Idle Unload (built-in provider active) ─────────────────────────────
+
+  async function renderBuiltinActive(
+    onSaved: (next: RawAppConfig) => void = () => {},
+  ) {
+    const view = render(
+      <ModelTab
+        config={BUILTIN_ACTIVE_CONFIG}
+        resyncToken={0}
+        onSaved={onSaved}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    return view;
+  }
+
+  it('renders Idle Unload instead of Keep Warm when the built-in provider is active', async () => {
+    await renderBuiltinActive();
+    expect(screen.getByText('Idle Unload')).toBeInTheDocument();
+    expect(screen.queryByText('Keep Warm')).not.toBeInTheDocument();
+    expect(screen.getByText('Engine: stopped')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+  });
+
+  it('clamps the idle minutes input to the 0..1440 range', async () => {
+    await renderBuiltinActive();
+    const input = screen.getByRole('spinbutton', {
+      name: 'Unload after N idle minutes',
+    }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '45' } });
+    expect(input.value).toBe('45');
+    fireEvent.change(input, { target: { value: '-5' } });
+    expect(input.value).toBe('0');
+    fireEvent.change(input, { target: { value: '99999' } });
+    expect(input.value).toBe('1440');
+  });
+
+  it('allows empty idle input mid-edit; blur defaults to 0', async () => {
+    await renderBuiltinActive();
+    const input = screen.getByRole('spinbutton', {
+      name: 'Unload after N idle minutes',
+    }) as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '' } });
+    expect(input.value).toBe('');
+    fireEvent.blur(input);
+    expect(input.value).toBe('0');
+  });
+
+  it('blur with a valid idle value does not reset the field', async () => {
+    await renderBuiltinActive();
+    const input = screen.getByRole('spinbutton', {
+      name: 'Unload after N idle minutes',
+    }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '30' } });
+    fireEvent.blur(input);
+    expect(input.value).toBe('30');
+  });
+
+  it('resync does not overwrite the idle minutes input while focused', async () => {
+    const { rerender } = await renderBuiltinActive();
+    const input = screen.getByRole('spinbutton', {
+      name: 'Unload after N idle minutes',
+    }) as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '25' } });
+    const updatedConfig: RawAppConfig = {
+      ...BUILTIN_ACTIVE_CONFIG,
+      inference: {
+        ...BUILTIN_ACTIVE_CONFIG.inference,
+        idle_unload_minutes: 90,
+      },
+    };
+    rerender(
+      <ModelTab config={updatedConfig} resyncToken={1} onSaved={() => {}} />,
+    );
+    expect(input.value).toBe('25');
+  });
+
+  it('engine:status loaded enables Unload now and clicking invokes evict_model', async () => {
+    await renderBuiltinActive();
+    act(() => {
+      emitTauriEvent('engine:status', engineStatus('loaded'));
+    });
+    expect(screen.getByText('Engine: loaded')).toBeInTheDocument();
+    const btn = screen.getByRole('button', { name: 'Unload now' });
+    expect(btn).toBeEnabled();
+    fireEvent.click(btn);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(invokeMock).toHaveBeenCalledWith('evict_model');
+  });
+
+  it('swallows an evict_model failure from the engine Unload now button', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state')
+        return Promise.resolve({
+          active: null,
+          all: [],
+          ollamaReachable: false,
+        });
+      if (cmd === 'evict_model')
+        return Promise.reject(new Error('no engine running'));
+      return Promise.resolve(CONFIG);
+    });
+    await renderBuiltinActive();
+    act(() => {
+      emitTauriEvent('engine:status', engineStatus('loaded'));
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Unload now' }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // The residency line is event-driven, so a failed eviction changes nothing.
+    expect(screen.getByText('Engine: loaded')).toBeInTheDocument();
+  });
+
+  // ─── Context slider "Applying" hint ─────────────────────────────────────
+
+  it('shows the Applying hint while the engine starts or stops and hides it otherwise', async () => {
+    await renderBuiltinActive();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    act(() => {
+      emitTauriEvent('engine:status', engineStatus('starting'));
+    });
+    expect(screen.getByRole('status')).toHaveTextContent(/Applying/);
+    act(() => {
+      emitTauriEvent('engine:status', engineStatus('stopping'));
+    });
+    expect(screen.getByRole('status')).toHaveTextContent(/Applying/);
+    act(() => {
+      emitTauriEvent('engine:status', engineStatus('loaded'));
+    });
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  // ─── Engine status mount seeding + listener cleanup ─────────────────────
+
+  it('seeds the residency line from get_engine_status on mount', async () => {
+    // The backend emits engine:status only on transitions; an engine that
+    // is already loaded must be reflected (and Unload now enabled) without
+    // waiting for the next event.
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_engine_status') {
+        return Promise.resolve(engineStatus('loaded'));
+      }
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state') {
+        return Promise.resolve({
+          active: null,
+          all: [],
+          ollamaReachable: false,
+        });
+      }
+      return Promise.resolve(CONFIG);
+    });
+    await renderBuiltinActive();
+    expect(screen.getByText('Engine: loaded')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeEnabled();
+  });
+
+  it('keeps the stopped default when the get_engine_status seed rejects', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'get_engine_status') {
+        return Promise.reject(new Error('runner not managed'));
+      }
+      if (cmd === 'get_loaded_model') return Promise.resolve(null);
+      if (cmd === 'get_model_picker_state') {
+        return Promise.resolve({
+          active: null,
+          all: [],
+          ollamaReachable: false,
+        });
+      }
+      return Promise.resolve(CONFIG);
+    });
+    await renderBuiltinActive();
+    expect(screen.getByText('Engine: stopped')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+  });
+
+  it('detaches every listener even when unmount races the listen promise', async () => {
+    // Regression for the leak where cleanup ran before listen() resolved
+    // and the captured unlisten was still null, leaving the handler
+    // registered forever. The promise-chained cleanup must detach all of
+    // them once the registrations resolve.
+    const listenMock = listen as unknown as ReturnType<typeof vi.fn>;
+    const original = listenMock.getMockImplementation();
+    let removed = 0;
+    listenMock.mockImplementation(async () => () => {
+      removed += 1;
+    });
+    try {
+      const before = listenMock.mock.calls.length;
+      const view = render(
+        <ModelTab
+          config={BUILTIN_ACTIVE_CONFIG}
+          resyncToken={0}
+          onSaved={() => {}}
+        />,
+      );
+      const registered = listenMock.mock.calls.length - before;
+      expect(registered).toBe(3); // engine:status + the warmup pair
+      // Unmount before the listen promises are flushed.
+      view.unmount();
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(removed).toBe(registered);
+    } finally {
+      listenMock.mockImplementation(original!);
+    }
+  });
+
+  // ─── Context Window helper copy per provider kind ────────────────────────
+
+  it('shows the builtin ctx helper while the built-in provider is active', async () => {
+    await renderBuiltinActive();
+    expect(
+      screen.getByText(/--ctx-size at start; changing it restarts the engine/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Ollama caps/)).not.toBeInTheDocument();
+  });
+
+  it('shows the server-controlled ctx helper for an openai provider', async () => {
+    const cfg: RawAppConfig = {
+      ...OPENAI_CONFIG,
+      inference: { ...OPENAI_CONFIG.inference, active_provider: 'openai' },
+    };
+    render(<ModelTab config={cfg} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByText(
+        /Informational only; your server controls the actual context/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Ollama caps/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the Ollama ctx helper for the ollama provider', async () => {
+    await renderModelTab();
+    expect(
+      screen.getByText(/Ollama caps to your model's trained maximum\./),
+    ).toBeInTheDocument();
   });
 });
 

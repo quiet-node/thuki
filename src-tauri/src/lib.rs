@@ -1956,6 +1956,10 @@ pub fn run() {
             settings_commands::get_config,
             settings_commands::set_config_field,
             settings_commands::set_ollama_url,
+            settings_commands::set_active_provider,
+            settings_commands::update_provider_field,
+            settings_commands::add_openai_provider,
+            settings_commands::remove_openai_provider,
             settings_commands::reset_config,
             settings_commands::reload_config_from_disk,
             settings_commands::get_corrupt_marker,
@@ -1968,17 +1972,23 @@ pub fn run() {
             #[cfg(not(coverage))]
             models::check_model_setup,
             #[cfg(not(coverage))]
+            models::detect_ollama,
+            #[cfg(not(coverage))]
             models::get_model_capabilities,
             #[cfg(not(coverage))]
             models::get_starter_options,
             #[cfg(not(coverage))]
             models::get_system_ram_bytes,
             #[cfg(not(coverage))]
+            models::get_models_dir_free_bytes,
+            #[cfg(not(coverage))]
             models::download_starter,
             #[cfg(not(coverage))]
             models::download_repo_model,
             #[cfg(not(coverage))]
             models::list_hf_repo_ggufs,
+            #[cfg(not(coverage))]
+            models::list_openai_models,
             #[cfg(not(coverage))]
             models::cancel_model_download,
             #[cfg(not(coverage))]
@@ -2043,6 +2053,8 @@ pub fn run() {
             warmup::evict_model,
             #[cfg(not(coverage))]
             warmup::get_loaded_model,
+            #[cfg(not(coverage))]
+            warmup::get_engine_status,
             updater::commands::get_updater_state,
             #[cfg(not(coverage))]
             updater::commands::check_for_update,

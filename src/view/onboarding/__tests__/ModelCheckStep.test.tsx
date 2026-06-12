@@ -4,18 +4,27 @@ import {
   fireEvent,
   act,
   waitFor,
+  within,
   cleanup,
 } from '@testing-library/react';
 import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
-import { ModelCheckStep } from '../ModelCheckStep';
+import { ModelCheckStep, buildConfirmInfo } from '../ModelCheckStep';
 import {
   ConfigProviderForTest,
   DEFAULT_CONFIG,
+  type AppConfig,
 } from '../../../contexts/ConfigContext';
 import {
   invoke,
   enableChannelCaptureWithResponses,
+  getLastChannel,
+  resetChannelCapture,
 } from '../../../testUtils/mocks/tauri';
+import type {
+  Starter,
+  StarterOption,
+  StarterTier,
+} from '../../../types/starter';
 
 const READY_RESPONSE = {
   state: 'ready',
@@ -691,5 +700,606 @@ describe('ModelCheckStep', () => {
     });
 
     expect(screen.queryByText('Copied')).not.toBeInTheDocument();
+  });
+});
+
+// ─── Built-in engine flow ────────────────────────────────────────────────────
+
+function makeStarter(tier: StarterTier, overrides?: Partial<Starter>): Starter {
+  return {
+    tier,
+    display_name: `Model ${tier}`,
+    repo: `org/${tier}-repo`,
+    revision: 'a'.repeat(40),
+    file_name: `${tier}.gguf`,
+    sha256: 'b'.repeat(64),
+    size_bytes: 7_300_000_000,
+    quant: 'Q4_K_M',
+    vision: false,
+    thinking: false,
+    mmproj_file: null,
+    mmproj_sha256: null,
+    mmproj_bytes: 0,
+    est_runtime_gb: 10,
+    license_note: 'MIT',
+    ...overrides,
+  };
+}
+
+function makeOption(
+  tier: StarterTier,
+  overrides?: Partial<StarterOption>,
+): StarterOption {
+  return {
+    starter: makeStarter(tier),
+    fit: 'fits',
+    installed: false,
+    partial_bytes: null,
+    ...overrides,
+  };
+}
+
+const BUILTIN_OPTIONS: StarterOption[] = [
+  makeOption('fast', { fit: 'fits' }),
+  makeOption('balanced', { fit: 'tight' }),
+  makeOption('smartest', { fit: 'too_big' }),
+];
+
+const BUILTIN_CONFIG: AppConfig = {
+  ...DEFAULT_CONFIG,
+  inference: {
+    ...DEFAULT_CONFIG.inference,
+    activeProvider: 'builtin',
+    activeProviderKind: 'builtin',
+  },
+};
+
+function builtinResponses(overrides: Record<string, unknown> = {}) {
+  enableChannelCaptureWithResponses({
+    check_model_setup: { state: 'needs_download' },
+    get_starter_options: BUILTIN_OPTIONS,
+    detect_ollama: true,
+    get_models_dir_free_bytes: 50_000_000_000,
+    ...overrides,
+  });
+}
+
+function renderBuiltin() {
+  return render(
+    <ConfigProviderForTest value={BUILTIN_CONFIG}>
+      <ModelCheckStep />
+    </ConfigProviderForTest>,
+  );
+}
+
+/** Clicks the per-card Download button, then confirms in the confirm card. */
+async function startDownload(container: HTMLElement, tier: StarterTier) {
+  const card = container.querySelector(`[data-tier="${tier}"]`)!;
+  await act(async () => {
+    fireEvent.click(
+      within(card as HTMLElement).getByRole('button', { name: 'Download' }),
+    );
+  });
+  const progressCard = container.querySelector('[data-download-progress]')!;
+  await act(async () => {
+    fireEvent.click(
+      within(progressCard as HTMLElement).getByRole('button', {
+        name: 'Download',
+      }),
+    );
+  });
+}
+
+describe('ModelCheckStep (builtin flow)', () => {
+  beforeEach(() => {
+    invoke.mockClear();
+    resetChannelCapture();
+  });
+
+  it('renders the picker with Balanced preselected, the more-options stub, and the escape hatch', async () => {
+    builtinResponses();
+
+    const { container } = renderBuiltin();
+    await act(async () => {});
+
+    expect(
+      container
+        .querySelector('[data-tier="balanced"]')
+        ?.getAttribute('data-selected'),
+    ).toBe('true');
+    expect(
+      container
+        .querySelector('[data-tier="fast"]')
+        ?.getAttribute('data-selected'),
+    ).toBe('false');
+    const stub = screen.getByRole('button', {
+      name: 'More options · Full model browser coming soon',
+    });
+    expect(stub).toBeDisabled();
+    expect(
+      screen.getByText('Use my existing Ollama instead'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Private by default · All inference runs on your machine',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('hides the escape hatch when Ollama is not detected', async () => {
+    builtinResponses({ detect_ollama: false });
+
+    renderBuiltin();
+    await act(async () => {});
+
+    expect(
+      screen.queryByText('Use my existing Ollama instead'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('selecting another card moves the highlight', async () => {
+    builtinResponses();
+
+    const { container } = renderBuiltin();
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(container.querySelector('[data-tier="fast"]')!);
+    });
+    expect(
+      container
+        .querySelector('[data-tier="fast"]')
+        ?.getAttribute('data-selected'),
+    ).toBe('true');
+  });
+
+  it('one-tap download shows confirm facts, walks to ready, refreshes options, and advances', async () => {
+    builtinResponses({ advance_past_model_check: undefined });
+
+    const { container } = renderBuiltin();
+    await act(async () => {});
+
+    const balancedCard = container.querySelector('[data-tier="balanced"]')!;
+    await act(async () => {
+      fireEvent.click(
+        within(balancedCard as HTMLElement).getByRole('button', {
+          name: 'Download',
+        }),
+      );
+    });
+
+    // Confirm card: size, free-disk line, RAM warning (balanced is 'tight':
+    // once on the picker badge, once in the confirm card).
+    expect(screen.getByText('7.3 GB download.')).toBeInTheDocument();
+    expect(screen.getByText('50.0 GB free on this disk.')).toBeInTheDocument();
+    expect(
+      screen.getAllByText("Will run, but close to this Mac's memory limit"),
+    ).toHaveLength(2);
+
+    const progressCard = container.querySelector('[data-download-progress]')!;
+    await act(async () => {
+      fireEvent.click(
+        within(progressCard as HTMLElement).getByRole('button', {
+          name: 'Download',
+        }),
+      );
+    });
+    expect(invoke).toHaveBeenCalledWith(
+      'download_starter',
+      expect.objectContaining({ tier: 'balanced' }),
+    );
+
+    const channel = getLastChannel()!;
+    await act(async () => {
+      channel.simulateMessage({
+        type: 'Started',
+        data: { file: 'balanced.gguf', total_bytes: 100, resumed_from: 0 },
+      });
+    });
+    expect(screen.getByText('Downloading model')).toBeInTheDocument();
+    // The picker is hidden while the download runs.
+    expect(container.querySelector('[data-starter-card]')).toBeNull();
+
+    await act(async () => {
+      channel.simulateMessage({ type: 'AllDone' });
+    });
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('advance_past_model_check');
+    });
+    expect(
+      invoke.mock.calls.filter((c) => c[0] === 'get_starter_options'),
+    ).toHaveLength(2);
+  });
+
+  it('advances immediately when check_model_setup already reports ready', async () => {
+    builtinResponses({
+      check_model_setup: READY_RESPONSE,
+      advance_past_model_check: undefined,
+    });
+
+    renderBuiltin();
+    await act(async () => {});
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('advance_past_model_check');
+    });
+  });
+
+  it('stays on the picker when the setup probe rejects', async () => {
+    builtinResponses();
+    const base = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (cmd, args) => {
+      if (cmd === 'check_model_setup') throw new Error('ipc broken');
+      return base(cmd, args);
+    });
+
+    renderBuiltin();
+    await act(async () => {});
+
+    expect(screen.getByText('Model balanced')).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('advance_past_model_check');
+  });
+
+  it('hides the disk line and the hatch when the auxiliary probes reject', async () => {
+    builtinResponses();
+    const base = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (cmd, args) => {
+      if (cmd === 'detect_ollama') throw new Error('down');
+      if (cmd === 'get_models_dir_free_bytes') throw new Error('down');
+      return base(cmd, args);
+    });
+
+    const { container } = renderBuiltin();
+    await act(async () => {});
+
+    expect(
+      screen.queryByText('Use my existing Ollama instead'),
+    ).not.toBeInTheDocument();
+
+    const balancedCard = container.querySelector('[data-tier="balanced"]')!;
+    await act(async () => {
+      fireEvent.click(
+        within(balancedCard as HTMLElement).getByRole('button', {
+          name: 'Download',
+        }),
+      );
+    });
+    expect(screen.getByText('7.3 GB download.')).toBeInTheDocument();
+    expect(screen.queryByText(/free on this disk/)).not.toBeInTheDocument();
+  });
+
+  it('cancel from the confirm card returns to the picker', async () => {
+    // A null free-bytes answer (backend could not stat the volume) hides
+    // the disk line instead of blocking the flow.
+    builtinResponses({ get_models_dir_free_bytes: null });
+
+    const { container } = renderBuiltin();
+    await act(async () => {});
+
+    const fastCard = container.querySelector('[data-tier="fast"]')!;
+    await act(async () => {
+      fireEvent.click(
+        within(fastCard as HTMLElement).getByRole('button', {
+          name: 'Download',
+        }),
+      );
+    });
+    // 'fast' fits comfortably: no RAM warning inside the confirm card (the
+    // picker badge keeps its single copy), and the null free-bytes answer
+    // drops the disk line.
+    expect(screen.getAllByText('Runs comfortably on this Mac')).toHaveLength(1);
+    expect(screen.queryByText(/free on this disk/)).not.toBeInTheDocument();
+
+    const progressCard = container.querySelector('[data-download-progress]')!;
+    await act(async () => {
+      fireEvent.click(
+        within(progressCard as HTMLElement).getByRole('button', {
+          name: 'Cancel',
+        }),
+      );
+    });
+    expect(screen.queryByText('7.3 GB download.')).not.toBeInTheDocument();
+    expect(screen.getByText('Model balanced')).toBeInTheDocument();
+  });
+
+  it('cancel during download invokes cancel_model_download and returns to the picker', async () => {
+    builtinResponses({ cancel_model_download: undefined });
+
+    const { container } = renderBuiltin();
+    await act(async () => {});
+    await startDownload(container as HTMLElement, 'balanced');
+
+    const channel = getLastChannel()!;
+    await act(async () => {
+      channel.simulateMessage({
+        type: 'Started',
+        data: { file: 'balanced.gguf', total_bytes: 100, resumed_from: 0 },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    });
+    expect(invoke).toHaveBeenCalledWith('cancel_model_download');
+
+    await act(async () => {
+      channel.simulateMessage({ type: 'Cancelled' });
+    });
+    expect(screen.getByText('Model balanced')).toBeInTheDocument();
+  });
+
+  it('shows resume and discard when an option carries a resumable partial', async () => {
+    const withPartial = [
+      makeOption('fast'),
+      makeOption('balanced', { fit: 'tight', partial_bytes: 1_200_000_000 }),
+      makeOption('smartest'),
+    ];
+    builtinResponses({ get_starter_options: withPartial });
+
+    renderBuiltin();
+    await act(async () => {});
+
+    const resume = screen.getByRole('button', {
+      name: 'Resume download (1.2 of 7.3 GB)',
+    });
+    await act(async () => {
+      fireEvent.click(resume);
+    });
+    expect(invoke).toHaveBeenCalledWith(
+      'download_starter',
+      expect.objectContaining({ tier: 'balanced' }),
+    );
+  });
+
+  it('discard invokes discard_partial_download and refreshes the options', async () => {
+    const withPartial = [
+      makeOption('fast'),
+      makeOption('balanced', { partial_bytes: 1_200_000_000 }),
+      makeOption('smartest'),
+    ];
+    builtinResponses({
+      get_starter_options: withPartial,
+      discard_partial_download: undefined,
+    });
+
+    renderBuiltin();
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    });
+    expect(invoke).toHaveBeenCalledWith('discard_partial_download', {
+      sha256: 'b'.repeat(64),
+    });
+    await waitFor(() => {
+      expect(
+        invoke.mock.calls.filter((c) => c[0] === 'get_starter_options'),
+      ).toHaveLength(2);
+    });
+  });
+
+  it('escape hatch from the picker switches the provider and lands in the legacy flow', async () => {
+    builtinResponses({ set_active_provider: undefined });
+
+    renderBuiltin();
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Use my existing Ollama instead'));
+    });
+
+    expect(invoke).toHaveBeenCalledWith('set_active_provider', {
+      providerId: 'ollama',
+    });
+    // No download in flight from the picker: nothing to cancel.
+    expect(invoke).not.toHaveBeenCalledWith('cancel_model_download');
+    // The legacy machine renders (its Verify button does not exist in the
+    // builtin flow).
+    expect(screen.getByLabelText('Verify setup')).toBeInTheDocument();
+    expect(screen.getByText('Install & start Ollama')).toBeInTheDocument();
+  });
+
+  it('escape hatch during a download cancels it before switching', async () => {
+    builtinResponses({
+      set_active_provider: undefined,
+      cancel_model_download: undefined,
+    });
+
+    const { container } = renderBuiltin();
+    await act(async () => {});
+    await startDownload(container as HTMLElement, 'balanced');
+
+    const channel = getLastChannel()!;
+    await act(async () => {
+      channel.simulateMessage({
+        type: 'Started',
+        data: { file: 'balanced.gguf', total_bytes: 100, resumed_from: 0 },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Use my existing Ollama instead'));
+    });
+
+    expect(invoke).toHaveBeenCalledWith('cancel_model_download');
+    expect(invoke).toHaveBeenCalledWith('set_active_provider', {
+      providerId: 'ollama',
+    });
+    expect(screen.getByLabelText('Verify setup')).toBeInTheDocument();
+  });
+
+  it('escape hatch is hidden during a download when Ollama is not detected', async () => {
+    builtinResponses({ detect_ollama: false });
+
+    const { container } = renderBuiltin();
+    await act(async () => {});
+    await startDownload(container as HTMLElement, 'balanced');
+
+    const channel = getLastChannel()!;
+    await act(async () => {
+      channel.simulateMessage({
+        type: 'Started',
+        data: { file: 'balanced.gguf', total_bytes: 100, resumed_from: 0 },
+      });
+    });
+
+    expect(
+      screen.queryByText('Use my existing Ollama instead'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('stays on the builtin flow when switching the provider fails', async () => {
+    builtinResponses();
+    const base = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (cmd, args) => {
+      if (cmd === 'set_active_provider') throw new Error('disk error');
+      return base(cmd, args);
+    });
+
+    renderBuiltin();
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Use my existing Ollama instead'));
+    });
+
+    expect(screen.queryByLabelText('Verify setup')).not.toBeInTheDocument();
+    expect(screen.getByText('Model balanced')).toBeInTheDocument();
+  });
+
+  it('failure shows the failed card with the escape hatch; retry restarts the download', async () => {
+    builtinResponses();
+
+    const { container } = renderBuiltin();
+    await act(async () => {});
+    await startDownload(container as HTMLElement, 'balanced');
+
+    const channel = getLastChannel()!;
+    await act(async () => {
+      channel.simulateMessage({
+        type: 'Failed',
+        data: { kind: 'offline', message: 'no network' },
+      });
+    });
+
+    expect(screen.getByText('You appear to be offline.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Use my existing Ollama instead'),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    });
+    expect(
+      invoke.mock.calls.filter((c) => c[0] === 'download_starter'),
+    ).toHaveLength(2);
+  });
+
+  it('Choose a different model on the failed card returns to the picker', async () => {
+    builtinResponses();
+
+    const { container } = renderBuiltin();
+    await act(async () => {});
+    await startDownload(container as HTMLElement, 'balanced');
+
+    const channel = getLastChannel()!;
+    await act(async () => {
+      channel.simulateMessage({
+        type: 'Failed',
+        data: { kind: 'disk_full', message: 'no space left' },
+      });
+    });
+    expect(
+      screen.getByText('Not enough disk space. Free up space and retry.'),
+    ).toBeInTheDocument();
+    // The picker hides while the failed card is up; a user who now wants
+    // the smaller Fast tier needs this explicit way back.
+    expect(container.querySelector('[data-tier="fast"]')).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Choose a different model' }),
+      );
+    });
+    expect(container.querySelector('[data-tier="fast"]')).not.toBeNull();
+    expect(
+      screen.queryByText('Not enough disk space. Free up space and retry.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('drops probe results that resolve after unmount', async () => {
+    let resolveSetup: (v: unknown) => void = () => {};
+    let resolveDetect: (v: unknown) => void = () => {};
+    let resolveFree: (v: unknown) => void = () => {};
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'check_model_setup') {
+        return new Promise((r) => {
+          resolveSetup = r;
+        });
+      }
+      if (cmd === 'detect_ollama') {
+        return new Promise((r) => {
+          resolveDetect = r;
+        });
+      }
+      if (cmd === 'get_models_dir_free_bytes') {
+        return new Promise((r) => {
+          resolveFree = r;
+        });
+      }
+      if (cmd === 'get_starter_options') return BUILTIN_OPTIONS;
+      return undefined;
+    });
+
+    const { unmount } = renderBuiltin();
+    await act(async () => {});
+    unmount();
+
+    await act(async () => {
+      resolveSetup(READY_RESPONSE);
+      resolveDetect(true);
+      resolveFree(1);
+    });
+
+    expect(invoke).not.toHaveBeenCalledWith('advance_past_model_check');
+  });
+});
+
+describe('buildConfirmInfo', () => {
+  it('returns undefined outside the confirming phase', () => {
+    expect(buildConfirmInfo({ phase: 'idle' }, BUILTIN_OPTIONS, null)).toBe(
+      undefined,
+    );
+  });
+
+  it('returns undefined when the confirming tier has no option row', () => {
+    expect(
+      buildConfirmInfo({ phase: 'confirming', tier: 'balanced' }, [], null),
+    ).toBe(undefined);
+  });
+
+  it('maps size, free disk, and the RAM caution for a non-fits tier', () => {
+    expect(
+      buildConfirmInfo(
+        { phase: 'confirming', tier: 'smartest' },
+        BUILTIN_OPTIONS,
+        20_000_000_000,
+      ),
+    ).toEqual({
+      sizeGb: 7.3,
+      freeDiskGb: 20,
+      ramWarning:
+        "Larger than this Mac's memory can comfortably hold. Expect heavy slowdown.",
+    });
+  });
+
+  it('hides the disk line and the warning for a comfortable fit', () => {
+    expect(
+      buildConfirmInfo(
+        { phase: 'confirming', tier: 'fast' },
+        BUILTIN_OPTIONS,
+        null,
+      ),
+    ).toEqual({ sizeGb: 7.3, freeDiskGb: null, ramWarning: null });
   });
 });

@@ -6,6 +6,15 @@ The Context Window slider in Settings goes up to 1 M tokens, but the value that'
 >
 > See [thuki.app](https://www.thuki.app/) for project info, downloads, and documentation.
 
+## Which provider this applies to
+
+The Context Window value (`num_ctx`) is sent to whichever provider is active:
+
+- **Built-in engine (the default):** the value is passed to the bundled `llama-server` process as `--ctx-size` when it starts. The context size is fixed for the lifetime of the process, so changing it in Settings restarts the engine (a model reload, a few seconds). The three signals below and the Activity Monitor steps apply unchanged; the `ollama ps` steps do not, so watch Memory Pressure and GPU History instead.
+- **Ollama provider:** everything in this guide applies as written, including the `ollama ps` checks.
+
+The Keep Warm knob is Ollama-only. The built-in engine's counterpart is `idle_unload_minutes` (Settings, or `[inference]` in `config.toml`): minutes of inactivity before Thuki stops the engine to free memory, with `0` meaning keep it loaded indefinitely.
+
 ## Quick vocabulary
 
 A few terms you'll see in this doc and in tools like `ollama ps`:

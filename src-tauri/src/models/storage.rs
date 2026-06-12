@@ -115,6 +115,12 @@ impl ModelStore {
         let meta = std::fs::metadata(self.partial_path(sha256)).ok()?;
         Some(meta.len())
     }
+
+    /// Free bytes on the volume holding the store root, for the pre-download
+    /// disk-space line. `None` means unknown; callers skip the warning.
+    pub fn free_bytes(&self) -> Option<u64> {
+        free_disk_bytes(&self.root)
+    }
 }
 
 /// Free bytes available on the volume holding `path`.
@@ -291,6 +297,13 @@ mod tests {
     fn free_disk_bytes_returns_some_on_real_fs() {
         let (dir, _store) = make_store();
         let free = free_disk_bytes(dir.path());
+        assert!(free.is_some(), "expected Some on a real filesystem");
+    }
+
+    #[test]
+    fn store_free_bytes_delegates_to_root_volume() {
+        let (_dir, store) = make_store();
+        let free = store.free_bytes();
         assert!(free.is_some(), "expected Some on a real filesystem");
     }
 

@@ -96,19 +96,68 @@ export const OLLAMA_UNREACHABLE_MESSAGE =
   "Ollama isn't running. Start Ollama and try again.";
 
 /**
+ * Copy used when the built-in engine has no downloaded model yet. The
+ * recovery action lives in Settings (the download picker), never in an
+ * `ollama pull`: the builtin provider does not talk to Ollama at all.
+ */
+export const BUILTIN_NO_MODELS_MESSAGE =
+  'No model downloaded yet. Download one in Settings, then come back.';
+
+/**
+ * Copy used when an OpenAI-compatible provider has no model configured.
+ * The in-chat picker cannot fix this (openai model management lives in
+ * Settings), so the strip routes the user there.
+ */
+export const OPENAI_NO_MODEL_MESSAGE =
+  'No model set for this provider. Choose one in Settings, then come back.';
+
+/**
+ * Copy used for non-Ollama providers when the model picker state could not
+ * be loaded at all (the IPC call rejected or returned a malformed payload).
+ * The backend always reports builtin and openai providers as reachable, so
+ * this state only occurs on a real transport failure where nothing about
+ * the environment can be trusted. Deliberately generic: telling a builtin
+ * user to "start Ollama" would be wrong, and there is no user action more
+ * specific than retrying.
+ */
+export const MODEL_STATE_UNAVAILABLE_MESSAGE =
+  "Thuki couldn't check your models. Try again in a moment.";
+
+/**
+ * Copy used when models are installed but none is active yet. The in-chat
+ * picker chip can fix this directly, so the cue points at it. Shared by the
+ * ollama and builtin branches of {@link getEnvironmentMessage}.
+ */
+export const PICK_A_MODEL_MESSAGE =
+  'Pick a model from the chip above to start chatting.';
+
+/**
  * Picks the right environment-state message to render in
  * `CapabilityMismatchStrip`, or returns `null` when the environment is
  * healthy enough that a per-message capability gate should run instead.
  *
- * Three states are distinguished so the strip never tells the user to
- * "pull a model" when the actual problem is that Ollama is down:
+ * The matrix is provider-kind-aware so a builtin or openai user is never
+ * told to start Ollama or run `ollama pull`:
  *
- * - S1: Ollama unreachable. Returns the unreachable copy regardless of
- *   `installedCount` or `activeModel` because we cannot trust either.
- * - S2: Ollama reachable, zero models installed. Returns the no-models copy.
- * - S3: Ollama reachable, models installed, none active. Returns the
- *   pick-a-model copy. This state is rare post-Phase-A because the backend
- *   auto-picks on first launch, but the strip handles it defensively.
+ * - `ollama` (and any unknown kind, matching ConfigContext's fallback):
+ *   - S1: Ollama unreachable. Returns the unreachable copy regardless of
+ *     `installedCount` or `activeModel` because we cannot trust either.
+ *   - S2: Ollama reachable, zero models installed. Returns the no-models copy.
+ *   - S3: Ollama reachable, models installed, none active. Returns the
+ *     pick-a-model copy. This state is rare post-Phase-A because the backend
+ *     auto-picks on first launch, but the strip handles it defensively.
+ * - `builtin`: the backend always reports reachable=true (the engine starts
+ *   on demand per request), so `reachable=false` only means the picker IPC
+ *   call itself failed and the generic model-state copy is shown. Zero
+ *   installed routes to the Settings download picker; none-active reuses the
+ *   pick-a-model cue because the in-chat chips work for builtin models.
+ * - `openai`: reachable mirrors builtin (errors surface at request time).
+ *   Zero installed and none-active both route to Settings because the
+ *   configured model is the only inventory an openai provider has.
+ *
+ * `reachable` keeps the name `ollamaReachable` at the IPC boundary (the wire
+ * key on `get_model_picker_state` is legacy camelCase); here it simply means
+ * "the last picker fetch produced trustworthy state".
  *
  * Returns `null` once a model is actually active so callers fall through
  * to the per-message capability check.
@@ -117,11 +166,23 @@ export function getEnvironmentMessage(
   ollamaReachable: boolean,
   installedCount: number,
   activeModel: string | null | undefined,
+  providerKind: string,
 ): string | null {
+  if (providerKind === 'builtin') {
+    if (!ollamaReachable) return MODEL_STATE_UNAVAILABLE_MESSAGE;
+    if (installedCount === 0) return BUILTIN_NO_MODELS_MESSAGE;
+    if (!activeModel) return PICK_A_MODEL_MESSAGE;
+    return null;
+  }
+  if (providerKind === 'openai') {
+    if (!ollamaReachable) return MODEL_STATE_UNAVAILABLE_MESSAGE;
+    if (installedCount === 0 || !activeModel) return OPENAI_NO_MODEL_MESSAGE;
+    return null;
+  }
   if (!ollamaReachable) return OLLAMA_UNREACHABLE_MESSAGE;
   if (installedCount === 0) return NO_MODELS_INSTALLED_MESSAGE;
   if (!activeModel) {
-    return 'Pick a model from the chip above to start chatting.';
+    return PICK_A_MODEL_MESSAGE;
   }
   return null;
 }

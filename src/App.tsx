@@ -2401,6 +2401,7 @@ function App() {
       ollamaReachable,
       availableModels.length,
       activeModel,
+      config.inference.activeProviderKind,
     );
     if (envMessage !== null) return envMessage;
     return getCapabilityConflict(
@@ -2416,6 +2417,7 @@ function App() {
     activeModelCapabilities,
     ollamaReachable,
     availableModels.length,
+    config.inference.activeProviderKind,
   ]);
 
   /**
@@ -2433,6 +2435,7 @@ function App() {
       ollamaReachable,
       availableModels.length,
       activeModel,
+      config.inference.activeProviderKind,
     );
     if (envMessage !== null) return true;
     return isComposeCapabilityConflict(
@@ -2445,6 +2448,7 @@ function App() {
     activeModel,
     activeModelCapabilities,
     composeCapabilityState,
+    config.inference.activeProviderKind,
   ]);
 
   /**
@@ -3406,6 +3410,9 @@ function App() {
                                     onSelect={handleModelSelect}
                                     onClose={handleModelPickerClose}
                                     capabilities={modelCapabilities}
+                                    providerKind={
+                                      config.inference.activeProviderKind
+                                    }
                                   />
                                 </motion.div>
                               ) : null}
@@ -3622,6 +3629,7 @@ function App() {
                       onSelect={handleModelSelect}
                       onClose={handleModelPickerClose}
                       capabilities={modelCapabilities}
+                      providerKind={config.inference.activeProviderKind}
                       compact
                     />
                   </motion.div>

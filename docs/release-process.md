@@ -34,7 +34,7 @@ There is nothing to set up on your laptop. No env vars, no key files, no `.zshrc
 
 Every build embeds llama.cpp's `llama-server` as a Tauri sidecar. The binary and the dylibs it links are fetched and verified by `scripts/ensure-llama-server.ts`, which pins an exact llama.cpp release tag and the sha256 of its macOS arm64 asset; a hash mismatch aborts the build. The script runs automatically in front of `dev`, `build:backend`, and `build:release`, and is an instant no-op once the pinned version is installed under `src-tauri/binaries/` (gitignored, never committed). CI caches that directory with a key derived from the pinned version and hash, so release builds only hit GitHub's release CDN when the pin changes. Because the script adds an `@loader_path/../Frameworks` rpath for bundle-time dylib resolution, it ad-hoc re-signs the binary and each dylib after the edit.
 
-Deferred: Developer ID re-signing, deep-signing of the nested dylibs, and notarization land as a release-please workflow step when the Apple Developer certificate exists.
+Developer ID signing and notarization are a release-time prerequisite for shipping without the Gatekeeper quarantine workaround; they land as a release workflow step once the Apple Developer certificate exists. Caveat for that step: the sidecar's dylibs live nested under `Contents/Frameworks/`, and a plain `codesign` of the `.app` does not re-sign them, so the workflow must deep-sign the nested dylibs (each dylib and the `llama-server` binary individually, innermost first) before notarization or Apple's service rejects the bundle.
 
 ## Cutting a release manually (rare)
 

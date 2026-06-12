@@ -14,6 +14,19 @@ use tokio_util::sync::CancellationToken;
 use crate::commands::{ChatMessage, EngineError, EngineErrorKind, StreamChunk};
 use crate::config::defaults::MAX_SSE_LINE_BYTES;
 
+/// Which flavor of `/v1` server a request targets. Decided at the route
+/// dispatch (where the provider kind is known) and carried into the error
+/// classifiers so user-facing copy matches the provider: the bundled engine
+/// speaks about "Thuki's engine" and points at Settings, while any other
+/// OpenAI-compatible server keeps provider-neutral wording.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum V1Flavor {
+    /// The bundled llama-server sidecar at a loopback port.
+    Builtin,
+    /// Any other OpenAI-compatible server (an `openai`-kind provider).
+    Remote,
+}
+
 /// Groups the per-request parameters for [`stream_openai_chat`], mirroring
 /// `OllamaChatParams` on the native path.
 pub struct OpenAiChatParams {
@@ -24,6 +37,8 @@ pub struct OpenAiChatParams {
     pub messages: Vec<ChatMessage>,
     /// Sent as a `Bearer` authorization header when `Some`.
     pub api_key: Option<String>,
+    /// Picks the user-facing error copy for this request.
+    pub flavor: V1Flavor,
 }
 
 /// Error returned by [`request_openai_json`]. Mirrors the classification the
@@ -114,16 +129,15 @@ pub(crate) fn to_openai_message(msg: &ChatMessage) -> serde_json::Value {
 
 // ─── Error classification ────────────────────────────────────────────────────
 
-/// Maps a reqwest connection/transport error to a provider-neutral
-/// [`EngineError`], mirroring `classify_stream_error` on the native path:
+/// Maps a reqwest connection/transport error to an [`EngineError`],
+/// mirroring `classify_stream_error` on the native path:
 /// connect/timeout failures are `EngineUnreachable`, everything else
-/// (e.g. a connection reset mid-stream) is `Other`.
-fn classify_v1_transport_error(e: &reqwest::Error) -> EngineError {
+/// (e.g. a connection reset mid-stream) is `Other`. The unreachable copy
+/// branches on `flavor`: the bundled engine is Thuki's own process (the
+/// next message re-ensures it), while a remote server keeps neutral wording.
+fn classify_v1_transport_error(e: &reqwest::Error, flavor: V1Flavor) -> EngineError {
     if e.is_connect() || e.is_timeout() {
-        EngineError {
-            kind: EngineErrorKind::EngineUnreachable,
-            message: format!("The inference server could not be reached.\n{e}"),
-        }
+        v1_unreachable_error(&e.to_string(), flavor)
     } else {
         EngineError {
             kind: EngineErrorKind::Other,
@@ -134,13 +148,45 @@ fn classify_v1_transport_error(e: &reqwest::Error) -> EngineError {
     }
 }
 
-/// Maps a non-2xx HTTP status from a `/v1` server to a provider-neutral
-/// [`EngineError`], mirroring `classify_http_error` on the native path.
-fn classify_v1_http_error(status: u16, model_name: &str) -> EngineError {
+/// Copy for an unreachable `/v1` server, keyed by flavor. Shared by the
+/// streaming classifier above and the search pipeline's structured-output
+/// error mapping so each flavor's unreachable copy lives in exactly one
+/// place. The bundled engine is Thuki's own process (the next message
+/// re-ensures it); a remote server keeps neutral wording plus the transport
+/// detail.
+pub(crate) fn v1_unreachable_error(detail: &str, flavor: V1Flavor) -> EngineError {
+    EngineError {
+        kind: EngineErrorKind::EngineUnreachable,
+        message: match flavor {
+            V1Flavor::Builtin => {
+                "Thuki's engine isn't running\nSend your message again to restart it.".to_string()
+            }
+            V1Flavor::Remote => format!("The inference server could not be reached.\n{detail}"),
+        },
+    }
+}
+
+/// Maps a non-2xx HTTP status from a `/v1` server to an [`EngineError`],
+/// mirroring `classify_http_error` on the native path. The 404 copy branches
+/// on `flavor`: the bundled engine steers the user to the Settings download
+/// flow, a remote server names the model it is missing. Shared with the
+/// search pipeline's structured-output error mapping.
+pub(crate) fn classify_v1_http_error(
+    status: u16,
+    model_name: &str,
+    flavor: V1Flavor,
+) -> EngineError {
     match status {
         404 => EngineError {
             kind: EngineErrorKind::ModelNotFound,
-            message: format!("Model not found\nThe server has no model named '{model_name}'."),
+            message: match flavor {
+                V1Flavor::Builtin => {
+                    "Model not found\nPick or download a model in Settings.".to_string()
+                }
+                V1Flavor::Remote => {
+                    format!("Model not found\nThe server has no model named '{model_name}'.")
+                }
+            },
         },
         401 | 403 => EngineError {
             kind: EngineErrorKind::Other,
@@ -188,6 +234,7 @@ pub async fn stream_openai_chat(
         model,
         messages,
         api_key,
+        flavor,
     } = params;
     let body = serde_json::json!({
         "model": model,
@@ -206,14 +253,16 @@ pub async fn stream_openai_chat(
     let response = match request.send().await {
         Ok(response) => response,
         Err(e) => {
-            on_chunk(StreamChunk::Error(classify_v1_transport_error(&e)));
+            on_chunk(StreamChunk::Error(classify_v1_transport_error(&e, flavor)));
             return accumulated;
         }
     };
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        on_chunk(StreamChunk::Error(classify_v1_http_error(status, &model)));
+        on_chunk(StreamChunk::Error(classify_v1_http_error(
+            status, &model, flavor,
+        )));
         return accumulated;
     }
 
@@ -285,7 +334,7 @@ pub async fn stream_openai_chat(
                         }
                     }
                     Some(Err(e)) => {
-                        on_chunk(StreamChunk::Error(classify_v1_transport_error(&e)));
+                        on_chunk(StreamChunk::Error(classify_v1_transport_error(&e, flavor)));
                         return accumulated;
                     }
                     None => {
@@ -410,6 +459,7 @@ mod tests {
             model: "test-model".to_string(),
             messages: vec![user_message("hi")],
             api_key: None,
+            flavor: V1Flavor::Remote,
         }
     }
 
@@ -658,6 +708,40 @@ mod tests {
         assert_eq!(accumulated, "");
     }
 
+    /// Builtin flavor: an unreachable sidecar reads as Thuki's own engine
+    /// being down, not as a generic "inference server". The full string is
+    /// pinned: it is rendered verbatim by ErrorCard.
+    #[tokio::test]
+    async fn connect_refused_builtin_names_thukis_engine() {
+        // Bind then drop a listener so the port is closed.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+
+        let client = reqwest::Client::new();
+        let (chunks, callback) = collect_chunks();
+        let accumulated = stream_openai_chat(
+            OpenAiChatParams {
+                flavor: V1Flavor::Builtin,
+                ..chat_params(format!("http://127.0.0.1:{port}"))
+            },
+            &client,
+            CancellationToken::new(),
+            callback,
+        )
+        .await;
+
+        let chunks = chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(
+            &chunks[0],
+            StreamChunk::Error(e) if e.kind == EngineErrorKind::EngineUnreachable
+                && e.message == "Thuki's engine isn't running\nSend your message again to restart it."
+        ));
+        assert_eq!(accumulated, "");
+    }
+
     #[tokio::test]
     async fn http_404_maps_model_not_found() {
         let server = MockServer::start().await;
@@ -748,9 +832,34 @@ mod tests {
     /// 403 takes the same auth branch as 401.
     #[test]
     fn http_403_classifies_with_auth_message() {
-        let error = classify_v1_http_error(403, "m");
+        let error = classify_v1_http_error(403, "m", V1Flavor::Remote);
         assert_eq!(error.kind, EngineErrorKind::Other);
         assert!(error.message.contains("Authentication failed (HTTP 403)"));
+    }
+
+    /// Builtin flavor: a 404 steers the user to the Settings download flow
+    /// (the bundled engine has no server-side model listing to consult).
+    /// The full string is pinned: it is rendered verbatim by ErrorCard.
+    #[test]
+    fn http_404_builtin_points_at_settings() {
+        let error = classify_v1_http_error(404, "org/repo:m.gguf", V1Flavor::Builtin);
+        assert_eq!(error.kind, EngineErrorKind::ModelNotFound);
+        assert_eq!(
+            error.message,
+            "Model not found\nPick or download a model in Settings."
+        );
+    }
+
+    /// Remote flavor: the 404 copy names the model the server is missing.
+    /// Pinned byte-for-byte so builtin copy work never drifts it.
+    #[test]
+    fn http_404_remote_names_the_missing_model() {
+        let error = classify_v1_http_error(404, "test-model", V1Flavor::Remote);
+        assert_eq!(error.kind, EngineErrorKind::ModelNotFound);
+        assert_eq!(
+            error.message,
+            "Model not found\nThe server has no model named 'test-model'."
+        );
     }
 
     #[tokio::test]

@@ -72,6 +72,79 @@ function rpathDeps(machoPath: string): string[] {
   return deps;
 }
 
+// Indexes every dylib under `dir` by name (recursively, in case the layout
+// ever moves them into a lib/ subdirectory).
+async function indexDylibs(dir: string, into: Map<string, string>): Promise<void> {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await indexDylibs(path, into);
+    } else if (/^lib.+\.dylib$/.test(entry.name)) {
+      into.set(entry.name, path);
+    }
+  }
+}
+
+// Walks the @rpath link closure starting from llama-server so we know exactly
+// which dylibs it needs (and skip other tools' impl dylibs). `source` names
+// where the dylibs were expected, for the failure message.
+function walkClosure(
+  rootPath: string,
+  dylibByName: Map<string, string>,
+  source: string,
+): Set<string> {
+  const needed = new Set<string>();
+  const queue = rpathDeps(rootPath);
+  while (queue.length > 0) {
+    const name = queue.shift() as string;
+    if (needed.has(name)) {
+      continue;
+    }
+    const path = dylibByName.get(name);
+    if (path === undefined) {
+      fail(`llama-server links @rpath/${name} but ${source} does not contain it`);
+    }
+    needed.add(name);
+    queue.push(...rpathDeps(path));
+  }
+  return needed;
+}
+
+// Drift guard: the computed dylib closure must exactly match the hand-pinned
+// bundle.macOS.frameworks list in tauri.conf.json. Without this, a pin bump
+// that adds or renames a dylib would install it into binaries/ while the
+// bundle silently omits it, and the breakage would only surface in the
+// shipped .app.
+async function verifyFrameworksList(needed: Set<string>): Promise<void> {
+  const confRelPath = 'src-tauri/tauri.conf.json';
+  const confPath = resolve(repoRoot, confRelPath);
+  let frameworks: unknown;
+  try {
+    frameworks = JSON.parse(await readFile(confPath, 'utf8')).bundle?.macOS?.frameworks;
+  } catch (error) {
+    fail(`failed to read ${confRelPath}: ${(error as Error).message}`);
+  }
+  if (!Array.isArray(frameworks)) {
+    fail(`bundle.macOS.frameworks is missing from ${confRelPath}`);
+  }
+  const pinned = new Set(frameworks.map((entry) => basename(String(entry))));
+  const missing = [...needed].filter((name) => !pinned.has(name)).sort();
+  const extra = [...pinned].filter((name) => !needed.has(name)).sort();
+  if (missing.length > 0 || extra.length > 0) {
+    const lines = [
+      `dylib closure does not match bundle.macOS.frameworks in ${confRelPath}`,
+    ];
+    if (missing.length > 0) {
+      lines.push(`  needed by llama-server but not listed: ${missing.join(', ')}`);
+    }
+    if (extra.length > 0) {
+      lines.push(`  listed but not in the closure: ${extra.join(', ')}`);
+    }
+    lines.push(`Update the frameworks list in ${confRelPath} to match the closure.`);
+    fail(lines.join('\n'));
+  }
+}
+
 if (process.platform !== 'darwin' || process.arch !== 'arm64') {
   console.log(
     `ensure-llama-server: skipping on ${process.platform}/${process.arch} (sidecar is macOS arm64 only)`,
@@ -79,10 +152,16 @@ if (process.platform !== 'darwin' || process.arch !== 'arm64') {
   process.exit(0);
 }
 
-// Fast path: pinned version already installed.
+// Fast path: pinned version already installed. Still re-derive the closure
+// from the installed binaries and check the bundle wiring, so an edit to
+// tauri.conf.json (or a stale list) fails loudly in dev rather than in the
+// shipped .app.
 if (await exists(binPath)) {
   const stamp = await readFile(stampPath, 'utf8').catch(() => '');
   if (stamp.trim() === STAMP_CONTENT) {
+    const dylibByName = new Map<string, string>();
+    await indexDylibs(destDir, dylibByName);
+    await verifyFrameworksList(walkClosure(binPath, dylibByName, DEST));
     process.exit(0);
   }
 }
@@ -115,37 +194,15 @@ try {
     );
   }
 
-  // Index every dylib in the archive by name (recursively, in case the
-  // layout ever moves them into a lib/ subdirectory).
+  // Index every dylib in the archive, then walk the @rpath link closure
+  // starting from llama-server so we copy exactly the dylibs it needs.
   const dylibByName = new Map<string, string>();
-  async function indexDylibs(dir: string): Promise<void> {
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await indexDylibs(path);
-      } else if (/^lib.+\.dylib$/.test(entry.name)) {
-        dylibByName.set(entry.name, path);
-      }
-    }
-  }
-  await indexDylibs(extractedDir);
+  await indexDylibs(extractedDir, dylibByName);
+  const needed = walkClosure(serverPath, dylibByName, 'the archive');
 
-  // Walk the @rpath link closure starting from llama-server so we copy
-  // exactly the dylibs it needs and skip other tools' impl dylibs.
-  const needed = new Set<string>();
-  const queue = rpathDeps(serverPath);
-  while (queue.length > 0) {
-    const name = queue.shift() as string;
-    if (needed.has(name)) {
-      continue;
-    }
-    const path = dylibByName.get(name);
-    if (path === undefined) {
-      fail(`llama-server links @rpath/${name} but the archive does not contain it`);
-    }
-    needed.add(name);
-    queue.push(...rpathDeps(path));
-  }
+  // Check the bundle wiring before installing anything: a pin bump that
+  // changes the closure must update tauri.conf.json in the same change.
+  await verifyFrameworksList(needed);
 
   await mkdir(destDir, { recursive: true });
   await copyFile(serverPath, binPath);

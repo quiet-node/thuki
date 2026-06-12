@@ -208,9 +208,7 @@ describe('useModelSelection', () => {
         all: ['gemma4:e2b', 'qwen2.5:7b'],
         ollamaReachable: true,
       })
-      .mockRejectedValueOnce(
-        new Error('Model is not installed in Ollama: mystery'),
-      );
+      .mockRejectedValueOnce(new Error('Model is not installed: mystery'));
 
     const { result } = renderHook(() => useModelSelection());
     await act(async () => {});
@@ -219,7 +217,7 @@ describe('useModelSelection', () => {
       act(async () => {
         await result.current.setActiveModel('mystery');
       }),
-    ).rejects.toThrow('Model is not installed in Ollama: mystery');
+    ).rejects.toThrow('Model is not installed: mystery');
 
     expect(result.current.activeModel).toBe('gemma4:e2b');
   });

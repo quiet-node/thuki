@@ -88,4 +88,49 @@ describe('ErrorCard', () => {
     expect(code).not.toBeNull();
     expect(code?.textContent).toContain('ollama pull gemma3:4b');
   });
+
+  // The strings below pin the backend's provider-aware copy contract:
+  // Rust owns the wording, ErrorCard renders it verbatim.
+
+  it('renders the builtin EngineUnreachable copy (title and subtitle)', () => {
+    render(
+      <ErrorCard
+        kind="EngineUnreachable"
+        message={
+          "Thuki's engine isn't running\nSend your message again to restart it."
+        }
+      />,
+    );
+    expect(
+      screen.getByText("Thuki's engine isn't running"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Send your message again to restart it.'),
+    ).toBeInTheDocument();
+  });
+
+  it('pins the exact ollama EngineUnreachable copy', () => {
+    render(
+      <ErrorCard
+        kind="EngineUnreachable"
+        message={"Ollama isn't running\nStart Ollama and try again."}
+      />,
+    );
+    expect(screen.getByText("Ollama isn't running")).toBeInTheDocument();
+    expect(screen.getByText('Start Ollama and try again.')).toBeInTheDocument();
+  });
+
+  it('renders the builtin ModelNotFound copy without a code element', () => {
+    const { container } = render(
+      <ErrorCard
+        kind="ModelNotFound"
+        message={'Model not found\nPick or download a model in Settings.'}
+      />,
+    );
+    expect(
+      screen.getByText('Pick or download a model in Settings.'),
+    ).toBeInTheDocument();
+    // No ollama pull command in the builtin copy, so nothing is code-wrapped.
+    expect(container.querySelector('code')).toBeNull();
+  });
 });

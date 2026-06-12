@@ -12,6 +12,9 @@ pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
 /// Stable provider ids. `active_provider` references one of these.
 pub const PROVIDER_ID_BUILTIN: &str = "builtin";
 pub const PROVIDER_ID_OLLAMA: &str = "ollama";
+/// Fixed id of the (at most one) OpenAI-compatible provider record. A single
+/// record mirrors the single Ollama URL: one external server at a time.
+pub const PROVIDER_ID_OPENAI: &str = "openai";
 
 /// Provider kinds understood by the loader. Providers with any other kind are
 /// dropped during resolution. Recognized kinds: `"builtin"`, `"ollama"`,
@@ -27,13 +30,16 @@ pub const PROVIDER_KIND_OPENAI: &str = "openai";
 /// Human-readable provider labels shown in Settings.
 pub const DEFAULT_BUILTIN_LABEL: &str = "Built-in (Thuki)";
 pub const DEFAULT_OLLAMA_LABEL: &str = "Ollama";
+/// Fallback label for an OpenAI-compatible provider added with no label.
+pub const DEFAULT_OPENAI_LABEL: &str = "OpenAI-compatible";
 
 /// Provider Thuki sends inference to on a fresh install.
 ///
-/// Phase 1 ships no built-in engine, so a new install defaults to the Ollama
-/// provider (the only functional kind in this phase). Phase 2 flips this to
-/// `PROVIDER_ID_BUILTIN` when the bundled engine lands.
-pub const DEFAULT_ACTIVE_PROVIDER: &str = PROVIDER_ID_OLLAMA;
+/// Phase 2 bundles the llama.cpp engine, so a new install starts on the
+/// built-in provider and onboarding offers a starter model download. Configs
+/// that already persisted an `active_provider` (including Phase 1's Ollama
+/// default) are never rewritten; only fresh or dangling pointers land here.
+pub const DEFAULT_ACTIVE_PROVIDER: &str = PROVIDER_ID_BUILTIN;
 
 /// Default inactivity window before Thuki tells Ollama to release the model.
 /// 0 means do not manage: Ollama's own 5-minute default applies.
@@ -368,6 +374,12 @@ pub const MAX_HF_API_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Per-request timeout (seconds) for Hugging Face API metadata calls.
 pub const HF_API_TIMEOUT_SECS: u64 = 15;
+
+/// Per-request timeout (seconds) for an OpenAI-compatible server's
+/// `/v1/models` listing. Tighter than the Hugging Face timeout because the
+/// server is local or LAN-hosted in the common case and the Settings model
+/// dropdown blocks on this probe.
+pub const OPENAI_MODELS_TIMEOUT_SECS: u64 = 5;
 
 /// Canonical Hugging Face origin used for both model metadata calls and blob
 /// downloads. Not user-tunable: the sha256-pinning + provenance model assumes
