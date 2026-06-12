@@ -170,7 +170,9 @@ describe('useDownloadModel', () => {
     expect(result.current.etaSeconds).toBe(80);
   });
 
-  it('treats a post-AllDone Failed as terminal failure', async () => {
+  it('treats a Failed arriving after ready as terminal failure', async () => {
+    // The backend now emits Failed instead of AllDone when finalize fails,
+    // but Failed stays terminal from every state as a defensive invariant.
     const { result } = renderHook(() => useDownloadModel());
     await act(() => result.current.start('smartest'));
     act(() => channel().simulateMessage({ type: 'AllDone' }));

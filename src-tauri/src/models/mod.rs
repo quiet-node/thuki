@@ -1109,12 +1109,6 @@ pub fn cancel_active_download(state: &DownloadState) {
     }
 }
 
-/// True when a finished download should be recorded as installed: the run
-/// succeeded AND the user did not cancel between the last event and teardown.
-pub fn should_finalize(result_ok: bool, cancelled: bool) -> bool {
-    result_ok && !cancelled
-}
-
 /// One starter row for the download picker: the compile-time registry entry
 /// plus the machine-specific runtime facts the UI renders next to it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1620,13 +1614,21 @@ pub struct DeleteOutcome {
 
 /// Deletes a model from the manifest and removes the blobs no other row
 /// references. `builtin_model` is the builtin provider's currently configured
-/// model id; deleting it flags `clear_builtin` for the caller.
+/// model id; deleting it flags `clear_builtin` for the caller. Refuses while
+/// a download is in flight (it may be about to insert or share the very blobs
+/// being refcounted), holding the download-state lock across the removal so a
+/// concurrent claim cannot race the delete (mirrors `discard_partial_inner`).
 pub fn delete_installed_model_inner(
+    state: &DownloadState,
     conn: &rusqlite::Connection,
     store: &storage::ModelStore,
     id: &str,
     builtin_model: &str,
 ) -> Result<DeleteOutcome, String> {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    if guard.is_some() {
+        return Err("a download is already in progress".to_string());
+    }
     let orphans = manifest::delete(conn, id).map_err(|e| e.to_string())?;
     store.remove_blobs(&orphans).map_err(|e| e.to_string())?;
     Ok(DeleteOutcome {
@@ -1820,6 +1822,7 @@ pub fn list_installed_models(
 
 /// Deletes an installed model: manifest row, orphaned blobs, and (when it was
 /// the builtin provider's selected model) the provider's `model` field.
+/// Refused while a download is in flight.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn delete_installed_model(
@@ -1828,11 +1831,12 @@ pub fn delete_installed_model(
     db: tauri::State<'_, crate::history::Database>,
     store: tauri::State<'_, storage::ModelStore>,
     config: tauri::State<'_, parking_lot::RwLock<AppConfig>>,
+    download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     let builtin_model = builtin_provider_model(&config.read());
     let outcome = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        delete_installed_model_inner(&conn, &store, &id, &builtin_model)?
+        delete_installed_model_inner(&download_state, &conn, &store, &id, &builtin_model)?
     };
     if outcome.clear_builtin {
         persist_active_provider_model(&app, &config, PROVIDER_ID_BUILTIN, "")?;
@@ -1840,19 +1844,27 @@ pub fn delete_installed_model(
     Ok(())
 }
 
-/// Converts a `finalize_install` error string into the `Failed` event that
-/// should be emitted over the download channel. Pure function; testable without
-/// Tauri state.
-pub(crate) fn finalize_error_event(message: String) -> download::DownloadEvent {
-    download::DownloadEvent::Failed {
-        kind: download::DownloadFailKind::Other,
-        message,
+/// Maps the `finalize_install` outcome onto the terminal download event:
+/// `AllDone` once the install is recorded, `Failed` otherwise. AllDone is
+/// emitted here (after finalize) rather than from `run_download` so the
+/// frontend can never advance past an install that was not recorded. Pure
+/// function; testable without Tauri state.
+pub(crate) fn finalize_outcome_event(result: Result<(), String>) -> download::DownloadEvent {
+    match result {
+        Ok(()) => download::DownloadEvent::AllDone,
+        Err(message) => download::DownloadEvent::Failed {
+            kind: download::DownloadFailKind::Other,
+            message,
+        },
     }
 }
 
 /// Runs the claimed download on the async runtime: streams events to the
-/// channel, records the manifest row + builtin provider model on success,
-/// and releases the download slot in every outcome.
+/// channel, records the manifest row + builtin provider model on success
+/// (then emits AllDone, or Failed when recording fails), and releases the
+/// download slot in every outcome. A cancellation that lands after the run
+/// already succeeded is too late to mean anything: every byte is verified
+/// and installed, so the install is recorded unconditionally.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn spawn_model_download(
     app: tauri::AppHandle,
@@ -1869,29 +1881,37 @@ fn spawn_model_download(
             let emit = move |event: download::DownloadEvent| {
                 let _ = on_event.send(event);
             };
-            download::run_download(&specs, store.inner(), &client, token.clone(), emit).await
+            download::run_download(&specs, store.inner(), &client, token, emit).await
         };
-        if should_finalize(result.is_ok(), token.is_cancelled()) {
-            if let Err(e) = finalize_install(&app, &model) {
+        if result.is_ok() {
+            let finalized = finalize_install(&app, &model);
+            if let Err(e) = &finalized {
                 eprintln!("thuki: [models] failed to record installed model: {e}");
-                let _ = on_event_finalize.send(finalize_error_event(e));
             }
+            let _ = on_event_finalize.send(finalize_outcome_event(finalized));
         }
         release_download(&app.state::<DownloadState>());
     });
 }
 
-/// Records a completed download: manifest insert, then the builtin provider's
-/// `model` field (the active provider is never changed here).
+/// Records a completed download: manifest insert, removal of blobs the
+/// replaced row no longer references (a re-download whose upstream content
+/// changed must not strand the old multi-GB blob), then the builtin
+/// provider's `model` field (the active provider is never changed here).
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn finalize_install(
     app: &tauri::AppHandle,
     model: &manifest::InstalledModel,
 ) -> Result<(), String> {
-    {
+    let orphans = {
         let db = app.state::<crate::history::Database>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        manifest::insert(&conn, model).map_err(|e| e.to_string())?;
+        manifest::insert(&conn, model).map_err(|e| e.to_string())?
+    };
+    // Best-effort: the install itself succeeded, so a failure to reclaim the
+    // superseded blobs must not fail the download; it only leaks disk space.
+    if let Err(e) = app.state::<storage::ModelStore>().remove_blobs(&orphans) {
+        eprintln!("thuki: [models] failed to remove superseded blobs: {e}");
     }
     let config = app.state::<parking_lot::RwLock<AppConfig>>();
     persist_active_provider_model(app, &config, PROVIDER_ID_BUILTIN, &model.id)
@@ -3714,24 +3734,21 @@ mod tests {
         assert!(claim_download(&state).is_err());
         let (_dir, store) = make_store();
         assert!(discard_partial_inner(&state, &store, &"a".repeat(64)).is_err());
+        let conn = crate::database::open_in_memory().unwrap();
+        assert!(delete_installed_model_inner(&state, &conn, &store, "x:y.gguf", "").is_err());
         // Best-effort operations must not panic on the poisoned lock.
         cancel_active_download(&state);
         release_download(&state);
     }
 
     #[test]
-    fn should_finalize_requires_ok_and_not_cancelled() {
-        assert!(should_finalize(true, false));
-        assert!(!should_finalize(true, true));
-        assert!(!should_finalize(false, false));
-        assert!(!should_finalize(false, true));
-    }
-
-    #[test]
-    fn finalize_error_event_produces_failed_other_with_message() {
-        let event = finalize_error_event("disk full".to_string());
+    fn finalize_outcome_event_maps_ok_to_all_done_and_err_to_failed() {
         assert_eq!(
-            event,
+            finalize_outcome_event(Ok(())),
+            download::DownloadEvent::AllDone
+        );
+        assert_eq!(
+            finalize_outcome_event(Err("disk full".to_string())),
             download::DownloadEvent::Failed {
                 kind: download::DownloadFailKind::Other,
                 message: "disk full".to_string(),
@@ -4173,6 +4190,7 @@ mod tests {
     fn delete_installed_model_inner_removes_orphans_and_flags_builtin_clear() {
         let conn = crate::database::open_in_memory().unwrap();
         let (_dir, store) = make_store();
+        let state = DownloadState::default();
 
         let r = sample_resolved(true);
         let m = repo_installed_model("o/r", "w-Q4_K_M.gguf", &r);
@@ -4182,7 +4200,7 @@ mod tests {
 
         // The builtin provider currently points at this model: deletion must
         // flag the clear so the wrapper resets the provider's model field.
-        let out = delete_installed_model_inner(&conn, &store, &m.id, &m.id).unwrap();
+        let out = delete_installed_model_inner(&state, &conn, &store, &m.id, &m.id).unwrap();
         assert!(out.clear_builtin);
         assert!(!store.blob_path(&m.sha256).exists());
         assert!(!store.blob_path(m.mmproj_sha256.as_ref().unwrap()).exists());
@@ -4192,24 +4210,49 @@ mod tests {
         let m2 = repo_installed_model("o/r2", "x.gguf", &sample_resolved(false));
         manifest::insert(&conn, &m2).unwrap();
         std::fs::write(store.blob_path(&m2.sha256), b"x").unwrap();
-        let out = delete_installed_model_inner(&conn, &store, &m2.id, "other:model.gguf").unwrap();
+        let out = delete_installed_model_inner(&state, &conn, &store, &m2.id, "other:model.gguf")
+            .unwrap();
         assert!(!out.clear_builtin);
     }
 
     #[test]
+    fn delete_installed_model_inner_refuses_while_download_in_flight() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let (_dir, store) = make_store();
+        let state = DownloadState::default();
+
+        let m = repo_installed_model("o/r", "w.gguf", &sample_resolved(false));
+        manifest::insert(&conn, &m).unwrap();
+        std::fs::write(store.blob_path(&m.sha256), b"w").unwrap();
+
+        // A claimed download slot must refuse the delete and leave the row
+        // and blob untouched.
+        let _token = claim_download(&state).unwrap();
+        let err = delete_installed_model_inner(&state, &conn, &store, &m.id, "").unwrap_err();
+        assert_eq!(err, "a download is already in progress");
+        assert!(manifest::get(&conn, &m.id).unwrap().is_some());
+        assert!(store.blob_path(&m.sha256).exists());
+
+        // Releasing the slot lets the delete proceed.
+        release_download(&state);
+        assert!(delete_installed_model_inner(&state, &conn, &store, &m.id, "").is_ok());
+    }
+
+    #[test]
     fn delete_installed_model_inner_propagates_sql_and_io_errors() {
+        let state = DownloadState::default();
         // SQL failure: table dropped.
         let conn = crate::database::open_in_memory().unwrap();
         conn.execute_batch("DROP TABLE installed_models;").unwrap();
         let (_dir, store) = make_store();
-        assert!(delete_installed_model_inner(&conn, &store, "x:y.gguf", "").is_err());
+        assert!(delete_installed_model_inner(&state, &conn, &store, "x:y.gguf", "").is_err());
 
         // I/O failure: a directory sits where the orphaned blob should be.
         let conn = crate::database::open_in_memory().unwrap();
         let m = repo_installed_model("o/r", "w.gguf", &sample_resolved(false));
         manifest::insert(&conn, &m).unwrap();
         std::fs::create_dir_all(store.blob_path(&m.sha256)).unwrap();
-        assert!(delete_installed_model_inner(&conn, &store, &m.id, "").is_err());
+        assert!(delete_installed_model_inner(&state, &conn, &store, &m.id, "").is_err());
     }
 
     // ── Model library: discard partial ───────────────────────────────────────
