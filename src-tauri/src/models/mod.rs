@@ -41,9 +41,10 @@ use crate::config::AppConfig;
 pub const ACTIVE_MODEL_KEY: &str = "active_model";
 
 /// Shared error-message prefix used when a requested slug is not present in
-/// the live Ollama inventory. Exported so the frontend and tests can match
-/// against a stable constant instead of a prose string.
-pub const MODEL_NOT_INSTALLED_ERR_PREFIX: &str = "Model is not installed in Ollama: ";
+/// the active provider's inventory (the live Ollama tags, the builtin
+/// manifest, or the openai configured model). Exported so the frontend and
+/// tests can match against a stable constant instead of a prose string.
+pub const MODEL_NOT_INSTALLED_ERR_PREFIX: &str = "Model is not installed: ";
 
 /// In-memory cache of the currently active model slug. Written once at
 /// startup (after `resolve_seed_active_model`) and updated every time the
@@ -2722,10 +2723,9 @@ mod tests {
 
     #[test]
     fn model_not_installed_err_prefix_is_stable() {
-        assert_eq!(
-            MODEL_NOT_INSTALLED_ERR_PREFIX,
-            "Model is not installed in Ollama: "
-        );
+        // Provider-neutral: reachable on builtin (chip click racing a model
+        // delete) and openai providers, not only Ollama.
+        assert_eq!(MODEL_NOT_INSTALLED_ERR_PREFIX, "Model is not installed: ");
     }
 
     // ── derive_model_setup_state (Phase 3 onboarding gate) ──────────────────

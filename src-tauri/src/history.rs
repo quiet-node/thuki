@@ -284,17 +284,18 @@ pub(crate) async fn generate_title_text(
             )
             .await
         }
-        crate::commands::LlmTransport::V1 { base_url, api_key } => {
+        crate::commands::LlmTransport::V1 {
+            base_url,
+            api_key,
+            flavor,
+        } => {
             crate::openai::stream_openai_chat(
                 crate::openai::OpenAiChatParams {
                     base_url: base_url.clone(),
                     model,
                     messages: title_messages,
                     api_key: api_key.clone(),
-                    // The transport collapses builtin into a generic /v1
-                    // server; errors here are discarded anyway (title
-                    // generation has no user-facing error surface).
-                    flavor: crate::openai::V1Flavor::Remote,
+                    flavor: *flavor,
                 },
                 client,
                 cancel_token,
@@ -658,6 +659,7 @@ mod tests {
         let transport = crate::commands::LlmTransport::V1 {
             base_url: server.uri(),
             api_key: Some("sk-test".to_string()),
+            flavor: crate::openai::V1Flavor::Remote,
         };
         let accumulated = generate_title_text(
             &transport,
