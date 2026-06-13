@@ -18,6 +18,7 @@
 pub mod commands;
 pub mod config;
 pub mod database;
+pub mod engine;
 pub mod export;
 pub mod history;
 pub mod images;
@@ -1813,6 +1814,12 @@ pub fn run() {
             app.manage(models::ModelCapabilitiesCache::default());
             app.manage(history::Database(std::sync::Mutex::new(db_conn)));
 
+            // ── Model blob store + download slot for the built-in engine ──
+            let model_store = models::storage::ModelStore::new(app_data_dir.join("models"))
+                .expect("failed to initialise model blob store");
+            app.manage(model_store);
+            app.manage(models::DownloadState::default());
+
             // ── Orphaned image cleanup (startup + periodic) ─────────
             run_image_cleanup(app.handle());
             spawn_periodic_image_cleanup(app.handle().clone());
@@ -1855,6 +1862,24 @@ pub fn run() {
             models::check_model_setup,
             #[cfg(not(coverage))]
             models::get_model_capabilities,
+            #[cfg(not(coverage))]
+            models::get_starter_options,
+            #[cfg(not(coverage))]
+            models::get_system_ram_bytes,
+            #[cfg(not(coverage))]
+            models::download_starter,
+            #[cfg(not(coverage))]
+            models::download_repo_model,
+            #[cfg(not(coverage))]
+            models::list_hf_repo_ggufs,
+            #[cfg(not(coverage))]
+            models::cancel_model_download,
+            #[cfg(not(coverage))]
+            models::discard_partial_download,
+            #[cfg(not(coverage))]
+            models::list_installed_models,
+            #[cfg(not(coverage))]
+            models::delete_installed_model,
             #[cfg(not(coverage))]
             history::save_conversation,
             #[cfg(not(coverage))]

@@ -54,6 +54,57 @@ pub const BOUNDS_NUM_CTX: (u32, u32) = (2048, 1_048_576);
 /// Values below -1 or above 1440 are clamped to the compiled default.
 pub const BOUNDS_KEEP_WARM_INACTIVITY_MINUTES: (i32, i32) = (-1, 1440);
 
+/// Minutes of inactivity before Thuki stops the built-in engine to free RAM.
+/// 0 disables auto-unload: the model stays loaded and the first token stays
+/// instant (the default). Positive values free RAM after N idle minutes at
+/// the cost of a cold reload on the next message. Applies to the built-in engine only; the
+/// Ollama provider keeps `keep_warm_inactivity_minutes` (note the different
+/// meaning of 0 there: "use Ollama's own default").
+pub const DEFAULT_IDLE_UNLOAD_MINUTES: u32 = 0;
+pub const BOUNDS_IDLE_UNLOAD_MINUTES: (u32, u32) = (0, 1440);
+
+// Built-in engine lifecycle constants: baked in because they define the
+// engine runner's startup and idle-check contract, not a user preference.
+
+/// Wall-clock deadline (seconds) for a freshly spawned built-in engine to
+/// pass its `/health` check before the spawn is declared failed. Large GGUF
+/// models on a cold disk can take minutes to load, so the deadline is
+/// generous. Not user-tunable: it bounds the worst-case "warming up" wait the
+/// UI can present, so changing it alters the UX contract.
+pub const ENGINE_HEALTH_DEADLINE_SECS: u64 = 300;
+
+/// Interval (milliseconds) between `/health` probes while the built-in
+/// engine starts up. Not user-tunable: pure loopback-load tuning; 250 ms
+/// detects readiness promptly without hammering the local server while it is
+/// busy loading the model.
+pub const ENGINE_HEALTH_POLL_INTERVAL_MS: u64 = 250;
+
+/// Timeout (seconds) for a single `/health` GET inside the poll loop. Bounds
+/// a server that has accepted the TCP connection but stopped responding: a
+/// wedged-but-connected server would otherwise park the poll loop indefinitely.
+/// Loopback health probes are normally instant; 5 s is generous. Not
+/// user-tunable: internal lifecycle contract between the runner and the engine
+/// process; the poll interval and deadline are the user-facing knobs.
+pub const ENGINE_HEALTH_PROBE_TIMEOUT_SECS: u64 = 5;
+
+/// Interval (seconds) between idle-unload checks in the engine runner. Not
+/// user-tunable: internal timer granularity behind the user-facing
+/// `idle_unload_minutes` knob; 30 s keeps the unload within a minute-scale
+/// setting's precision at negligible cost.
+pub const ENGINE_IDLE_CHECK_INTERVAL_SECS: u64 = 30;
+
+/// Capacity of the engine runner command queue. Not user-tunable: bounds
+/// memory under command bursts; 64 slots is ample for all UI-driven traffic
+/// (Ensure, Touch, SetIdleMinutes, Shutdown) with no back-pressure under
+/// normal use.
+pub const ENGINE_COMMAND_QUEUE_CAPACITY: usize = 64;
+
+/// Minimum interval between Progress events emitted during a model download.
+/// Bounds IPC channel traffic: a fast local connection can deliver thousands
+/// of chunks per second and the UI only needs a few updates per second. Not
+/// user-tunable: pure IPC hygiene, invisible below the UI refresh rate.
+pub const DOWNLOAD_PROGRESS_MIN_INTERVAL_MS: u64 = 500;
+
 /// Built-in secretary persona prompt. User overrides via `[prompt] system` in
 /// the config file. The slash-command appendix is composed on top at load time
 /// and is never written back to the file.
@@ -299,6 +350,20 @@ pub const MAX_OLLAMA_TAGS_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// any real model and bounds attacker-controlled inputs.
 pub const MAX_OLLAMA_SHOW_BODY_BYTES: usize = 4 * 1024 * 1024;
 
+/// Maximum accepted body size for Hugging Face API responses (repo file
+/// listings). Bounds attacker-controlled data from a remote service,
+/// mirroring MAX_OLLAMA_TAGS_BODY_BYTES.
+pub const MAX_HF_API_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Per-request timeout (seconds) for Hugging Face API metadata calls.
+pub const HF_API_TIMEOUT_SECS: u64 = 15;
+
+/// Canonical Hugging Face origin used for both model metadata calls and blob
+/// downloads. Not user-tunable: the sha256-pinning + provenance model assumes
+/// the canonical Hub; pointing downloads at an arbitrary mirror would bypass
+/// the integrity guarantees that make the curated starter registry safe.
+pub const HF_BASE_URL: &str = "https://huggingface.co";
+
 /// Maximum accepted byte length for a model slug passed to `set_active_model`.
 /// Real Ollama slugs are a handful of characters; 256 is generous while still
 /// capping adversarial inputs long before any network or database work.
@@ -322,6 +387,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     // [inference] — active_provider and the providers array are not flat fields;
     // they are written via set_active_model / set_ollama_url, not set_config_field.
     ("inference", "keep_warm_inactivity_minutes"),
+    ("inference", "idle_unload_minutes"),
     ("inference", "num_ctx"),
     // [prompt]
     ("prompt", "system"),

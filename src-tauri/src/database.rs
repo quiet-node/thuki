@@ -206,6 +206,12 @@ fn run_migrations(conn: &Connection) -> SqlResult<()> {
         "  ON conversations(updated_at DESC);",
         "CREATE TABLE IF NOT EXISTS app_config (",
         "  key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        "CREATE TABLE IF NOT EXISTS installed_models (",
+        "  id TEXT PRIMARY KEY, display_name TEXT NOT NULL, repo TEXT NOT NULL,",
+        "  revision TEXT NOT NULL, file_name TEXT NOT NULL, sha256 TEXT NOT NULL,",
+        "  size_bytes INTEGER NOT NULL, quant TEXT NOT NULL,",
+        "  vision INTEGER NOT NULL, thinking INTEGER NOT NULL,",
+        "  mmproj_file TEXT, mmproj_sha256 TEXT, created_at INTEGER NOT NULL);",
     );
     conn.execute_batch(SCHEMA_DDL)?;
 

@@ -94,6 +94,12 @@ jobs:
       - name: Run all tests with coverage enforcement
         run: bun run test:all:coverage
 
+      - name: Cache llama.cpp sidecar
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: src-tauri/binaries
+          key: llama-cpp-${{ runner.os }}-b9590-b12cb8851ea60433
+
       - name: Build Tauri app
         # VITE_GIT_COMMIT_SHA is set here, not on a separate frontend step, because
         # tauri build runs beforeBuildCommand (bun run build:frontend) internally.

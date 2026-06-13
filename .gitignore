@@ -50,3 +50,7 @@ docs/superpowers/
 # SearXNG container dumps upstream defaults here on each start
 sandbox/search-box/searxng/settings.yml.new
 
+
+# Bundled inference engine artifacts (fetched by scripts/ensure-llama-server.ts)
+src-tauri/binaries/
+*.gguf

@@ -95,7 +95,7 @@ fn allowed_fields_count_matches_schema_field_count() {
     // and is intentionally absent from ALLOWED_FIELDS. If this assertion fails, the
     // schema has drifted from the allowlist and someone added a field without
     // extending ALLOWED_FIELDS.
-    assert_eq!(ALLOWED_FIELDS.len(), 30);
+    assert_eq!(ALLOWED_FIELDS.len(), 31);
 }
 
 #[test]

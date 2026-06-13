@@ -95,6 +95,12 @@ jobs:
       - name: Build frontend
         run: bun run build:frontend
 
+      - name: Cache llama.cpp sidecar
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: src-tauri/binaries
+          key: llama-cpp-${{ runner.os }}-b9590-b12cb8851ea60433
+
       - name: Build Tauri app
         run: bun run build:backend
 

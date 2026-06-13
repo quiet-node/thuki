@@ -81,6 +81,23 @@
     "active": true,
     "targets": "all",
     "homepage": "https://www.thuki.app/",
+    "externalBin": [
+      "binaries/llama-server"
+    ],
+    "macOS": {
+      "frameworks": [
+        "binaries/libggml-base.0.dylib",
+        "binaries/libggml-blas.0.dylib",
+        "binaries/libggml-cpu.0.dylib",
+        "binaries/libggml-metal.0.dylib",
+        "binaries/libggml-rpc.0.dylib",
+        "binaries/libggml.0.dylib",
+        "binaries/libllama-common.0.dylib",
+        "binaries/libllama-server-impl.dylib",
+        "binaries/libllama.0.dylib",
+        "binaries/libmtmd.0.dylib"
+      ]
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
