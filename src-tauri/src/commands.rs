@@ -93,6 +93,9 @@ pub fn apply_capability_filter(messages: &mut [ChatMessage], caps: &Capabilities
 pub enum EngineErrorKind {
     /// Ollama process is not running (connection refused / timeout).
     EngineUnreachable,
+    /// The bundled engine's sidecar process failed to launch or crashed before
+    /// passing its health check.
+    EngineStartFailed,
     /// The requested model has not been pulled yet (HTTP 404).
     ModelNotFound,
     /// No active model has been selected. The user must pick a model from
@@ -115,34 +118,361 @@ pub fn no_model_selected_error() -> EngineError {
     }
 }
 
-/// Returns the error to emit when the active provider's kind has no Phase-1
-/// implementation, or `None` when the kind is the native Ollama path. Pure so
-/// the routing decision is unit-tested even though `ask_model` is coverage-off.
-/// In Phase 1 the only functional kind is `ollama`; the built-in engine and
-/// the generic OpenAI-compatible kind arrive in Phase 2.
-pub(crate) fn unsupported_provider_error(kind: &str, label: &str) -> Option<EngineError> {
-    use crate::config::defaults::PROVIDER_KIND_OLLAMA;
-    if kind == PROVIDER_KIND_OLLAMA {
-        return None;
-    }
-    let who = if label.trim().is_empty() {
-        "This provider"
-    } else {
-        label
-    };
-    Some(EngineError {
-        kind: EngineErrorKind::EngineUnreachable,
-        message: format!("{who} is not available in this version of Thuki yet."),
-    })
-}
-
 /// Structured error emitted over the streaming channel.
 /// Rust owns all user-facing copy; the frontend only uses `kind` for styling.
-#[derive(Clone, Serialize, Debug)]
+#[derive(Clone, Serialize, Debug, PartialEq)]
 pub struct EngineError {
     pub kind: EngineErrorKind,
     /// Final user-facing string. First line is the title, remainder is the subtitle.
     pub message: String,
+}
+
+/// How a chat turn reaches its inference backend, decided once per request
+/// from the active provider's kind.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ChatRoute {
+    /// Native Ollama `/api/chat` streaming at the provider's base URL.
+    OllamaNative {
+        /// Full `<base>/api/chat` endpoint.
+        endpoint: String,
+    },
+    /// Generic OpenAI-compatible `/v1` streaming at the provider's base URL.
+    /// The API key is fetched later by provider id so the Keychain read
+    /// happens only on the path that needs it.
+    V1 {
+        base_url: String,
+        api_key_provider: Option<String>,
+    },
+    /// The bundled engine: resolve the installed model, ensure the sidecar
+    /// serves it, then stream via the `/v1` client at the engine's port.
+    Builtin {
+        /// The active provider's `model` field: the manifest id.
+        model_id: String,
+    },
+}
+
+/// Decides the chat route from the resolved config. Pure so the routing
+/// decision is unit-tested even though `ask_model` is coverage-off.
+///
+/// Errors:
+/// - unknown/empty kind (defensive; the loader drops unknown kinds and
+///   repairs a dangling `active_provider` pointer),
+/// - `builtin` with an empty model (`NoModelSelected`, pointing the user at
+///   the Settings model pick).
+pub fn resolve_chat_route(
+    inference: &crate::config::schema::InferenceSection,
+) -> Result<ChatRoute, EngineError> {
+    use crate::config::defaults::{
+        PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+    };
+    match inference.active_provider_kind() {
+        PROVIDER_KIND_OLLAMA => Ok(ChatRoute::OllamaNative {
+            endpoint: format!(
+                "{}/api/chat",
+                inference.active_provider_base_url().trim_end_matches('/')
+            ),
+        }),
+        PROVIDER_KIND_OPENAI => Ok(ChatRoute::V1 {
+            base_url: inference
+                .active_provider_base_url()
+                .trim_end_matches('/')
+                .to_string(),
+            api_key_provider: Some(inference.active_provider.clone()),
+        }),
+        PROVIDER_KIND_BUILTIN => {
+            let model = inference.active_provider_model();
+            if model.is_empty() {
+                return Err(EngineError {
+                    kind: EngineErrorKind::NoModelSelected,
+                    message: "No model selected\nPick or download a model in Settings.".to_string(),
+                });
+            }
+            Ok(ChatRoute::Builtin {
+                model_id: model.to_string(),
+            })
+        }
+        _ => Err(EngineError {
+            kind: EngineErrorKind::Other,
+            message: "Something went wrong\nThe active provider has an unknown kind.".to_string(),
+        }),
+    }
+}
+
+/// Maps an installed-model manifest row onto the engine [`Target`] the
+/// runner spawns: blob-store paths for the weights and optional mmproj plus
+/// the configured context size.
+///
+/// [`Target`]: crate::engine::state::Target
+pub fn builtin_target(
+    conn: &rusqlite::Connection,
+    store: &crate::models::storage::ModelStore,
+    model_id: &str,
+    num_ctx: u32,
+) -> Result<crate::engine::state::Target, EngineError> {
+    let row = crate::models::manifest::get(conn, model_id).map_err(|e| EngineError {
+        kind: EngineErrorKind::Other,
+        message: format!("Something went wrong\nCould not read the installed-model manifest: {e}"),
+    })?;
+    let Some(model) = row else {
+        return Err(EngineError {
+            kind: EngineErrorKind::ModelNotFound,
+            message: "The selected model is not installed.\nPick or download a model in Settings."
+                .to_string(),
+        });
+    };
+    Ok(crate::engine::state::Target {
+        model_path: store.blob_path(&model.sha256),
+        mmproj_path: model
+            .mmproj_sha256
+            .as_deref()
+            .map(|sha| store.blob_path(sha)),
+        num_ctx,
+    })
+}
+
+/// Parses llama-server's `GET /props` response and reports whether the
+/// loaded model accepts image input. The flag lives at `modalities.vision`;
+/// an absent field, a non-boolean value, or a malformed body all collapse to
+/// `false` so the gate fails closed (images are stripped rather than letting
+/// llama-server reject the whole request).
+pub(crate) fn parse_props_vision(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("modalities")
+                .and_then(|m| m.get("vision"))
+                .and_then(|b| b.as_bool())
+        })
+        .unwrap_or(false)
+}
+
+/// Asks the serving llama-server whether the loaded model accepts images
+/// (`GET /props`). Any transport or read failure collapses to `false`,
+/// matching [`parse_props_vision`]'s fail-closed contract.
+async fn fetch_builtin_vision(client: &reqwest::Client, base_url: &str) -> bool {
+    match client.get(format!("{base_url}/props")).send().await {
+        Ok(resp) => match resp.bytes().await {
+            Ok(bytes) => parse_props_vision(&bytes),
+            Err(_) => false,
+        },
+        Err(_) => false,
+    }
+}
+
+/// Runs the built-in-engine stage of a chat turn: mark activity, ensure the
+/// engine serves `target`, then stream via the `/v1` client at the engine's
+/// port. Pulled out of [`ask_model`] so the ensure-error mapping is covered
+/// by tests:
+/// - `Superseded` becomes a terminal `Cancelled` (a newer settings change
+///   preempted this request; never an engine-start failure),
+/// - `StartFailed` becomes a typed `EngineStartFailed` error.
+///
+/// When the outgoing messages carry images, the serving llama-server is asked
+/// whether the loaded model actually accepts them (`/props` runtime gate);
+/// a non-vision model gets the images stripped through the same
+/// [`apply_capability_filter`] path and stderr notice the cache-driven filter
+/// uses, instead of letting the whole request fail.
+///
+/// Returns the accumulated assistant content (empty on the error paths) so
+/// the caller's persistence tail treats every route identically.
+pub(crate) async fn stream_builtin_chat(
+    engine: &crate::engine::runner::EngineHandle,
+    target: crate::engine::state::Target,
+    model_id: String,
+    mut messages: Vec<ChatMessage>,
+    client: &reqwest::Client,
+    cancel_token: CancellationToken,
+    on_chunk: impl Fn(StreamChunk),
+) -> String {
+    engine.touch();
+    match engine.ensure_loaded(target).await {
+        Ok(port) => {
+            let base_url = format!("http://127.0.0.1:{port}");
+            let carries_images = messages
+                .iter()
+                .any(|m| m.images.as_ref().is_some_and(|imgs| !imgs.is_empty()));
+            if carries_images && !fetch_builtin_vision(client, &base_url).await {
+                let stats = apply_capability_filter(&mut messages, &Capabilities::default());
+                if stats.stripped_images > 0 {
+                    eprintln!(
+                        "thuki: [capability filter] model={} stripped_images={}",
+                        model_id, stats.stripped_images
+                    );
+                }
+            }
+            crate::openai::stream_openai_chat(
+                crate::openai::OpenAiChatParams {
+                    base_url,
+                    model: model_id,
+                    messages,
+                    api_key: None,
+                },
+                client,
+                cancel_token,
+                on_chunk,
+            )
+            .await
+        }
+        Err(crate::engine::runner::EnsureError::Superseded) => {
+            on_chunk(StreamChunk::Cancelled);
+            String::new()
+        }
+        Err(crate::engine::runner::EnsureError::StartFailed(detail)) => {
+            on_chunk(StreamChunk::Error(EngineError {
+                kind: EngineErrorKind::EngineStartFailed,
+                message: format!("Thuki's engine could not start.\n{detail}"),
+            }));
+            String::new()
+        }
+    }
+}
+
+/// Reads the API key for an `openai`-kind provider from the secret store.
+/// Errors degrade to `None` with a stderr log: a missing or unreadable key
+/// must not block a keyless local `/v1` server.
+pub(crate) fn resolve_provider_api_key(
+    store: &dyn crate::keychain::SecretStore,
+    provider_id: Option<&str>,
+) -> Option<String> {
+    let id = provider_id?;
+    match store.get(id) {
+        Ok(key) => key,
+        Err(e) => {
+            eprintln!("thuki: [keychain] failed to read the api key for provider '{id}': {e}");
+            None
+        }
+    }
+}
+
+/// How LLM calls reach the active provider, decided once per pipeline turn.
+///
+/// Downstream of [`ChatRoute`]: the route names the provider kind, the
+/// transport is the resolved wire target. `Builtin` routes collapse into
+/// `V1` here because once the engine sidecar is serving, it is just another
+/// keyless OpenAI-compatible server at a loopback port.
+#[derive(Clone, PartialEq)]
+pub enum LlmTransport {
+    /// Native Ollama `/api/chat` at the provider's base URL.
+    OllamaNative {
+        /// Full `<base>/api/chat` endpoint.
+        endpoint: String,
+    },
+    /// Generic OpenAI-compatible `/v1` server: an `openai`-kind provider
+    /// (key already resolved) or the built-in engine (keyless, engine port).
+    V1 {
+        base_url: String,
+        api_key: Option<String>,
+    },
+}
+
+impl LlmTransport {
+    /// Human-readable endpoint label for forensic trace records.
+    pub fn endpoint_label(&self) -> String {
+        match self {
+            LlmTransport::OllamaNative { endpoint } => endpoint.clone(),
+            LlmTransport::V1 { base_url, .. } => format!("{base_url}/v1/chat/completions"),
+        }
+    }
+}
+
+impl std::fmt::Debug for LlmTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LlmTransport::OllamaNative { endpoint } => f
+                .debug_struct("OllamaNative")
+                .field("endpoint", endpoint)
+                .finish(),
+            LlmTransport::V1 { base_url, api_key } => f
+                .debug_struct("V1")
+                .field("base_url", base_url)
+                .field("api_key", &api_key.as_ref().map(|_| "<redacted>"))
+                .finish(),
+        }
+    }
+}
+
+/// Picks the model slug for a pipeline turn. `Builtin` routes carry their
+/// model in the provider config (already validated non-empty by
+/// `resolve_chat_route`); every other kind keeps the picker-backed fallback
+/// whose `None` means "no model selected".
+///
+/// Used by both the search pipeline and title generation so the selection
+/// logic stays in one place.
+pub fn model_for_route(route: &ChatRoute, fallback: Option<String>) -> Option<String> {
+    match route {
+        ChatRoute::Builtin { model_id } => Some(model_id.clone()),
+        _ => fallback,
+    }
+}
+
+/// Error from [`resolve_llm_transport`]. Splits the engine-ensure outcomes so
+/// each caller can map them into its own vocabulary: `Superseded` is a
+/// cancellation (a newer settings change preempted the request, never a
+/// failure), `Engine` carries a typed user-facing error.
+#[derive(Debug, PartialEq)]
+pub enum TransportError {
+    /// A newer settings change preempted the engine ensure.
+    Superseded,
+    /// A typed engine error (start failure, missing manifest row, ...).
+    Engine(EngineError),
+}
+
+/// Resolves a [`ChatRoute`] into the [`LlmTransport`] a pipeline turn streams
+/// through. `OllamaNative` passes through; `V1` resolves the provider's API
+/// key; `Builtin` maps the manifest row to an engine [`Target`], marks
+/// activity, and ensures the sidecar serves it, yielding a keyless `V1`
+/// transport at the engine's loopback port.
+///
+/// `num_ctx` is consumed only by the builtin arm: the context size is a
+/// launch property of the llama-server process, not a per-request knob.
+///
+/// [`Target`]: crate::engine::state::Target
+pub(crate) async fn resolve_llm_transport(
+    route: ChatRoute,
+    db: &crate::history::Database,
+    store: &crate::models::storage::ModelStore,
+    engine: &crate::engine::runner::EngineHandle,
+    secrets: &dyn crate::keychain::SecretStore,
+    num_ctx: u32,
+) -> Result<LlmTransport, TransportError> {
+    match route {
+        ChatRoute::OllamaNative { endpoint } => Ok(LlmTransport::OllamaNative { endpoint }),
+        ChatRoute::V1 {
+            base_url,
+            api_key_provider,
+        } => Ok(LlmTransport::V1 {
+            base_url,
+            api_key: resolve_provider_api_key(secrets, api_key_provider.as_deref()),
+        }),
+        ChatRoute::Builtin { model_id } => {
+            // Resolve the manifest row inside a scope so the connection guard
+            // drops before the ensure await. A poisoned lock is recovered:
+            // the connection itself is not invalidated by an unrelated panic.
+            let target = {
+                let conn = match db.0.lock() {
+                    Ok(conn) => conn,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                builtin_target(&conn, store, &model_id, num_ctx).map_err(TransportError::Engine)?
+            };
+            engine.touch();
+            match engine.ensure_loaded(target).await {
+                Ok(port) => Ok(LlmTransport::V1 {
+                    base_url: format!("http://127.0.0.1:{port}"),
+                    api_key: None,
+                }),
+                Err(crate::engine::runner::EnsureError::Superseded) => {
+                    Err(TransportError::Superseded)
+                }
+                Err(crate::engine::runner::EnsureError::StartFailed(detail)) => {
+                    Err(TransportError::Engine(EngineError {
+                        kind: EngineErrorKind::EngineStartFailed,
+                        message: format!("Thuki's engine could not start.\n{detail}"),
+                    }))
+                }
+            }
+        }
+    }
 }
 
 /// Pulls the human-readable reason out of an Ollama error payload. Ollama
@@ -586,40 +916,35 @@ pub async fn ask_model(
     active_model: State<'_, crate::models::ActiveModelState>,
     capabilities_cache: State<'_, ModelCapabilitiesCache>,
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
+    db: State<'_, crate::history::Database>,
+    model_store: State<'_, crate::models::storage::ModelStore>,
+    engine: State<'_, crate::engine::runner::EngineHandle>,
+    secrets: State<'_, crate::keychain::Secrets>,
 ) -> Result<(), String> {
     // Snapshot the config once so all downstream reads (endpoint, prompt, model)
     // see a consistent view even if the user edits Settings mid-stream.
     let config = config.read().clone();
 
-    // Route by provider kind. Phase 1 implements only the native Ollama path;
-    // a non-Ollama active provider (the built-in engine) cannot serve yet, so
-    // bail with a typed, provider-labeled error regardless of model selection.
-    {
-        let kind = config.inference.active_provider_kind();
-        let label = config
-            .inference
-            .active()
-            .map(|p| p.label.as_str())
-            .unwrap_or("");
-        if let Some(err) = unsupported_provider_error(kind, label) {
+    // Route by the active provider's kind: native Ollama, the built-in
+    // engine, or a generic OpenAI-compatible server. The decision is made
+    // once here; the streaming dispatch below consumes it.
+    let route = match resolve_chat_route(&config.inference) {
+        Ok(route) => route,
+        Err(err) => {
             let _ = on_event.send(StreamChunk::Error(err));
             return Ok(());
         }
-    }
+    };
 
-    let endpoint = format!(
-        "{}/api/chat",
-        config
-            .inference
-            .active_provider_base_url()
-            .trim_end_matches('/')
-    );
-    // Snapshot the active model slug; drop the guard before any `.await`.
-    let model_name = {
+    // Snapshot the picker-backed active model; drop the guard before any
+    // `.await`. It is only a fallback: `Builtin` routes carry their model in
+    // the provider config (kept fresh by `persist_active_provider_model`), so
+    // a builtin chat must not depend on this snapshot.
+    let snapshot = {
         let guard = active_model.0.lock().map_err(|e| e.to_string())?;
         guard.clone()
     };
-    let Some(model_name) = model_name else {
+    let Some(model_name) = model_for_route(&route, snapshot) else {
         // Defense in depth: the onboarding gate already refuses to open the
         // overlay without a selected model, so this branch only fires if the
         // user removed their last installed model with `ollama rm` between
@@ -752,27 +1077,81 @@ pub async fn ask_model(
     let token_count_for_pump = std::sync::Arc::clone(&token_count_atomic);
     let recorder_for_pump = std::sync::Arc::clone(&bound_recorder);
 
-    let accumulated = stream_ollama_chat(
-        OllamaChatParams {
-            endpoint,
-            model: model_name,
-            messages,
-            think,
-            keep_alive,
-            num_ctx: config.inference.num_ctx,
-        },
-        &client,
-        cancel_token.clone(),
-        |chunk| {
-            // Mirror the user-visible chunk into the trace before
-            // forwarding it to the frontend. Token / ThinkingToken
-            // chunks land as discrete trace events; terminal chunks are
-            // summarized below by `AssistantComplete`.
-            record_chunk_to_trace(&chunk, &recorder_for_pump, &token_count_for_pump);
-            let _ = on_event.send(chunk);
-        },
-    )
-    .await;
+    // Mirror every user-visible chunk into the trace before forwarding it
+    // to the frontend. Token / ThinkingToken chunks land as discrete trace
+    // events; terminal chunks are summarized below by `AssistantComplete`.
+    // Captures by reference only, so the closure is Copy and each route arm
+    // can consume it.
+    let pump = |chunk: StreamChunk| {
+        record_chunk_to_trace(&chunk, &recorder_for_pump, &token_count_for_pump);
+        let _ = on_event.send(chunk);
+    };
+
+    // Every arm returns the accumulated assistant content (empty when the
+    // turn ended in a pre-stream error), so the persistence tail below is
+    // identical for all three routes.
+    let accumulated = match route {
+        ChatRoute::OllamaNative { endpoint } => {
+            stream_ollama_chat(
+                OllamaChatParams {
+                    endpoint,
+                    model: model_name,
+                    messages,
+                    think,
+                    keep_alive,
+                    num_ctx: config.inference.num_ctx,
+                },
+                &client,
+                cancel_token.clone(),
+                pump,
+            )
+            .await
+        }
+        ChatRoute::Builtin { model_id } => {
+            // Resolve the manifest row to blob-store paths inside a scope so
+            // the connection guard drops before any `.await`.
+            let target = {
+                let conn = db.0.lock().map_err(|e| e.to_string())?;
+                builtin_target(&conn, &model_store, &model_id, config.inference.num_ctx)
+            };
+            match target {
+                Ok(target) => {
+                    stream_builtin_chat(
+                        &engine,
+                        target,
+                        model_id,
+                        messages,
+                        &client,
+                        cancel_token.clone(),
+                        pump,
+                    )
+                    .await
+                }
+                Err(err) => {
+                    pump(StreamChunk::Error(err));
+                    String::new()
+                }
+            }
+        }
+        ChatRoute::V1 {
+            base_url,
+            api_key_provider,
+        } => {
+            let api_key = resolve_provider_api_key(secrets.0.as_ref(), api_key_provider.as_deref());
+            crate::openai::stream_openai_chat(
+                crate::openai::OpenAiChatParams {
+                    base_url,
+                    model: model_name,
+                    messages,
+                    api_key,
+                },
+                &client,
+                cancel_token.clone(),
+                pump,
+            )
+            .await
+        }
+    };
 
     let stream_ended_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1848,26 +2227,6 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_provider_error_passes_ollama_and_flags_other_kinds() {
-        use crate::config::defaults::{PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA};
-        // The native Ollama path proceeds (no error).
-        assert!(unsupported_provider_error(PROVIDER_KIND_OLLAMA, "Ollama").is_none());
-        // The built-in kind has no Phase-1 implementation: typed error, labeled.
-        let err = unsupported_provider_error(PROVIDER_KIND_BUILTIN, "Built-in (Thuki)").unwrap();
-        assert_eq!(err.kind, EngineErrorKind::EngineUnreachable);
-        assert!(err.message.contains("Built-in (Thuki)"));
-        // An empty label falls back to a generic noun.
-        let unlabeled = unsupported_provider_error(PROVIDER_KIND_BUILTIN, "").unwrap();
-        assert!(unlabeled.message.contains("This provider"));
-        // Any non-Ollama kind is flagged, not just the built-in: the gate keys
-        // on `kind != ollama`, so a future provider kind also bails cleanly
-        // rather than falling through to the unreachable Ollama HTTP path.
-        let other = unsupported_provider_error("openai", "Cloud").unwrap();
-        assert_eq!(other.kind, EngineErrorKind::EngineUnreachable);
-        assert!(other.message.contains("Cloud"));
-    }
-
-    #[test]
     fn engine_error_kinds_serialize_as_pascal_case() {
         // Wire format contract: every kind must serialize verbatim in
         // PascalCase so the React side (ErrorCard.barColors, useModel) can match
@@ -1875,6 +2234,7 @@ mod tests {
         // and error routing without failing any other test.
         let cases = [
             (EngineErrorKind::EngineUnreachable, "EngineUnreachable"),
+            (EngineErrorKind::EngineStartFailed, "EngineStartFailed"),
             (EngineErrorKind::ModelNotFound, "ModelNotFound"),
             (EngineErrorKind::NoModelSelected, "NoModelSelected"),
             (EngineErrorKind::Other, "Other"),
@@ -2537,5 +2897,966 @@ mod tests {
             "ignored".to_string(),
         );
         assert_eq!(mock.snapshot().len(), 0);
+    }
+
+    // ─── resolve_chat_route ─────────────────────────────────────────────
+
+    /// Helper: an `InferenceSection` whose single provider `p1` is active.
+    fn inference_with_provider(
+        kind: &str,
+        base_url: &str,
+        model: &str,
+    ) -> crate::config::schema::InferenceSection {
+        use crate::config::schema::{InferenceSection, Provider};
+        InferenceSection {
+            active_provider: "p1".to_string(),
+            providers: vec![Provider {
+                id: "p1".to_string(),
+                kind: kind.to_string(),
+                label: "Test".to_string(),
+                base_url: base_url.to_string(),
+                model: model.to_string(),
+                vision: false,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_chat_route_ollama() {
+        use crate::config::defaults::PROVIDER_KIND_OLLAMA;
+        let inference =
+            inference_with_provider(PROVIDER_KIND_OLLAMA, "http://127.0.0.1:11434/", "");
+        assert_eq!(
+            resolve_chat_route(&inference).unwrap(),
+            ChatRoute::OllamaNative {
+                endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_chat_route_openai() {
+        use crate::config::defaults::PROVIDER_KIND_OPENAI;
+        let inference =
+            inference_with_provider(PROVIDER_KIND_OPENAI, "http://localhost:8080/", "qwen3");
+        assert_eq!(
+            resolve_chat_route(&inference).unwrap(),
+            ChatRoute::V1 {
+                base_url: "http://localhost:8080".to_string(),
+                api_key_provider: Some("p1".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_chat_route_builtin() {
+        use crate::config::defaults::PROVIDER_KIND_BUILTIN;
+        let inference = inference_with_provider(PROVIDER_KIND_BUILTIN, "", "org/repo:m.gguf");
+        assert_eq!(
+            resolve_chat_route(&inference).unwrap(),
+            ChatRoute::Builtin {
+                model_id: "org/repo:m.gguf".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_chat_route_no_model_selected() {
+        use crate::config::defaults::PROVIDER_KIND_BUILTIN;
+        let inference = inference_with_provider(PROVIDER_KIND_BUILTIN, "", "");
+        let err = resolve_chat_route(&inference).unwrap_err();
+        assert_eq!(err.kind, EngineErrorKind::NoModelSelected);
+        assert!(err.message.contains("Settings"));
+    }
+
+    #[test]
+    fn resolve_chat_route_unknown_kind() {
+        let inference = inference_with_provider("weird", "http://x", "m");
+        let err = resolve_chat_route(&inference).unwrap_err();
+        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert!(err.message.contains("unknown kind"));
+    }
+
+    // ─── builtin_target ─────────────────────────────────────────────────
+
+    /// Helper: a complete manifest row keyed by `id` with the given hashes.
+    fn installed_model(
+        id: &str,
+        sha256: &str,
+        mmproj_sha256: Option<&str>,
+    ) -> crate::models::manifest::InstalledModel {
+        crate::models::manifest::InstalledModel {
+            id: id.to_string(),
+            display_name: format!("Model {id}"),
+            repo: "org/repo".to_string(),
+            revision: "a".repeat(40),
+            file_name: format!("{id}.gguf"),
+            sha256: sha256.to_string(),
+            size_bytes: 1_000_000,
+            quant: "Q4_K_M".to_string(),
+            vision: mmproj_sha256.is_some(),
+            thinking: false,
+            mmproj_file: mmproj_sha256.map(|_| format!("{id}-mmproj.gguf")),
+            mmproj_sha256: mmproj_sha256.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn builtin_target_maps_manifest_row() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::models::storage::ModelStore::new(dir.path().to_path_buf()).unwrap();
+        crate::models::manifest::insert(
+            &conn,
+            &installed_model("org/repo:v.gguf", "sha_w", Some("sha_mm")),
+        )
+        .unwrap();
+        crate::models::manifest::insert(&conn, &installed_model("org/repo:t.gguf", "sha_t", None))
+            .unwrap();
+
+        let vision = builtin_target(&conn, &store, "org/repo:v.gguf", 4096).unwrap();
+        assert_eq!(vision.model_path, store.blob_path("sha_w"));
+        assert_eq!(vision.mmproj_path, Some(store.blob_path("sha_mm")));
+        assert_eq!(vision.num_ctx, 4096);
+
+        let text = builtin_target(&conn, &store, "org/repo:t.gguf", DEFAULT_NUM_CTX).unwrap();
+        assert_eq!(text.model_path, store.blob_path("sha_t"));
+        assert_eq!(text.mmproj_path, None);
+        assert_eq!(text.num_ctx, DEFAULT_NUM_CTX);
+    }
+
+    #[test]
+    fn builtin_target_missing_row_is_model_not_found() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::models::storage::ModelStore::new(dir.path().to_path_buf()).unwrap();
+        let err = builtin_target(&conn, &store, "org/repo:gone.gguf", 4096).unwrap_err();
+        assert_eq!(err.kind, EngineErrorKind::ModelNotFound);
+        assert!(err.message.contains("Settings"));
+    }
+
+    #[test]
+    fn builtin_target_manifest_read_error_is_other() {
+        // A bare connection without the schema makes `manifest::get` fail.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::models::storage::ModelStore::new(dir.path().to_path_buf()).unwrap();
+        let err = builtin_target(&conn, &store, "org/repo:m.gguf", 4096).unwrap_err();
+        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert!(err.message.contains("manifest"));
+    }
+
+    // ─── resolve_provider_api_key ───────────────────────────────────────
+
+    #[test]
+    fn resolve_provider_api_key_reads_key_and_misses_to_none() {
+        use crate::keychain::SecretStore;
+        let store = crate::keychain::FakeSecretStore::new();
+        store.set("p1", "sk-test").unwrap();
+        assert_eq!(
+            resolve_provider_api_key(&store, Some("p1")),
+            Some("sk-test".to_string())
+        );
+        assert_eq!(resolve_provider_api_key(&store, Some("absent")), None);
+        assert_eq!(resolve_provider_api_key(&store, None), None);
+    }
+
+    /// A secret store whose reads always fail, for the degrade-to-None path.
+    struct FailingSecretStore;
+
+    impl crate::keychain::SecretStore for FailingSecretStore {
+        fn set(&self, _provider_id: &str, _secret: &str) -> Result<(), String> {
+            Err("locked".to_string())
+        }
+        fn get(&self, _provider_id: &str) -> Result<Option<String>, String> {
+            Err("locked".to_string())
+        }
+        fn delete(&self, _provider_id: &str) -> Result<(), String> {
+            Err("locked".to_string())
+        }
+    }
+
+    #[test]
+    fn resolve_provider_api_key_error_degrades_to_none() {
+        use crate::keychain::SecretStore;
+        assert_eq!(
+            resolve_provider_api_key(&FailingSecretStore, Some("p1")),
+            None
+        );
+        // The other trait methods fail too; the chat path never calls them.
+        assert!(FailingSecretStore.set("p1", "sk").is_err());
+        assert!(FailingSecretStore.delete("p1").is_err());
+    }
+
+    // ─── Ollama native path regression ──────────────────────────────────
+
+    /// Locks the native `/api/chat` wire contract across the routing change:
+    /// the exact request body (model, messages, stream, think, options
+    /// {temperature, top_p, top_k, num_ctx}, keep_alive) must be identical
+    /// to the pre-routing Phase 1 payload.
+    #[tokio::test]
+    async fn ollama_request_body_unchanged() {
+        use crate::config::defaults::PROVIDER_KIND_OLLAMA;
+        let mut server = mockito::Server::new_async().await;
+
+        // The endpoint comes from the route resolver, exactly as `ask_model`
+        // dispatches it.
+        let inference =
+            inference_with_provider(PROVIDER_KIND_OLLAMA, &format!("{}/", server.url()), "");
+        let endpoint = format!("{}/api/chat", server.url());
+        assert_eq!(
+            resolve_chat_route(&inference).unwrap(),
+            ChatRoute::OllamaNative {
+                endpoint: endpoint.clone(),
+            }
+        );
+
+        let expected_body = serde_json::json!({
+            "model": "gemma3:12b",
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"}
+            ],
+            "stream": true,
+            "think": false,
+            "options": {
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "top_k": 64,
+                "num_ctx": DEFAULT_NUM_CTX
+            },
+            "keep_alive": "10m"
+        });
+        let mock = server
+            .mock("POST", "/api/chat")
+            .match_body(mockito::Matcher::Json(expected_body))
+            .with_body(chat_line("", true))
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let (_, callback) = collect_chunks();
+        stream_ollama_chat(
+            OllamaChatParams {
+                endpoint,
+                model: "gemma3:12b".to_string(),
+                messages: vec![
+                    ChatMessage {
+                        role: "system".to_string(),
+                        content: "sys".to_string(),
+                        images: None,
+                    },
+                    ChatMessage {
+                        role: "user".to_string(),
+                        content: "hi".to_string(),
+                        images: None,
+                    },
+                ],
+                think: false,
+                keep_alive: Some("10m".to_string()),
+                num_ctx: DEFAULT_NUM_CTX,
+            },
+            &client,
+            CancellationToken::new(),
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+    }
+
+    // ─── stream_builtin_chat ────────────────────────────────────────────
+
+    /// Scriptable [`crate::engine::process::EngineProcess`] for the built-in
+    /// route tests: hands out a fixed port, optionally fails every spawn,
+    /// and either answers health probes with 200 or hangs them forever so a
+    /// test can preempt the in-flight ensure.
+    struct ScriptedEngineProcess {
+        port: u16,
+        spawn_error: Option<String>,
+        healthy: bool,
+    }
+
+    struct ScriptedChild {
+        exit_tx: tokio::sync::watch::Sender<bool>,
+        exit_rx: tokio::sync::watch::Receiver<bool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::engine::process::EngineChild for ScriptedChild {
+        async fn wait_exit(&mut self) {
+            let _ = self.exit_rx.wait_for(|exited| *exited).await;
+        }
+        async fn kill(&mut self) {
+            let _ = self.exit_tx.send(true);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::engine::process::EngineProcess for ScriptedEngineProcess {
+        async fn spawn(
+            &self,
+            _args: &crate::engine::process::SpawnArgs,
+        ) -> Result<Box<dyn crate::engine::process::EngineChild>, String> {
+            if let Some(ref message) = self.spawn_error {
+                return Err(message.clone());
+            }
+            let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
+            Ok(Box::new(ScriptedChild { exit_tx, exit_rx }))
+        }
+        fn free_port(&self) -> Result<u16, String> {
+            Ok(self.port)
+        }
+        async fn health_probe(&self, _port: u16) -> Result<u16, String> {
+            if !self.healthy {
+                // Hangs until the poll task is dropped by a kill; the
+                // answer below is only ever reached on the healthy path.
+                std::future::pending::<()>().await;
+            }
+            Ok(200)
+        }
+    }
+
+    /// Helper: an [`crate::engine::state::Target`] with placeholder paths.
+    fn engine_target() -> crate::engine::state::Target {
+        crate::engine::state::Target {
+            model_path: std::path::PathBuf::from("/tmp/m.gguf"),
+            mmproj_path: None,
+            num_ctx: DEFAULT_NUM_CTX,
+        }
+    }
+
+    /// Helper: an [`crate::engine::runner::EngineHandle`] over a scripted
+    /// process with idle unload disabled.
+    fn spawn_engine(process: ScriptedEngineProcess) -> crate::engine::runner::EngineHandle {
+        crate::engine::runner::EngineHandle::spawn(
+            Arc::new(process),
+            0,
+            std::time::Duration::from_secs(3600),
+        )
+    }
+
+    #[tokio::test]
+    async fn stream_builtin_chat_streams_from_engine_port() {
+        let mut server = mockito::Server::new_async().await;
+        let port: u16 = server
+            .url()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse()
+            .expect("mockito url ends in a port");
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_header("content-type", "text/event-stream")
+            .with_body("data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\ndata: [DONE]\n")
+            .create_async()
+            .await;
+
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port,
+            spawn_error: None,
+            healthy: true,
+        });
+        let client = reqwest::Client::new();
+        let (chunks, callback) = collect_chunks();
+        let accumulated = stream_builtin_chat(
+            &engine,
+            engine_target(),
+            "org/repo:m.gguf".to_string(),
+            vec![],
+            &client,
+            CancellationToken::new(),
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+        assert_eq!(accumulated, "Hi");
+        let chunks = chunks.lock().unwrap();
+        assert!(matches!(&chunks[0], StreamChunk::Token(t) if t == "Hi"));
+        assert_eq!(
+            std::mem::discriminant(&chunks[1]),
+            std::mem::discriminant(&StreamChunk::Done)
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn superseded_ensure_emits_cancelled() {
+        // Health probes hang, so the ensure stays in flight until the
+        // unload preempts it.
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: false,
+        });
+        let client = reqwest::Client::new();
+        let (chunks, callback) = collect_chunks();
+
+        let task = {
+            let engine = engine.clone();
+            tokio::spawn(async move {
+                stream_builtin_chat(
+                    &engine,
+                    engine_target(),
+                    "org/repo:m.gguf".to_string(),
+                    vec![],
+                    &client,
+                    CancellationToken::new(),
+                    callback,
+                )
+                .await
+            })
+        };
+
+        // Wait until the spawn landed and the health poll is in flight,
+        // then preempt the waiting ensure.
+        let mut status = engine.status();
+        status
+            .wait_for(|s| s.state == "starting")
+            .await
+            .expect("actor is running");
+        engine.unload().await;
+
+        let accumulated = task.await.unwrap();
+        assert_eq!(accumulated, "");
+        let chunks = chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1, "exactly one terminal chunk");
+        assert_eq!(
+            std::mem::discriminant(&chunks[0]),
+            std::mem::discriminant(&StreamChunk::Cancelled)
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn start_failed_maps_engine_start_failed() {
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: Some("spawn boom".to_string()),
+            healthy: true,
+        });
+        let client = reqwest::Client::new();
+        let (chunks, callback) = collect_chunks();
+        let accumulated = stream_builtin_chat(
+            &engine,
+            engine_target(),
+            "org/repo:m.gguf".to_string(),
+            vec![],
+            &client,
+            CancellationToken::new(),
+            callback,
+        )
+        .await;
+
+        assert_eq!(accumulated, "");
+        let chunks = chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1, "exactly one terminal chunk");
+        assert!(matches!(
+            &chunks[0],
+            StreamChunk::Error(e)
+                if e.kind == EngineErrorKind::EngineStartFailed
+                && e.message.starts_with("Thuki's engine could not start.\n")
+                && e.message.contains("spawn boom")
+        ));
+        engine.shutdown().await;
+    }
+
+    // ─── /props runtime vision gate ─────────────────────────────────────
+
+    #[test]
+    fn parse_props_vision_true_false_absent_malformed() {
+        assert!(parse_props_vision(br#"{"modalities":{"vision":true}}"#));
+        assert!(!parse_props_vision(br#"{"modalities":{"vision":false}}"#));
+        assert!(!parse_props_vision(br#"{"modalities":{}}"#), "absent flag");
+        assert!(!parse_props_vision(br#"{}"#), "absent modalities");
+        assert!(
+            !parse_props_vision(br#"{"modalities":{"vision":"yes"}}"#),
+            "non-boolean flag fails closed"
+        );
+        assert!(!parse_props_vision(b"not json"), "malformed body");
+    }
+
+    #[tokio::test]
+    async fn fetch_builtin_vision_transport_error_fails_closed() {
+        let client = reqwest::Client::new();
+        assert!(!fetch_builtin_vision(&client, "http://127.0.0.1:1").await);
+    }
+
+    /// A 2xx `/props` response whose body dies mid-read (connection closed
+    /// before the promised Content-Length) fails closed, like every other
+    /// gate failure mode.
+    #[tokio::test]
+    async fn fetch_builtin_vision_body_read_failure_fails_closed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut req_buf = [0u8; 8192];
+            let _ = stream.read(&mut req_buf).await;
+            // Promise more bytes than are sent, then shut down.
+            let response =
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"modalities\"";
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+
+        let client = reqwest::Client::new();
+        assert!(!fetch_builtin_vision(&client, &format!("http://127.0.0.1:{port}")).await);
+    }
+
+    /// Messages carrying one image, as the gate sees them after the
+    /// capability snapshot is built.
+    fn image_message() -> Vec<ChatMessage> {
+        vec![ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+            images: Some(vec!["QUJD".to_string()]),
+        }]
+    }
+
+    /// Drives `stream_builtin_chat` against a mockito server acting as the
+    /// engine port, with `/props` scripted to report `vision` and the chat
+    /// mock matching `expected_chat_body`. Returns once both mocks assert.
+    async fn run_props_gate_case(vision: bool, expected_chat_body: &str) {
+        let mut server = mockito::Server::new_async().await;
+        let port: u16 = server
+            .url()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse()
+            .expect("mockito url ends in a port");
+        let props_mock = server
+            .mock("GET", "/props")
+            .with_status(200)
+            .with_body(format!(r#"{{"modalities":{{"vision":{vision}}}}}"#))
+            .create_async()
+            .await;
+        let chat_mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(mockito::Matcher::PartialJsonString(
+                expected_chat_body.to_string(),
+            ))
+            .with_header("content-type", "text/event-stream")
+            .with_body("data: [DONE]\n")
+            .create_async()
+            .await;
+
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port,
+            spawn_error: None,
+            healthy: true,
+        });
+        let client = reqwest::Client::new();
+        let (_chunks, callback) = collect_chunks();
+        stream_builtin_chat(
+            &engine,
+            engine_target(),
+            "org/repo:m.gguf".to_string(),
+            image_message(),
+            &client,
+            CancellationToken::new(),
+            callback,
+        )
+        .await;
+
+        props_mock.assert_async().await;
+        chat_mock.assert_async().await;
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn props_gate_strips_images_when_vision_unloaded() {
+        // vision:false -> the image part is stripped, so the wire message
+        // collapses to the plain-string content shape.
+        run_props_gate_case(false, r#"{"messages":[{"role":"user","content":"hi"}]}"#).await;
+    }
+
+    #[tokio::test]
+    async fn props_gate_keeps_images_when_vision_supported() {
+        // vision:true -> the multipart content shape with the image part
+        // reaches the wire untouched.
+        run_props_gate_case(
+            true,
+            r#"{"messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,QUJD"}}]}]}"#,
+        )
+        .await;
+    }
+
+    // ─── LlmTransport / resolve_llm_transport ───────────────────────────
+
+    #[test]
+    fn llm_transport_endpoint_label_names_the_wire_target() {
+        let native = LlmTransport::OllamaNative {
+            endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+        };
+        assert_eq!(native.endpoint_label(), "http://127.0.0.1:11434/api/chat");
+        let v1 = LlmTransport::V1 {
+            base_url: "http://localhost:8080".to_string(),
+            api_key: None,
+        };
+        assert_eq!(
+            v1.endpoint_label(),
+            "http://localhost:8080/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn llm_transport_debug_redacts_api_key() {
+        let with_key = LlmTransport::V1 {
+            base_url: "https://api.openai.com".to_string(),
+            api_key: Some("sk-supersecret".to_string()),
+        };
+        let debug = format!("{with_key:?}");
+        assert!(
+            !debug.contains("sk-supersecret"),
+            "key must not appear in Debug output"
+        );
+        assert!(
+            debug.contains("<redacted>"),
+            "redacted placeholder must be present"
+        );
+
+        let no_key = LlmTransport::V1 {
+            base_url: "http://127.0.0.1:8080".to_string(),
+            api_key: None,
+        };
+        let debug_none = format!("{no_key:?}");
+        assert!(debug_none.contains("None"), "None key must show as None");
+
+        // OllamaNative has no key field; just verify it formats without panic.
+        let native = LlmTransport::OllamaNative {
+            endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+        };
+        let debug_native = format!("{native:?}");
+        assert!(debug_native.contains("OllamaNative"));
+    }
+
+    // ─── model_for_route ────────────────────────────────────────────────────
+
+    #[test]
+    fn model_for_route_prefers_builtin_provider_model() {
+        let route = ChatRoute::Builtin {
+            model_id: "org/repo:m.gguf".to_string(),
+        };
+        assert_eq!(
+            model_for_route(&route, Some("gemma3:12b".to_string())),
+            Some("org/repo:m.gguf".to_string())
+        );
+        assert_eq!(
+            model_for_route(&route, None),
+            Some("org/repo:m.gguf".to_string())
+        );
+    }
+
+    #[test]
+    fn model_for_route_keeps_fallback_for_non_builtin_routes() {
+        let ollama = ChatRoute::OllamaNative {
+            endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+        };
+        assert_eq!(
+            model_for_route(&ollama, Some("gemma3:12b".to_string())),
+            Some("gemma3:12b".to_string())
+        );
+        assert_eq!(model_for_route(&ollama, None), None);
+
+        let v1 = ChatRoute::V1 {
+            base_url: "http://localhost:8080".to_string(),
+            api_key_provider: None,
+        };
+        assert_eq!(
+            model_for_route(&v1, Some("gpt-4o".to_string())),
+            Some("gpt-4o".to_string())
+        );
+        assert_eq!(model_for_route(&v1, None), None);
+    }
+
+    /// Helper: a `Database` over a fresh in-memory schema.
+    fn test_db() -> crate::history::Database {
+        crate::history::Database(StdMutex::new(crate::database::open_in_memory().unwrap()))
+    }
+
+    /// Helper: a `ModelStore` rooted in a fresh temp dir, plus the dir guard.
+    fn test_store() -> (tempfile::TempDir, crate::models::storage::ModelStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::models::storage::ModelStore::new(dir.path().to_path_buf()).unwrap();
+        (dir, store)
+    }
+
+    #[tokio::test]
+    async fn resolve_llm_transport_passes_ollama_endpoint_through() {
+        let db = test_db();
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let transport = resolve_llm_transport(
+            ChatRoute::OllamaNative {
+                endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            transport,
+            LlmTransport::OllamaNative {
+                endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+            }
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resolve_llm_transport_v1_resolves_api_key() {
+        use crate::keychain::SecretStore;
+        let db = test_db();
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        secrets.set("p1", "sk-test").unwrap();
+        let transport = resolve_llm_transport(
+            ChatRoute::V1 {
+                base_url: "http://localhost:8080".to_string(),
+                api_key_provider: Some("p1".to_string()),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            transport,
+            LlmTransport::V1 {
+                base_url: "http://localhost:8080".to_string(),
+                api_key: Some("sk-test".to_string()),
+            }
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resolve_llm_transport_builtin_ensures_engine() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(
+                &conn,
+                &installed_model("org/repo:m.gguf", "sha_w", None),
+            )
+            .unwrap();
+        }
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 4242,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let transport = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:m.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            transport,
+            LlmTransport::V1 {
+                base_url: "http://127.0.0.1:4242".to_string(),
+                api_key: None,
+            }
+        );
+        // The ensure landed: the engine reports the loaded model.
+        assert_eq!(engine.status().borrow().state, "loaded");
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resolve_llm_transport_builtin_missing_row_is_engine_error() {
+        let db = test_db();
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let err = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:gone.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            TransportError::Engine(e) if e.kind == EngineErrorKind::ModelNotFound
+        ));
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resolve_llm_transport_recovers_poisoned_db_lock() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(
+                &conn,
+                &installed_model("org/repo:m.gguf", "sha_w", None),
+            )
+            .unwrap();
+        }
+        // Poison the connection mutex with an unrelated panic; the resolver
+        // must recover the guard rather than fail the turn.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = db.0.lock().unwrap();
+            panic!("poison");
+        }));
+        assert!(db.0.lock().is_err(), "mutex must be poisoned");
+
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 4243,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let transport = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:m.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            transport,
+            LlmTransport::V1 {
+                base_url: "http://127.0.0.1:4243".to_string(),
+                api_key: None,
+            }
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resolve_llm_transport_superseded_and_start_failed_map() {
+        // StartFailed: every spawn errors out.
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(
+                &conn,
+                &installed_model("org/repo:m.gguf", "sha_w", None),
+            )
+            .unwrap();
+        }
+        let (_dir, store) = test_store();
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: Some("spawn boom".to_string()),
+            healthy: true,
+        });
+        let err = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:m.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            TransportError::Engine(ref e)
+                if e.kind == EngineErrorKind::EngineStartFailed
+                && e.message.starts_with("Thuki's engine could not start.\n")
+                && e.message.contains("spawn boom")
+        ));
+        engine.shutdown().await;
+
+        // Superseded: health probes hang, so the in-flight ensure can be
+        // preempted by an unload.
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 1,
+            spawn_error: None,
+            healthy: false,
+        });
+        let task = {
+            let engine = engine.clone();
+            let db = test_db();
+            {
+                let conn = db.0.lock().unwrap();
+                crate::models::manifest::insert(
+                    &conn,
+                    &installed_model("org/repo:m.gguf", "sha_w", None),
+                )
+                .unwrap();
+            }
+            let (_dir2, store2) = test_store();
+            tokio::spawn(async move {
+                let secrets = crate::keychain::FakeSecretStore::new();
+                resolve_llm_transport(
+                    ChatRoute::Builtin {
+                        model_id: "org/repo:m.gguf".to_string(),
+                    },
+                    &db,
+                    &store2,
+                    &engine,
+                    &secrets,
+                    DEFAULT_NUM_CTX,
+                )
+                .await
+            })
+        };
+        let mut status = engine.status();
+        status
+            .wait_for(|s| s.state == "starting")
+            .await
+            .expect("actor is running");
+        engine.unload().await;
+        let err = task.await.unwrap().unwrap_err();
+        assert_eq!(err, TransportError::Superseded);
+        engine.shutdown().await;
     }
 }
