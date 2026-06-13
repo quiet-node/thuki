@@ -36,6 +36,20 @@ Every build embeds llama.cpp's `llama-server` as a Tauri sidecar. The binary and
 
 Deferred: Developer ID re-signing, deep-signing of the nested dylibs, and notarization land as a release-please workflow step when the Apple Developer certificate exists.
 
+### Bumping the pinned llama.cpp version
+
+The pin in `scripts/ensure-llama-server.ts` is two constants. `LLAMA_CPP_TAG` names a published llama.cpp release (for example `b9590`, listed at https://github.com/ggml-org/llama.cpp/releases), and `ASSET_SHA256` is the sha256 of that release's `llama-<tag>-bin-macos-arm64.tar.gz` asset. This is a release pin, not a git commit: llama.cpp's `main` branch moving forward does not affect a pinned build, and a newer release does not make the current one stop working. The pin is updated only when we deliberately adopt a newer engine.
+
+There is no automatic bump, and that is intentional: a new engine version has to clear the manual checks below on real hardware before it ships. Upgrade when there is a concrete reason: a newer model architecture we want to load, a `llama-server` bug or security fix, or a Metal/performance improvement. Otherwise the existing pin keeps working indefinitely.
+
+To bump:
+
+1. Pick the target release on https://github.com/ggml-org/llama.cpp/releases and set `LLAMA_CPP_TAG` to its tag.
+2. Set `ASSET_SHA256` to the macOS arm64 asset's hash. Read it from the GitHub Releases API (the asset's `digest` field) or compute it locally with `shasum -a 256 llama-<tag>-bin-macos-arm64.tar.gz`.
+3. Run `bun run engine:ensure`. It fetches the new asset, verifies the new hash, and re-derives the dylib link closure. If the new release adds, renames, or drops a dylib, the script aborts and names exactly which entries differ from `bundle.macOS.frameworks` in `src-tauri/tauri.conf.json`; update that list to match so the closure check passes.
+4. Bump the cache key in the build workflows so the new asset is not served stale from the old cache.
+5. Re-run the binary-dependent checks on a real machine: the sidecar spawns and streams a response, and `codesign -vv` is clean on the `llama-server` binary and every bundled dylib.
+
 ## Cutting a release manually (rare)
 
 If for some reason a release must be cut outside of CI (incident response, rolling back a bad release-please commit, etc.), the procedure is:

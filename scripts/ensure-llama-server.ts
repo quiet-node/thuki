@@ -20,6 +20,13 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// The pin: LLAMA_CPP_TAG names a published llama.cpp *release* (browse them at
+// https://github.com/ggml-org/llama.cpp/releases), and ASSET_SHA256 is the
+// sha256 of that release's macOS arm64 asset. This is a release pin, not a git
+// commit: llama.cpp's main branch moving on does not change what a build
+// produces, and the pin is bumped only when we deliberately adopt a newer
+// engine. For when and how to bump, see "Bumping the pinned llama.cpp version"
+// in docs/release-process.md.
 const LLAMA_CPP_TAG = 'b9590';
 const ASSET = `llama-${LLAMA_CPP_TAG}-bin-macos-arm64.tar.gz`;
 const ASSET_SHA256 =
