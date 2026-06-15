@@ -7,6 +7,8 @@ interface ErrorCardProps {
 
 const barColors: Record<EngineErrorKind, string> = {
   EngineUnreachable: '#ef4444',
+  // Same red as EngineUnreachable: a sidecar crash is equally severe.
+  EngineStartFailed: '#ef4444',
   ModelNotFound: '#f59e0b',
   // Same accent as ModelNotFound: this is a configuration/setup nudge,
   // not a daemon failure, so the warning hue (amber) is the right read.

@@ -136,7 +136,7 @@ Every domain below is shown as a single table that lists **all** constants Thuki
 
 ### `[inference]`
 
-Thuki reaches a model through a **provider**. `active_provider` names which one is used; each provider is described by a `[[inference.providers]]` block. Phase 1 ships two providers: **Ollama** (reached over HTTP at a configurable URL, local or remote) and a **Built-in (Thuki)** entry reserved for an upcoming bundled engine. A fresh install defaults to the Ollama provider.
+Thuki reaches a model through a **provider**. `active_provider` names which one is used; each provider is described by a `[[inference.providers]]` block. Phase 1 ships two providers: **Ollama** (reached over HTTP at a configurable URL, local or remote) and a **Built-in (Thuki)** entry reserved for an upcoming bundled engine. A fresh install defaults to the Ollama provider. You can also add **OpenAI-compatible** providers (LM Studio, Jan, llama-server, etc.) by specifying `kind = "openai"` and a valid `base_url`.
 
 Each provider keeps its own selected `model`. Thuki discovers installed models live from Ollama's `/api/tags` endpoint and lets you pick one from the in-app model picker (or the Providers section of Settings); the choice is written to that provider's `model` field. When no model is installed and none has been chosen, Thuki refuses to dispatch a chat request and surfaces a "Pick a model" prompt. Pull a model with `ollama pull <slug>` and select it.
 
@@ -154,10 +154,11 @@ Each `[[inference.providers]]` block has these fields:
 | Field      | Description                                                                                                                                                  |
 | :--------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`       | Stable identifier referenced by `active_provider`. The `builtin` and `ollama` ids are seeded automatically.                                                  |
-| `kind`     | `builtin` or `ollama`. Any other kind is dropped on load. Determines how Thuki talks to the provider (the Ollama kind uses Ollama's native API).             |
+| `kind`     | `"builtin"`, `"ollama"`, or `"openai"`. Any other kind is dropped on load. Determines how Thuki talks to the provider.                                       |
 | `label`    | Human-readable name shown in Settings.                                                                                                                       |
-| `base_url` | For the Ollama kind: where Thuki reaches the server (defaults to `http://127.0.0.1:11434`; point it at another machine to use remote Ollama). Empty for the built-in kind. A provider of kind `ollama` with an empty `base_url` is dropped and re-seeded at the localhost default. |
+| `base_url` | For the `ollama` and `openai` kinds: the server's base URL. For `ollama`, defaults to `http://127.0.0.1:11434` if empty (then re-seeded). For `openai`, must be a valid `http://` or `https://` URL; a provider with an empty or non-http(s) URL is dropped without healing. Empty for the `builtin` kind. |
 | `model`    | The model selected for this provider, written when you pick one. Empty means "none chosen yet".                                                              |
+| `vision`   | For `openai`-kind providers only: set to `true` if the selected model accepts image inputs. OpenAI-compatible local servers expose no capability probe, so this is declared manually. Ignored for `builtin` and `ollama` (capabilities are resolved from the manifest or Ollama's `/api/show`). Defaults to `false`. |
 
 If the active model has been removed from Ollama between launches, Thuki silently falls back to the first installed model the next time you open the picker. If no models are installed at all, the next request surfaces a "Model not found" error with the exact `ollama pull <name>` command to run.
 
@@ -180,6 +181,7 @@ The table below also lists the baked-in safety limits that govern Thuki's commun
 | `MAX_HF_API_BODY_BYTES`                     | `4 MiB`  | No       | Defense-in-depth bound on attacker-controlled data from a remote service, mirroring `MAX_OLLAMA_TAGS_BODY_BYTES`. | —      | The largest Hugging Face API response body (repo file listings) Thuki will accept while resolving a model to download. Larger responses are rejected mid-stream and the request returns an error. |
 | `HF_API_TIMEOUT_SECS`                       | `15 s`   | No       | Protocol cap on a hung remote service so the download UI cannot stall on metadata resolution; 15 s is generous for a small metadata call over the internet. | —      | How long Thuki waits for a Hugging Face API metadata call (repo file listing) to respond before giving up. Applies to resolving pasted repo ids and listing a repo's GGUF files, not to the model download itself. |
 | `HF_BASE_URL`                               | `https://huggingface.co` | No | Single origin for model metadata and downloads; the sha256-pinning and provenance model assume the canonical Hub. Pointing downloads at an arbitrary mirror would bypass the integrity guarantees that make the curated starter registry safe. | — | The Hugging Face origin Thuki uses for all model metadata calls and blob downloads. Every starter in the registry pins a repo at an exact revision and carries a sha256 digest verified on install; those digests are read from this origin and only meaningful against it. |
+| `MAX_SSE_LINE_BYTES`                        | `1 MiB`  | No       | Defense-in-depth bound on attacker-controlled stream data. A malicious or broken chat server could otherwise grow a single stream line without limit and exhaust memory. | —      | The longest single Server-Sent-Events line Thuki accepts while streaming a chat response from an OpenAI-compatible (`/v1`) server. A stream line exceeding this aborts the response with an error. |
 
 ### `[prompt]`
 

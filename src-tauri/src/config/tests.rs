@@ -24,14 +24,14 @@ use super::defaults::{
     DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
     DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
     PROVIDER_ID_BUILTIN, PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA,
-    SLASH_COMMAND_PROMPT_APPENDIX,
+    PROVIDER_KIND_OPENAI, SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
-use super::loader::{compose_system_prompt, load_from_path};
+use super::loader::{compose_system_prompt, load_from_path, resolve};
 use super::migrate::{attach_legacy_active_model, toml_has_providers};
 use super::schema::{
-    AppConfig, BehaviorSection, DebugSection, InferenceSection, PromptSection, Provider,
-    QuoteSection, SearchSection, UpdaterSection, WindowSection,
+    ollama_provider, openai_provider, AppConfig, BehaviorSection, DebugSection, InferenceSection,
+    PromptSection, Provider, QuoteSection, SearchSection, UpdaterSection, WindowSection,
 };
 use super::writer::atomic_write;
 
@@ -1480,11 +1480,13 @@ fn provider_constructors_carry_expected_fields() {
     assert_eq!(b.id, PROVIDER_ID_BUILTIN);
     assert_eq!(b.kind, PROVIDER_KIND_BUILTIN);
     assert!(b.base_url.is_empty());
+    assert!(!b.vision);
 
     let o = super::schema::ollama_provider("http://x:1");
     assert_eq!(o.id, PROVIDER_ID_OLLAMA);
     assert_eq!(o.kind, PROVIDER_KIND_OLLAMA);
     assert_eq!(o.base_url, "http://x:1");
+    assert!(!o.vision);
 }
 
 #[test]
@@ -1802,6 +1804,121 @@ fn new_shape_with_model_roundtrips_through_toml() {
     );
 }
 
+// ── inference providers: pre-providers active pin ───────────────────────────
+
+#[test]
+fn pre_providers_file_with_url_pins_active_to_ollama() {
+    // A pre-providers file carrying an ollama_url: the user runs Ollama, so
+    // the active pointer must land on the Ollama provider regardless of the
+    // compiled default, and the URL must survive the migration.
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        "[inference]\nollama_url = \"http://10.0.0.5:11434\"\n",
+    )
+    .unwrap();
+    let c = load_from_path(&path).unwrap();
+    assert_eq!(c.inference.active_provider, PROVIDER_ID_OLLAMA);
+    let ollama = c
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == PROVIDER_ID_OLLAMA)
+        .unwrap();
+    assert_eq!(ollama.base_url, "http://10.0.0.5:11434");
+}
+
+#[test]
+fn pre_providers_file_without_url_key_pins_active_to_ollama() {
+    // A pre-providers file WITHOUT an ollama_url key (the user never changed
+    // the URL) is still a pre-providers file: providers are reseeded and the
+    // active pointer must land on the Ollama provider.
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[inference]\nnum_ctx = 4096\n").unwrap();
+    let c = load_from_path(&path).unwrap();
+    assert_eq!(c.inference.active_provider, PROVIDER_ID_OLLAMA);
+    assert!(c
+        .inference
+        .providers
+        .iter()
+        .any(|p| p.kind == PROVIDER_KIND_BUILTIN));
+    assert!(c
+        .inference
+        .providers
+        .iter()
+        .any(|p| p.kind == PROVIDER_KIND_OLLAMA));
+    assert_eq!(c.inference.num_ctx, 4096);
+}
+
+#[test]
+fn pre_providers_explicit_custom_active_keeps_it() {
+    // An explicit active_provider naming the Ollama provider in a
+    // pre-providers file survives resolution unchanged.
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        "[inference]\nactive_provider = \"ollama\"\nollama_url = \"http://10.0.0.5:11434\"\n",
+    )
+    .unwrap();
+    let c = load_from_path(&path).unwrap();
+    assert_eq!(c.inference.active_provider, PROVIDER_ID_OLLAMA);
+}
+
+#[test]
+fn pre_providers_explicit_builtin_is_pinned_to_ollama() {
+    // A pre-providers file cannot legitimately point at the built-in provider
+    // (none existed when the file was written), so an explicit "builtin" is
+    // overridden to the Ollama provider.
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        "[inference]\nactive_provider = \"builtin\"\nnum_ctx = 4096\n",
+    )
+    .unwrap();
+    let c = load_from_path(&path).unwrap();
+    assert_eq!(c.inference.active_provider, PROVIDER_ID_OLLAMA);
+}
+
+#[test]
+fn new_shape_config_active_untouched() {
+    // A new-shape file (explicit [[inference.providers]]) is never pinned:
+    // an explicit "builtin" choice is respected.
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            active_provider = "builtin"
+            [[inference.providers]]
+            id = "builtin"
+            kind = "builtin"
+            label = "Built-in (Thuki)"
+            [[inference.providers]]
+            id = "ollama"
+            kind = "ollama"
+            label = "Ollama"
+            base_url = "http://127.0.0.1:11434"
+        "#,
+    )
+    .unwrap();
+    let c = load_from_path(&path).unwrap();
+    assert_eq!(c.inference.active_provider, PROVIDER_ID_BUILTIN);
+}
+
+#[test]
+fn fresh_seed_uses_compiled_default() {
+    // A fresh-seeded config (schema Default = default_providers()) is NOT a
+    // pre-providers file: the compiled default pointer is left alone.
+    let mut c = AppConfig::default();
+    resolve(&mut c);
+    assert_eq!(c.inference.active_provider, DEFAULT_ACTIVE_PROVIDER);
+}
+
 // ── inference providers: migrate helpers ─────────────────────────────────────
 
 #[test]
@@ -1817,11 +1934,15 @@ fn attach_legacy_active_model_sets_model_on_active_provider() {
 #[test]
 fn attach_legacy_active_model_targets_the_active_provider_only() {
     // The legacy slug must land on the *active* provider, never on some other
-    // provider that merely happens to have an empty model. Make the built-in
-    // active (empty) and give Ollama a pre-existing model: attach writes the
-    // built-in and leaves Ollama untouched.
+    // provider that merely happens to have an empty model. Add a second
+    // Ollama-kind provider, make it active (empty model), and give the default
+    // Ollama entry a pre-existing model: attach writes the active one and
+    // leaves the other untouched.
     let mut c = AppConfig::default();
-    c.inference.active_provider = PROVIDER_ID_BUILTIN.to_string();
+    let mut remote = ollama_provider("http://10.0.0.9:11434");
+    remote.id = "ollama-remote".to_string();
+    c.inference.providers.push(remote);
+    c.inference.active_provider = "ollama-remote".to_string();
     if let Some(ollama) = c
         .inference
         .providers
@@ -1831,13 +1952,13 @@ fn attach_legacy_active_model_targets_the_active_provider_only() {
         ollama.model = "existing:7b".to_string();
     }
     assert!(attach_legacy_active_model(&mut c, Some("legacy:1b")));
-    let builtin = c
+    let remote = c
         .inference
         .providers
         .iter()
-        .find(|p| p.id == PROVIDER_ID_BUILTIN)
+        .find(|p| p.id == "ollama-remote")
         .unwrap();
-    assert_eq!(builtin.model, "legacy:1b");
+    assert_eq!(remote.model, "legacy:1b");
     let ollama = c
         .inference
         .providers
@@ -1845,6 +1966,30 @@ fn attach_legacy_active_model_targets_the_active_provider_only() {
         .find(|p| p.id == PROVIDER_ID_OLLAMA)
         .unwrap();
     assert_eq!(ollama.model, "existing:7b");
+}
+
+#[test]
+fn legacy_model_attaches_only_to_ollama_kind_provider() {
+    // The legacy SQLite slug is by definition an Ollama model name. When the
+    // active provider is not Ollama-kind (post-flip: a fresh builtin default),
+    // the slug must NOT attach: writing an Ollama slug onto the built-in
+    // provider would make chat fail with ModelNotFound.
+    let mut c = AppConfig::default();
+    c.inference.active_provider = PROVIDER_ID_BUILTIN.to_string();
+    assert!(!attach_legacy_active_model(&mut c, Some("phi4:14b")));
+    let builtin = c
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == PROVIDER_ID_BUILTIN)
+        .unwrap();
+    assert!(builtin.model.is_empty());
+
+    // Active = Ollama-kind with an empty model: attaches as before.
+    let mut c = AppConfig::default();
+    c.inference.active_provider = PROVIDER_ID_OLLAMA.to_string();
+    assert!(attach_legacy_active_model(&mut c, Some("phi4:14b")));
+    assert_eq!(c.inference.active_provider_model(), "phi4:14b");
 }
 
 #[test]
@@ -1879,4 +2024,203 @@ fn provider_struct_default_is_all_empty() {
     assert!(p.kind.is_empty());
     assert!(p.base_url.is_empty());
     assert!(p.model.is_empty());
+    assert!(!p.vision);
+}
+
+// ── inference providers: openai kind ────────────────────────────────────────
+
+#[test]
+fn openai_provider_constructor_shape() {
+    let p = openai_provider("lmstudio", "LM Studio", "http://localhost:1234");
+    assert_eq!(p.id, "lmstudio");
+    assert_eq!(p.kind, PROVIDER_KIND_OPENAI);
+    assert_eq!(p.label, "LM Studio");
+    assert_eq!(p.base_url, "http://localhost:1234");
+    assert!(p.model.is_empty());
+    assert!(!p.vision);
+}
+
+#[test]
+fn openai_kind_with_url_is_kept() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            active_provider = "lmstudio"
+            [[inference.providers]]
+            id = "builtin"
+            kind = "builtin"
+            label = "Built-in (Thuki)"
+            [[inference.providers]]
+            id = "ollama"
+            kind = "ollama"
+            label = "Ollama"
+            base_url = "http://127.0.0.1:11434"
+            [[inference.providers]]
+            id = "lmstudio"
+            kind = "openai"
+            label = "LM Studio"
+            base_url = "http://localhost:1234"
+        "#,
+    )
+    .unwrap();
+    let c = load_from_path(&path).unwrap();
+    let p = c
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == "lmstudio")
+        .expect("openai provider should be retained");
+    assert_eq!(p.kind, PROVIDER_KIND_OPENAI);
+    assert_eq!(p.base_url, "http://localhost:1234");
+}
+
+#[test]
+fn openai_kind_without_url_is_dropped() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            active_provider = "ollama"
+            [[inference.providers]]
+            id = "builtin"
+            kind = "builtin"
+            label = "Built-in (Thuki)"
+            [[inference.providers]]
+            id = "ollama"
+            kind = "ollama"
+            label = "Ollama"
+            base_url = "http://127.0.0.1:11434"
+            [[inference.providers]]
+            id = "lmstudio"
+            kind = "openai"
+            label = "LM Studio"
+            base_url = ""
+        "#,
+    )
+    .unwrap();
+    let c = load_from_path(&path).unwrap();
+    assert!(
+        !c.inference.providers.iter().any(|p| p.id == "lmstudio"),
+        "openai provider with empty base_url must be dropped"
+    );
+}
+
+#[test]
+fn openai_kind_bad_scheme_is_dropped() {
+    // Both a non-http(s) scheme and a bare host without a scheme are rejected.
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            active_provider = "ollama"
+            [[inference.providers]]
+            id = "builtin"
+            kind = "builtin"
+            label = "Built-in (Thuki)"
+            [[inference.providers]]
+            id = "ollama"
+            kind = "ollama"
+            label = "Ollama"
+            base_url = "http://127.0.0.1:11434"
+            [[inference.providers]]
+            id = "bad-scheme"
+            kind = "openai"
+            label = "Bad"
+            base_url = "file:///x"
+            [[inference.providers]]
+            id = "no-scheme"
+            kind = "openai"
+            label = "No scheme"
+            base_url = "localhost:1234"
+        "#,
+    )
+    .unwrap();
+    let c = load_from_path(&path).unwrap();
+    assert!(
+        !c.inference.providers.iter().any(|p| p.id == "bad-scheme"),
+        "openai provider with file:// scheme must be dropped"
+    );
+    assert!(
+        !c.inference.providers.iter().any(|p| p.id == "no-scheme"),
+        "openai provider with scheme-less host must be dropped"
+    );
+}
+
+#[test]
+fn provider_vision_flag_roundtrips() {
+    // A TOML file with vision=true on an openai provider survives load unmodified.
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            active_provider = "jan"
+            [[inference.providers]]
+            id = "builtin"
+            kind = "builtin"
+            label = "Built-in (Thuki)"
+            [[inference.providers]]
+            id = "ollama"
+            kind = "ollama"
+            label = "Ollama"
+            base_url = "http://127.0.0.1:11434"
+            [[inference.providers]]
+            id = "jan"
+            kind = "openai"
+            label = "Jan"
+            base_url = "http://localhost:1337"
+            vision = true
+        "#,
+    )
+    .unwrap();
+    let c = load_from_path(&path).unwrap();
+    let jan = c
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == "jan")
+        .expect("jan provider must be retained");
+    assert!(jan.vision, "vision=true must round-trip through TOML load");
+}
+
+#[test]
+fn unknown_kind_still_dropped() {
+    // Regression: adding openai must not affect the unknown-kind drop path.
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            active_provider = "ollama"
+            [[inference.providers]]
+            id = "builtin"
+            kind = "builtin"
+            label = "Built-in (Thuki)"
+            [[inference.providers]]
+            id = "ollama"
+            kind = "ollama"
+            label = "Ollama"
+            base_url = "http://127.0.0.1:11434"
+            [[inference.providers]]
+            id = "cloud"
+            kind = "anthropic"
+            label = "Cloud"
+            base_url = "https://api.anthropic.com"
+        "#,
+    )
+    .unwrap();
+    let c = load_from_path(&path).unwrap();
+    assert!(
+        !c.inference.providers.iter().any(|p| p.id == "cloud"),
+        "provider with unknown kind must still be dropped"
+    );
 }

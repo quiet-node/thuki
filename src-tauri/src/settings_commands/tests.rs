@@ -12,8 +12,8 @@ use serde_json::json;
 use toml_edit::DocumentMut;
 
 use super::{
-    coerce_json_to_toml, is_allowed_field, is_allowed_section, json_type_name,
-    json_value_to_toml_item, patch_document, read_document, reset_section_on_disk,
+    coerce_json_to_toml, idle_unload_minutes_changed, is_allowed_field, is_allowed_section,
+    json_type_name, json_value_to_toml_item, patch_document, read_document, reset_section_on_disk,
     trace_enabled_changed, write_field_to_disk, write_provider_field_to_disk,
 };
 use crate::config::defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS};
@@ -1064,6 +1064,22 @@ fn trace_enabled_changed_returns_false_when_value_unchanged() {
     assert!(!trace_enabled_changed(true, &cfg));
     cfg.debug.trace_enabled = false;
     assert!(!trace_enabled_changed(false, &cfg));
+}
+
+// ─── idle_unload_minutes_changed ─────────────────────────────────────────────
+
+#[test]
+fn idle_unload_minutes_changed_returns_new_value_on_change() {
+    let mut cfg = AppConfig::default();
+    cfg.inference.idle_unload_minutes = 45;
+    assert_eq!(idle_unload_minutes_changed(0, &cfg), Some(45));
+}
+
+#[test]
+fn idle_unload_minutes_changed_returns_none_when_unchanged() {
+    let mut cfg = AppConfig::default();
+    cfg.inference.idle_unload_minutes = 45;
+    assert_eq!(idle_unload_minutes_changed(45, &cfg), None);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

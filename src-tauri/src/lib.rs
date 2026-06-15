@@ -25,6 +25,7 @@ pub mod images;
 pub mod models;
 pub mod ocr;
 pub mod onboarding;
+pub mod openai;
 pub mod screenshot;
 pub mod search;
 pub mod settings_commands;
@@ -37,6 +38,7 @@ mod activator;
 #[cfg(target_os = "macos")]
 mod cg_displays;
 pub mod context;
+pub mod keychain;
 pub mod permissions;
 pub mod replace;
 
@@ -254,43 +256,84 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 
     // Pre-load the active model so the user's first message does not pay
     // the cold-start penalty. Fires on all show paths: double-tap, tray,
-    // and first-launch auto-show.
-    let warmup_model = app_handle
-        .state::<models::ActiveModelState>()
-        .0
-        .lock()
-        .ok()
-        .and_then(|g| g.clone());
-    if let Some(model) = warmup_model {
-        let warmup_config = app_handle
-            .state::<parking_lot::RwLock<crate::config::AppConfig>>()
-            .read()
-            .clone();
-        let endpoint = format!(
-            "{}/api/chat",
-            warmup_config
-                .inference
-                .active_provider_base_url()
-                .trim_end_matches('/')
-        );
-        let system_prompt = warmup_config.prompt.resolved_system.clone();
-        let keep_alive = if warmup_config.inference.keep_warm_inactivity_minutes == 0 {
-            None
-        } else {
-            Some(warmup::keep_alive_string(
-                warmup_config.inference.keep_warm_inactivity_minutes,
-            ))
-        };
-        let num_ctx = warmup_config.inference.num_ctx;
-        let client = app_handle.state::<reqwest::Client>().inner().clone();
-        app_handle.state::<warmup::WarmupState>().fire(
-            endpoint,
-            model,
-            system_prompt,
-            client,
-            keep_alive,
-            num_ctx,
-        );
+    // and first-launch auto-show. Branches by the active provider's kind:
+    // Ollama keeps its native /api/chat warmup, the built-in engine gets a
+    // /v1 prime ONLY when it is already serving (summoning the overlay must
+    // never load a model implicitly), and openai providers get no warmup
+    // (nothing local to warm).
+    let warmup_kind = app_handle
+        .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+        .read()
+        .inference
+        .active_provider_kind()
+        .to_string();
+    match warmup_kind.as_str() {
+        crate::config::defaults::PROVIDER_KIND_OLLAMA => {
+            let warmup_model = app_handle
+                .state::<models::ActiveModelState>()
+                .0
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
+            if let Some(model) = warmup_model {
+                let warmup_config = app_handle
+                    .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                    .read()
+                    .clone();
+                let endpoint = format!(
+                    "{}/api/chat",
+                    warmup_config
+                        .inference
+                        .active_provider_base_url()
+                        .trim_end_matches('/')
+                );
+                let system_prompt = warmup_config.prompt.resolved_system.clone();
+                let keep_alive = if warmup_config.inference.keep_warm_inactivity_minutes == 0 {
+                    None
+                } else {
+                    Some(warmup::keep_alive_string(
+                        warmup_config.inference.keep_warm_inactivity_minutes,
+                    ))
+                };
+                let num_ctx = warmup_config.inference.num_ctx;
+                let client = app_handle.state::<reqwest::Client>().inner().clone();
+                app_handle.state::<warmup::WarmupState>().fire(
+                    endpoint,
+                    model,
+                    system_prompt,
+                    client,
+                    keep_alive,
+                    num_ctx,
+                );
+            }
+        }
+        crate::config::defaults::PROVIDER_KIND_BUILTIN => {
+            let status = app_handle
+                .state::<engine::runner::EngineHandle>()
+                .status()
+                .borrow()
+                .clone();
+            if let Some(port) = warmup::builtin_prime_port(&status) {
+                let (model, system_prompt) = {
+                    let cfg = app_handle
+                        .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                        .read()
+                        .clone();
+                    (
+                        cfg.inference.active_provider_model().to_string(),
+                        cfg.prompt.resolved_system.clone(),
+                    )
+                };
+                let client = app_handle.state::<reqwest::Client>().inner().clone();
+                tauri::async_runtime::spawn(warmup::prime_builtin(
+                    port,
+                    model,
+                    system_prompt,
+                    client,
+                ));
+            }
+        }
+        _ => {}
     }
 
     // Extract before building local_ctx to avoid an extra clone.
@@ -1473,6 +1516,28 @@ fn config_file_has_providers(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Path to the bundled `llama-server` sidecar binary.
+///
+/// Debug builds run straight from the repo, so the target-triple-suffixed
+/// binary in `src-tauri/binaries/` is used directly. Bundled builds rely on
+/// Tauri's `externalBin` handling, which installs the sidecar next to the
+/// app executable (`Contents/MacOS`) with the target-triple suffix stripped,
+/// so it resolves relative to `current_exe()`. Verified manually against the
+/// packaged app layout (see the release checklist).
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn engine_sidecar_path() -> std::path::PathBuf {
+    if cfg!(debug_assertions) {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join("llama-server-aarch64-apple-darwin")
+    } else {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("llama-server")))
+            .unwrap_or_else(|| std::path::PathBuf::from("llama-server"))
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -1820,6 +1885,48 @@ pub fn run() {
             app.manage(model_store);
             app.manage(models::DownloadState::default());
 
+            // ── Keychain secret store ──────────────────────────────
+            app.manage(keychain::Secrets(std::sync::Arc::new(
+                keychain::KeyringStore,
+            )));
+
+            // ── Built-in inference engine runner ───────────────────
+            // One actor owns the bundled llama-server lifecycle: at most one
+            // process, kill-then-start on model switch, idle unload. Spawned
+            // inside block_on so the actor task lands on Tauri's tokio
+            // runtime (setup itself runs outside a runtime context).
+            let engine_idle_minutes = app
+                .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                .read()
+                .inference
+                .idle_unload_minutes;
+            let engine_client = app.state::<reqwest::Client>().inner().clone();
+            let engine = tauri::async_runtime::block_on(async move {
+                engine::runner::EngineHandle::spawn(
+                    std::sync::Arc::new(engine::process::TokioEngineProcess {
+                        binary: engine_sidecar_path(),
+                        client: engine_client,
+                    }),
+                    engine_idle_minutes,
+                    std::time::Duration::from_secs(
+                        crate::config::defaults::ENGINE_IDLE_CHECK_INTERVAL_SECS,
+                    ),
+                )
+            });
+            // Forward every engine lifecycle change to the frontend,
+            // mirroring how warmup events are emitted.
+            {
+                let status_handle = app.handle().clone();
+                let mut status_rx = engine.status();
+                tauri::async_runtime::spawn(async move {
+                    while status_rx.changed().await.is_ok() {
+                        let status = status_rx.borrow_and_update().clone();
+                        let _ = status_handle.emit("engine:status", status);
+                    }
+                });
+            }
+            app.manage(engine);
+
             // ── Orphaned image cleanup (startup + periodic) ─────────
             run_image_cleanup(app.handle());
             spawn_periodic_image_cleanup(app.handle().clone());
@@ -1952,17 +2059,22 @@ pub fn run() {
             #[cfg(not(coverage))]
             updater::commands::reset_and_relaunch_for_grant,
             #[cfg(not(coverage))]
-            updater::commands::consume_pending_grant_resume
+            updater::commands::consume_pending_grant_resume,
+            #[cfg(not(coverage))]
+            keychain::set_provider_api_key,
+            #[cfg(not(coverage))]
+            keychain::clear_provider_api_key,
+            #[cfg(not(coverage))]
+            keychain::has_provider_api_key
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let RunEvent::WindowEvent {
+        .run(|app_handle, event| match event {
+            RunEvent::WindowEvent {
                 label,
                 event: tauri::WindowEvent::CloseRequested { api, .. },
                 ..
-            } = event
-            {
+            } => {
                 if label == "main" {
                     api.prevent_close();
 
@@ -1984,6 +2096,17 @@ pub fn run() {
                     }
                 }
             }
+            RunEvent::Exit => {
+                // Kill the built-in engine sidecar and confirm its exit so
+                // no orphan llama-server survives quit. The actor runs on
+                // the tokio runtime, so block_on here cannot deadlock.
+                let engine = app_handle
+                    .state::<engine::runner::EngineHandle>()
+                    .inner()
+                    .clone();
+                tauri::async_runtime::block_on(async move { engine.shutdown().await });
+            }
+            _ => {}
         });
 }
 

@@ -14,9 +14,15 @@ pub const PROVIDER_ID_BUILTIN: &str = "builtin";
 pub const PROVIDER_ID_OLLAMA: &str = "ollama";
 
 /// Provider kinds understood by the loader. Providers with any other kind are
-/// dropped during resolution.
+/// dropped during resolution. Recognized kinds: `"builtin"`, `"ollama"`,
+/// `"openai"`.
 pub const PROVIDER_KIND_BUILTIN: &str = "builtin";
 pub const PROVIDER_KIND_OLLAMA: &str = "ollama";
+/// Any OpenAI-compatible local or remote inference server (LM Studio, Jan,
+/// llama-server, etc.). Requires a valid http(s) `base_url`; providers with
+/// an empty or non-http(s) URL are dropped rather than healed (unlike Ollama,
+/// there is no sensible localhost default for arbitrary /v1 servers).
+pub const PROVIDER_KIND_OPENAI: &str = "openai";
 
 /// Human-readable provider labels shown in Settings.
 pub const DEFAULT_BUILTIN_LABEL: &str = "Built-in (Thuki)";
@@ -104,6 +110,11 @@ pub const ENGINE_COMMAND_QUEUE_CAPACITY: usize = 64;
 /// of chunks per second and the UI only needs a few updates per second. Not
 /// user-tunable: pure IPC hygiene, invisible below the UI refresh rate.
 pub const DOWNLOAD_PROGRESS_MIN_INTERVAL_MS: u64 = 500;
+
+/// Maximum accepted length of a single Server-Sent-Events line from a /v1
+/// streaming response. Bounds attacker-controlled data from a chat server
+/// (a malicious or broken server cannot grow a single line unboundedly).
+pub const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
 
 /// Built-in secretary persona prompt. User overrides via `[prompt] system` in
 /// the config file. The slash-command appendix is composed on top at load time

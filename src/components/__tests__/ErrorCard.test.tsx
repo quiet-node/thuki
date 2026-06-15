@@ -40,6 +40,24 @@ describe('ErrorCard', () => {
     expect(bar?.getAttribute('data-kind')).toBe('EngineUnreachable');
   });
 
+  it('applies red accent bar for EngineStartFailed', () => {
+    const { container } = render(
+      <ErrorCard
+        kind="EngineStartFailed"
+        message={
+          'Engine failed to start\nThe bundled sidecar crashed before becoming healthy.'
+        }
+      />,
+    );
+    const bar = container.querySelector('[data-error-bar]');
+    expect(bar).not.toBeNull();
+    expect(bar?.getAttribute('data-kind')).toBe('EngineStartFailed');
+    // JSDOM normalizes hex to rgb; assert the same red family as EngineUnreachable.
+    expect((bar as HTMLElement | null)?.style.background).toBe(
+      'rgb(239, 68, 68)',
+    );
+  });
+
   it('applies amber accent bar for ModelNotFound', () => {
     const { container } = render(
       <ErrorCard

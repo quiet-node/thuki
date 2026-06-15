@@ -2,12 +2,16 @@
 //! startup orchestration (SQLite active-model fold-in). Kept pure so both
 //! halves are unit-tested without a Tauri app or a real SQLite connection.
 
+use super::defaults::PROVIDER_KIND_OLLAMA;
 use super::schema::AppConfig;
 
 /// Attaches a legacy SQLite `active_model` onto the active provider's `model`
-/// field when that provider has no model yet. Returns true if it mutated the
-/// config (so startup can decide whether to persist). No-op when `legacy` is
-/// empty/whitespace or the active provider already has a model.
+/// field when that provider is Ollama-kind and has no model yet. The legacy
+/// slug is by definition an Ollama model name, so it never attaches to a
+/// provider of any other kind. Returns true if it mutated the config (so
+/// startup can decide whether to persist). No-op when `legacy` is
+/// empty/whitespace, the active provider is not Ollama-kind, or it already
+/// has a model.
 pub fn attach_legacy_active_model(config: &mut AppConfig, legacy: Option<&str>) -> bool {
     let Some(model) = legacy.map(str::trim).filter(|m| !m.is_empty()) else {
         return false;
@@ -19,6 +23,9 @@ pub fn attach_legacy_active_model(config: &mut AppConfig, legacy: Option<&str>) 
         .iter_mut()
         .find(|p| p.id == active_id)
     {
+        if provider.kind != PROVIDER_KIND_OLLAMA {
+            return false;
+        }
         if provider.model.trim().is_empty() {
             provider.model = model.to_string();
             return true;

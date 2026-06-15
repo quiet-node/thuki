@@ -4,7 +4,9 @@ use std::sync::{
 };
 use tauri::{Emitter, Manager};
 
-use crate::config::defaults::VRAM_POLL_INTERVAL_SECS;
+use crate::config::defaults::{
+    PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, VRAM_POLL_INTERVAL_SECS,
+};
 
 type InFlightSlot = Arc<Mutex<Option<(String, Option<String>, String, u32)>>>;
 type OnLoaded = Arc<dyn Fn(String) + Send + Sync + 'static>;
@@ -58,6 +60,83 @@ pub fn keep_alive_string(minutes: i32) -> String {
         "-1".to_string()
     } else {
         format!("{minutes}m")
+    }
+}
+
+/// True when the VRAM poller should query Ollama's `/api/ps` on this tick.
+/// The poller observes Ollama's VRAM only: the built-in engine publishes its
+/// lifecycle through the engine status watch and an `openai` provider has no
+/// local memory to observe, so any non-Ollama active provider skips the HTTP
+/// call entirely.
+pub(crate) fn vram_poll_active(kind: &str) -> bool {
+    kind == PROVIDER_KIND_OLLAMA
+}
+
+/// The engine port to prime, when the built-in engine already serves a model.
+/// `None` for every other lifecycle state: summoning the overlay must never
+/// load a model implicitly (loads happen on explicit chat or download).
+pub(crate) fn builtin_prime_port(status: &crate::engine::runner::EngineStatus) -> Option<u16> {
+    if status.state == "loaded" {
+        status.port
+    } else {
+        None
+    }
+}
+
+/// Builds the prime request body for the built-in engine: a plain
+/// `/v1/chat/completions` completion carrying the resolved system prompt and
+/// a one-token budget. llama-server's prompt cache (on by default) keeps the
+/// system prefix in KV so the first real message skips its prefill.
+pub(crate) fn builtin_prime_body(model: &str, system_prompt: &str) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "ok"}
+        ],
+        "max_tokens": 1,
+        "stream": false
+    })
+}
+
+/// Fires the built-in engine prime request at the serving port. Best-effort,
+/// mirroring `run_warmup`'s error handling: every failure (transport or HTTP)
+/// is silently ignored. Deliberately does NOT touch the engine's idle clock:
+/// priming is app-summon activity, not user chat; if it touched, idle-unload
+/// would never fire for a user who keeps summoning the overlay without
+/// chatting.
+pub(crate) async fn prime_builtin(
+    port: u16,
+    model: String,
+    system_prompt: String,
+    client: reqwest::Client,
+) {
+    let body = builtin_prime_body(&model, &system_prompt);
+    let _ = client
+        .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+        .json(&body)
+        .send()
+        .await;
+}
+
+/// Built-in arm of `evict_model`: stops the engine sidecar and resolves once
+/// the process exit is confirmed. The `warmup:model-evicted` emit stays in
+/// the thin Tauri command because it needs an `AppHandle`.
+pub(crate) async fn evict_builtin(engine: &crate::engine::runner::EngineHandle) {
+    engine.unload().await;
+}
+
+/// Built-in arm of `get_loaded_model`: the provider's configured model id
+/// when the engine status watch reports a loaded model, `None` otherwise
+/// (including when no model has been picked yet).
+pub(crate) fn builtin_loaded_model(
+    status: &crate::engine::runner::EngineStatus,
+    model_id: &str,
+) -> Option<String> {
+    if status.state == "loaded" && !model_id.is_empty() {
+        Some(model_id.to_string())
+    } else {
+        None
     }
 }
 
@@ -151,34 +230,52 @@ pub fn warm_up_model(
     models: tauri::State<crate::models::ActiveModelState>,
     config: tauri::State<parking_lot::RwLock<crate::config::AppConfig>>,
     client: tauri::State<reqwest::Client>,
+    engine: tauri::State<crate::engine::runner::EngineHandle>,
 ) {
-    let model = models.0.lock().ok().and_then(|g| g.clone());
-    if let Some(model) = model {
-        let cfg = config.read();
-        let endpoint = format!(
-            "{}/api/chat",
-            cfg.inference
-                .active_provider_base_url()
-                .trim_end_matches('/')
-        );
-        let system_prompt = cfg.prompt.resolved_system.clone();
-        let keep_alive = if cfg.inference.keep_warm_inactivity_minutes == 0 {
-            None
-        } else {
-            Some(keep_alive_string(
-                cfg.inference.keep_warm_inactivity_minutes,
-            ))
-        };
-        let num_ctx = cfg.inference.num_ctx;
-        drop(cfg);
-        warmup.fire(
-            endpoint,
-            model,
-            system_prompt,
-            client.inner().clone(),
-            keep_alive,
-            num_ctx,
-        );
+    let kind = config.read().inference.active_provider_kind().to_string();
+    match kind.as_str() {
+        PROVIDER_KIND_OLLAMA => {
+            let model = models.0.lock().ok().and_then(|g| g.clone());
+            if let Some(model) = model {
+                let cfg = config.read();
+                let endpoint = format!(
+                    "{}/api/chat",
+                    cfg.inference
+                        .active_provider_base_url()
+                        .trim_end_matches('/')
+                );
+                let system_prompt = cfg.prompt.resolved_system.clone();
+                let keep_alive = if cfg.inference.keep_warm_inactivity_minutes == 0 {
+                    None
+                } else {
+                    Some(keep_alive_string(
+                        cfg.inference.keep_warm_inactivity_minutes,
+                    ))
+                };
+                let num_ctx = cfg.inference.num_ctx;
+                drop(cfg);
+                warmup.fire(
+                    endpoint,
+                    model,
+                    system_prompt,
+                    client.inner().clone(),
+                    keep_alive,
+                    num_ctx,
+                );
+            }
+        }
+        PROVIDER_KIND_BUILTIN => {
+            let status = engine.status().borrow().clone();
+            if let Some(port) = builtin_prime_port(&status) {
+                let cfg = config.read();
+                let model = cfg.inference.active_provider_model().to_string();
+                let system_prompt = cfg.prompt.resolved_system.clone();
+                drop(cfg);
+                let client = client.inner().clone();
+                tauri::async_runtime::spawn(prime_builtin(port, model, system_prompt, client));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -216,28 +313,43 @@ pub(crate) async fn get_loaded_model_request(
     Ok(if found { Some(model.to_string()) } else { None })
 }
 
-/// Returns the active model's name if it is currently loaded in Ollama's VRAM,
-/// `None` if no model is selected or the selected model is not running.
+/// Returns the active model's name if it is currently loaded, `None` if no
+/// model is selected or nothing is running. Branches by the active provider's
+/// kind: Ollama queries `/api/ps`, the built-in engine reads its own status
+/// watch, and `openai` providers always report `None` (there is no local
+/// memory to observe).
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn get_loaded_model(
     models: tauri::State<'_, crate::models::ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<crate::config::AppConfig>>,
     client: tauri::State<'_, reqwest::Client>,
+    engine: tauri::State<'_, crate::engine::runner::EngineHandle>,
 ) -> Result<Option<String>, String> {
-    let model = models.0.lock().ok().and_then(|g| g.clone());
-    if let Some(model) = model {
-        let endpoint = format!(
-            "{}/api/ps",
-            config
-                .read()
-                .inference
-                .active_provider_base_url()
-                .trim_end_matches('/')
-        );
-        get_loaded_model_request(&endpoint, &model, client.inner()).await
-    } else {
-        Ok(None)
+    let kind = config.read().inference.active_provider_kind().to_string();
+    match kind.as_str() {
+        PROVIDER_KIND_BUILTIN => {
+            let model_id = config.read().inference.active_provider_model().to_string();
+            let status = engine.status().borrow().clone();
+            Ok(builtin_loaded_model(&status, &model_id))
+        }
+        PROVIDER_KIND_OLLAMA => {
+            let model = models.0.lock().ok().and_then(|g| g.clone());
+            if let Some(model) = model {
+                let endpoint = format!(
+                    "{}/api/ps",
+                    config
+                        .read()
+                        .inference
+                        .active_provider_base_url()
+                        .trim_end_matches('/')
+                );
+                get_loaded_model_request(&endpoint, &model, client.inner()).await
+            } else {
+                Ok(None)
+            }
+        }
+        _ => Ok(None),
     }
 }
 
@@ -264,11 +376,14 @@ pub(crate) async fn evict_model_request(
         .map_err(|e| e.to_string())
 }
 
-/// Unloads the active model from Ollama's VRAM immediately.
+/// Unloads the active model from local memory immediately. Branches by the
+/// active provider's kind: Ollama gets the `/api/generate keep_alive:"0"`
+/// request, the built-in engine unloads its sidecar process, and `openai`
+/// providers are a no-op (there is no local memory to release).
 ///
-/// Delegates to `evict_model_request`; returns an error string on failure so
-/// the frontend can react (e.g. reset the eject button state). Emits
-/// `warmup:model-evicted` on success so the Settings panel updates live.
+/// The Ollama arm delegates to `evict_model_request`; returns an error string
+/// on failure so the frontend can react (e.g. reset the eject button state).
+/// Emits `warmup:model-evicted` on success so the Settings panel updates live.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn evict_model(
@@ -277,22 +392,36 @@ pub async fn evict_model(
     models: tauri::State<'_, crate::models::ActiveModelState>,
     config: tauri::State<'_, parking_lot::RwLock<crate::config::AppConfig>>,
     client: tauri::State<'_, reqwest::Client>,
+    engine: tauri::State<'_, crate::engine::runner::EngineHandle>,
 ) -> Result<(), String> {
-    let model = models.0.lock().ok().and_then(|g| g.clone());
-    if let Some(model) = model {
-        let endpoint = format!(
-            "{}/api/generate",
-            config
-                .read()
-                .inference
-                .active_provider_base_url()
-                .trim_end_matches('/')
-        );
-        evict_model_request(&endpoint, &model, client.inner()).await?;
-        // Suppress any in-flight warmup callback so a slow warmup that
-        // completes after the eviction request does not re-announce the model.
-        warmup.mark_evicted();
-        let _ = app_handle.emit("warmup:model-evicted", ());
+    let kind = config.read().inference.active_provider_kind().to_string();
+    match kind.as_str() {
+        PROVIDER_KIND_BUILTIN => {
+            // No mark_evicted() here: the WarmupState in-flight slot is only
+            // armed by fire(), which is never called for builtin providers.
+            // There is no Ollama-era warmup callback to suppress.
+            evict_builtin(&engine).await;
+            let _ = app_handle.emit("warmup:model-evicted", ());
+        }
+        PROVIDER_KIND_OLLAMA => {
+            let model = models.0.lock().ok().and_then(|g| g.clone());
+            if let Some(model) = model {
+                let endpoint = format!(
+                    "{}/api/generate",
+                    config
+                        .read()
+                        .inference
+                        .active_provider_base_url()
+                        .trim_end_matches('/')
+                );
+                evict_model_request(&endpoint, &model, client.inner()).await?;
+                // Suppress any in-flight warmup callback so a slow warmup that
+                // completes after the eviction request does not re-announce the model.
+                warmup.mark_evicted();
+                let _ = app_handle.emit("warmup:model-evicted", ());
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -315,6 +444,20 @@ pub fn spawn_vram_poller(app_handle: tauri::AppHandle) {
 
         loop {
             ticker.tick().await;
+
+            // The poller is Ollama-specific: skip the tick entirely (no HTTP
+            // call) while any other provider kind is active. `prev` is left
+            // untouched so a later switch back to Ollama resumes transition
+            // detection from the last observed Ollama state.
+            let kind = app_handle
+                .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                .read()
+                .inference
+                .active_provider_kind()
+                .to_string();
+            if !vram_poll_active(&kind) {
+                continue;
+            }
 
             let model = app_handle
                 .state::<crate::models::ActiveModelState>()
@@ -1248,5 +1391,146 @@ mod tests {
             in_flight.lock().unwrap().is_none(),
             "slot clears even when eviction suppresses the callback"
         );
+    }
+
+    // ── Provider-kind branching ──────────────────────────────────────────────
+
+    #[test]
+    fn vram_poller_tick_skips_non_ollama() {
+        assert!(vram_poll_active("ollama"), "ollama keeps polling /api/ps");
+        assert!(!vram_poll_active("builtin"), "builtin must not hit Ollama");
+        assert!(!vram_poll_active("openai"), "openai has no VRAM to observe");
+        assert!(!vram_poll_active(""), "unresolved kind must not poll");
+    }
+
+    /// EngineStatus literal for the prime/loaded-model decision tests.
+    fn engine_status(state: &str, port: Option<u16>) -> crate::engine::runner::EngineStatus {
+        crate::engine::runner::EngineStatus {
+            state: state.to_string(),
+            model_path: String::new(),
+            port,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn prime_skipped_when_engine_not_loaded() {
+        assert_eq!(builtin_prime_port(&engine_status("stopped", None)), None);
+        assert_eq!(builtin_prime_port(&engine_status("starting", None)), None);
+        assert_eq!(builtin_prime_port(&engine_status("failed", None)), None);
+        assert_eq!(
+            builtin_prime_port(&engine_status("loaded", Some(40123))),
+            Some(40123)
+        );
+    }
+
+    #[tokio::test]
+    async fn builtin_prime_request_hits_v1_with_max_tokens_1() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"model":"org/repo:m.gguf","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"ok"}],"max_tokens":1,"stream":false}"#.to_string(),
+            ))
+            .with_status(200)
+            .with_body("{}")
+            .create_async()
+            .await;
+
+        let port: u16 = server
+            .url()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse()
+            .expect("mockito url ends in a port");
+        prime_builtin(
+            port,
+            "org/repo:m.gguf".to_string(),
+            SYS.to_string(),
+            reqwest::Client::new(),
+        )
+        .await;
+
+        mock.assert_async().await;
+    }
+
+    #[test]
+    fn get_loaded_model_builtin_from_status() {
+        assert_eq!(
+            builtin_loaded_model(&engine_status("loaded", Some(40123)), "org/repo:m.gguf"),
+            Some("org/repo:m.gguf".to_string())
+        );
+        assert_eq!(
+            builtin_loaded_model(&engine_status("stopped", None), "org/repo:m.gguf"),
+            None
+        );
+        assert_eq!(
+            builtin_loaded_model(&engine_status("loaded", Some(40123)), ""),
+            None,
+            "no picked model means nothing to report even while loaded"
+        );
+    }
+
+    // ── evict_builtin against a scripted engine ──────────────────────────────
+
+    /// Minimal scriptable engine process: spawns instantly and answers every
+    /// health probe with 200, so `ensure_loaded` resolves without a real
+    /// llama-server.
+    struct InstantEngineProcess;
+
+    struct InstantChild {
+        exit_tx: tokio::sync::watch::Sender<bool>,
+        exit_rx: tokio::sync::watch::Receiver<bool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::engine::process::EngineChild for InstantChild {
+        async fn wait_exit(&mut self) {
+            let _ = self.exit_rx.wait_for(|exited| *exited).await;
+        }
+        async fn kill(&mut self) {
+            let _ = self.exit_tx.send(true);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::engine::process::EngineProcess for InstantEngineProcess {
+        async fn spawn(
+            &self,
+            _args: &crate::engine::process::SpawnArgs,
+        ) -> Result<Box<dyn crate::engine::process::EngineChild>, String> {
+            let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
+            Ok(Box::new(InstantChild { exit_tx, exit_rx }))
+        }
+        fn free_port(&self) -> Result<u16, String> {
+            Ok(40123)
+        }
+        async fn health_probe(&self, _port: u16) -> Result<u16, String> {
+            Ok(200)
+        }
+    }
+
+    #[tokio::test]
+    async fn evict_on_builtin_calls_runner_unload() {
+        let engine = crate::engine::runner::EngineHandle::spawn(
+            Arc::new(InstantEngineProcess),
+            0,
+            Duration::from_secs(3600),
+        );
+        engine
+            .ensure_loaded(crate::engine::state::Target {
+                model_path: std::path::PathBuf::from("/tmp/m.gguf"),
+                mmproj_path: None,
+                num_ctx: DEFAULT_NUM_CTX,
+            })
+            .await
+            .expect("scripted engine loads");
+        assert_eq!(engine.status().borrow().state, "loaded");
+
+        evict_builtin(&engine).await;
+
+        assert_eq!(engine.status().borrow().state, "stopped");
+        engine.shutdown().await;
     }
 }
