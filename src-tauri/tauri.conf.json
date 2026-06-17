@@ -85,6 +85,8 @@
       "binaries/llama-server"
     ],
     "macOS": {
+      "signingIdentity": "-",
+      "hardenedRuntime": false,
       "frameworks": [
         "binaries/libggml-base.0.dylib",
         "binaries/libggml-blas.0.dylib",
