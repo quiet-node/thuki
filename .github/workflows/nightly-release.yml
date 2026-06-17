@@ -85,6 +85,19 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
+      # The sidecar must be present before any cargo invocation. lint:backend
+      # (cargo clippy) and test:all:coverage (cargo llvm-cov) both run build.rs,
+      # which fails if binaries/llama-server-<triple> is missing. Restore the
+      # cache and fetch on miss before the first lint step, not after.
+      - name: Cache llama.cpp sidecar
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: src-tauri/binaries
+          key: llama-cpp-${{ runner.os }}-b9590-b12cb8851ea60433
+
+      - name: Fetch llama-server sidecar
+        run: bun run engine:ensure
+
       - name: Lint and format check
         run: bun run lint && bun run format:check
 
@@ -93,12 +106,6 @@ jobs:
 
       - name: Run all tests with coverage enforcement
         run: bun run test:all:coverage
-
-      - name: Cache llama.cpp sidecar
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: src-tauri/binaries
-          key: llama-cpp-${{ runner.os }}-b9590-b12cb8851ea60433
 
       - name: Build Tauri app
         # VITE_GIT_COMMIT_SHA is set here, not on a separate frontend step, because
