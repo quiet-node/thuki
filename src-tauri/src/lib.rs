@@ -164,6 +164,21 @@ static OVERLAY_MINIMIZED: AtomicBool = AtomicBool::new(false);
 /// registered, so the show event is guaranteed to have a listener.
 static LAUNCH_SHOW_PENDING: AtomicBool = AtomicBool::new(true);
 
+/// True while the onboarding flow owns the main window (any stage:
+/// permissions, model_check, intro). Set when `show_onboarding_window` puts
+/// the window into its fixed 460x640 centered onboarding appearance, cleared
+/// by `finish_onboarding` just before the first real overlay show. Read at the
+/// top of `show_overlay` so an activation (tray "Open Thuki" / double-tap
+/// Control) does not run the ask-bar show path while onboarding is up: doing so
+/// would reposition the window and emit a `show` visibility event, and the
+/// frontend's width/height sync would then collapse the still-onboarding window
+/// to the ask-bar size.
+static ONBOARDING_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+fn set_onboarding_active_impl(active: bool) {
+    ONBOARDING_ACTIVE.store(active, Ordering::SeqCst);
+}
+
 /// Payload emitted to the frontend on every visibility transition.
 #[derive(Clone, serde::Serialize)]
 struct VisibilityPayload {
@@ -245,6 +260,17 @@ fn monitor_info_fallback() -> (f64, f64, f64, f64) {
 /// back to global coordinates for `set_position`.
 #[cfg(target_os = "macos")]
 fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
+    // Onboarding owns the main window (fixed 460x640, centered). Running the
+    // ask-bar show path here would reposition the window and emit a `show`
+    // visibility event, and the frontend would then collapse the still-
+    // onboarding window to the ask-bar size. Bring the onboarding window
+    // forward instead so "Open Thuki" / the hotkey still surface it.
+    if ONBOARDING_ACTIVE.load(Ordering::SeqCst) {
+        if let Ok(panel) = app_handle.get_webview_panel("main") {
+            panel.show_and_make_key();
+        }
+        return;
+    }
     if take_minimized_for_restore() {
         emit_overlay_restore(app_handle);
         return;
@@ -609,6 +635,9 @@ fn request_overlay_hide(app_handle: &tauri::AppHandle) {
 /// (e.g. Windows global hotkey) are implemented.
 #[cfg(not(target_os = "macos"))]
 fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
+    if ONBOARDING_ACTIVE.load(Ordering::SeqCst) {
+        return;
+    }
     if take_minimized_for_restore() {
         emit_overlay_restore(app_handle);
         return;
@@ -1081,6 +1110,10 @@ fn finish_onboarding(
     onboarding::mark_complete(&conn).map_err(|e| format!("db write failed: {e}"))?;
     drop(conn);
 
+    // Onboarding no longer owns the window; release the gate before the
+    // overlay show below (otherwise show_overlay would gate itself out).
+    set_onboarding_active_impl(false);
+
     // Restore panel to overlay configuration and show the Ask Bar.
     // Must run on the macOS main thread because NSPanel APIs are not thread-safe.
     let handle = app_handle.clone();
@@ -1320,6 +1353,9 @@ fn init_update_panel(app_handle: &tauri::AppHandle) {
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn show_onboarding_window(app_handle: &tauri::AppHandle, stage: onboarding::OnboardingStage) {
+    // Mark onboarding as owning the main window so any activation that races in
+    // (tray / double-tap Control) is gated out of the ask-bar show path.
+    set_onboarding_active_impl(true);
     let handle = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
         if let Some(window) = handle.get_webview_window("main") {
@@ -2167,6 +2203,15 @@ mod tests {
         assert!(OVERLAY_MINIMIZED.load(Ordering::SeqCst));
         set_overlay_minimized_impl(false);
         assert!(!OVERLAY_MINIMIZED.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn onboarding_active_gate_toggles_flag() {
+        ONBOARDING_ACTIVE.store(false, Ordering::SeqCst);
+        set_onboarding_active_impl(true);
+        assert!(ONBOARDING_ACTIVE.load(Ordering::SeqCst));
+        set_onboarding_active_impl(false);
+        assert!(!ONBOARDING_ACTIVE.load(Ordering::SeqCst));
     }
 
     #[test]
