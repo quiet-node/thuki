@@ -772,20 +772,12 @@ function renderBuiltin() {
   );
 }
 
-/** Clicks the per-card Download button, then confirms in the confirm card. */
+/** One tap on a column's Download starts the download directly (no confirm). */
 async function startDownload(container: HTMLElement, tier: StarterTier) {
   const card = container.querySelector(`[data-tier="${tier}"]`)!;
   await act(async () => {
     fireEvent.click(
       within(card as HTMLElement).getByRole('button', { name: 'Download' }),
-    );
-  });
-  const progressCard = container.querySelector('[data-download-progress]')!;
-  await act(async () => {
-    fireEvent.click(
-      within(progressCard as HTMLElement).getByRole('button', {
-        name: 'Download',
-      }),
     );
   });
 }
@@ -796,7 +788,7 @@ describe('ModelCheckStep (builtin flow)', () => {
     resetChannelCapture();
   });
 
-  it('renders the picker with Balanced preselected, the more-options stub, and the escape hatch', async () => {
+  it('renders the matrix with Balanced recommended, the more-options stub, and the escape hatch', async () => {
     builtinResponses();
 
     const { container } = renderBuiltin();
@@ -805,12 +797,12 @@ describe('ModelCheckStep (builtin flow)', () => {
     expect(
       container
         .querySelector('[data-tier="balanced"]')
-        ?.getAttribute('data-selected'),
+        ?.getAttribute('data-recommended'),
     ).toBe('true');
     expect(
       container
         .querySelector('[data-tier="fast"]')
-        ?.getAttribute('data-selected'),
+        ?.getAttribute('data-recommended'),
     ).toBe('false');
     const stub = screen.getByRole('button', {
       name: 'More options · Full model browser coming soon',
@@ -837,53 +829,14 @@ describe('ModelCheckStep (builtin flow)', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('selecting another card moves the highlight', async () => {
-    builtinResponses();
-
-    const { container } = renderBuiltin();
-    await act(async () => {});
-
-    await act(async () => {
-      fireEvent.click(container.querySelector('[data-tier="fast"]')!);
-    });
-    expect(
-      container
-        .querySelector('[data-tier="fast"]')
-        ?.getAttribute('data-selected'),
-    ).toBe('true');
-  });
-
-  it('one-tap download shows confirm facts, walks to ready, refreshes options, and advances', async () => {
+  it('one-tap download starts immediately (no confirm), walks to ready, refreshes, and advances', async () => {
     builtinResponses({ advance_past_model_check: undefined });
 
     const { container } = renderBuiltin();
     await act(async () => {});
 
-    const balancedCard = container.querySelector('[data-tier="balanced"]')!;
-    await act(async () => {
-      fireEvent.click(
-        within(balancedCard as HTMLElement).getByRole('button', {
-          name: 'Download',
-        }),
-      );
-    });
-
-    // Confirm card: size, free-disk line, RAM warning (balanced is 'tight':
-    // once on the picker badge, once in the confirm card).
-    expect(screen.getByText('7.3 GB download.')).toBeInTheDocument();
-    expect(screen.getByText('50.0 GB free on this disk.')).toBeInTheDocument();
-    expect(
-      screen.getAllByText("Will run, but close to this Mac's memory limit"),
-    ).toHaveLength(2);
-
-    const progressCard = container.querySelector('[data-download-progress]')!;
-    await act(async () => {
-      fireEvent.click(
-        within(progressCard as HTMLElement).getByRole('button', {
-          name: 'Download',
-        }),
-      );
-    });
+    await startDownload(container as HTMLElement, 'balanced');
+    // No confirm step: the download command fires straight away.
     expect(invoke).toHaveBeenCalledWith(
       'download_starter',
       expect.objectContaining({ tier: 'balanced' }),
@@ -896,9 +849,11 @@ describe('ModelCheckStep (builtin flow)', () => {
         data: { file: 'balanced.gguf', total_bytes: 100, resumed_from: 0 },
       });
     });
-    expect(screen.getByText('Downloading model')).toBeInTheDocument();
-    // The picker is hidden while the download runs.
-    expect(container.querySelector('[data-starter-card]')).toBeNull();
+    // The active column fills in place; the matrix itself stays mounted.
+    expect(container.querySelector('[data-starter-matrix]')).not.toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Pause download' }),
+    ).toBeInTheDocument();
 
     await act(async () => {
       channel.simulateMessage({ type: 'AllDone' });
@@ -940,69 +895,24 @@ describe('ModelCheckStep (builtin flow)', () => {
     expect(invoke).not.toHaveBeenCalledWith('advance_past_model_check');
   });
 
-  it('hides the disk line and the hatch when the auxiliary probes reject', async () => {
+  it('hides the escape hatch when the detect probe rejects', async () => {
     builtinResponses();
     const base = invoke.getMockImplementation()!;
     invoke.mockImplementation(async (cmd, args) => {
       if (cmd === 'detect_ollama') throw new Error('down');
-      if (cmd === 'get_models_dir_free_bytes') throw new Error('down');
       return base(cmd, args);
     });
 
-    const { container } = renderBuiltin();
+    renderBuiltin();
     await act(async () => {});
 
     expect(
       screen.queryByText('Use my existing Ollama instead'),
     ).not.toBeInTheDocument();
-
-    const balancedCard = container.querySelector('[data-tier="balanced"]')!;
-    await act(async () => {
-      fireEvent.click(
-        within(balancedCard as HTMLElement).getByRole('button', {
-          name: 'Download',
-        }),
-      );
-    });
-    expect(screen.getByText('7.3 GB download.')).toBeInTheDocument();
-    expect(screen.queryByText(/free on this disk/)).not.toBeInTheDocument();
-  });
-
-  it('cancel from the confirm card returns to the picker', async () => {
-    // A null free-bytes answer (backend could not stat the volume) hides
-    // the disk line instead of blocking the flow.
-    builtinResponses({ get_models_dir_free_bytes: null });
-
-    const { container } = renderBuiltin();
-    await act(async () => {});
-
-    const fastCard = container.querySelector('[data-tier="fast"]')!;
-    await act(async () => {
-      fireEvent.click(
-        within(fastCard as HTMLElement).getByRole('button', {
-          name: 'Download',
-        }),
-      );
-    });
-    // 'fast' fits comfortably: no RAM warning inside the confirm card (the
-    // picker badge keeps its single copy), and the null free-bytes answer
-    // drops the disk line.
-    expect(screen.getAllByText('Runs comfortably on this Mac')).toHaveLength(1);
-    expect(screen.queryByText(/free on this disk/)).not.toBeInTheDocument();
-
-    const progressCard = container.querySelector('[data-download-progress]')!;
-    await act(async () => {
-      fireEvent.click(
-        within(progressCard as HTMLElement).getByRole('button', {
-          name: 'Cancel',
-        }),
-      );
-    });
-    expect(screen.queryByText('7.3 GB download.')).not.toBeInTheDocument();
     expect(screen.getByText('Model balanced')).toBeInTheDocument();
   });
 
-  it('cancel during download invokes cancel_model_download and returns to the picker', async () => {
+  it('pausing a download cancels it and returns the matrix to its download buttons', async () => {
     builtinResponses({ cancel_model_download: undefined });
 
     const { container } = renderBuiltin();
@@ -1018,17 +928,20 @@ describe('ModelCheckStep (builtin flow)', () => {
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Pause download' }));
     });
     expect(invoke).toHaveBeenCalledWith('cancel_model_download');
 
     await act(async () => {
       channel.simulateMessage({ type: 'Cancelled' });
     });
-    expect(screen.getByText('Model balanced')).toBeInTheDocument();
+    // Back to the matrix's plain Download buttons.
+    expect(
+      screen.getAllByRole('button', { name: 'Download' }).length,
+    ).toBeGreaterThan(0);
   });
 
-  it('shows resume and discard when an option carries a resumable partial', async () => {
+  it('resumes from a partial, showing the bytes and re-invoking the download', async () => {
     const withPartial = [
       makeOption('fast'),
       makeOption('balanced', { fit: 'tight', partial_bytes: 1_200_000_000 }),
@@ -1039,11 +952,10 @@ describe('ModelCheckStep (builtin flow)', () => {
     renderBuiltin();
     await act(async () => {});
 
-    const resume = screen.getByRole('button', {
-      name: 'Resume download (1.2 of 7.3 GB)',
-    });
+    // 1.2 of the 7.3 GB weights file, mirroring the download view.
+    expect(screen.getByText('1.2 / 7.3 GB')).toBeInTheDocument();
     await act(async () => {
-      fireEvent.click(resume);
+      fireEvent.click(screen.getByRole('button', { name: 'Resume download' }));
     });
     expect(invoke).toHaveBeenCalledWith(
       'download_starter',
@@ -1066,7 +978,7 @@ describe('ModelCheckStep (builtin flow)', () => {
     await act(async () => {});
 
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+      fireEvent.click(screen.getByText('Discard partial'));
     });
     expect(invoke).toHaveBeenCalledWith('discard_partial_download', {
       sha256: 'b'.repeat(64),
@@ -1182,7 +1094,7 @@ describe('ModelCheckStep (builtin flow)', () => {
       });
     });
 
-    expect(screen.getByText('You appear to be offline.')).toBeInTheDocument();
+    expect(screen.getByText("You're offline")).toBeInTheDocument();
     expect(
       screen.getByText('Use my existing Ollama instead'),
     ).toBeInTheDocument();
@@ -1195,7 +1107,7 @@ describe('ModelCheckStep (builtin flow)', () => {
     ).toHaveLength(2);
   });
 
-  it('Choose a different model on the failed card returns to the picker', async () => {
+  it('leaves the other tiers usable after a failure (no lock, no "choose another")', async () => {
     builtinResponses();
 
     const { container } = renderBuiltin();
@@ -1209,22 +1121,22 @@ describe('ModelCheckStep (builtin flow)', () => {
         data: { kind: 'disk_full', message: 'no space left' },
       });
     });
-    expect(
-      screen.getByText('Not enough disk space. Free up space and retry.'),
-    ).toBeInTheDocument();
-    // The picker hides while the failed card is up; a user who now wants
-    // the smaller Fast tier needs this explicit way back.
-    expect(container.querySelector('[data-tier="fast"]')).toBeNull();
+    expect(screen.getByText('Not enough disk')).toBeInTheDocument();
 
-    await act(async () => {
-      fireEvent.click(
-        screen.getByRole('button', { name: 'Choose a different model' }),
-      );
+    // The Fast column stays in the matrix and is immediately downloadable;
+    // there is no separate "choose another" affordance.
+    const fast = container.querySelector('[data-tier="fast"]')!;
+    const fastDownload = within(fast as HTMLElement).getByRole('button', {
+      name: 'Download',
     });
-    expect(container.querySelector('[data-tier="fast"]')).not.toBeNull();
-    expect(
-      screen.queryByText('Not enough disk space. Free up space and retry.'),
-    ).not.toBeInTheDocument();
+    expect(fastDownload).not.toBeDisabled();
+    await act(async () => {
+      fireEvent.click(fastDownload);
+    });
+    expect(invoke).toHaveBeenCalledWith(
+      'download_starter',
+      expect.objectContaining({ tier: 'fast' }),
+    );
   });
 
   it('drops probe results that resolve after unmount', async () => {

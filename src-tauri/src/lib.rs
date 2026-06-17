@@ -190,11 +190,30 @@ const OVERLAY_VISIBILITY_RESTORE: &str = "restore";
 /// required permissions have not yet been granted.
 const ONBOARDING_EVENT: &str = "thuki://onboarding";
 
-/// Logical dimensions of the onboarding window (centered, fixed size).
-/// Content fits tightly; native macOS shadow is re-enabled for onboarding
-/// so it renders outside the window boundary without extra transparent padding.
+/// Logical dimensions of the onboarding window (centered). The permission
+/// and intro steps use the compact base size; the model-picker step widens
+/// to fit the three-column comparison matrix. Steps smaller than the frame
+/// they render in center their card against the transparent background, so
+/// the per-stage size difference is invisible. Native macOS shadow is
+/// re-enabled for onboarding so it renders outside the window boundary
+/// without extra transparent padding.
 const ONBOARDING_LOGICAL_WIDTH: f64 = 460.0;
 const ONBOARDING_LOGICAL_HEIGHT: f64 = 640.0;
+const ONBOARDING_PICKER_WIDTH: f64 = 860.0;
+const ONBOARDING_PICKER_HEIGHT: f64 = 700.0;
+
+/// Per-stage onboarding window size. The model-picker step needs a wide
+/// frame for the comparison matrix; every other step keeps the compact base
+/// size. Pure so the mapping is unit-tested even though the window mutation
+/// it feeds runs on the macOS main thread.
+fn onboarding_window_size(stage: &onboarding::OnboardingStage) -> (f64, f64) {
+    match stage {
+        onboarding::OnboardingStage::ModelCheck => {
+            (ONBOARDING_PICKER_WIDTH, ONBOARDING_PICKER_HEIGHT)
+        }
+        _ => (ONBOARDING_LOGICAL_WIDTH, ONBOARDING_LOGICAL_HEIGHT),
+    }
+}
 
 /// Tracks the intended visibility state of the overlay, preventing race conditions
 /// between the frontend exit animation and rapid activation toggles.
@@ -1415,12 +1434,10 @@ fn show_onboarding_window(app_handle: &tauri::AppHandle, stage: onboarding::Onbo
     // (tray / double-tap Control) is gated out of the ask-bar show path.
     set_onboarding_active_impl(true);
     let handle = app_handle.clone();
+    let (win_w, win_h) = onboarding_window_size(&stage);
     let _ = app_handle.run_on_main_thread(move || {
         if let Some(window) = handle.get_webview_window("main") {
-            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
-                ONBOARDING_LOGICAL_WIDTH,
-                ONBOARDING_LOGICAL_HEIGHT,
-            )));
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(win_w, win_h)));
             let _ = window.center();
         }
         match handle.get_webview_panel("main") {
@@ -2323,6 +2340,24 @@ mod tests {
     fn onboarding_logical_dimensions() {
         assert_eq!(ONBOARDING_LOGICAL_WIDTH, 460.0);
         assert_eq!(ONBOARDING_LOGICAL_HEIGHT, 640.0);
+        assert_eq!(ONBOARDING_PICKER_WIDTH, 860.0);
+        assert_eq!(ONBOARDING_PICKER_HEIGHT, 700.0);
+    }
+
+    #[test]
+    fn onboarding_window_size_widens_for_picker() {
+        assert_eq!(
+            onboarding_window_size(&onboarding::OnboardingStage::ModelCheck),
+            (ONBOARDING_PICKER_WIDTH, ONBOARDING_PICKER_HEIGHT),
+        );
+        assert_eq!(
+            onboarding_window_size(&onboarding::OnboardingStage::Permissions),
+            (ONBOARDING_LOGICAL_WIDTH, ONBOARDING_LOGICAL_HEIGHT),
+        );
+        assert_eq!(
+            onboarding_window_size(&onboarding::OnboardingStage::Intro),
+            (ONBOARDING_LOGICAL_WIDTH, ONBOARDING_LOGICAL_HEIGHT),
+        );
     }
 
     #[test]

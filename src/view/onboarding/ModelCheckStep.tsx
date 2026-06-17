@@ -22,17 +22,12 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
 import { useConfig } from '../../contexts/ConfigContext';
-import {
-  FIT_COPY,
-  StarterPicker,
-  useStarterOptions,
-} from '../../components/StarterPicker';
-import {
-  DownloadProgress,
-  type ConfirmInfo,
-} from '../../components/DownloadProgress';
+import { FIT_COPY, useStarterOptions } from '../../components/StarterPicker';
+import { StarterMatrix } from '../../components/StarterMatrix';
+import type { ConfirmInfo } from '../../components/DownloadProgress';
 import {
   useDownloadModel,
+  type DownloadProgressInfo,
   type DownloadUiState,
 } from '../../hooks/useDownloadModel';
 import type { StarterOption, StarterTier } from '../../types/starter';
@@ -195,19 +190,27 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
     state,
     progress,
     etaSeconds,
-    beginConfirm,
-    cancelConfirm,
     start,
     cancel,
     retry,
     resume,
     discard,
     enterResumePending,
-    reset,
   } = useDownloadModel();
-  const [selected, setSelected] = useState<StarterTier>('balanced');
+  // The tier whose download is in flight; the matrix renders the fill there
+  // and dims the rest. The matrix only reads it while a download is busy, so
+  // the last value lingering after one finishes or cancels is harmless.
+  const [downloadingTier, setDownloadingTier] = useState<StarterTier | null>(
+    null,
+  );
+  // On Resume the download restarts with no progress yet, which would flash
+  // the fill back to 0 before the resumed byte count arrives. Seeding the
+  // partial here keeps the fill parked at the paused position until the first
+  // real Progress event lands. Null for a fresh (non-resume) download.
+  const [resumeFrom, setResumeFrom] = useState<DownloadProgressInfo | null>(
+    null,
+  );
   const [ollamaDetected, setOllamaDetected] = useState(false);
-  const [freeDiskBytes, setFreeDiskBytes] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -230,17 +233,29 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
       .catch(() => {
         // Detection failure just hides the escape hatch.
       });
-    void invoke<number | null>('get_models_dir_free_bytes')
-      .then((bytes) => {
-        if (!cancelled) setFreeDiskBytes(bytes ?? null);
-      })
-      .catch(() => {
-        // Unknown free space hides the disk line; never blocks the download.
-      });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  // A cancelled download leaves a resumable partial on disk, but the picker's
+  // rows still carry the pre-cancel `partial_bytes`. When the machine returns
+  // to idle from an active phase (a cancel), re-fetch so the affected column
+  // offers Resume/Discard right away, not only after a relaunch. The ref keeps
+  // mount (already idle) and the resume_pending hop (Discard refreshes itself)
+  // from firing a redundant fetch.
+  const prevPhaseRef = useRef(state.phase);
+  useEffect(() => {
+    const prev = prevPhaseRef.current;
+    prevPhaseRef.current = state.phase;
+    if (
+      state.phase === 'idle' &&
+      prev !== 'idle' &&
+      prev !== 'resume_pending'
+    ) {
+      void refresh();
+    }
+  }, [state.phase, refresh]);
 
   // An interrupted earlier download leaves a resumable partial: surface the
   // per-card Resume/Discard pair instead of the plain Download button.
@@ -277,77 +292,43 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
     onUseOllama();
   }, [state.phase, cancel, onUseOllama]);
 
-  const pickerVisible =
-    state.phase === 'idle' ||
-    state.phase === 'confirming' ||
-    state.phase === 'resume_pending';
-  const hatchBesideProgress =
-    ollamaDetected &&
-    (isDownloadingPhase(state.phase) || state.phase === 'failed');
-
   return (
     <BuiltinShell>
       {options === null ? null : (
-        <>
-          {pickerVisible ? (
-            <div style={{ marginBottom: 12 }}>
-              <StarterPicker
-                options={options}
-                selected={selected}
-                onSelect={setSelected}
-                onDownload={(tier) => {
-                  setSelected(tier);
-                  beginConfirm(tier);
-                }}
-                onResume={(tier) => {
-                  setSelected(tier);
-                  void resume(tier);
-                }}
-                onDiscard={(sha256) => {
-                  void discard(sha256).then(refresh);
-                }}
-                ollamaDetected={ollamaDetected}
-                onUseOllama={() => void handleUseOllama()}
-              />
-              <MoreOptionsStub />
-            </div>
-          ) : null}
-          <DownloadProgress
+        <div style={{ marginBottom: 12 }}>
+          <StarterMatrix
+            options={options}
             state={state}
-            progress={progress}
+            progress={progress ?? resumeFrom}
             etaSeconds={etaSeconds}
-            confirmInfo={buildConfirmInfo(state, options, freeDiskBytes)}
-            // `selected` always names the confirmed tier: onDownload and
-            // onResume both select before the confirm/start transition.
-            onConfirm={() => void start(selected)}
-            onCancelConfirm={cancelConfirm}
+            downloadingTier={downloadingTier}
+            onDownload={(tier) => {
+              setResumeFrom(null);
+              setDownloadingTier(tier);
+              void start(tier);
+            }}
+            onResume={(tier, partialBytes, sizeBytes) => {
+              // Seed the fill with the bytes already on disk so it stays at the
+              // paused position instead of flashing to 0 when the resumed
+              // download restarts.
+              setResumeFrom({
+                file: '',
+                bytes: partialBytes,
+                totalBytes: sizeBytes,
+              });
+              setDownloadingTier(tier);
+              void resume(tier);
+            }}
+            onDiscard={(sha256) => {
+              void discard(sha256).then(refresh);
+            }}
             onCancel={() => void cancel()}
             onRetry={() => void retry()}
-            // A failed download (disk full, checksum) must not trap the
-            // user on Retry: this steps back to the picker so a smaller
-            // tier stays reachable.
-            onChooseAnother={reset}
+            ollamaDetected={ollamaDetected}
+            onUseOllama={() => void handleUseOllama()}
           />
-          {hatchBesideProgress ? (
-            <button
-              onClick={() => void handleUseOllama()}
-              style={{
-                display: 'block',
-                margin: '8px auto 0',
-                background: 'transparent',
-                border: 'none',
-                padding: 0,
-                fontFamily: 'inherit',
-                fontSize: 11,
-                fontWeight: 500,
-                color: 'rgba(255,141,92,0.7)',
-                cursor: 'pointer',
-              }}
-            >
-              Use my existing Ollama instead
-            </button>
-          ) : null}
-        </>
+          <MoreOptionsStub />
+        </div>
       )}
     </BuiltinShell>
   );
@@ -403,7 +384,7 @@ function BuiltinShell({ children }: { children: React.ReactNode }) {
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ type: 'spring', stiffness: 300, damping: 28 }}
         style={{
-          width: 420,
+          width: 720,
           background:
             'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
           border: '1px solid rgba(255, 141, 92, 0.2)',
@@ -464,7 +445,7 @@ function BuiltinShell({ children }: { children: React.ReactNode }) {
             color: 'rgba(255,255,255,0.55)',
             lineHeight: 1.5,
             margin: '0 auto 18px',
-            maxWidth: 320,
+            maxWidth: 560,
           }}
         >
           Pick a starter brain for Thuki. Downloads once, then runs fully
