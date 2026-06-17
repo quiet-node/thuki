@@ -23,9 +23,6 @@ bun run format           # Prettier + cargo fmt
 bun run format:check     # Dry-run format validation
 bun run typecheck        # tsc --noEmit
 
-bun run sandbox:start    # Docker Compose up (pulls Ollama model)
-bun run sandbox:stop     # docker compose down -v (destructive: wipes volume)
-
 bun run test             # Vitest run (frontend tests only)
 bun run test:watch       # Vitest watch mode
 bun run test:coverage    # Vitest with coverage report
@@ -71,10 +68,6 @@ User-facing reference for all commands lives in `docs/commands.md`. **Any new sl
 - **`commands.rs`** — `ask_model` Tauri command: routes by the active provider's kind (Phase 1 implements Ollama's native `/api/chat` only; a non-Ollama active provider returns a typed `EngineError`), streams newline-delimited JSON, and sends chunks via Tauri Channel. Reads the active provider (base URL + selected model) from `State<RwLock<AppConfig>>`, the resolved system prompt, and the in-memory `ActiveModelState`.
 - **`screenshot.rs`** — `capture_full_screen_command` Tauri command: uses CoreGraphics FFI (`CGWindowListCreateImage`) to capture all displays excluding Thuki's own windows, writes a JPEG to a temp dir, and returns the path
 - **`activator.rs`** — Core Graphics event tap watching for double-tap Control key (400 ms window, 600 ms cooldown; timing is a compiled constant, not yet exposed through `AppConfig` because the event-tap callback runs in a thread that cannot trivially read Tauri managed state). The tap MUST use `CGEventTapLocation::HID` and `CGEventTapOptions::Default` — see the critical constraint note in "Key Design Constraints" below.
-
-### Sandbox (`sandbox/`)
-
-Docker Compose runs Ollama in a hardened container: `cap_drop: ALL`, `no-new-privileges`, read-only model volume, localhost-only port binding (`127.0.0.1:11434`). Two services: `sandbox-init` (one-shot model pull) and `sandbox-server` (long-running daemon). `sandbox:stop` uses `down -v` which wipes the volume.
 
 ### IPC Pattern
 
@@ -169,7 +162,7 @@ Workflow:
 ## Key Design Constraints
 
 - **macOS only** — uses NSPanel, Core Graphics event taps, macOS Control key
-- **Privacy-first** — Ollama runs locally; Docker sandbox drops all capabilities and isolates network
+- **Privacy-first**: Ollama runs locally
 - **Two permissions required** — Accessibility (CGEventTap creation), Screen Recording (/screen command)
 
 ### CGEventTap configuration — DO NOT CHANGE these two settings

@@ -78,7 +78,6 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **Throwaway conversations:** fast, lightweight interactions without the overhead of a full chat app
 - **Conversation history:** persist and revisit past conversations across sessions
 - **Fully local LLM:** powered by Ollama; no API keys, no accounts, no cost per query
-- **Isolated sandbox:** optionally run models in a hardened Docker container with capability dropping, read-only volumes, and localhost-only networking
 - **Image input:** paste or drag images and screenshots directly into the chat
 - **Screen capture:** type `/screen` to instantly capture your entire screen and attach it to your question as context
 - **OCR on text-only models:** `/extract`, `/explain`, `/tldr`, `/translate`, `/rewrite`, `/refine`, `/bullets`, and `/todos` read attached images via macOS Vision OCR, so they work even when the active model has no vision capability
@@ -96,11 +95,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 
 ### Step 1: Set Up Your AI Engine
 
-Choose one of the two options below to set up your AI engine before installing Thuki.
-
-#### Option A: Local Ollama (Recommended for most users)
-
-[Ollama](https://ollama.com) runs AI models directly on your Mac. It's free, open-source, and takes about 5 minutes to set up.
+Set up [Ollama](https://ollama.com) to run AI models directly on your Mac before installing Thuki. It's free, open-source, and takes about 5 minutes to set up.
 
 1. **Install Ollama**
 
@@ -125,28 +120,6 @@ Choose one of the two options below to set up your AI engine before installing T
    ```
 
    You should see your model listed. Once it appears, Ollama is ready and Thuki will connect to it automatically at `http://127.0.0.1:11434`.
-
-#### Option B: Docker Sandbox (For security-conscious users)
-
-**Prerequisites:** Install [Docker Desktop](https://www.docker.com/get-started)
-
-The Docker sandbox is for users who want the strongest possible isolation between the AI model and their host system, ideal if you work in regulated environments, are security-conscious about what runs on your machine, or simply want peace of mind. The model runs in a hardened container that cannot reach the internet, cannot write to your filesystem, and leaves no trace when stopped.
-
-Start the sandbox:
-
-```bash
-bun run sandbox:start
-```
-
-> **First run:** The sandbox will pull the model inside the container; this may take several minutes depending on your connection. Subsequent starts are instant.
-
-When you're done, stop and wipe all model data:
-
-```bash
-bun run sandbox:stop
-```
-
-For the full architecture and security philosophy behind the sandbox, see [`sandbox/README.md`](sandbox/README.md).
 
 ### Step 2: Install Thuki
 
@@ -197,15 +170,9 @@ See [docs/agentic-search.md#setup](docs/agentic-search.md#setup) for the setup s
 
 Thuki is a **Tauri v2** app (Rust backend + React/TypeScript frontend) that interfaces with a locally running Ollama instance at `http://127.0.0.1:11434`.
 
-### Dual-Layer Isolation
+### Frontend Isolation
 
-1. **Frontend (Tauri/React):** Operates within a secure system webview with restricted IPC. Streaming uses Tauri's Channel API; the Rust backend sends typed `StreamChunk` enum variants, and the frontend hook accumulates tokens into React state.
-
-2. **Generative Engine (Docker Sandbox):**
-   - **Ingress Isolation:** The API is bound to `127.0.0.1` only, blocking all external network access
-   - **Privilege Dropping:** All Linux kernel capabilities are dropped (`cap_drop: ALL`)
-   - **Model Integrity:** Model weights are mounted read-only (`:ro`) to prevent tampering
-   - **Ephemeral State:** All model data is purged on shutdown via `docker compose down -v`
+The frontend operates within a secure system webview with restricted IPC. Streaming uses Tauri's Channel API; the Rust backend sends typed `StreamChunk` enum variants, and the frontend hook accumulates tokens into React state.
 
 ### Window Lifecycle
 

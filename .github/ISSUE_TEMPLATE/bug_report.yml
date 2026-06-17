@@ -72,10 +72,9 @@ body:
     id: backend
     attributes:
       label: AI Backend
-      description: Are you running Ollama locally or via the Docker sandbox?
+      description: Which AI backend are you using?
       options:
         - Local Ollama
-        - Docker sandbox
         - Not sure
     validations:
       required: true
