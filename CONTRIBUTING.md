@@ -43,11 +43,11 @@ rustup toolchain install nightly-2026-03-30 --component llvm-tools
 
 ### Optional
 
-**Docker:** only needed if you want to run the isolated Docker sandbox instead of a local Ollama install
+**Docker:** only needed if you want to run the local `/search` stack (`bun run search-box:start`)
 
 - Install via [docker.com](https://www.docker.com/get-started)
 
-**Ollama:** if you're not using the Docker sandbox, install Ollama directly
+**Ollama:** install Ollama to run and test the local inference provider
 
 - Install via [ollama.com](https://ollama.com)
 
@@ -68,19 +68,9 @@ rustup toolchain install nightly-2026-03-30 --component llvm-tools
    bun install
    ```
 
-3. **Set up your AI backend** (choose one):
+3. **Set up your AI backend**
 
-   **Option A: Docker sandbox (recommended for isolation)**
-
-   ```bash
-   bun run sandbox:start
-   ```
-
-   This pulls the default model (`gemma4:e2b`) and starts the hardened container. It may take a few minutes on first run.
-
-   **Option B: Local Ollama**
-
-   Make sure Ollama is running and you have a model pulled:
+   Install [Ollama](https://ollama.com), make sure it's running, and pull a model:
 
    ```bash
    ollama pull gemma4:e2b
