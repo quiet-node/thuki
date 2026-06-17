@@ -1,6 +1,10 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { computeEtaSeconds, useDownloadModel } from '../useDownloadModel';
+import {
+  computeEtaSeconds,
+  computeSpeedBytesPerSec,
+  useDownloadModel,
+} from '../useDownloadModel';
 import {
   invoke,
   getLastChannel,
@@ -489,6 +493,190 @@ describe('useDownloadModel', () => {
       await act(async () => {});
       emitTauriEvent('engine:status', engineStatus('starting'));
     });
+  });
+
+  describe('combined progress across the two files (Part 1)', () => {
+    it('starts with a null combinedBytes and speed', () => {
+      const { result } = renderHook(() => useDownloadModel());
+      expect(result.current.combinedBytes).toBeNull();
+      expect(result.current.speedBytesPerSec).toBeNull();
+    });
+
+    it('accumulates combinedBytes across the weights -> mmproj seam without resetting', async () => {
+      const { result } = renderHook(() => useDownloadModel());
+      await act(() => result.current.start('balanced'));
+
+      act(() =>
+        channel().simulateMessage({
+          type: 'Started',
+          data: { file: 'weights.gguf', total_bytes: 100, resumed_from: 0 },
+        }),
+      );
+      expect(result.current.combinedBytes).toBe(0);
+
+      act(() =>
+        channel().simulateMessage({
+          type: 'Progress',
+          data: { file: 'weights.gguf', bytes: 60, total_bytes: 100 },
+        }),
+      );
+      expect(result.current.combinedBytes).toBe(60);
+
+      act(() =>
+        channel().simulateMessage({
+          type: 'FileDone',
+          data: { file: 'weights.gguf' },
+        }),
+      );
+      // FileDone snaps the cumulative figure to the file boundary.
+      expect(result.current.combinedBytes).toBe(100);
+
+      act(() =>
+        channel().simulateMessage({
+          type: 'Started',
+          data: { file: 'mmproj.gguf', total_bytes: 50, resumed_from: 0 },
+        }),
+      );
+      // The second file must NOT reset the bar to zero: it stays at 100.
+      expect(result.current.combinedBytes).toBe(100);
+
+      act(() =>
+        channel().simulateMessage({
+          type: 'Progress',
+          data: { file: 'mmproj.gguf', bytes: 30, total_bytes: 50 },
+        }),
+      );
+      expect(result.current.combinedBytes).toBe(130);
+
+      act(() =>
+        channel().simulateMessage({
+          type: 'FileDone',
+          data: { file: 'mmproj.gguf' },
+        }),
+      );
+      expect(result.current.combinedBytes).toBe(150);
+    });
+
+    it('seeds combinedBytes from resumed_from on a resumed first file', async () => {
+      const { result } = renderHook(() => useDownloadModel());
+      await act(() => result.current.start('fast'));
+      act(() =>
+        channel().simulateMessage({
+          type: 'Started',
+          data: { file: 'w.gguf', total_bytes: 100, resumed_from: 40 },
+        }),
+      );
+      expect(result.current.combinedBytes).toBe(40);
+    });
+
+    it('exposes a rolling download speed in bytes per second', async () => {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(0);
+      const { result } = renderHook(() => useDownloadModel());
+      await act(() => result.current.start('fast'));
+      act(() =>
+        channel().simulateMessage({
+          type: 'Started',
+          data: { file: 'w.gguf', total_bytes: 1000, resumed_from: 0 },
+        }),
+      );
+      act(() =>
+        channel().simulateMessage({
+          type: 'Progress',
+          data: { file: 'w.gguf', bytes: 10, total_bytes: 1000 },
+        }),
+      );
+      expect(result.current.speedBytesPerSec).toBeNull(); // one sample
+
+      now.mockReturnValue(5000);
+      act(() =>
+        channel().simulateMessage({
+          type: 'Progress',
+          data: { file: 'w.gguf', bytes: 50, total_bytes: 1000 },
+        }),
+      );
+      // 40 bytes over 5s = 8 B/s.
+      expect(result.current.speedBytesPerSec).toBe(8);
+    });
+
+    it('clears combinedBytes and speed on Cancelled', async () => {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(0);
+      const { result } = renderHook(() => useDownloadModel());
+      await act(() => result.current.start('fast'));
+      act(() =>
+        channel().simulateMessage({
+          type: 'Started',
+          data: { file: 'w.gguf', total_bytes: 100, resumed_from: 20 },
+        }),
+      );
+      now.mockReturnValue(2000);
+      act(() =>
+        channel().simulateMessage({
+          type: 'Progress',
+          data: { file: 'w.gguf', bytes: 60, total_bytes: 100 },
+        }),
+      );
+      expect(result.current.combinedBytes).toBe(60);
+
+      act(() => channel().simulateMessage({ type: 'Cancelled' }));
+      expect(result.current.combinedBytes).toBeNull();
+      expect(result.current.speedBytesPerSec).toBeNull();
+    });
+
+    it('clears combinedBytes and speed on reset from a terminal phase', async () => {
+      const { result } = renderHook(() => useDownloadModel());
+      await act(() => result.current.start('fast'));
+      act(() =>
+        channel().simulateMessage({
+          type: 'Started',
+          data: { file: 'w.gguf', total_bytes: 100, resumed_from: 30 },
+        }),
+      );
+      act(() =>
+        channel().simulateMessage({
+          type: 'Failed',
+          data: { kind: 'http', message: 'boom' },
+        }),
+      );
+      expect(result.current.combinedBytes).toBe(30);
+
+      act(() => result.current.reset());
+      expect(result.current.combinedBytes).toBeNull();
+      expect(result.current.speedBytesPerSec).toBeNull();
+    });
+  });
+});
+
+describe('computeSpeedBytesPerSec', () => {
+  it('returns null with fewer than two samples', () => {
+    expect(computeSpeedBytesPerSec([])).toBeNull();
+    expect(computeSpeedBytesPerSec([{ t: 0, bytes: 0 }])).toBeNull();
+  });
+
+  it('returns null when no time elapsed between window edges', () => {
+    expect(
+      computeSpeedBytesPerSec([
+        { t: 1000, bytes: 0 },
+        { t: 1000, bytes: 50 },
+      ]),
+    ).toBeNull();
+  });
+
+  it('returns null when bytes did not advance', () => {
+    expect(
+      computeSpeedBytesPerSec([
+        { t: 0, bytes: 50 },
+        { t: 5000, bytes: 50 },
+      ]),
+    ).toBeNull();
+  });
+
+  it('computes bytes per second across the window', () => {
+    expect(
+      computeSpeedBytesPerSec([
+        { t: 0, bytes: 0 },
+        { t: 4000, bytes: 200 },
+      ]),
+    ).toBe(50);
   });
 });
 

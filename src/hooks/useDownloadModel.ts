@@ -63,6 +63,21 @@ interface EtaSample {
 const ETA_WINDOW_MS = 10_000;
 
 /**
+ * Bytes per second from the rolling sample window, or `null` while the rate
+ * is not yet measurable (fewer than two samples, zero elapsed time, or no
+ * forward progress between the window's edges).
+ */
+export function computeSpeedBytesPerSec(samples: EtaSample[]): number | null {
+  if (samples.length < 2) return null;
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  const elapsedSeconds = (last.t - first.t) / 1000;
+  const deltaBytes = last.bytes - first.bytes;
+  if (elapsedSeconds <= 0 || deltaBytes <= 0) return null;
+  return deltaBytes / elapsedSeconds;
+}
+
+/**
  * Remaining seconds from the rolling sample window, or `null` while the
  * rate is not yet measurable (fewer than two samples, zero elapsed time,
  * or no forward progress between the window's edges).
@@ -72,13 +87,8 @@ export function computeEtaSeconds(
   bytes: number,
   totalBytes: number,
 ): number | null {
-  if (samples.length < 2) return null;
-  const first = samples[0];
-  const last = samples[samples.length - 1];
-  const elapsedSeconds = (last.t - first.t) / 1000;
-  const deltaBytes = last.bytes - first.bytes;
-  if (elapsedSeconds <= 0 || deltaBytes <= 0) return null;
-  const bytesPerSecond = deltaBytes / elapsedSeconds;
+  const bytesPerSecond = computeSpeedBytesPerSec(samples);
+  if (bytesPerSecond === null) return null;
   return Math.max(0, Math.round((totalBytes - bytes) / bytesPerSecond));
 }
 
@@ -86,6 +96,14 @@ export interface UseDownloadModel {
   state: DownloadUiState;
   progress: DownloadProgressInfo | null;
   etaSeconds: number | null;
+  /**
+   * Cumulative bytes downloaded across every file of the current run
+   * (weights + vision companion), or null when idle. The two files are one
+   * continuous figure: this never resets between them.
+   */
+  combinedBytes: number | null;
+  /** Rolling download rate in bytes per second, or null until measurable. */
+  speedBytesPerSec: number | null;
   /** idle -> confirming. No backend call; shows the confirm card. */
   beginConfirm: (tier: StarterTier) => void;
   /** confirming -> idle. */
@@ -141,9 +159,15 @@ export function useDownloadModel(
   const [state, setState] = useState<DownloadUiState>({ phase: 'idle' });
   const [progress, setProgress] = useState<DownloadProgressInfo | null>(null);
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
+  const [combinedBytes, setCombinedBytes] = useState<number | null>(null);
+  const [speedBytesPerSec, setSpeedBytesPerSec] = useState<number | null>(null);
 
   const samplesRef = useRef<EtaSample[]>([]);
   const startedCountRef = useRef(0);
+  /** Bytes from files that have already fully completed this run. */
+  const completedBytesRef = useRef(0);
+  /** Declared total of the file currently downloading. */
+  const currentFileTotalRef = useRef(0);
   /** Replays the most recent start (tier or repo) for `retry`. */
   const lastStartRef = useRef<(() => Promise<void>) | null>(null);
 
@@ -154,11 +178,14 @@ export function useDownloadModel(
           startedCountRef.current += 1;
           samplesRef.current = [];
           setEtaSeconds(null);
+          setSpeedBytesPerSec(null);
+          currentFileTotalRef.current = event.data.total_bytes;
           setProgress({
             file: event.data.file,
             bytes: event.data.resumed_from,
             totalBytes: event.data.total_bytes,
           });
+          setCombinedBytes(completedBytesRef.current + event.data.resumed_from);
           // The second Started is always the mmproj companion: specs are
           // ordered weights first, mmproj second.
           setState(
@@ -187,13 +214,20 @@ export function useDownloadModel(
               event.data.total_bytes,
             ),
           );
+          setSpeedBytesPerSec(computeSpeedBytesPerSec(samples));
+          setCombinedBytes(completedBytesRef.current + event.data.bytes);
           break;
         }
         case 'Verifying':
           setState({ phase: 'verifying' });
           break;
         case 'FileDone':
-          // Interim: the next Started (mmproj) or AllDone moves the state.
+          // Fold this file's bytes into the completed total and snap the
+          // cumulative figure to the boundary so the bar never dips. The next
+          // Started (mmproj) or AllDone moves the state.
+          completedBytesRef.current += currentFileTotalRef.current;
+          currentFileTotalRef.current = 0;
+          setCombinedBytes(completedBytesRef.current);
           break;
         case 'AllDone':
           setState(awaitEngine ? { phase: 'installing' } : { phase: 'ready' });
@@ -201,6 +235,10 @@ export function useDownloadModel(
         case 'Cancelled':
           setProgress(null);
           setEtaSeconds(null);
+          setSpeedBytesPerSec(null);
+          setCombinedBytes(null);
+          completedBytesRef.current = 0;
+          currentFileTotalRef.current = 0;
           setState({ phase: 'idle' });
           break;
         case 'Failed':
@@ -256,8 +294,12 @@ export function useDownloadModel(
     async (command: string, args: Record<string, unknown>) => {
       startedCountRef.current = 0;
       samplesRef.current = [];
+      completedBytesRef.current = 0;
+      currentFileTotalRef.current = 0;
       setProgress(null);
       setEtaSeconds(null);
+      setSpeedBytesPerSec(null);
+      setCombinedBytes(null);
       setState({ phase: 'downloading' });
       const channel = new Channel<DownloadEvent>();
       channel.onmessage = handleEvent;
@@ -322,12 +364,18 @@ export function useDownloadModel(
     // reseeds them. Callers only invoke reset from the terminal cards.
     setProgress(null);
     setEtaSeconds(null);
+    setSpeedBytesPerSec(null);
+    setCombinedBytes(null);
+    completedBytesRef.current = 0;
+    currentFileTotalRef.current = 0;
   }, []);
 
   return {
     state,
     progress,
     etaSeconds,
+    combinedBytes,
+    speedBytesPerSec,
     beginConfirm,
     cancelConfirm,
     start,

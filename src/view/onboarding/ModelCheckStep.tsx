@@ -27,7 +27,6 @@ import { StarterMatrix } from '../../components/StarterMatrix';
 import type { ConfirmInfo } from '../../components/DownloadProgress';
 import {
   useDownloadModel,
-  type DownloadProgressInfo,
   type DownloadUiState,
 } from '../../hooks/useDownloadModel';
 import type { StarterOption, StarterTier } from '../../types/starter';
@@ -188,8 +187,8 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
   const { options, refresh } = useStarterOptions();
   const {
     state,
-    progress,
-    etaSeconds,
+    combinedBytes,
+    speedBytesPerSec,
     start,
     cancel,
     retry,
@@ -203,13 +202,11 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
   const [downloadingTier, setDownloadingTier] = useState<StarterTier | null>(
     null,
   );
-  // On Resume the download restarts with no progress yet, which would flash
-  // the fill back to 0 before the resumed byte count arrives. Seeding the
-  // partial here keeps the fill parked at the paused position until the first
-  // real Progress event lands. Null for a fresh (non-resume) download.
-  const [resumeFrom, setResumeFrom] = useState<DownloadProgressInfo | null>(
-    null,
-  );
+  // On Resume the download restarts with combinedBytes null until the first
+  // event arrives, which would flash the fill back to "Starting…". Seeding the
+  // partial byte count here floors the combined bar at the paused position
+  // until the first real event lands. Null for a fresh (non-resume) download.
+  const [resumeSeedBytes, setResumeSeedBytes] = useState<number | null>(null);
   const [ollamaDetected, setOllamaDetected] = useState(false);
 
   useEffect(() => {
@@ -299,23 +296,19 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
           <StarterMatrix
             options={options}
             state={state}
-            progress={progress ?? resumeFrom}
-            etaSeconds={etaSeconds}
+            combinedBytes={combinedBytes ?? resumeSeedBytes}
+            speedBytesPerSec={speedBytesPerSec}
             downloadingTier={downloadingTier}
             onDownload={(tier) => {
-              setResumeFrom(null);
+              setResumeSeedBytes(null);
               setDownloadingTier(tier);
               void start(tier);
             }}
-            onResume={(tier, partialBytes, sizeBytes) => {
-              // Seed the fill with the bytes already on disk so it stays at the
-              // paused position instead of flashing to 0 when the resumed
-              // download restarts.
-              setResumeFrom({
-                file: '',
-                bytes: partialBytes,
-                totalBytes: sizeBytes,
-              });
+            onResume={(tier, partialBytes) => {
+              // Floor the combined bar at the bytes already on disk so it stays
+              // at the paused position instead of flashing to "Starting…" when
+              // the resumed download restarts.
+              setResumeSeedBytes(partialBytes);
               setDownloadingTier(tier);
               void resume(tier);
             }}

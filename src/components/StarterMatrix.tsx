@@ -17,7 +17,6 @@ import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type React from 'react';
 import type {
-  DownloadProgressInfo,
   DownloadUiFailKind,
   DownloadUiState,
 } from '../hooks/useDownloadModel';
@@ -94,6 +93,11 @@ function gb(bytes: number): string {
   return (bytes / 1e9).toFixed(1);
 }
 
+/** Bytes/sec rendered as decimal megabytes per second (e.g. "8.2"). */
+function mbps(bytesPerSec: number): string {
+  return (bytesPerSec / 1e6).toFixed(1);
+}
+
 /** Seconds rendered as a compact countdown: "45s", "5m", "2h 1m". */
 function formatEta(etaSeconds: number): string {
   if (etaSeconds < 60) return `${etaSeconds}s`;
@@ -117,8 +121,14 @@ export interface StarterMatrixProps {
   options: StarterOption[];
   /** Live download state machine, so the active column can render progress. */
   state: DownloadUiState;
-  progress: DownloadProgressInfo | null;
-  etaSeconds: number | null;
+  /**
+   * Cumulative bytes downloaded across both files (weights + vision
+   * companion), or null before the first byte. The two files render as one
+   * continuous bar against the card total, never as two separate downloads.
+   */
+  combinedBytes: number | null;
+  /** Rolling download rate in bytes per second, or null until measurable. */
+  speedBytesPerSec: number | null;
   /** Which tier the active download belongs to (null when idle). */
   downloadingTier: StarterTier | null;
   onDownload: (tier: StarterTier) => void;
@@ -138,8 +148,8 @@ export interface StarterMatrixProps {
 export function StarterMatrix({
   options,
   state,
-  progress,
-  etaSeconds,
+  combinedBytes,
+  speedBytesPerSec,
   downloadingTier,
   onDownload,
   onResume,
@@ -187,8 +197,8 @@ export function StarterMatrix({
               dimmed={lockOthers && !active}
               disabled={lockOthers}
               state={state}
-              progress={progress}
-              etaSeconds={etaSeconds}
+              combinedBytes={combinedBytes}
+              speedBytesPerSec={speedBytesPerSec}
               onDownload={onDownload}
               onResume={onResume}
               onDiscard={onDiscard}
@@ -267,8 +277,8 @@ interface TierColumnProps {
   dimmed: boolean;
   disabled: boolean;
   state: DownloadUiState;
-  progress: DownloadProgressInfo | null;
-  etaSeconds: number | null;
+  combinedBytes: number | null;
+  speedBytesPerSec: number | null;
   onDownload: (tier: StarterTier) => void;
   onResume: (
     tier: StarterTier,
@@ -287,8 +297,8 @@ function TierColumn({
   dimmed,
   disabled,
   state,
-  progress,
-  etaSeconds,
+  combinedBytes,
+  speedBytesPerSec,
   onDownload,
   onResume,
   onDiscard,
@@ -403,8 +413,9 @@ function TierColumn({
         {active ? (
           <DownloadCell
             state={state}
-            progress={progress}
-            etaSeconds={etaSeconds}
+            combinedBytes={combinedBytes}
+            speedBytesPerSec={speedBytesPerSec}
+            grandTotalBytes={totalBytes(option)}
             onCancel={onCancel}
             onRetry={onRetry}
           />
@@ -516,8 +527,12 @@ function ProvenanceLink({
 
 interface DownloadCellProps {
   state: DownloadUiState;
-  progress: DownloadProgressInfo | null;
-  etaSeconds: number | null;
+  /** Cumulative bytes across both files, or null before the first byte. */
+  combinedBytes: number | null;
+  /** Rolling download rate in bytes per second, or null until measurable. */
+  speedBytesPerSec: number | null;
+  /** The card's full on-disk total (weights + vision companion). */
+  grandTotalBytes: number;
   onCancel: () => void;
   onRetry: () => void;
 }
@@ -530,8 +545,9 @@ interface DownloadCellProps {
  */
 function DownloadCell({
   state,
-  progress,
-  etaSeconds,
+  combinedBytes,
+  speedBytesPerSec,
+  grandTotalBytes,
   onCancel,
   onRetry,
 }: DownloadCellProps) {
@@ -556,20 +572,31 @@ function DownloadCell({
     );
   }
 
-  // While bytes are coming down, the button IS the progress: it fills as it
-  // downloads, shows the byte counts + ETA inside (no percentage), and is the
-  // cancel control. Hovering eases the warm fill to a neutral "stop" grey and
-  // swaps in "Cancel download", so a click clearly stops it.
+  // While bytes are coming down, the button IS the progress: it fills as one
+  // continuous bar against the card's full total (weights + vision companion
+  // summed, never two separate downloads), shows the byte counts, speed and
+  // ETA inside (no percentage), and is the cancel control. Hovering eases the
+  // warm fill to a neutral "stop" grey and swaps in "Pause download".
   if (state.phase === 'downloading' || state.phase === 'downloading_mmproj') {
     const pct =
-      progress && progress.totalBytes > 0
-        ? Math.floor((progress.bytes / progress.totalBytes) * 100)
+      combinedBytes !== null && grandTotalBytes > 0
+        ? Math.min(100, Math.floor((combinedBytes / grandTotalBytes) * 100))
         : 0;
-    const bytesLabel = progress
-      ? `${gb(progress.bytes)} / ${gb(progress.totalBytes)} GB${
-          etaSeconds !== null ? ` · ${formatEta(etaSeconds)} left` : ''
-        }`
-      : 'Starting…';
+    // speedBytesPerSec is null or strictly positive (the hook never reports a
+    // zero rate), so a non-null value is always safe to divide by.
+    const etaSeconds =
+      combinedBytes !== null && speedBytesPerSec !== null
+        ? Math.max(
+            0,
+            Math.round((grandTotalBytes - combinedBytes) / speedBytesPerSec),
+          )
+        : null;
+    const bytesLabel =
+      combinedBytes === null
+        ? 'Starting…'
+        : `${gb(combinedBytes)} / ${gb(grandTotalBytes)} GB${
+            speedBytesPerSec !== null ? ` · ${mbps(speedBytesPerSec)} MB/s` : ''
+          }${etaSeconds !== null ? ` · ${formatEta(etaSeconds)} left` : ''}`;
     return (
       <button
         onClick={onCancel}

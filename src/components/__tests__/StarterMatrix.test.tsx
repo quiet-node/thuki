@@ -2,10 +2,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StarterMatrix } from '../StarterMatrix';
 import { invoke } from '../../testUtils/mocks/tauri';
-import type {
-  DownloadProgressInfo,
-  DownloadUiState,
-} from '../../hooks/useDownloadModel';
+import type { DownloadUiState } from '../../hooks/useDownloadModel';
 import type { Starter, StarterOption, StarterTier } from '../../types/starter';
 
 function makeStarter(tier: StarterTier, overrides?: Partial<Starter>): Starter {
@@ -70,8 +67,8 @@ function renderMatrix(
     <StarterMatrix
       options={options}
       state={{ phase: 'idle' }}
-      progress={null}
-      etaSeconds={null}
+      combinedBytes={null}
+      speedBytesPerSec={null}
       downloadingTier={null}
       {...handlers}
       {...props}
@@ -79,12 +76,6 @@ function renderMatrix(
   );
   return { ...utils, ...handlers };
 }
-
-const PROGRESS: DownloadProgressInfo = {
-  file: 'weights.gguf',
-  bytes: 1_400_000_000,
-  totalBytes: 2_500_000_000,
-};
 
 describe('StarterMatrix (picker)', () => {
   beforeEach(() => {
@@ -215,14 +206,17 @@ describe('StarterMatrix (picker)', () => {
     expect(onDiscard).toHaveBeenCalledWith('fast-sha');
   });
 
-  it('renders the active column download fill and cancels on click', () => {
+  it('renders one combined bar with bytes, speed and ETA, and cancels on click', () => {
     const { onCancel } = renderMatrix(THREE_TIERS, {
       state: { phase: 'downloading' },
-      progress: PROGRESS,
-      etaSeconds: 30,
+      combinedBytes: 1_400_000_000,
+      speedBytesPerSec: 8_000_000,
       downloadingTier: 'fast',
     });
-    expect(screen.getByText('1.4 / 2.5 GB · 30s left')).toBeInTheDocument();
+    // 1.4 of the 3.3 GB card total; (3.3e9 - 1.4e9) / 8e6 = 238s -> "3m".
+    expect(
+      screen.getByText('1.4 / 3.3 GB · 8.0 MB/s · 3m left'),
+    ).toBeInTheDocument();
     const pause = screen.getByRole('button', { name: 'Pause download' });
     fireEvent.mouseEnter(pause); // cross-fade to grey/"Pause download"
     fireEvent.click(pause);
@@ -233,12 +227,12 @@ describe('StarterMatrix (picker)', () => {
   it('dims and disables the other columns while one is downloading', () => {
     const { container, onDownload } = renderMatrix(THREE_TIERS, {
       state: { phase: 'downloading' },
-      progress: PROGRESS,
-      etaSeconds: null,
+      combinedBytes: 1_400_000_000,
+      speedBytesPerSec: null,
       downloadingTier: 'fast',
     });
-    // No ETA -> just the byte counts.
-    expect(screen.getByText('1.4 / 2.5 GB')).toBeInTheDocument();
+    // No measurable rate yet -> just the byte counts, no speed or ETA.
+    expect(screen.getByText('1.4 / 3.3 GB')).toBeInTheDocument();
     const balanced = container.querySelector('[data-tier="balanced"]');
     expect(balanced?.getAttribute('style')).toContain('opacity: 0.32');
     const downloads = screen.getAllByRole('button', { name: 'Download' });
@@ -247,48 +241,40 @@ describe('StarterMatrix (picker)', () => {
     expect(onDownload).not.toHaveBeenCalled();
   });
 
-  it('formats minute- and hour-scale ETAs', () => {
-    const { rerender } = renderMatrix([makeOption('fast')], {
-      state: { phase: 'downloading' },
-      progress: PROGRESS,
-      etaSeconds: 90,
-      downloadingTier: 'fast',
-    });
-    expect(screen.getByText('1.4 / 2.5 GB · 1m left')).toBeInTheDocument();
-    rerender(
-      <StarterMatrix
-        options={[makeOption('fast')]}
-        state={{ phase: 'downloading' }}
-        progress={PROGRESS}
-        etaSeconds={3700}
-        downloadingTier="fast"
-        onDownload={vi.fn()}
-        onResume={vi.fn()}
-        onDiscard={vi.fn()}
-        onCancel={vi.fn()}
-        onRetry={vi.fn()}
-      />,
-    );
-    expect(screen.getByText('1.4 / 2.5 GB · 1h 1m left')).toBeInTheDocument();
-  });
-
-  it('shows "Starting…" before the first progress event', () => {
+  it('formats an hour-scale ETA from the combined remaining bytes', () => {
     renderMatrix([makeOption('fast')], {
       state: { phase: 'downloading' },
-      progress: null,
+      combinedBytes: 0,
+      speedBytesPerSec: 200_000,
+      downloadingTier: 'fast',
+    });
+    // 3.3e9 / 2e5 = 16500s -> 4h 35m.
+    expect(
+      screen.getByText('0.0 / 3.3 GB · 0.2 MB/s · 4h 35m left'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows "Starting…" before the first combined byte arrives', () => {
+    renderMatrix([makeOption('fast')], {
+      state: { phase: 'downloading' },
+      combinedBytes: null,
+      speedBytesPerSec: null,
       downloadingTier: 'fast',
     });
     expect(screen.getByText('Starting…')).toBeInTheDocument();
   });
 
-  it('labels the vision-companion phase', () => {
+  it('renders the mmproj phase as the same combined bar, with no second-file label', () => {
     renderMatrix([makeOption('fast')], {
       state: { phase: 'downloading_mmproj' },
-      progress: { file: 'mmproj', bytes: 400_000_000, totalBytes: 800_000_000 },
-      etaSeconds: 5,
+      combinedBytes: 3_000_000_000,
+      speedBytesPerSec: 8_000_000,
       downloadingTier: 'fast',
     });
-    expect(screen.getByText('0.4 / 0.8 GB · 5s left')).toBeInTheDocument();
+    // One bar against the 3.3 GB total; (3.3e9 - 3.0e9) / 8e6 = 38s.
+    expect(
+      screen.getByText('3.0 / 3.3 GB · 8.0 MB/s · 38s left'),
+    ).toBeInTheDocument();
   });
 
   it('renders each post-download phase label', () => {
@@ -349,7 +335,7 @@ describe('StarterMatrix (picker)', () => {
       ],
       {
         state: { phase: 'downloading' },
-        progress: PROGRESS,
+        combinedBytes: 1_400_000_000,
         downloadingTier: 'fast',
       },
     );
@@ -373,8 +359,8 @@ describe('StarterMatrix (picker)', () => {
     const base = {
       options: THREE_TIERS,
       state: { phase: 'idle' } as DownloadUiState,
-      progress: null,
-      etaSeconds: null,
+      combinedBytes: null,
+      speedBytesPerSec: null,
       downloadingTier: null,
       onDownload: vi.fn(),
       onResume: vi.fn(),
