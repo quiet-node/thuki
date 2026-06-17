@@ -5,10 +5,11 @@
  *
  * 1. The downloader writes bytes into `root/tmp/<sha256>.partial` so
  *    interrupted downloads can be resumed from the already-written offset.
- * 2. On completion the store verifies the file by streaming it through
- *    SHA-256 (buffered copy; never fully buffered in memory) and, on match, atomically
- *    renames it into `root/blobs/<sha256>`. A mismatch deletes the partial
- *    and returns [`StorageError::VerifyFailed`].
+ * 2. On completion the file's SHA-256 is checked against the expected digest.
+ *    The downloader hashes bytes as they stream in; a full-length partial that
+ *    was never streamed is read back through SHA-256 here. On match the partial
+ *    is atomically renamed into `root/blobs/<sha256>`; a mismatch deletes the
+ *    partial and returns [`StorageError::VerifyFailed`].
  *
  * `free_disk_bytes` is a thin `libc::statfs` wrapper used by callers to show
  * a low-disk warning before starting a download. Treating `None` as "unknown"
@@ -19,6 +20,8 @@ use std::io;
 use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
+
+use crate::config::defaults::BLOB_HASH_BUFFER_BYTES;
 
 /// Errors returned by [`ModelStore`] operations.
 #[derive(Debug, thiserror::Error)]
@@ -64,32 +67,48 @@ impl ModelStore {
         self.root.join("tmp").join(format!("{sha256}.partial"))
     }
 
-    /// Streams `root/tmp/<sha256>.partial` through SHA-256 (buffered copy,
-    /// never whole-file in memory). On hash match the partial is atomically
-    /// renamed into `root/blobs/<sha256>` and the blob path is returned.
-    /// On mismatch the partial is deleted and [`StorageError::VerifyFailed`]
-    /// is returned. `sha256` must be a lowercase hex digest; the comparison
-    /// is case-sensitive.
-    pub fn verify_and_install(&self, sha256: &str) -> Result<PathBuf, StorageError> {
+    /// Streams the existing partial for `sha256` into `sink` using a large read
+    /// buffer (never whole-file in memory). Used to hash a full-length partial
+    /// that was never streamed live, and to seed an incremental hasher with the
+    /// bytes already on disk before a resumed download appends the rest.
+    pub fn feed_partial<W: io::Write>(&self, sha256: &str, sink: &mut W) -> io::Result<()> {
+        let file = std::fs::File::open(self.partial_path(sha256))?;
+        let mut reader = io::BufReader::with_capacity(BLOB_HASH_BUFFER_BYTES, file);
+        io::copy(&mut reader, sink)?;
+        Ok(())
+    }
+
+    /// Finalizes a downloaded partial whose SHA-256 `actual` is already known
+    /// (hashed live during the download, or by [`Self::verify_and_install`]). On
+    /// match the partial is atomically renamed into `root/blobs/<sha256>` and
+    /// the blob path is returned; on mismatch the partial is deleted and
+    /// [`StorageError::VerifyFailed`] is returned. `sha256` must be a lowercase
+    /// hex digest; the comparison is case-sensitive.
+    pub fn install_if_matches(&self, sha256: &str, actual: &str) -> Result<PathBuf, StorageError> {
         let partial = self.partial_path(sha256);
-        let mut file = std::fs::File::open(&partial)?;
-
-        let mut hasher = Sha256::new();
-        io::copy(&mut file, &mut hasher)?;
-        let actual = format!("{:x}", hasher.finalize());
-
         if actual != sha256 {
             // Best-effort delete; ignore secondary I/O errors.
             let _ = std::fs::remove_file(&partial);
             return Err(StorageError::VerifyFailed {
                 expected: sha256.to_string(),
-                actual,
+                actual: actual.to_string(),
             });
         }
-
         let blob = self.blob_path(sha256);
         std::fs::rename(&partial, &blob)?;
         Ok(blob)
+    }
+
+    /// Reads `root/tmp/<sha256>.partial` back through SHA-256 and installs it.
+    /// Used for a full-length partial whose hash was never computed during a
+    /// live download (e.g. a completed-but-uninstalled download from a prior
+    /// run). On mismatch the partial is deleted and
+    /// [`StorageError::VerifyFailed`] is returned.
+    pub fn verify_and_install(&self, sha256: &str) -> Result<PathBuf, StorageError> {
+        let mut hasher = Sha256::new();
+        self.feed_partial(sha256, &mut hasher)?;
+        let actual = format!("{:x}", hasher.finalize());
+        self.install_if_matches(sha256, &actual)
     }
 
     /// Removes each blob in `shas` from `root/blobs/`. Missing files are

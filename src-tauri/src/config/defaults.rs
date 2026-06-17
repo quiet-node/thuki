@@ -117,6 +117,14 @@ pub const ENGINE_COMMAND_QUEUE_CAPACITY: usize = 64;
 /// user-tunable: pure IPC hygiene, invisible below the UI refresh rate.
 pub const DOWNLOAD_PROGRESS_MIN_INTERVAL_MS: u64 = 500;
 
+/// Read-buffer size for streaming a downloaded blob through SHA-256 when the
+/// hash cannot be computed live: a full-length partial already on disk, or
+/// seeding the hasher with a resumed download's existing prefix. A few-MB
+/// buffer turns a multi-GB read into a few hundred syscalls instead of hundreds
+/// of thousands. Not user-tunable: an internal I/O buffer whose only effect is
+/// verify speed.
+pub const BLOB_HASH_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+
 /// Maximum accepted length of a single Server-Sent-Events line from a /v1
 /// streaming response. Bounds attacker-controlled data from a chat server
 /// (a malicious or broken server cannot grow a single line unboundedly).

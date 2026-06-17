@@ -13,11 +13,12 @@
  * validated as exactly 64 lowercase ASCII hex chars before any filesystem
  * use. An invalid digest aborts the whole download with a `Failed` event.
  *
- * Blocking contract: the verification step hashes the whole file with
- * synchronous I/O, blocking the current runtime worker for seconds on a
- * multi-GB model. `run_download` must therefore run on a spawned task of the
- * multi-threaded runtime (the Tauri command path), never on a thread the UI
- * waits on.
+ * Blocking contract: the body is hashed incrementally as it streams, but a
+ * full-length partial (or a resumed download's existing prefix) is read back
+ * through SHA-256 with synchronous I/O, blocking the current runtime worker for
+ * seconds on a multi-GB model. `run_download` must therefore run on a spawned
+ * task of the multi-threaded runtime (the Tauri command path), never on a
+ * thread the UI waits on.
  */
 
 use std::io::Write;
@@ -146,6 +147,14 @@ enum FileOutcome {
     Cancelled,
 }
 
+/// Result of streaming one file's body into the partial. On completion it
+/// carries the SHA-256 hashed live over the full file (seed prefix + streamed
+/// bytes), so the caller installs without a second read.
+enum FetchOutcome {
+    Done { sha256: String },
+    Cancelled,
+}
+
 /// Downloads (or skips, when the partial is already full-length) one spec,
 /// then verifies and installs it.
 async fn download_one(
@@ -163,18 +172,19 @@ async fn download_one(
     });
 
     // A full-length partial skips the network and goes straight to verify.
+    // When we do stream, the body is hashed live so verify needs no second read.
     // Note: if upstream metadata ever overstates total_bytes, the partial can
     // never reach it and a resume Range past the real EOF returns 416, which
     // surfaces as an Http failure with the partial kept; Discard is the
     // user's recovery path.
-    if resumed_from < spec.total_bytes
-        && matches!(
-            fetch_into_partial(spec, store, client, cancel, emit, resumed_from).await?,
-            FileOutcome::Cancelled
-        )
-    {
-        return Ok(FileOutcome::Cancelled);
-    }
+    let streamed_hash = if resumed_from < spec.total_bytes {
+        match fetch_into_partial(spec, store, client, cancel, emit, resumed_from).await? {
+            FetchOutcome::Cancelled => return Ok(FileOutcome::Cancelled),
+            FetchOutcome::Done { sha256 } => Some(sha256),
+        }
+    } else {
+        None
+    };
 
     // Final 100% Progress always precedes Verifying so the UI bar completes.
     emit(DownloadEvent::Progress {
@@ -185,19 +195,27 @@ async fn download_one(
     emit(DownloadEvent::Verifying {
         file: spec.file.clone(),
     });
-    store
-        .verify_and_install(&spec.sha256)
-        .map_err(map_storage_error)?;
+    // A streamed download already has its hash, so installing only renames; a
+    // full-length partial was never hashed live, so read it back to verify.
+    match streamed_hash {
+        Some(actual) => store
+            .install_if_matches(&spec.sha256, &actual)
+            .map_err(map_storage_error)?,
+        None => store
+            .verify_and_install(&spec.sha256)
+            .map_err(map_storage_error)?,
+    };
     emit(DownloadEvent::FileDone {
         file: spec.file.clone(),
     });
     Ok(FileOutcome::Done)
 }
 
-/// Streams the response body into the store partial, resuming from
-/// `resumed_from` when it is non-zero. A 200 answer to a Range request means
-/// the server ignored the range, so the partial is truncated and rewritten
-/// from scratch.
+/// Streams the response body into the store partial, hashing the bytes live so
+/// the caller can install without a second read. Resumes from `resumed_from`
+/// when it is non-zero: a 206 seeds the hasher with the existing on-disk prefix
+/// and appends; a 200 means the server ignored the range, so the partial is
+/// truncated and the hash starts fresh over the full body.
 async fn fetch_into_partial(
     spec: &DownloadSpec,
     store: &ModelStore,
@@ -205,7 +223,9 @@ async fn fetch_into_partial(
     cancel: &CancellationToken,
     emit: &impl Fn(DownloadEvent),
     resumed_from: u64,
-) -> Result<FileOutcome, DownloadIoError> {
+) -> Result<FetchOutcome, DownloadIoError> {
+    use sha2::{Digest, Sha256};
+
     let ranged = resumed_from > 0;
     let mut request = client.get(&spec.url);
     if ranged {
@@ -216,7 +236,7 @@ async fn fetch_into_partial(
     // no timeouts, so an unraced await here could park forever.
     let sent = tokio::select! {
         biased;
-        () = cancel.cancelled() => return Ok(FileOutcome::Cancelled),
+        () = cancel.cancelled() => return Ok(FetchOutcome::Cancelled),
         sent = request.send() => sent,
     };
     let response = sent.map_err(|e| DownloadIoError::Connect(e.to_string()))?;
@@ -229,6 +249,16 @@ async fn fetch_into_partial(
         (_, 200) => 0,
         _ => return Err(DownloadIoError::HttpStatus(status)),
     };
+
+    // Seed the running hash with the bytes already on disk ONLY when the server
+    // honored the range (start > 0). A 200 truncates the partial, so the hash
+    // must cover the full body and nothing that came before it.
+    let mut hasher = Sha256::new();
+    if start > 0 {
+        store
+            .feed_partial(&spec.sha256, &mut hasher)
+            .map_err(DownloadIoError::Write)?;
+    }
 
     let mut options = std::fs::OpenOptions::new();
     options.create(true);
@@ -250,12 +280,13 @@ async fn fetch_into_partial(
         // never emit Cancelled. The partial is kept for a later resume.
         let next = tokio::select! {
             biased;
-            () = cancel.cancelled() => return Ok(FileOutcome::Cancelled),
+            () = cancel.cancelled() => return Ok(FetchOutcome::Cancelled),
             next = stream.next() => next,
         };
         let Some(chunk) = next else { break };
         let chunk = chunk.map_err(|e| DownloadIoError::MidStream(e.to_string()))?;
         file.write_all(&chunk).map_err(DownloadIoError::Write)?;
+        hasher.update(&chunk);
         written += chunk.len() as u64;
         if throttle.should_emit(written) {
             emit(DownloadEvent::Progress {
@@ -266,7 +297,9 @@ async fn fetch_into_partial(
         }
     }
     file.flush().map_err(DownloadIoError::Write)?;
-    Ok(FileOutcome::Done)
+    Ok(FetchOutcome::Done {
+        sha256: format!("{:x}", hasher.finalize()),
+    })
 }
 
 /// Rate limiter for Progress events: emits when either
@@ -898,7 +931,7 @@ mod tests {
                 ),
             }
         );
-        // verify_and_install already deleted the mismatched partial.
+        // the install step already deleted the mismatched partial.
         assert_eq!(store.existing_partial_len(&expected_sha), None);
         assert!(!store.blob_path(&expected_sha).exists());
     }
