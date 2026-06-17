@@ -8,8 +8,9 @@
  * [`crate::models::download::DownloadSpec`] which verifies them on install).
  *
  * Hashes and sizes were read from the Hugging Face tree-at-revision API
- * (`/api/models/<repo>/tree/<revision>`) on 2026-06-10, so each digest
- * matches the pinned commit, not whatever `main` later points to.
+ * (`/api/models/<repo>/tree/<revision>`) on 2026-06-17 for the Gemma 4 tiers
+ * and 2026-06-10 for Phi-4, so each digest matches the pinned commit, not
+ * whatever `main` later points to.
  */
 
 use crate::config::defaults::HF_BASE_URL;
@@ -31,7 +32,7 @@ pub enum Tier {
 pub struct Starter {
     /// Which speed/quality tier this entry fills.
     pub tier: Tier,
-    /// Human-readable label shown in the picker (e.g. "Gemma 3 4B").
+    /// Human-readable label shown in the picker (e.g. "Gemma 4 E4B").
     pub display_name: &'static str,
     /// Hugging Face repo slug.
     pub repo: &'static str,
@@ -69,37 +70,37 @@ pub struct Starter {
 pub const STARTERS: &[Starter] = &[
     Starter {
         tier: Tier::Fast,
-        display_name: "Gemma 3 4B",
-        repo: "ggml-org/gemma-3-4b-it-GGUF",
-        revision: "d0976223747697cb51e056d85c532013931fe52e",
-        file_name: "gemma-3-4b-it-Q4_K_M.gguf",
-        sha256: "882e8d2db44dc554fb0ea5077cb7e4bc49e7342a1f0da57901c0802ea21a0863",
-        size_bytes: 2_489_757_856,
+        display_name: "Gemma 4 E4B",
+        repo: "ggml-org/gemma-4-E4B-it-GGUF",
+        revision: "2714b5519c6c3516b1000e7c5e1eba998dfe1fe8",
+        file_name: "gemma-4-E4B-it-Q4_K_M.gguf",
+        sha256: "90ce98129eb3e8cc57e62433d500c97c624b1e3af1fcc85dd3b55ad7e0313e9f",
+        size_bytes: 5_335_289_824,
         quant: "Q4_K_M",
         vision: true,
         thinking: false,
-        mmproj_file: Some("mmproj-model-f16.gguf"),
-        mmproj_sha256: Some("8c0fb064b019a6972856aaae2c7e4792858af3ca4561be2dbf649123ba6c40cb"),
-        mmproj_bytes: 851_251_104,
-        est_runtime_gb: 5.0,
-        license_note: "Gemma Terms of Use",
+        mmproj_file: Some("mmproj-gemma-4-E4B-it-Q8_0.gguf"),
+        mmproj_sha256: Some("51d4b7fd825e4569f746b200fccc5332bf914e8ef7cbe447272ce4fec6df3db6"),
+        mmproj_bytes: 559_874_528,
+        est_runtime_gb: 7.0,
+        license_note: "Apache 2.0",
     },
     Starter {
         tier: Tier::Balanced,
-        display_name: "Gemma 3 12B",
-        repo: "ggml-org/gemma-3-12b-it-GGUF",
-        revision: "ec0cbabd8dbff316f659876a50202295c3c4a314",
-        file_name: "gemma-3-12b-it-Q4_K_M.gguf",
-        sha256: "7bb69bff3f48a7b642355d64a90e481182a7794707b3133890646b1efa778ff5",
-        size_bytes: 7_300_574_976,
+        display_name: "Gemma 4 12B",
+        repo: "ggml-org/gemma-4-12B-it-GGUF",
+        revision: "44ee90c4b61e888ac5b318a54ec7a94df61e9cd7",
+        file_name: "gemma-4-12B-it-Q4_K_M.gguf",
+        sha256: "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
+        size_bytes: 7_381_382_048,
         quant: "Q4_K_M",
         vision: true,
         thinking: false,
-        mmproj_file: Some("mmproj-model-f16.gguf"),
-        mmproj_sha256: Some("30c02d056410848227001830866e0a269fcc28aaf8ca971bded494003de9f5a5"),
-        mmproj_bytes: 854_200_224,
-        est_runtime_gb: 11.5,
-        license_note: "Gemma Terms of Use",
+        mmproj_file: Some("mmproj-gemma-4-12B-it-Q8_0.gguf"),
+        mmproj_sha256: Some("b486d28398a398db4fa14cc4b032252ad3a8d7f950b9fabd93f5c8b4d4dde52b"),
+        mmproj_bytes: 158_987_584,
+        est_runtime_gb: 10.0,
+        license_note: "Apache 2.0",
     },
     Starter {
         tier: Tier::Smartest,
@@ -249,10 +250,10 @@ mod tests {
 
     #[test]
     fn license_notes_per_tier() {
-        // The picker surfaces these verbatim: both Gemma tiers carry the
-        // Gemma Terms of Use, the Phi-4 tier is MIT.
-        assert_eq!(starter(Tier::Fast).license_note, "Gemma Terms of Use");
-        assert_eq!(starter(Tier::Balanced).license_note, "Gemma Terms of Use");
+        // The picker surfaces these verbatim: both Gemma 4 tiers are Apache
+        // 2.0, the Phi-4 tier is MIT.
+        assert_eq!(starter(Tier::Fast).license_note, "Apache 2.0");
+        assert_eq!(starter(Tier::Balanced).license_note, "Apache 2.0");
         assert_eq!(starter(Tier::Smartest).license_note, "MIT");
     }
 
@@ -260,8 +261,8 @@ mod tests {
     fn mmproj_hashes_are_distinct_between_gemma_tiers() {
         let fast = starter(Tier::Fast);
         let balanced = starter(Tier::Balanced);
-        // Both Gemma mmproj files share a name but differ in size, so their
-        // hashes must differ; identical hashes would mean a swap happened.
+        // The two Gemma 4 tiers ship their own mmproj; the sizes and hashes
+        // must differ, or a copy/paste swap slipped in.
         assert_ne!(fast.mmproj_bytes, balanced.mmproj_bytes);
         assert_ne!(fast.mmproj_sha256.unwrap(), balanced.mmproj_sha256.unwrap());
     }
@@ -269,9 +270,9 @@ mod tests {
     #[test]
     fn fit_cutoffs() {
         const GIB: u64 = 1 << 30;
-        // (ram_gib, expected fit for Fast 5.0 / Balanced 11.5 / Smartest 10.7)
+        // (ram_gib, expected fit for Fast 7.0 / Balanced 10.0 / Smartest 10.7)
         let table: &[(u64, [RamFit; 3])] = &[
-            (8, [RamFit::Tight, RamFit::TooBig, RamFit::TooBig]),
+            (8, [RamFit::TooBig, RamFit::TooBig, RamFit::TooBig]),
             (16, [RamFit::Fits, RamFit::Tight, RamFit::Tight]),
             (24, [RamFit::Fits, RamFit::Fits, RamFit::Fits]),
             (32, [RamFit::Fits, RamFit::Fits, RamFit::Fits]),
