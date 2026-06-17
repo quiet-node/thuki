@@ -982,32 +982,23 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
                 let stage = onboarding::get_stage(&conn)
                     .unwrap_or(onboarding::OnboardingStage::Permissions);
 
-                // "intro" and "model_check" both mean the user already cleared
-                // the permission gate on this or an earlier launch. Trust the
-                // persisted stage and skip the live permission re-check: the
-                // permission APIs (CGPreflightScreenCaptureAccess,
-                // AXIsProcessTrusted) return a stale `false` immediately after a
-                // restart on macOS 15+, and an outright wrong `false` when
-                // macOS's own "Quit & Reopen" relaunches a different Thuki
-                // bundle (by bundle id, via Launch Services) whose code
-                // requirement no longer matches the grant. Re-gating either
-                // stage on that read is what looped the user back to the
-                // permission screen. PermissionsStep persists "model_check" the
-                // moment both grants are confirmed live, so progress survives
-                // every relaunch path.
+                // The "intro" stage means the user already cleared both the
+                // permissions and the model-check gates on a previous launch.
+                // Skip the live permission re-check here: on macOS 15+
+                // CGPreflightScreenCaptureAccess can return a stale false
+                // negative immediately after a restart, which would wrongly
+                // loop the user back to the permissions screen.
                 if matches!(stage, onboarding::OnboardingStage::Intro) {
                     show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
                     return;
                 }
-                if matches!(stage, onboarding::OnboardingStage::ModelCheck) {
-                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::ModelCheck);
-                    return;
-                }
 
-                // Only "permissions" (first launch) and "complete" read live
-                // permissions: "permissions" to decide whether to advance,
-                // "complete" to catch a revocation after onboarding finished.
-                // Both restart the flow at Permissions if a grant is missing.
+                // For "permissions", "model_check", and "complete" stages,
+                // re-validate live macOS permissions. "complete" detects
+                // revocation after onboarding finished. "model_check" detects
+                // mid-onboarding revocation. "permissions" is the first-launch
+                // path. All three must restart the flow at Permissions if
+                // either grant has been withdrawn.
                 let ax = permissions::is_accessibility_granted();
                 let sr = permissions::is_screen_recording_granted();
                 if !ax || !sr {
@@ -1016,16 +1007,19 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
                     return;
                 }
 
-                // Permissions just confirmed granted from the first-launch
-                // "permissions" stage: advance to the model-check gate. The
-                // frontend probes Ollama via `check_model_setup` and either
-                // renders the gate (Ollama unreachable / no models) or fires
-                // `advance_past_model_check` to skip straight to Intro on Ready.
-                // We do not probe here because /api/tags requires the async
-                // runtime and notify_frontend_ready is invoked synchronously
-                // from a Tauri command worker. ("complete" falls through to the
-                // overlay.)
-                if matches!(stage, onboarding::OnboardingStage::Permissions) {
+                // Permissions granted. If the user has not yet cleared the
+                // model-check gate, route them there. The frontend probes
+                // Ollama via `check_model_setup` and either renders the gate
+                // (Ollama unreachable / no models) or fires
+                // `advance_past_model_check` to skip straight to Intro on
+                // Ready. We do not probe here because /api/tags requires the
+                // async runtime and notify_frontend_ready is invoked
+                // synchronously from a Tauri command worker.
+                if matches!(
+                    stage,
+                    onboarding::OnboardingStage::Permissions
+                        | onboarding::OnboardingStage::ModelCheck
+                ) {
                     let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::ModelCheck);
                     show_onboarding_window(&app_handle, onboarding::OnboardingStage::ModelCheck);
                     return;
@@ -1070,22 +1064,6 @@ fn advance_past_model_check(
         },
     );
     Ok(())
-}
-
-/// Persists onboarding progress once `PermissionsStep` confirms both permission
-/// grants live, advancing the stage from `permissions` to `model_check`. This
-/// makes onboarding survive any relaunch path: macOS's own "Quit & Reopen"
-/// relaunches by bundle id via Launch Services and can bring up a different
-/// Thuki build whose code requirement no longer matches the grant, and the
-/// permission preflight can return a stale `false` right after a restart. With
-/// progress persisted, `notify_frontend_ready` routes to the model-check gate
-/// instead of re-reading those unreliable APIs and bouncing back to permissions.
-/// Delegates to the tested `onboarding::mark_permissions_granted`.
-#[tauri::command]
-#[cfg_attr(coverage_nightly, coverage(off))]
-fn mark_permissions_granted(db: tauri::State<history::Database>) -> Result<(), String> {
-    let conn = db.0.lock().map_err(|e| format!("db lock poisoned: {e}"))?;
-    onboarding::mark_permissions_granted(&conn).map_err(|e| format!("db write failed: {e}"))
 }
 
 // ─── Onboarding completion ───────────────────────────────────────────────────
@@ -2059,7 +2037,6 @@ pub fn run() {
             permissions::quit_and_relaunch,
             finish_onboarding,
             advance_past_model_check,
-            mark_permissions_granted,
             #[cfg(not(coverage))]
             warmup::warm_up_model,
             #[cfg(not(coverage))]

@@ -306,19 +306,6 @@ export function PermissionsStep() {
   const isScreenPolling = screenRecordingStatus === 'polling';
   const screenGranted = screenRecordingStatus === 'granted';
 
-  // Once both permissions are confirmed granted in this live process (a reliable
-  // read, unlike the post-relaunch preflight), persist onboarding progress so
-  // any relaunch advances past the permission gate. macOS's own "Quit & Reopen"
-  // relaunches by bundle id via Launch Services and can bring up a different
-  // Thuki build whose code requirement no longer matches the grant; that build
-  // would otherwise re-read the permission API, see a stale/mismatched false,
-  // and bounce back to this screen.
-  useEffect(() => {
-    if (accessibilityGranted && screenGranted) {
-      void invoke('mark_permissions_granted');
-    }
-  }, [accessibilityGranted, screenGranted]);
-
   return (
     // Transparent outer container so the rounded panel corners show through
     // against the macOS desktop (window has transparent: true in tauri.conf.json).

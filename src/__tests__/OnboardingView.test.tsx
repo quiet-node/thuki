@@ -444,45 +444,6 @@ describe('OnboardingView', () => {
     expect(invoke).toHaveBeenCalledWith('quit_and_relaunch');
   });
 
-  it('persists permission progress once both grants are confirmed', async () => {
-    invoke.mockImplementation(async (cmd: string) => {
-      if (cmd === 'check_accessibility_permission') return true;
-      if (cmd === 'check_screen_recording_permission') return false;
-      if (cmd === 'request_screen_recording_access') return;
-      if (cmd === 'open_screen_recording_settings') return;
-      if (cmd === 'check_screen_recording_tcc_granted') return true;
-    });
-
-    render(<PermissionsStep />);
-    await act(async () => {});
-
-    await act(async () => {
-      fireEvent.click(
-        screen.getByRole('button', { name: /open screen recording settings/i }),
-      );
-    });
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(500);
-    });
-
-    // Both permissions are now confirmed granted in this live process, so the
-    // step persists progress to the onboarding stage. This lets a relaunch —
-    // including one macOS routes to a different bundle via "Quit & Reopen" —
-    // advance past the permission gate instead of re-reading the unreliable
-    // preflight and bouncing back here.
-    expect(invoke).toHaveBeenCalledWith('mark_permissions_granted');
-  });
-
-  it('does not persist permission progress when only accessibility is granted', async () => {
-    setupPermissions(true);
-    render(<PermissionsStep />);
-    await act(async () => {});
-
-    // Screen Recording is still ungranted, so progress must not be persisted.
-    expect(invoke).not.toHaveBeenCalledWith('mark_permissions_granted');
-  });
-
   it('shows screen recording step info', async () => {
     setupPermissions(true);
     render(<PermissionsStep />);
