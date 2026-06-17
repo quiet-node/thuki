@@ -46,6 +46,23 @@ export type DownloadUiState =
   | { phase: 'resume_pending' }
   | { phase: 'failed'; kind: DownloadUiFailKind; message: string };
 
+/**
+ * True while a download is active but not yet terminal: bytes still moving
+ * (`downloading`/`downloading_mmproj`) or the post-download verify/install/warm
+ * steps running. False for idle, the pre-flight confirm/resume states, and the
+ * terminal `ready`/`failed`. Shared by the picker's "Continue setup" line, the
+ * ambient strip, and the submit soft-block so all three agree on "in flight".
+ */
+export function isDownloadInFlight(phase: DownloadUiState['phase']): boolean {
+  return (
+    phase === 'downloading' ||
+    phase === 'downloading_mmproj' ||
+    phase === 'verifying' ||
+    phase === 'installing' ||
+    phase === 'warming_up'
+  );
+}
+
 /** Last reported byte counts for the file currently downloading. */
 export interface DownloadProgressInfo {
   file: string;

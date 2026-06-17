@@ -1074,8 +1074,35 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
         #[cfg(target_os = "macos")]
         {
             if let Ok(conn) = db.0.lock() {
-                let stage = onboarding::get_stage(&conn)
+                let raw_stage = onboarding::get_stage(&conn)
                     .unwrap_or(onboarding::OnboardingStage::Permissions);
+
+                // Relaunch-safety gate: a built-in model download still in
+                // flight persists `intro` (Continue setup) or `complete` (Get
+                // Started) before it finishes. If the user quit mid-download,
+                // re-gate back to model_check so they can resume instead of
+                // being stranded past selection with no usable model. Scoped to
+                // builtin + zero models + a resumable partial on disk, so a
+                // deliberate delete-model-in-Settings does not re-onboard.
+                let is_builtin = app_handle
+                    .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                    .read()
+                    .inference
+                    .active_provider_kind()
+                    == "builtin";
+                let has_model = crate::models::manifest::list(&conn)
+                    .map(|m| !m.is_empty())
+                    .unwrap_or(false);
+                let model_store = app_handle.state::<crate::models::storage::ModelStore>();
+                let has_partial = crate::models::build_starter_options(
+                    &conn,
+                    &model_store,
+                    crate::models::system_ram_bytes(),
+                )
+                .iter()
+                .any(|o| o.partial_bytes.is_some());
+                let stage =
+                    onboarding::apply_model_gate(raw_stage, is_builtin, has_model, has_partial);
 
                 // The "intro" stage means the user already cleared both the
                 // permissions and the model-check gates on a previous launch.

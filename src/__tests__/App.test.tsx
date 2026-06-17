@@ -11,6 +11,7 @@ import {
   DEFAULT_CONFIG,
   ConfigProviderForTest,
 } from '../contexts/ConfigContext';
+import type { DownloadContextValue } from '../contexts/DownloadContext';
 import {
   invoke,
   emitTauriEvent,
@@ -37,6 +38,45 @@ import {
 vi.mock('../hooks/useTips', () => ({
   useTips: vi.fn(() => ({ tip: '', tipKey: 0, isVisible: false })),
 }));
+
+// The download machine lives in an app-root provider that `main.tsx` wires
+// around `<App />`; these tests render `<App />` bare, so `useDownloadCtx` is
+// mocked to a controllable value. `downloadHolder.value` is reset to an idle
+// machine before every test and overridden per-test to drive the ambient
+// strip, the submit soft-block, and the ready-refresh effect.
+const downloadHolder = vi.hoisted(() => ({ value: null as unknown }));
+vi.mock('../contexts/DownloadContext', () => ({
+  useDownloadCtx: () => downloadHolder.value,
+}));
+
+function makeDownloadCtx(
+  overrides: Partial<DownloadContextValue> = {},
+): DownloadContextValue {
+  return {
+    state: { phase: 'idle' },
+    progress: null,
+    etaSeconds: null,
+    combinedBytes: null,
+    speedBytesPerSec: null,
+    beginConfirm: vi.fn(),
+    cancelConfirm: vi.fn(),
+    start: vi.fn(async () => {}),
+    startRepo: vi.fn(async () => {}),
+    cancel: vi.fn(async () => {}),
+    retry: vi.fn(async () => {}),
+    resume: vi.fn(async () => {}),
+    discard: vi.fn(async () => {}),
+    enterResumePending: vi.fn(),
+    reset: vi.fn(),
+    downloadingTier: null,
+    resumeSeedBytes: null,
+    activeOption: null,
+    grandTotalBytes: null,
+    beginDownload: vi.fn(),
+    resumeDownload: vi.fn(),
+    ...overrides,
+  };
+}
 
 /** The AskBar Lexical contentEditable input (role="textbox"). */
 function getAskInput(): HTMLElement {
@@ -91,6 +131,7 @@ describe('App', () => {
   beforeEach(() => {
     invoke.mockClear();
     enableChannelCapture();
+    downloadHolder.value = makeDownloadCtx();
   });
 
   it('fetches model picker state on mount and refreshes it when the overlay shows', async () => {
@@ -7671,6 +7712,214 @@ describe('App', () => {
       });
 
       expect(screen.queryByText("You're all set")).toBeNull();
+    });
+  });
+
+  describe('background model download', () => {
+    const BUILTIN = {
+      ...DEFAULT_CONFIG,
+      inference: {
+        ...DEFAULT_CONFIG.inference,
+        activeProvider: 'builtin',
+        activeProviderKind: 'builtin',
+      },
+    };
+
+    function builtinTree() {
+      return (
+        <ConfigProviderForTest value={BUILTIN}>
+          <App />
+        </ConfigProviderForTest>
+      );
+    }
+
+    it('shows the ambient strip with percent and ETA in the ask bar while downloading', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 4_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 8_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
+      // 4 / 10 GB -> 40%; (10 - 4)e9 / 8e6 = 750s -> "12m".
+      expect(screen.getByText('40% · 12m left')).toBeInTheDocument();
+      // The download strip owns the messaging: no capability strip stacks under it.
+      expect(
+        screen.queryByTestId('capability-mismatch-strip'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('shows percent only before the download rate is measurable', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: null,
+        resumeSeedBytes: null,
+        grandTotalBytes: null,
+        speedBytesPerSec: null,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('0%')).toBeInTheDocument();
+    });
+
+    it('soft-blocks submit while downloading, without sending or shaking', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 1_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 5_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      act(() => {
+        setAskValue('hello');
+      });
+      invoke.mockClear();
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(
+        invoke.mock.calls.filter((c) => c[0] === 'ask_model'),
+      ).toHaveLength(0);
+      // The wait holds calmly: the ambient strip stays, no error cue replaces it.
+      expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
+    });
+
+    it('shows a failed strip whose Retry restarts the download', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      const retry = vi.fn(async () => {});
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'failed', kind: 'offline', message: 'no network' },
+        retry,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('Model download failed.')).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Retry download' }));
+      });
+      expect(retry).toHaveBeenCalledTimes(1);
+    });
+
+    it('refreshes the model list and shows "Model ready" when the download completes', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 1_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 5_000_000,
+      });
+
+      const { rerender } = render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      const before = invoke.mock.calls.filter(
+        (c) => c[0] === 'get_model_picker_state',
+      ).length;
+      downloadHolder.value = makeDownloadCtx({ state: { phase: 'ready' } });
+      await act(async () => {
+        rerender(builtinTree());
+      });
+
+      expect(screen.getByText('Model ready')).toBeInTheDocument();
+      const after = invoke.mock.calls.filter(
+        (c) => c[0] === 'get_model_picker_state',
+      ).length;
+      expect(after).toBeGreaterThan(before);
+    });
+
+    it('floats the strip over the intro tour, but not during model_check or when idle', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 1_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 5_000_000,
+      });
+
+      const { rerender } = render(<App />);
+      await act(async () => {});
+
+      // model_check: the picker matrix owns the bar, so no app-root strip.
+      await act(async () => {
+        emitTauriEvent('thuki://onboarding', { stage: 'model_check' });
+      });
+      expect(
+        screen.queryByTestId('download-status-strip'),
+      ).not.toBeInTheDocument();
+
+      // intro: the strip floats over the tour.
+      await act(async () => {
+        emitTauriEvent('thuki://onboarding', { stage: 'intro' });
+      });
+      expect(screen.getByText("You're all set")).toBeInTheDocument();
+      expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
+
+      // intro with an idle machine: nothing to float.
+      downloadHolder.value = makeDownloadCtx();
+      await act(async () => {
+        rerender(<App />);
+      });
+      expect(
+        screen.queryByTestId('download-status-strip'),
+      ).not.toBeInTheDocument();
     });
   });
 

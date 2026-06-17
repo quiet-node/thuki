@@ -102,6 +102,43 @@ describe('AskBarView', () => {
     expect(screen.getByText('Reply...')).toBeInTheDocument();
   });
 
+  it('renders the ambient download strip when a download status is supplied', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        downloadStatus={{ kind: 'downloading', percent: 40, etaSeconds: 90 }}
+      />,
+    );
+    expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
+    expect(screen.getByText('Setting up your model')).toBeInTheDocument();
+  });
+
+  it('renders no download strip when no download status is supplied', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        downloadStatus={null}
+      />,
+    );
+    expect(
+      screen.queryByTestId('download-status-strip'),
+    ).not.toBeInTheDocument();
+  });
+
   it('calls setQuery when the editor text changes', async () => {
     const setQuery = vi.fn();
     render(

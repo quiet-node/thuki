@@ -4,6 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import App from './App';
 import { ConfigProvider } from './contexts/ConfigContext';
+import { DownloadProvider } from './contexts/DownloadContext';
 import { SettingsWindow } from './settings/SettingsWindow';
 import { UpdateWindow } from './view/update/UpdateWindow';
 
@@ -44,7 +45,9 @@ export function rootForLabel(label: string): React.ReactElement {
   return (
     <React.StrictMode>
       <ConfigProvider>
-        <App />
+        <DownloadProvider>
+          <App />
+        </DownloadProvider>
       </ConfigProvider>
     </React.StrictMode>
   );

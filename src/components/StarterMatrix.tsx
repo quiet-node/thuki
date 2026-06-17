@@ -16,9 +16,10 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type React from 'react';
-import type {
-  DownloadUiFailKind,
-  DownloadUiState,
+import {
+  isDownloadInFlight,
+  type DownloadUiFailKind,
+  type DownloadUiState,
 } from '../hooks/useDownloadModel';
 import type { RamFit, StarterOption, StarterTier } from '../types/starter';
 
@@ -140,6 +141,12 @@ export interface StarterMatrixProps {
   onDiscard: (sha256: string) => void;
   onCancel: () => void;
   onRetry: () => void;
+  /**
+   * When wired, renders a quiet "Continue setup" line while a download is in
+   * flight, letting the user leave the picker and let it finish in the
+   * background. Omitted in the Settings context, where there is no next step.
+   */
+  onContinue?: () => void;
   /** When true (and onUseOllama is wired), offers the Ollama escape hatch. */
   ollamaDetected?: boolean;
   onUseOllama?: () => void;
@@ -156,6 +163,7 @@ export function StarterMatrix({
   onDiscard,
   onCancel,
   onRetry,
+  onContinue,
   ollamaDetected,
   onUseOllama,
 }: StarterMatrixProps) {
@@ -208,6 +216,33 @@ export function StarterMatrix({
           );
         })}
       </div>
+      {onContinue && isDownloadInFlight(state.phase) ? (
+        <div
+          style={{
+            textAlign: 'center',
+            margin: '14px auto 0',
+            fontSize: 11.5,
+            color: 'rgba(255,255,255,0.5)',
+          }}
+        >
+          Downloading in the background.{' '}
+          <button
+            onClick={onContinue}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              fontFamily: 'inherit',
+              fontSize: 11.5,
+              fontWeight: 700,
+              color: 'rgba(255,141,92,0.7)',
+              cursor: 'pointer',
+            }}
+          >
+            Continue setup →
+          </button>
+        </div>
+      ) : null}
       {ollamaDetected && onUseOllama ? (
         <div
           style={{

@@ -3,8 +3,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   computeEtaSeconds,
   computeSpeedBytesPerSec,
+  isDownloadInFlight,
   useDownloadModel,
 } from '../useDownloadModel';
+import type { DownloadUiState } from '../useDownloadModel';
 import {
   invoke,
   getLastChannel,
@@ -708,5 +710,33 @@ describe('computeEtaSeconds', () => {
       { t: 1000, bytes: 150 },
     ];
     expect(computeEtaSeconds(samples, 150, 100)).toBe(0);
+  });
+});
+
+describe('isDownloadInFlight', () => {
+  it('is true while bytes move and through the post-download steps', () => {
+    const inFlight: DownloadUiState['phase'][] = [
+      'downloading',
+      'downloading_mmproj',
+      'verifying',
+      'installing',
+      'warming_up',
+    ];
+    for (const phase of inFlight) {
+      expect(isDownloadInFlight(phase)).toBe(true);
+    }
+  });
+
+  it('is false for the idle, pre-flight and terminal phases', () => {
+    const settled: DownloadUiState['phase'][] = [
+      'idle',
+      'confirming',
+      'resume_pending',
+      'ready',
+      'failed',
+    ];
+    for (const phase of settled) {
+      expect(isDownloadInFlight(phase)).toBe(false);
+    }
   });
 });

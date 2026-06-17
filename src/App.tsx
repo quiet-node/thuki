@@ -22,6 +22,12 @@ import type { Message } from './hooks/useModel';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { useModelSelection } from './hooks/useModelSelection';
 import { useModelCapabilities } from './hooks/useModelCapabilities';
+import { useDownloadCtx } from './contexts/DownloadContext';
+import { isDownloadInFlight } from './hooks/useDownloadModel';
+import {
+  DownloadStatusStrip,
+  type DownloadStripStatus,
+} from './components/DownloadStatusStrip';
 import {
   getCapabilityConflict,
   getEnvironmentMessage,
@@ -417,6 +423,21 @@ function App() {
     setActiveModel,
   } = useModelSelection();
 
+  // App-root download machine. A built-in model download started on the
+  // onboarding picker keeps running here after the picker unmounts, so the
+  // ambient strip and the submit soft-block read from the same live state.
+  // Destructured into stable locals so the strip memo and the ready-refresh
+  // effect depend on primitives rather than the per-render context object.
+  const download = useDownloadCtx();
+  const {
+    combinedBytes: downloadCombinedBytes,
+    resumeSeedBytes: downloadResumeSeedBytes,
+    grandTotalBytes: downloadGrandTotalBytes,
+    speedBytesPerSec: downloadSpeedBytesPerSec,
+    retry: retryDownload,
+  } = download;
+  const downloadPhase = download.state.phase;
+
   const { capabilities: modelCapabilities, refresh: refreshModelCapabilities } =
     useModelCapabilities();
 
@@ -439,6 +460,18 @@ function App() {
     const timer = setTimeout(() => setShakeAskBar(false), 600);
     return () => clearTimeout(timer);
   }, [shakeAskBar]);
+
+  // A background model download finishing is not event-driven for the picker
+  // state, so refresh the installed-model list when the machine reaches
+  // `ready`. The effect re-runs only when the phase changes, so this fires once
+  // per completion; the active model then resolves via the backend fallback
+  // (only one model is installed during onboarding), clearing the submit gate
+  // and populating the chip.
+  useEffect(() => {
+    if (downloadPhase === 'ready') {
+      void refreshModels();
+    }
+  }, [downloadPhase, refreshModels]);
 
   const {
     conversationId,
@@ -2396,7 +2429,59 @@ function App() {
     };
   }, [query, attachedImages]);
 
+  /**
+   * Ambient model-download status for the strip rendered in the onboarding
+   * intro and above the ask bar. Maps the download machine's phase onto the
+   * strip's three states; percent and ETA use the same math as the picker's
+   * combined bar (combined bytes against the card's grand total). Null in the
+   * settled phases (idle, confirm, resume), so no strip renders.
+   */
+  const downloadStripStatus = useMemo<DownloadStripStatus | null>(() => {
+    if (downloadPhase === 'ready') return { kind: 'ready' };
+    if (downloadPhase === 'failed') {
+      return {
+        kind: 'failed',
+        message: 'Model download failed.',
+        onRetry: () => void retryDownload(),
+      };
+    }
+    if (isDownloadInFlight(downloadPhase)) {
+      const bytes = downloadCombinedBytes ?? downloadResumeSeedBytes;
+      const total = downloadGrandTotalBytes;
+      const percent =
+        bytes !== null && total !== null && total > 0
+          ? Math.min(100, Math.floor((bytes / total) * 100))
+          : 0;
+      const etaSeconds =
+        bytes !== null && total !== null && downloadSpeedBytesPerSec !== null
+          ? Math.max(0, Math.round((total - bytes) / downloadSpeedBytesPerSec))
+          : null;
+      return { kind: 'downloading', percent, etaSeconds };
+    }
+    return null;
+  }, [
+    downloadPhase,
+    downloadCombinedBytes,
+    downloadResumeSeedBytes,
+    downloadGrandTotalBytes,
+    downloadSpeedBytesPerSec,
+    retryDownload,
+  ]);
+
+  /**
+   * True while a built-in model is still downloading. Drives the submit
+   * soft-block: a calm hold (no shake, no queue) because the ambient strip
+   * already shows the ETA.
+   */
+  const isBuiltinDownloadInFlight =
+    config.inference.activeProviderKind === 'builtin' &&
+    isDownloadInFlight(downloadPhase);
+
   const liveCapabilityConflictMessage = useMemo(() => {
+    // The ambient download strip owns the messaging while a download is
+    // surfaced; suppress the environment/capability strip so the two never
+    // stack or contradict each other.
+    if (downloadStripStatus !== null) return null;
     const envMessage = getEnvironmentMessage(
       ollamaReachable,
       availableModels.length,
@@ -2418,6 +2503,7 @@ function App() {
     ollamaReachable,
     availableModels.length,
     config.inference.activeProviderKind,
+    downloadStripStatus,
   ]);
 
   /**
@@ -2631,6 +2717,14 @@ function App() {
       (utilityTrigger !== undefined &&
         (hasScreen || attachedImages.length > 0));
 
+    // Built-in download soft-block. While the model is still downloading in
+    // the background, hold the submit calmly: no shake, nothing queued. The
+    // ambient strip already shows the ETA, so the refusal needs no extra cue.
+    // Checked before the shake gate below so the wait never reads as an error.
+    if (!isOcrPath && isBuiltinDownloadInFlight) {
+      return;
+    }
+
     // Submit-time capability gate. Refuses messages whose attached content
     // the active model cannot handle (images on a text-only model) and
     // environment-state failures (Ollama unreachable, no model selected).
@@ -2820,6 +2914,7 @@ function App() {
     searchActive,
     quote.maxContextLength,
     hasBlockingConflict,
+    isBuiltinDownloadInFlight,
   ]);
 
   // When a pending submit exists and all images finish processing, dispatch
@@ -3240,10 +3335,34 @@ function App() {
 
   if (onboardingStage !== null) {
     return (
-      <OnboardingView
-        stage={onboardingStage}
-        onComplete={() => setOnboardingStage(null)}
-      />
+      <>
+        <OnboardingView
+          stage={onboardingStage}
+          onComplete={() => setOnboardingStage(null)}
+        />
+        {/* Ambient download strip over the intro tour: IntroStep is a
+            self-contained full-screen modal with no footer, so the strip
+            floats at the bottom while the background download finishes. Not
+            shown during model_check (the matrix's own bar covers it). */}
+        {onboardingStage === 'intro' && downloadStripStatus ? (
+          <div
+            style={{
+              position: 'fixed',
+              left: 0,
+              right: 0,
+              bottom: 16,
+              display: 'flex',
+              justifyContent: 'center',
+              pointerEvents: 'none',
+              zIndex: 50,
+            }}
+          >
+            <div style={{ width: 420, pointerEvents: 'auto' }}>
+              <DownloadStatusStrip status={downloadStripStatus} />
+            </div>
+          </div>
+        ) : null}
+      </>
     );
   }
 
@@ -3506,6 +3625,7 @@ function App() {
                             capabilityConflictMessage={
                               liveCapabilityConflictMessage
                             }
+                            downloadStatus={downloadStripStatus}
                             shake={shakeAskBar}
                             maxImages={config.window.maxImages}
                             onFirstKeystroke={() =>

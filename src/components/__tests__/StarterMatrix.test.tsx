@@ -347,6 +347,72 @@ describe('StarterMatrix (picker)', () => {
     expect(screen.queryByText('Discard partial')).not.toBeInTheDocument();
   });
 
+  it('shows the Continue line while a download is in flight and fires onContinue', () => {
+    const onContinue = vi.fn();
+    renderMatrix([makeOption('fast')], {
+      state: { phase: 'downloading' },
+      downloadingTier: 'fast',
+      onContinue,
+    });
+    expect(
+      screen.getByText('Downloading in the background.'),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue setup →' }));
+    expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the Continue line through every in-flight phase', () => {
+    const phases: DownloadUiState['phase'][] = [
+      'downloading',
+      'downloading_mmproj',
+      'verifying',
+      'installing',
+      'warming_up',
+    ];
+    for (const phase of phases) {
+      const { unmount } = renderMatrix([makeOption('fast')], {
+        state: { phase } as DownloadUiState,
+        downloadingTier: 'fast',
+        onContinue: vi.fn(),
+      });
+      expect(
+        screen.getByText('Downloading in the background.'),
+      ).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it('hides the Continue line outside the in-flight phases', () => {
+    const states: DownloadUiState[] = [
+      { phase: 'idle' },
+      { phase: 'confirming', tier: 'fast' },
+      { phase: 'resume_pending' },
+      { phase: 'ready' },
+      { phase: 'failed', kind: 'other', message: 'x' },
+    ];
+    for (const state of states) {
+      const { unmount } = renderMatrix([makeOption('fast')], {
+        state,
+        downloadingTier: 'fast',
+        onContinue: vi.fn(),
+      });
+      expect(
+        screen.queryByText('Downloading in the background.'),
+      ).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it('hides the Continue line when onContinue is not wired', () => {
+    renderMatrix([makeOption('fast')], {
+      state: { phase: 'downloading' },
+      downloadingTier: 'fast',
+    });
+    expect(
+      screen.queryByText('Downloading in the background.'),
+    ).not.toBeInTheDocument();
+  });
+
   it('shows the Ollama escape hatch only when detected and wired', () => {
     const onUseOllama = vi.fn();
     const { rerender } = renderMatrix(THREE_TIERS, {

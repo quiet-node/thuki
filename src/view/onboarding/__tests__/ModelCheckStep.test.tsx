@@ -14,6 +14,7 @@ import {
   DEFAULT_CONFIG,
   type AppConfig,
 } from '../../../contexts/ConfigContext';
+import { DownloadProvider } from '../../../contexts/DownloadContext';
 import {
   invoke,
   enableChannelCaptureWithResponses,
@@ -769,7 +770,9 @@ function builtinResponses(overrides: Record<string, unknown> = {}) {
 function renderBuiltin() {
   return render(
     <ConfigProviderForTest value={BUILTIN_CONFIG}>
-      <ModelCheckStep />
+      <DownloadProvider>
+        <ModelCheckStep />
+      </DownloadProvider>
     </ConfigProviderForTest>,
   );
 }
@@ -858,6 +861,27 @@ describe('ModelCheckStep (builtin flow)', () => {
     expect(
       invoke.mock.calls.filter((c) => c[0] === 'get_starter_options'),
     ).toHaveLength(2);
+  });
+
+  it('Continue line advances onboarding while the download keeps running', async () => {
+    builtinResponses({ advance_past_model_check: undefined });
+
+    const { container } = renderBuiltin();
+    await act(async () => {});
+    await startDownload(container as HTMLElement, 'balanced');
+
+    const channel = getLastChannel()!;
+    await act(async () => {
+      channel.simulateMessage({
+        type: 'Started',
+        data: { file: 'balanced.gguf', total_bytes: 100, resumed_from: 0 },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Continue setup →' }));
+    });
+    expect(invoke).toHaveBeenCalledWith('advance_past_model_check');
   });
 
   it('advances immediately when check_model_setup already reports ready', async () => {

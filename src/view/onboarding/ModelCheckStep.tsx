@@ -22,14 +22,12 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
 import { useConfig } from '../../contexts/ConfigContext';
+import { useDownloadCtx } from '../../contexts/DownloadContext';
 import { FIT_COPY, useStarterOptions } from '../../components/StarterPicker';
 import { StarterMatrix } from '../../components/StarterMatrix';
 import type { ConfirmInfo } from '../../components/DownloadProgress';
-import {
-  useDownloadModel,
-  type DownloadUiState,
-} from '../../hooks/useDownloadModel';
-import type { StarterOption, StarterTier } from '../../types/starter';
+import type { DownloadUiState } from '../../hooks/useDownloadModel';
+import type { StarterOption } from '../../types/starter';
 import { Badge } from './_shared';
 
 const OLLAMA_DOCS_URL = 'https://ollama.com/download';
@@ -178,10 +176,12 @@ export function buildConfirmInfo(
  *   - `detect_ollama`: gates the "Use my existing Ollama instead" hatch.
  *   - `get_models_dir_free_bytes`: feeds the confirm card's disk line.
  *
- * Download lifecycle is owned by `useDownloadModel` (awaitEngine off: the
- * engine starts lazily on first chat, so `AllDone` is terminal here). On
- * `ready` the options refresh (so the row shows Installed) and the backend
- * advances onboarding to the intro step.
+ * Download lifecycle is owned by the app-root `DownloadProvider` (engine
+ * handoff off: the engine starts lazily on first chat, so `AllDone` is
+ * terminal here), consumed via `useDownloadCtx` so a download started here
+ * survives this step unmounting when the user taps "Continue". On `ready`
+ * the options refresh (so the row shows Installed) and the backend advances
+ * onboarding to the intro step.
  */
 function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
   const { options, refresh } = useStarterOptions();
@@ -189,24 +189,17 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
     state,
     combinedBytes,
     speedBytesPerSec,
-    start,
+    // The tier whose download is in flight and the resume-seed floor both live
+    // in the provider now, so the bar keeps rendering after this step unmounts.
+    downloadingTier,
+    resumeSeedBytes,
     cancel,
     retry,
-    resume,
     discard,
     enterResumePending,
-  } = useDownloadModel();
-  // The tier whose download is in flight; the matrix renders the fill there
-  // and dims the rest. The matrix only reads it while a download is busy, so
-  // the last value lingering after one finishes or cancels is harmless.
-  const [downloadingTier, setDownloadingTier] = useState<StarterTier | null>(
-    null,
-  );
-  // On Resume the download restarts with combinedBytes null until the first
-  // event arrives, which would flash the fill back to "Starting…". Seeding the
-  // partial byte count here floors the combined bar at the paused position
-  // until the first real event lands. Null for a fresh (non-resume) download.
-  const [resumeSeedBytes, setResumeSeedBytes] = useState<number | null>(null);
+    beginDownload,
+    resumeDownload,
+  } = useDownloadCtx();
   const [ollamaDetected, setOllamaDetected] = useState(false);
 
   useEffect(() => {
@@ -300,23 +293,19 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
             speedBytesPerSec={speedBytesPerSec}
             downloadingTier={downloadingTier}
             onDownload={(tier) => {
-              setResumeSeedBytes(null);
-              setDownloadingTier(tier);
-              void start(tier);
+              const option = options.find((o) => o.starter.tier === tier)!;
+              beginDownload(tier, option);
             }}
             onResume={(tier, partialBytes) => {
-              // Floor the combined bar at the bytes already on disk so it stays
-              // at the paused position instead of flashing to "Starting…" when
-              // the resumed download restarts.
-              setResumeSeedBytes(partialBytes);
-              setDownloadingTier(tier);
-              void resume(tier);
+              const option = options.find((o) => o.starter.tier === tier)!;
+              resumeDownload(tier, option, partialBytes);
             }}
             onDiscard={(sha256) => {
               void discard(sha256).then(refresh);
             }}
             onCancel={() => void cancel()}
             onRetry={() => void retry()}
+            onContinue={() => void invoke('advance_past_model_check')}
             ollamaDetected={ollamaDetected}
             onUseOllama={() => void handleUseOllama()}
           />
