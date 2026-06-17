@@ -200,7 +200,7 @@ const ONBOARDING_EVENT: &str = "thuki://onboarding";
 const ONBOARDING_LOGICAL_WIDTH: f64 = 460.0;
 const ONBOARDING_LOGICAL_HEIGHT: f64 = 640.0;
 const ONBOARDING_PICKER_WIDTH: f64 = 860.0;
-const ONBOARDING_PICKER_HEIGHT: f64 = 700.0;
+const ONBOARDING_PICKER_HEIGHT: f64 = 744.0;
 
 /// Per-stage onboarding window size. The model-picker step needs a wide
 /// frame for the comparison matrix; every other step keeps the compact base
@@ -2341,7 +2341,7 @@ mod tests {
         assert_eq!(ONBOARDING_LOGICAL_WIDTH, 460.0);
         assert_eq!(ONBOARDING_LOGICAL_HEIGHT, 640.0);
         assert_eq!(ONBOARDING_PICKER_WIDTH, 860.0);
-        assert_eq!(ONBOARDING_PICKER_HEIGHT, 700.0);
+        assert_eq!(ONBOARDING_PICKER_HEIGHT, 744.0);
     }
 
     #[test]

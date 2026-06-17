@@ -33,6 +33,10 @@ export interface Starter {
   mmproj_bytes: number;
   est_runtime_gb: number;
   license_note: string;
+  /** Model maker shown in the Origin row (e.g. "OpenAI"). */
+  origin: string;
+  /** The maker's own official HF repo, opened from the Origin row to verify provenance. */
+  origin_repo: string;
 }
 
 /** One starter picker row: registry entry plus machine-specific facts. */

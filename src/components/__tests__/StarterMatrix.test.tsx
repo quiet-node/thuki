@@ -25,6 +25,8 @@ function makeStarter(tier: StarterTier, overrides?: Partial<Starter>): Starter {
     mmproj_bytes: 800_000_000,
     est_runtime_gb: 5,
     license_note: 'Gemma Terms of Use',
+    origin: 'TestMaker',
+    origin_repo: `maker/${tier}-repo`,
     ...overrides,
   };
 }
@@ -149,6 +151,21 @@ describe('StarterMatrix (picker)', () => {
     );
     expect(invoke).toHaveBeenCalledWith('open_url', {
       url: 'https://huggingface.co/org/smartest-repo',
+    });
+  });
+
+  it('opens the maker page from the origin cell', () => {
+    renderMatrix(THREE_TIERS);
+    // Origin defaults to 'TestMaker' for every tier; the link uses
+    // origin_repo (the maker's page), distinct from the license repo.
+    expect(screen.getAllByText('TestMaker ↗')).toHaveLength(3);
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Verify Model smartest: open its maker TestMaker on Hugging Face',
+      }),
+    );
+    expect(invoke).toHaveBeenCalledWith('open_url', {
+      url: 'https://huggingface.co/maker/smartest-repo',
     });
   });
 

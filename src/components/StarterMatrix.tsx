@@ -246,6 +246,7 @@ function LabelColumn() {
       {cell('Quality')}
       {cell('Vision')}
       {cell('On your Mac')}
+      {cell('Origin')}
       {cell('License')}
     </div>
   );
@@ -370,26 +371,21 @@ function TierColumn({
       </ValueCell>
 
       <ValueCell>
-        <button
-          onClick={() => openHuggingFace(starter.repo)}
-          aria-label={`Open ${starter.display_name} on Hugging Face`}
-          style={{
-            background: 'transparent',
-            border: 'none',
-            padding: 0,
-            fontFamily: 'inherit',
-            fontSize: 11.5,
-            fontWeight: 600,
-            color: 'rgba(255,141,92,0.78)',
-            cursor: 'pointer',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            maxWidth: '100%',
-          }}
+        <ProvenanceLink
+          repo={starter.origin_repo}
+          ariaLabel={`Verify ${starter.display_name}: open its maker ${starter.origin} on Hugging Face`}
         >
-          {starter.license_note} ↗
-        </button>
+          {starter.origin}
+        </ProvenanceLink>
+      </ValueCell>
+
+      <ValueCell>
+        <ProvenanceLink
+          repo={starter.repo}
+          ariaLabel={`Open ${starter.display_name} on Hugging Face`}
+        >
+          {starter.license_note}
+        </ProvenanceLink>
       </ValueCell>
 
       {/* Action: the filling download cell when this column is active,
@@ -471,6 +467,42 @@ function ValueCell({ children }: { children: React.ReactNode }) {
     >
       {children}
     </div>
+  );
+}
+
+/** A small "↗" link inside a trait cell that opens a Hugging Face repo page.
+ * Shared by the Origin row (the model maker's official page) and the License
+ * row (the GGUF download source). */
+function ProvenanceLink({
+  repo,
+  ariaLabel,
+  children,
+}: {
+  repo: string;
+  ariaLabel: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={() => openHuggingFace(repo)}
+      aria-label={ariaLabel}
+      style={{
+        background: 'transparent',
+        border: 'none',
+        padding: 0,
+        fontFamily: 'inherit',
+        fontSize: 11.5,
+        fontWeight: 600,
+        color: 'rgba(255,141,92,0.78)',
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        maxWidth: '100%',
+      }}
+    >
+      {children} ↗
+    </button>
   );
 }
 

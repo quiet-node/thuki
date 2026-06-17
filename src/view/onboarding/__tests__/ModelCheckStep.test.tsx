@@ -722,6 +722,8 @@ function makeStarter(tier: StarterTier, overrides?: Partial<Starter>): Starter {
     mmproj_bytes: 0,
     est_runtime_gb: 10,
     license_note: 'MIT',
+    origin: 'TestMaker',
+    origin_repo: `maker/${tier}-repo`,
     ...overrides,
   };
 }

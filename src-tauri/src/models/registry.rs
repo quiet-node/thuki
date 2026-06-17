@@ -63,6 +63,12 @@ pub struct Starter {
     pub est_runtime_gb: f64,
     /// Short license label surfaced next to the download button.
     pub license_note: &'static str,
+    /// Model maker (e.g. "OpenAI"), shown in the picker's Origin row.
+    pub origin: &'static str,
+    /// The maker's own official Hugging Face repo, opened from the Origin row
+    /// so a user can verify provenance on the source org's page. Differs from
+    /// `repo` (the GGUF download source) when a third party hosts the GGUF.
+    pub origin_repo: &'static str,
 }
 
 /// The curated starters, ordered Fast, Balanced, Smartest.
@@ -83,6 +89,8 @@ pub const STARTERS: &[Starter] = &[
         mmproj_bytes: 921_705_024,
         est_runtime_gb: 8.5,
         license_note: "Apache 2.0",
+        origin: "Alibaba",
+        origin_repo: "Qwen/Qwen3.5-9B",
     },
     Starter {
         tier: Tier::Balanced,
@@ -100,6 +108,8 @@ pub const STARTERS: &[Starter] = &[
         mmproj_bytes: 175_115_264,
         est_runtime_gb: 9.5,
         license_note: "Apache 2.0",
+        origin: "Google",
+        origin_repo: "google/gemma-4-12B-it",
     },
     Starter {
         tier: Tier::Smartest,
@@ -117,6 +127,8 @@ pub const STARTERS: &[Starter] = &[
         mmproj_bytes: 0,
         est_runtime_gb: 13.3,
         license_note: "Apache 2.0",
+        origin: "OpenAI",
+        origin_repo: "openai/gpt-oss-20b",
     },
 ];
 
@@ -264,6 +276,25 @@ mod tests {
         assert_eq!(starter(Tier::Fast).license_note, "Apache 2.0");
         assert_eq!(starter(Tier::Balanced).license_note, "Apache 2.0");
         assert_eq!(starter(Tier::Smartest).license_note, "Apache 2.0");
+    }
+
+    #[test]
+    fn origin_per_tier() {
+        // The picker's Origin row links to each maker's own official HF page
+        // for verification; the maker can differ from the GGUF download repo.
+        let cases = [
+            (Tier::Fast, "Alibaba", "Qwen/Qwen3.5-9B"),
+            (Tier::Balanced, "Google", "google/gemma-4-12B-it"),
+            (Tier::Smartest, "OpenAI", "openai/gpt-oss-20b"),
+        ];
+        for (tier, origin, origin_repo) in cases {
+            let s = starter(tier);
+            assert_eq!(s.origin, origin);
+            assert_eq!(s.origin_repo, origin_repo);
+            // origin_repo is an "org/name" slug the picker turns into an HF URL.
+            assert_eq!(s.origin_repo.split('/').count(), 2);
+            assert!(!s.origin.is_empty());
+        }
     }
 
     #[test]

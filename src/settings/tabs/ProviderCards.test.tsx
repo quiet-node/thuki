@@ -141,6 +141,8 @@ const STARTER_OPTION: StarterOption = {
     mmproj_bytes: 0,
     est_runtime_gb: 6,
     license_note: '',
+    origin: 'Google',
+    origin_repo: 'google/gemma-4-12B-it',
   },
   fit: 'fits',
   installed: false,
