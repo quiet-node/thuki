@@ -207,7 +207,7 @@ export function StarterMatrix({
             color: 'rgba(255,255,255,0.5)',
           }}
         >
-          Already running Ollama?{' '}
+          Looks like Ollama&apos;s also running here.{' '}
           <button
             onClick={onUseOllama}
             style={{
