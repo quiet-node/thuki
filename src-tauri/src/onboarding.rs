@@ -89,6 +89,24 @@ pub fn mark_complete(conn: &Connection) -> rusqlite::Result<()> {
     set_stage(conn, &OnboardingStage::Complete)
 }
 
+/// Persists onboarding progress once the user has confirmed both permission
+/// grants in a live process. Advances `Permissions` -> `ModelCheck`.
+///
+/// Called by `PermissionsStep` the moment both Accessibility and Screen
+/// Recording read as granted (a reliable live read). Persisting here means a
+/// subsequent relaunch routes past the permission gate without re-reading the
+/// permission APIs, which return a stale `false` immediately after a restart on
+/// macOS 15+ and an outright wrong `false` when macOS's "Quit & Reopen"
+/// relaunches a different Thuki bundle whose code requirement no longer matches
+/// the grant. A no-op at any later stage so it can never regress
+/// `Intro`/`Complete` back to `ModelCheck`.
+pub fn mark_permissions_granted(conn: &Connection) -> rusqlite::Result<()> {
+    if matches!(get_stage(conn)?, OnboardingStage::Permissions) {
+        set_stage(conn, &OnboardingStage::ModelCheck)?;
+    }
+    Ok(())
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -229,5 +247,37 @@ mod tests {
         set_stage(&conn, &OnboardingStage::Intro).unwrap();
         let result = compute_startup_stage(&conn).unwrap();
         assert_eq!(result, Some(OnboardingStage::Intro));
+    }
+
+    #[test]
+    fn mark_permissions_granted_advances_permissions_to_model_check() {
+        let conn = open_in_memory().unwrap();
+        // Default (unwritten) stage is Permissions.
+        mark_permissions_granted(&conn).unwrap();
+        assert_eq!(get_stage(&conn).unwrap(), OnboardingStage::ModelCheck);
+    }
+
+    #[test]
+    fn mark_permissions_granted_is_noop_when_already_model_check() {
+        let conn = open_in_memory().unwrap();
+        set_stage(&conn, &OnboardingStage::ModelCheck).unwrap();
+        mark_permissions_granted(&conn).unwrap();
+        assert_eq!(get_stage(&conn).unwrap(), OnboardingStage::ModelCheck);
+    }
+
+    #[test]
+    fn mark_permissions_granted_does_not_regress_intro() {
+        let conn = open_in_memory().unwrap();
+        set_stage(&conn, &OnboardingStage::Intro).unwrap();
+        mark_permissions_granted(&conn).unwrap();
+        assert_eq!(get_stage(&conn).unwrap(), OnboardingStage::Intro);
+    }
+
+    #[test]
+    fn mark_permissions_granted_does_not_regress_complete() {
+        let conn = open_in_memory().unwrap();
+        set_stage(&conn, &OnboardingStage::Complete).unwrap();
+        mark_permissions_granted(&conn).unwrap();
+        assert_eq!(get_stage(&conn).unwrap(), OnboardingStage::Complete);
     }
 }
