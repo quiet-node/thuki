@@ -806,13 +806,7 @@ describe('ModelCheckStep (builtin flow)', () => {
         .querySelector('[data-tier="fast"]')
         ?.getAttribute('data-recommended'),
     ).toBe('false');
-    const stub = screen.getByRole('button', {
-      name: 'More options · Full model browser coming soon',
-    });
-    expect(stub).toBeDisabled();
-    expect(
-      screen.getByText('Use my existing Ollama instead'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Use it instead')).toBeInTheDocument();
     expect(
       screen.getByText(
         'Private by default · All inference runs on your machine',
@@ -826,9 +820,7 @@ describe('ModelCheckStep (builtin flow)', () => {
     renderBuiltin();
     await act(async () => {});
 
-    expect(
-      screen.queryByText('Use my existing Ollama instead'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Use it instead')).not.toBeInTheDocument();
   });
 
   it('one-tap download starts immediately (no confirm), walks to ready, refreshes, and advances', async () => {
@@ -908,9 +900,7 @@ describe('ModelCheckStep (builtin flow)', () => {
     renderBuiltin();
     await act(async () => {});
 
-    expect(
-      screen.queryByText('Use my existing Ollama instead'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Use it instead')).not.toBeInTheDocument();
     expect(screen.getByText('Model balanced')).toBeInTheDocument();
   });
 
@@ -999,7 +989,7 @@ describe('ModelCheckStep (builtin flow)', () => {
     await act(async () => {});
 
     await act(async () => {
-      fireEvent.click(screen.getByText('Use my existing Ollama instead'));
+      fireEvent.click(screen.getByText('Use it instead'));
     });
 
     expect(invoke).toHaveBeenCalledWith('set_active_provider', {
@@ -1032,7 +1022,7 @@ describe('ModelCheckStep (builtin flow)', () => {
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByText('Use my existing Ollama instead'));
+      fireEvent.click(screen.getByText('Use it instead'));
     });
 
     expect(invoke).toHaveBeenCalledWith('cancel_model_download');
@@ -1057,9 +1047,7 @@ describe('ModelCheckStep (builtin flow)', () => {
       });
     });
 
-    expect(
-      screen.queryByText('Use my existing Ollama instead'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Use it instead')).not.toBeInTheDocument();
   });
 
   it('stays on the builtin flow when switching the provider fails', async () => {
@@ -1074,7 +1062,7 @@ describe('ModelCheckStep (builtin flow)', () => {
     await act(async () => {});
 
     await act(async () => {
-      fireEvent.click(screen.getByText('Use my existing Ollama instead'));
+      fireEvent.click(screen.getByText('Use it instead'));
     });
 
     expect(screen.queryByLabelText('Verify setup')).not.toBeInTheDocument();
@@ -1097,9 +1085,7 @@ describe('ModelCheckStep (builtin flow)', () => {
     });
 
     expect(screen.getByText("You're offline")).toBeInTheDocument();
-    expect(
-      screen.getByText('Use my existing Ollama instead'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Use it instead')).toBeInTheDocument();
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Retry' }));

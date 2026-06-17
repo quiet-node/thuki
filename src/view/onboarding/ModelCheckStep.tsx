@@ -327,38 +327,9 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
             ollamaDetected={ollamaDetected}
             onUseOllama={() => void handleUseOllama()}
           />
-          <MoreOptionsStub />
         </div>
       )}
     </BuiltinShell>
-  );
-}
-
-/**
- * Phase 3 stub: the full model browser (paste-a-repo, search) ships later.
- * Disabled on purpose; the styling marks it as a preview, not a dead button.
- */
-function MoreOptionsStub() {
-  return (
-    <button
-      disabled
-      style={{
-        display: 'block',
-        width: '100%',
-        marginTop: 8,
-        padding: '8px 10px',
-        borderRadius: 10,
-        background: 'rgba(255,255,255,0.02)',
-        border: '1px dashed rgba(255,255,255,0.1)',
-        color: 'rgba(255,255,255,0.35)',
-        fontSize: 11,
-        fontWeight: 500,
-        fontFamily: 'inherit',
-        cursor: 'default',
-      }}
-    >
-      More options · Full model browser coming soon
-    </button>
   );
 }
 

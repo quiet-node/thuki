@@ -199,23 +199,31 @@ export function StarterMatrix({
         })}
       </div>
       {ollamaDetected && onUseOllama ? (
-        <button
-          onClick={onUseOllama}
+        <div
           style={{
-            display: 'block',
+            textAlign: 'center',
             margin: '14px auto 0',
-            background: 'transparent',
-            border: 'none',
-            padding: 0,
-            fontFamily: 'inherit',
             fontSize: 11.5,
-            fontWeight: 500,
-            color: 'rgba(255,141,92,0.7)',
-            cursor: 'pointer',
+            color: 'rgba(255,255,255,0.5)',
           }}
         >
-          Use my existing Ollama instead
-        </button>
+          Already running Ollama?{' '}
+          <button
+            onClick={onUseOllama}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              fontFamily: 'inherit',
+              fontSize: 11.5,
+              fontWeight: 700,
+              color: 'rgba(255,141,92,0.7)',
+              cursor: 'pointer',
+            }}
+          >
+            Use it instead
+          </button>
+        </div>
       ) : null}
     </div>
   );

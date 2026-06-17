@@ -367,9 +367,7 @@ describe('StarterMatrix (picker)', () => {
       ollamaDetected: true,
       onUseOllama,
     });
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Use my existing Ollama instead' }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Use it instead' }));
     expect(onUseOllama).toHaveBeenCalledTimes(1);
 
     const base = {
@@ -391,12 +389,8 @@ describe('StarterMatrix (picker)', () => {
         onUseOllama={onUseOllama}
       />,
     );
-    expect(
-      screen.queryByText('Use my existing Ollama instead'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Use it instead')).not.toBeInTheDocument();
     rerender(<StarterMatrix {...base} ollamaDetected={true} />);
-    expect(
-      screen.queryByText('Use my existing Ollama instead'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Use it instead')).not.toBeInTheDocument();
   });
 });
