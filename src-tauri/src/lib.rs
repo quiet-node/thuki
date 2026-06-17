@@ -73,13 +73,60 @@ use tauri_nspanel::{CollectionBehavior, ManagerExt, PanelLevel, StyleMask, Webvi
 #[cfg(target_os = "macos")]
 mod _thuki_panel {
     use tauri::Manager;
+    use tauri_nspanel::TrackingAreaOptions;
     tauri_nspanel::tauri_panel! {
         panel!(ThukiPanel {
             config: {
+                can_become_main_window: false,
                 can_become_key_window: true,
+                becomes_key_only_if_needed: true,
                 is_floating_panel: true
             }
+            with: {
+                // A nonactivating panel under Accessory policy cannot
+                // self-activate on modern macOS (cooperative activation), so
+                // once the overlay is defocused a plain click can never regain
+                // key/active: the webview then drops clicks, drag, and hover.
+                // An `active_always` tracking area keeps mouse-move / enter /
+                // exit / cursor-update events flowing to the webview even while
+                // the app is inactive (revives `:hover` and the pointer
+                // cursor), and the mouse-entered callback (wired in
+                // `init_panel`) makes the panel key on cursor-enter so clicks
+                // and drag land. None of this activates the app, so the overlay
+                // still never yanks the user off another app's fullscreen Space.
+                tracking_area: {
+                    options: TrackingAreaOptions::new()
+                        .active_always()
+                        .mouse_entered_and_exited()
+                        .mouse_moved()
+                        .cursor_update(),
+                    auto_resize: true
+                }
+            }
         })
+        panel_event!(ThukiOverlayEventsInner {})
+    }
+
+    /// Constructs the mouse-event handler and attaches it to `panel`.
+    ///
+    /// `panel_event!` emits a private handler struct, so the wiring lives here
+    /// where that type is in scope; callers only need the public `ThukiPanel`.
+    /// The mouse-entered callback makes the overlay the key window the instant
+    /// the cursor enters it, which is what restores clicks/drag after the
+    /// overlay has been defocused (see the tracking-area comment on the panel).
+    pub fn attach_overlay_event_handler(app_handle: tauri::AppHandle) {
+        use tauri_nspanel::ManagerExt;
+        let Ok(panel) = app_handle.get_webview_panel("main") else {
+            return;
+        };
+        let cb_handle = app_handle.clone();
+        let events = ThukiOverlayEventsInner::new();
+        events.on_mouse_entered(move |_event| {
+            if let Ok(p) = cb_handle.get_webview_panel("main") {
+                p.make_key_window();
+            }
+        });
+        panel.set_event_handler(Some(events.as_ref()));
     }
 }
 #[cfg(target_os = "macos")]
@@ -1180,6 +1227,17 @@ fn init_panel(app_handle: &tauri::AppHandle) {
     // different after the user clicks elsewhere. The CSS `shadow-bar` provides
     // a stable, focus-independent elevation effect.
     panel.set_has_shadow(false);
+
+    // Hover-activate: take key focus the moment the cursor enters the overlay.
+    // Pairs with the `active_always` tracking area declared on `ThukiPanel`.
+    // A nonactivating panel cannot self-activate on modern macOS, so after the
+    // overlay loses focus a click alone cannot regain key/active and the webview
+    // drops clicks, drag, and hover. Making the panel key on mouse-enter (no app
+    // activation) restores interaction without yanking the user off a fullscreen
+    // Space. The handler is retained by `set_event_handler`, and the macro
+    // forwards window-delegate events to wry's original delegate so window
+    // resize/focus/close behavior is preserved.
+    _thuki_panel::attach_overlay_event_handler(app_handle.clone());
 
     // Three NSPanel-layer assertions to keep the overlay visually clean
     // through the save-dialog flow, only one of which is strictly novel:
