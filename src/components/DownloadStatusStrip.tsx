@@ -36,13 +36,12 @@ export type DownloadStripStatus =
  * other. Slow on purpose: the strip is ambient, so the swap should be a calm
  * background rhythm, not something that pulls the eye.
  */
-const LABEL_ROTATE_MS = 7000;
+const LABEL_ROTATE_MS = 12000;
 /**
- * The reassurance half of the alternating label: the download keeps going while
- * Thuki is closed (hidden), so the user can step away and come back. "Close"
- * (not quit) is deliberate: quitting from the tray is what stops it.
+ * The reassurance half of the alternating label (ask bar only): closing Thuki
+ * keeps the download going, but quitting stops it. Short and succinct.
  */
-const BACKGROUND_HINT = 'You can close and come back anytime';
+const BACKGROUND_HINT = "Safe to close, just don't quit";
 
 const ORANGE = 'rgb(255,141,92)';
 const ORANGE_FILL = 'linear-gradient(90deg,#ffa06f,#d45a1e)';
@@ -141,8 +140,15 @@ function Shell({
 
 export function DownloadStatusStrip({
   status,
+  alternate = false,
 }: {
   status: DownloadStripStatus;
+  /**
+   * When true, the downloading label alternates with the "safe to close" hint.
+   * Used on the ask bar; the intro shows just the model name (the hint would
+   * read oddly on a full setup screen the user is looking at).
+   */
+  alternate?: boolean;
 }) {
   if (status.kind === 'ready') {
     return (
@@ -210,26 +216,31 @@ export function DownloadStatusStrip({
     );
   }
 
-  return <DownloadingRow status={status} />;
+  return <DownloadingRow status={status} alternate={alternate} />;
 }
 
 /**
- * The byte-moving downloading row. Its label alternates between the model name
- * and the "runs in the background" reassurance so both fit the single line; the
- * percent, ETA, and Pause stay fixed.
+ * The byte-moving downloading row. On the ask bar (`alternate`) its label
+ * crossfades between the model name and the "safe to close" reassurance so both
+ * fit the single line; on the intro it stays the model name. The percent, ETA,
+ * and Pause stay fixed.
  */
 function DownloadingRow({
   status,
+  alternate,
 }: {
   status: Extract<DownloadStripStatus, { kind: 'downloading' }>;
+  alternate: boolean;
 }) {
   const [showHint, setShowHint] = useState(false);
   useEffect(() => {
+    if (!alternate) return;
     const id = setInterval(() => setShowHint((s) => !s), LABEL_ROTATE_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [alternate]);
 
-  const label = showHint ? BACKGROUND_HINT : `Downloading ${status.modelName}`;
+  const label =
+    alternate && showHint ? BACKGROUND_HINT : `Downloading ${status.modelName}`;
   const trailing =
     status.etaSeconds !== null
       ? `${status.percent}% · ${formatEta(status.etaSeconds)} left`

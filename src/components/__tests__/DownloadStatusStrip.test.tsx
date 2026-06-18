@@ -23,7 +23,30 @@ describe('DownloadStatusStrip', () => {
     expect(screen.getByText('62% · 1m left')).toBeInTheDocument();
   });
 
-  it('alternates the label with the background hint every few seconds', () => {
+  it('alternates the label with the background hint when alternate is set', () => {
+    vi.useFakeTimers();
+    render(
+      <DownloadStatusStrip
+        alternate
+        status={{
+          kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
+          percent: 30,
+          etaSeconds: 120,
+          onPause: vi.fn(),
+        }}
+      />,
+    );
+    expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(12000));
+    expect(
+      screen.getByText("Safe to close, just don't quit"),
+    ).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(12000));
+    expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
+  });
+
+  it('does not alternate the label by default (intro)', () => {
     vi.useFakeTimers();
     render(
       <DownloadStatusStrip
@@ -37,12 +60,11 @@ describe('DownloadStatusStrip', () => {
       />,
     );
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
-    act(() => vi.advanceTimersByTime(7000));
-    expect(
-      screen.getByText('You can close and come back anytime'),
-    ).toBeInTheDocument();
-    act(() => vi.advanceTimersByTime(7000));
+    act(() => vi.advanceTimersByTime(12000));
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
+    expect(
+      screen.queryByText("Safe to close, just don't quit"),
+    ).not.toBeInTheDocument();
   });
 
   it('omits the ETA when it is not yet measurable', () => {
