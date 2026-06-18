@@ -82,6 +82,13 @@ interface ConversationViewProps {
   /** Currently active model slug forwarded to the WindowControls pill trigger.
    *  `null` keeps the chip visible with a "Pick a model" placeholder. */
   activeModel?: string | null;
+  /**
+   * Friendly display name per model id, forwarded to the titlebar pill and the
+   * per-message attribution chips so built-in model ids render their elegant
+   * label (e.g. "Qwen3.5 9B") instead of the raw "repo:file.gguf" slug, exactly
+   * as the model picker does. Ids without an entry render verbatim.
+   */
+  modelDisplayNames?: Record<string, string>;
   /** Toggles the model picker panel; forwarded to WindowControls. */
   onModelPickerToggle?: () => void;
   /** Whether the model picker panel is open; drives aria-expanded on the pill. */
@@ -124,6 +131,7 @@ export function ConversationView({
   onReplace,
   searchStage = null,
   activeModel,
+  modelDisplayNames,
   onModelPickerToggle,
   isModelPickerOpen,
   onMinimize,
@@ -230,6 +238,7 @@ export function ConversationView({
         onNewConversation={onNewConversation}
         onHistoryOpen={onHistoryOpen}
         activeModel={activeModel}
+        displayNames={modelDisplayNames}
         onModelPickerToggle={onModelPickerToggle}
         isModelPickerOpen={isModelPickerOpen}
         onMinimize={onMinimize}
@@ -292,6 +301,7 @@ export function ConversationView({
               sandboxUnavailable={msg.sandboxUnavailable}
               searchTraces={msg.searchTraces}
               modelName={msg.modelName}
+              displayNames={modelDisplayNames}
               isSearching={
                 isGenerating &&
                 msg.fromSearch === true &&

@@ -104,6 +104,25 @@ describe('WindowControls', () => {
     expect(screen.getByText('gemma4:e2b')).toBeInTheDocument();
   });
 
+  it('renders the friendly display name when the active model id has one', () => {
+    // Built-in model ids are raw "repo:file.gguf" slugs; the pill must show
+    // the elegant label, matching the model picker.
+    render(
+      <WindowControls
+        onClose={vi.fn()}
+        activeModel="unsloth/Qwen3.5:Qwen3.5-9B-Q4_K_M.gguf"
+        displayNames={{
+          'unsloth/Qwen3.5:Qwen3.5-9B-Q4_K_M.gguf': 'Qwen3.5 9B',
+        }}
+        onModelPickerToggle={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Qwen3.5 9B')).toBeInTheDocument();
+    expect(
+      screen.queryByText('unsloth/Qwen3.5:Qwen3.5-9B-Q4_K_M.gguf'),
+    ).toBeNull();
+  });
+
   it('renders the picker chip with a "Pick a model" placeholder when activeModel is null', () => {
     // The chip is the recovery affordance for the no-model state, so it
     // must stay visible (and clickable) even when activeModel is null.

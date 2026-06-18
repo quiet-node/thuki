@@ -3531,6 +3531,7 @@ function App() {
                                 onReplace={performReplace}
                                 searchStage={searchStage}
                                 activeModel={activeModel}
+                                modelDisplayNames={modelDisplayNames}
                                 onModelPickerToggle={
                                   ollamaReachable
                                     ? handleModelPickerToggle

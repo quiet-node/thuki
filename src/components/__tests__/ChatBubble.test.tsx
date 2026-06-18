@@ -1152,6 +1152,27 @@ describe('ChatBubble', () => {
       expect(chip).toHaveTextContent('gemma4:e2b');
     });
 
+    it('renders the friendly display name in the chip when the model id has one', () => {
+      // Built-in model ids are raw "repo:file.gguf" slugs; the chip must show
+      // the elegant label, matching the model picker and titlebar pill.
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Hello there"
+          index={0}
+          modelName="unsloth/Qwen3.5:Qwen3.5-9B-Q4_K_M.gguf"
+          displayNames={{
+            'unsloth/Qwen3.5:Qwen3.5-9B-Q4_K_M.gguf': 'Qwen3.5 9B',
+          }}
+        />,
+      );
+      const chip = screen.getByTestId('model-attribution');
+      expect(chip).toHaveTextContent('Qwen3.5 9B');
+      expect(chip).not.toHaveTextContent(
+        'unsloth/Qwen3.5:Qwen3.5-9B-Q4_K_M.gguf',
+      );
+    });
+
     it('does not render the attribution chip when modelName is absent', () => {
       render(<ChatBubble role="assistant" content="Hello" index={0} />);
       expect(screen.queryByTestId('model-attribution')).toBeNull();

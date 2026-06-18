@@ -157,6 +157,14 @@ interface WindowControlsProps {
    */
   activeModel?: string | null;
   /**
+   * Friendly display name per model id. When the active model id has an entry
+   * (built-in models, whose ids are the raw "repo:file.gguf" slug), the pill
+   * renders the friendly name instead; ids without an entry render verbatim
+   * (already clean for Ollama / OpenAI). Keeps the pill label consistent with
+   * the model picker.
+   */
+  displayNames?: Record<string, string>;
+  /**
    * Called when the user clicks the active-model pill to open/close the picker.
    * Omit to hide the pill entirely. When provided the pill always renders,
    * regardless of `activeModel`, so users can recover from a no-model state.
@@ -192,6 +200,7 @@ export const WindowControls = memo(function WindowControls({
   onHistoryOpen,
   onNewConversation,
   activeModel,
+  displayNames,
   onModelPickerToggle,
   isModelPickerOpen = false,
   onMinimize,
@@ -323,7 +332,7 @@ export const WindowControls = memo(function WindowControls({
                   }`}
                 >
                   {activeModel != null && activeModel.length > 0
-                    ? activeModel
+                    ? (displayNames?.[activeModel] ?? activeModel)
                     : 'Pick a model'}
                 </span>
               </button>

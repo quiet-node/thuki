@@ -267,6 +267,14 @@ interface ChatBubbleProps {
   isSearching?: boolean;
   /** When set on an assistant message, renders a chip-style attribution badge beside the CopyButton so the user sees which model produced this response. */
   modelName?: string;
+  /**
+   * Friendly display name per model id. When `modelName` has an entry
+   * (built-in models, whose ids are the raw "repo:file.gguf" slug), the
+   * attribution chip renders the friendly name; ids without an entry render
+   * verbatim (already clean for Ollama / OpenAI). Keeps the chip consistent
+   * with the model picker and the titlebar pill.
+   */
+  displayNames?: Record<string, string>;
 }
 
 /**
@@ -318,6 +326,7 @@ export function ChatBubble({
   searchTraces,
   isSearching = false,
   modelName,
+  displayNames,
 }: ChatBubbleProps) {
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -602,7 +611,9 @@ export function ChatBubble({
                   <span className="text-primary/85 shrink-0 flex items-center">
                     {ATTRIB_CHIP_ICON}
                   </span>
-                  <span className="max-w-[100px] truncate">{modelName}</span>
+                  <span className="max-w-[100px] truncate">
+                    {displayNames?.[modelName] ?? modelName}
+                  </span>
                 </span>
               )}
             </div>
