@@ -234,30 +234,6 @@ describe('DownloadContext', () => {
     ).toHaveLength(2);
   });
 
-  it('discardActive discards the partial and clears the active option', async () => {
-    const { result } = renderHook(() => useDownloadCtx(), { wrapper });
-    const opt = option({ sha256: 'deadbeef' });
-
-    await act(async () => {
-      result.current.beginDownload('balanced', opt);
-    });
-    await act(async () => {
-      result.current.pauseDownload();
-    });
-    act(() => channel().simulateMessage({ type: 'Cancelled' }));
-
-    await act(async () => {
-      result.current.discardActive();
-    });
-
-    expect(result.current.isPaused).toBe(false);
-    expect(result.current.activeOption).toBeNull();
-    expect(result.current.grandTotalBytes).toBeNull();
-    expect(invoke).toHaveBeenCalledWith('discard_partial_download', {
-      sha256: 'deadbeef',
-    });
-  });
-
   describe('launch auto-resume', () => {
     it('resumes an interrupted partial past the picker (intro) with no installed model', async () => {
       const partial: StarterOption = {

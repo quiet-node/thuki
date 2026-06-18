@@ -60,6 +60,7 @@ describe('IntroStep', () => {
         onComplete={vi.fn()}
         downloadStatus={{
           kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
           percent: 15,
           etaSeconds: 180,
           onPause: vi.fn(),
@@ -67,7 +68,7 @@ describe('IntroStep', () => {
       />,
     );
     expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
-    expect(screen.getByText('Setting up your model')).toBeInTheDocument();
+    expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
   });
 
   it('renders no download strip when no status is supplied', () => {

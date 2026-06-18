@@ -115,6 +115,7 @@ describe('AskBarView', () => {
         inputRef={makeRef()}
         downloadStatus={{
           kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
           percent: 40,
           etaSeconds: 90,
           onPause: vi.fn(),
@@ -122,7 +123,7 @@ describe('AskBarView', () => {
       />,
     );
     expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
-    expect(screen.getByText('Setting up your model')).toBeInTheDocument();
+    expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
   });
 
   it('renders no download strip when no download status is supplied', () => {
@@ -157,6 +158,7 @@ describe('AskBarView', () => {
         inputRef={makeRef()}
         downloadStatus={{
           kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
           percent: 58,
           etaSeconds: 180,
           onPause: vi.fn(),
@@ -198,7 +200,6 @@ describe('AskBarView', () => {
           kind: 'paused',
           percent: 58,
           onResume: vi.fn(),
-          onDiscard: vi.fn(),
         }}
       />,
     );

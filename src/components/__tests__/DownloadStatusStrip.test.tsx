@@ -1,21 +1,48 @@
-import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { DownloadStatusStrip } from '../DownloadStatusStrip';
 
 describe('DownloadStatusStrip', () => {
-  it('shows the setup label, percent and ETA while downloading', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows the model name, percent and ETA while downloading', () => {
     render(
       <DownloadStatusStrip
         status={{
           kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
           percent: 62,
           etaSeconds: 90,
           onPause: vi.fn(),
         }}
       />,
     );
-    expect(screen.getByText('Setting up your model')).toBeInTheDocument();
+    expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
     expect(screen.getByText('62% · 1m left')).toBeInTheDocument();
+  });
+
+  it('alternates the label with the background hint every few seconds', () => {
+    vi.useFakeTimers();
+    render(
+      <DownloadStatusStrip
+        status={{
+          kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
+          percent: 30,
+          etaSeconds: 120,
+          onPause: vi.fn(),
+        }}
+      />,
+    );
+    expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(4000));
+    expect(
+      screen.getByText('Close anytime, runs in the background'),
+    ).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(4000));
+    expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
   });
 
   it('omits the ETA when it is not yet measurable', () => {
@@ -23,6 +50,7 @@ describe('DownloadStatusStrip', () => {
       <DownloadStatusStrip
         status={{
           kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
           percent: 5,
           etaSeconds: null,
           onPause: vi.fn(),
@@ -37,6 +65,7 @@ describe('DownloadStatusStrip', () => {
       <DownloadStatusStrip
         status={{
           kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
           percent: 1,
           etaSeconds: 3700,
           onPause: vi.fn(),
@@ -48,6 +77,7 @@ describe('DownloadStatusStrip', () => {
       <DownloadStatusStrip
         status={{
           kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
           percent: 99,
           etaSeconds: 30,
           onPause: vi.fn(),
@@ -61,7 +91,13 @@ describe('DownloadStatusStrip', () => {
     const onPause = vi.fn();
     render(
       <DownloadStatusStrip
-        status={{ kind: 'downloading', percent: 40, etaSeconds: 60, onPause }}
+        status={{
+          kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
+          percent: 40,
+          etaSeconds: 60,
+          onPause,
+        }}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Pause download' }));
@@ -74,30 +110,35 @@ describe('DownloadStatusStrip', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('shows a paused state with Resume and Discard', () => {
+  it('shows a paused state with Resume but no Discard', () => {
     const onResume = vi.fn();
-    const onDiscard = vi.fn();
     render(
       <DownloadStatusStrip
-        status={{ kind: 'paused', percent: 58, onResume, onDiscard }}
+        status={{ kind: 'paused', percent: 58, onResume }}
       />,
     );
     expect(screen.getByText('Paused · 58%')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Resume download' }));
     expect(onResume).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole('button', { name: 'Discard download' }));
-    expect(onDiscard).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByRole('button', { name: 'Discard download' }),
+    ).not.toBeInTheDocument();
   });
 
-  it('shows a verifying state (no controls) during the re-hash', () => {
+  it('reassures that verifying can take a while during the re-hash', () => {
     render(<DownloadStatusStrip status={{ kind: 'verifying', percent: 40 }} />);
     expect(screen.getByText('Verifying…')).toBeInTheDocument();
+    expect(
+      screen.getByText('This can take a minute for large models'),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('shows a ready state', () => {
+  it('shows a ready state that invites the first message', () => {
     render(<DownloadStatusStrip status={{ kind: 'ready' }} />);
-    expect(screen.getByText('Model ready')).toBeInTheDocument();
+    expect(
+      screen.getByText('Model ready. Send your first message'),
+    ).toBeInTheDocument();
   });
 
   it('shows a failure message with a Retry button', () => {

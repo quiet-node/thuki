@@ -8,12 +8,14 @@
  * rather than a separate box. It is the only place the background download is
  * surfaced once the user has left the picker.
  */
-import type React from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
-/** The strip's four states, mirroring the download machine plus a paused hop. */
+/** The strip's states, mirroring the download machine plus a paused hop. */
 export type DownloadStripStatus =
   | {
       kind: 'downloading';
+      /** Display name of the model being downloaded, e.g. "Qwen3.5 9B". */
+      modelName: string;
       percent: number;
       etaSeconds: number | null;
       onPause: () => void;
@@ -22,12 +24,19 @@ export type DownloadStripStatus =
       kind: 'paused';
       percent: number;
       onResume: () => void;
-      onDiscard: () => void;
     }
   | { kind: 'pausing'; percent: number }
   | { kind: 'verifying'; percent: number }
   | { kind: 'ready' }
   | { kind: 'failed'; message: string; onRetry: () => void };
+
+/** How often the downloading label swaps between the model name and the hint. */
+const LABEL_ROTATE_MS = 4000;
+/**
+ * The reassurance half of the alternating label: the download keeps running in
+ * the background, so the user can dismiss Thuki (not quit) and come back.
+ */
+const BACKGROUND_HINT = 'Close anytime, runs in the background';
 
 const ORANGE = 'rgb(255,141,92)';
 const ORANGE_FILL = 'linear-gradient(90deg,#ffa06f,#d45a1e)';
@@ -96,7 +105,7 @@ function Shell({
   color: string;
   fill: string;
   percent: number;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <div
@@ -132,7 +141,9 @@ export function DownloadStatusStrip({
   if (status.kind === 'ready') {
     return (
       <Shell color={GREEN} fill={GREEN_FILL} percent={100}>
-        <span className="flex-1 leading-snug">Model ready</span>
+        <span className="flex-1 leading-snug">
+          Model ready. Send your first message
+        </span>
       </Shell>
     );
   }
@@ -162,15 +173,24 @@ export function DownloadStatusStrip({
   if (status.kind === 'verifying') {
     // The integrity re-hash on resume (and the brief end-of-download verify):
     // an active working step, so it keeps the orange treatment but offers no
-    // controls of its own.
+    // controls of its own. The re-hash of a multi-GB partial is a slow read, so
+    // the sub-line reassures the user it is working rather than hung.
     return (
       <Shell color={ORANGE} fill={ORANGE_FILL} percent={status.percent}>
-        <span className="flex-1 leading-snug">Verifying…</span>
+        <span className="flex-1 flex flex-col leading-snug">
+          <span>Verifying…</span>
+          <span style={{ color: MUTED }} className="text-[11px]">
+            This can take a minute for large models
+          </span>
+        </span>
       </Shell>
     );
   }
 
   if (status.kind === 'paused') {
+    // Resume only here. Discard belongs to the picker, where a Download button
+    // can re-trigger; in the ambient strip a discard would strand the user with
+    // no way back to start a download.
     return (
       <Shell color={MUTED} fill={MUTED_FILL} percent={status.percent}>
         <span className="flex-1 leading-snug">Paused · {status.percent}%</span>
@@ -180,23 +200,37 @@ export function DownloadStatusStrip({
           color={ACTION}
           onClick={status.onResume}
         />
-        <Action
-          label="Discard"
-          ariaLabel="Discard download"
-          color="rgba(255,255,255,0.5)"
-          onClick={status.onDiscard}
-        />
       </Shell>
     );
   }
 
+  return <DownloadingRow status={status} />;
+}
+
+/**
+ * The byte-moving downloading row. Its label alternates between the model name
+ * and the "runs in the background" reassurance so both fit the single line; the
+ * percent, ETA, and Pause stay fixed.
+ */
+function DownloadingRow({
+  status,
+}: {
+  status: Extract<DownloadStripStatus, { kind: 'downloading' }>;
+}) {
+  const [showHint, setShowHint] = useState(false);
+  useEffect(() => {
+    const id = setInterval(() => setShowHint((s) => !s), LABEL_ROTATE_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  const label = showHint ? BACKGROUND_HINT : `Downloading ${status.modelName}`;
   const trailing =
     status.etaSeconds !== null
       ? `${status.percent}% · ${formatEta(status.etaSeconds)} left`
       : `${status.percent}%`;
   return (
     <Shell color={ORANGE} fill={ORANGE_FILL} percent={status.percent}>
-      <span className="leading-snug">Setting up your model</span>
+      <span className="leading-snug">{label}</span>
       <span className="flex-1" />
       <span className="shrink-0">{trailing}</span>
       <Action

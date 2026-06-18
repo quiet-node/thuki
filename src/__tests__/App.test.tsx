@@ -12,6 +12,7 @@ import {
   ConfigProviderForTest,
 } from '../contexts/ConfigContext';
 import type { DownloadContextValue } from '../contexts/DownloadContext';
+import type { StarterOption } from '../types/starter';
 import {
   invoke,
   emitTauriEvent,
@@ -79,7 +80,6 @@ function makeDownloadCtx(
     pausedBytes: 0,
     pauseDownload: vi.fn(),
     resumeFromPause: vi.fn(),
-    discardActive: vi.fn(),
     ...overrides,
   };
 }
@@ -7809,9 +7809,10 @@ describe('App', () => {
       await showOverlay();
 
       expect(screen.getByText('Verifying…')).toBeInTheDocument();
-      // The strip owns the messaging: the downloading label is not shown.
+      // The strip owns the messaging: the downloading row (with its Pause) is
+      // not shown while verifying.
       expect(
-        screen.queryByText('Setting up your model'),
+        screen.queryByRole('button', { name: 'Pause download' }),
       ).not.toBeInTheDocument();
     });
 
@@ -7903,11 +7904,100 @@ describe('App', () => {
         rerender(builtinTree());
       });
 
-      expect(screen.getByText('Model ready')).toBeInTheDocument();
+      expect(
+        screen.getByText('Model ready. Send your first message'),
+      ).toBeInTheDocument();
       const after = invoke.mock.calls.filter(
         (c) => c[0] === 'get_model_picker_state',
       ).length;
       expect(after).toBeGreaterThan(before);
+    });
+
+    function downloadingOption(displayName: string): StarterOption {
+      return {
+        starter: {
+          tier: 'fast',
+          display_name: displayName,
+          repo: 'org/repo-GGUF',
+          revision: 'a'.repeat(40),
+          file_name: 'model.gguf',
+          sha256: 'b'.repeat(64),
+          size_bytes: 5_000_000_000,
+          quant: 'Q4_K_M',
+          vision: true,
+          thinking: false,
+          mmproj_file: null,
+          mmproj_sha256: null,
+          mmproj_bytes: 0,
+          est_runtime_gb: 6,
+          license_note: 'Apache 2.0',
+          origin: 'Org',
+          origin_repo: 'org/repo',
+        },
+        fit: 'fits',
+        installed: false,
+        partial_bytes: null,
+      };
+    }
+
+    it('names the model in the downloading strip from the active option', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        activeOption: downloadingOption('Qwen3.5 9B'),
+        combinedBytes: 1_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 5_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
+    });
+
+    it('dismisses the ready strip once the first message is sent', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'm',
+          all: ['m'],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({ state: { phase: 'ready' } });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(
+        screen.getByText('Model ready. Send your first message'),
+      ).toBeInTheDocument();
+
+      const textarea = getAskInput();
+      act(() => {
+        setAskValue('hello');
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'hi' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      expect(
+        screen.queryByText('Model ready. Send your first message'),
+      ).not.toBeInTheDocument();
     });
 
     it('pauses the download from the ask-bar strip', async () => {
@@ -7960,7 +8050,7 @@ describe('App', () => {
       expect(screen.getByText('Pausing…')).toBeInTheDocument();
     });
 
-    it('shows a paused strip with Resume / Discard and the held percent', async () => {
+    it('shows a paused strip with Resume and the held percent', async () => {
       enableChannelCaptureWithResponses({
         get_model_picker_state: {
           active: null,
@@ -7969,14 +8059,12 @@ describe('App', () => {
         },
       });
       const resumeFromPause = vi.fn();
-      const discardActive = vi.fn();
       downloadHolder.value = makeDownloadCtx({
         state: { phase: 'idle' },
         isPaused: true,
         pausedBytes: 5_000_000_000,
         grandTotalBytes: 10_000_000_000,
         resumeFromPause,
-        discardActive,
       });
 
       const { rerender } = render(builtinTree());
@@ -7990,12 +8078,9 @@ describe('App', () => {
         );
       });
       expect(resumeFromPause).toHaveBeenCalledTimes(1);
-      await act(async () => {
-        fireEvent.click(
-          screen.getByRole('button', { name: 'Discard download' }),
-        );
-      });
-      expect(discardActive).toHaveBeenCalledTimes(1);
+      expect(
+        screen.queryByRole('button', { name: 'Discard download' }),
+      ).not.toBeInTheDocument();
 
       // Grand total unknown while paused falls back to 0%.
       downloadHolder.value = makeDownloadCtx({

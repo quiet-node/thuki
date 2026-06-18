@@ -76,8 +76,6 @@ export interface DownloadContextValue extends UseDownloadModel {
   pauseDownload: () => void;
   /** Resume a paused download from where it stopped. */
   resumeFromPause: () => void;
-  /** Discard a paused download's partial and clear the active option. */
-  discardActive: () => void;
 }
 
 const DownloadContext = createContext<DownloadContextValue | null>(null);
@@ -92,7 +90,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   const [pauseRequested, setPauseRequested] = useState(false);
   const [pausedBytes, setPausedBytes] = useState(0);
 
-  const { start, resume, cancel, discard, combinedBytes } = download;
+  const { start, resume, cancel, combinedBytes } = download;
   const downloadPhase = download.state.phase;
 
   // A pause is only *committed* once the cancel has fully landed (machine back
@@ -168,12 +166,6 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     resumeDownload(activeOption!.starter.tier, activeOption!, pausedBytes);
   }, [activeOption, pausedBytes, resumeDownload]);
 
-  const discardActive = useCallback(() => {
-    setPauseRequested(false);
-    void discard(activeOption!.starter.sha256);
-    setActiveOption(null);
-  }, [activeOption, discard]);
-
   const grandTotalBytes =
     activeOption === null
       ? null
@@ -193,7 +185,6 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       pausedBytes,
       pauseDownload,
       resumeFromPause,
-      discardActive,
     }),
     [
       download,
@@ -208,7 +199,6 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       pausedBytes,
       pauseDownload,
       resumeFromPause,
-      discardActive,
     ],
   );
 

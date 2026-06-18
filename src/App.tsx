@@ -435,11 +435,14 @@ function App() {
     isPaused: isDownloadPaused,
     isPausing: isDownloadPausing,
     pausedBytes: downloadPausedBytes,
+    activeOption: downloadActiveOption,
     pauseDownload,
     resumeFromPause,
-    discardActive,
   } = download;
   const downloadPhase = download.state.phase;
+  /** Display name of the model being downloaded, for the ambient strip. */
+  const downloadModelName =
+    downloadActiveOption?.starter.display_name ?? 'your model';
 
   const { capabilities: modelCapabilities, refresh: refreshModelCapabilities } =
     useModelCapabilities();
@@ -2453,7 +2456,6 @@ function App() {
         kind: 'paused',
         percent: percentOf(downloadPausedBytes),
         onResume: resumeFromPause,
-        onDiscard: discardActive,
       };
     }
     // Transitional: Pause clicked but the cancel has not landed yet. Shown
@@ -2461,7 +2463,11 @@ function App() {
     if (isDownloadPausing) {
       return { kind: 'pausing', percent: percentOf(liveBytes) };
     }
-    if (downloadPhase === 'ready') return { kind: 'ready' };
+    // The ready prompt invites the first message; it clears the instant the
+    // user sends one (enters chat mode) rather than lingering until a restart.
+    if (downloadPhase === 'ready') {
+      return isChatMode ? null : { kind: 'ready' };
+    }
     if (downloadPhase === 'failed') {
       return {
         kind: 'failed',
@@ -2487,6 +2493,7 @@ function App() {
           : null;
       return {
         kind: 'downloading',
+        modelName: downloadModelName,
         percent: percentOf(liveBytes),
         etaSeconds,
         onPause: pauseDownload,
@@ -2498,6 +2505,8 @@ function App() {
     isDownloadPausing,
     downloadPausedBytes,
     downloadPhase,
+    downloadModelName,
+    isChatMode,
     downloadCombinedBytes,
     downloadResumeSeedBytes,
     downloadGrandTotalBytes,
@@ -2505,7 +2514,6 @@ function App() {
     retryDownload,
     pauseDownload,
     resumeFromPause,
-    discardActive,
   ]);
 
   /**
