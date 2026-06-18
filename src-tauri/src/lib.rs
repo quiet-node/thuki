@@ -1603,6 +1603,47 @@ pub fn build_trace_inner(
     Arc::new(trace::RegistryRecorder::new(traces_root))
 }
 
+// ─── Menu helpers ────────────────────────────────────────────────────────────
+
+/// Custom macOS application menu, replacing Tauri's default. The Quit item is a
+/// custom one (id "quit", Cmd+Q) so quitting routes through `show_quit_dialog`
+/// instead of the predefined hard-quit that ignores an in-flight download. The
+/// Edit submenu is kept so the ask bar's copy / paste / select-all shortcuts
+/// (which the replaced default menu provided) keep working.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn build_app_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    let quit = MenuItem::with_id(app, "quit", "Quit Thuki", true, Some("Cmd+Q"))?;
+    let app_menu = Submenu::with_items(
+        app,
+        "Thuki",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, Some("About Thuki"), None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    Menu::with_items(app, &[&app_menu, &edit_menu])
+}
+
 // ─── Tray helpers ────────────────────────────────────────────────────────────
 
 /// Builds the system-tray menu. When `update_version` is `Some`, a
@@ -1719,6 +1760,20 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        // Replace Tauri's default macOS menu: its predefined Quit does a hard
+        // quit on Cmd+Q that bypasses our handlers. Our custom Quit fires this
+        // handler instead, so a download in flight gets the warning.
+        .menu(build_app_menu)
+        .on_menu_event(|app, event| {
+            if event.id.as_ref() == "quit" {
+                if models::download_in_flight(app.state::<models::DownloadState>().inner()) {
+                    show_quit_dialog(app);
+                } else {
+                    app.state::<crate::commands::GenerationState>().cancel();
+                    app.exit(0);
+                }
+            }
+        })
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
