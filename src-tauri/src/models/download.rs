@@ -164,6 +164,22 @@ async fn download_one(
     cancel: &CancellationToken,
     emit: &impl Fn(DownloadEvent),
 ) -> Result<FileOutcome, DownloadIoError> {
+    // Already installed as a verified blob: the first file of a multi-file
+    // download that finished before a later file was interrupted. Skip it so a
+    // resume does not re-download a completed file; emit Started(full) + FileDone
+    // so the combined bar still counts its bytes.
+    if store.blob_path(&spec.sha256).exists() {
+        emit(DownloadEvent::Started {
+            file: spec.file.clone(),
+            total_bytes: spec.total_bytes,
+            resumed_from: spec.total_bytes,
+        });
+        emit(DownloadEvent::FileDone {
+            file: spec.file.clone(),
+        });
+        return Ok(FileOutcome::Done);
+    }
+
     let resumed_from = store.existing_partial_len(&spec.sha256).unwrap_or(0);
     emit(DownloadEvent::Started {
         file: spec.file.clone(),
@@ -588,6 +604,44 @@ mod tests {
             }
         );
         assert_eq!(std::fs::read(store.blob_path(&sha)).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn skips_an_already_installed_blob_without_downloading() {
+        // A multi-file download whose first file already installed must not
+        // re-download it on a resume: the blob is skipped (no HTTP request) and
+        // its bytes are still counted via Started(full) + FileDone.
+        let body = body_of(8192);
+        let sha = sha256_of(&body);
+        let (_dir, store) = make_store();
+        std::fs::create_dir_all(store.blob_path(&sha).parent().unwrap()).unwrap();
+        std::fs::write(store.blob_path(&sha), &body).unwrap();
+        // An unroutable URL: if the code tried to download, this would error.
+        let spec = spec_for("http://127.0.0.1:1/nope".to_string(), "w.gguf", &body);
+        let (events, emit) = collector();
+
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            emit,
+        )
+        .await;
+
+        assert_eq!(result, Ok(()));
+        let evs = events.lock().unwrap();
+        assert_eq!(
+            evs[0],
+            DownloadEvent::Started {
+                file: "w.gguf".to_string(),
+                total_bytes: 8192,
+                resumed_from: 8192,
+            }
+        );
+        assert!(evs.contains(&DownloadEvent::FileDone {
+            file: "w.gguf".to_string()
+        }));
     }
 
     #[tokio::test]
