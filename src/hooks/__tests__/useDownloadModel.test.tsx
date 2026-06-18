@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   computeEtaSeconds,
   computeSpeedBytesPerSec,
+  downloadFailureMessage,
   isDownloadInFlight,
   useDownloadModel,
 } from '../useDownloadModel';
@@ -796,5 +797,22 @@ describe('isDownloadInFlight', () => {
     for (const phase of settled) {
       expect(isDownloadInFlight(phase)).toBe(false);
     }
+  });
+});
+
+describe('downloadFailureMessage', () => {
+  it('maps each failure kind to a friendly, jargon-free reason', () => {
+    expect(downloadFailureMessage('offline')).toBe('You appear to be offline.');
+    expect(downloadFailureMessage('http')).toBe(
+      'Hugging Face had an error. Try again.',
+    );
+    expect(downloadFailureMessage('checksum')).toBe(
+      'The download did not verify. Retrying starts it fresh.',
+    );
+    expect(downloadFailureMessage('disk_full')).toBe('Not enough disk space.');
+    expect(downloadFailureMessage('engine')).toBe(
+      "Thuki's engine could not start.",
+    );
+    expect(downloadFailureMessage('other')).toBe('Model download failed.');
   });
 });

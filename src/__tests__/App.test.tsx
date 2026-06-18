@@ -7852,7 +7852,7 @@ describe('App', () => {
       expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
     });
 
-    it('shows a failed strip whose Retry restarts the download', async () => {
+    it('shows the real failure reason and a Retry that restarts the download', async () => {
       enableChannelCaptureWithResponses({
         get_model_picker_state: {
           active: null,
@@ -7870,7 +7870,7 @@ describe('App', () => {
       await act(async () => {});
       await showOverlay();
 
-      expect(screen.getByText('Model download failed.')).toBeInTheDocument();
+      expect(screen.getByText('You appear to be offline.')).toBeInTheDocument();
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: 'Retry download' }));
       });

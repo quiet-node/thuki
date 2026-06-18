@@ -23,7 +23,10 @@ import { useConversationHistory } from './hooks/useConversationHistory';
 import { useModelSelection } from './hooks/useModelSelection';
 import { useModelCapabilities } from './hooks/useModelCapabilities';
 import { useDownloadCtx } from './contexts/DownloadContext';
-import { isDownloadInFlight } from './hooks/useDownloadModel';
+import {
+  downloadFailureMessage,
+  isDownloadInFlight,
+} from './hooks/useDownloadModel';
 import type { DownloadStripStatus } from './components/DownloadStatusStrip';
 import {
   getCapabilityConflict,
@@ -439,7 +442,8 @@ function App() {
     pauseDownload,
     resumeFromPause,
   } = download;
-  const downloadPhase = download.state.phase;
+  const downloadState = download.state;
+  const downloadPhase = downloadState.phase;
   /** Display name of the model being downloaded, for the ambient strip. */
   const downloadModelName =
     downloadActiveOption?.starter.display_name ?? 'your model';
@@ -2468,10 +2472,10 @@ function App() {
     if (downloadPhase === 'ready') {
       return isChatMode ? null : { kind: 'ready' };
     }
-    if (downloadPhase === 'failed') {
+    if (downloadState.phase === 'failed') {
       return {
         kind: 'failed',
-        message: 'Model download failed.',
+        message: downloadFailureMessage(downloadState.kind),
         onRetry: () => void retryDownload(),
       };
     }
@@ -2505,6 +2509,7 @@ function App() {
     isDownloadPausing,
     downloadPausedBytes,
     downloadPhase,
+    downloadState,
     downloadModelName,
     isChatMode,
     downloadCombinedBytes,

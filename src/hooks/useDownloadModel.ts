@@ -63,6 +63,27 @@ export function isDownloadInFlight(phase: DownloadUiState['phase']): boolean {
   );
 }
 
+/**
+ * A short, jargon-free reason for a failed download, by kind, so the ambient
+ * strip tells the user what actually went wrong instead of a generic message.
+ */
+export function downloadFailureMessage(kind: DownloadUiFailKind): string {
+  switch (kind) {
+    case 'offline':
+      return 'You appear to be offline.';
+    case 'http':
+      return 'Hugging Face had an error. Try again.';
+    case 'checksum':
+      return 'The download did not verify. Retrying starts it fresh.';
+    case 'disk_full':
+      return 'Not enough disk space.';
+    case 'engine':
+      return "Thuki's engine could not start.";
+    case 'other':
+      return 'Model download failed.';
+  }
+}
+
 /** Last reported byte counts for the file currently downloading. */
 export interface DownloadProgressInfo {
   file: string;
