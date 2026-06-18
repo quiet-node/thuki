@@ -24,10 +24,7 @@ import { useModelSelection } from './hooks/useModelSelection';
 import { useModelCapabilities } from './hooks/useModelCapabilities';
 import { useDownloadCtx } from './contexts/DownloadContext';
 import { isDownloadInFlight } from './hooks/useDownloadModel';
-import {
-  DownloadStatusStrip,
-  type DownloadStripStatus,
-} from './components/DownloadStatusStrip';
+import type { DownloadStripStatus } from './components/DownloadStatusStrip';
 import {
   getCapabilityConflict,
   getEnvironmentMessage,
@@ -3364,47 +3361,16 @@ function App() {
   // panel loses key focus and rAF is throttled.
 
   if (onboardingStage !== null) {
+    // The ambient download strip is rendered INSIDE the intro card (via
+    // OnboardingView -> IntroStep) so it reads as part of that screen, not a
+    // detached floating box. Not shown during model_check (the picker matrix
+    // has its own bar).
     return (
-      <>
-        <OnboardingView
-          stage={onboardingStage}
-          onComplete={() => setOnboardingStage(null)}
-        />
-        {/* Ambient download strip over the intro tour: IntroStep is a
-            self-contained full-screen modal with no footer, so the strip
-            floats at the bottom while the background download finishes. The
-            strip is borderless (it inherits its surface), so the floating
-            container supplies the ask-bar-style surface here. Not shown during
-            model_check (the matrix's own bar covers it). */}
-        {onboardingStage === 'intro' && downloadStripStatus ? (
-          <div
-            style={{
-              position: 'fixed',
-              left: 0,
-              right: 0,
-              bottom: 16,
-              display: 'flex',
-              justifyContent: 'center',
-              pointerEvents: 'none',
-              zIndex: 50,
-            }}
-          >
-            <div
-              style={{
-                width: 420,
-                pointerEvents: 'auto',
-                padding: '6px 0 10px',
-                background: 'rgba(28,24,20,0.97)',
-                border: '1px solid rgba(255,255,255,0.08)',
-                borderRadius: 16,
-                boxShadow: '0 18px 50px -20px rgba(0,0,0,0.8)',
-              }}
-            >
-              <DownloadStatusStrip status={downloadStripStatus} />
-            </div>
-          </div>
-        ) : null}
-      </>
+      <OnboardingView
+        stage={onboardingStage}
+        onComplete={() => setOnboardingStage(null)}
+        downloadStatus={downloadStripStatus}
+      />
     );
   }
 

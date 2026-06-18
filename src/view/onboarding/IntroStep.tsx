@@ -1,12 +1,22 @@
 import { motion } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
+import {
+  DownloadStatusStrip,
+  type DownloadStripStatus,
+} from '../../components/DownloadStatusStrip';
 
 interface Props {
   onComplete: () => void;
+  /**
+   * Ambient background-download status, rendered inside the card at its base
+   * while a built-in model finishes downloading during the tour. `null` /
+   * omitted renders nothing.
+   */
+  downloadStatus?: DownloadStripStatus | null;
 }
 
-export function IntroStep({ onComplete }: Props) {
+export function IntroStep({ onComplete, downloadStatus }: Props) {
   const handleGetStarted = async () => {
     await invoke('finish_onboarding');
     onComplete();
@@ -166,6 +176,16 @@ export function IntroStep({ onComplete }: Props) {
         >
           Private by default &middot; All inference runs on your machine
         </p>
+
+        {/* Ambient download strip, rendered inside the card so it reads as part
+            of the screen. The borderless strip inherits the card surface; the
+            negative side margins pull it out to the content width (matching the
+            divider + CTA) so it spans cleanly rather than sitting inset. */}
+        {downloadStatus ? (
+          <div style={{ marginTop: 4, marginLeft: -16, marginRight: -16 }}>
+            <DownloadStatusStrip status={downloadStatus} />
+          </div>
+        ) : null}
       </motion.div>
     </div>
   );
