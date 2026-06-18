@@ -35,10 +35,11 @@ pub const DEFAULT_OPENAI_LABEL: &str = "OpenAI-compatible";
 
 /// Provider Thuki sends inference to on a fresh install.
 ///
-/// Phase 2 bundles the llama.cpp engine, so a new install starts on the
+/// Thuki bundles the llama.cpp engine, so a new install starts on the
 /// built-in provider and onboarding offers a starter model download. Configs
-/// that already persisted an `active_provider` (including Phase 1's Ollama
-/// default) are never rewritten; only fresh or dangling pointers land here.
+/// that already persisted an `active_provider` (including the older
+/// Ollama-only default) are never rewritten; only fresh or dangling pointers
+/// land here.
 pub const DEFAULT_ACTIVE_PROVIDER: &str = PROVIDER_ID_BUILTIN;
 
 /// Default inactivity window before Thuki releases the active model from local

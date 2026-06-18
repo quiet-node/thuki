@@ -1440,7 +1440,7 @@ fn reset_section_on_disk_replaces_named_section_with_defaults() {
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
 
     let resolved = reset_section_on_disk(&path, Some("inference")).unwrap();
-    // Section reset restores compiled defaults: builtin active since Phase 2.
+    // Section reset restores compiled defaults: the built-in engine is the default active provider.
     assert_eq!(resolved.inference.active_provider, "builtin");
     assert!(resolved
         .inference

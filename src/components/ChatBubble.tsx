@@ -334,9 +334,9 @@ export function ChatBubble({
   // Render-time defense for legacy assistant content that may carry
   // special turn-boundary tokens leaked by older Ollama versions or
   // mis-tuned models. Backend now strips these on write, so the scrub is
-  // a no-op for fresh replies; pre-Phase-B history on disk relies on it.
-  // User input never contains these markers naturally so we skip the
-  // scrub for user bubbles.
+  // a no-op for fresh replies; history stored before that strip existed
+  // relies on it. User input never contains these markers naturally so we
+  // skip the scrub for user bubbles.
   const displayContent = isUser ? content : cleanForRender(content);
 
   const activeWarnings = searchWarnings ?? [];

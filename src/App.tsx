@@ -2401,8 +2401,8 @@ function App() {
    */
   /**
    * History-state derived from the current `messages` array. Drives the
-   * Phase B history-based capability strip: a heads-up when the active
-   * model lacks a capability earlier turns relied on (vision, thinking).
+   * history-based capability strip: a heads-up when the active model lacks
+   * a capability earlier turns relied on (vision, thinking).
    * `messages.some(...)` is O(n) per render but bounded by typical chat
    * lengths and memoized against the messages reference.
    */

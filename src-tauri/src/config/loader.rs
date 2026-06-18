@@ -406,7 +406,7 @@ fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
     {
         inf.providers.insert(0, builtin_provider());
     }
-    // Ensure a functional Phase-1 provider exists: re-seed Ollama if absent.
+    // Ensure the Ollama provider exists: re-seed it if a user file omitted it.
     if !inf.providers.iter().any(|p| p.kind == PROVIDER_KIND_OLLAMA) {
         inf.providers.push(ollama_provider(DEFAULT_OLLAMA_URL));
     }
@@ -424,8 +424,8 @@ fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
 
     // A pre-providers file (no [[inference.providers]] array) predates the
     // built-in engine: that user runs Ollama. Pin the pointer explicitly so
-    // the compiled default (which favors the built-in engine from Phase 2 on)
-    // only ever applies to fresh installs and new-shape files. Covers both
+    // the compiled default (which favors the built-in engine) only ever
+    // applies to fresh installs and new-shape files. Covers both
     // legacy shapes: with an ollama_url key and without one. An explicit
     // active_provider equal to the compiled default, or naming the built-in
     // provider, is also overridden here: in a pre-providers file neither
@@ -465,7 +465,8 @@ pub fn compose_system_prompt(base: &str, appendix: &str) -> String {
 }
 
 fn clamp_keep_warm_inactivity(value: &mut i32, default: i32, field: &str) {
-    // Valid: -1 (never release), 0 (disabled), or 1..=1440 (explicit timeout).
+    // Valid: -1 (keep resident forever), 0 (provider's natural short default),
+    // or 1..=1440 (explicit timeout).
     // Invalid: below -1 or above 1440 — reset to compiled default.
     let (lo, hi) = BOUNDS_KEEP_WARM_INACTIVITY_MINUTES;
     if !(lo..=hi).contains(value) {

@@ -499,7 +499,7 @@ pub async fn capture_full_screen_command(
     // strictly main-thread-only.
     let main_window = app_handle.get_webview_window("main");
 
-    // Phase 1: Capture raw RGBA pixels on the main thread (CoreGraphics
+    // Step 1: Capture raw RGBA pixels on the main thread (CoreGraphics
     // requirement). Returns (width, height, rgba_bytes).
     //
     // The anchor point steers multi-monitor capture: we look up the
@@ -529,7 +529,7 @@ pub async fn capture_full_screen_command(
         .await
         .map_err(|_| "main thread capture channel closed unexpectedly".to_string())??;
 
-    // Phase 2: Encode to PNG and save via the images pipeline on a blocking
+    // Step 2: Encode to PNG and save via the images pipeline on a blocking
     // thread so the main thread stays responsive.
     let saved_path = tokio::task::spawn_blocking(move || {
         let buf =

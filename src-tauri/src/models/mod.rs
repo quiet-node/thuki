@@ -513,11 +513,11 @@ pub async fn set_active_model(
     Ok(())
 }
 
-// ─── Model setup gate (Phase 3 onboarding) ──────────────────────────────────
+// ─── Model setup gate (onboarding) ──────────────────────────────────────────
 
 /// Result of probing the local Ollama daemon for setup readiness.
 ///
-/// Drives the Phase 3 onboarding gate that fires after the user grants
+/// Drives the onboarding model-setup gate that fires after the user grants
 /// macOS permissions but before the chat overlay is allowed to open.
 /// Variants are emitted to the frontend in `snake_case` with an
 /// internally-tagged `state` discriminator so the React side can route
@@ -1323,7 +1323,7 @@ pub struct MmprojCompanion {
 
 /// Pure parse of an HF repo listing into the spec for one target `file`.
 /// Capability rule for pasted repos: vision = an `mmproj*.gguf` sibling with
-/// complete LFS metadata exists; thinking = false (full detection is Phase 3).
+/// complete LFS metadata exists; thinking = false (full detection is not yet implemented).
 pub fn resolve_listing(body: &[u8], file: &str) -> Result<RepoResolved, String> {
     let info: HfRepoInfo = serde_json::from_slice(body)
         .map_err(|e| format!("failed to decode Hugging Face API response: {e}"))?;
@@ -2820,7 +2820,7 @@ mod tests {
         assert_eq!(MODEL_NOT_INSTALLED_ERR_PREFIX, "Model is not installed: ");
     }
 
-    // ── derive_model_setup_state (Phase 3 onboarding gate) ──────────────────
+    // ── derive_model_setup_state (onboarding model-setup gate) ──────────────
 
     #[test]
     fn derive_setup_state_returns_unreachable_on_fetch_error() {

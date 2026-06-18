@@ -1,9 +1,9 @@
 /**
  * Render-time defense against special turn-boundary tokens that may have
  * leaked into stored assistant content. Backend `sanitize_assistant_content`
- * (Rust) strips these before persisting, but pre-Phase-B conversations on
- * disk may already carry the dirty bytes. The render-time scrub keeps those
- * legacy messages visually clean without a SQLite migration.
+ * (Rust) strips these before persisting, but conversations stored before that
+ * strip existed may already carry the dirty bytes on disk. The render-time
+ * scrub keeps those legacy messages visually clean without a SQLite migration.
  *
  * Keep this list in lock-step with `STRIP_PATTERNS` in
  * `src-tauri/src/config/defaults.rs`. Exact-string match, case-sensitive: these

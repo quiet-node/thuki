@@ -2849,7 +2849,7 @@ mod tests {
         assert_eq!(messages[1].images.as_ref().unwrap().len(), 1);
     }
 
-    // ─── classify_http_error: Phase B picker hint ────────────────────────────
+    // ─── classify_http_error: capability picker hint ─────────────────────────
 
     #[test]
     fn classify_http_500_appends_picker_hint_when_body_mentions_image() {
@@ -3191,7 +3191,7 @@ mod tests {
     /// Locks the native `/api/chat` wire contract across the routing change:
     /// the exact request body (model, messages, stream, think, options
     /// {temperature, top_p, top_k, num_ctx}, keep_alive) must be identical
-    /// to the pre-routing Phase 1 payload.
+    /// to the payload Thuki sent before provider routing was introduced.
     #[tokio::test]
     async fn ollama_request_body_unchanged() {
         use crate::config::defaults::PROVIDER_KIND_OLLAMA;

@@ -275,7 +275,7 @@ describe('getCapabilityConflict', () => {
     expect(result).toBeNull();
   });
 
-  // ── history-state gates (Phase B) ─────────────────────────────────────────
+  // ── history-state gates ───────────────────────────────────────────────────
 
   const HISTORY_HAS_IMAGES: HistoryCapabilityState = {
     historyHasImages: true,
@@ -626,7 +626,7 @@ describe('getEnvironmentMessage', () => {
     });
 
     it('returns the pick-a-model copy when reachable, models present, none active (S3)', () => {
-      // S3 is the rare post-Phase-A defensive state. Backend auto-picks the
+      // S3 is the rare defensive state. Backend auto-picks the
       // first installed model on launch, but if a payload drift ever lands
       // here we still surface a clear recovery cue instead of falling
       // through to the capability helper with a null model.

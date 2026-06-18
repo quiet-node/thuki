@@ -27,7 +27,7 @@ describe('cleanForRender', () => {
   });
 
   it('strips a leaked thinking tag wrapper from legacy assistant content', () => {
-    // Pre-Phase-B reasoning models occasionally emitted `<think>...</think>`
+    // Some reasoning models occasionally emitted `<think>...</think>`
     // into `content` instead of the structured `thinking` field. The
     // render-time scrub keeps that legacy text visually clean.
     const dirty = 'answer<think>internal reasoning</think> shipped.';

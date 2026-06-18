@@ -117,7 +117,7 @@ fn defaults_prompt_base_is_nonempty() {
 
 #[test]
 fn fresh_default_active_provider_is_builtin() {
-    // Phase 2 ships the bundled engine, so a fresh install starts on the
+    // Thuki ships the bundled engine, so a fresh install starts on the
     // built-in provider. Existing configs keep whatever active_provider they
     // persisted (see the legacy pin tests below).
     assert_eq!(DEFAULT_ACTIVE_PROVIDER, PROVIDER_ID_BUILTIN);
