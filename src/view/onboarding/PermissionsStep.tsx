@@ -3,6 +3,7 @@ import type React from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
+import { useFitOnboardingWindow } from '../../hooks/useFitOnboardingWindow';
 import { StepCard, Badge } from './_shared';
 
 /** How often to poll for permission grants after the user requests them. */
@@ -152,6 +153,12 @@ const Spinner = () => (
  * against the macOS desktop.
  */
 export function PermissionsStep() {
+  // Match the transparent window to the card so its empty area never blocks
+  // clicks to the apps behind Thuki (the card has a fixed layout, so the fit
+  // runs once on mount).
+  const cardRef = useRef<HTMLDivElement>(null);
+  useFitOnboardingWindow(cardRef, null);
+
   const [accessibilityStatus, setAccessibilityStatus] =
     useState<AccessibilityStatus>('pending');
   const [screenRecordingStatus, setScreenRecordingStatus] =
@@ -320,6 +327,7 @@ export function PermissionsStep() {
       }}
     >
       <motion.div
+        ref={cardRef}
         initial={{ opacity: 0, scale: 0.97, y: 8 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ type: 'spring', stiffness: 300, damping: 28 }}
