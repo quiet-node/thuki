@@ -759,6 +759,9 @@ const BUILTIN_CONFIG: AppConfig = {
 
 function builtinResponses(overrides: Record<string, unknown> = {}) {
   enableChannelCaptureWithResponses({
+    // This flow IS the model_check picker, which owns the resume decision, so
+    // the DownloadProvider's launch auto-resume gates itself out here.
+    onboarding_stage: 'model_check',
     check_model_setup: { state: 'needs_download' },
     get_starter_options: BUILTIN_OPTIONS,
     detect_ollama: true,

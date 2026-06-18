@@ -2,6 +2,7 @@ import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { DownloadProvider, useDownloadCtx } from '../DownloadContext';
+import { ConfigProviderForTest, DEFAULT_CONFIG } from '../ConfigContext';
 import {
   invoke,
   enableChannelCapture,
@@ -49,6 +50,39 @@ function option(
 
 function wrapper({ children }: { children: ReactNode }) {
   return <DownloadProvider>{children}</DownloadProvider>;
+}
+
+/** AppConfig whose active provider is the bundled built-in engine. */
+const BUILTIN_CONFIG = {
+  ...DEFAULT_CONFIG,
+  inference: {
+    ...DEFAULT_CONFIG.inference,
+    activeProvider: 'builtin',
+    activeProviderKind: 'builtin',
+  },
+};
+
+/** Provider tree with the built-in engine active. */
+function builtinWrapper({ children }: { children: ReactNode }) {
+  return (
+    <ConfigProviderForTest value={BUILTIN_CONFIG}>
+      <DownloadProvider>{children}</DownloadProvider>
+    </ConfigProviderForTest>
+  );
+}
+
+/** Counts how many times `invoke` was called for a given command. */
+function invokeCount(command: string): number {
+  return invoke.mock.calls.filter((c) => c[0] === command).length;
+}
+
+/** Stub the launch probes: the persisted onboarding stage and the starters. */
+function mockLaunch(stage: string, options: StarterOption[] = []) {
+  invoke.mockImplementation((cmd) => {
+    if (cmd === 'onboarding_stage') return Promise.resolve(stage);
+    if (cmd === 'get_starter_options') return Promise.resolve(options);
+    return Promise.resolve();
+  });
 }
 
 describe('DownloadContext', () => {
@@ -221,6 +255,116 @@ describe('DownloadContext', () => {
     expect(result.current.grandTotalBytes).toBeNull();
     expect(invoke).toHaveBeenCalledWith('discard_partial_download', {
       sha256: 'deadbeef',
+    });
+  });
+
+  describe('launch auto-resume', () => {
+    it('resumes an interrupted partial past the picker (intro) with no installed model', async () => {
+      const partial: StarterOption = {
+        ...option({ tier: 'fast', size_bytes: 4_000_000_000, mmproj_bytes: 0 }),
+        partial_bytes: 3_000_000_000,
+      };
+      mockLaunch('intro', [partial]);
+
+      const { result } = renderHook(() => useDownloadCtx(), {
+        wrapper: builtinWrapper,
+      });
+      await act(async () => {});
+
+      expect(invokeCount('get_starter_options')).toBe(1);
+      expect(result.current.downloadingTier).toBe('fast');
+      expect(result.current.resumeSeedBytes).toBe(3_000_000_000);
+      expect(result.current.state).toEqual({ phase: 'downloading' });
+      expect(invoke).toHaveBeenCalledWith('download_starter', {
+        tier: 'fast',
+        onEvent: expect.anything(),
+      });
+    });
+
+    it('does not resume at the model_check picker (it owns the resume choice)', async () => {
+      const partial: StarterOption = {
+        ...option(),
+        partial_bytes: 3_000_000_000,
+      };
+      mockLaunch('model_check', [partial]);
+
+      const { result } = renderHook(() => useDownloadCtx(), {
+        wrapper: builtinWrapper,
+      });
+      await act(async () => {});
+
+      // Gated out before probing the starters; the picker handles the partial.
+      expect(invokeCount('get_starter_options')).toBe(0);
+      expect(result.current.state).toEqual({ phase: 'idle' });
+    });
+
+    it('does not resume when a model is already installed (complete stage)', async () => {
+      const installed: StarterOption = { ...option(), installed: true };
+      mockLaunch('complete', [installed]);
+
+      const { result } = renderHook(() => useDownloadCtx(), {
+        wrapper: builtinWrapper,
+      });
+      await act(async () => {});
+
+      expect(invokeCount('get_starter_options')).toBe(1);
+      expect(result.current.state).toEqual({ phase: 'idle' });
+      expect(invokeCount('download_starter')).toBe(0);
+    });
+
+    it('does not resume when no partial is on disk', async () => {
+      mockLaunch('intro', [option()]);
+
+      const { result } = renderHook(() => useDownloadCtx(), {
+        wrapper: builtinWrapper,
+      });
+      await act(async () => {});
+
+      expect(invokeCount('get_starter_options')).toBe(1);
+      expect(result.current.state).toEqual({ phase: 'idle' });
+      expect(invokeCount('download_starter')).toBe(0);
+    });
+
+    it('does not probe anything when the active provider is not the built-in engine', async () => {
+      const { result } = renderHook(() => useDownloadCtx(), { wrapper });
+      await act(async () => {});
+
+      expect(invokeCount('onboarding_stage')).toBe(0);
+      expect(invokeCount('get_starter_options')).toBe(0);
+      expect(result.current.state).toEqual({ phase: 'idle' });
+    });
+
+    it('fires once: a later provider change does not re-trigger the launch probe', async () => {
+      mockLaunch('intro', [{ ...option(), partial_bytes: 1_000 }]);
+
+      let cfg = BUILTIN_CONFIG;
+      function mutableWrapper({ children }: { children: ReactNode }) {
+        return (
+          <ConfigProviderForTest value={cfg}>
+            <DownloadProvider>{children}</DownloadProvider>
+          </ConfigProviderForTest>
+        );
+      }
+
+      const { rerender } = renderHook(() => useDownloadCtx(), {
+        wrapper: mutableWrapper,
+      });
+      await act(async () => {});
+      expect(invokeCount('onboarding_stage')).toBe(1);
+
+      // Flipping the active provider re-runs the effect; the fire-once ref
+      // blocks a second probe.
+      cfg = {
+        ...BUILTIN_CONFIG,
+        inference: {
+          ...BUILTIN_CONFIG.inference,
+          activeProviderKind: 'ollama',
+        },
+      };
+      await act(async () => {
+        rerender();
+      });
+      expect(invokeCount('onboarding_stage')).toBe(1);
     });
   });
 });

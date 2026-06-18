@@ -17,15 +17,19 @@ import {
   createContext,
   use,
   useCallback,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import {
   isDownloadInFlight,
   useDownloadModel,
   type UseDownloadModel,
 } from '../hooks/useDownloadModel';
+import { useConfig } from './ConfigContext';
 import type { StarterOption, StarterTier } from '../types/starter';
 
 export interface DownloadContextValue extends UseDownloadModel {
@@ -122,6 +126,31 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     },
     [resume],
   );
+
+  // On launch, recover an interrupted built-in download: if the engine is the
+  // active provider and a starter has a partial on disk but none is installed,
+  // resume it in the background so the ambient strip is the recovery surface.
+  // The relaunch no longer bounces the user back to the picker, so this is what
+  // keeps them from being stranded with no model. Fires once: the ref guards
+  // against the StrictMode double-invoke and any later provider re-render.
+  const activeProviderKind = useConfig().inference.activeProviderKind;
+  const autoResumedRef = useRef(false);
+  useEffect(() => {
+    if (autoResumedRef.current) return;
+    autoResumedRef.current = true;
+    if (activeProviderKind !== 'builtin') return;
+    void (async () => {
+      // The model_check picker owns the resume decision (its own Resume /
+      // Discard choice), so only auto-resume once the user is past it: the
+      // intro tour or the ask bar.
+      const stage = await invoke<string>('onboarding_stage');
+      if (stage !== 'intro' && stage !== 'complete') return;
+      const options = await invoke<StarterOption[]>('get_starter_options');
+      const partial = options.find((o) => o.partial_bytes !== null);
+      if (options.some((o) => o.installed) || partial === undefined) return;
+      resumeDownload(partial.starter.tier, partial, partial.partial_bytes!);
+    })();
+  }, [activeProviderKind, resumeDownload]);
 
   const pauseDownload = useCallback(() => {
     // Remember how far we got so the paused strip can show the percent, then

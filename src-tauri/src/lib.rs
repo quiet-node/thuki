@@ -1074,35 +1074,14 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
         #[cfg(target_os = "macos")]
         {
             if let Ok(conn) = db.0.lock() {
-                let raw_stage = onboarding::get_stage(&conn)
+                // Use the persisted stage as-is. A built-in model download
+                // still in flight no longer bounces the user back to the
+                // picker: on a mid-download relaunch they stay where they left
+                // off, and the DownloadProvider auto-resumes the partial in the
+                // background so the ambient strip is the recovery surface (the
+                // user is never stranded past selection with no usable model).
+                let stage = onboarding::get_stage(&conn)
                     .unwrap_or(onboarding::OnboardingStage::Permissions);
-
-                // Relaunch-safety gate: a built-in model download still in
-                // flight persists `intro` (Continue setup) or `complete` (Get
-                // Started) before it finishes. If the user quit mid-download,
-                // re-gate back to model_check so they can resume instead of
-                // being stranded past selection with no usable model. Scoped to
-                // builtin + zero models + a resumable partial on disk, so a
-                // deliberate delete-model-in-Settings does not re-onboard.
-                let is_builtin = app_handle
-                    .state::<parking_lot::RwLock<crate::config::AppConfig>>()
-                    .read()
-                    .inference
-                    .active_provider_kind()
-                    == "builtin";
-                let has_model = crate::models::manifest::list(&conn)
-                    .map(|m| !m.is_empty())
-                    .unwrap_or(false);
-                let model_store = app_handle.state::<crate::models::storage::ModelStore>();
-                let has_partial = crate::models::build_starter_options(
-                    &conn,
-                    &model_store,
-                    crate::models::system_ram_bytes(),
-                )
-                .iter()
-                .any(|o| o.partial_bytes.is_some());
-                let stage =
-                    onboarding::apply_model_gate(raw_stage, is_builtin, has_model, has_partial);
 
                 // The "intro" stage means the user already cleared both the
                 // permissions and the model-check gates on a previous launch.
@@ -1155,6 +1134,20 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
         }
         show_overlay(&app_handle, crate::context::ActivationContext::empty());
     }
+}
+
+/// Returns the persisted onboarding stage for the frontend's launch
+/// auto-resume gate. The model-check picker owns the resume decision while it
+/// is shown (its own Resume / Discard choice), so the `DownloadProvider` only
+/// auto-resumes an interrupted built-in download once the user is past it (the
+/// intro tour or the ask bar). Thin wrapper over the tested `get_stage`.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn onboarding_stage(
+    db: tauri::State<history::Database>,
+) -> Result<onboarding::OnboardingStage, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    onboarding::get_stage(&conn).map_err(|e| e.to_string())
 }
 
 /// Advances the onboarding stage from `model_check` to `intro` and emits
@@ -2185,6 +2178,7 @@ pub fn run() {
             permissions::quit_and_relaunch,
             finish_onboarding,
             advance_past_model_check,
+            onboarding_stage,
             #[cfg(not(coverage))]
             warmup::warm_up_model,
             #[cfg(not(coverage))]

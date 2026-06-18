@@ -89,37 +89,6 @@ pub fn mark_complete(conn: &Connection) -> rusqlite::Result<()> {
     set_stage(conn, &OnboardingStage::Complete)
 }
 
-/// Relaunch-safety gate over the persisted stage.
-///
-/// The non-blocking download experience lets the user leave the picker while a
-/// built-in model is still downloading: tapping "Continue setup" persists
-/// `intro`, and finishing the intro tour persists `complete`, all before the
-/// download completes. A quit + relaunch mid-download would otherwise strand
-/// the user past model selection with no usable model.
-///
-/// So when the persisted stage is past model selection (`intro`/`complete`)
-/// but the built-in engine is active with zero installed models AND a resumable
-/// partial is on disk, force the user back to `model_check` to finish (resume)
-/// the download. Every other case is returned unchanged.
-///
-/// The partial is the load-bearing signal: a deliberate delete-model-in-Settings
-/// leaves no partial, so it does NOT re-trigger onboarding. Stages before model
-/// selection (`permissions`/`model_check`) are never touched: the user has not
-/// reached the picker yet, so there is nothing to relaunch-protect.
-pub fn apply_model_gate(
-    stage: OnboardingStage,
-    is_builtin: bool,
-    has_model: bool,
-    has_partial: bool,
-) -> OnboardingStage {
-    let past_model_selection = matches!(stage, OnboardingStage::Intro | OnboardingStage::Complete);
-    if past_model_selection && is_builtin && !has_model && has_partial {
-        OnboardingStage::ModelCheck
-    } else {
-        stage
-    }
-}
-
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -260,74 +229,5 @@ mod tests {
         set_stage(&conn, &OnboardingStage::Intro).unwrap();
         let result = compute_startup_stage(&conn).unwrap();
         assert_eq!(result, Some(OnboardingStage::Intro));
-    }
-
-    // ── apply_model_gate (relaunch safety) ───────────────────────────────────
-
-    #[test]
-    fn model_gate_forces_model_check_from_intro_mid_download() {
-        // Quit while the model was still downloading after tapping Continue:
-        // builtin, no model installed yet, a partial left on disk.
-        assert_eq!(
-            apply_model_gate(OnboardingStage::Intro, true, false, true),
-            OnboardingStage::ModelCheck
-        );
-    }
-
-    #[test]
-    fn model_gate_forces_model_check_from_complete_mid_download() {
-        // Quit after Get Started but before the download finished.
-        assert_eq!(
-            apply_model_gate(OnboardingStage::Complete, true, false, true),
-            OnboardingStage::ModelCheck
-        );
-    }
-
-    #[test]
-    fn model_gate_keeps_stage_when_a_model_is_installed() {
-        // Download completed: a model exists, so nothing to recover.
-        assert_eq!(
-            apply_model_gate(OnboardingStage::Intro, true, true, true),
-            OnboardingStage::Intro
-        );
-        assert_eq!(
-            apply_model_gate(OnboardingStage::Complete, true, true, false),
-            OnboardingStage::Complete
-        );
-    }
-
-    #[test]
-    fn model_gate_ignores_a_deliberate_delete_with_no_partial() {
-        // Model deleted in Settings (no partial left): must NOT re-onboard.
-        assert_eq!(
-            apply_model_gate(OnboardingStage::Intro, true, false, false),
-            OnboardingStage::Intro
-        );
-        assert_eq!(
-            apply_model_gate(OnboardingStage::Complete, true, false, false),
-            OnboardingStage::Complete
-        );
-    }
-
-    #[test]
-    fn model_gate_ignores_non_builtin_providers() {
-        // An Ollama/openai user with a stray partial is never re-gated.
-        assert_eq!(
-            apply_model_gate(OnboardingStage::Complete, false, false, true),
-            OnboardingStage::Complete
-        );
-    }
-
-    #[test]
-    fn model_gate_leaves_pre_selection_stages_untouched() {
-        // Before the picker there is nothing to relaunch-protect.
-        assert_eq!(
-            apply_model_gate(OnboardingStage::Permissions, true, false, true),
-            OnboardingStage::Permissions
-        );
-        assert_eq!(
-            apply_model_gate(OnboardingStage::ModelCheck, true, false, true),
-            OnboardingStage::ModelCheck
-        );
     }
 }
