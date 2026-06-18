@@ -682,6 +682,14 @@ function App() {
   const isChatMode = messages.length > 0 || isGenerating || isSubmitPending;
   const previousIsChatModeRef = useRef(isChatMode);
 
+  // The "model ready, send your first message" nudge is a one-time prompt. Once
+  // the user has sent any message (entered chat mode), it is acknowledged for
+  // good, so it never reappears on a new conversation or the next summon.
+  const [readyNudgeAcknowledged, setReadyNudgeAcknowledged] = useState(false);
+  useEffect(() => {
+    if (isChatMode) setReadyNudgeAcknowledged(true);
+  }, [isChatMode]);
+
   /**
    * The bookmark save button is active once the AI has produced at least one
    * complete response. We check for an assistant message rather than any message
@@ -2468,10 +2476,13 @@ function App() {
     if (isDownloadPausing) {
       return { kind: 'pausing', percent: percentOf(liveBytes) };
     }
-    // The ready prompt invites the first message; it clears the instant the
-    // user sends one (enters chat mode) rather than lingering until a restart.
+    // The ready prompt invites the first message; once acknowledged (the user
+    // has sent a message) it never reappears, including on a new conversation
+    // or the next summon.
     if (downloadPhase === 'ready') {
-      return isChatMode ? null : { kind: 'ready' };
+      return readyNudgeAcknowledged
+        ? null
+        : { kind: 'ready', modelName: downloadModelName };
     }
     if (downloadState.phase === 'failed') {
       return {
@@ -2512,7 +2523,7 @@ function App() {
     downloadPhase,
     downloadState,
     downloadModelName,
-    isChatMode,
+    readyNudgeAcknowledged,
     downloadCombinedBytes,
     downloadResumeSeedBytes,
     downloadGrandTotalBytes,

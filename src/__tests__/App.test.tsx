@@ -7899,13 +7899,16 @@ describe('App', () => {
       const before = invoke.mock.calls.filter(
         (c) => c[0] === 'get_model_picker_state',
       ).length;
-      downloadHolder.value = makeDownloadCtx({ state: { phase: 'ready' } });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'ready' },
+        activeOption: downloadingOption('Qwen3.5 9B'),
+      });
       await act(async () => {
         rerender(builtinTree());
       });
 
       expect(
-        screen.getByText('Model ready. Send your first message'),
+        screen.getByText('Qwen3.5 9B ready. Send your first message!'),
       ).toBeInTheDocument();
       const after = invoke.mock.calls.filter(
         (c) => c[0] === 'get_model_picker_state',
@@ -7963,7 +7966,7 @@ describe('App', () => {
       expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
     });
 
-    it('dismisses the ready strip once the first message is sent', async () => {
+    it('dismisses the ready nudge after the first message and never reshows it', async () => {
       enableChannelCaptureWithResponses({
         get_model_picker_state: {
           active: 'm',
@@ -7971,14 +7974,17 @@ describe('App', () => {
           ollamaReachable: true,
         },
       });
-      downloadHolder.value = makeDownloadCtx({ state: { phase: 'ready' } });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'ready' },
+        activeOption: downloadingOption('Qwen3.5 9B'),
+      });
 
       render(builtinTree());
       await act(async () => {});
       await showOverlay();
 
       expect(
-        screen.getByText('Model ready. Send your first message'),
+        screen.getByText('Qwen3.5 9B ready. Send your first message!'),
       ).toBeInTheDocument();
 
       const textarea = getAskInput();
@@ -7996,7 +8002,16 @@ describe('App', () => {
       await act(async () => {});
 
       expect(
-        screen.queryByText('Model ready. Send your first message'),
+        screen.queryByText('Qwen3.5 9B ready. Send your first message!'),
+      ).not.toBeInTheDocument();
+
+      // Back out of chat mode (new conversation / re-summon clears messages):
+      // the nudge stays dismissed, it is a one-time prompt.
+      await act(async () => {
+        await showOverlay();
+      });
+      expect(
+        screen.queryByText('Qwen3.5 9B ready. Send your first message!'),
       ).not.toBeInTheDocument();
     });
 

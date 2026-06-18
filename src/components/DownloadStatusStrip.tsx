@@ -9,6 +9,7 @@
  * surfaced once the user has left the picker.
  */
 import { useEffect, useState, type ReactNode } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 
 /** The strip's states, mirroring the download machine plus a paused hop. */
 export type DownloadStripStatus =
@@ -27,16 +28,21 @@ export type DownloadStripStatus =
     }
   | { kind: 'pausing'; percent: number }
   | { kind: 'verifying'; percent: number }
-  | { kind: 'ready' }
+  | { kind: 'ready'; modelName: string }
   | { kind: 'failed'; message: string; onRetry: () => void };
 
-/** How often the downloading label swaps between the model name and the hint. */
-const LABEL_ROTATE_MS = 4000;
 /**
- * The reassurance half of the alternating label: the download keeps running in
- * the background, so the user can dismiss Thuki (not quit) and come back.
+ * How long each half of the downloading label shows before crossfading to the
+ * other. Slow on purpose: the strip is ambient, so the swap should be a calm
+ * background rhythm, not something that pulls the eye.
  */
-const BACKGROUND_HINT = 'Close anytime, runs in the background';
+const LABEL_ROTATE_MS = 7000;
+/**
+ * The reassurance half of the alternating label: the download keeps going while
+ * Thuki is closed (hidden), so the user can step away and come back. "Close"
+ * (not quit) is deliberate: quitting from the tray is what stops it.
+ */
+const BACKGROUND_HINT = 'You can close and come back anytime';
 
 const ORANGE = 'rgb(255,141,92)';
 const ORANGE_FILL = 'linear-gradient(90deg,#ffa06f,#d45a1e)';
@@ -142,7 +148,7 @@ export function DownloadStatusStrip({
     return (
       <Shell color={GREEN} fill={GREEN_FILL} percent={100}>
         <span className="flex-1 leading-snug">
-          Model ready. Send your first message
+          {status.modelName} ready. Send your first message!
         </span>
       </Shell>
     );
@@ -230,7 +236,20 @@ function DownloadingRow({
       : `${status.percent}%`;
   return (
     <Shell color={ORANGE} fill={ORANGE_FILL} percent={status.percent}>
-      <span className="leading-snug">{label}</span>
+      {/* Crossfade between the two labels so the swap is a soft dissolve, not
+          a hard cut. mode="wait" fades the old out before the new fades in. */}
+      <AnimatePresence mode="wait">
+        <motion.span
+          key={label}
+          className="leading-snug"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.45 }}
+        >
+          {label}
+        </motion.span>
+      </AnimatePresence>
       <span className="flex-1" />
       <span className="shrink-0">{trailing}</span>
       <Action

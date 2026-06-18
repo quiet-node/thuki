@@ -37,11 +37,11 @@ describe('DownloadStatusStrip', () => {
       />,
     );
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
-    act(() => vi.advanceTimersByTime(4000));
+    act(() => vi.advanceTimersByTime(7000));
     expect(
-      screen.getByText('Close anytime, runs in the background'),
+      screen.getByText('You can close and come back anytime'),
     ).toBeInTheDocument();
-    act(() => vi.advanceTimersByTime(4000));
+    act(() => vi.advanceTimersByTime(7000));
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
   });
 
@@ -134,10 +134,14 @@ describe('DownloadStatusStrip', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('shows a ready state that invites the first message', () => {
-    render(<DownloadStatusStrip status={{ kind: 'ready' }} />);
+  it('names the model and invites the first message when ready', () => {
+    render(
+      <DownloadStatusStrip
+        status={{ kind: 'ready', modelName: 'Qwen3.5 9B' }}
+      />,
+    );
     expect(
-      screen.getByText('Model ready. Send your first message'),
+      screen.getByText('Qwen3.5 9B ready. Send your first message!'),
     ).toBeInTheDocument();
   });
 

@@ -234,7 +234,7 @@ describe('AskBarView', () => {
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
         inputRef={makeRef()}
-        downloadStatus={{ kind: 'ready' }}
+        downloadStatus={{ kind: 'ready', modelName: 'Qwen3.5 9B' }}
       />,
     );
     expect(
