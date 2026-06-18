@@ -18,6 +18,7 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
 
@@ -34,6 +35,15 @@ pub enum StorageError {
     Io(#[from] io::Error),
 }
 
+/// A paused download's running SHA-256, kept in memory so an in-session resume
+/// can continue it instead of re-reading the whole on-disk prefix back through
+/// SHA-256. `hasher` has consumed exactly `len` bytes of the partial `sha256`.
+struct SuspendedHash {
+    sha256: String,
+    len: u64,
+    hasher: Sha256,
+}
+
 /// Content-addressed store rooted at a caller-supplied directory (in the app
 /// this is `<app_data>/models`).
 ///
@@ -42,6 +52,10 @@ pub enum StorageError {
 /// - `root/tmp/<sha256>.partial`: in-flight downloads (resume-safe).
 pub struct ModelStore {
     root: PathBuf,
+    /// Running hash of the single in-flight download kept across a pause so an
+    /// in-session resume continues it rather than re-hashing the prefix. Holds
+    /// at most one entry (one download at a time); a later save overwrites it.
+    suspended_hash: Mutex<Option<SuspendedHash>>,
 }
 
 impl ModelStore {
@@ -54,7 +68,31 @@ impl ModelStore {
     pub fn new(root: PathBuf) -> Result<Self, io::Error> {
         std::fs::create_dir_all(root.join("blobs"))?;
         std::fs::create_dir_all(root.join("tmp"))?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            suspended_hash: Mutex::new(None),
+        })
+    }
+
+    /// Remembers a paused download's running `hasher` (which has consumed
+    /// exactly `len` bytes of the partial for `sha256`) so an in-session resume
+    /// can continue it. At most one is kept; a later save overwrites it.
+    pub fn save_suspended_hash(&self, sha256: &str, len: u64, hasher: Sha256) {
+        *self.suspended_hash.lock().unwrap() = Some(SuspendedHash {
+            sha256: sha256.to_string(),
+            len,
+            hasher,
+        });
+    }
+
+    /// Takes the kept running hash for `sha256` when it stands exactly at the
+    /// resume offset `len`. Clears the slot either way, so a stale entry never
+    /// lingers; returns the hasher to continue, or `None` to re-hash from disk.
+    pub fn take_suspended_hash(&self, sha256: &str, len: u64) -> Option<Sha256> {
+        match self.suspended_hash.lock().unwrap().take() {
+            Some(s) if s.sha256 == sha256 && s.len == len => Some(s.hasher),
+            _ => None,
+        }
     }
 
     /// Absolute path where a verified blob is stored: `root/blobs/<sha256>`.
@@ -319,6 +357,44 @@ mod tests {
             sink.len() < data.len(),
             "feed_partial must stop before reading the whole partial"
         );
+    }
+
+    // ── suspended hash (in-memory resume) ────────────────────────────────────
+
+    #[test]
+    fn suspended_hash_round_trips_and_continues() {
+        let (_dir, store) = make_store();
+        // A paused download whose running hash has consumed "abc".
+        let mut hasher = Sha256::new();
+        hasher.update(b"abc");
+        store.save_suspended_hash("aa", 3, hasher);
+
+        // Resuming takes it back and continues with the remaining bytes; the
+        // result must equal hashing the whole stream in one pass.
+        let mut taken = store.take_suspended_hash("aa", 3).unwrap();
+        taken.update(b"def");
+        assert_eq!(format!("{:x}", taken.finalize()), sha256_of(b"abcdef"));
+    }
+
+    #[test]
+    fn suspended_hash_take_clears_the_slot() {
+        let (_dir, store) = make_store();
+        store.save_suspended_hash("aa", 3, Sha256::new());
+        assert!(store.take_suspended_hash("aa", 3).is_some());
+        // The slot is now empty: a second take finds nothing.
+        assert!(store.take_suspended_hash("aa", 3).is_none());
+    }
+
+    #[test]
+    fn suspended_hash_is_dropped_on_a_mismatch() {
+        let (_dir, store) = make_store();
+        // A different sha clears the stale entry and returns None.
+        store.save_suspended_hash("aa", 3, Sha256::new());
+        assert!(store.take_suspended_hash("bb", 3).is_none());
+        assert!(store.take_suspended_hash("aa", 3).is_none());
+        // A length that no longer matches the on-disk partial returns None.
+        store.save_suspended_hash("aa", 3, Sha256::new());
+        assert!(store.take_suspended_hash("aa", 9).is_none());
     }
 
     // ── remove_blobs ─────────────────────────────────────────────────────────

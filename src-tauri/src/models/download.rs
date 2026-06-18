@@ -255,20 +255,28 @@ async fn fetch_into_partial(
     // must cover the full body and nothing that came before it.
     let mut hasher = Sha256::new();
     if start > 0 {
-        // The resume re-hash reads the entire on-disk prefix back through
-        // SHA-256 to seed the running hash: seconds of blocking I/O on a
-        // multi-GB partial. Label it so the bar is not a silent frozen mystery.
-        emit(DownloadEvent::Verifying {
-            file: spec.file.clone(),
-        });
-        // Cancellable so a pause during the re-hash lands instantly instead of
-        // after the whole prefix is read. A cancelled re-hash stops with a
-        // partial (discarded) hash; the cancel token is still set, so the
-        // stream loop below returns Cancelled at its first check before writing
-        // anything, keeping the on-disk partial intact for a later resume.
-        store
-            .feed_partial(&spec.sha256, &mut hasher, &|| cancel.is_cancelled())
-            .map_err(DownloadIoError::Write)?;
+        match store.take_suspended_hash(&spec.sha256, start) {
+            // An in-session pause kept the running hash for this exact offset:
+            // continue it directly, skipping the prefix re-read entirely.
+            Some(suspended) => hasher = suspended,
+            // A cold resume (process restart, or no kept hash): rebuild the
+            // running hash by reading the on-disk prefix back through SHA-256.
+            // That re-read is seconds of blocking I/O on a multi-GB partial, so
+            // label it (Verifying) so the bar is not a silent frozen mystery,
+            // and make it cancellable so a pause during it lands instantly. A
+            // cancelled re-hash stops with a partial (discarded) hash; the
+            // cancel token is still set, so the stream loop below returns
+            // Cancelled at its first check before writing anything, keeping the
+            // on-disk partial intact for a later resume.
+            None => {
+                emit(DownloadEvent::Verifying {
+                    file: spec.file.clone(),
+                });
+                store
+                    .feed_partial(&spec.sha256, &mut hasher, &|| cancel.is_cancelled())
+                    .map_err(DownloadIoError::Write)?;
+            }
+        }
     }
 
     let mut options = std::fs::OpenOptions::new();
@@ -291,7 +299,14 @@ async fn fetch_into_partial(
         // never emit Cancelled. The partial is kept for a later resume.
         let next = tokio::select! {
             biased;
-            () = cancel.cancelled() => return Ok(FetchOutcome::Cancelled),
+            () = cancel.cancelled() => {
+                // Keep the running hash so an in-session resume continues it
+                // instead of re-reading the prefix. `written` equals the
+                // on-disk length here (each chunk is written then hashed before
+                // the next cancel check), so the resume offset will match.
+                store.save_suspended_hash(&spec.sha256, written, hasher.clone());
+                return Ok(FetchOutcome::Cancelled);
+            }
             next = stream.next() => next,
         };
         let Some(chunk) = next else { break };
@@ -633,6 +648,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resume_reuses_a_suspended_hash_and_skips_the_rehash() {
+        // An in-session resume where the running hash of the prefix was kept in
+        // memory (a pause). The re-read is skipped: no re-hash Verifying fires
+        // before the streamed bytes, and the continued hash still verifies.
+        let server = MockServer::start().await;
+        let body = body_of(8192);
+        let sha = sha256_of(&body);
+        Mock::given(method("GET"))
+            .and(path("/q/resolve/main/w.gguf"))
+            .and(header("range", "bytes=1000-"))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(body[1000..].to_vec()))
+            .mount(&server)
+            .await;
+
+        let (_dir, store) = make_store();
+        std::fs::write(store.partial_path(&sha), &body[..1000]).unwrap();
+        // Stash the running hash of the prefix, as a pause would.
+        let mut prefix_hasher = Sha256::new();
+        prefix_hasher.update(&body[..1000]);
+        store.save_suspended_hash(&sha, 1000, prefix_hasher);
+
+        let spec = spec_for(
+            format!("{}/q/resolve/main/w.gguf", server.uri()),
+            "w.gguf",
+            &body,
+        );
+        let (events, emit) = collector();
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            emit,
+        )
+        .await;
+        assert_eq!(result, Ok(()));
+        // The blob verifies, so the kept hash was continued correctly.
+        assert_eq!(std::fs::read(store.blob_path(&sha)).unwrap(), body);
+
+        // The re-hash Verifying is gone: the only Verifying is the end verify,
+        // which comes AFTER the streamed Progress (the inverse of
+        // resume_emits_verifying_before_rehash).
+        let events = events.lock().unwrap();
+        let first_progress = events
+            .iter()
+            .position(|e| matches!(e, DownloadEvent::Progress { .. }))
+            .unwrap();
+        let first_verifying = events
+            .iter()
+            .position(|e| matches!(e, DownloadEvent::Verifying { .. }))
+            .unwrap();
+        assert!(
+            first_progress < first_verifying,
+            "reusing the suspended hash must skip the re-hash Verifying"
+        );
+    }
+
+    #[tokio::test]
     async fn range_ignored_by_server_restarts_from_scratch() {
         let server = MockServer::start().await;
         let body = body_of(4096);
@@ -852,6 +925,10 @@ mod tests {
         // The partial was opened (and possibly fed the prefix) and is KEPT.
         assert!(store.existing_partial_len(&sha).is_some());
         assert!(!store.blob_path(&sha).exists());
+        // The running hash was stashed at the on-disk length so a resume can
+        // continue it without re-reading the prefix.
+        let len = store.existing_partial_len(&sha).unwrap();
+        assert!(store.take_suspended_hash(&sha, len).is_some());
         let _ = release_tx.send(());
         server.await.unwrap();
     }
