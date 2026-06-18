@@ -7790,6 +7790,31 @@ describe('App', () => {
       expect(screen.getByText('0%')).toBeInTheDocument();
     });
 
+    it('shows a Verifying… strip while the download is verifying', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'verifying' },
+        combinedBytes: 4_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('Verifying…')).toBeInTheDocument();
+      // The strip owns the messaging: the downloading label is not shown.
+      expect(
+        screen.queryByText('Setting up your model'),
+      ).not.toBeInTheDocument();
+    });
+
     it('soft-blocks submit while downloading, without sending or shaking', async () => {
       enableChannelCaptureWithResponses({
         get_model_picker_state: {

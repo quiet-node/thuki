@@ -89,6 +89,12 @@ describe('DownloadStatusStrip', () => {
     expect(onDiscard).toHaveBeenCalledTimes(1);
   });
 
+  it('shows a verifying state (no controls) during the re-hash', () => {
+    render(<DownloadStatusStrip status={{ kind: 'verifying', percent: 40 }} />);
+    expect(screen.getByText('Verifying…')).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
   it('shows a ready state', () => {
     render(<DownloadStatusStrip status={{ kind: 'ready' }} />);
     expect(screen.getByText('Model ready')).toBeInTheDocument();

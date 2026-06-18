@@ -71,10 +71,28 @@ impl ModelStore {
     /// buffer (never whole-file in memory). Used to hash a full-length partial
     /// that was never streamed live, and to seed an incremental hasher with the
     /// bytes already on disk before a resumed download appends the rest.
-    pub fn feed_partial<W: io::Write>(&self, sha256: &str, sink: &mut W) -> io::Result<()> {
-        let file = std::fs::File::open(self.partial_path(sha256))?;
-        let mut reader = io::BufReader::with_capacity(BLOB_HASH_BUFFER_BYTES, file);
-        io::copy(&mut reader, sink)?;
+    ///
+    /// `cancelled` is polled once per read buffer (every
+    /// [`BLOB_HASH_BUFFER_BYTES`]); when it returns true the read stops early,
+    /// so a pause during a multi-GB resume re-hash lands promptly instead of
+    /// after the whole prefix is read. A cancelled read leaves a partial sink;
+    /// callers that cancel discard the sink (the running hash) entirely.
+    pub fn feed_partial<W: io::Write>(
+        &self,
+        sha256: &str,
+        sink: &mut W,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<()> {
+        use io::Read;
+        let mut file = std::fs::File::open(self.partial_path(sha256))?;
+        let mut buf = vec![0u8; BLOB_HASH_BUFFER_BYTES];
+        while !cancelled() {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            sink.write_all(&buf[..n])?;
+        }
         Ok(())
     }
 
@@ -106,7 +124,9 @@ impl ModelStore {
     /// [`StorageError::VerifyFailed`] is returned.
     pub fn verify_and_install(&self, sha256: &str) -> Result<PathBuf, StorageError> {
         let mut hasher = Sha256::new();
-        self.feed_partial(sha256, &mut hasher)?;
+        // A full-length-partial verify always runs to completion: there is no
+        // pause surface for it, so it never cancels.
+        self.feed_partial(sha256, &mut hasher, &|| false)?;
         let actual = format!("{:x}", hasher.finalize());
         self.install_if_matches(sha256, &actual)
     }
@@ -261,6 +281,44 @@ mod tests {
         let (_dir, store) = make_store();
         let err = store.verify_and_install("deadbeef").unwrap_err();
         assert!(matches!(err, StorageError::Io(_)));
+    }
+
+    // ── feed_partial cancellation ────────────────────────────────────────────
+
+    #[test]
+    fn feed_partial_reads_the_whole_partial_when_not_cancelled() {
+        let (_dir, store) = make_store();
+        let sha = "feeddone";
+        let data = b"some bytes to stream through the sink";
+        write_partial(&store, sha, data);
+
+        let mut sink = Vec::new();
+        store.feed_partial(sha, &mut sink, &|| false).unwrap();
+        assert_eq!(sink, data);
+    }
+
+    #[test]
+    fn feed_partial_stops_early_when_cancelled() {
+        let (_dir, store) = make_store();
+        let sha = "feedcancel";
+        // Two full read buffers, so the cancel can land after the first.
+        let data = vec![7u8; BLOB_HASH_BUFFER_BYTES * 2];
+        write_partial(&store, sha, &data);
+
+        let mut sink = Vec::new();
+        let checks = std::cell::Cell::new(0u32);
+        store
+            .feed_partial(sha, &mut sink, &|| {
+                let n = checks.get();
+                checks.set(n + 1);
+                // False on the first check (one buffer is read), true after.
+                n >= 1
+            })
+            .unwrap();
+        assert!(
+            sink.len() < data.len(),
+            "feed_partial must stop before reading the whole partial"
+        );
     }
 
     // ── remove_blobs ─────────────────────────────────────────────────────────

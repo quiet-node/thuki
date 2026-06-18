@@ -145,6 +145,64 @@ describe('useDownloadModel', () => {
     expect(result.current.state).toEqual({ phase: 'ready' });
   });
 
+  it('flips a post-re-hash Progress back to the active downloading phase', async () => {
+    // On resume the prefix is re-hashed (Verifying) before the remaining bytes
+    // stream. The first streamed Progress must flip the label back to
+    // downloading so the resumed transfer is not mislabeled "Verifying".
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.start('balanced'));
+
+    act(() =>
+      channel().simulateMessage({
+        type: 'Started',
+        data: { file: 'w.gguf', total_bytes: 100, resumed_from: 40 },
+      }),
+    );
+    act(() =>
+      channel().simulateMessage({
+        type: 'Verifying',
+        data: { file: 'w.gguf' },
+      }),
+    );
+    expect(result.current.state).toEqual({ phase: 'verifying' });
+    act(() =>
+      channel().simulateMessage({
+        type: 'Progress',
+        data: { file: 'w.gguf', bytes: 50, total_bytes: 100 },
+      }),
+    );
+    expect(result.current.state).toEqual({ phase: 'downloading' });
+
+    // The vision companion resumes too: its re-hash Verifying flips back to the
+    // mmproj downloading phase, not the plain one.
+    act(() =>
+      channel().simulateMessage({
+        type: 'FileDone',
+        data: { file: 'w.gguf' },
+      }),
+    );
+    act(() =>
+      channel().simulateMessage({
+        type: 'Started',
+        data: { file: 'mmproj.gguf', total_bytes: 50, resumed_from: 20 },
+      }),
+    );
+    act(() =>
+      channel().simulateMessage({
+        type: 'Verifying',
+        data: { file: 'mmproj.gguf' },
+      }),
+    );
+    expect(result.current.state).toEqual({ phase: 'verifying' });
+    act(() =>
+      channel().simulateMessage({
+        type: 'Progress',
+        data: { file: 'mmproj.gguf', bytes: 30, total_bytes: 50 },
+      }),
+    );
+    expect(result.current.state).toEqual({ phase: 'downloading_mmproj' });
+  });
+
   it('drops ETA samples older than the 10s window', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(0);
     const { result } = renderHook(() => useDownloadModel());

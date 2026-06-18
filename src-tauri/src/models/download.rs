@@ -255,8 +255,19 @@ async fn fetch_into_partial(
     // must cover the full body and nothing that came before it.
     let mut hasher = Sha256::new();
     if start > 0 {
+        // The resume re-hash reads the entire on-disk prefix back through
+        // SHA-256 to seed the running hash: seconds of blocking I/O on a
+        // multi-GB partial. Label it so the bar is not a silent frozen mystery.
+        emit(DownloadEvent::Verifying {
+            file: spec.file.clone(),
+        });
+        // Cancellable so a pause during the re-hash lands instantly instead of
+        // after the whole prefix is read. A cancelled re-hash stops with a
+        // partial (discarded) hash; the cancel token is still set, so the
+        // stream loop below returns Cancelled at its first check before writing
+        // anything, keeping the on-disk partial intact for a later resume.
         store
-            .feed_partial(&spec.sha256, &mut hasher)
+            .feed_partial(&spec.sha256, &mut hasher, &|| cancel.is_cancelled())
             .map_err(DownloadIoError::Write)?;
     }
 
@@ -562,6 +573,63 @@ mod tests {
             }
         );
         assert_eq!(std::fs::read(store.blob_path(&sha)).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn resume_emits_verifying_before_rehash() {
+        // On resume the existing prefix is re-hashed before the remaining bytes
+        // stream. That re-hash is labeled with a Verifying event so the bar is
+        // not a silent frozen mystery, so a Verifying must precede every
+        // streamed Progress (the end-of-download Verifying comes much later).
+        let server = MockServer::start().await;
+        let body = body_of(8192);
+        let sha = sha256_of(&body);
+        Mock::given(method("GET"))
+            .and(path("/q/resolve/main/w.gguf"))
+            .and(header("range", "bytes=1000-"))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(body[1000..].to_vec()))
+            .mount(&server)
+            .await;
+
+        let (_dir, store) = make_store();
+        std::fs::write(store.partial_path(&sha), &body[..1000]).unwrap();
+        let spec = spec_for(
+            format!("{}/q/resolve/main/w.gguf", server.uri()),
+            "w.gguf",
+            &body,
+        );
+        let (events, emit) = collector();
+
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            emit,
+        )
+        .await;
+        assert_eq!(result, Ok(()));
+
+        let events = events.lock().unwrap();
+        assert!(matches!(
+            events[0],
+            DownloadEvent::Started {
+                resumed_from: 1000,
+                ..
+            }
+        ));
+        let first_verifying = events
+            .iter()
+            .position(|e| matches!(e, DownloadEvent::Verifying { .. }))
+            .unwrap();
+        let first_progress = events
+            .iter()
+            .position(|e| matches!(e, DownloadEvent::Progress { .. }))
+            .unwrap();
+        assert!(
+            first_verifying < first_progress,
+            "the re-hash Verifying must precede any streamed Progress"
+        );
     }
 
     #[tokio::test]

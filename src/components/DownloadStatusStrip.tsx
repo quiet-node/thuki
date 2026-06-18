@@ -25,6 +25,7 @@ export type DownloadStripStatus =
       onDiscard: () => void;
     }
   | { kind: 'pausing'; percent: number }
+  | { kind: 'verifying'; percent: number }
   | { kind: 'ready' }
   | { kind: 'failed'; message: string; onRetry: () => void };
 
@@ -154,6 +155,17 @@ export function DownloadStatusStrip({
     return (
       <Shell color={MUTED} fill={MUTED_FILL} percent={status.percent}>
         <span className="flex-1 leading-snug">Pausing…</span>
+      </Shell>
+    );
+  }
+
+  if (status.kind === 'verifying') {
+    // The integrity re-hash on resume (and the brief end-of-download verify):
+    // an active working step, so it keeps the orange treatment but offers no
+    // controls of its own.
+    return (
+      <Shell color={ORANGE} fill={ORANGE_FILL} percent={status.percent}>
+        <span className="flex-1 leading-snug">Verifying…</span>
       </Shell>
     );
   }

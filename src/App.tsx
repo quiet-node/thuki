@@ -2469,6 +2469,12 @@ function App() {
         onRetry: () => void retryDownload(),
       };
     }
+    // The integrity re-hash on resume (and the brief end-of-download verify)
+    // gets its own label, distinct from the byte-moving downloading step. It is
+    // in-flight, so this must precede the generic downloading branch below.
+    if (downloadPhase === 'verifying') {
+      return { kind: 'verifying', percent: percentOf(liveBytes) };
+    }
     if (isDownloadInFlight(downloadPhase)) {
       const etaSeconds =
         liveBytes !== null &&

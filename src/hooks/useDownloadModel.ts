@@ -233,6 +233,17 @@ export function useDownloadModel(
           );
           setSpeedBytesPerSec(computeSpeedBytesPerSec(samples));
           setCombinedBytes(completedBytesRef.current + event.data.bytes);
+          // A resume re-hash labels itself `verifying` before the remaining
+          // bytes stream; the first streamed Progress returns the label to the
+          // active downloading phase so the transfer is not mislabeled. Any
+          // other phase is left untouched (same reference → no re-render).
+          setState((prev) =>
+            prev.phase === 'verifying'
+              ? startedCountRef.current >= 2
+                ? { phase: 'downloading_mmproj' }
+                : { phase: 'downloading' }
+              : prev,
+          );
           break;
         }
         case 'Verifying':

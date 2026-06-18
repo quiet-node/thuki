@@ -270,6 +270,7 @@ export function AskBarView({
   const isDownloadHolding =
     downloadStatus?.kind === 'downloading' ||
     downloadStatus?.kind === 'pausing' ||
+    downloadStatus?.kind === 'verifying' ||
     downloadStatus?.kind === 'paused';
   const canSubmit =
     (query.trim().length > 0 || attachedImages.length > 0) &&
