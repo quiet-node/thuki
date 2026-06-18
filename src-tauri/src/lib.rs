@@ -199,6 +199,12 @@ const ONBOARDING_EVENT: &str = "thuki://onboarding";
 /// without extra transparent padding.
 const ONBOARDING_LOGICAL_WIDTH: f64 = 460.0;
 const ONBOARDING_LOGICAL_HEIGHT: f64 = 640.0;
+/// The intro tour is taller than the other simple stages: it can carry the
+/// ambient download strip pinned at the base of its card (a relaunch
+/// mid-download lands here and auto-resumes), and the window is sized once at
+/// show time, so it must reserve the strip's height up front or the strip
+/// clips against the window's bottom edge.
+const ONBOARDING_INTRO_HEIGHT: f64 = 720.0;
 const ONBOARDING_PICKER_WIDTH: f64 = 860.0;
 const ONBOARDING_PICKER_HEIGHT: f64 = 744.0;
 
@@ -211,6 +217,7 @@ fn onboarding_window_size(stage: &onboarding::OnboardingStage) -> (f64, f64) {
         onboarding::OnboardingStage::ModelCheck => {
             (ONBOARDING_PICKER_WIDTH, ONBOARDING_PICKER_HEIGHT)
         }
+        onboarding::OnboardingStage::Intro => (ONBOARDING_LOGICAL_WIDTH, ONBOARDING_INTRO_HEIGHT),
         _ => (ONBOARDING_LOGICAL_WIDTH, ONBOARDING_LOGICAL_HEIGHT),
     }
 }
@@ -2377,7 +2384,7 @@ mod tests {
         );
         assert_eq!(
             onboarding_window_size(&onboarding::OnboardingStage::Intro),
-            (ONBOARDING_LOGICAL_WIDTH, ONBOARDING_LOGICAL_HEIGHT),
+            (ONBOARDING_LOGICAL_WIDTH, ONBOARDING_INTRO_HEIGHT),
         );
     }
 
