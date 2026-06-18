@@ -1738,8 +1738,40 @@ pub fn run() {
                         show_update_window(app);
                     }
                     "quit" => {
-                        app.state::<crate::commands::GenerationState>().cancel();
-                        app.exit(0);
+                        // Quitting (tray Quit or its Cmd+Q accelerator) tears
+                        // down the download task, discarding the in-flight
+                        // chunks. Warn first so the user can close (hide) the
+                        // app instead and let the download finish in the
+                        // background. Only when a download is actually running.
+                        if models::download_in_flight(
+                            app.state::<models::DownloadState>().inner(),
+                        ) {
+                            use tauri_plugin_dialog::{
+                                DialogExt, MessageDialogButtons, MessageDialogKind,
+                            };
+                            let handle = app.clone();
+                            app.dialog()
+                                .message(
+                                    "Quitting stops the model download and you'll have to start it over.\n\nTo keep it downloading in the background, just close Thuki instead (double-tap Control to reopen).",
+                                )
+                                .title("Quit while a model is downloading?")
+                                .kind(MessageDialogKind::Warning)
+                                .buttons(MessageDialogButtons::OkCancelCustom(
+                                    "Quit Anyway".to_string(),
+                                    "Keep Downloading".to_string(),
+                                ))
+                                .show(move |quit_anyway| {
+                                    if quit_anyway {
+                                        handle
+                                            .state::<crate::commands::GenerationState>()
+                                            .cancel();
+                                        handle.exit(0);
+                                    }
+                                });
+                        } else {
+                            app.state::<crate::commands::GenerationState>().cancel();
+                            app.exit(0);
+                        }
                     }
                     _ => {}
                 })

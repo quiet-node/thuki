@@ -1137,6 +1137,12 @@ pub fn release_download(state: &DownloadState) {
     }
 }
 
+/// True while a model download holds the slot. Read before quitting so the app
+/// can warn that quitting discards the in-flight download.
+pub fn download_in_flight(state: &DownloadState) -> bool {
+    state.0.lock().map(|guard| guard.is_some()).unwrap_or(false)
+}
+
 /// Cancels the in-flight download's token, if one is claimed. Does NOT clear
 /// the slot: the download task notices the cancellation, emits `Cancelled`,
 /// and releases the slot itself.
@@ -3777,6 +3783,16 @@ mod tests {
         // Release clears the claim so a new download can start.
         release_download(&state);
         assert!(claim_download(&state).is_ok());
+    }
+
+    #[test]
+    fn download_in_flight_tracks_the_claim() {
+        let state = DownloadState::default();
+        assert!(!download_in_flight(&state));
+        let _token = claim_download(&state).unwrap();
+        assert!(download_in_flight(&state));
+        release_download(&state);
+        assert!(!download_in_flight(&state));
     }
 
     #[test]
