@@ -249,6 +249,28 @@ async function flush() {
   });
 }
 
+/**
+ * A queue of externally-settled promises, used to control the resolution
+ * order of overlapping async responses (e.g. two in-flight model-list calls).
+ */
+function deferredQueue<T>() {
+  const items: Array<{
+    resolve: (value: T) => void;
+    reject: (reason: unknown) => void;
+  }> = [];
+  const next = () => {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    items.push({ resolve, reject });
+    return promise;
+  };
+  return { items, next };
+}
+
 beforeEach(() => {
   invokeMock.mockReset();
   lastChannel = null;
@@ -1055,6 +1077,78 @@ describe('OpenAiProviderCard', () => {
     await waitFor(() => expect(listCalls).toBe(2));
     expect(screen.getByText('new-model')).toBeInTheDocument();
     expect(screen.queryByText('old-model')).not.toBeInTheDocument();
+  });
+
+  it('ignores a stale model-list response that resolves after a newer one', async () => {
+    const lists = deferredQueue<string[]>();
+    mockCommands({
+      list_openai_models: () => lists.next(),
+      has_provider_api_key: false,
+      update_provider_field: configWith({
+        ...OPENAI_PROVIDER,
+        base_url: 'http://127.0.0.1:9999',
+      }),
+    });
+    render(<StatefulOpenAiCard />);
+    await flush(); // mount fires the first refresh (lists.items[0]), still pending
+
+    const url = screen.getByLabelText('OpenAI-compatible base URL');
+    fireEvent.focus(url);
+    fireEvent.change(url, { target: { value: 'http://127.0.0.1:9999' } });
+    fireEvent.blur(url);
+    // The committed base URL lifts a new config, re-running the effect and
+    // firing a second refresh (lists.items[1]) while the first is in flight.
+    await waitFor(() => expect(lists.items.length).toBe(2));
+
+    // Newer refresh settles first and wins.
+    await act(async () => {
+      lists.items[1].resolve(['new-model']);
+      await Promise.resolve();
+    });
+    expect(screen.getByText('new-model')).toBeInTheDocument();
+
+    // Stale earlier refresh settles late and must not overwrite the newer one.
+    await act(async () => {
+      lists.items[0].resolve(['old-model']);
+      await Promise.resolve();
+    });
+    expect(screen.queryByText('old-model')).not.toBeInTheDocument();
+    expect(screen.getByText('new-model')).toBeInTheDocument();
+  });
+
+  it('ignores a stale model-list rejection that settles after a newer success', async () => {
+    const lists = deferredQueue<string[]>();
+    mockCommands({
+      list_openai_models: () => lists.next(),
+      has_provider_api_key: false,
+      update_provider_field: configWith({
+        ...OPENAI_PROVIDER,
+        base_url: 'http://127.0.0.1:9999',
+      }),
+    });
+    render(<StatefulOpenAiCard />);
+    await flush();
+
+    const url = screen.getByLabelText('OpenAI-compatible base URL');
+    fireEvent.focus(url);
+    fireEvent.change(url, { target: { value: 'http://127.0.0.1:9999' } });
+    fireEvent.blur(url);
+    await waitFor(() => expect(lists.items.length).toBe(2));
+
+    await act(async () => {
+      lists.items[1].resolve(['new-model']);
+      await Promise.resolve();
+    });
+    expect(screen.getByText('new-model')).toBeInTheDocument();
+
+    // A late rejection from the superseded refresh must not surface an error
+    // or clear the newer model list.
+    await act(async () => {
+      lists.items[0].reject('late failure');
+      await Promise.resolve();
+    });
+    expect(screen.queryByText('Couldn’t list models')).not.toBeInTheDocument();
+    expect(screen.getByText('new-model')).toBeInTheDocument();
   });
 
   it('reverts the base URL when the commit fails; unchanged URL never commits', async () => {

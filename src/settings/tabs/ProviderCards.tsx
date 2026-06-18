@@ -424,12 +424,19 @@ export function OpenAiProviderCard({
     if (!baseUrlFocusedRef.current) setBaseUrl(provider.base_url);
   }
 
+  // Monotonic token guarding against out-of-order refreshes: a base URL or
+  // key change can leave an earlier `list_openai_models` call in flight, so a
+  // slow earlier response must not overwrite a newer one's result.
+  const refreshSeqRef = useRef(0);
   const refreshModels = useCallback(async () => {
+    const seq = ++refreshSeqRef.current;
     setModelsError(null);
     try {
       const rows = await invoke<string[]>('list_openai_models');
+      if (seq !== refreshSeqRef.current) return;
       setModels(Array.isArray(rows) ? rows : []);
     } catch (err) {
+      if (seq !== refreshSeqRef.current) return;
       setModels(null);
       setModelsError(String(err));
     }
