@@ -18,9 +18,10 @@
 
 import { AnimatePresence, motion } from 'framer-motion';
 import type React from 'react';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, forwardRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
+import { useFitOnboardingWindow } from '../../hooks/useFitOnboardingWindow';
 import { useConfig } from '../../contexts/ConfigContext';
 import { useDownloadCtx } from '../../contexts/DownloadContext';
 import { FIT_COPY, useStarterOptions } from '../../components/StarterPicker';
@@ -282,8 +283,14 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
     onUseOllama();
   }, [state.phase, cancel, onUseOllama]);
 
+  // Match the transparent window to the picker card so its empty area never
+  // blocks background clicks. Re-fit when the card height changes: options
+  // loading in, or a download phase that adds rows (progress, resume, failed).
+  const cardRef = useRef<HTMLDivElement>(null);
+  useFitOnboardingWindow(cardRef, `${options === null}:${state.phase}`);
+
   return (
-    <BuiltinShell>
+    <BuiltinShell ref={cardRef}>
       {options === null ? null : (
         <div style={{ marginBottom: 12 }}>
           <StarterMatrix
@@ -320,108 +327,111 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
  * (logo, title, privacy footer) so onboarding stays visually coherent; the
  * legacy markup itself is left untouched inside `OllamaModelCheck`.
  */
-function BuiltinShell({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'transparent',
-        fontFamily: 'inherit',
-      }}
-    >
-      <motion.div
-        initial={{ opacity: 0, scale: 0.97, y: 8 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+const BuiltinShell = forwardRef<HTMLDivElement, { children: React.ReactNode }>(
+  function BuiltinShell({ children }, ref) {
+    return (
+      <div
         style={{
-          width: 720,
-          background:
-            'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
-          border: '1px solid rgba(255, 141, 92, 0.2)',
-          borderRadius: 24,
-          padding: '26px 22px 22px',
-          boxShadow: '0 0 40px rgba(255,100,40,0.07)',
-          position: 'relative',
-          overflow: 'hidden',
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'transparent',
+          fontFamily: 'inherit',
         }}
       >
-        <div
+        <motion.div
+          ref={ref}
+          initial={{ opacity: 0, scale: 0.97, y: 8 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ type: 'spring', stiffness: 300, damping: 28 }}
           style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            height: 1,
+            width: 720,
             background:
-              'linear-gradient(90deg, transparent, rgba(255,141,92,0.4), transparent)',
+              'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
+            border: '1px solid rgba(255, 141, 92, 0.2)',
+            borderRadius: 24,
+            padding: '26px 22px 22px',
+            boxShadow: '0 0 40px rgba(255,100,40,0.07)',
+            position: 'relative',
+            overflow: 'hidden',
           }}
-        />
-
-        <div
-          data-tauri-drag-region
-          style={{ textAlign: 'center', marginBottom: 12, cursor: 'grab' }}
         >
-          <img
-            src={thukiLogo}
-            width={40}
-            height={40}
-            alt="Thuki"
+          <div
             style={{
-              objectFit: 'contain',
-              pointerEvents: 'none',
-              display: 'block',
-              margin: '0 auto',
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 1,
+              background:
+                'linear-gradient(90deg, transparent, rgba(255,141,92,0.4), transparent)',
             }}
           />
-        </div>
 
-        <h1
-          style={{
-            textAlign: 'center',
-            fontSize: 18,
-            fontWeight: 700,
-            color: '#f0f0f2',
-            letterSpacing: '-0.3px',
-            lineHeight: 1.25,
-            margin: '0 0 4px',
-          }}
-        >
-          Set up your local AI
-        </h1>
-        <p
-          style={{
-            textAlign: 'center',
-            fontSize: 12.5,
-            color: 'rgba(255,255,255,0.55)',
-            lineHeight: 1.5,
-            margin: '0 auto 18px',
-            maxWidth: 560,
-          }}
-        >
-          Pick a starter brain for Thuki. Downloads once, then runs fully
-          offline.
-        </p>
+          <div
+            data-tauri-drag-region
+            style={{ textAlign: 'center', marginBottom: 12, cursor: 'grab' }}
+          >
+            <img
+              src={thukiLogo}
+              width={40}
+              height={40}
+              alt="Thuki"
+              style={{
+                objectFit: 'contain',
+                pointerEvents: 'none',
+                display: 'block',
+                margin: '0 auto',
+              }}
+            />
+          </div>
 
-        {children}
+          <h1
+            style={{
+              textAlign: 'center',
+              fontSize: 18,
+              fontWeight: 700,
+              color: '#f0f0f2',
+              letterSpacing: '-0.3px',
+              lineHeight: 1.25,
+              margin: '0 0 4px',
+            }}
+          >
+            Set up your local AI
+          </h1>
+          <p
+            style={{
+              textAlign: 'center',
+              fontSize: 12.5,
+              color: 'rgba(255,255,255,0.55)',
+              lineHeight: 1.5,
+              margin: '0 auto 18px',
+              maxWidth: 560,
+            }}
+          >
+            Pick a starter brain for Thuki. Downloads once, then runs fully
+            offline.
+          </p>
 
-        <p
-          style={{
-            textAlign: 'center',
-            fontSize: 11,
-            color: 'rgba(255,255,255,0.18)',
-            marginTop: 12,
-            lineHeight: 1.5,
-          }}
-        >
-          Private by default · All inference runs on your machine
-        </p>
-      </motion.div>
-    </div>
-  );
-}
+          {children}
+
+          <p
+            style={{
+              textAlign: 'center',
+              fontSize: 11,
+              color: 'rgba(255,255,255,0.18)',
+              marginTop: 12,
+              lineHeight: 1.5,
+            }}
+          >
+            Private by default · All inference runs on your machine
+          </p>
+        </motion.div>
+      </div>
+    );
+  },
+);
 
 // ─── Legacy Ollama flow (kept verbatim) ──────────────────────────────────────
 
