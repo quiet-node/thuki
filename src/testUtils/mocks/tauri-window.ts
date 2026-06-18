@@ -57,6 +57,7 @@ const mockWindow = {
     return mockLabel;
   },
   setSize: vi.fn(async () => {}),
+  center: vi.fn(async () => {}),
   setPosition: vi.fn(async () => {}),
   hide: vi.fn(async () => {}),
   show: vi.fn(async () => {}),

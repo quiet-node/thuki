@@ -1,6 +1,8 @@
+import { useRef } from 'react';
 import { motion } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
+import { useFitOnboardingWindow } from '../../hooks/useFitOnboardingWindow';
 import {
   DownloadStatusStrip,
   type DownloadStripStatus,
@@ -17,6 +19,13 @@ interface Props {
 }
 
 export function IntroStep({ onComplete, downloadStatus }: Props) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  // Match the transparent window to the card so its empty area never blocks
+  // clicks to the apps behind Thuki. Re-fit when the ambient strip appears or
+  // changes height (the verifying line, the ready line) by keying on
+  // `downloadStatus`.
+  useFitOnboardingWindow(cardRef, downloadStatus);
+
   const handleGetStarted = async () => {
     await invoke('finish_onboarding');
     onComplete();
@@ -34,6 +43,7 @@ export function IntroStep({ onComplete, downloadStatus }: Props) {
       }}
     >
       <motion.div
+        ref={cardRef}
         initial={{ opacity: 0, scale: 0.97, y: 8 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ type: 'spring', stiffness: 300, damping: 28 }}
