@@ -249,6 +249,40 @@ fn set_onboarding_active_impl(active: bool) {
     ONBOARDING_ACTIVE.store(active, Ordering::SeqCst);
 }
 
+/// Set once the user confirms a quit (or quits with no download in flight), so
+/// the re-entrant `ExitRequested` that `app.exit` raises is allowed straight
+/// through instead of re-prompting the download warning forever.
+static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
+
+/// Shows the native "quit while a model is downloading" warning. "Quit Anyway"
+/// records the confirmation and exits; "Keep Downloading" cancels the quit.
+/// Non-blocking: the callback runs when the user answers. Reached from both the
+/// tray Quit click and Cmd+Q (via `RunEvent::ExitRequested`).
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn show_quit_dialog(app: &tauri::AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let handle = app.clone();
+    app.dialog()
+        .message(
+            "Quitting stops the model download and you'll have to start it over.\n\nTo keep it downloading in the background, just close Thuki instead (double-tap Control to reopen).",
+        )
+        .title("Quit while a model is downloading?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit Anyway".to_string(),
+            "Keep Downloading".to_string(),
+        ))
+        .show(move |quit_anyway| {
+            if quit_anyway {
+                QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+                handle
+                    .state::<crate::commands::GenerationState>()
+                    .cancel();
+                handle.exit(0);
+            }
+        });
+}
+
 /// Payload emitted to the frontend on every visibility transition.
 #[derive(Clone, serde::Serialize)]
 struct VisibilityPayload {
@@ -1738,36 +1772,14 @@ pub fn run() {
                         show_update_window(app);
                     }
                     "quit" => {
-                        // Quitting (tray Quit or its Cmd+Q accelerator) tears
-                        // down the download task, discarding the in-flight
-                        // chunks. Warn first so the user can close (hide) the
-                        // app instead and let the download finish in the
-                        // background. Only when a download is actually running.
-                        if models::download_in_flight(
-                            app.state::<models::DownloadState>().inner(),
-                        ) {
-                            use tauri_plugin_dialog::{
-                                DialogExt, MessageDialogButtons, MessageDialogKind,
-                            };
-                            let handle = app.clone();
-                            app.dialog()
-                                .message(
-                                    "Quitting stops the model download and you'll have to start it over.\n\nTo keep it downloading in the background, just close Thuki instead (double-tap Control to reopen).",
-                                )
-                                .title("Quit while a model is downloading?")
-                                .kind(MessageDialogKind::Warning)
-                                .buttons(MessageDialogButtons::OkCancelCustom(
-                                    "Quit Anyway".to_string(),
-                                    "Keep Downloading".to_string(),
-                                ))
-                                .show(move |quit_anyway| {
-                                    if quit_anyway {
-                                        handle
-                                            .state::<crate::commands::GenerationState>()
-                                            .cancel();
-                                        handle.exit(0);
-                                    }
-                                });
+                        // The tray Quit click. Cmd+Q does NOT reach here (a
+                        // status-bar menu's key-equivalent is not a global
+                        // shortcut); that path is handled in RunEvent::
+                        // ExitRequested. Both route through show_quit_dialog so
+                        // an in-flight download is never torn down silently.
+                        if models::download_in_flight(app.state::<models::DownloadState>().inner())
+                        {
+                            show_quit_dialog(app);
                         } else {
                             app.state::<crate::commands::GenerationState>().cancel();
                             app.exit(0);
@@ -2274,6 +2286,19 @@ pub fn run() {
                     if let Some(window) = app_handle.get_webview_window("update") {
                         let _ = window.hide();
                     }
+                }
+            }
+            RunEvent::ExitRequested { api, .. } => {
+                // Cmd+Q (and any app.exit issued before the user has confirmed)
+                // lands here. If a model download is in flight, hold the exit
+                // and warn so the user can keep it running in the background.
+                if !QUIT_CONFIRMED.load(Ordering::SeqCst)
+                    && models::download_in_flight(
+                        app_handle.state::<models::DownloadState>().inner(),
+                    )
+                {
+                    api.prevent_exit();
+                    show_quit_dialog(app_handle);
                 }
             }
             RunEvent::Exit => {
