@@ -38,7 +38,6 @@ const CONFIG: RawAppConfig = {
   inference: {
     active_provider: 'ollama',
     keep_warm_inactivity_minutes: 0,
-    idle_unload_minutes: 0,
     num_ctx: 16384,
     providers: [
       {
@@ -95,7 +94,7 @@ const CONFIG: RawAppConfig = {
   },
 };
 
-/** CONFIG with the built-in provider active (Idle Unload replaces Keep Warm). */
+/** CONFIG with the built-in provider active (Keep Warm shows the engine-status row). */
 const BUILTIN_ACTIVE_CONFIG: RawAppConfig = {
   ...CONFIG,
   inference: { ...CONFIG.inference, active_provider: 'builtin' },
@@ -526,7 +525,7 @@ describe('ModelTab', () => {
   it('renders the Keep Warm section with Release after input and Unload now button', async () => {
     await renderModelTab();
     expect(screen.getByText('Keep Warm')).toBeInTheDocument();
-    expect(screen.getByText('Keep active model in VRAM')).toBeInTheDocument();
+    expect(screen.getByText('Keep active model in memory')).toBeInTheDocument();
     expect(screen.getByText('Release after')).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: 'Unload now' }),
@@ -1154,7 +1153,7 @@ describe('ModelTab', () => {
     });
   });
 
-  // ─── Idle Unload (built-in provider active) ─────────────────────────────
+  // ─── Keep Warm with the built-in provider active ────────────────────────
 
   async function renderBuiltinActive(
     onSaved: (next: RawAppConfig) => void = () => {},
@@ -1172,53 +1171,35 @@ describe('ModelTab', () => {
     return view;
   }
 
-  it('renders Idle Unload instead of Keep Warm when the built-in provider is active', async () => {
+  it('renders the unified Keep Warm control with the engine-status row when the built-in provider is active', async () => {
     await renderBuiltinActive();
-    expect(screen.getByText('Idle Unload')).toBeInTheDocument();
-    expect(screen.queryByText('Keep Warm')).not.toBeInTheDocument();
+    // Same single Keep Warm section as Ollama, but the built-in status row
+    // reports the sidecar lifecycle instead of the VRAM slug.
+    expect(screen.getByText('Keep Warm')).toBeInTheDocument();
+    expect(screen.getByText('Keep active model in memory')).toBeInTheDocument();
+    expect(screen.queryByText('Idle Unload')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('vram-status-dot')).not.toBeInTheDocument();
     expect(screen.getByText('Engine: stopped')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
   });
 
-  it('clamps the idle minutes input to the 0..1440 range', async () => {
+  it('clamps the Keep Warm input to the -1..1440 range while built-in is active', async () => {
     await renderBuiltinActive();
     const input = screen.getByRole('spinbutton', {
-      name: 'Unload after N idle minutes',
+      name: 'Release after N minutes',
     }) as HTMLInputElement;
     fireEvent.change(input, { target: { value: '45' } });
     expect(input.value).toBe('45');
     fireEvent.change(input, { target: { value: '-5' } });
-    expect(input.value).toBe('0');
+    expect(input.value).toBe('-1');
     fireEvent.change(input, { target: { value: '99999' } });
     expect(input.value).toBe('1440');
   });
 
-  it('allows empty idle input mid-edit; blur defaults to 0', async () => {
-    await renderBuiltinActive();
-    const input = screen.getByRole('spinbutton', {
-      name: 'Unload after N idle minutes',
-    }) as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.change(input, { target: { value: '' } });
-    expect(input.value).toBe('');
-    fireEvent.blur(input);
-    expect(input.value).toBe('0');
-  });
-
-  it('blur with a valid idle value does not reset the field', async () => {
-    await renderBuiltinActive();
-    const input = screen.getByRole('spinbutton', {
-      name: 'Unload after N idle minutes',
-    }) as HTMLInputElement;
-    fireEvent.change(input, { target: { value: '30' } });
-    fireEvent.blur(input);
-    expect(input.value).toBe('30');
-  });
-
-  it('resync does not overwrite the idle minutes input while focused', async () => {
+  it('resync does not overwrite the Keep Warm input while focused (built-in active)', async () => {
     const { rerender } = await renderBuiltinActive();
     const input = screen.getByRole('spinbutton', {
-      name: 'Unload after N idle minutes',
+      name: 'Release after N minutes',
     }) as HTMLInputElement;
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: '25' } });
@@ -1226,7 +1207,7 @@ describe('ModelTab', () => {
       ...BUILTIN_ACTIVE_CONFIG,
       inference: {
         ...BUILTIN_ACTIVE_CONFIG.inference,
-        idle_unload_minutes: 90,
+        keep_warm_inactivity_minutes: 90,
       },
     };
     rerender(

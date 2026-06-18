@@ -14,17 +14,17 @@ use std::path::PathBuf;
 
 use super::defaults::{
     DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_DEBUG_TRACE_ENABLED,
-    DEFAULT_IDLE_UNLOAD_MINUTES, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX,
-    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
-    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
-    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
-    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
-    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
-    DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
-    DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
-    PROVIDER_ID_BUILTIN, PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA,
-    PROVIDER_KIND_OPENAI, SLASH_COMMAND_PROMPT_APPENDIX,
+    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
+    DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_READER_BATCH_TIMEOUT_S,
+    DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL, DEFAULT_ROUTER_TIMEOUT_S,
+    DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS, DEFAULT_SEARXNG_URL,
+    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT,
+    DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_TOP_K_URLS,
+    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN,
+    PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+    SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path, resolve};
@@ -548,49 +548,6 @@ fn num_ctx_roundtrips_through_toml() {
     atomic_write(&path, &config).unwrap();
     let reloaded = load_from_path(&path).unwrap();
     assert_eq!(reloaded.inference.num_ctx, config.inference.num_ctx);
-}
-
-#[test]
-fn idle_unload_default_matches_const() {
-    let c = AppConfig::default();
-    assert_eq!(c.inference.idle_unload_minutes, DEFAULT_IDLE_UNLOAD_MINUTES);
-}
-
-#[test]
-fn idle_unload_out_of_bounds_resets() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(&path, "[inference]\nidle_unload_minutes = 99999\n").unwrap();
-    let config = load_from_path(&path).unwrap();
-    assert_eq!(
-        config.inference.idle_unload_minutes,
-        DEFAULT_IDLE_UNLOAD_MINUTES
-    );
-}
-
-#[test]
-fn idle_unload_in_bounds_preserved() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(&path, "[inference]\nidle_unload_minutes = 30\n").unwrap();
-    let config = load_from_path(&path).unwrap();
-    assert_eq!(config.inference.idle_unload_minutes, 30);
-}
-
-#[test]
-fn idle_unload_roundtrips_through_toml() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(&path, "[inference]\nidle_unload_minutes = 15\n").unwrap();
-    let config = load_from_path(&path).unwrap();
-    assert_eq!(config.inference.idle_unload_minutes, 15);
-
-    atomic_write(&path, &config).unwrap();
-    let reloaded = load_from_path(&path).unwrap();
-    assert_eq!(
-        reloaded.inference.idle_unload_minutes,
-        config.inference.idle_unload_minutes
-    );
 }
 
 #[test]

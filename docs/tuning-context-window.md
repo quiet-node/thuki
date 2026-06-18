@@ -13,7 +13,7 @@ The Context Window value (`num_ctx`) is sent to whichever provider is active:
 - **Built-in engine (the default):** the value is passed to the bundled `llama-server` process as `--ctx-size` when it starts. The context size is fixed for the lifetime of the process, so changing it in Settings restarts the engine (a model reload, a few seconds). The three signals below and the Activity Monitor steps apply unchanged; the `ollama ps` steps do not, so watch Memory Pressure and GPU History instead.
 - **Ollama provider:** everything in this guide applies as written, including the `ollama ps` checks.
 
-The Keep Warm knob is Ollama-only. The built-in engine's counterpart is `idle_unload_minutes` (Settings, or `[inference]` in `config.toml`): minutes of inactivity before Thuki stops the engine to free memory, with `0` meaning keep it loaded indefinitely.
+The Keep Warm knob (`keep_warm_inactivity_minutes`, in Settings or `[inference]` in `config.toml`) governs both local providers: minutes of inactivity before Thuki releases the active model from memory. For the built-in engine it stops the `llama-server` sidecar; for Ollama it sets the `keep_alive`. `0` uses the provider's natural short default (about 5 minutes), and `-1` keeps the model resident forever.
 
 ## Quick vocabulary
 

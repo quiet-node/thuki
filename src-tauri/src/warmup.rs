@@ -63,6 +63,33 @@ pub fn keep_alive_string(minutes: i32) -> String {
     }
 }
 
+/// Translates the unified `keep_warm_inactivity_minutes` sentinel into the
+/// built-in engine runner's own `idle_minutes` convention. Lives here next to
+/// [`keep_alive_string`], the symmetric Ollama translator, so both consumers of
+/// the unified field (startup seeding in `lib.rs` and the Settings forward in
+/// `settings_commands.rs`) translate through one tested boundary.
+///
+/// Unified field semantics -> runner convention (`0` = idle-unload disabled =
+/// forever, `N>0` = unload after N minutes):
+/// - `-1` (keep resident forever) -> `0` (disable the runner's idle timer).
+/// - `0` (the provider's natural short default) -> `DEFAULT_BUILTIN_IDLE_MINUTES`
+///   (~5 min): the built-in engine has no external daemon to defer to, so it
+///   applies its own short timer.
+/// - `N>0` (explicit minutes) -> `N` as the runner's minute count.
+///
+/// The loader clamps the field to `[-1, 1440]`, so the catch-all only fires on
+/// already-validated values; the `match` is written total regardless.
+pub(crate) fn builtin_idle_minutes(keep_warm_inactivity_minutes: i32) -> u32 {
+    match keep_warm_inactivity_minutes {
+        -1 => 0,
+        0 => crate::config::defaults::DEFAULT_BUILTIN_IDLE_MINUTES,
+        n if n > 0 => n as u32,
+        // Below -1: out-of-contract once the loader clamps; map to the same
+        // "forever" disable as -1 so a stray negative never enables a timer.
+        _ => 0,
+    }
+}
+
 /// True when the VRAM poller should query Ollama's `/api/ps` on this tick.
 /// The poller observes Ollama's VRAM only: the built-in engine publishes its
 /// lifecycle through the engine status watch and an `openai` provider has no
@@ -1179,6 +1206,35 @@ mod tests {
     #[test]
     fn keep_alive_string_never() {
         assert_eq!(keep_alive_string(-1), "-1");
+    }
+
+    #[test]
+    fn builtin_idle_minutes_forever_disables_timer() {
+        // -1 (keep resident forever) maps to the runner's "0 = disabled".
+        assert_eq!(builtin_idle_minutes(-1), 0);
+    }
+
+    #[test]
+    fn builtin_idle_minutes_zero_uses_short_default() {
+        // 0 (natural short default) maps to the baked-in ~5-minute timer.
+        assert_eq!(
+            builtin_idle_minutes(0),
+            crate::config::defaults::DEFAULT_BUILTIN_IDLE_MINUTES
+        );
+    }
+
+    #[test]
+    fn builtin_idle_minutes_positive_passes_through() {
+        assert_eq!(builtin_idle_minutes(30), 30);
+        assert_eq!(builtin_idle_minutes(1), 1);
+        assert_eq!(builtin_idle_minutes(1440), 1440);
+    }
+
+    #[test]
+    fn builtin_idle_minutes_below_minus_one_disables_timer() {
+        // Out-of-contract once the loader clamps; the total match still maps
+        // any stray negative to the "forever" disable rather than a timer.
+        assert_eq!(builtin_idle_minutes(-999), 0);
     }
 
     #[tokio::test]

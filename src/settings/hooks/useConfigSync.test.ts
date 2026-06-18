@@ -16,7 +16,6 @@ const CONFIG_A: RawAppConfig = {
   inference: {
     active_provider: 'ollama',
     keep_warm_inactivity_minutes: 0,
-    idle_unload_minutes: 0,
     num_ctx: 16384,
     providers: [
       {

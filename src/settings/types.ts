@@ -27,7 +27,6 @@ export interface RawAppConfig {
   inference: {
     active_provider: string;
     keep_warm_inactivity_minutes: number;
-    idle_unload_minutes: number;
     num_ctx: number;
     providers: RawProvider[];
   };

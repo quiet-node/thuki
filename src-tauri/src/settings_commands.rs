@@ -116,24 +116,32 @@ pub(crate) fn trace_enabled_changed(prior_enabled: bool, resolved: &AppConfig) -
     resolved.debug.trace_enabled != prior_enabled
 }
 
-/// Returns the new `[inference] idle_unload_minutes` value when the post-write
-/// `AppConfig` changed it relative to the pre-write snapshot, `None` when it
-/// is unchanged. Pulled out so the predicate is covered by tests instead of
-/// riding inside the coverage-off Tauri command bodies that forward the new
-/// value to the running engine actor.
-pub(crate) fn idle_unload_minutes_changed(prior_minutes: u32, resolved: &AppConfig) -> Option<u32> {
-    let new_minutes = resolved.inference.idle_unload_minutes;
-    (new_minutes != prior_minutes).then_some(new_minutes)
+/// Returns the engine runner's new `idle_minutes` value when the post-write
+/// `AppConfig` changed `[inference] keep_warm_inactivity_minutes` relative to
+/// the pre-write snapshot, `None` when it is unchanged. The unified field is
+/// translated through [`crate::warmup::builtin_idle_minutes`] so the runner's
+/// own `0 = forever` convention stays an implementation detail. Pulled out so
+/// the predicate is covered by tests instead of riding inside the coverage-off
+/// Tauri command bodies that forward the new value to the running engine actor.
+pub(crate) fn keep_warm_idle_minutes_changed(
+    prior_minutes: i32,
+    resolved: &AppConfig,
+) -> Option<u32> {
+    let new_minutes = resolved.inference.keep_warm_inactivity_minutes;
+    (new_minutes != prior_minutes).then(|| crate::warmup::builtin_idle_minutes(new_minutes))
 }
 
-/// Forwards a changed `[inference] idle_unload_minutes` value to the engine
-/// runner actor so the new idle-unload policy applies without a restart.
-/// Spawned because the config commands are synchronous while the actor's
-/// mailbox is async. Thin dispatch; the predicate and the actor's
+/// Forwards a changed `[inference] keep_warm_inactivity_minutes` value to the
+/// engine runner actor (translated to the runner's `idle_minutes`) so the new
+/// residency policy applies without a restart. The runner is managed
+/// regardless of the active provider, so forwarding is harmless when Ollama is
+/// active (the Ollama path enforces residency through `keep_alive`, not the
+/// runner). Spawned because the config commands are synchronous while the
+/// actor's mailbox is async. Thin dispatch; the predicate and the actor's
 /// `SetIdleMinutes` handling are both tested on their own.
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn forward_idle_unload_minutes(app: &AppHandle, prior_minutes: u32, resolved: &AppConfig) {
-    if let Some(minutes) = idle_unload_minutes_changed(prior_minutes, resolved) {
+fn forward_keep_warm_idle_minutes(app: &AppHandle, prior_minutes: i32, resolved: &AppConfig) {
+    if let Some(minutes) = keep_warm_idle_minutes_changed(prior_minutes, resolved) {
         let engine = app
             .state::<crate::engine::runner::EngineHandle>()
             .inner()
@@ -200,11 +208,11 @@ pub fn set_config_field(
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let (prior_trace_enabled, prior_idle_unload_minutes) = {
+    let (prior_trace_enabled, prior_keep_warm_minutes) = {
         let guard = state.read();
         (
             guard.debug.trace_enabled,
-            guard.inference.idle_unload_minutes,
+            guard.inference.keep_warm_inactivity_minutes,
         )
     };
     let resolved = {
@@ -224,9 +232,10 @@ pub fn set_config_field(
         let new_inner = crate::build_trace_inner(&app, resolved.debug.trace_enabled);
         trace_recorder.replace(new_inner);
     }
-    // Forward an `[inference] idle_unload_minutes` change to the engine
-    // runner so the new idle policy applies without restarting Thuki.
-    forward_idle_unload_minutes(&app, prior_idle_unload_minutes, &resolved);
+    // Forward an `[inference] keep_warm_inactivity_minutes` change to the
+    // engine runner so the new residency policy applies without restarting
+    // Thuki.
+    forward_keep_warm_idle_minutes(&app, prior_keep_warm_minutes, &resolved);
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -762,11 +771,11 @@ pub fn reset_config(
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let (prior_trace_enabled, prior_idle_unload_minutes) = {
+    let (prior_trace_enabled, prior_keep_warm_minutes) = {
         let guard = state.read();
         (
             guard.debug.trace_enabled,
-            guard.inference.idle_unload_minutes,
+            guard.inference.keep_warm_inactivity_minutes,
         )
     };
     let resolved = {
@@ -783,9 +792,9 @@ pub fn reset_config(
         let new_inner = crate::build_trace_inner(&app, resolved.debug.trace_enabled);
         trace_recorder.replace(new_inner);
     }
-    // A whole-file or `[inference]` reset restores the default idle-unload
+    // A whole-file or `[inference]` reset restores the default residency
     // policy; forward it so the engine runner picks it up immediately.
-    forward_idle_unload_minutes(&app, prior_idle_unload_minutes, &resolved);
+    forward_keep_warm_idle_minutes(&app, prior_keep_warm_minutes, &resolved);
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -852,11 +861,11 @@ pub fn reload_config_from_disk(
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let (prior_trace_enabled, prior_idle_unload_minutes, prior_kind) = {
+    let (prior_trace_enabled, prior_keep_warm_minutes, prior_kind) = {
         let guard = state.read();
         (
             guard.debug.trace_enabled,
-            guard.inference.idle_unload_minutes,
+            guard.inference.keep_warm_inactivity_minutes,
             guard.inference.active_provider_kind().to_string(),
         )
     };
@@ -873,9 +882,9 @@ pub fn reload_config_from_disk(
         let new_inner = crate::build_trace_inner(&app, resolved.debug.trace_enabled);
         trace_recorder.replace(new_inner);
     }
-    // Manual edits to `[inference] idle_unload_minutes` reach the engine
-    // runner through the same refresh path.
-    forward_idle_unload_minutes(&app, prior_idle_unload_minutes, &resolved);
+    // Manual edits to `[inference] keep_warm_inactivity_minutes` reach the
+    // engine runner through the same refresh path.
+    forward_keep_warm_idle_minutes(&app, prior_keep_warm_minutes, &resolved);
     // A hand-edited `active_provider` that moved away from the built-in
     // engine releases the sidecar, mirroring the Settings radio path.
     unload_engine_if_builtin_deactivated(&app, &prior_kind, &resolved);
