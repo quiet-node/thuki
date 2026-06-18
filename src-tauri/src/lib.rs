@@ -310,13 +310,16 @@ fn show_quit_dialog(app: &tauri::AppHandle) {
         )
         .title("Quit while a model is downloading?")
         .kind(MessageDialogKind::Warning)
+        // "Keep Downloading" is the primary/highlighted button (the default on
+        // Enter): the safe choice for a destructive action. "Quit Anyway" is the
+        // secondary. The callback's bool is true for the primary button.
         .buttons(MessageDialogButtons::OkCancelCustom(
-            "Quit Anyway".to_string(),
             "Keep Downloading".to_string(),
+            "Quit Anyway".to_string(),
         ))
-        .show(move |quit_anyway| {
+        .show(move |keep_downloading| {
             QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
-            if quit_anyway {
+            if !keep_downloading {
                 QUIT_CONFIRMED.store(true, Ordering::SeqCst);
                 handle
                     .state::<crate::commands::GenerationState>()
