@@ -68,6 +68,12 @@ describe('DownloadStatusStrip', () => {
     expect(onPause).toHaveBeenCalledTimes(1);
   });
 
+  it('shows a pausing state (no controls) while the cancel lands', () => {
+    render(<DownloadStatusStrip status={{ kind: 'pausing', percent: 40 }} />);
+    expect(screen.getByText('Pausing…')).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
   it('shows a paused state with Resume and Discard', () => {
     const onResume = vi.fn();
     const onDiscard = vi.fn();

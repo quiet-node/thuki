@@ -24,6 +24,7 @@ export type DownloadStripStatus =
       onResume: () => void;
       onDiscard: () => void;
     }
+  | { kind: 'pausing'; percent: number }
   | { kind: 'ready' }
   | { kind: 'failed'; message: string; onRetry: () => void };
 
@@ -145,6 +146,14 @@ export function DownloadStatusStrip({
           color={ACTION}
           onClick={status.onRetry}
         />
+      </Shell>
+    );
+  }
+
+  if (status.kind === 'pausing') {
+    return (
+      <Shell color={MUTED} fill={MUTED_FILL} percent={status.percent}>
+        <span className="flex-1 leading-snug">Pausing…</span>
       </Shell>
     );
   }

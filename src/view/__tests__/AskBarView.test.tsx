@@ -166,6 +166,23 @@ describe('AskBarView', () => {
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
   });
 
+  it('keeps the send button disabled while a download is pausing', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query="Hello?"
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        downloadStatus={{ kind: 'pausing', percent: 40 }}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+  });
+
   it('keeps the send button disabled while a download is paused', () => {
     render(
       <AskBarView

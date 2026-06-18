@@ -433,6 +433,7 @@ function App() {
     speedBytesPerSec: downloadSpeedBytesPerSec,
     retry: retryDownload,
     isPaused: isDownloadPaused,
+    isPausing: isDownloadPausing,
     pausedBytes: downloadPausedBytes,
     pauseDownload,
     resumeFromPause,
@@ -2439,20 +2440,26 @@ function App() {
    * settled phases (idle, confirm, resume), so no strip renders.
    */
   const downloadStripStatus = useMemo<DownloadStripStatus | null>(() => {
-    // Paused overrides the machine phase (which is idle after a cancel): the
-    // strip stays, now offering Resume / Discard.
+    const total = downloadGrandTotalBytes;
+    const liveBytes = downloadCombinedBytes ?? downloadResumeSeedBytes;
+    const percentOf = (bytes: number | null): number =>
+      bytes !== null && total !== null && total > 0
+        ? Math.min(100, Math.floor((bytes / total) * 100))
+        : 0;
+    // Paused overrides the machine phase (idle after a cancel): the strip
+    // stays, now offering Resume / Discard.
     if (isDownloadPaused) {
-      const total = downloadGrandTotalBytes;
-      const percent =
-        total !== null && total > 0
-          ? Math.min(100, Math.floor((downloadPausedBytes / total) * 100))
-          : 0;
       return {
         kind: 'paused',
-        percent,
+        percent: percentOf(downloadPausedBytes),
         onResume: resumeFromPause,
         onDiscard: discardActive,
       };
+    }
+    // Transitional: Pause clicked but the cancel has not landed yet. Shown
+    // instantly so the click is never silent.
+    if (isDownloadPausing) {
+      return { kind: 'pausing', percent: percentOf(liveBytes) };
     }
     if (downloadPhase === 'ready') return { kind: 'ready' };
     if (downloadPhase === 'failed') {
@@ -2463,19 +2470,18 @@ function App() {
       };
     }
     if (isDownloadInFlight(downloadPhase)) {
-      const bytes = downloadCombinedBytes ?? downloadResumeSeedBytes;
-      const total = downloadGrandTotalBytes;
-      const percent =
-        bytes !== null && total !== null && total > 0
-          ? Math.min(100, Math.floor((bytes / total) * 100))
-          : 0;
       const etaSeconds =
-        bytes !== null && total !== null && downloadSpeedBytesPerSec !== null
-          ? Math.max(0, Math.round((total - bytes) / downloadSpeedBytesPerSec))
+        liveBytes !== null &&
+        total !== null &&
+        downloadSpeedBytesPerSec !== null
+          ? Math.max(
+              0,
+              Math.round((total - liveBytes) / downloadSpeedBytesPerSec),
+            )
           : null;
       return {
         kind: 'downloading',
-        percent,
+        percent: percentOf(liveBytes),
         etaSeconds,
         onPause: pauseDownload,
       };
@@ -2483,6 +2489,7 @@ function App() {
     return null;
   }, [
     isDownloadPaused,
+    isDownloadPausing,
     downloadPausedBytes,
     downloadPhase,
     downloadCombinedBytes,

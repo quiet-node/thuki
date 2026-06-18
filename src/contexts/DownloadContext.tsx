@@ -22,6 +22,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  isDownloadInFlight,
   useDownloadModel,
   type UseDownloadModel,
 } from '../hooks/useDownloadModel';
@@ -59,6 +60,12 @@ export interface DownloadContextValue extends UseDownloadModel {
   ) => void;
   /** True while a started download has been paused (cancelled, partial kept). */
   isPaused: boolean;
+  /**
+   * True the instant Pause is clicked, until the cancel lands (the download is
+   * still in flight). Drives the transitional "Pausing…" strip so the click
+   * has immediate feedback before `isPaused` commits at idle.
+   */
+  isPausing: boolean;
   /** Bytes downloaded at the moment of pause, for the paused strip's percent. */
   pausedBytes: number;
   /** Pause the in-flight download: cancel it; the partial stays on disk. */
@@ -90,6 +97,9 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   // free, so a resume can never collide with the download it replaces and fail
   // with "a download is already in progress".
   const isPaused = pauseRequested && downloadPhase === 'idle';
+  // Transitional: the cancel is requested but the download is still winding
+  // down. The strip shows "Pausing…" here so the Pause click is never silent.
+  const isPausing = pauseRequested && isDownloadInFlight(downloadPhase);
 
   const beginDownload = useCallback(
     (tier: StarterTier, option: StarterOption) => {
@@ -150,6 +160,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       beginDownload,
       resumeDownload,
       isPaused,
+      isPausing,
       pausedBytes,
       pauseDownload,
       resumeFromPause,
@@ -164,6 +175,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       beginDownload,
       resumeDownload,
       isPaused,
+      isPausing,
       pausedBytes,
       pauseDownload,
       resumeFromPause,

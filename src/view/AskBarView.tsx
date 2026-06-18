@@ -268,7 +268,9 @@ export function AskBarView({
   // submit (App soft-blocks it), so the send affordance is greyed to match:
   // the input stays editable for drafting, but there is nothing to send yet.
   const isDownloadHolding =
-    downloadStatus?.kind === 'downloading' || downloadStatus?.kind === 'paused';
+    downloadStatus?.kind === 'downloading' ||
+    downloadStatus?.kind === 'pausing' ||
+    downloadStatus?.kind === 'paused';
   const canSubmit =
     (query.trim().length > 0 || attachedImages.length > 0) &&
     !isBusy &&

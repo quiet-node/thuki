@@ -75,6 +75,7 @@ function makeDownloadCtx(
     beginDownload: vi.fn(),
     resumeDownload: vi.fn(),
     isPaused: false,
+    isPausing: false,
     pausedBytes: 0,
     pauseDownload: vi.fn(),
     resumeFromPause: vi.fn(),
@@ -7909,6 +7910,29 @@ describe('App', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Pause download' }));
       });
       expect(pauseDownload).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a Pausing… strip the instant Pause is requested', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        isPausing: true,
+        combinedBytes: 4_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 8_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('Pausing…')).toBeInTheDocument();
     });
 
     it('shows a paused strip with Resume / Discard and the held percent', async () => {
