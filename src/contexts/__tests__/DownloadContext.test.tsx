@@ -148,9 +148,14 @@ describe('DownloadContext', () => {
       result.current.pauseDownload();
     });
 
-    expect(result.current.isPaused).toBe(true);
+    // Cancel fired and the bytes were captured, but the pause is NOT committed
+    // until the backend Cancelled lands (slot released) so a resume cannot race.
     expect(result.current.pausedBytes).toBe(60);
     expect(invoke).toHaveBeenCalledWith('cancel_model_download');
+    expect(result.current.isPaused).toBe(false);
+
+    act(() => channel().simulateMessage({ type: 'Cancelled' }));
+    expect(result.current.isPaused).toBe(true);
   });
 
   it('pauseDownload defaults to zero bytes before the first event arrives', async () => {
@@ -162,6 +167,7 @@ describe('DownloadContext', () => {
     await act(async () => {
       result.current.pauseDownload();
     });
+    act(() => channel().simulateMessage({ type: 'Cancelled' }));
 
     expect(result.current.isPaused).toBe(true);
     expect(result.current.pausedBytes).toBe(0);
@@ -177,6 +183,9 @@ describe('DownloadContext', () => {
     await act(async () => {
       result.current.pauseDownload();
     });
+    act(() => channel().simulateMessage({ type: 'Cancelled' }));
+    expect(result.current.isPaused).toBe(true);
+
     await act(async () => {
       result.current.resumeFromPause();
     });
@@ -198,6 +207,8 @@ describe('DownloadContext', () => {
     await act(async () => {
       result.current.pauseDownload();
     });
+    act(() => channel().simulateMessage({ type: 'Cancelled' }));
+
     await act(async () => {
       result.current.discardActive();
     });
