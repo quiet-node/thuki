@@ -32,17 +32,6 @@ import { AboutTab } from './AboutTab';
 import { BehaviorTab } from './BehaviorTab';
 import type { RawAppConfig } from '../types';
 
-// The OpenAI-compatible provider UI is gated behind a compile-time dev flag
-// (off in shipped builds). Mock the flag module through a mutable holder so the
-// suite can drive both branches: the existing openai-card tests run with it
-// enabled, and a dedicated test asserts the affordance is absent when disabled.
-const devFlags = { openaiEnabled: true };
-vi.mock('../devFlags', () => ({
-  get OPENAI_PROVIDER_ENABLED() {
-    return devFlags.openaiEnabled;
-  },
-}));
-
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 const CONFIG: RawAppConfig = {
@@ -139,8 +128,9 @@ function engineStatus(
 
 beforeEach(() => {
   // Default to the enabled branch so the openai-card tests render the gated
-  // UI; the disabled-state test flips this within its own body.
-  devFlags.openaiEnabled = true;
+  // UI; the disabled-state test flips this within its own body. ModelTab reads
+  // the flag from `import.meta.env` at render, so stubbing it here is enough.
+  vi.stubEnv('VITE_ENABLE_OPENAI_PROVIDER', 'true');
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === 'get_loaded_model') return Promise.resolve(null);
@@ -1168,7 +1158,7 @@ describe('ModelTab', () => {
   });
 
   it('hides every OpenAI-compatible affordance when the dev flag is disabled', async () => {
-    devFlags.openaiEnabled = false;
+    vi.stubEnv('VITE_ENABLE_OPENAI_PROVIDER', 'false');
     // No openai provider configured: the "add a server" affordance is gone.
     const { unmount } = render(
       <ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />,

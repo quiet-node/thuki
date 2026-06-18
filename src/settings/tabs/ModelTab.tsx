@@ -20,7 +20,6 @@ import {
   OpenAiProviderCard,
 } from './ProviderCards';
 import { useDebouncedSave } from '../hooks/useDebouncedSave';
-import { OPENAI_PROVIDER_ENABLED } from '../devFlags';
 import { useModelSelection } from '../../hooks/useModelSelection';
 import { isNonLocalUrl } from '../../utils/isNonLocalUrl';
 import { configHelp } from '../configHelpers';
@@ -104,6 +103,16 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
   const activeKind = providers.find((p) => p.id === activeId)?.kind ?? 'ollama';
   const builtinProvider = providers.find((p) => p.kind === 'builtin');
   const openaiProvider = providers.find((p) => p.kind === 'openai');
+
+  // The OpenAI-compatible provider kind is gated behind a compile-time,
+  // dev-only env flag, off by default. Vite statically replaces
+  // `import.meta.env` at build, so a production build folds this to `false`
+  // and tree-shakes the gated affordance out of the bundle entirely. Gates
+  // the UI only: the shared /v1 client the built-in engine depends on stays
+  // live. Read here (not at module load) so tests can toggle it via
+  // `vi.stubEnv`.
+  const openaiProviderEnabled =
+    import.meta.env.VITE_ENABLE_OPENAI_PROVIDER === 'true';
 
   // Latest engine lifecycle snapshot; drives the built-in residency line and
   // the context slider's non-blocking "Applying" hint.
@@ -371,7 +380,7 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
             paths to create or manage one, so hiding them keeps the kind out of
             reach of end users. The shared /v1 backend stays live for the
             built-in engine regardless. */}
-        {OPENAI_PROVIDER_ENABLED ? (
+        {openaiProviderEnabled ? (
           openaiProvider ? (
             <div
               className={providerCardClass(activeKind === 'openai')}
