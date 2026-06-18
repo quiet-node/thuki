@@ -20,6 +20,7 @@ import {
   OpenAiProviderCard,
 } from './ProviderCards';
 import { useDebouncedSave } from '../hooks/useDebouncedSave';
+import { OPENAI_PROVIDER_ENABLED } from '../devFlags';
 import { useModelSelection } from '../../hooks/useModelSelection';
 import { isNonLocalUrl } from '../../utils/isNonLocalUrl';
 import { configHelp } from '../configHelpers';
@@ -364,33 +365,41 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
           ) : null}
         </div>
 
-        {openaiProvider ? (
-          <div
-            className={providerCardClass(activeKind === 'openai')}
-            data-provider-card="openai"
-          >
-            <label className={styles.providerSelectRow}>
-              <input
-                type="radio"
-                className={styles.providerRadio}
-                name="active-provider"
-                aria-label="Use OpenAI-compatible server"
-                checked={activeKind === 'openai'}
-                onChange={() => selectProvider(openaiProvider.id)}
+        {/* The OpenAI-compatible provider KIND is gated behind a
+            compile-time, dev-only flag (off in shipped builds): both the
+            management card and the "add a server" affordance are the only UI
+            paths to create or manage one, so hiding them keeps the kind out of
+            reach of end users. The shared /v1 backend stays live for the
+            built-in engine regardless. */}
+        {OPENAI_PROVIDER_ENABLED ? (
+          openaiProvider ? (
+            <div
+              className={providerCardClass(activeKind === 'openai')}
+              data-provider-card="openai"
+            >
+              <label className={styles.providerSelectRow}>
+                <input
+                  type="radio"
+                  className={styles.providerRadio}
+                  name="active-provider"
+                  aria-label="Use OpenAI-compatible server"
+                  checked={activeKind === 'openai'}
+                  onChange={() => selectProvider(openaiProvider.id)}
+                />
+                <span className={styles.providerName}>
+                  {openaiProvider.label}
+                </span>
+              </label>
+              <OpenAiProviderCard
+                provider={openaiProvider}
+                resyncToken={resyncToken}
+                onSaved={onSaved}
               />
-              <span className={styles.providerName}>
-                {openaiProvider.label}
-              </span>
-            </label>
-            <OpenAiProviderCard
-              provider={openaiProvider}
-              resyncToken={resyncToken}
-              onSaved={onSaved}
-            />
-          </div>
-        ) : (
-          <AddOpenAiProvider onSaved={onSaved} />
-        )}
+            </div>
+          ) : (
+            <AddOpenAiProvider onSaved={onSaved} />
+          )
+        ) : null}
       </Section>
 
       {/* Unified residency control: one Keep Warm knob bound to

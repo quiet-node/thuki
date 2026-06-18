@@ -32,6 +32,17 @@ import { AboutTab } from './AboutTab';
 import { BehaviorTab } from './BehaviorTab';
 import type { RawAppConfig } from '../types';
 
+// The OpenAI-compatible provider UI is gated behind a compile-time dev flag
+// (off in shipped builds). Mock the flag module through a mutable holder so the
+// suite can drive both branches: the existing openai-card tests run with it
+// enabled, and a dedicated test asserts the affordance is absent when disabled.
+const devFlags = { openaiEnabled: true };
+vi.mock('../devFlags', () => ({
+  get OPENAI_PROVIDER_ENABLED() {
+    return devFlags.openaiEnabled;
+  },
+}));
+
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 const CONFIG: RawAppConfig = {
@@ -127,6 +138,9 @@ function engineStatus(
 }
 
 beforeEach(() => {
+  // Default to the enabled branch so the openai-card tests render the gated
+  // UI; the disabled-state test flips this within its own body.
+  devFlags.openaiEnabled = true;
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === 'get_loaded_model') return Promise.resolve(null);
@@ -1151,6 +1165,34 @@ describe('ModelTab', () => {
     expect(invokeMock).toHaveBeenCalledWith('set_active_provider', {
       providerId: 'openai',
     });
+  });
+
+  it('hides every OpenAI-compatible affordance when the dev flag is disabled', async () => {
+    devFlags.openaiEnabled = false;
+    // No openai provider configured: the "add a server" affordance is gone.
+    const { unmount } = render(
+      <ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      screen.queryByRole('button', { name: 'Add OpenAI-compatible server' }),
+    ).not.toBeInTheDocument();
+    unmount();
+
+    // An openai provider hand-edited into config: its management card and
+    // radio stay hidden too (the backend still honors it).
+    render(
+      <ModelTab config={OPENAI_CONFIG} resyncToken={0} onSaved={() => {}} />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByText('LM Studio')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('radio', { name: 'Use OpenAI-compatible server' }),
+    ).not.toBeInTheDocument();
   });
 
   // ─── Keep Warm with the built-in provider active ────────────────────────
