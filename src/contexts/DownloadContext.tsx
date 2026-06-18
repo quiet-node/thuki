@@ -103,6 +103,14 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   // down. The strip shows "Pausing…" here so the Pause click is never silent.
   const isPausing = pauseRequested && isDownloadInFlight(downloadPhase);
 
+  // A pause cancels the backend download task, so the slot is free and only the
+  // frontend knows a download is paused. Report it so the quit warning fires
+  // for a paused (or pausing) download too, not only an actively-streaming one.
+  const pausedForQuitWarning = isPaused || isPausing;
+  useEffect(() => {
+    void invoke('set_download_paused', { paused: pausedForQuitWarning });
+  }, [pausedForQuitWarning]);
+
   const beginDownload = useCallback(
     (tier: StarterTier, option: StarterOption) => {
       setResumeSeedBytes(null);

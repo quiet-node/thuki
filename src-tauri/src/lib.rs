@@ -254,13 +254,55 @@ fn set_onboarding_active_impl(active: bool) {
 /// through instead of re-prompting the download warning forever.
 static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
+/// True while the quit warning dialog is on screen. Cmd+Q reaches the warning
+/// twice (the app-menu Quit event AND `RunEvent::ExitRequested`); this guard
+/// keeps it to a single dialog instead of two stacked ones.
+static QUIT_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// True while a model download is paused, set by the frontend via
+/// `set_download_paused`. A paused download still has work left (the partial is
+/// discarded on the next launch), so the quit warning must cover it too, not
+/// only an actively-streaming download.
+static DOWNLOAD_PAUSED: AtomicBool = AtomicBool::new(false);
+
+/// Frontend hook so the quit warning fires for a paused download, not only an
+/// actively-streaming one. The pause cancels the backend task, so the slot is
+/// free and only the frontend knows a download is paused.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+fn set_download_paused(paused: bool) {
+    DOWNLOAD_PAUSED.store(paused, Ordering::SeqCst);
+}
+
+/// Whether quitting now would discard an in-progress model download: one is
+/// actively streaming, or one is paused.
+fn should_warn_on_quit(app: &tauri::AppHandle) -> bool {
+    models::download_in_flight(app.state::<models::DownloadState>().inner())
+        || DOWNLOAD_PAUSED.load(Ordering::SeqCst)
+}
+
+/// Handles a quit request from the app menu or the tray: warn when a download
+/// would be lost, otherwise quit immediately.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn request_quit(app: &tauri::AppHandle) {
+    if should_warn_on_quit(app) {
+        show_quit_dialog(app);
+    } else {
+        app.state::<crate::commands::GenerationState>().cancel();
+        app.exit(0);
+    }
+}
+
 /// Shows the native "quit while a model is downloading" warning. "Quit Anyway"
 /// records the confirmation and exits; "Keep Downloading" cancels the quit.
-/// Non-blocking: the callback runs when the user answers. Reached from both the
-/// tray Quit click and Cmd+Q (via `RunEvent::ExitRequested`).
+/// Non-blocking, and deduplicated via `QUIT_DIALOG_OPEN` so the two quit paths
+/// that both fire on Cmd+Q show a single dialog.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn show_quit_dialog(app: &tauri::AppHandle) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    if QUIT_DIALOG_OPEN.swap(true, Ordering::SeqCst) {
+        return;
+    }
     let handle = app.clone();
     app.dialog()
         .message(
@@ -273,6 +315,7 @@ fn show_quit_dialog(app: &tauri::AppHandle) {
             "Keep Downloading".to_string(),
         ))
         .show(move |quit_anyway| {
+            QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
             if quit_anyway {
                 QUIT_CONFIRMED.store(true, Ordering::SeqCst);
                 handle
@@ -1766,12 +1809,7 @@ pub fn run() {
         .menu(build_app_menu)
         .on_menu_event(|app, event| {
             if event.id.as_ref() == "quit" {
-                if models::download_in_flight(app.state::<models::DownloadState>().inner()) {
-                    show_quit_dialog(app);
-                } else {
-                    app.state::<crate::commands::GenerationState>().cancel();
-                    app.exit(0);
-                }
+                request_quit(app);
             }
         })
         .setup(|app| {
@@ -1827,18 +1865,10 @@ pub fn run() {
                         show_update_window(app);
                     }
                     "quit" => {
-                        // The tray Quit click. Cmd+Q does NOT reach here (a
-                        // status-bar menu's key-equivalent is not a global
-                        // shortcut); that path is handled in RunEvent::
-                        // ExitRequested. Both route through show_quit_dialog so
-                        // an in-flight download is never torn down silently.
-                        if models::download_in_flight(app.state::<models::DownloadState>().inner())
-                        {
-                            show_quit_dialog(app);
-                        } else {
-                            app.state::<crate::commands::GenerationState>().cancel();
-                            app.exit(0);
-                        }
+                        // Tray Quit click. Cmd+Q reaches the app menu + Exit
+                        // Requested instead, all routed through request_quit so
+                        // an in-progress download is never torn down silently.
+                        request_quit(app);
                     }
                     _ => {}
                 })
@@ -2228,6 +2258,8 @@ pub fn run() {
             #[cfg(not(coverage))]
             models::discard_partial_download,
             #[cfg(not(coverage))]
+            set_download_paused,
+            #[cfg(not(coverage))]
             models::list_installed_models,
             #[cfg(not(coverage))]
             models::delete_installed_model,
@@ -2345,13 +2377,10 @@ pub fn run() {
             }
             RunEvent::ExitRequested { api, .. } => {
                 // Cmd+Q (and any app.exit issued before the user has confirmed)
-                // lands here. If a model download is in flight, hold the exit
-                // and warn so the user can keep it running in the background.
-                if !QUIT_CONFIRMED.load(Ordering::SeqCst)
-                    && models::download_in_flight(
-                        app_handle.state::<models::DownloadState>().inner(),
-                    )
-                {
+                // lands here. If a download would be lost, hold the exit and
+                // warn so the user can keep it running in the background. The
+                // dialog itself is deduplicated against the app-menu path.
+                if !QUIT_CONFIRMED.load(Ordering::SeqCst) && should_warn_on_quit(app_handle) {
                     api.prevent_exit();
                     show_quit_dialog(app_handle);
                 }

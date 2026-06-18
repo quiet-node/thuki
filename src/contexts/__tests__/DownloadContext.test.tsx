@@ -193,6 +193,11 @@ describe('DownloadContext', () => {
     act(() => channel().simulateMessage({ type: 'Cancelled' }));
     expect(result.current.isPaused).toBe(true);
     expect(result.current.isPausing).toBe(false);
+
+    // The paused state is reported to the backend so Cmd+Q warns while paused.
+    expect(invoke).toHaveBeenCalledWith('set_download_paused', {
+      paused: true,
+    });
   });
 
   it('pauseDownload defaults to zero bytes before the first event arrives', async () => {
