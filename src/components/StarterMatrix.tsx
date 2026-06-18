@@ -94,11 +94,6 @@ function gb(bytes: number): string {
   return (bytes / 1e9).toFixed(1);
 }
 
-/** Bytes/sec rendered as decimal megabytes per second (e.g. "8.2"). */
-function mbps(bytesPerSec: number): string {
-  return (bytesPerSec / 1e6).toFixed(1);
-}
-
 /** Seconds rendered as a compact countdown: "45s", "5m", "2h 1m". */
 function formatEta(etaSeconds: number): string {
   if (etaSeconds < 60) return `${etaSeconds}s`;
@@ -609,14 +604,16 @@ function DownloadCell({
 
   // While bytes are coming down, the button IS the progress: it fills as one
   // continuous bar against the card's full total (weights + vision companion
-  // summed, never two separate downloads), shows the byte counts, speed and
-  // ETA inside (no percentage), and is the cancel control. Hovering eases the
-  // warm fill to a neutral "stop" grey and swaps in "Pause download".
+  // summed, never two separate downloads), shows the byte counts and ETA
+  // inside (no percentage, no speed), and is the cancel control. Hovering eases
+  // the warm fill to a neutral "stop" grey and swaps in "Pause download".
   if (state.phase === 'downloading' || state.phase === 'downloading_mmproj') {
     const pct =
       combinedBytes !== null && grandTotalBytes > 0
         ? Math.min(100, Math.floor((combinedBytes / grandTotalBytes) * 100))
         : 0;
+    // The rolling rate drives the ETA but is not shown: the ETA already answers
+    // "how much longer", and the column is too narrow for a third figure.
     // speedBytesPerSec is null or strictly positive (the hook never reports a
     // zero rate), so a non-null value is always safe to divide by.
     const etaSeconds =
@@ -630,8 +627,8 @@ function DownloadCell({
       combinedBytes === null
         ? 'Starting…'
         : `${gb(combinedBytes)} / ${gb(grandTotalBytes)} GB${
-            speedBytesPerSec !== null ? ` · ${mbps(speedBytesPerSec)} MB/s` : ''
-          }${etaSeconds !== null ? ` · ${formatEta(etaSeconds)} left` : ''}`;
+            etaSeconds !== null ? ` · ${formatEta(etaSeconds)} left` : ''
+          }`;
     return (
       <button
         onClick={onCancel}
@@ -681,11 +678,14 @@ function DownloadCell({
           <span
             style={{
               gridArea: '1 / 1',
-              fontSize: 12.5,
+              fontSize: 12,
               fontWeight: 800,
               color: '#fff',
               textShadow: '0 1px 2px rgba(0,0,0,0.35)',
               whiteSpace: 'nowrap',
+              // Slightly tightened so even the biggest tier ("10.5 / 10.6 GB ·
+              // Em left") fits the ~160px column without clipping.
+              letterSpacing: '-0.2px',
               opacity: hover ? 0 : 1,
               transition: 'opacity 0.3s ease',
             }}

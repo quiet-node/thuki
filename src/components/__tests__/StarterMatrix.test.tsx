@@ -206,17 +206,17 @@ describe('StarterMatrix (picker)', () => {
     expect(onDiscard).toHaveBeenCalledWith('fast-sha');
   });
 
-  it('renders one combined bar with bytes, speed and ETA, and cancels on click', () => {
+  it('renders one combined bar with bytes and ETA (no speed), and cancels on click', () => {
     const { onCancel } = renderMatrix(THREE_TIERS, {
       state: { phase: 'downloading' },
       combinedBytes: 1_400_000_000,
       speedBytesPerSec: 8_000_000,
       downloadingTier: 'fast',
     });
-    // 1.4 of the 3.3 GB card total; (3.3e9 - 1.4e9) / 8e6 = 238s -> "3m".
-    expect(
-      screen.getByText('1.4 / 3.3 GB · 8.0 MB/s · 3m left'),
-    ).toBeInTheDocument();
+    // 1.4 of the 3.3 GB card total; speed drives the ETA but is not shown:
+    // (3.3e9 - 1.4e9) / 8e6 = 238s -> "3m".
+    expect(screen.getByText('1.4 / 3.3 GB · 3m left')).toBeInTheDocument();
+    expect(screen.queryByText(/MB\/s/)).not.toBeInTheDocument();
     const pause = screen.getByRole('button', { name: 'Pause download' });
     fireEvent.mouseEnter(pause); // cross-fade to grey/"Pause download"
     fireEvent.click(pause);
@@ -248,9 +248,9 @@ describe('StarterMatrix (picker)', () => {
       speedBytesPerSec: 200_000,
       downloadingTier: 'fast',
     });
-    // 3.3e9 / 2e5 = 16500s -> 4h 35m.
+    // 3.3e9 / 2e5 = 16500s -> 4h 35m (speed feeds the ETA, but is not shown).
     expect(
-      screen.getByText('0.0 / 3.3 GB · 0.2 MB/s · 4h 35m left'),
+      screen.getByText('0.0 / 3.3 GB · 4h 35m left'),
     ).toBeInTheDocument();
   });
 
@@ -272,9 +272,7 @@ describe('StarterMatrix (picker)', () => {
       downloadingTier: 'fast',
     });
     // One bar against the 3.3 GB total; (3.3e9 - 3.0e9) / 8e6 = 38s.
-    expect(
-      screen.getByText('3.0 / 3.3 GB · 8.0 MB/s · 38s left'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('3.0 / 3.3 GB · 38s left')).toBeInTheDocument();
   });
 
   it('renders each post-download phase label', () => {
