@@ -90,7 +90,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   const [pauseRequested, setPauseRequested] = useState(false);
   const [pausedBytes, setPausedBytes] = useState(0);
 
-  const { start, resume, cancel, combinedBytes } = download;
+  const { start, resume, cancel, discard, combinedBytes } = download;
   const downloadPhase = download.state.phase;
 
   // A pause is only *committed* once the cancel has fully landed (machine back
@@ -127,7 +127,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
 
   // On launch, recover an interrupted built-in download: if the engine is the
   // active provider and a starter has a partial on disk but none is installed,
-  // resume it in the background so the ambient strip is the recovery surface.
+  // restart it in the background so the ambient strip is the recovery surface.
   // The relaunch no longer bounces the user back to the picker, so this is what
   // keeps them from being stranded with no model. Fires once: the ref guards
   // against the StrictMode double-invoke and any later provider re-render.
@@ -139,16 +139,24 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     if (activeProviderKind !== 'builtin') return;
     void (async () => {
       // The model_check picker owns the resume decision (its own Resume /
-      // Discard choice), so only auto-resume once the user is past it: the
-      // intro tour or the ask bar.
+      // Discard choice), so only act once the user is past it: the intro tour
+      // or the ask bar.
       const stage = await invoke<string>('onboarding_stage');
       if (stage !== 'intro' && stage !== 'complete') return;
       const options = await invoke<StarterOption[]>('get_starter_options');
       const partial = options.find((o) => o.partial_bytes !== null);
       if (options.some((o) => o.installed) || partial === undefined) return;
-      resumeDownload(partial.starter.tier, partial, partial.partial_bytes!);
+      // A cold-restart resume re-hashes the on-disk prefix and appends a Range
+      // body, but that path fails verification against the live CDN every time,
+      // so it would only ever re-download after a scary "did not verify" error.
+      // Discard the partial(s) and download fresh instead: same bytes, no error.
+      await discard(partial.starter.sha256);
+      if (partial.starter.mmproj_sha256 !== null) {
+        await discard(partial.starter.mmproj_sha256);
+      }
+      beginDownload(partial.starter.tier, partial);
     })();
-  }, [activeProviderKind, resumeDownload]);
+  }, [activeProviderKind, discard, beginDownload]);
 
   const pauseDownload = useCallback(() => {
     // Remember how far we got so the paused strip can show the percent, then

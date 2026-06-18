@@ -235,9 +235,18 @@ describe('DownloadContext', () => {
   });
 
   describe('launch auto-resume', () => {
-    it('resumes an interrupted partial past the picker (intro) with no installed model', async () => {
+    /** Flush the multi-await auto-resume IIFE (stage, options, discards). */
+    async function flushLaunch() {
+      for (let i = 0; i < 6; i++) {
+        await act(async () => {
+          await Promise.resolve();
+        });
+      }
+    }
+
+    it('discards an interrupted partial and downloads fresh past the picker', async () => {
       const partial: StarterOption = {
-        ...option({ tier: 'fast', size_bytes: 4_000_000_000, mmproj_bytes: 0 }),
+        ...option({ tier: 'fast' }),
         partial_bytes: 3_000_000_000,
       };
       mockLaunch('intro', [partial]);
@@ -245,16 +254,43 @@ describe('DownloadContext', () => {
       const { result } = renderHook(() => useDownloadCtx(), {
         wrapper: builtinWrapper,
       });
-      await act(async () => {});
+      await flushLaunch();
 
       expect(invokeCount('get_starter_options')).toBe(1);
+      // The unreliable cold-resume is skipped: both blobs' partials are
+      // discarded and a fresh download starts (no resume seed).
+      expect(invoke).toHaveBeenCalledWith('discard_partial_download', {
+        sha256: 'sha',
+      });
+      expect(invoke).toHaveBeenCalledWith('discard_partial_download', {
+        sha256: 'mmsha',
+      });
       expect(result.current.downloadingTier).toBe('fast');
-      expect(result.current.resumeSeedBytes).toBe(3_000_000_000);
+      expect(result.current.resumeSeedBytes).toBeNull();
       expect(result.current.state).toEqual({ phase: 'downloading' });
       expect(invoke).toHaveBeenCalledWith('download_starter', {
         tier: 'fast',
         onEvent: expect.anything(),
       });
+    });
+
+    it('discards only the weights partial for a text-only starter', async () => {
+      const partial: StarterOption = {
+        ...option({ mmproj_file: null, mmproj_sha256: null, mmproj_bytes: 0 }),
+        partial_bytes: 3_000_000_000,
+      };
+      mockLaunch('intro', [partial]);
+
+      renderHook(() => useDownloadCtx(), { wrapper: builtinWrapper });
+      await flushLaunch();
+
+      expect(invoke).toHaveBeenCalledWith('discard_partial_download', {
+        sha256: 'sha',
+      });
+      expect(invoke).not.toHaveBeenCalledWith('discard_partial_download', {
+        sha256: 'mmsha',
+      });
+      expect(invokeCount('download_starter')).toBe(1);
     });
 
     it('does not resume at the model_check picker (it owns the resume choice)', async () => {
