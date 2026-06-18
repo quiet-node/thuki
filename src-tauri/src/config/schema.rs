@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 
 use super::defaults::{
     DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_BUILTIN_LABEL,
-    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_IDLE_UNLOAD_MINUTES, DEFAULT_JUDGE_TIMEOUT_S,
-    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
-    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_LABEL, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX,
+    DEFAULT_OLLAMA_LABEL, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
     DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
     DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
     DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
@@ -105,7 +105,8 @@ pub fn default_providers() -> Vec<Provider> {
 /// Inference targets one of several `providers`; `active_provider` selects
 /// which. Per-provider model selection lives on each [`Provider`] record
 /// (replacing the former single SQLite `active_model`). `num_ctx` and
-/// `keep_warm_inactivity_minutes` remain universal Ollama-path knobs.
+/// `keep_warm_inactivity_minutes` are universal knobs read by both local
+/// provider paths.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct InferenceSection {
@@ -118,15 +119,14 @@ pub struct InferenceSection {
     /// fit longer conversations in a single context; lower to use less VRAM.
     /// Valid range: 2048..=1048576.
     pub num_ctx: u32,
-    /// Minutes of inactivity before Thuki tells Ollama to release the model.
-    /// Applies to the Ollama provider only. 0 means do not manage (Ollama's
-    /// 5-minute default applies). -1 means keep indefinitely. Valid range: -1
-    /// or 0..=1440.
+    /// Minutes of inactivity before Thuki releases the active model from local
+    /// memory. Governs both local providers: the built-in engine stops its
+    /// sidecar, and Ollama is told to release the model. Not applicable to a
+    /// remote OpenAI-compatible server, whose residency Thuki does not manage.
+    /// 0 uses the provider's natural short default (~5 min): Ollama defers to
+    /// its own timer, the built-in engine applies its own ~5-minute timer.
+    /// -1 keeps the model resident indefinitely. Valid range: -1 or 0..=1440.
     pub keep_warm_inactivity_minutes: i32,
-    /// Minutes of inactivity before the built-in engine is stopped to free
-    /// RAM. 0 keeps the model loaded indefinitely (default). Built-in only;
-    /// Ollama keeps `keep_warm_inactivity_minutes`. Valid range: 0..=1440.
-    pub idle_unload_minutes: u32,
     /// The configured providers. Always contains the built-in entry after
     /// resolution. The field-level `#[serde(default)]` defaults a *missing*
     /// `providers` key to an empty Vec (not the seeded pair), so the loader can
@@ -147,7 +147,6 @@ impl Default for InferenceSection {
             active_provider: DEFAULT_ACTIVE_PROVIDER.to_string(),
             num_ctx: DEFAULT_NUM_CTX,
             keep_warm_inactivity_minutes: DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
-            idle_unload_minutes: DEFAULT_IDLE_UNLOAD_MINUTES,
             providers: default_providers(),
             legacy_ollama_url: None,
         }

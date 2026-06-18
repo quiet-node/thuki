@@ -2,9 +2,9 @@
  * AI tab.
  *
  * Holds the Providers panel (built-in engine, Ollama, and an optional
- * OpenAI-compatible server, with the active one selectable), the per-kind
- * memory controls (Keep Warm for Ollama, Idle Unload for the built-in
- * engine), the context window slider, and the custom system prompt. The
+ * OpenAI-compatible server, with the active one selectable), the unified
+ * Keep Warm residency control (shown for both local providers, hidden for
+ * OpenAI), the context window slider, and the custom system prompt. The
  * Window/Quote knobs live in the Display tab.
  */
 
@@ -47,10 +47,11 @@ const EJECT_RESET_MS = 2500;
 const TOKENS_PER_TURN_ESTIMATE = 400;
 
 const KEEP_WARM_TOOLTIP =
-  'Keep Warm holds your active model loaded in VRAM after each use. ' +
+  'Keep Warm holds your active model resident in memory after each use, ' +
+  'for both the built-in engine and Ollama. ' +
   'The timer below sets how long before it auto-releases; use -1 to keep it indefinitely. ' +
   'Unload now releases it immediately. ' +
-  'If set to 0, Ollama unloads models after its default 5-minute timeout.';
+  'If set to 0, each provider uses its natural short default (about 5 minutes).';
 
 // Log-scale context window slider: slider pos [0..1000] ↔ token count.
 // Scale: value = CTX_MIN * (CTX_MAX / CTX_MIN)^(pos/1000)
@@ -102,6 +103,16 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
   const activeKind = providers.find((p) => p.id === activeId)?.kind ?? 'ollama';
   const builtinProvider = providers.find((p) => p.kind === 'builtin');
   const openaiProvider = providers.find((p) => p.kind === 'openai');
+
+  // The OpenAI-compatible provider kind is gated behind a compile-time,
+  // dev-only env flag, off by default. Vite statically replaces
+  // `import.meta.env` at build, so a production build folds this to `false`
+  // and tree-shakes the gated affordance out of the bundle entirely. Gates
+  // the UI only: the shared /v1 client the built-in engine depends on stays
+  // live. Read here (not at module load) so tests can toggle it via
+  // `vi.stubEnv`.
+  const openaiProviderEnabled =
+    import.meta.env.VITE_ENABLE_OPENAI_PROVIDER === 'true';
 
   // Latest engine lifecycle snapshot; drives the built-in residency line and
   // the context slider's non-blocking "Applying" hint.
@@ -194,21 +205,6 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
     { onSaved },
   );
 
-  // Built-in engine idle-unload minutes (replaces keep-warm when the
-  // built-in provider is active). Same raw-string editing pattern as the
-  // keep-warm minutes input above.
-  const [idleMin, setIdleMin] = useState(config.inference.idle_unload_minutes);
-  const [rawIdleMin, setRawIdleMin] = useState(
-    String(config.inference.idle_unload_minutes),
-  );
-  const idleMinFocusedRef = useRef(false);
-  const { resetTo: resetIdleMin } = useDebouncedSave(
-    'inference',
-    'idle_unload_minutes',
-    idleMin,
-    { onSaved },
-  );
-
   const prevTokenRef = useRef(resyncToken);
 
   if (prevTokenRef.current !== resyncToken) {
@@ -217,11 +213,6 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
       setInactivityMin(config.inference.keep_warm_inactivity_minutes);
       setRawMin(String(config.inference.keep_warm_inactivity_minutes));
       resetMin(config.inference.keep_warm_inactivity_minutes);
-    }
-    if (!idleMinFocusedRef.current) {
-      setIdleMin(config.inference.idle_unload_minutes);
-      setRawIdleMin(String(config.inference.idle_unload_minutes));
-      resetIdleMin(config.inference.idle_unload_minutes);
     }
     const nextCtx = config.inference.num_ctx;
     setNumCtx(nextCtx);
@@ -383,103 +374,62 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
           ) : null}
         </div>
 
-        {openaiProvider ? (
-          <div
-            className={providerCardClass(activeKind === 'openai')}
-            data-provider-card="openai"
-          >
-            <label className={styles.providerSelectRow}>
-              <input
-                type="radio"
-                className={styles.providerRadio}
-                name="active-provider"
-                aria-label="Use OpenAI-compatible server"
-                checked={activeKind === 'openai'}
-                onChange={() => selectProvider(openaiProvider.id)}
+        {/* The OpenAI-compatible provider KIND is gated behind a
+            compile-time, dev-only flag (off in shipped builds): both the
+            management card and the "add a server" affordance are the only UI
+            paths to create or manage one, so hiding them keeps the kind out of
+            reach of end users. The shared /v1 backend stays live for the
+            built-in engine regardless. */}
+        {openaiProviderEnabled ? (
+          openaiProvider ? (
+            <div
+              className={providerCardClass(activeKind === 'openai')}
+              data-provider-card="openai"
+            >
+              <label className={styles.providerSelectRow}>
+                <input
+                  type="radio"
+                  className={styles.providerRadio}
+                  name="active-provider"
+                  aria-label="Use OpenAI-compatible server"
+                  checked={activeKind === 'openai'}
+                  onChange={() => selectProvider(openaiProvider.id)}
+                />
+                <span className={styles.providerName}>
+                  {openaiProvider.label}
+                </span>
+              </label>
+              <OpenAiProviderCard
+                provider={openaiProvider}
+                resyncToken={resyncToken}
+                onSaved={onSaved}
               />
-              <span className={styles.providerName}>
-                {openaiProvider.label}
-              </span>
-            </label>
-            <OpenAiProviderCard
-              provider={openaiProvider}
-              resyncToken={resyncToken}
-              onSaved={onSaved}
-            />
-          </div>
-        ) : (
-          <AddOpenAiProvider onSaved={onSaved} />
-        )}
+            </div>
+          ) : (
+            <AddOpenAiProvider onSaved={onSaved} />
+          )
+        ) : null}
       </Section>
 
-      {activeKind === 'builtin' ? (
-        <Section heading="Idle Unload">
-          <SettingRow
-            label="Unload after idle"
-            helper={configHelp('inference', 'idle_unload_minutes')}
-          >
-            <div className={styles.keepWarmTimerGroup}>
-              <input
-                type="number"
-                className={styles.keepWarmNumberInput}
-                value={rawIdleMin}
-                min={0}
-                max={1440}
-                aria-label="Unload after N idle minutes"
-                onFocus={() => {
-                  idleMinFocusedRef.current = true;
-                }}
-                onChange={(e) => {
-                  const n = parseInt(e.target.value, 10);
-                  if (Number.isNaN(n)) {
-                    setRawIdleMin(e.target.value);
-                  } else {
-                    const clamped = Math.max(0, Math.min(1440, n));
-                    setRawIdleMin(String(clamped));
-                    setIdleMin(clamped);
-                  }
-                }}
-                onBlur={() => {
-                  idleMinFocusedRef.current = false;
-                  if (Number.isNaN(parseInt(rawIdleMin, 10))) {
-                    setRawIdleMin('0');
-                    setIdleMin(0);
-                  }
-                }}
-              />
-              <span className={styles.keepWarmUnit}>min</span>
-            </div>
-          </SettingRow>
-          <div className={styles.keepWarmStatusRow}>
-            <span className={styles.engineStatusLine}>
-              Engine: {engineState}
-            </span>
-            <button
-              type="button"
-              className={styles.keepWarmEjectPill}
-              aria-label="Unload now"
-              disabled={engineState !== 'loaded'}
-              onClick={handleEngineEject}
-            >
-              Unload now
-            </button>
-          </div>
-        </Section>
-      ) : null}
-
-      {activeKind === 'ollama' ? (
+      {/* Unified residency control: one Keep Warm knob bound to
+          keep_warm_inactivity_minutes, shown for both local providers
+          (built-in engine and Ollama) and hidden for OpenAI (Thuki does not
+          manage a remote server's residency). The status row branches by
+          kind: the built-in engine reports its sidecar lifecycle, Ollama
+          reports the model resident in VRAM. */}
+      {activeKind === 'builtin' || activeKind === 'ollama' ? (
         <Section heading="Keep Warm">
           {/* Row 1: label + [?] on left | Release after [N] min on right */}
           <div className={styles.keepWarmRow1}>
             <div className={styles.keepWarmLabelLine}>
               <span className={styles.keepWarmLabel}>
-                Keep active model in VRAM
+                Keep active model in memory
               </span>
               <Tooltip label={KEEP_WARM_TOOLTIP} multiline>
                 <button
                   type="button"
                   className={styles.infoBtn}
-                  aria-label="About Keep active model in VRAM"
+                  aria-label="About Keep active model in memory"
                 >
                   ?
                 </button>
@@ -521,51 +471,70 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
             </div>
           </div>
 
-          {/* Row 2: slug status on left | Unload now on right */}
-          <div className={styles.keepWarmStatusRow}>
-            <div className={styles.keepWarmStatusLeft}>
-              {loadedModel !== null ? (
-                <div className={styles.keepWarmVramSubtitle}>
-                  <span
-                    className={styles.keepWarmVramDot}
-                    data-testid="vram-status-dot"
-                    aria-hidden="true"
-                  />
-                  <span className={styles.keepWarmVramModelName}>
-                    {loadedModel}
-                  </span>
-                  <span>&nbsp;· in VRAM</span>
-                </div>
-              ) : (
-                <span className={styles.keepWarmNoModel}>No model loaded</span>
-              )}
+          {/* Row 2: residency status on left | Unload now on right. */}
+          {activeKind === 'builtin' ? (
+            <div className={styles.keepWarmStatusRow}>
+              <span className={styles.engineStatusLine}>
+                Engine: {engineState}
+              </span>
+              <button
+                type="button"
+                className={styles.keepWarmEjectPill}
+                aria-label="Unload now"
+                disabled={engineState !== 'loaded'}
+                onClick={handleEngineEject}
+              >
+                Unload now
+              </button>
             </div>
+          ) : (
+            <div className={styles.keepWarmStatusRow}>
+              <div className={styles.keepWarmStatusLeft}>
+                {loadedModel !== null ? (
+                  <div className={styles.keepWarmVramSubtitle}>
+                    <span
+                      className={styles.keepWarmVramDot}
+                      data-testid="vram-status-dot"
+                      aria-hidden="true"
+                    />
+                    <span className={styles.keepWarmVramModelName}>
+                      {loadedModel}
+                    </span>
+                    <span>&nbsp;· in VRAM</span>
+                  </div>
+                ) : (
+                  <span className={styles.keepWarmNoModel}>
+                    No model loaded
+                  </span>
+                )}
+              </div>
 
-            <button
-              type="button"
-              className={styles.keepWarmEjectPill}
-              aria-label="Unload now"
-              disabled={ejecting || loadedModel === null}
-              data-ejecting={ejecting}
-              onClick={handleEject}
-            >
-              {ejecting ? (
-                <DrawCheckIcon />
-              ) : (
-                <svg
-                  viewBox="0 0 16 16"
-                  width="11"
-                  height="11"
-                  fill="currentColor"
-                  aria-hidden="true"
-                >
-                  <polygon points="8,2 14,11 2,11" />
-                  <rect x="2" y="12.5" width="12" height="2" rx="1" />
-                </svg>
-              )}
-              Unload now
-            </button>
-          </div>
+              <button
+                type="button"
+                className={styles.keepWarmEjectPill}
+                aria-label="Unload now"
+                disabled={ejecting || loadedModel === null}
+                data-ejecting={ejecting}
+                onClick={handleEject}
+              >
+                {ejecting ? (
+                  <DrawCheckIcon />
+                ) : (
+                  <svg
+                    viewBox="0 0 16 16"
+                    width="11"
+                    height="11"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <polygon points="8,2 14,11 2,11" />
+                    <rect x="2" y="12.5" width="12" height="2" rx="1" />
+                  </svg>
+                )}
+                Unload now
+              </button>
+            </div>
+          )}
         </Section>
       ) : null}
 

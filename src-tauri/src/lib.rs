@@ -2162,11 +2162,15 @@ pub fn run() {
             // process, kill-then-start on model switch, idle unload. Spawned
             // inside block_on so the actor task lands on Tauri's tokio
             // runtime (setup itself runs outside a runtime context).
-            let engine_idle_minutes = app
-                .state::<parking_lot::RwLock<crate::config::AppConfig>>()
-                .read()
-                .inference
-                .idle_unload_minutes;
+            // The unified `keep_warm_inactivity_minutes` field governs both
+            // local providers; translate its sentinel into the runner's own
+            // `idle_minutes` convention through the shared boundary helper.
+            let engine_idle_minutes = warmup::builtin_idle_minutes(
+                app.state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                    .read()
+                    .inference
+                    .keep_warm_inactivity_minutes,
+            );
             let engine_client = app.state::<reqwest::Client>().inner().clone();
             let engine = tauri::async_runtime::block_on(async move {
                 engine::runner::EngineHandle::spawn(

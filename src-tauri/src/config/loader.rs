@@ -22,15 +22,15 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::defaults::{
-    ALLOWED_FONT_WEIGHTS, BOUNDS_IDLE_UNLOAD_MINUTES, BOUNDS_KEEP_WARM_INACTIVITY_MINUTES,
-    BOUNDS_MAX_CHAT_HEIGHT, BOUNDS_MAX_IMAGES, BOUNDS_MAX_ITERATIONS, BOUNDS_NUM_CTX,
-    BOUNDS_OVERLAY_WIDTH, BOUNDS_PIPELINE_WALL_CLOCK_BUDGET_S, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
+    ALLOWED_FONT_WEIGHTS, BOUNDS_KEEP_WARM_INACTIVITY_MINUTES, BOUNDS_MAX_CHAT_HEIGHT,
+    BOUNDS_MAX_IMAGES, BOUNDS_MAX_ITERATIONS, BOUNDS_NUM_CTX, BOUNDS_OVERLAY_WIDTH,
+    BOUNDS_PIPELINE_WALL_CLOCK_BUDGET_S, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
     BOUNDS_QUOTE_MAX_DISPLAY_CHARS, BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_SEARXNG_MAX_RESULTS,
     BOUNDS_TEXT_BASE_PX, BOUNDS_TEXT_LETTER_SPACING_PX, BOUNDS_TEXT_LINE_HEIGHT, BOUNDS_TIMEOUT_S,
-    BOUNDS_TOP_K_URLS, BOUNDS_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_IDLE_UNLOAD_MINUTES,
-    DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
-    DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    BOUNDS_TOP_K_URLS, BOUNDS_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
     DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
     DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
     DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
@@ -323,7 +323,7 @@ fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
     // carry providers. Consumed by the active-pointer pin at the end.
     let is_pre_providers_file = inf.providers.is_empty();
 
-    // num_ctx + keep_warm: unchanged clamping (Ollama-path knobs).
+    // num_ctx + keep_warm: numeric clamps (universal local-provider knobs).
     clamp_u32(
         &mut inf.num_ctx,
         BOUNDS_NUM_CTX,
@@ -334,12 +334,6 @@ fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
         &mut inf.keep_warm_inactivity_minutes,
         DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
         "inference.keep_warm_inactivity_minutes",
-    );
-    clamp_u32(
-        &mut inf.idle_unload_minutes,
-        BOUNDS_IDLE_UNLOAD_MINUTES,
-        DEFAULT_IDLE_UNLOAD_MINUTES,
-        "inference.idle_unload_minutes",
     );
 
     // Migration: a pre-providers file has `ollama_url` and no `providers`.
@@ -412,7 +406,7 @@ fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
     {
         inf.providers.insert(0, builtin_provider());
     }
-    // Ensure a functional Phase-1 provider exists: re-seed Ollama if absent.
+    // Ensure the Ollama provider exists: re-seed it if a user file omitted it.
     if !inf.providers.iter().any(|p| p.kind == PROVIDER_KIND_OLLAMA) {
         inf.providers.push(ollama_provider(DEFAULT_OLLAMA_URL));
     }
@@ -430,8 +424,8 @@ fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
 
     // A pre-providers file (no [[inference.providers]] array) predates the
     // built-in engine: that user runs Ollama. Pin the pointer explicitly so
-    // the compiled default (which favors the built-in engine from Phase 2 on)
-    // only ever applies to fresh installs and new-shape files. Covers both
+    // the compiled default (which favors the built-in engine) only ever
+    // applies to fresh installs and new-shape files. Covers both
     // legacy shapes: with an ollama_url key and without one. An explicit
     // active_provider equal to the compiled default, or naming the built-in
     // provider, is also overridden here: in a pre-providers file neither
@@ -471,7 +465,8 @@ pub fn compose_system_prompt(base: &str, appendix: &str) -> String {
 }
 
 fn clamp_keep_warm_inactivity(value: &mut i32, default: i32, field: &str) {
-    // Valid: -1 (never release), 0 (disabled), or 1..=1440 (explicit timeout).
+    // Valid: -1 (keep resident forever), 0 (provider's natural short default),
+    // or 1..=1440 (explicit timeout).
     // Invalid: below -1 or above 1440 — reset to compiled default.
     let (lo, hi) = BOUNDS_KEEP_WARM_INACTIVITY_MINUTES;
     if !(lo..=hi).contains(value) {

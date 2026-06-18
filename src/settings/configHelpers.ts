@@ -17,11 +17,9 @@ const HELPERS = {
     ollama_base_url:
       'The address where Thuki reaches your Ollama server. The default works if you run Ollama on this Mac with its standard port. Point it at another machine to use Ollama running elsewhere (one server at a time).',
     keep_warm:
-      'When on, Thuki tells Ollama to keep the active model loaded in GPU memory between conversations, saving the cold-load wait on every open. Set "Release after" to −1 to keep it warm indefinitely, or pick a timeout in minutes so GPU memory is reclaimed when you stop using Thuki for a while.',
+      'How long Thuki keeps the active model resident in memory between messages, so the next one skips the cold-load wait. Applies to both local providers (the built-in engine and Ollama); it does not apply to a remote OpenAI-compatible server, whose memory Thuki does not manage. Set "Release after" to −1 to keep it resident indefinitely, 0 to use the provider\'s natural short default (about 5 minutes), or a timeout in minutes so memory is reclaimed when you stop using Thuki for a while.',
     builtin_model:
       'The downloaded model Thuki\'s built-in engine runs. Pick from the models you have downloaded, or use "Download a model" below to grab a curated starter or any GGUF file from a Hugging Face repo.',
-    idle_unload_minutes:
-      'How many minutes of inactivity before Thuki stops its built-in engine to free memory. 0 (the default) keeps the model loaded so the first token of your next message stays instant. A positive value frees memory after that many idle minutes, at the cost of a cold reload on the next message.',
     openai_base_url:
       'The address of your OpenAI-compatible server (LM Studio, Jan, llama-server, and similar all expose one). Thuki calls its /v1 endpoints for chat and model listing. Must start with http:// or https://.',
     openai_api_key:

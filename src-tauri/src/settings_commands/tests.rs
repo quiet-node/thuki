@@ -13,8 +13,8 @@ use toml_edit::DocumentMut;
 
 use super::{
     add_openai_provider_to_disk, builtin_deactivated, cleanup_provider_secrets,
-    coerce_json_to_toml, idle_unload_minutes_changed, is_allowed_field, is_allowed_section,
-    is_http_url, json_type_name, json_value_to_toml_item, patch_document, read_document,
+    coerce_json_to_toml, is_allowed_field, is_allowed_section, is_http_url, json_type_name,
+    json_value_to_toml_item, keep_warm_idle_minutes_changed, patch_document, read_document,
     remove_openai_provider_from_disk, reset_section_on_disk, trace_enabled_changed,
     validate_provider_value, write_active_provider_to_disk, write_field_to_disk,
     write_provider_field_to_disk,
@@ -117,7 +117,8 @@ vision = false
 fn allowed_fields_count_matches_schema_field_count() {
     // Hand-counted from `AppConfig`: inference(2) + prompt(1) + window(7) + quote(3)
     // + behavior(2) + search(11) + debug(1) + updater(3) = 30 tunable flat fields.
-    // The inference section's `active_provider` and `providers` array are NOT flat
+    // The inference section's two flat tunables are `keep_warm_inactivity_minutes`
+    // and `num_ctx`; `active_provider` and the `providers` array are NOT flat
     // fields: they are written through the dedicated `set_active_model` /
     // `set_ollama_url` commands, not the generic `set_config_field` path, so they
     // are intentionally absent from ALLOWED_FIELDS. The collapsed bar height and
@@ -128,7 +129,7 @@ fn allowed_fields_count_matches_schema_field_count() {
     // and is intentionally absent from ALLOWED_FIELDS. If this assertion fails, the
     // schema has drifted from the allowlist and someone added a field without
     // extending ALLOWED_FIELDS.
-    assert_eq!(ALLOWED_FIELDS.len(), 31);
+    assert_eq!(ALLOWED_FIELDS.len(), 30);
 }
 
 #[test]
@@ -1439,7 +1440,7 @@ fn reset_section_on_disk_replaces_named_section_with_defaults() {
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
 
     let resolved = reset_section_on_disk(&path, Some("inference")).unwrap();
-    // Section reset restores compiled defaults: builtin active since Phase 2.
+    // Section reset restores compiled defaults: the built-in engine is the default active provider.
     assert_eq!(resolved.inference.active_provider, "builtin");
     assert!(resolved
         .inference
@@ -1576,20 +1577,40 @@ fn trace_enabled_changed_returns_false_when_value_unchanged() {
     assert!(!trace_enabled_changed(false, &cfg));
 }
 
-// ─── idle_unload_minutes_changed ─────────────────────────────────────────────
+// ─── keep_warm_idle_minutes_changed ──────────────────────────────────────────
 
 #[test]
-fn idle_unload_minutes_changed_returns_new_value_on_change() {
+fn keep_warm_idle_minutes_changed_returns_translated_value_on_positive_change() {
     let mut cfg = AppConfig::default();
-    cfg.inference.idle_unload_minutes = 45;
-    assert_eq!(idle_unload_minutes_changed(0, &cfg), Some(45));
+    cfg.inference.keep_warm_inactivity_minutes = 45;
+    // Positive N passes straight through the translator.
+    assert_eq!(keep_warm_idle_minutes_changed(0, &cfg), Some(45));
 }
 
 #[test]
-fn idle_unload_minutes_changed_returns_none_when_unchanged() {
+fn keep_warm_idle_minutes_changed_translates_forever_to_disabled() {
     let mut cfg = AppConfig::default();
-    cfg.inference.idle_unload_minutes = 45;
-    assert_eq!(idle_unload_minutes_changed(45, &cfg), None);
+    cfg.inference.keep_warm_inactivity_minutes = -1;
+    // -1 (forever) translates to the runner's "0 = disabled".
+    assert_eq!(keep_warm_idle_minutes_changed(0, &cfg), Some(0));
+}
+
+#[test]
+fn keep_warm_idle_minutes_changed_translates_zero_to_short_default() {
+    let mut cfg = AppConfig::default();
+    cfg.inference.keep_warm_inactivity_minutes = 0;
+    // 0 (natural short default) translates to the baked-in ~5-minute timer.
+    assert_eq!(
+        keep_warm_idle_minutes_changed(-1, &cfg),
+        Some(crate::config::defaults::DEFAULT_BUILTIN_IDLE_MINUTES)
+    );
+}
+
+#[test]
+fn keep_warm_idle_minutes_changed_returns_none_when_unchanged() {
+    let mut cfg = AppConfig::default();
+    cfg.inference.keep_warm_inactivity_minutes = 45;
+    assert_eq!(keep_warm_idle_minutes_changed(45, &cfg), None);
 }
 
 // ─── builtin_deactivated ─────────────────────────────────────────────────────

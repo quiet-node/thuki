@@ -144,8 +144,8 @@ export const PICK_A_MODEL_MESSAGE =
  *     `installedCount` or `activeModel` because we cannot trust either.
  *   - S2: Ollama reachable, zero models installed. Returns the no-models copy.
  *   - S3: Ollama reachable, models installed, none active. Returns the
- *     pick-a-model copy. This state is rare post-Phase-A because the backend
- *     auto-picks on first launch, but the strip handles it defensively.
+ *     pick-a-model copy. This state is rare because the backend auto-picks
+ *     a model on first launch, but the strip handles it defensively.
  * - `builtin`: the backend always reports reachable=true (the engine starts
  *   on demand per request), so `reachable=false` only means the picker IPC
  *   call itself failed and the generic model-state copy is shown. Zero
@@ -263,7 +263,7 @@ export function getCapabilityConflict(
     return `${name} doesn't show reasoning. Try a thinking model for /think.`;
   }
 
-  // History-state checks (Phase B). The backend already strips images
+  // History-state checks. The backend already strips images
   // and thinking artifacts from the per-request snapshot when the active
   // model lacks the capability; the strip is purely informational so the
   // user knows why earlier content is missing from the model's view of

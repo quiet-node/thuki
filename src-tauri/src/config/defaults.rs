@@ -35,15 +35,21 @@ pub const DEFAULT_OPENAI_LABEL: &str = "OpenAI-compatible";
 
 /// Provider Thuki sends inference to on a fresh install.
 ///
-/// Phase 2 bundles the llama.cpp engine, so a new install starts on the
+/// Thuki bundles the llama.cpp engine, so a new install starts on the
 /// built-in provider and onboarding offers a starter model download. Configs
-/// that already persisted an `active_provider` (including Phase 1's Ollama
-/// default) are never rewritten; only fresh or dangling pointers land here.
+/// that already persisted an `active_provider` (including the older
+/// Ollama-only default) are never rewritten; only fresh or dangling pointers
+/// land here.
 pub const DEFAULT_ACTIVE_PROVIDER: &str = PROVIDER_ID_BUILTIN;
 
-/// Default inactivity window before Thuki tells Ollama to release the model.
-/// 0 means do not manage: Ollama's own 5-minute default applies.
-/// -1 means keep indefinitely. Positive values are minutes (1..=1440).
+/// Default inactivity window before Thuki releases the active model from local
+/// memory. Unified across both local providers (built-in engine and Ollama);
+/// not applicable to a remote OpenAI-compatible server, whose residency Thuki
+/// does not manage.
+/// 0 means use the provider's natural short default (~5 min): Ollama defers to
+/// its own 5-minute timer, the built-in engine applies its own ~5-minute timer
+/// (see `DEFAULT_BUILTIN_IDLE_MINUTES`).
+/// -1 means keep resident indefinitely. Positive values are minutes (1..=1440).
 pub const DEFAULT_KEEP_WARM_INACTIVITY_MINUTES: i32 = 0;
 
 /// Ollama context window size (tokens) sent with every /api/chat request.
@@ -62,18 +68,20 @@ pub const DEFAULT_NUM_CTX: u32 = 16384;
 pub const BOUNDS_NUM_CTX: (u32, u32) = (2048, 1_048_576);
 
 /// Accepted range for `keep_warm_inactivity_minutes`.
-/// -1 = never release, 0 = disabled (Ollama default), 1..=1440 = explicit timeout.
-/// Values below -1 or above 1440 are clamped to the compiled default.
+/// -1 = keep resident forever, 0 = provider's natural short default (~5 min),
+/// 1..=1440 = explicit timeout. Values below -1 or above 1440 are clamped to
+/// the compiled default.
 pub const BOUNDS_KEEP_WARM_INACTIVITY_MINUTES: (i32, i32) = (-1, 1440);
 
-/// Minutes of inactivity before Thuki stops the built-in engine to free RAM.
-/// 0 disables auto-unload: the model stays loaded and the first token stays
-/// instant (the default). Positive values free RAM after N idle minutes at
-/// the cost of a cold reload on the next message. Applies to the built-in engine only; the
-/// Ollama provider keeps `keep_warm_inactivity_minutes` (note the different
-/// meaning of 0 there: "use Ollama's own default").
-pub const DEFAULT_IDLE_UNLOAD_MINUTES: u32 = 0;
-pub const BOUNDS_IDLE_UNLOAD_MINUTES: (u32, u32) = (0, 1440);
+/// The built-in engine's idle-unload timer (minutes) for the unified
+/// `keep_warm_inactivity_minutes = 0` sentinel. The built-in engine has no
+/// external daemon to defer to, so `0` ("use the provider's natural short
+/// default") resolves to this fixed ~5-minute timer. Baked in, not tunable:
+/// it is the fixed translation of one sentinel value, not a preference; users
+/// who want a different timeout set `keep_warm_inactivity_minutes` directly
+/// (`N` minutes or `-1` for forever). `warmup::builtin_idle_minutes` maps the
+/// sentinel onto the runner's `idle_minutes` convention.
+pub const DEFAULT_BUILTIN_IDLE_MINUTES: u32 = 5;
 
 // Built-in engine lifecycle constants: baked in because they define the
 // engine runner's startup and idle-check contract, not a user preference.
@@ -101,8 +109,8 @@ pub const ENGINE_HEALTH_PROBE_TIMEOUT_SECS: u64 = 5;
 
 /// Interval (seconds) between idle-unload checks in the engine runner. Not
 /// user-tunable: internal timer granularity behind the user-facing
-/// `idle_unload_minutes` knob; 30 s keeps the unload within a minute-scale
-/// setting's precision at negligible cost.
+/// `keep_warm_inactivity_minutes` knob; 30 s keeps the unload within a
+/// minute-scale setting's precision at negligible cost.
 pub const ENGINE_IDLE_CHECK_INTERVAL_SECS: u64 = 30;
 
 /// Capacity of the engine runner command queue. Not user-tunable: bounds
@@ -418,7 +426,6 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     // [inference] — active_provider and the providers array are not flat fields;
     // they are written via set_active_model / set_ollama_url, not set_config_field.
     ("inference", "keep_warm_inactivity_minutes"),
-    ("inference", "idle_unload_minutes"),
     ("inference", "num_ctx"),
     // [prompt]
     ("prompt", "system"),

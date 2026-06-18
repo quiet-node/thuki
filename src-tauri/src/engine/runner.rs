@@ -65,7 +65,7 @@ enum Command {
 
 /// RAII marker for an in-flight LLM request against the engine. While at
 /// least one guard is alive the idle sweep treats the engine as active, so
-/// `idle_unload_minutes` can never kill the sidecar mid-generation (cold
+/// the idle timer can never kill the sidecar mid-generation (cold
 /// ensure, prefill, and body streaming included). Explicit `unload` and
 /// `shutdown` are deliberately NOT blocked by guards: a user-driven eviction
 /// or app quit always wins over an in-flight request.
