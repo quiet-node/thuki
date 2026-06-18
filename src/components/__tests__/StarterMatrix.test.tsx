@@ -249,9 +249,7 @@ describe('StarterMatrix (picker)', () => {
       downloadingTier: 'fast',
     });
     // 3.3e9 / 2e5 = 16500s -> 4h 35m (speed feeds the ETA, but is not shown).
-    expect(
-      screen.getByText('0.0 / 3.3 GB · 4h 35m left'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('0.0 / 3.3 GB · 4h 35m left')).toBeInTheDocument();
   });
 
   it('shows "Starting…" before the first combined byte arrives', () => {

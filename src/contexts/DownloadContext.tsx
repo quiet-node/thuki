@@ -57,6 +57,16 @@ export interface DownloadContextValue extends UseDownloadModel {
     option: StarterOption,
     partialBytes: number,
   ) => void;
+  /** True while a started download has been paused (cancelled, partial kept). */
+  isPaused: boolean;
+  /** Bytes downloaded at the moment of pause, for the paused strip's percent. */
+  pausedBytes: number;
+  /** Pause the in-flight download: cancel it; the partial stays on disk. */
+  pauseDownload: () => void;
+  /** Resume a paused download from where it stopped. */
+  resumeFromPause: () => void;
+  /** Discard a paused download's partial and clear the active option. */
+  discardActive: () => void;
 }
 
 const DownloadContext = createContext<DownloadContextValue | null>(null);
@@ -68,14 +78,17 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   );
   const [resumeSeedBytes, setResumeSeedBytes] = useState<number | null>(null);
   const [activeOption, setActiveOption] = useState<StarterOption | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
+  const [pausedBytes, setPausedBytes] = useState(0);
 
-  const { start, resume } = download;
+  const { start, resume, cancel, discard, combinedBytes } = download;
 
   const beginDownload = useCallback(
     (tier: StarterTier, option: StarterOption) => {
       setResumeSeedBytes(null);
       setDownloadingTier(tier);
       setActiveOption(option);
+      setIsPaused(false);
       void start(tier);
     },
     [start],
@@ -86,10 +99,32 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       setResumeSeedBytes(partialBytes);
       setDownloadingTier(tier);
       setActiveOption(option);
+      setIsPaused(false);
       void resume(tier);
     },
     [resume],
   );
+
+  const pauseDownload = useCallback(() => {
+    // Remember how far we got so the paused strip can show the percent, then
+    // cancel the run (the backend keeps the partial on disk for resume).
+    setPausedBytes(combinedBytes ?? 0);
+    setIsPaused(true);
+    void cancel();
+  }, [combinedBytes, cancel]);
+
+  const resumeFromPause = useCallback(() => {
+    // Only reachable from the paused strip, which renders only when a download
+    // was started, so the active option is always set here.
+    setIsPaused(false);
+    resumeDownload(activeOption!.starter.tier, activeOption!, pausedBytes);
+  }, [activeOption, pausedBytes, resumeDownload]);
+
+  const discardActive = useCallback(() => {
+    setIsPaused(false);
+    void discard(activeOption!.starter.sha256);
+    setActiveOption(null);
+  }, [activeOption, discard]);
 
   const grandTotalBytes =
     activeOption === null
@@ -105,6 +140,11 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       grandTotalBytes,
       beginDownload,
       resumeDownload,
+      isPaused,
+      pausedBytes,
+      pauseDownload,
+      resumeFromPause,
+      discardActive,
     }),
     [
       download,
@@ -114,6 +154,11 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       grandTotalBytes,
       beginDownload,
       resumeDownload,
+      isPaused,
+      pausedBytes,
+      pauseDownload,
+      resumeFromPause,
+      discardActive,
     ],
   );
 

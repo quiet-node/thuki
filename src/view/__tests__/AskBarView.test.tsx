@@ -113,7 +113,12 @@ describe('AskBarView', () => {
         onSubmit={vi.fn()}
         onCancel={vi.fn()}
         inputRef={makeRef()}
-        downloadStatus={{ kind: 'downloading', percent: 40, etaSeconds: 90 }}
+        downloadStatus={{
+          kind: 'downloading',
+          percent: 40,
+          etaSeconds: 90,
+          onPause: vi.fn(),
+        }}
       />,
     );
     expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
@@ -137,6 +142,69 @@ describe('AskBarView', () => {
     expect(
       screen.queryByTestId('download-status-strip'),
     ).not.toBeInTheDocument();
+  });
+
+  it('disables the send button while a model is downloading, even with text typed', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query="Hello?"
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        downloadStatus={{
+          kind: 'downloading',
+          percent: 58,
+          etaSeconds: 180,
+          onPause: vi.fn(),
+        }}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+  });
+
+  it('keeps the send button disabled while a download is paused', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query="Hello?"
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        downloadStatus={{
+          kind: 'paused',
+          percent: 58,
+          onResume: vi.fn(),
+          onDiscard: vi.fn(),
+        }}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+  });
+
+  it('keeps the send button enabled once the download is ready', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query="Hello?"
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        downloadStatus={{ kind: 'ready' }}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Send message' }),
+    ).not.toBeDisabled();
   });
 
   it('calls setQuery when the editor text changes', async () => {

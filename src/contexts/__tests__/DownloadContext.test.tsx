@@ -5,10 +5,17 @@ import { DownloadProvider, useDownloadCtx } from '../DownloadContext';
 import {
   invoke,
   enableChannelCapture,
+  getLastChannel,
   resetChannelCapture,
   clearEventHandlers,
+  type Channel,
 } from '../../testUtils/mocks/tauri';
-import type { StarterOption } from '../../types/starter';
+import type { DownloadEvent, StarterOption } from '../../types/starter';
+
+/** The captured download channel, typed for simulateMessage calls. */
+function channel(): Channel<DownloadEvent> {
+  return getLastChannel() as Channel<DownloadEvent>;
+}
 
 function option(
   overrides: Partial<StarterOption['starter']> = {},
@@ -114,6 +121,92 @@ describe('DownloadContext', () => {
     expect(invoke).toHaveBeenCalledWith('download_starter', {
       tier: 'fast',
       onEvent: expect.anything(),
+    });
+  });
+
+  it('pauseDownload remembers the bytes so far and cancels the run', async () => {
+    const { result } = renderHook(() => useDownloadCtx(), { wrapper });
+    const opt = option();
+
+    await act(async () => {
+      result.current.beginDownload('balanced', opt);
+    });
+    act(() =>
+      channel().simulateMessage({
+        type: 'Started',
+        data: { file: 'weights.gguf', total_bytes: 100, resumed_from: 0 },
+      }),
+    );
+    act(() =>
+      channel().simulateMessage({
+        type: 'Progress',
+        data: { file: 'weights.gguf', bytes: 60, total_bytes: 100 },
+      }),
+    );
+
+    await act(async () => {
+      result.current.pauseDownload();
+    });
+
+    expect(result.current.isPaused).toBe(true);
+    expect(result.current.pausedBytes).toBe(60);
+    expect(invoke).toHaveBeenCalledWith('cancel_model_download');
+  });
+
+  it('pauseDownload defaults to zero bytes before the first event arrives', async () => {
+    const { result } = renderHook(() => useDownloadCtx(), { wrapper });
+
+    await act(async () => {
+      result.current.beginDownload('balanced', option());
+    });
+    await act(async () => {
+      result.current.pauseDownload();
+    });
+
+    expect(result.current.isPaused).toBe(true);
+    expect(result.current.pausedBytes).toBe(0);
+  });
+
+  it('resumeFromPause restarts the download and clears the paused flag', async () => {
+    const { result } = renderHook(() => useDownloadCtx(), { wrapper });
+    const opt = option();
+
+    await act(async () => {
+      result.current.beginDownload('balanced', opt);
+    });
+    await act(async () => {
+      result.current.pauseDownload();
+    });
+    await act(async () => {
+      result.current.resumeFromPause();
+    });
+
+    expect(result.current.isPaused).toBe(false);
+    expect(result.current.downloadingTier).toBe('balanced');
+    expect(
+      invoke.mock.calls.filter((c) => c[0] === 'download_starter'),
+    ).toHaveLength(2);
+  });
+
+  it('discardActive discards the partial and clears the active option', async () => {
+    const { result } = renderHook(() => useDownloadCtx(), { wrapper });
+    const opt = option({ sha256: 'deadbeef' });
+
+    await act(async () => {
+      result.current.beginDownload('balanced', opt);
+    });
+    await act(async () => {
+      result.current.pauseDownload();
+    });
+    await act(async () => {
+      result.current.discardActive();
+    });
+
+    expect(result.current.isPaused).toBe(false);
+    expect(result.current.activeOption).toBeNull();
+    expect(result.current.grandTotalBytes).toBeNull();
+    expect(invoke).toHaveBeenCalledWith('discard_partial_download', {
+      sha256: 'deadbeef',
     });
   });
 });

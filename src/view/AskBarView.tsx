@@ -264,8 +264,15 @@ export function AskBarView({
 
   /** True when the UI should be locked - either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
+  // A built-in model still downloading (or paused mid-download) holds the
+  // submit (App soft-blocks it), so the send affordance is greyed to match:
+  // the input stays editable for drafting, but there is nothing to send yet.
+  const isDownloadHolding =
+    downloadStatus?.kind === 'downloading' || downloadStatus?.kind === 'paused';
   const canSubmit =
-    (query.trim().length > 0 || attachedImages.length > 0) && !isBusy;
+    (query.trim().length > 0 || attachedImages.length > 0) &&
+    !isBusy &&
+    !isDownloadHolding;
   const isAtMaxImages = attachedImages.length >= maxImages;
 
   /** True briefly after a paste attempt is rejected because max images reached. */

@@ -435,6 +435,11 @@ function App() {
     grandTotalBytes: downloadGrandTotalBytes,
     speedBytesPerSec: downloadSpeedBytesPerSec,
     retry: retryDownload,
+    isPaused: isDownloadPaused,
+    pausedBytes: downloadPausedBytes,
+    pauseDownload,
+    resumeFromPause,
+    discardActive,
   } = download;
   const downloadPhase = download.state.phase;
 
@@ -2437,6 +2442,21 @@ function App() {
    * settled phases (idle, confirm, resume), so no strip renders.
    */
   const downloadStripStatus = useMemo<DownloadStripStatus | null>(() => {
+    // Paused overrides the machine phase (which is idle after a cancel): the
+    // strip stays, now offering Resume / Discard.
+    if (isDownloadPaused) {
+      const total = downloadGrandTotalBytes;
+      const percent =
+        total !== null && total > 0
+          ? Math.min(100, Math.floor((downloadPausedBytes / total) * 100))
+          : 0;
+      return {
+        kind: 'paused',
+        percent,
+        onResume: resumeFromPause,
+        onDiscard: discardActive,
+      };
+    }
     if (downloadPhase === 'ready') return { kind: 'ready' };
     if (downloadPhase === 'failed') {
       return {
@@ -2456,26 +2476,36 @@ function App() {
         bytes !== null && total !== null && downloadSpeedBytesPerSec !== null
           ? Math.max(0, Math.round((total - bytes) / downloadSpeedBytesPerSec))
           : null;
-      return { kind: 'downloading', percent, etaSeconds };
+      return {
+        kind: 'downloading',
+        percent,
+        etaSeconds,
+        onPause: pauseDownload,
+      };
     }
     return null;
   }, [
+    isDownloadPaused,
+    downloadPausedBytes,
     downloadPhase,
     downloadCombinedBytes,
     downloadResumeSeedBytes,
     downloadGrandTotalBytes,
     downloadSpeedBytesPerSec,
     retryDownload,
+    pauseDownload,
+    resumeFromPause,
+    discardActive,
   ]);
 
   /**
-   * True while a built-in model is still downloading. Drives the submit
+   * True while a built-in model download is active OR paused. Drives the submit
    * soft-block: a calm hold (no shake, no queue) because the ambient strip
-   * already shows the ETA.
+   * already shows the ETA (or the paused Resume / Discard choice).
    */
-  const isBuiltinDownloadInFlight =
+  const isBuiltinDownloadActive =
     config.inference.activeProviderKind === 'builtin' &&
-    isDownloadInFlight(downloadPhase);
+    (isDownloadInFlight(downloadPhase) || isDownloadPaused);
 
   const liveCapabilityConflictMessage = useMemo(() => {
     // The ambient download strip owns the messaging while a download is
@@ -2717,11 +2747,11 @@ function App() {
       (utilityTrigger !== undefined &&
         (hasScreen || attachedImages.length > 0));
 
-    // Built-in download soft-block. While the model is still downloading in
-    // the background, hold the submit calmly: no shake, nothing queued. The
-    // ambient strip already shows the ETA, so the refusal needs no extra cue.
-    // Checked before the shake gate below so the wait never reads as an error.
-    if (!isOcrPath && isBuiltinDownloadInFlight) {
+    // Built-in download soft-block. While the model is still downloading (or
+    // paused mid-download), hold the submit calmly: no shake, nothing queued.
+    // The ambient strip already shows the state, so the refusal needs no extra
+    // cue. Checked before the shake gate below so the wait never reads as error.
+    if (!isOcrPath && isBuiltinDownloadActive) {
       return;
     }
 
@@ -2914,7 +2944,7 @@ function App() {
     searchActive,
     quote.maxContextLength,
     hasBlockingConflict,
-    isBuiltinDownloadInFlight,
+    isBuiltinDownloadActive,
   ]);
 
   // When a pending submit exists and all images finish processing, dispatch
@@ -3342,8 +3372,10 @@ function App() {
         />
         {/* Ambient download strip over the intro tour: IntroStep is a
             self-contained full-screen modal with no footer, so the strip
-            floats at the bottom while the background download finishes. Not
-            shown during model_check (the matrix's own bar covers it). */}
+            floats at the bottom while the background download finishes. The
+            strip is borderless (it inherits its surface), so the floating
+            container supplies the ask-bar-style surface here. Not shown during
+            model_check (the matrix's own bar covers it). */}
         {onboardingStage === 'intro' && downloadStripStatus ? (
           <div
             style={{
@@ -3357,7 +3389,17 @@ function App() {
               zIndex: 50,
             }}
           >
-            <div style={{ width: 420, pointerEvents: 'auto' }}>
+            <div
+              style={{
+                width: 420,
+                pointerEvents: 'auto',
+                padding: '6px 0 10px',
+                background: 'rgba(28,24,20,0.97)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: 16,
+                boxShadow: '0 18px 50px -20px rgba(0,0,0,0.8)',
+              }}
+            >
               <DownloadStatusStrip status={downloadStripStatus} />
             </div>
           </div>

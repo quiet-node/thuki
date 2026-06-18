@@ -74,6 +74,11 @@ function makeDownloadCtx(
     grandTotalBytes: null,
     beginDownload: vi.fn(),
     resumeDownload: vi.fn(),
+    isPaused: false,
+    pausedBytes: 0,
+    pauseDownload: vi.fn(),
+    resumeFromPause: vi.fn(),
+    discardActive: vi.fn(),
     ...overrides,
   };
 }
@@ -7877,6 +7882,117 @@ describe('App', () => {
         (c) => c[0] === 'get_model_picker_state',
       ).length;
       expect(after).toBeGreaterThan(before);
+    });
+
+    it('pauses the download from the ask-bar strip', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      const pauseDownload = vi.fn();
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 4_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 8_000_000,
+        pauseDownload,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Pause download' }));
+      });
+      expect(pauseDownload).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a paused strip with Resume / Discard and the held percent', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      const resumeFromPause = vi.fn();
+      const discardActive = vi.fn();
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'idle' },
+        isPaused: true,
+        pausedBytes: 5_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        resumeFromPause,
+        discardActive,
+      });
+
+      const { rerender } = render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('Paused · 50%')).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Resume download' }),
+        );
+      });
+      expect(resumeFromPause).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Discard download' }),
+        );
+      });
+      expect(discardActive).toHaveBeenCalledTimes(1);
+
+      // Grand total unknown while paused falls back to 0%.
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'idle' },
+        isPaused: true,
+        pausedBytes: 5_000_000_000,
+        grandTotalBytes: null,
+      });
+      await act(async () => {
+        rerender(builtinTree());
+      });
+      expect(screen.getByText('Paused · 0%')).toBeInTheDocument();
+    });
+
+    it('soft-blocks submit while the download is paused', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'idle' },
+        isPaused: true,
+        pausedBytes: 5_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      act(() => {
+        setAskValue('hello');
+      });
+      invoke.mockClear();
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(
+        invoke.mock.calls.filter((c) => c[0] === 'ask_model'),
+      ).toHaveLength(0);
     });
 
     it('floats the strip over the intro tour, but not during model_check or when idle', async () => {
