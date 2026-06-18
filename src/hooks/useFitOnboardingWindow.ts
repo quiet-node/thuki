@@ -15,10 +15,12 @@ import { LogicalSize } from '@tauri-apps/api/dpi';
  *
  * Measurement uses `offsetWidth`/`offsetHeight` (the layout border box), which
  * ignores the card's entrance transform, and runs in a layout effect so the
- * resize happens before paint and the strip never flashes clipped.
+ * resize happens before paint and the card never flashes clipped.
  *
- * `changeKey` is any value that changes when the card height changes (the
- * ambient download status). The fit re-runs whenever it changes identity.
+ * A `ResizeObserver` re-fits on ANY later content change (async data loading
+ * in, a conditional line appearing), so the window can never end up shorter
+ * than the card and clip its bottom. `changeKey` forces an immediate re-fit
+ * for the known triggers without waiting for the observer's next callback.
  */
 export function useFitOnboardingWindow(
   ref: RefObject<HTMLElement | null>,
@@ -27,13 +29,19 @@ export function useFitOnboardingWindow(
   useLayoutEffect(() => {
     const node = ref.current;
     if (!node) return;
-    const width = node.offsetWidth;
-    const height = node.offsetHeight;
-    if (width === 0 || height === 0) return;
-    void (async () => {
-      const win = getCurrentWindow();
-      await win.setSize(new LogicalSize(width, height));
-      await win.center();
-    })();
+    const fit = () => {
+      const width = node.offsetWidth;
+      const height = node.offsetHeight;
+      if (width === 0 || height === 0) return;
+      void (async () => {
+        const win = getCurrentWindow();
+        await win.setSize(new LogicalSize(width, height));
+        await win.center();
+      })();
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(node);
+    return () => observer.disconnect();
   }, [ref, changeKey]);
 }

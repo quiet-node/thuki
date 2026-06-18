@@ -290,6 +290,7 @@ function LabelColumn() {
   return (
     <div style={{ width: 104, flexShrink: 0 }}>
       <div style={{ height: HEADER_H }} />
+      {cell('Size')}
       {cell('Speed')}
       {cell('Quality')}
       {cell('Vision')}
@@ -357,7 +358,8 @@ function TierColumn({
           : 'transparent',
       }}
     >
-      {/* Header: tier eyebrow, then name + size on one line */}
+      {/* Header: tier eyebrow, then the model name (size moved to its own row
+          so it never truncates next to a long name). */}
       <div style={{ height: HEADER_H, padding: '11px 14px 0' }}>
         <div
           style={{
@@ -377,29 +379,21 @@ function TierColumn({
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
+            fontSize: 15,
+            fontWeight: 700,
+            color: '#fff',
+            letterSpacing: '-0.2px',
           }}
         >
-          <span
-            style={{
-              fontSize: 15,
-              fontWeight: 700,
-              color: '#fff',
-              letterSpacing: '-0.2px',
-            }}
-          >
-            {starter.display_name}
-          </span>
-          <span
-            style={{
-              fontSize: 12,
-              color: 'rgba(255,255,255,0.42)',
-              marginLeft: 7,
-            }}
-          >
-            {gb(totalBytes(option))} GB
-          </span>
+          {starter.display_name}
         </div>
       </div>
+
+      <ValueCell>
+        <span style={{ color: '#fff', fontWeight: 600 }}>
+          {gb(totalBytes(option))} GB
+        </span>
+      </ValueCell>
 
       <BarCell level={levels.speed} />
       <BarCell level={levels.quality} />
