@@ -12,9 +12,12 @@ use serde_json::json;
 use toml_edit::DocumentMut;
 
 use super::{
+    add_openai_provider_to_disk, builtin_deactivated, cleanup_provider_secrets,
     coerce_json_to_toml, idle_unload_minutes_changed, is_allowed_field, is_allowed_section,
-    json_type_name, json_value_to_toml_item, patch_document, read_document, reset_section_on_disk,
-    trace_enabled_changed, write_field_to_disk, write_provider_field_to_disk,
+    is_http_url, json_type_name, json_value_to_toml_item, patch_document, read_document,
+    remove_openai_provider_from_disk, reset_section_on_disk, trace_enabled_changed,
+    validate_provider_value, write_active_provider_to_disk, write_field_to_disk,
+    write_provider_field_to_disk,
 };
 use crate::config::defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS};
 use crate::config::{AppConfig, ConfigError};
@@ -76,6 +79,36 @@ kind = "ollama"
 label = "Ollama"
 base_url = "http://127.0.0.1:11434"
 model = ""
+"#;
+
+/// PROVIDERS_CONFIG plus an OpenAI-compatible entry, for the add/remove/update
+/// provider tests.
+const OPENAI_PROVIDERS_CONFIG: &str = r#"
+[inference]
+active_provider = "ollama"
+num_ctx = 16384
+keep_warm_inactivity_minutes = 0
+
+[[inference.providers]]
+id = "builtin"
+kind = "builtin"
+label = "Built-in (Thuki)"
+model = ""
+
+[[inference.providers]]
+id = "ollama"
+kind = "ollama"
+label = "Ollama"
+base_url = "http://127.0.0.1:11434"
+model = ""
+
+[[inference.providers]]
+id = "openai"
+kind = "openai"
+label = "LM Studio"
+base_url = "http://127.0.0.1:1234"
+model = ""
+vision = false
 "#;
 
 // ─── ALLOWED_FIELDS / ALLOWED_SECTIONS ──────────────────────────────────────
@@ -853,11 +886,161 @@ fn write_provider_field_rejects_unknown_field() {
     let dir = tempdir();
     let path = dir.join("config.toml");
     std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
-    let err = write_provider_field_to_disk(&path, "ollama", "label", "x").unwrap_err();
+    let err = write_provider_field_to_disk(&path, "ollama", "id", "x").unwrap_err();
     match err {
-        ConfigError::UnknownField { key, .. } => assert_eq!(key, "label"),
+        ConfigError::UnknownField { key, .. } => assert_eq!(key, "id"),
         other => panic!("expected UnknownField, got {other:?}"),
     }
+}
+
+#[test]
+fn write_provider_field_patches_label() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+
+    let resolved = write_provider_field_to_disk(&path, "ollama", "label", "  My Ollama  ").unwrap();
+    let ollama = resolved
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == "ollama")
+        .unwrap();
+    assert_eq!(ollama.label, "My Ollama");
+}
+
+#[test]
+fn write_provider_field_heals_empty_openai_label_to_default() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, OPENAI_PROVIDERS_CONFIG).unwrap();
+
+    let resolved = write_provider_field_to_disk(&path, "openai", "label", "   ").unwrap();
+    let openai = resolved
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == "openai")
+        .unwrap();
+    assert_eq!(openai.label, crate::config::defaults::DEFAULT_OPENAI_LABEL);
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains(crate::config::defaults::DEFAULT_OPENAI_LABEL));
+}
+
+#[test]
+fn validate_provider_value_heals_only_empty_openai_labels() {
+    // Non-empty labels trim for every kind.
+    let item = validate_provider_value("openai", "label", "  Jan  ").unwrap();
+    assert_eq!(item.as_str(), Some("Jan"));
+    // A trimmed-empty label on a non-openai kind is not healed.
+    let item = validate_provider_value("ollama", "label", "   ").unwrap();
+    assert_eq!(item.as_str(), Some(""));
+    // A trimmed-empty label on the openai kind heals to the default.
+    let item = validate_provider_value("openai", "label", "").unwrap();
+    assert_eq!(
+        item.as_str(),
+        Some(crate::config::defaults::DEFAULT_OPENAI_LABEL)
+    );
+}
+
+#[test]
+fn write_provider_field_patches_vision_as_boolean() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, OPENAI_PROVIDERS_CONFIG).unwrap();
+
+    let resolved = write_provider_field_to_disk(&path, "openai", "vision", "true").unwrap();
+    let openai = resolved
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == "openai")
+        .unwrap();
+    assert!(openai.vision);
+
+    // Stored as a real TOML boolean, not the string "true".
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("vision = true"));
+
+    let resolved = write_provider_field_to_disk(&path, "openai", "vision", "false").unwrap();
+    let openai = resolved
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == "openai")
+        .unwrap();
+    assert!(!openai.vision);
+}
+
+#[test]
+fn write_provider_field_rejects_malformed_vision_value() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, OPENAI_PROVIDERS_CONFIG).unwrap();
+    let err = write_provider_field_to_disk(&path, "openai", "vision", "yes").unwrap_err();
+    match err {
+        ConfigError::TypeMismatch { key, .. } => assert_eq!(key, "vision"),
+        other => panic!("expected TypeMismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_provider_field_rejects_non_http_base_url() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+    let err = write_provider_field_to_disk(&path, "ollama", "base_url", "ftp://x").unwrap_err();
+    match err {
+        ConfigError::TypeMismatch { key, message, .. } => {
+            assert_eq!(key, "base_url");
+            assert!(message.contains("http://"));
+        }
+        other => panic!("expected TypeMismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_provider_field_rejects_builtin_base_url() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+    let err =
+        write_provider_field_to_disk(&path, "builtin", "base_url", "http://10.0.0.1").unwrap_err();
+    match err {
+        ConfigError::TypeMismatch { message, .. } => {
+            assert!(message.contains("built-in"));
+        }
+        other => panic!("expected TypeMismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn validate_provider_value_rejects_field_outside_allowlist() {
+    // The wrapper gates the field name first, so this arm is only reachable
+    // by calling the helper directly; cover it here.
+    let err = validate_provider_value("ollama", "kind", "x").unwrap_err();
+    match err {
+        ConfigError::UnknownField { key, .. } => assert_eq!(key, "kind"),
+        other => panic!("expected UnknownField, got {other:?}"),
+    }
+}
+
+// ─── is_http_url ─────────────────────────────────────────────────────────────
+
+#[test]
+fn is_http_url_accepts_http_and_https_with_surrounding_whitespace() {
+    assert!(is_http_url("http://127.0.0.1:1234"));
+    assert!(is_http_url("https://example.com/v1"));
+    assert!(is_http_url("  http://host  "));
+}
+
+#[test]
+fn is_http_url_rejects_other_schemes_and_empty() {
+    assert!(!is_http_url(""));
+    assert!(!is_http_url("   "));
+    assert!(!is_http_url("ftp://host"));
+    assert!(!is_http_url("127.0.0.1:1234"));
 }
 
 #[test]
@@ -890,6 +1073,332 @@ fn write_provider_field_propagates_read_error_for_missing_file() {
     let dir = tempdir();
     let path = dir.join("missing.toml");
     let err = write_provider_field_to_disk(&path, "ollama", "model", "x").unwrap_err();
+    matches!(err, ConfigError::IoError { .. });
+}
+
+// ─── write_active_provider_to_disk ──────────────────────────────────────────
+
+#[test]
+fn set_active_provider_updates_active_and_mirror() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+
+    // Give the builtin provider a model first, so the mirror decision below
+    // exercises the Some(non-empty) arm the command relies on.
+    write_provider_field_to_disk(&path, "builtin", "model", "org/repo:w.gguf").unwrap();
+
+    let resolved = write_active_provider_to_disk(&path, "builtin").unwrap();
+    assert_eq!(resolved.inference.active_provider, "builtin");
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("active_provider = \"builtin\""));
+
+    // The command refreshes the ActiveModelState mirror through this exact
+    // decision helper: the new active provider's model, empty mapped to None.
+    assert_eq!(
+        crate::models::should_refresh_active_model("builtin", &resolved),
+        Some(Some("org/repo:w.gguf".to_string()))
+    );
+
+    // Switching back to a provider with no model clears the mirror.
+    let resolved = write_active_provider_to_disk(&path, "ollama").unwrap();
+    assert_eq!(resolved.inference.active_provider, "ollama");
+    assert_eq!(
+        crate::models::should_refresh_active_model("ollama", &resolved),
+        Some(None)
+    );
+}
+
+#[test]
+fn set_active_provider_rejects_unknown_id() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+    let err = write_active_provider_to_disk(&path, "ghost").unwrap_err();
+    match err {
+        ConfigError::UnknownField { section, key } => {
+            assert_eq!(section, "inference.providers");
+            assert_eq!(key, "ghost");
+        }
+        other => panic!("expected UnknownField, got {other:?}"),
+    }
+    // The file is untouched: the active provider pointer keeps its old value.
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("active_provider = \"ollama\""));
+}
+
+#[test]
+fn set_active_provider_errors_when_no_providers_array() {
+    // SAMPLE_CONFIG is the pre-providers shape (no [[inference.providers]]).
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+    let err = write_active_provider_to_disk(&path, "ollama").unwrap_err();
+    match err {
+        ConfigError::UnknownSection { section } => assert_eq!(section, "inference.providers"),
+        other => panic!("expected UnknownSection, got {other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn set_active_provider_propagates_io_error_when_parent_dir_is_readonly() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+
+    let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+    perms.set_mode(0o500);
+    std::fs::set_permissions(&dir, perms.clone()).unwrap();
+
+    let err = write_active_provider_to_disk(&path, "builtin").unwrap_err();
+
+    // Restore writability so the OS can clean up the tempdir later.
+    let mut restore = perms;
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&dir, restore).unwrap();
+
+    matches!(err, ConfigError::IoError { .. });
+}
+
+// ─── add_openai_provider_to_disk ─────────────────────────────────────────────
+
+#[test]
+fn add_openai_appends_provider_with_custom_label() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+
+    let resolved =
+        add_openai_provider_to_disk(&path, "LM Studio", "http://127.0.0.1:1234").unwrap();
+    let openai = resolved
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.kind == "openai")
+        .unwrap();
+    assert_eq!(openai.id, "openai");
+    assert_eq!(openai.label, "LM Studio");
+    assert_eq!(openai.base_url, "http://127.0.0.1:1234");
+    assert_eq!(openai.model, "");
+    assert!(!openai.vision);
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("kind = \"openai\""));
+    assert!(on_disk.contains("http://127.0.0.1:1234"));
+}
+
+#[test]
+fn add_openai_defaults_empty_label() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+
+    let resolved = add_openai_provider_to_disk(&path, "   ", "https://10.0.0.5:1234").unwrap();
+    let openai = resolved
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.kind == "openai")
+        .unwrap();
+    assert_eq!(openai.label, "OpenAI-compatible");
+}
+
+#[test]
+fn add_openai_rejects_non_http_base_url() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+    let err = add_openai_provider_to_disk(&path, "x", "localhost:1234").unwrap_err();
+    match err {
+        ConfigError::TypeMismatch { key, .. } => assert_eq!(key, "base_url"),
+        other => panic!("expected TypeMismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn add_openai_rejects_second_openai_provider() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, OPENAI_PROVIDERS_CONFIG).unwrap();
+    let err = add_openai_provider_to_disk(&path, "Another", "http://127.0.0.1:9999").unwrap_err();
+    match err {
+        ConfigError::TypeMismatch { message, .. } => {
+            assert!(message.contains("already exists"));
+        }
+        other => panic!("expected TypeMismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn add_openai_errors_when_no_providers_array() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+    let err = add_openai_provider_to_disk(&path, "x", "http://127.0.0.1:1234").unwrap_err();
+    match err {
+        ConfigError::UnknownSection { section } => assert_eq!(section, "inference.providers"),
+        other => panic!("expected UnknownSection, got {other:?}"),
+    }
+}
+
+#[test]
+fn add_openai_propagates_read_error_for_missing_file() {
+    let dir = tempdir();
+    let path = dir.join("missing.toml");
+    let err = add_openai_provider_to_disk(&path, "x", "http://127.0.0.1:1234").unwrap_err();
+    matches!(err, ConfigError::IoError { .. });
+}
+
+#[cfg(unix)]
+#[test]
+fn add_openai_propagates_io_error_when_parent_dir_is_readonly() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+
+    let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+    perms.set_mode(0o500);
+    std::fs::set_permissions(&dir, perms.clone()).unwrap();
+
+    let err = add_openai_provider_to_disk(&path, "x", "http://127.0.0.1:1234").unwrap_err();
+
+    let mut restore = perms;
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&dir, restore).unwrap();
+
+    matches!(err, ConfigError::IoError { .. });
+}
+
+// ─── remove_openai_provider_from_disk ────────────────────────────────────────
+
+#[test]
+fn remove_openai_deletes_entry_and_keeps_active_pointer() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, OPENAI_PROVIDERS_CONFIG).unwrap();
+
+    let (resolved, removed_ids) = remove_openai_provider_from_disk(&path).unwrap();
+    assert!(!resolved
+        .inference
+        .providers
+        .iter()
+        .any(|p| p.kind == "openai"));
+    // Active was "ollama" and stays "ollama".
+    assert_eq!(resolved.inference.active_provider, "ollama");
+    // The removed ids feed the Keychain cleanup in the command wrapper.
+    assert_eq!(removed_ids, vec!["openai".to_string()]);
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(!on_disk.contains("kind = \"openai\""));
+}
+
+#[test]
+fn remove_openai_returns_custom_id_for_keychain_cleanup() {
+    // A hand-edited file can carry an arbitrary id on the openai-kind row;
+    // the frontend stores the API key under that id, so the removal must
+    // surface it for cleanup instead of assuming the fixed default id.
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    let custom = OPENAI_PROVIDERS_CONFIG.replace("id = \"openai\"", "id = \"my-llm\"");
+    std::fs::write(&path, custom).unwrap();
+
+    let (resolved, removed_ids) = remove_openai_provider_from_disk(&path).unwrap();
+    assert!(!resolved
+        .inference
+        .providers
+        .iter()
+        .any(|p| p.kind == "openai"));
+    assert_eq!(removed_ids, vec!["my-llm".to_string()]);
+
+    // Feeding the removed ids through the cleanup helper deletes exactly
+    // that id's secret and leaves unrelated entries alone.
+    let store = crate::keychain::FakeSecretStore::new();
+    use crate::keychain::SecretStore;
+    store.set("my-llm", "sk-custom").unwrap();
+    store.set("unrelated", "sk-keep").unwrap();
+    cleanup_provider_secrets(&store, &removed_ids);
+    assert_eq!(store.get("my-llm").unwrap(), None);
+    assert_eq!(store.get("unrelated").unwrap(), Some("sk-keep".to_string()));
+}
+
+#[test]
+fn cleanup_provider_secrets_skips_empty_ids() {
+    // A removed row missing an `id` collapses to "" in removed_ids; cleanup
+    // must skip it rather than issuing a delete for an empty account name.
+    let store = crate::keychain::FakeSecretStore::new();
+    use crate::keychain::SecretStore;
+    store.set("", "sentinel").unwrap();
+    store.set("openai", "sk-gone").unwrap();
+    cleanup_provider_secrets(&store, &[String::new(), "openai".to_string()]);
+    assert_eq!(store.get("").unwrap(), Some("sentinel".to_string()));
+    assert_eq!(store.get("openai").unwrap(), None);
+}
+
+#[test]
+fn remove_openai_falls_back_to_builtin_when_it_was_active() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, OPENAI_PROVIDERS_CONFIG).unwrap();
+    write_active_provider_to_disk(&path, "openai").unwrap();
+
+    let (resolved, _removed_ids) = remove_openai_provider_from_disk(&path).unwrap();
+    assert_eq!(resolved.inference.active_provider, "builtin");
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("active_provider = \"builtin\""));
+
+    // The command re-mirrors the in-memory active model through this exact
+    // decision helper: builtin has no model yet, so the mirror clears.
+    assert_eq!(
+        crate::models::should_refresh_active_model("builtin", &resolved),
+        Some(None)
+    );
+}
+
+#[test]
+fn remove_openai_errors_when_no_openai_provider() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, PROVIDERS_CONFIG).unwrap();
+    let err = remove_openai_provider_from_disk(&path).unwrap_err();
+    match err {
+        ConfigError::UnknownField { key, .. } => assert_eq!(key, "openai"),
+        other => panic!("expected UnknownField, got {other:?}"),
+    }
+}
+
+#[test]
+fn remove_openai_errors_when_no_providers_array() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+    let err = remove_openai_provider_from_disk(&path).unwrap_err();
+    match err {
+        ConfigError::UnknownSection { section } => assert_eq!(section, "inference.providers"),
+        other => panic!("expected UnknownSection, got {other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn remove_openai_propagates_io_error_when_parent_dir_is_readonly() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, OPENAI_PROVIDERS_CONFIG).unwrap();
+
+    let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+    perms.set_mode(0o500);
+    std::fs::set_permissions(&dir, perms.clone()).unwrap();
+
+    let err = remove_openai_provider_from_disk(&path).unwrap_err();
+
+    let mut restore = perms;
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&dir, restore).unwrap();
+
     matches!(err, ConfigError::IoError { .. });
 }
 
@@ -930,7 +1439,8 @@ fn reset_section_on_disk_replaces_named_section_with_defaults() {
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
 
     let resolved = reset_section_on_disk(&path, Some("inference")).unwrap();
-    assert_eq!(resolved.inference.active_provider, "ollama");
+    // Section reset restores compiled defaults: builtin active since Phase 2.
+    assert_eq!(resolved.inference.active_provider, "builtin");
     assert!(resolved
         .inference
         .providers
@@ -1080,6 +1590,48 @@ fn idle_unload_minutes_changed_returns_none_when_unchanged() {
     let mut cfg = AppConfig::default();
     cfg.inference.idle_unload_minutes = 45;
     assert_eq!(idle_unload_minutes_changed(45, &cfg), None);
+}
+
+// ─── builtin_deactivated ─────────────────────────────────────────────────────
+
+/// `AppConfig::default()` with the active provider pointed at `id` (the
+/// default providers list carries `builtin` and `ollama`).
+fn config_with_active(id: &str) -> AppConfig {
+    let mut cfg = AppConfig::default();
+    cfg.inference.active_provider = id.to_string();
+    cfg
+}
+
+#[test]
+fn builtin_deactivated_detects_switch_away_from_builtin() {
+    assert!(builtin_deactivated(
+        "builtin",
+        &config_with_active("ollama")
+    ));
+}
+
+#[test]
+fn builtin_deactivated_ignores_switch_onto_builtin() {
+    assert!(!builtin_deactivated(
+        "ollama",
+        &config_with_active("builtin")
+    ));
+}
+
+#[test]
+fn builtin_deactivated_ignores_non_builtin_transitions_and_no_ops() {
+    // ollama -> ollama: nothing changed.
+    assert!(!builtin_deactivated(
+        "ollama",
+        &config_with_active("ollama")
+    ));
+    // builtin -> builtin: still active; must not unload.
+    assert!(!builtin_deactivated(
+        "builtin",
+        &config_with_active("builtin")
+    ));
+    // Unresolved prior kind (empty) never counts as builtin.
+    assert!(!builtin_deactivated("", &config_with_active("ollama")));
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

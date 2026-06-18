@@ -125,11 +125,11 @@ To illustrate how hard this problem is: a naive approach might try to strip `<na
 
 ---
 
-### Ollama: the local AI model runner
+### The model provider: the local AI model runner
 
-[Ollama](https://ollama.com) is the piece that actually runs the AI model. It is a local server that loads a language model (such as Llama, Mistral, Qwen, or Gemma) into the computer's memory and responds to chat requests over a local API. Every time Thuki needs to "think," it sends a request to Ollama.
+The third piece is whatever runs the AI model: Thuki's **active provider**. By default that is the built-in inference engine (a bundled llama.cpp `llama-server` Thuki manages itself); it can also be a local [Ollama](https://ollama.com) install or any OpenAI-compatible local server. Whichever one is active, it is a local server that loads a language model (such as Gemma, Phi, Llama, Mistral, or Qwen) into the computer's memory and responds to chat requests over a local API. Every time Thuki needs to "think," it sends a request to the active provider.
 
-In the `/search` pipeline, Ollama is called three times in the typical case:
+In the `/search` pipeline, the model is called three times in the typical case:
 
 1. To analyze the query and decide what to do (one call).
 2. To judge whether retrieved sources are good enough to answer the question (one or more calls).
@@ -145,7 +145,7 @@ With those three services defined, here is the complete flow for a `/search` inv
 
 ```mermaid
 flowchart TD
-    A["User types /search &lt;question&gt;"] --> B["Step 1: Query Analysis<br>(search_plan prompt to Ollama)"]
+    A["User types /search &lt;question&gt;"] --> B["Step 1: Query Analysis<br>(search_plan prompt to the model)"]
     B -->|"CLARIFY: ambiguous query"| C["Stream follow-up question to user"]
     B -->|"PROCEED: history sufficient"| D["Answer from conversation history"]
     B -->|"PROCEED: need fresh search"| E["Step 2: SearXNG Search<br>(returns title + URL + snippet per result)"]
@@ -173,7 +173,7 @@ Now, each step in detail.
 
 The pipeline's first move is not to search. It is to think about the question.
 
-A single call goes out to Ollama using a system prompt called `search_plan`. The model receives the user's question and the full conversation history from this session. It returns a small JSON object that tells the pipeline exactly what to do next.
+A single call goes out to the active provider using a system prompt called `search_plan`. The model receives the user's question and the full conversation history from this session. It returns a small JSON object that tells the pipeline exactly what to do next.
 
 ```json
 {
@@ -228,7 +228,7 @@ After reranking, the top 10 URLs advance to the next stage.
 
 Before fetching any full pages (which requires network requests and takes time), the pipeline pauses and asks a question: "Do the short snippets we already have contain enough information to answer this question?"
 
-This is the first judge call. A second call goes out to Ollama, this time using the `search_judge` system prompt. The model receives the user's original question and all the snippets from the top 10 results. It returns a structured verdict:
+This is the first judge call. A second call goes out to the active provider, this time using the `search_judge` system prompt. The model receives the user's original question and all the snippets from the top 10 results. It returns a structured verdict:
 
 ```json
 {
@@ -314,7 +314,7 @@ The gap loop is where the pipeline becomes truly agentic. Instead of giving up w
 
 Synthesis is the final step: turning the collected evidence into an answer and streaming it to the user.
 
-**Building the prompt.** The pipeline assembles a message sequence for Ollama:
+**Building the prompt.** The pipeline assembles a message sequence for the active provider:
 
 1. The synthesis system prompt (`search_synthesis.txt`), which tells the model how to write answers: open with the direct answer, follow with supporting context the reader would naturally want, use inline citations, aim for substance rather than padding. Today's date is injected into the prompt so the model can correctly reason about time-sensitive questions.
 2. All completed conversation turns from this session, so the model has conversational continuity.
@@ -323,7 +323,7 @@ Synthesis is the final step: turning the collected evidence into an answer and s
 
 **How citations work.** The sources are numbered `[1]`, `[2]`, `[3]`, and so on. The synthesis prompt instructs the model to use these numbers as inline citations when it makes a claim: "Tesla was founded in 2003 `[1]`". Before synthesis begins, the pipeline emits a final `Sources` event to the frontend that lists the exact URLs in the exact order they were numbered. This guarantees that when the user sees `[3]` in the answer, source 3 in the sources footer is the page that claim came from.
 
-**Streaming.** Ollama streams the answer token by token: each word or subword arrives as it is generated and appears in the UI in real time. The user sees the answer build progressively rather than waiting for the entire response to finish before anything appears. If the user closes the overlay mid-stream, the pipeline drops the HTTP connection (Ollama stops generating), emits a cancellation event, and discards the partial response without saving it.
+**Streaming.** The model streams the answer token by token: each word or subword arrives as it is generated and appears in the UI in real time. The user sees the answer build progressively rather than waiting for the entire response to finish before anything appears. If the user closes the overlay mid-stream, the pipeline drops the HTTP connection (the provider stops generating), emits a cancellation event, and discards the partial response without saving it.
 
 **Substance, not length.** Small local models tend to produce very short answers when left to their own devices. The synthesis prompt explicitly pushes against this. For questions about people, the model is instructed to include their role, their notable work, and relevant facts. For companies, the founding year and what they do. For events, when, where, and why they matter. For processes, the key steps. For comparisons, the dimensions that actually differentiate the options. Two to four tight paragraphs with real information is the target, not a one-liner that technically answers the question but leaves the reader with follow-up questions.
 
@@ -333,7 +333,7 @@ Synthesis is the final step: turning the collected evidence into an answer and s
 
 Every step in the pipeline that involves AI processing, content extraction, or search aggregation runs on the user's machine. Here is exactly where data goes at each stage:
 
-**Query text:** The user's question goes to the local Ollama instance for routing (Step 1) and synthesis (Step 9). It also goes to the local SearXNG instance for search (Step 2). None of these leave the machine.
+**Query text:** The user's question goes to the local model provider (the built-in engine by default) for routing (Step 1) and synthesis (Step 9). It also goes to the local SearXNG instance for search (Step 2). None of these leave the machine.
 
 **Web search requests:** SearXNG sends queries to upstream engines (Google, Bing, DuckDuckGo, etc.). These requests originate from the SearXNG container running on the user's machine, not from the user's browser, so upstream engines see the container's requests rather than the user's browser fingerprint or IP address.
 
@@ -361,7 +361,7 @@ A headless browser (Playwright, Puppeteer) can render JavaScript-heavy pages, wh
 
 Vector embedding reranking (used by modern semantic search systems) works by converting each chunk of text into a list of numbers (a vector) that represents its meaning, and then measuring which vectors are closest to the query vector. It captures meaning, not just keyword matches, which is a real advantage for vague or paraphrased queries.
 
-The problem is that generating vectors requires running an embedding model, which takes time and resources. Thuki is already running one local model (Ollama). Adding a second model specifically for embeddings adds infrastructure complexity and latency. BM25 is deterministic, requires no model, runs in microseconds, and performs comparably to embedding-based rerankers for the keyword-rich search queries that `/search` handles. If retrieval quality becomes a measurable problem, swapping in an embedding-based reranker is a clean future upgrade. The pipeline seam is already in place.
+The problem is that generating vectors requires running an embedding model, which takes time and resources. Thuki is already running one local model through the active provider. Adding a second model specifically for embeddings adds infrastructure complexity and latency. BM25 is deterministic, requires no model, runs in microseconds, and performs comparably to embedding-based rerankers for the keyword-rich search queries that `/search` handles. If retrieval quality becomes a measurable problem, swapping in an embedding-based reranker is a clean future upgrade. The pipeline seam is already in place.
 
 ---
 

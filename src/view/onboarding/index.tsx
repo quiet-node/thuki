@@ -1,6 +1,7 @@
 import { IntroStep } from './IntroStep';
 import { ModelCheckStep } from './ModelCheckStep';
 import { PermissionsStep } from './PermissionsStep';
+import type { DownloadStripStatus } from '../../components/DownloadStatusStrip';
 
 /**
  * Stage values mirror the Rust `OnboardingStage` enum exactly. The
@@ -12,6 +13,8 @@ export type OnboardingStage = 'permissions' | 'model_check' | 'intro';
 interface Props {
   stage: OnboardingStage;
   onComplete: () => void;
+  /** Ambient download status shown inside the intro card (intro stage only). */
+  downloadStatus?: DownloadStripStatus | null;
 }
 
 /**
@@ -25,9 +28,11 @@ interface Props {
  * When stage is "complete" the backend never emits the onboarding event,
  * so this component is never rendered.
  */
-export function OnboardingView({ stage, onComplete }: Props) {
+export function OnboardingView({ stage, onComplete, downloadStatus }: Props) {
   if (stage === 'intro') {
-    return <IntroStep onComplete={onComplete} />;
+    return (
+      <IntroStep onComplete={onComplete} downloadStatus={downloadStatus} />
+    );
   }
   if (stage === 'model_check') {
     // ModelCheckStep advances to `intro` via the backend

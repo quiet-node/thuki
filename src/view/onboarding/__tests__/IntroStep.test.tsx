@@ -54,6 +54,30 @@ describe('IntroStep', () => {
     expect(screen.getByText(/private by default/i)).toBeInTheDocument();
   });
 
+  it('renders the ambient download strip inside the card when a status is supplied', () => {
+    render(
+      <IntroStep
+        onComplete={vi.fn()}
+        downloadStatus={{
+          kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
+          percent: 15,
+          etaSeconds: 180,
+          onPause: vi.fn(),
+        }}
+      />,
+    );
+    expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
+    expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
+  });
+
+  it('renders no download strip when no status is supplied', () => {
+    render(<IntroStep onComplete={vi.fn()} />);
+    expect(
+      screen.queryByTestId('download-status-strip'),
+    ).not.toBeInTheDocument();
+  });
+
   it('calls finish_onboarding and onComplete when Get Started is clicked', async () => {
     const onComplete = vi.fn();
     invoke.mockResolvedValue(undefined);

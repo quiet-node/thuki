@@ -5,10 +5,11 @@
  *
  * 1. The downloader writes bytes into `root/tmp/<sha256>.partial` so
  *    interrupted downloads can be resumed from the already-written offset.
- * 2. On completion the store verifies the file by streaming it through
- *    SHA-256 (buffered copy; never fully buffered in memory) and, on match, atomically
- *    renames it into `root/blobs/<sha256>`. A mismatch deletes the partial
- *    and returns [`StorageError::VerifyFailed`].
+ * 2. On completion the file's SHA-256 is checked against the expected digest.
+ *    The downloader hashes bytes as they stream in; a full-length partial that
+ *    was never streamed is read back through SHA-256 here. On match the partial
+ *    is atomically renamed into `root/blobs/<sha256>`; a mismatch deletes the
+ *    partial and returns [`StorageError::VerifyFailed`].
  *
  * `free_disk_bytes` is a thin `libc::statfs` wrapper used by callers to show
  * a low-disk warning before starting a download. Treating `None` as "unknown"
@@ -17,8 +18,11 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
+
+use crate::config::defaults::BLOB_HASH_BUFFER_BYTES;
 
 /// Errors returned by [`ModelStore`] operations.
 #[derive(Debug, thiserror::Error)]
@@ -31,6 +35,15 @@ pub enum StorageError {
     Io(#[from] io::Error),
 }
 
+/// A paused download's running SHA-256, kept in memory so an in-session resume
+/// can continue it instead of re-reading the whole on-disk prefix back through
+/// SHA-256. `hasher` has consumed exactly `len` bytes of the partial `sha256`.
+struct SuspendedHash {
+    sha256: String,
+    len: u64,
+    hasher: Sha256,
+}
+
 /// Content-addressed store rooted at a caller-supplied directory (in the app
 /// this is `<app_data>/models`).
 ///
@@ -39,6 +52,10 @@ pub enum StorageError {
 /// - `root/tmp/<sha256>.partial`: in-flight downloads (resume-safe).
 pub struct ModelStore {
     root: PathBuf,
+    /// Running hash of the single in-flight download kept across a pause so an
+    /// in-session resume continues it rather than re-hashing the prefix. Holds
+    /// at most one entry (one download at a time); a later save overwrites it.
+    suspended_hash: Mutex<Option<SuspendedHash>>,
 }
 
 impl ModelStore {
@@ -51,7 +68,31 @@ impl ModelStore {
     pub fn new(root: PathBuf) -> Result<Self, io::Error> {
         std::fs::create_dir_all(root.join("blobs"))?;
         std::fs::create_dir_all(root.join("tmp"))?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            suspended_hash: Mutex::new(None),
+        })
+    }
+
+    /// Remembers a paused download's running `hasher` (which has consumed
+    /// exactly `len` bytes of the partial for `sha256`) so an in-session resume
+    /// can continue it. At most one is kept; a later save overwrites it.
+    pub fn save_suspended_hash(&self, sha256: &str, len: u64, hasher: Sha256) {
+        *self.suspended_hash.lock().unwrap() = Some(SuspendedHash {
+            sha256: sha256.to_string(),
+            len,
+            hasher,
+        });
+    }
+
+    /// Takes the kept running hash for `sha256` when it stands exactly at the
+    /// resume offset `len`. Clears the slot either way, so a stale entry never
+    /// lingers; returns the hasher to continue, or `None` to re-hash from disk.
+    pub fn take_suspended_hash(&self, sha256: &str, len: u64) -> Option<Sha256> {
+        match self.suspended_hash.lock().unwrap().take() {
+            Some(s) if s.sha256 == sha256 && s.len == len => Some(s.hasher),
+            _ => None,
+        }
     }
 
     /// Absolute path where a verified blob is stored: `root/blobs/<sha256>`.
@@ -64,32 +105,68 @@ impl ModelStore {
         self.root.join("tmp").join(format!("{sha256}.partial"))
     }
 
-    /// Streams `root/tmp/<sha256>.partial` through SHA-256 (buffered copy,
-    /// never whole-file in memory). On hash match the partial is atomically
-    /// renamed into `root/blobs/<sha256>` and the blob path is returned.
-    /// On mismatch the partial is deleted and [`StorageError::VerifyFailed`]
-    /// is returned. `sha256` must be a lowercase hex digest; the comparison
-    /// is case-sensitive.
-    pub fn verify_and_install(&self, sha256: &str) -> Result<PathBuf, StorageError> {
+    /// Streams the existing partial for `sha256` into `sink` using a large read
+    /// buffer (never whole-file in memory). Used to hash a full-length partial
+    /// that was never streamed live, and to seed an incremental hasher with the
+    /// bytes already on disk before a resumed download appends the rest.
+    ///
+    /// `cancelled` is polled once per read buffer (every
+    /// [`BLOB_HASH_BUFFER_BYTES`]); when it returns true the read stops early,
+    /// so a pause during a multi-GB resume re-hash lands promptly instead of
+    /// after the whole prefix is read. A cancelled read leaves a partial sink;
+    /// callers that cancel discard the sink (the running hash) entirely.
+    pub fn feed_partial<W: io::Write>(
+        &self,
+        sha256: &str,
+        sink: &mut W,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<()> {
+        use io::Read;
+        let mut file = std::fs::File::open(self.partial_path(sha256))?;
+        let mut buf = vec![0u8; BLOB_HASH_BUFFER_BYTES];
+        while !cancelled() {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            sink.write_all(&buf[..n])?;
+        }
+        Ok(())
+    }
+
+    /// Finalizes a downloaded partial whose SHA-256 `actual` is already known
+    /// (hashed live during the download, or by [`Self::verify_and_install`]). On
+    /// match the partial is atomically renamed into `root/blobs/<sha256>` and
+    /// the blob path is returned; on mismatch the partial is deleted and
+    /// [`StorageError::VerifyFailed`] is returned. `sha256` must be a lowercase
+    /// hex digest; the comparison is case-sensitive.
+    pub fn install_if_matches(&self, sha256: &str, actual: &str) -> Result<PathBuf, StorageError> {
         let partial = self.partial_path(sha256);
-        let mut file = std::fs::File::open(&partial)?;
-
-        let mut hasher = Sha256::new();
-        io::copy(&mut file, &mut hasher)?;
-        let actual = format!("{:x}", hasher.finalize());
-
         if actual != sha256 {
             // Best-effort delete; ignore secondary I/O errors.
             let _ = std::fs::remove_file(&partial);
             return Err(StorageError::VerifyFailed {
                 expected: sha256.to_string(),
-                actual,
+                actual: actual.to_string(),
             });
         }
-
         let blob = self.blob_path(sha256);
         std::fs::rename(&partial, &blob)?;
         Ok(blob)
+    }
+
+    /// Reads `root/tmp/<sha256>.partial` back through SHA-256 and installs it.
+    /// Used for a full-length partial whose hash was never computed during a
+    /// live download (e.g. a completed-but-uninstalled download from a prior
+    /// run). On mismatch the partial is deleted and
+    /// [`StorageError::VerifyFailed`] is returned.
+    pub fn verify_and_install(&self, sha256: &str) -> Result<PathBuf, StorageError> {
+        let mut hasher = Sha256::new();
+        // A full-length-partial verify always runs to completion: there is no
+        // pause surface for it, so it never cancels.
+        self.feed_partial(sha256, &mut hasher, &|| false)?;
+        let actual = format!("{:x}", hasher.finalize());
+        self.install_if_matches(sha256, &actual)
     }
 
     /// Removes each blob in `shas` from `root/blobs/`. Missing files are
@@ -114,6 +191,12 @@ impl ModelStore {
     pub fn existing_partial_len(&self, sha256: &str) -> Option<u64> {
         let meta = std::fs::metadata(self.partial_path(sha256)).ok()?;
         Some(meta.len())
+    }
+
+    /// Free bytes on the volume holding the store root, for the pre-download
+    /// disk-space line. `None` means unknown; callers skip the warning.
+    pub fn free_bytes(&self) -> Option<u64> {
+        free_disk_bytes(&self.root)
     }
 }
 
@@ -238,6 +321,82 @@ mod tests {
         assert!(matches!(err, StorageError::Io(_)));
     }
 
+    // ── feed_partial cancellation ────────────────────────────────────────────
+
+    #[test]
+    fn feed_partial_reads_the_whole_partial_when_not_cancelled() {
+        let (_dir, store) = make_store();
+        let sha = "feeddone";
+        let data = b"some bytes to stream through the sink";
+        write_partial(&store, sha, data);
+
+        let mut sink = Vec::new();
+        store.feed_partial(sha, &mut sink, &|| false).unwrap();
+        assert_eq!(sink, data);
+    }
+
+    #[test]
+    fn feed_partial_stops_early_when_cancelled() {
+        let (_dir, store) = make_store();
+        let sha = "feedcancel";
+        // Two full read buffers, so the cancel can land after the first.
+        let data = vec![7u8; BLOB_HASH_BUFFER_BYTES * 2];
+        write_partial(&store, sha, &data);
+
+        let mut sink = Vec::new();
+        let checks = std::cell::Cell::new(0u32);
+        store
+            .feed_partial(sha, &mut sink, &|| {
+                let n = checks.get();
+                checks.set(n + 1);
+                // False on the first check (one buffer is read), true after.
+                n >= 1
+            })
+            .unwrap();
+        assert!(
+            sink.len() < data.len(),
+            "feed_partial must stop before reading the whole partial"
+        );
+    }
+
+    // ── suspended hash (in-memory resume) ────────────────────────────────────
+
+    #[test]
+    fn suspended_hash_round_trips_and_continues() {
+        let (_dir, store) = make_store();
+        // A paused download whose running hash has consumed "abc".
+        let mut hasher = Sha256::new();
+        hasher.update(b"abc");
+        store.save_suspended_hash("aa", 3, hasher);
+
+        // Resuming takes it back and continues with the remaining bytes; the
+        // result must equal hashing the whole stream in one pass.
+        let mut taken = store.take_suspended_hash("aa", 3).unwrap();
+        taken.update(b"def");
+        assert_eq!(format!("{:x}", taken.finalize()), sha256_of(b"abcdef"));
+    }
+
+    #[test]
+    fn suspended_hash_take_clears_the_slot() {
+        let (_dir, store) = make_store();
+        store.save_suspended_hash("aa", 3, Sha256::new());
+        assert!(store.take_suspended_hash("aa", 3).is_some());
+        // The slot is now empty: a second take finds nothing.
+        assert!(store.take_suspended_hash("aa", 3).is_none());
+    }
+
+    #[test]
+    fn suspended_hash_is_dropped_on_a_mismatch() {
+        let (_dir, store) = make_store();
+        // A different sha clears the stale entry and returns None.
+        store.save_suspended_hash("aa", 3, Sha256::new());
+        assert!(store.take_suspended_hash("bb", 3).is_none());
+        assert!(store.take_suspended_hash("aa", 3).is_none());
+        // A length that no longer matches the on-disk partial returns None.
+        store.save_suspended_hash("aa", 3, Sha256::new());
+        assert!(store.take_suspended_hash("aa", 9).is_none());
+    }
+
     // ── remove_blobs ─────────────────────────────────────────────────────────
 
     #[test]
@@ -291,6 +450,13 @@ mod tests {
     fn free_disk_bytes_returns_some_on_real_fs() {
         let (dir, _store) = make_store();
         let free = free_disk_bytes(dir.path());
+        assert!(free.is_some(), "expected Some on a real filesystem");
+    }
+
+    #[test]
+    fn store_free_bytes_delegates_to_root_volume() {
+        let (_dir, store) = make_store();
+        let free = store.free_bytes();
         assert!(free.is_some(), "expected Some on a real filesystem");
     }
 

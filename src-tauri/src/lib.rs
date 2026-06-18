@@ -190,11 +190,34 @@ const OVERLAY_VISIBILITY_RESTORE: &str = "restore";
 /// required permissions have not yet been granted.
 const ONBOARDING_EVENT: &str = "thuki://onboarding";
 
-/// Logical dimensions of the onboarding window (centered, fixed size).
-/// Content fits tightly; native macOS shadow is re-enabled for onboarding
-/// so it renders outside the window boundary without extra transparent padding.
+/// Logical dimensions of the onboarding window (centered). The permission
+/// and intro steps use the compact base size; the model-picker step widens
+/// to fit the three-column comparison matrix. Steps smaller than the frame
+/// they render in center their card against the transparent background, so
+/// the per-stage size difference is invisible. Native macOS shadow is
+/// re-enabled for onboarding so it renders outside the window boundary
+/// without extra transparent padding.
 const ONBOARDING_LOGICAL_WIDTH: f64 = 460.0;
 const ONBOARDING_LOGICAL_HEIGHT: f64 = 640.0;
+const ONBOARDING_PICKER_WIDTH: f64 = 860.0;
+const ONBOARDING_PICKER_HEIGHT: f64 = 744.0;
+
+/// Per-stage onboarding window size. The model-picker step needs a wide
+/// frame for the comparison matrix; every other step keeps the compact base
+/// size. Pure so the mapping is unit-tested even though the window mutation
+/// it feeds runs on the macOS main thread.
+fn onboarding_window_size(stage: &onboarding::OnboardingStage) -> (f64, f64) {
+    match stage {
+        onboarding::OnboardingStage::ModelCheck => {
+            (ONBOARDING_PICKER_WIDTH, ONBOARDING_PICKER_HEIGHT)
+        }
+        // The intro tour is sized to its card by the frontend
+        // (`useFitOnboardingWindow`) so the transparent window never blocks
+        // background clicks and grows to fit the ambient download strip; the
+        // compact base is only its pre-fit starting size.
+        _ => (ONBOARDING_LOGICAL_WIDTH, ONBOARDING_LOGICAL_HEIGHT),
+    }
+}
 
 /// Tracks the intended visibility state of the overlay, preventing race conditions
 /// between the frontend exit animation and rapid activation toggles.
@@ -224,6 +247,86 @@ static ONBOARDING_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 fn set_onboarding_active_impl(active: bool) {
     ONBOARDING_ACTIVE.store(active, Ordering::SeqCst);
+}
+
+/// Set once the user confirms a quit (or quits with no download in flight), so
+/// the re-entrant `ExitRequested` that `app.exit` raises is allowed straight
+/// through instead of re-prompting the download warning forever.
+static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
+
+/// True while the quit warning dialog is on screen. Cmd+Q reaches the warning
+/// twice (the app-menu Quit event AND `RunEvent::ExitRequested`); this guard
+/// keeps it to a single dialog instead of two stacked ones.
+static QUIT_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// True while a model download is paused, set by the frontend via
+/// `set_download_paused`. A paused download still has work left (the partial is
+/// discarded on the next launch), so the quit warning must cover it too, not
+/// only an actively-streaming download.
+static DOWNLOAD_PAUSED: AtomicBool = AtomicBool::new(false);
+
+/// Frontend hook so the quit warning fires for a paused download, not only an
+/// actively-streaming one. The pause cancels the backend task, so the slot is
+/// free and only the frontend knows a download is paused.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+fn set_download_paused(paused: bool) {
+    DOWNLOAD_PAUSED.store(paused, Ordering::SeqCst);
+}
+
+/// Whether quitting now would discard an in-progress model download: one is
+/// actively streaming, or one is paused.
+fn should_warn_on_quit(app: &tauri::AppHandle) -> bool {
+    models::download_in_flight(app.state::<models::DownloadState>().inner())
+        || DOWNLOAD_PAUSED.load(Ordering::SeqCst)
+}
+
+/// Handles a quit request from the app menu or the tray: warn when a download
+/// would be lost, otherwise quit immediately.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn request_quit(app: &tauri::AppHandle) {
+    if should_warn_on_quit(app) {
+        show_quit_dialog(app);
+    } else {
+        app.state::<crate::commands::GenerationState>().cancel();
+        app.exit(0);
+    }
+}
+
+/// Shows the native "quit while a model is downloading" warning. "Quit Anyway"
+/// records the confirmation and exits; "Keep Downloading" cancels the quit.
+/// Non-blocking, and deduplicated via `QUIT_DIALOG_OPEN` so the two quit paths
+/// that both fire on Cmd+Q show a single dialog.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn show_quit_dialog(app: &tauri::AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    if QUIT_DIALOG_OPEN.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let handle = app.clone();
+    app.dialog()
+        .message(
+            "Quitting stops the model download and you'll have to start it over.\n\nTo keep it downloading in the background, just close Thuki instead (double-tap Control to reopen).",
+        )
+        .title("Quit while a model is downloading?")
+        .kind(MessageDialogKind::Warning)
+        // "Keep Downloading" is the primary/highlighted button (the default on
+        // Enter): the safe choice for a destructive action. "Quit Anyway" is the
+        // secondary. The callback's bool is true for the primary button.
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Keep Downloading".to_string(),
+            "Quit Anyway".to_string(),
+        ))
+        .show(move |keep_downloading| {
+            QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
+            if !keep_downloading {
+                QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+                handle
+                    .state::<crate::commands::GenerationState>()
+                    .cancel();
+                handle.exit(0);
+            }
+        });
 }
 
 /// Payload emitted to the frontend on every visibility transition.
@@ -1055,6 +1158,12 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
         #[cfg(target_os = "macos")]
         {
             if let Ok(conn) = db.0.lock() {
+                // Use the persisted stage as-is. A built-in model download
+                // still in flight no longer bounces the user back to the
+                // picker: on a mid-download relaunch they stay where they left
+                // off, and the DownloadProvider auto-resumes the partial in the
+                // background so the ambient strip is the recovery surface (the
+                // user is never stranded past selection with no usable model).
                 let stage = onboarding::get_stage(&conn)
                     .unwrap_or(onboarding::OnboardingStage::Permissions);
 
@@ -1109,6 +1218,20 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
         }
         show_overlay(&app_handle, crate::context::ActivationContext::empty());
     }
+}
+
+/// Returns the persisted onboarding stage for the frontend's launch
+/// auto-resume gate. The model-check picker owns the resume decision while it
+/// is shown (its own Resume / Discard choice), so the `DownloadProvider` only
+/// auto-resumes an interrupted built-in download once the user is past it (the
+/// intro tour or the ask bar). Thin wrapper over the tested `get_stage`.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn onboarding_stage(
+    db: tauri::State<history::Database>,
+) -> Result<onboarding::OnboardingStage, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    onboarding::get_stage(&conn).map_err(|e| e.to_string())
 }
 
 /// Advances the onboarding stage from `model_check` to `intro` and emits
@@ -1415,12 +1538,10 @@ fn show_onboarding_window(app_handle: &tauri::AppHandle, stage: onboarding::Onbo
     // (tray / double-tap Control) is gated out of the ask-bar show path.
     set_onboarding_active_impl(true);
     let handle = app_handle.clone();
+    let (win_w, win_h) = onboarding_window_size(&stage);
     let _ = app_handle.run_on_main_thread(move || {
         if let Some(window) = handle.get_webview_window("main") {
-            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
-                ONBOARDING_LOGICAL_WIDTH,
-                ONBOARDING_LOGICAL_HEIGHT,
-            )));
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(win_w, win_h)));
             let _ = window.center();
         }
         match handle.get_webview_panel("main") {
@@ -1526,6 +1647,47 @@ pub fn build_trace_inner(
         "thuki: [trace] Files may contain sensitive text. Disable in config.toml when not actively debugging."
     );
     Arc::new(trace::RegistryRecorder::new(traces_root))
+}
+
+// ─── Menu helpers ────────────────────────────────────────────────────────────
+
+/// Custom macOS application menu, replacing Tauri's default. The Quit item is a
+/// custom one (id "quit", Cmd+Q) so quitting routes through `show_quit_dialog`
+/// instead of the predefined hard-quit that ignores an in-flight download. The
+/// Edit submenu is kept so the ask bar's copy / paste / select-all shortcuts
+/// (which the replaced default menu provided) keep working.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn build_app_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    let quit = MenuItem::with_id(app, "quit", "Quit Thuki", true, Some("Cmd+Q"))?;
+    let app_menu = Submenu::with_items(
+        app,
+        "Thuki",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, Some("About Thuki"), None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    Menu::with_items(app, &[&app_menu, &edit_menu])
 }
 
 // ─── Tray helpers ────────────────────────────────────────────────────────────
@@ -1644,6 +1806,15 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        // Replace Tauri's default macOS menu: its predefined Quit does a hard
+        // quit on Cmd+Q that bypasses our handlers. Our custom Quit fires this
+        // handler instead, so a download in flight gets the warning.
+        .menu(build_app_menu)
+        .on_menu_event(|app, event| {
+            if event.id.as_ref() == "quit" {
+                request_quit(app);
+            }
+        })
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
@@ -1697,8 +1868,10 @@ pub fn run() {
                         show_update_window(app);
                     }
                     "quit" => {
-                        app.state::<crate::commands::GenerationState>().cancel();
-                        app.exit(0);
+                        // Tray Quit click. Cmd+Q reaches the app menu + Exit
+                        // Requested instead, all routed through request_quit so
+                        // an in-progress download is never torn down silently.
+                        request_quit(app);
                     }
                     _ => {}
                 })
@@ -2050,6 +2223,10 @@ pub fn run() {
             settings_commands::get_config,
             settings_commands::set_config_field,
             settings_commands::set_ollama_url,
+            settings_commands::set_active_provider,
+            settings_commands::update_provider_field,
+            settings_commands::add_openai_provider,
+            settings_commands::remove_openai_provider,
             settings_commands::reset_config,
             settings_commands::reload_config_from_disk,
             settings_commands::get_corrupt_marker,
@@ -2062,11 +2239,15 @@ pub fn run() {
             #[cfg(not(coverage))]
             models::check_model_setup,
             #[cfg(not(coverage))]
+            models::detect_ollama,
+            #[cfg(not(coverage))]
             models::get_model_capabilities,
             #[cfg(not(coverage))]
             models::get_starter_options,
             #[cfg(not(coverage))]
             models::get_system_ram_bytes,
+            #[cfg(not(coverage))]
+            models::get_models_dir_free_bytes,
             #[cfg(not(coverage))]
             models::download_starter,
             #[cfg(not(coverage))]
@@ -2074,9 +2255,13 @@ pub fn run() {
             #[cfg(not(coverage))]
             models::list_hf_repo_ggufs,
             #[cfg(not(coverage))]
+            models::list_openai_models,
+            #[cfg(not(coverage))]
             models::cancel_model_download,
             #[cfg(not(coverage))]
             models::discard_partial_download,
+            #[cfg(not(coverage))]
+            set_download_paused,
             #[cfg(not(coverage))]
             models::list_installed_models,
             #[cfg(not(coverage))]
@@ -2131,12 +2316,15 @@ pub fn run() {
             permissions::quit_and_relaunch,
             finish_onboarding,
             advance_past_model_check,
+            onboarding_stage,
             #[cfg(not(coverage))]
             warmup::warm_up_model,
             #[cfg(not(coverage))]
             warmup::evict_model,
             #[cfg(not(coverage))]
             warmup::get_loaded_model,
+            #[cfg(not(coverage))]
+            warmup::get_engine_status,
             updater::commands::get_updater_state,
             #[cfg(not(coverage))]
             updater::commands::check_for_update,
@@ -2188,6 +2376,16 @@ pub fn run() {
                     if let Some(window) = app_handle.get_webview_window("update") {
                         let _ = window.hide();
                     }
+                }
+            }
+            RunEvent::ExitRequested { api, .. } => {
+                // Cmd+Q (and any app.exit issued before the user has confirmed)
+                // lands here. If a download would be lost, hold the exit and
+                // warn so the user can keep it running in the background. The
+                // dialog itself is deduplicated against the app-menu path.
+                if !QUIT_CONFIRMED.load(Ordering::SeqCst) && should_warn_on_quit(app_handle) {
+                    api.prevent_exit();
+                    show_quit_dialog(app_handle);
                 }
             }
             RunEvent::Exit => {
@@ -2311,6 +2509,26 @@ mod tests {
     fn onboarding_logical_dimensions() {
         assert_eq!(ONBOARDING_LOGICAL_WIDTH, 460.0);
         assert_eq!(ONBOARDING_LOGICAL_HEIGHT, 640.0);
+        assert_eq!(ONBOARDING_PICKER_WIDTH, 860.0);
+        assert_eq!(ONBOARDING_PICKER_HEIGHT, 744.0);
+    }
+
+    #[test]
+    fn onboarding_window_size_widens_for_picker() {
+        assert_eq!(
+            onboarding_window_size(&onboarding::OnboardingStage::ModelCheck),
+            (ONBOARDING_PICKER_WIDTH, ONBOARDING_PICKER_HEIGHT),
+        );
+        assert_eq!(
+            onboarding_window_size(&onboarding::OnboardingStage::Permissions),
+            (ONBOARDING_LOGICAL_WIDTH, ONBOARDING_LOGICAL_HEIGHT),
+        );
+        // Intro falls back to the compact base; the frontend fits it to its
+        // card at runtime via `useFitOnboardingWindow`.
+        assert_eq!(
+            onboarding_window_size(&onboarding::OnboardingStage::Intro),
+            (ONBOARDING_LOGICAL_WIDTH, ONBOARDING_LOGICAL_HEIGHT),
+        );
     }
 
     #[test]

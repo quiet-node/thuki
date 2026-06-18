@@ -47,6 +47,19 @@ fn config_path_in(dir: &std::path::Path) -> PathBuf {
     dir.join("config.toml")
 }
 
+/// Asserts `config` carries the compiled inference defaults: the built-in
+/// provider is active and the seeded Ollama row keeps the default endpoint.
+fn assert_default_inference(config: &AppConfig) {
+    assert_eq!(config.inference.active_provider, DEFAULT_ACTIVE_PROVIDER);
+    let ollama = config
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == PROVIDER_ID_OLLAMA)
+        .expect("defaults seed an Ollama provider row");
+    assert_eq!(ollama.base_url, DEFAULT_OLLAMA_URL);
+}
+
 // ── defaults module ──────────────────────────────────────────────────────────
 
 #[test]
@@ -54,7 +67,10 @@ fn defaults_const_values_match_schema_defaults() {
     // Guard rail: a change to a default in defaults.rs must flow through to
     // AppConfig::default(). If this test fails, someone changed one but not both.
     let c = AppConfig::default();
-    assert_eq!(c.inference.active_provider_base_url(), DEFAULT_OLLAMA_URL);
+    // Builtin is active by default and carries no base URL; the seeded
+    // Ollama row still holds the compiled default endpoint.
+    assert_eq!(c.inference.active_provider_base_url(), "");
+    assert_default_inference(&c);
     assert_eq!(
         c.inference.keep_warm_inactivity_minutes,
         DEFAULT_KEEP_WARM_INACTIVITY_MINUTES
@@ -99,13 +115,26 @@ fn defaults_prompt_base_is_nonempty() {
     assert!(!DEFAULT_SYSTEM_PROMPT_BASE.trim().is_empty());
 }
 
+#[test]
+fn fresh_default_active_provider_is_builtin() {
+    // Phase 2 ships the bundled engine, so a fresh install starts on the
+    // built-in provider. Existing configs keep whatever active_provider they
+    // persisted (see the legacy pin tests below).
+    assert_eq!(DEFAULT_ACTIVE_PROVIDER, PROVIDER_ID_BUILTIN);
+    assert_eq!(
+        InferenceSection::default().active_provider,
+        PROVIDER_ID_BUILTIN
+    );
+}
+
 // ── schema module ───────────────────────────────────────────────────────────
 
 #[test]
 fn section_defaults_are_sensible() {
     let m = InferenceSection::default();
     assert_eq!(m.active_provider, DEFAULT_ACTIVE_PROVIDER);
-    assert_eq!(m.active_provider_base_url(), DEFAULT_OLLAMA_URL);
+    // The default active provider is the builtin engine, which has no URL.
+    assert_eq!(m.active_provider_base_url(), "");
 
     let p = PromptSection::default();
     assert_eq!(p.system, DEFAULT_SYSTEM_PROMPT_BASE);
@@ -207,10 +236,7 @@ fn load_missing_file_seeds_defaults_and_returns_them() {
     let config = load_from_path(&path).expect("seed on first run");
 
     assert!(path.exists(), "file should be seeded");
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        DEFAULT_OLLAMA_URL
-    );
+    assert_default_inference(&config);
     // Resolved system prompt composed from default base plus appendix.
     assert!(config
         .prompt
@@ -229,10 +255,7 @@ fn load_missing_file_in_missing_parent_dir_creates_dir() {
     let path = config_path_in(&nested);
     let config = load_from_path(&path).expect("creates parent dir and seeds");
     assert!(path.exists());
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        DEFAULT_OLLAMA_URL
-    );
+    assert_default_inference(&config);
 }
 
 #[test]
@@ -300,10 +323,7 @@ fn load_corrupt_file_is_renamed_and_reseeded() {
     std::fs::write(&path, "this is = definitely not [ valid toml").unwrap();
 
     let config = load_from_path(&path).expect("recover from corrupt file");
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        DEFAULT_OLLAMA_URL
-    );
+    assert_default_inference(&config);
 
     // Original file renamed with .corrupt- prefix.
     let renamed_exists = std::fs::read_dir(&dir)
@@ -345,10 +365,7 @@ fn load_unreadable_file_returns_in_memory_defaults() {
     }
 
     let config = load_from_path(&path).expect("fallback to in-memory defaults");
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        DEFAULT_OLLAMA_URL
-    );
+    assert_default_inference(&config);
     // Restore so cleanup works.
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
 }
@@ -938,10 +955,7 @@ fn marker_write_failure_is_logged_but_does_not_block_recovery() {
     std::fs::create_dir(&blocker).unwrap();
 
     let config = load_from_path(&path).expect("recover even when marker write fails");
-    assert_eq!(
-        config.inference.active_provider_base_url(),
-        DEFAULT_OLLAMA_URL
-    );
+    assert_default_inference(&config);
 
     // Marker squatter is still a directory: the failed write did not replace it.
     assert!(blocker.is_dir());
@@ -1443,7 +1457,7 @@ fn updater_toml_roundtrip_preserves_fields() {
 fn inference_defaults_seed_builtin_and_ollama_providers() {
     let c = AppConfig::default();
     assert_eq!(c.inference.active_provider, DEFAULT_ACTIVE_PROVIDER);
-    assert_eq!(c.inference.active_provider_kind(), PROVIDER_KIND_OLLAMA);
+    assert_eq!(c.inference.active_provider_kind(), PROVIDER_KIND_BUILTIN);
     assert_eq!(c.inference.num_ctx, DEFAULT_NUM_CTX);
     assert_eq!(
         c.inference.keep_warm_inactivity_minutes,
@@ -1509,17 +1523,20 @@ fn active_provider_accessors_handle_missing_active() {
 fn active_provider_model_opt_maps_empty_to_none() {
     // Empty model field -> None; a selected model -> Some(slug). Drives the
     // active-model resolve helpers without re-deriving the empty check.
-    let mut c = AppConfig::default();
+    let mut c = AppConfig::default(); // active = builtin, model empty
     assert_eq!(c.inference.active_provider_model_opt(), None);
-    if let Some(ollama) = c
+    if let Some(builtin) = c
         .inference
         .providers
         .iter_mut()
-        .find(|p| p.id == PROVIDER_ID_OLLAMA)
+        .find(|p| p.id == PROVIDER_ID_BUILTIN)
     {
-        ollama.model = "llama3.1:8b".to_string();
+        builtin.model = "org/gemma:gemma.gguf".to_string();
     }
-    assert_eq!(c.inference.active_provider_model_opt(), Some("llama3.1:8b"));
+    assert_eq!(
+        c.inference.active_provider_model_opt(),
+        Some("org/gemma:gemma.gguf")
+    );
 }
 
 // ── inference providers: migration matrix ────────────────────────────────────
@@ -1923,7 +1940,10 @@ fn fresh_seed_uses_compiled_default() {
 
 #[test]
 fn attach_legacy_active_model_sets_model_on_active_provider() {
-    let mut c = AppConfig::default(); // active = ollama, model empty
+    // Legacy users (the only configs attach runs against) persisted
+    // active = ollama; the fresh-install default is builtin now.
+    let mut c = AppConfig::default();
+    c.inference.active_provider = PROVIDER_ID_OLLAMA.to_string();
     assert!(attach_legacy_active_model(&mut c, Some("phi4:14b")));
     assert_eq!(c.inference.active_provider_model(), "phi4:14b");
     // idempotent: a second call with a different model does not overwrite

@@ -11,6 +11,8 @@ import {
   DEFAULT_CONFIG,
   ConfigProviderForTest,
 } from '../contexts/ConfigContext';
+import type { DownloadContextValue } from '../contexts/DownloadContext';
+import type { StarterOption } from '../types/starter';
 import {
   invoke,
   emitTauriEvent,
@@ -37,6 +39,50 @@ import {
 vi.mock('../hooks/useTips', () => ({
   useTips: vi.fn(() => ({ tip: '', tipKey: 0, isVisible: false })),
 }));
+
+// The download machine lives in an app-root provider that `main.tsx` wires
+// around `<App />`; these tests render `<App />` bare, so `useDownloadCtx` is
+// mocked to a controllable value. `downloadHolder.value` is reset to an idle
+// machine before every test and overridden per-test to drive the ambient
+// strip, the submit soft-block, and the ready-refresh effect.
+const downloadHolder = vi.hoisted(() => ({ value: null as unknown }));
+vi.mock('../contexts/DownloadContext', () => ({
+  useDownloadCtx: () => downloadHolder.value,
+}));
+
+function makeDownloadCtx(
+  overrides: Partial<DownloadContextValue> = {},
+): DownloadContextValue {
+  return {
+    state: { phase: 'idle' },
+    progress: null,
+    etaSeconds: null,
+    combinedBytes: null,
+    speedBytesPerSec: null,
+    beginConfirm: vi.fn(),
+    cancelConfirm: vi.fn(),
+    start: vi.fn(async () => {}),
+    startRepo: vi.fn(async () => {}),
+    cancel: vi.fn(async () => {}),
+    retry: vi.fn(async () => {}),
+    resume: vi.fn(async () => {}),
+    discard: vi.fn(async () => {}),
+    enterResumePending: vi.fn(),
+    reset: vi.fn(),
+    downloadingTier: null,
+    resumeSeedBytes: null,
+    activeOption: null,
+    grandTotalBytes: null,
+    beginDownload: vi.fn(),
+    resumeDownload: vi.fn(),
+    isPaused: false,
+    isPausing: false,
+    pausedBytes: 0,
+    pauseDownload: vi.fn(),
+    resumeFromPause: vi.fn(),
+    ...overrides,
+  };
+}
 
 /** The AskBar Lexical contentEditable input (role="textbox"). */
 function getAskInput(): HTMLElement {
@@ -91,6 +137,7 @@ describe('App', () => {
   beforeEach(() => {
     invoke.mockClear();
     enableChannelCapture();
+    downloadHolder.value = makeDownloadCtx();
   });
 
   it('fetches model picker state on mount and refreshes it when the overlay shows', async () => {
@@ -278,6 +325,103 @@ describe('App', () => {
       "Thuki couldn't find any local LLM models",
     );
     expect(strip.textContent).toContain('ollama pull <model>');
+  });
+
+  it('submits normally when the builtin provider is active with a downloaded model', async () => {
+    // Regression guard for the builtin gate bug: with the builtin provider
+    // active, the picker payload reports reachable=true and the manifest
+    // inventory, so the env gate must let the message through instead of
+    // blocking with the Ollama copy.
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'tinyllama-1.1b',
+        all: ['tinyllama-1.1b'],
+        ollamaReachable: true,
+      },
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          inference: {
+            ...DEFAULT_CONFIG.inference,
+            activeProvider: 'builtin',
+            activeProviderKind: 'builtin',
+          },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = getAskInput();
+    act(() => {
+      setAskValue('hello from the builtin engine');
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith(
+      'ask_model',
+      expect.objectContaining({ message: 'hello from the builtin engine' }),
+    );
+  });
+
+  it('blocks submit with the builtin download copy when no model is downloaded', async () => {
+    // Builtin provider active, manifest empty: the strip must point at the
+    // Settings download flow, never at Ollama, and the submit stays gated.
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: null,
+        all: [],
+        ollamaReachable: true,
+      },
+    });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          inference: {
+            ...DEFAULT_CONFIG.inference,
+            activeProvider: 'builtin',
+            activeProviderKind: 'builtin',
+          },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay();
+
+    const strip = screen.getByTestId('capability-mismatch-strip');
+    expect(strip.textContent).toContain('No model downloaded yet');
+    expect(strip.textContent).not.toContain('Ollama');
+
+    const textarea = getAskInput();
+    act(() => {
+      setAskValue('hello');
+    });
+    invoke.mockClear();
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+
+    const askInvocations = invoke.mock.calls.filter(
+      (call) => call[0] === 'ask_model',
+    );
+    expect(askInvocations.length).toBe(0);
+    // Wait past the 600 ms shake reset so the gate's timeout cleanup runs.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 650));
+    });
   });
 
   it('saves the conversation with the currently selected model', async () => {
@@ -647,7 +791,7 @@ describe('App', () => {
       }
       if (cmd === 'set_active_model') {
         rejectionSeen = true;
-        throw new Error('Model is not installed in Ollama: qwen2.5:7b');
+        throw new Error('Model is not installed: qwen2.5:7b');
       }
       return undefined;
     });
@@ -7574,6 +7718,473 @@ describe('App', () => {
       });
 
       expect(screen.queryByText("You're all set")).toBeNull();
+    });
+  });
+
+  describe('background model download', () => {
+    const BUILTIN = {
+      ...DEFAULT_CONFIG,
+      inference: {
+        ...DEFAULT_CONFIG.inference,
+        activeProvider: 'builtin',
+        activeProviderKind: 'builtin',
+      },
+    };
+
+    function builtinTree() {
+      return (
+        <ConfigProviderForTest value={BUILTIN}>
+          <App />
+        </ConfigProviderForTest>
+      );
+    }
+
+    it('shows the ambient strip with percent and ETA in the ask bar while downloading', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 4_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 8_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
+      // 4 / 10 GB -> 40%; (10 - 4)e9 / 8e6 = 750s -> "12m".
+      expect(screen.getByText('40% · 12m left')).toBeInTheDocument();
+      // The download strip owns the messaging: no capability strip stacks under it.
+      expect(
+        screen.queryByTestId('capability-mismatch-strip'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('shows percent only before the download rate is measurable', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: null,
+        resumeSeedBytes: null,
+        grandTotalBytes: null,
+        speedBytesPerSec: null,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('0%')).toBeInTheDocument();
+    });
+
+    it('shows a Verifying… strip while the download is verifying', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'verifying' },
+        combinedBytes: 4_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('Verifying…')).toBeInTheDocument();
+      // The strip owns the messaging: the downloading row (with its Pause) is
+      // not shown while verifying.
+      expect(
+        screen.queryByRole('button', { name: 'Pause download' }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('soft-blocks submit while downloading, without sending or shaking', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 1_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 5_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      act(() => {
+        setAskValue('hello');
+      });
+      invoke.mockClear();
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(
+        invoke.mock.calls.filter((c) => c[0] === 'ask_model'),
+      ).toHaveLength(0);
+      // The wait holds calmly: the ambient strip stays, no error cue replaces it.
+      expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
+    });
+
+    it('shows the real failure reason and a Retry that restarts the download', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      const retry = vi.fn(async () => {});
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'failed', kind: 'offline', message: 'no network' },
+        retry,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('You appear to be offline.')).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Retry download' }));
+      });
+      expect(retry).toHaveBeenCalledTimes(1);
+    });
+
+    it('refreshes the model list and shows "Model ready" when the download completes', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 1_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 5_000_000,
+      });
+
+      const { rerender } = render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      const before = invoke.mock.calls.filter(
+        (c) => c[0] === 'get_model_picker_state',
+      ).length;
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'ready' },
+        activeOption: downloadingOption('Qwen3.5 9B'),
+      });
+      await act(async () => {
+        rerender(builtinTree());
+      });
+
+      expect(
+        screen.getByText('Qwen3.5 9B ready. Send your first message!'),
+      ).toBeInTheDocument();
+      const after = invoke.mock.calls.filter(
+        (c) => c[0] === 'get_model_picker_state',
+      ).length;
+      expect(after).toBeGreaterThan(before);
+    });
+
+    function downloadingOption(displayName: string): StarterOption {
+      return {
+        starter: {
+          tier: 'fast',
+          display_name: displayName,
+          repo: 'org/repo-GGUF',
+          revision: 'a'.repeat(40),
+          file_name: 'model.gguf',
+          sha256: 'b'.repeat(64),
+          size_bytes: 5_000_000_000,
+          quant: 'Q4_K_M',
+          vision: true,
+          thinking: false,
+          mmproj_file: null,
+          mmproj_sha256: null,
+          mmproj_bytes: 0,
+          est_runtime_gb: 6,
+          license_note: 'Apache 2.0',
+          origin: 'Org',
+          origin_repo: 'org/repo',
+        },
+        fit: 'fits',
+        installed: false,
+        partial_bytes: null,
+      };
+    }
+
+    it('names the model in the downloading strip from the active option', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        activeOption: downloadingOption('Qwen3.5 9B'),
+        combinedBytes: 1_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 5_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
+    });
+
+    it('dismisses the ready nudge after the first message and never reshows it', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'm',
+          all: ['m'],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'ready' },
+        activeOption: downloadingOption('Qwen3.5 9B'),
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(
+        screen.getByText('Qwen3.5 9B ready. Send your first message!'),
+      ).toBeInTheDocument();
+
+      const textarea = getAskInput();
+      act(() => {
+        setAskValue('hello');
+      });
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'hi' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      expect(
+        screen.queryByText('Qwen3.5 9B ready. Send your first message!'),
+      ).not.toBeInTheDocument();
+
+      // Back out of chat mode (new conversation / re-summon clears messages):
+      // the nudge stays dismissed, it is a one-time prompt.
+      await act(async () => {
+        await showOverlay();
+      });
+      expect(
+        screen.queryByText('Qwen3.5 9B ready. Send your first message!'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('pauses the download from the ask-bar strip', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      const pauseDownload = vi.fn();
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 4_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 8_000_000,
+        pauseDownload,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Pause download' }));
+      });
+      expect(pauseDownload).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a Pausing… strip the instant Pause is requested', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        isPausing: true,
+        combinedBytes: 4_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 8_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('Pausing…')).toBeInTheDocument();
+    });
+
+    it('shows a paused strip with Resume and the held percent', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      const resumeFromPause = vi.fn();
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'idle' },
+        isPaused: true,
+        pausedBytes: 5_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        resumeFromPause,
+      });
+
+      const { rerender } = render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('Paused · 50%')).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Resume download' }),
+        );
+      });
+      expect(resumeFromPause).toHaveBeenCalledTimes(1);
+      expect(
+        screen.queryByRole('button', { name: 'Discard download' }),
+      ).not.toBeInTheDocument();
+
+      // Grand total unknown while paused falls back to 0%.
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'idle' },
+        isPaused: true,
+        pausedBytes: 5_000_000_000,
+        grandTotalBytes: null,
+      });
+      await act(async () => {
+        rerender(builtinTree());
+      });
+      expect(screen.getByText('Paused · 0%')).toBeInTheDocument();
+    });
+
+    it('soft-blocks submit while the download is paused', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'idle' },
+        isPaused: true,
+        pausedBytes: 5_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      act(() => {
+        setAskValue('hello');
+      });
+      invoke.mockClear();
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      expect(
+        invoke.mock.calls.filter((c) => c[0] === 'ask_model'),
+      ).toHaveLength(0);
+    });
+
+    it('floats the strip over the intro tour, but not during model_check or when idle', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 1_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 5_000_000,
+      });
+
+      const { rerender } = render(<App />);
+      await act(async () => {});
+
+      // model_check: the picker matrix owns the bar, so no app-root strip.
+      await act(async () => {
+        emitTauriEvent('thuki://onboarding', { stage: 'model_check' });
+      });
+      expect(
+        screen.queryByTestId('download-status-strip'),
+      ).not.toBeInTheDocument();
+
+      // intro: the strip floats over the tour.
+      await act(async () => {
+        emitTauriEvent('thuki://onboarding', { stage: 'intro' });
+      });
+      expect(screen.getByText("You're all set")).toBeInTheDocument();
+      expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
+
+      // intro with an idle machine: nothing to float.
+      downloadHolder.value = makeDownloadCtx();
+      await act(async () => {
+        rerender(<App />);
+      });
+      expect(
+        screen.queryByTestId('download-status-strip'),
+      ).not.toBeInTheDocument();
     });
   });
 

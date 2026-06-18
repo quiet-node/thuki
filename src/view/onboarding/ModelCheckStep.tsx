@@ -1,27 +1,34 @@
 /**
- * Onboarding step that gates the chat overlay on a working local Ollama
- * setup with at least one installed model.
+ * Onboarding step that gates the chat overlay on a usable model for the
+ * active inference provider.
  *
- * Layout:
- *   - Vertical timeline rail with numbered nodes connected by a thin line.
- *   - Step 1 active shows a single title row, then a two-tab install hero
- *     (Install Ollama / Already Installed?) above a single code box that
- *     swaps its command per tab. A short sub-line below the box invites
- *     the user to paste the command or visit the Ollama docs.
- *   - Step 2 active hosts a compact list of starter models, all rendered
- *     equal — no badge, no hierarchy. The user picks whichever fits.
+ * Dispatches on the active provider's kind:
+ *   - `builtin` (the default): a RAM-aware three-tier starter picker with
+ *     one-tap download (StarterPicker + DownloadProgress + useDownloadModel,
+ *     the same kit Settings uses). When a local Ollama daemon is detected,
+ *     a "Use my existing Ollama instead" escape hatch switches the active
+ *     provider and falls into the legacy Ollama flow below.
+ *   - anything else: the original Ollama state machine
+ *     (ollama_unreachable / no_models_installed / ready), kept verbatim.
  *
- * Probes Ollama via the `check_model_setup` Tauri command on mount and on
- * every Re-check click. Background polling is intentionally absent so
- * idle CPU and IPC stay at zero between explicit user actions.
+ * The Ollama machine probes via the `check_model_setup` Tauri command on
+ * mount and on every Re-check click. Background polling is intentionally
+ * absent so idle CPU and IPC stay at zero between explicit user actions.
  */
 
 import { AnimatePresence, motion } from 'framer-motion';
 import type React from 'react';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, forwardRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
+import { useFitOnboardingWindow } from '../../hooks/useFitOnboardingWindow';
 import { useConfig } from '../../contexts/ConfigContext';
+import { useDownloadCtx } from '../../contexts/DownloadContext';
+import { FIT_COPY, useStarterOptions } from '../../components/StarterPicker';
+import { StarterMatrix } from '../../components/StarterMatrix';
+import type { ConfirmInfo } from '../../components/DownloadProgress';
+import type { DownloadUiState } from '../../hooks/useDownloadModel';
+import type { StarterOption } from '../../types/starter';
 import { Badge } from './_shared';
 
 const OLLAMA_DOCS_URL = 'https://ollama.com/download';
@@ -44,6 +51,7 @@ function formatListenAddr(url: string): string {
 type ModelSetupState =
   | { state: 'ollama_unreachable' }
   | { state: 'no_models_installed' }
+  | { state: 'needs_download' }
   | { state: 'ready'; active_slug: string; installed: string[] };
 
 interface InstallTab {
@@ -115,7 +123,319 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
+/**
+ * Dispatches between the built-in starter flow and the legacy Ollama state
+ * machine based on the active provider's kind. `ollamaOverride` flips when
+ * the user takes the "Use my existing Ollama instead" escape hatch, so the
+ * legacy machine renders immediately without waiting for the config-updated
+ * broadcast to round-trip.
+ */
 export function ModelCheckStep() {
+  const config = useConfig();
+  const [ollamaOverride, setOllamaOverride] = useState(false);
+
+  if (config.inference.activeProviderKind !== 'builtin' || ollamaOverride) {
+    return <OllamaModelCheck />;
+  }
+  return <BuiltinModelCheck onUseOllama={() => setOllamaOverride(true)} />;
+}
+
+// ─── Built-in engine flow ────────────────────────────────────────────────────
+
+/** Download phases during which the escape hatch must stay reachable. */
+function isDownloadingPhase(phase: string): boolean {
+  return phase === 'downloading' || phase === 'downloading_mmproj';
+}
+
+/**
+ * Confirm-card facts for the tier being confirmed: total download size, the
+ * disk's free space, and the picker's RAM caution for non-comfortable fits.
+ * `undefined` outside the confirming phase (or, defensively, when the tier
+ * has no matching option row) hides the info block entirely.
+ */
+export function buildConfirmInfo(
+  state: DownloadUiState,
+  options: StarterOption[],
+  freeDiskBytes: number | null,
+): ConfirmInfo | undefined {
+  if (state.phase !== 'confirming') return undefined;
+  const option = options.find((o) => o.starter.tier === state.tier);
+  if (!option) return undefined;
+  return {
+    sizeGb: (option.starter.size_bytes + option.starter.mmproj_bytes) / 1e9,
+    freeDiskGb: freeDiskBytes === null ? null : freeDiskBytes / 1e9,
+    ramWarning: option.fit === 'fits' ? null : FIT_COPY[option.fit],
+  };
+}
+
+/**
+ * Starter picker + one-tap download for the built-in engine.
+ *
+ * Mount probes:
+ *   - `check_model_setup`: a returning user whose starter is already
+ *     installed advances straight past this step.
+ *   - `detect_ollama`: gates the "Use my existing Ollama instead" hatch.
+ *   - `get_models_dir_free_bytes`: feeds the confirm card's disk line.
+ *
+ * Download lifecycle is owned by the app-root `DownloadProvider` (engine
+ * handoff off: the engine starts lazily on first chat, so `AllDone` is
+ * terminal here), consumed via `useDownloadCtx` so a download started here
+ * survives this step unmounting when the user taps "Continue". On `ready`
+ * the options refresh (so the row shows Installed) and the backend advances
+ * onboarding to the intro step.
+ */
+function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
+  const { options, refresh } = useStarterOptions();
+  const {
+    state,
+    combinedBytes,
+    speedBytesPerSec,
+    // The tier whose download is in flight and the resume-seed floor both live
+    // in the provider now, so the bar keeps rendering after this step unmounts.
+    downloadingTier,
+    resumeSeedBytes,
+    cancel,
+    retry,
+    discard,
+    enterResumePending,
+    beginDownload,
+    resumeDownload,
+  } = useDownloadCtx();
+  const [ollamaDetected, setOllamaDetected] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const setup = await invoke<ModelSetupState>('check_model_setup');
+        if (cancelled) return;
+        if (setup.state === 'ready') {
+          await invoke('advance_past_model_check');
+        }
+      } catch {
+        // Probe failure is not fatal: stay on the picker so the user can
+        // still download a starter.
+      }
+    })();
+    void invoke<boolean>('detect_ollama')
+      .then((detected) => {
+        if (!cancelled) setOllamaDetected(detected);
+      })
+      .catch(() => {
+        // Detection failure just hides the escape hatch.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // A cancelled download leaves a resumable partial on disk, but the picker's
+  // rows still carry the pre-cancel `partial_bytes`. When the machine returns
+  // to idle from an active phase (a cancel), re-fetch so the affected column
+  // offers Resume/Discard right away, not only after a relaunch. The ref keeps
+  // mount (already idle) and the resume_pending hop (Discard refreshes itself)
+  // from firing a redundant fetch.
+  const prevPhaseRef = useRef(state.phase);
+  useEffect(() => {
+    const prev = prevPhaseRef.current;
+    prevPhaseRef.current = state.phase;
+    if (
+      state.phase === 'idle' &&
+      prev !== 'idle' &&
+      prev !== 'resume_pending'
+    ) {
+      void refresh();
+    }
+  }, [state.phase, refresh]);
+
+  // An interrupted earlier download leaves a resumable partial: surface the
+  // per-card Resume/Discard pair instead of the plain Download button.
+  useEffect(() => {
+    if (
+      state.phase === 'idle' &&
+      options !== null &&
+      options.some((o) => o.partial_bytes !== null)
+    ) {
+      enterResumePending();
+    }
+  }, [state.phase, options, enterResumePending]);
+
+  // Download finished: refresh the rows so Installed shows, then let the
+  // backend advance onboarding (it re-emits the stage event).
+  useEffect(() => {
+    if (state.phase !== 'ready') return;
+    void (async () => {
+      await refresh();
+      await invoke('advance_past_model_check');
+    })();
+  }, [state.phase, refresh]);
+
+  const handleUseOllama = useCallback(async () => {
+    if (isDownloadingPhase(state.phase)) {
+      await cancel();
+    }
+    try {
+      await invoke('set_active_provider', { providerId: 'ollama' });
+    } catch {
+      // Switching failed (e.g. config write error): stay on the picker.
+      return;
+    }
+    onUseOllama();
+  }, [state.phase, cancel, onUseOllama]);
+
+  // Match the transparent window to the picker card so its empty area never
+  // blocks background clicks. Re-fit when the card height changes: options
+  // loading in, or a download phase that adds rows (progress, resume, failed).
+  const cardRef = useRef<HTMLDivElement>(null);
+  useFitOnboardingWindow(cardRef, `${options === null}:${state.phase}`);
+
+  return (
+    <BuiltinShell ref={cardRef}>
+      {options === null ? null : (
+        <div style={{ marginBottom: 12 }}>
+          <StarterMatrix
+            options={options}
+            state={state}
+            combinedBytes={combinedBytes ?? resumeSeedBytes}
+            speedBytesPerSec={speedBytesPerSec}
+            downloadingTier={downloadingTier}
+            onDownload={(tier) => {
+              const option = options.find((o) => o.starter.tier === tier)!;
+              beginDownload(tier, option);
+            }}
+            onResume={(tier, partialBytes) => {
+              const option = options.find((o) => o.starter.tier === tier)!;
+              resumeDownload(tier, option, partialBytes);
+            }}
+            onDiscard={(sha256) => {
+              void discard(sha256).then(refresh);
+            }}
+            onCancel={() => void cancel()}
+            onRetry={() => void retry()}
+            onContinue={() => void invoke('advance_past_model_check')}
+            ollamaDetected={ollamaDetected}
+            onUseOllama={() => void handleUseOllama()}
+          />
+        </div>
+      )}
+    </BuiltinShell>
+  );
+}
+
+/**
+ * Outer card for the built-in flow. Mirrors the legacy machine's shell
+ * (logo, title, privacy footer) so onboarding stays visually coherent; the
+ * legacy markup itself is left untouched inside `OllamaModelCheck`.
+ */
+const BuiltinShell = forwardRef<HTMLDivElement, { children: React.ReactNode }>(
+  function BuiltinShell({ children }, ref) {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'transparent',
+          fontFamily: 'inherit',
+        }}
+      >
+        <motion.div
+          ref={ref}
+          initial={{ opacity: 0, scale: 0.97, y: 8 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+          style={{
+            width: 720,
+            background:
+              'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
+            border: '1px solid rgba(255, 141, 92, 0.2)',
+            borderRadius: 24,
+            padding: '26px 22px 22px',
+            boxShadow: '0 0 40px rgba(255,100,40,0.07)',
+            position: 'relative',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 1,
+              background:
+                'linear-gradient(90deg, transparent, rgba(255,141,92,0.4), transparent)',
+            }}
+          />
+
+          <div
+            data-tauri-drag-region
+            style={{ textAlign: 'center', marginBottom: 12, cursor: 'grab' }}
+          >
+            <img
+              src={thukiLogo}
+              width={40}
+              height={40}
+              alt="Thuki"
+              style={{
+                objectFit: 'contain',
+                pointerEvents: 'none',
+                display: 'block',
+                margin: '0 auto',
+              }}
+            />
+          </div>
+
+          <h1
+            style={{
+              textAlign: 'center',
+              fontSize: 18,
+              fontWeight: 700,
+              color: '#f0f0f2',
+              letterSpacing: '-0.3px',
+              lineHeight: 1.25,
+              margin: '0 0 4px',
+            }}
+          >
+            Set up your local AI
+          </h1>
+          <p
+            style={{
+              textAlign: 'center',
+              fontSize: 12.5,
+              color: 'rgba(255,255,255,0.55)',
+              lineHeight: 1.5,
+              margin: '0 auto 18px',
+              maxWidth: 560,
+            }}
+          >
+            Pick a starter brain for Thuki. Downloads once, then runs fully
+            offline.
+          </p>
+
+          {children}
+
+          <p
+            style={{
+              textAlign: 'center',
+              fontSize: 11,
+              color: 'rgba(255,255,255,0.18)',
+              marginTop: 12,
+              lineHeight: 1.5,
+            }}
+          >
+            Private by default · All inference runs on your machine
+          </p>
+        </motion.div>
+      </div>
+    );
+  },
+);
+
+// ─── Legacy Ollama flow (kept verbatim) ──────────────────────────────────────
+
+function OllamaModelCheck() {
   const [setupState, setSetupState] = useState<ModelSetupState | null>(null);
   const [isRechecking, setIsRechecking] = useState(false);
   const mountedRef = useRef(true);

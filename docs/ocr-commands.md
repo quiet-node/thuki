@@ -44,7 +44,7 @@ Most AI assistants that "read" images send the image to a vision-capable languag
 - **Latency:** The model must load (if not already warm), tokenize the image, run a forward pass, and stream tokens back. For a text-only extraction task, this adds 1-10 seconds of overhead.
 - **Accuracy:** LLMs can hallucinate or paraphrase text. A vision model asked to "extract text" may still rephrase, correct apparent typos, or drop content it considers noise. OCR engines report what the pixels say, faithfully.
 - **Token cost:** Image tokens are expensive. A 1080p screenshot may consume 500-1000 tokens just to encode, before the model writes a single character of output.
-- **VRAM:** Running a multimodal model requires a vision-capable Ollama model loaded in GPU memory. Not every setup has one, and loading one takes time.
+- **VRAM:** Running a multimodal model requires a vision-capable model loaded in GPU memory. Not every setup has one, and loading one takes time.
 
 The OCR commands bypass all of this. They call `VNRecognizeTextRequest` directly via the macOS Vision framework, which is a compiled CoreML-backed pipeline that runs in milliseconds on CPU. No model, no stream, no round-trip for the OCR step. The utility commands (`/tldr`, `/translate`, etc.) still call the model for the post-OCR work, but only with plain text.
 
@@ -62,9 +62,9 @@ When you submit any OCR-supported command, Thuki:
 
 If every image is blank (no readable text detected), `/extract` returns `[No text detected]`. Utility commands surface a friendly error so the model is not asked to summarize an empty string.
 
-### Fallback to Ollama vision model (/extract only)
+### Fallback to a vision-capable model (/extract only)
 
-If Vision OCR fails on `/extract` (e.g., an unsupported image format), Thuki falls back to your active Ollama model only if it has vision capability. The fallback prompt asks the model to extract text verbatim. If no vision model is active, Thuki surfaces an error instead of silently doing nothing. Utility commands do not currently fall back; their OCR failure surfaces as a capture error.
+If Vision OCR fails on `/extract` (e.g., an unsupported image format), Thuki falls back to your active model only if it has vision capability, whichever provider serves it. The fallback prompt asks the model to extract text verbatim. If the active model has no vision capability, Thuki surfaces an error instead of silently doing nothing. Utility commands do not currently fall back; their OCR failure surfaces as a capture error.
 
 ## Performance
 
@@ -128,7 +128,7 @@ Paste or drag up to 4 images before submitting any OCR-supported command. Each i
 - Heavily stylized display fonts
 - Extreme compression artifacts (high-JPEG-compression screenshots)
 
-For these cases, the Ollama vision fallback (on `/extract`) may produce better results because the model uses context and can infer partial characters. For utility commands, switching to a vision model and re-submitting without the slash command sends the image directly to the model instead.
+For these cases, the vision-model fallback (on `/extract`) may produce better results because the model uses context and can infer partial characters. For utility commands, switching to a vision model and re-submitting without the slash command sends the image directly to the model instead.
 
 ## Technical details
 

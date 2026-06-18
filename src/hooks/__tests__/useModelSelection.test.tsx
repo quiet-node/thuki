@@ -26,6 +26,35 @@ describe('useModelSelection', () => {
     expect(result.current.ollamaReachable).toBe(true);
   });
 
+  it('exposes per-id display names from the backend payload', async () => {
+    invoke.mockResolvedValueOnce({
+      active: 'org/repo:a.gguf',
+      all: ['org/repo:a.gguf'],
+      ollamaReachable: true,
+      displayNames: { 'org/repo:a.gguf': 'Model A' },
+    });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+
+    expect(result.current.modelDisplayNames).toEqual({
+      'org/repo:a.gguf': 'Model A',
+    });
+  });
+
+  it('defaults display names to an empty map when the payload omits them', async () => {
+    invoke.mockResolvedValueOnce({
+      active: 'gemma4:e2b',
+      all: ['gemma4:e2b'],
+      ollamaReachable: true,
+    });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+
+    expect(result.current.modelDisplayNames).toEqual({});
+  });
+
   it('starts with a null active model before the first refresh resolves', () => {
     invoke.mockImplementationOnce(() => new Promise<unknown>(() => {}));
     const { result } = renderHook(() => useModelSelection());
@@ -208,9 +237,7 @@ describe('useModelSelection', () => {
         all: ['gemma4:e2b', 'qwen2.5:7b'],
         ollamaReachable: true,
       })
-      .mockRejectedValueOnce(
-        new Error('Model is not installed in Ollama: mystery'),
-      );
+      .mockRejectedValueOnce(new Error('Model is not installed: mystery'));
 
     const { result } = renderHook(() => useModelSelection());
     await act(async () => {});
@@ -219,7 +246,7 @@ describe('useModelSelection', () => {
       act(async () => {
         await result.current.setActiveModel('mystery');
       }),
-    ).rejects.toThrow('Model is not installed in Ollama: mystery');
+    ).rejects.toThrow('Model is not installed: mystery');
 
     expect(result.current.activeModel).toBe('gemma4:e2b');
   });

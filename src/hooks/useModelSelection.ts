@@ -40,6 +40,11 @@ export interface UseModelSelectionResult {
   /** All locally installed Ollama model names available for selection. */
   availableModels: string[];
   /**
+   * Friendly display name per model id (built-in models only); ids without an
+   * entry render verbatim. Drives the picker's elegant labels.
+   */
+  modelDisplayNames: Record<string, string>;
+  /**
    * Whether the most recent backend call reached the local Ollama daemon.
    * `true` is the optimistic default before the first fetch resolves so the
    * UI does not flash an "Ollama is down" strip during cold start. Set to
@@ -80,6 +85,9 @@ export function useModelSelection(): UseModelSelectionResult {
   // eslint-disable-next-line @eslint-react/use-state
   const [activeModel, setActiveModelState] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelDisplayNames, setModelDisplayNames] = useState<
+    Record<string, string>
+  >({});
   // Optimistic default: assume reachable until the first fetch tells us
   // otherwise. This prevents a cold-start flash of the "Ollama is down"
   // strip while the IPC call is in flight.
@@ -111,16 +119,19 @@ export function useModelSelection(): UseModelSelectionResult {
         // is unreachable so the strip nudges the user toward starting it.
         setActiveModelState(null);
         setAvailableModels([]);
+        setModelDisplayNames({});
         setOllamaReachable(false);
         return;
       }
       setActiveModelState(state.active);
       setAvailableModels(state.all);
+      setModelDisplayNames(state.displayNames ?? {});
       setOllamaReachable(state.ollamaReachable);
     } catch {
       if (!isLatest(token)) return;
       setActiveModelState(null);
       setAvailableModels([]);
+      setModelDisplayNames({});
       setOllamaReachable(false);
     }
   }, [isLatest]);
@@ -151,6 +162,7 @@ export function useModelSelection(): UseModelSelectionResult {
   return {
     activeModel,
     availableModels,
+    modelDisplayNames,
     ollamaReachable,
     refreshModels,
     setActiveModel,

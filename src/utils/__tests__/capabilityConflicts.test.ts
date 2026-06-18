@@ -1,11 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import {
+  BUILTIN_NO_MODELS_MESSAGE,
   getCapabilityConflict,
   getEnvironmentMessage,
   isComposeCapabilityConflict,
+  MODEL_STATE_UNAVAILABLE_MESSAGE,
   NO_MODELS_INSTALLED_MESSAGE,
   OCR_COMMANDS_DOC_URL,
   OLLAMA_UNREACHABLE_MESSAGE,
+  OPENAI_NO_MODEL_MESSAGE,
+  PICK_A_MODEL_MESSAGE,
 } from '../capabilityConflicts';
 import type { ModelCapabilities } from '../../types/model';
 import type {
@@ -599,46 +603,122 @@ describe('isComposeCapabilityConflict', () => {
 });
 
 describe('getEnvironmentMessage', () => {
-  it('returns the unreachable copy when Ollama cannot be reached (S1)', () => {
-    // S1: connection refused / timeout / DNS failure. Even if the
-    // installedCount and activeModel happen to be non-empty (stale state
-    // from a prior fetch), reachability is the dominant constraint.
-    expect(getEnvironmentMessage(false, 0, null)).toBe(
-      OLLAMA_UNREACHABLE_MESSAGE,
-    );
+  describe('ollama provider', () => {
+    it('returns the unreachable copy when Ollama cannot be reached (S1)', () => {
+      // S1: connection refused / timeout / DNS failure. Even if the
+      // installedCount and activeModel happen to be non-empty (stale state
+      // from a prior fetch), reachability is the dominant constraint.
+      expect(getEnvironmentMessage(false, 0, null, 'ollama')).toBe(
+        OLLAMA_UNREACHABLE_MESSAGE,
+      );
+    });
+
+    it('returns the unreachable copy even with stale active/installed values', () => {
+      expect(getEnvironmentMessage(false, 3, 'gemma4:e4b', 'ollama')).toBe(
+        OLLAMA_UNREACHABLE_MESSAGE,
+      );
+    });
+
+    it('returns the no-models copy when reachable but installed list is empty (S2)', () => {
+      expect(getEnvironmentMessage(true, 0, null, 'ollama')).toBe(
+        NO_MODELS_INSTALLED_MESSAGE,
+      );
+    });
+
+    it('returns the pick-a-model copy when reachable, models present, none active (S3)', () => {
+      // S3 is the rare post-Phase-A defensive state. Backend auto-picks the
+      // first installed model on launch, but if a payload drift ever lands
+      // here we still surface a clear recovery cue instead of falling
+      // through to the capability helper with a null model.
+      const result = getEnvironmentMessage(true, 2, null, 'ollama');
+      expect(result).toBe(PICK_A_MODEL_MESSAGE);
+      expect(result).toBe(
+        'Pick a model from the chip above to start chatting.',
+      );
+    });
+
+    it('returns null when an active model is set so per-message gates can run (S4)', () => {
+      expect(getEnvironmentMessage(true, 2, 'gemma4:e4b', 'ollama')).toBeNull();
+    });
+
+    it('returns the pick-a-model copy when activeModel is the empty string', () => {
+      // Empty string is treated as "no active model" so the strip surfaces
+      // the recovery cue rather than letting the capability helper pretend
+      // the empty slug is a real selection.
+      expect(getEnvironmentMessage(true, 1, '', 'ollama')).toBe(
+        'Pick a model from the chip above to start chatting.',
+      );
+    });
+
+    it('treats an unknown provider kind as ollama (ConfigContext fallback)', () => {
+      // ConfigContext falls back to 'ollama' when the active-provider
+      // pointer does not resolve; an unexpected kind string must follow
+      // the same conservative route rather than silently unblocking.
+      expect(getEnvironmentMessage(false, 0, null, 'mystery')).toBe(
+        OLLAMA_UNREACHABLE_MESSAGE,
+      );
+    });
   });
 
-  it('returns the unreachable copy even with stale active/installed values', () => {
-    expect(getEnvironmentMessage(false, 3, 'gemma4:e4b')).toBe(
-      OLLAMA_UNREACHABLE_MESSAGE,
-    );
+  describe('builtin provider', () => {
+    it('never shows the Ollama copy: an IPC failure shows the generic model-state copy', () => {
+      // The backend always reports reachable=true for the builtin engine
+      // (it starts on demand per request), so reachable=false here means
+      // the picker IPC call itself failed. Still gate, but never tell a
+      // builtin user to start Ollama.
+      expect(getEnvironmentMessage(false, 0, null, 'builtin')).toBe(
+        MODEL_STATE_UNAVAILABLE_MESSAGE,
+      );
+    });
+
+    it('points at Settings when no model is downloaded yet', () => {
+      expect(getEnvironmentMessage(true, 0, null, 'builtin')).toBe(
+        BUILTIN_NO_MODELS_MESSAGE,
+      );
+      expect(BUILTIN_NO_MODELS_MESSAGE).not.toContain('Ollama');
+      expect(BUILTIN_NO_MODELS_MESSAGE).not.toContain('ollama pull');
+    });
+
+    it('returns the pick-a-model copy when models are downloaded but none is active', () => {
+      expect(getEnvironmentMessage(true, 2, null, 'builtin')).toBe(
+        PICK_A_MODEL_MESSAGE,
+      );
+    });
+
+    it('returns null when a downloaded model is active', () => {
+      expect(
+        getEnvironmentMessage(true, 1, 'tinyllama-1.1b', 'builtin'),
+      ).toBeNull();
+    });
   });
 
-  it('returns the no-models copy when reachable but installed list is empty (S2)', () => {
-    expect(getEnvironmentMessage(true, 0, null)).toBe(
-      NO_MODELS_INSTALLED_MESSAGE,
-    );
-  });
+  describe('openai provider', () => {
+    it('shows the generic model-state copy when the picker IPC call failed', () => {
+      expect(getEnvironmentMessage(false, 0, null, 'openai')).toBe(
+        MODEL_STATE_UNAVAILABLE_MESSAGE,
+      );
+    });
 
-  it('returns the pick-a-model copy when reachable, models present, none active (S3)', () => {
-    // S3 is the rare post-Phase-A defensive state. Backend auto-picks the
-    // first installed model on launch, but if a payload drift ever lands
-    // here we still surface a clear recovery cue instead of falling
-    // through to the capability helper with a null model.
-    const result = getEnvironmentMessage(true, 2, null);
-    expect(result).toBe('Pick a model from the chip above to start chatting.');
-  });
+    it('points at Settings when no model is configured', () => {
+      expect(getEnvironmentMessage(true, 0, null, 'openai')).toBe(
+        OPENAI_NO_MODEL_MESSAGE,
+      );
+      expect(OPENAI_NO_MODEL_MESSAGE).not.toContain('Ollama');
+    });
 
-  it('returns null when an active model is set so per-message gates can run (S4)', () => {
-    expect(getEnvironmentMessage(true, 2, 'gemma4:e4b')).toBeNull();
-  });
+    it('points at Settings when models exist but none is active (defensive)', () => {
+      // The backend derives the openai inventory from the configured model,
+      // so installed-without-active should not occur; route it to Settings
+      // anyway because the in-chat picker cannot fix an openai provider.
+      expect(getEnvironmentMessage(true, 1, null, 'openai')).toBe(
+        OPENAI_NO_MODEL_MESSAGE,
+      );
+    });
 
-  it('returns the pick-a-model copy when activeModel is the empty string', () => {
-    // Empty string is treated as "no active model" so the strip surfaces
-    // the recovery cue rather than letting the capability helper pretend
-    // the empty slug is a real selection.
-    expect(getEnvironmentMessage(true, 1, '')).toBe(
-      'Pick a model from the chip above to start chatting.',
-    );
+    it('returns null when the configured model is active', () => {
+      expect(
+        getEnvironmentMessage(true, 1, 'gpt-4o-mini', 'openai'),
+      ).toBeNull();
+    });
   });
 });

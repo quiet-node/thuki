@@ -50,10 +50,27 @@ pub struct InstalledModel {
 /// always produces an up-to-date entry. `created_at` is set to the current
 /// Unix second timestamp inside this function.
 ///
+/// Returns the SHA-256 values of the replaced row (weights and mmproj) that
+/// are no longer referenced by any row after the replace, mirroring
+/// [`delete`]: a re-download whose upstream content changed would otherwise
+/// strand the old multi-GB blob forever. The caller is responsible for
+/// removing the orphaned blobs from disk. Empty when no row was replaced or
+/// every old SHA is still referenced (same content, or shared with another
+/// row).
+///
 /// # Errors
 ///
 /// Returns a `rusqlite::Error` if the underlying SQL execution fails.
-pub fn insert(conn: &Connection, model: &InstalledModel) -> SqlResult<()> {
+pub fn insert(conn: &Connection, model: &InstalledModel) -> SqlResult<Vec<String>> {
+    // Snapshot the SHA values of the row being replaced before it is gone.
+    let replaced: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT sha256, mmproj_sha256 FROM installed_models WHERE id = ?1",
+            params![model.id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?;
+
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -80,7 +97,29 @@ pub fn insert(conn: &Connection, model: &InstalledModel) -> SqlResult<()> {
             created_at,
         ],
     )?;
-    Ok(())
+
+    let Some((old_weights_sha, old_mmproj_sha)) = replaced else {
+        return Ok(vec![]);
+    };
+
+    // Refcount each replaced SHA against the post-replace table (the new row
+    // counts, so an unchanged SHA is never reported); deduplicate so a row
+    // whose weights and mmproj share a SHA does not produce duplicates.
+    let mut candidates: Vec<String> = vec![old_weights_sha];
+    if let Some(s) = old_mmproj_sha {
+        if !candidates.contains(&s) {
+            candidates.push(s);
+        }
+    }
+
+    let mut orphans = Vec::new();
+    for sha in candidates {
+        if sha_refcount(conn, &sha)? == 0 {
+            orphans.push(sha);
+        }
+    }
+
+    Ok(orphans)
 }
 
 /// Returns all installed models ordered alphabetically by `display_name`.
@@ -346,17 +385,76 @@ mod tests {
     fn duplicate_install_upserts() {
         let conn = open_in_memory().unwrap();
         let m1 = make_model("org/repo:model.gguf", "sha_v1");
-        insert(&conn, &m1).unwrap();
+        // A fresh insert replaces nothing, so nothing can be orphaned.
+        assert!(insert(&conn, &m1).unwrap().is_empty());
 
-        // Re-insert with a different display_name and sha256.
+        // Re-insert with a different display_name and sha256: the replaced
+        // row's blob is no longer referenced and must be reported.
         let mut m2 = make_model("org/repo:model.gguf", "sha_v2");
         m2.display_name = "Updated Name".to_string();
-        insert(&conn, &m2).unwrap();
+        let orphans = insert(&conn, &m2).unwrap();
+        assert_eq!(orphans, vec!["sha_v1".to_string()]);
 
         let rows = list(&conn).unwrap();
         assert_eq!(rows.len(), 1, "upsert must not create a second row");
         assert_eq!(rows[0].sha256, "sha_v2");
         assert_eq!(rows[0].display_name, "Updated Name");
+    }
+
+    #[test]
+    fn reinsert_with_same_shas_reports_no_orphans() {
+        let conn = open_in_memory().unwrap();
+        let m = make_model_with_mmproj("org/repo:model.gguf", "sha_w", "sha_mm");
+        insert(&conn, &m).unwrap();
+
+        // Same content re-installed: the new row still references both SHAs,
+        // so neither may be reported for removal.
+        let orphans = insert(&conn, &m).unwrap();
+        assert!(orphans.is_empty());
+        assert_eq!(list(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reinsert_with_changed_shas_reports_old_weights_and_mmproj() {
+        let conn = open_in_memory().unwrap();
+        let m1 = make_model_with_mmproj("org/repo:model.gguf", "sha_w_old", "sha_mm_old");
+        insert(&conn, &m1).unwrap();
+
+        // Upstream content changed: both old blobs are now unreferenced.
+        let m2 = make_model_with_mmproj("org/repo:model.gguf", "sha_w_new", "sha_mm_new");
+        let orphans = insert(&conn, &m2).unwrap();
+        assert_eq!(orphans.len(), 2);
+        assert!(orphans.contains(&"sha_w_old".to_string()));
+        assert!(orphans.contains(&"sha_mm_old".to_string()));
+    }
+
+    #[test]
+    fn reinsert_keeps_old_sha_shared_with_another_row() {
+        let conn = open_in_memory().unwrap();
+        // Two models share the same mmproj SHA.
+        let m1 = make_model_with_mmproj("org/repo:model1.gguf", "sha_w1_old", "sha_shared_mm");
+        let m2 = make_model_with_mmproj("org/repo:model2.gguf", "sha_w2", "sha_shared_mm");
+        insert(&conn, &m1).unwrap();
+        insert(&conn, &m2).unwrap();
+
+        // Re-install model1 with changed content: its old weights blob is
+        // orphaned, but the shared mmproj is still referenced by model2.
+        let replacement =
+            make_model_with_mmproj("org/repo:model1.gguf", "sha_w1_new", "sha_mm_new");
+        let orphans = insert(&conn, &replacement).unwrap();
+        assert_eq!(orphans, vec!["sha_w1_old".to_string()]);
+    }
+
+    #[test]
+    fn reinsert_dedupes_row_whose_weights_and_mmproj_share_a_sha() {
+        let conn = open_in_memory().unwrap();
+        // Degenerate row whose weights and mmproj reference the same blob.
+        let m1 = make_model_with_mmproj("org/repo:model.gguf", "sha_same", "sha_same");
+        insert(&conn, &m1).unwrap();
+
+        let m2 = make_model_with_mmproj("org/repo:model.gguf", "sha_new_w", "sha_new_mm");
+        let orphans = insert(&conn, &m2).unwrap();
+        assert_eq!(orphans, vec!["sha_same".to_string()]);
     }
 
     #[test]
@@ -401,8 +499,24 @@ mod tests {
 
     #[test]
     fn insert_propagates_sql_error_when_table_absent() {
+        // The replaced-row snapshot SELECT is the first statement to fail.
         let conn = open_in_memory().unwrap();
         conn.execute_batch("DROP TABLE installed_models;").unwrap();
+        let m = make_model("x:y.gguf", "sha");
+        assert!(insert(&conn, &m).is_err());
+    }
+
+    #[test]
+    fn insert_propagates_sql_error_on_insert_statement() {
+        // Replace the table with a non-insertable view so the snapshot
+        // SELECT still works but the INSERT OR REPLACE statement fails.
+        // This exercises the `?` Err arm on the insert execute call.
+        let conn = open_in_memory().unwrap();
+        conn.execute_batch(
+            "ALTER TABLE installed_models RENAME TO installed_models_real; \
+             CREATE VIEW installed_models AS SELECT * FROM installed_models_real;",
+        )
+        .unwrap();
         let m = make_model("x:y.gguf", "sha");
         assert!(insert(&conn, &m).is_err());
     }

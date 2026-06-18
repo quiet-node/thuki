@@ -8,7 +8,7 @@
  * [`crate::models::download::DownloadSpec`] which verifies them on install).
  *
  * Hashes and sizes were read from the Hugging Face tree-at-revision API
- * (`/api/models/<repo>/tree/<revision>`) on 2026-06-10, so each digest
+ * (`/api/models/<repo>/tree/<revision>`) on 2026-06-17, so each digest
  * matches the pinned commit, not whatever `main` later points to.
  */
 
@@ -31,7 +31,7 @@ pub enum Tier {
 pub struct Starter {
     /// Which speed/quality tier this entry fills.
     pub tier: Tier,
-    /// Human-readable label shown in the picker (e.g. "Gemma 3 4B").
+    /// Human-readable label shown in the picker (e.g. "Gemma 4 12B").
     pub display_name: &'static str,
     /// Hugging Face repo slug.
     pub repo: &'static str,
@@ -63,60 +63,72 @@ pub struct Starter {
     pub est_runtime_gb: f64,
     /// Short license label surfaced next to the download button.
     pub license_note: &'static str,
+    /// Model maker (e.g. "OpenAI"), shown in the picker's Origin row.
+    pub origin: &'static str,
+    /// The maker's own official Hugging Face repo, opened from the Origin row
+    /// so a user can verify provenance on the source org's page. Differs from
+    /// `repo` (the GGUF download source) when a third party hosts the GGUF.
+    pub origin_repo: &'static str,
 }
 
 /// The curated starters, ordered Fast, Balanced, Smartest.
 pub const STARTERS: &[Starter] = &[
     Starter {
         tier: Tier::Fast,
-        display_name: "Gemma 3 4B",
-        repo: "ggml-org/gemma-3-4b-it-GGUF",
-        revision: "d0976223747697cb51e056d85c532013931fe52e",
-        file_name: "gemma-3-4b-it-Q4_K_M.gguf",
-        sha256: "882e8d2db44dc554fb0ea5077cb7e4bc49e7342a1f0da57901c0802ea21a0863",
-        size_bytes: 2_489_757_856,
+        display_name: "Qwen3.5 9B",
+        repo: "unsloth/Qwen3.5-9B-GGUF",
+        revision: "3885219b6810b007914f3a7950a8d1b469d598a5",
+        file_name: "Qwen3.5-9B-Q4_K_M.gguf",
+        sha256: "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
+        size_bytes: 5_680_522_464,
         quant: "Q4_K_M",
         vision: true,
         thinking: false,
-        mmproj_file: Some("mmproj-model-f16.gguf"),
-        mmproj_sha256: Some("8c0fb064b019a6972856aaae2c7e4792858af3ca4561be2dbf649123ba6c40cb"),
-        mmproj_bytes: 851_251_104,
-        est_runtime_gb: 5.0,
-        license_note: "Gemma Terms of Use",
+        mmproj_file: Some("mmproj-BF16.gguf"),
+        mmproj_sha256: Some("853698ce7aa6c7ba732478bad280240969ddf7b0fcbf93900046f63903a83383"),
+        mmproj_bytes: 921_705_024,
+        est_runtime_gb: 8.5,
+        license_note: "Apache 2.0",
+        origin: "Alibaba",
+        origin_repo: "Qwen/Qwen3.5-9B",
     },
     Starter {
         tier: Tier::Balanced,
-        display_name: "Gemma 3 12B",
-        repo: "ggml-org/gemma-3-12b-it-GGUF",
-        revision: "ec0cbabd8dbff316f659876a50202295c3c4a314",
-        file_name: "gemma-3-12b-it-Q4_K_M.gguf",
-        sha256: "7bb69bff3f48a7b642355d64a90e481182a7794707b3133890646b1efa778ff5",
-        size_bytes: 7_300_574_976,
-        quant: "Q4_K_M",
+        display_name: "Gemma 4 12B",
+        repo: "google/gemma-4-12B-it-qat-q4_0-gguf",
+        revision: "f6e7774e6148da3b7f201e42ba37cf084c1db35f",
+        file_name: "gemma-4-12b-it-qat-q4_0.gguf",
+        sha256: "faff1a63667fac17ac5e777f47114688fcefea96e220e211aaa8d62c2c4561f1",
+        size_bytes: 6_975_877_728,
+        quant: "Q4_0",
         vision: true,
         thinking: false,
-        mmproj_file: Some("mmproj-model-f16.gguf"),
-        mmproj_sha256: Some("30c02d056410848227001830866e0a269fcc28aaf8ca971bded494003de9f5a5"),
-        mmproj_bytes: 854_200_224,
-        est_runtime_gb: 11.5,
-        license_note: "Gemma Terms of Use",
+        mmproj_file: Some("mmproj-gemma-4-12b-it-qat-q4_0.gguf"),
+        mmproj_sha256: Some("e70b0e5cd80323d5d588b4ed06780356b7b1ba03995a4b8164c6ae9db0ff5989"),
+        mmproj_bytes: 175_115_264,
+        est_runtime_gb: 9.5,
+        license_note: "Apache 2.0",
+        origin: "Google",
+        origin_repo: "google/gemma-4-12B-it",
     },
     Starter {
         tier: Tier::Smartest,
-        display_name: "Phi-4 14B",
-        repo: "bartowski/phi-4-GGUF",
-        revision: "19cd65f97c2f1712a81c506611d3f9c94b16a1e1",
-        file_name: "phi-4-Q4_K_M.gguf",
-        sha256: "009aba717c09d4a35890c7d35eb59d54e1dba884c7c526e7197d9c13ab5911d9",
-        size_bytes: 9_053_114_816,
-        quant: "Q4_K_M",
+        display_name: "gpt-oss 20B",
+        repo: "ggml-org/gpt-oss-20b-GGUF",
+        revision: "e1dc459feff949ff451ce107337a2026daa80df8",
+        file_name: "gpt-oss-20b-mxfp4.gguf",
+        sha256: "be37a636aca0fc1aae0d32325f82f6b4d21495f06823b5fbc1898ae0303e9935",
+        size_bytes: 12_109_566_560,
+        quant: "MXFP4",
         vision: false,
         thinking: false,
         mmproj_file: None,
         mmproj_sha256: None,
         mmproj_bytes: 0,
-        est_runtime_gb: 10.7,
-        license_note: "MIT",
+        est_runtime_gb: 13.3,
+        license_note: "Apache 2.0",
+        origin: "OpenAI",
+        origin_repo: "openai/gpt-oss-20b",
     },
 ];
 
@@ -208,12 +220,22 @@ mod tests {
     }
 
     #[test]
-    fn balanced_is_vision() {
-        let balanced = starter(Tier::Balanced);
-        assert!(balanced.vision);
-        assert!(balanced.mmproj_file.is_some());
-        assert!(balanced.mmproj_sha256.is_some());
-        assert!(balanced.mmproj_bytes > 0);
+    fn vision_and_mmproj_per_tier() {
+        // Fast (Qwen3.5) and Balanced (Gemma 4) are multimodal and each carries
+        // a vision projector; Smartest (gpt-oss) is text-only, so it has no
+        // mmproj companion at all.
+        for tier in [Tier::Fast, Tier::Balanced] {
+            let s = starter(tier);
+            assert!(s.vision, "{tier:?} should be a vision tier");
+            assert!(s.mmproj_file.is_some());
+            assert!(s.mmproj_sha256.is_some());
+            assert!(s.mmproj_bytes > 0);
+        }
+        let smartest = starter(Tier::Smartest);
+        assert!(!smartest.vision);
+        assert!(smartest.mmproj_file.is_none());
+        assert!(smartest.mmproj_sha256.is_none());
+        assert_eq!(smartest.mmproj_bytes, 0);
     }
 
     #[test]
@@ -248,11 +270,39 @@ mod tests {
     }
 
     #[test]
-    fn mmproj_hashes_are_distinct_between_gemma_tiers() {
+    fn license_notes_per_tier() {
+        // The picker surfaces these verbatim. Every tier ships under a
+        // permissive license: Qwen3.5, Gemma 4, and gpt-oss are all Apache 2.0.
+        assert_eq!(starter(Tier::Fast).license_note, "Apache 2.0");
+        assert_eq!(starter(Tier::Balanced).license_note, "Apache 2.0");
+        assert_eq!(starter(Tier::Smartest).license_note, "Apache 2.0");
+    }
+
+    #[test]
+    fn origin_per_tier() {
+        // The picker's Origin row links to each maker's own official HF page
+        // for verification; the maker can differ from the GGUF download repo.
+        let cases = [
+            (Tier::Fast, "Alibaba", "Qwen/Qwen3.5-9B"),
+            (Tier::Balanced, "Google", "google/gemma-4-12B-it"),
+            (Tier::Smartest, "OpenAI", "openai/gpt-oss-20b"),
+        ];
+        for (tier, origin, origin_repo) in cases {
+            let s = starter(tier);
+            assert_eq!(s.origin, origin);
+            assert_eq!(s.origin_repo, origin_repo);
+            // origin_repo is an "org/name" slug the picker turns into an HF URL.
+            assert_eq!(s.origin_repo.split('/').count(), 2);
+            assert!(!s.origin.is_empty());
+        }
+    }
+
+    #[test]
+    fn mmproj_hashes_are_distinct_between_vision_tiers() {
         let fast = starter(Tier::Fast);
         let balanced = starter(Tier::Balanced);
-        // Both Gemma mmproj files share a name but differ in size, so their
-        // hashes must differ; identical hashes would mean a swap happened.
+        // The two vision tiers (Qwen3.5 and Gemma 4) ship their own mmproj; the
+        // sizes and hashes must differ, or a copy/paste swap slipped in.
         assert_ne!(fast.mmproj_bytes, balanced.mmproj_bytes);
         assert_ne!(fast.mmproj_sha256.unwrap(), balanced.mmproj_sha256.unwrap());
     }
@@ -260,10 +310,10 @@ mod tests {
     #[test]
     fn fit_cutoffs() {
         const GIB: u64 = 1 << 30;
-        // (ram_gib, expected fit for Fast 5.0 / Balanced 11.5 / Smartest 10.7)
+        // (ram_gib, expected fit for Fast 8.5 / Balanced 9.5 / Smartest 13.3)
         let table: &[(u64, [RamFit; 3])] = &[
-            (8, [RamFit::Tight, RamFit::TooBig, RamFit::TooBig]),
-            (16, [RamFit::Fits, RamFit::Tight, RamFit::Tight]),
+            (8, [RamFit::TooBig, RamFit::TooBig, RamFit::TooBig]),
+            (16, [RamFit::Fits, RamFit::Fits, RamFit::Tight]),
             (24, [RamFit::Fits, RamFit::Fits, RamFit::Fits]),
             (32, [RamFit::Fits, RamFit::Fits, RamFit::Fits]),
         ];

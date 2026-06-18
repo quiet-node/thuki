@@ -284,13 +284,18 @@ pub(crate) async fn generate_title_text(
             )
             .await
         }
-        crate::commands::LlmTransport::V1 { base_url, api_key } => {
+        crate::commands::LlmTransport::V1 {
+            base_url,
+            api_key,
+            flavor,
+        } => {
             crate::openai::stream_openai_chat(
                 crate::openai::OpenAiChatParams {
                     base_url: base_url.clone(),
                     model,
                     messages: title_messages,
                     api_key: api_key.clone(),
+                    flavor: *flavor,
                 },
                 client,
                 cancel_token,
@@ -364,6 +369,10 @@ pub async fn generate_title(
     let Some(model) = crate::commands::model_for_route(&route, Some(model)) else {
         return Ok(());
     };
+    // Pin the engine while the title call streams so the idle sweep cannot
+    // kill the sidecar mid-generation. The cancel token is fresh and never
+    // cancelled: background title generation has no Stop affordance.
+    let _activity_guard = crate::commands::route_activity_guard(&route, &engine);
     let Ok(transport) = crate::commands::resolve_llm_transport(
         route,
         &db,
@@ -371,6 +380,7 @@ pub async fn generate_title(
         &engine,
         secrets.0.as_ref(),
         app_config.inference.num_ctx,
+        &tokio_util::sync::CancellationToken::new(),
     )
     .await
     else {
@@ -654,6 +664,7 @@ mod tests {
         let transport = crate::commands::LlmTransport::V1 {
             base_url: server.uri(),
             api_key: Some("sk-test".to_string()),
+            flavor: crate::openai::V1Flavor::Remote,
         };
         let accumulated = generate_title_text(
             &transport,

@@ -504,13 +504,18 @@ async fn run_streaming_branch(
         // num_ctx is NOT sent on /v1: for the builtin engine it is a launch
         // property of the llama-server process, and for openai-kind servers
         // it is informational only (spec 6.5).
-        LlmTransport::V1 { base_url, api_key } => {
+        LlmTransport::V1 {
+            base_url,
+            api_key,
+            flavor,
+        } => {
             crate::openai::stream_openai_chat(
                 crate::openai::OpenAiChatParams {
                     base_url: base_url.clone(),
                     model: model.to_string(),
                     messages,
                     api_key: api_key.clone(),
+                    flavor: *flavor,
                 },
                 client,
                 cancel_token,
@@ -2934,6 +2939,7 @@ mod tests {
         let transport = LlmTransport::V1 {
             base_url: server.uri(),
             api_key: None,
+            flavor: crate::openai::V1Flavor::Remote,
         };
 
         run_streaming_branch(

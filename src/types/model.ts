@@ -16,6 +16,13 @@ export interface ModelPickerState {
   /** All locally installed Ollama model names available for selection. */
   all: string[];
   /**
+   * Friendly display name per model id, for built-in models whose ids are the
+   * raw "repo:file.gguf" slug (e.g. "...:Qwen3.5-9B-Q4_K_M.gguf" -> "Qwen3.5
+   * 9B"). Sparse: omitted/absent ids fall back to rendering the id verbatim,
+   * which is already clean for Ollama and OpenAI providers.
+   */
+  displayNames?: Record<string, string>;
+  /**
    * Whether the Rust backend successfully reached the local Ollama daemon
    * during the last picker fetch. False when `/api/tags` errored (connection
    * refused, timeout, DNS failure, port closed). The frontend uses this to

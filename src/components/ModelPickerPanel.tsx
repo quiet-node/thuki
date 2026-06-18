@@ -1,6 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelCapabilitiesMap } from '../types/model';
+import {
+  BUILTIN_NO_MODELS_MESSAGE,
+  OPENAI_NO_MODEL_MESSAGE,
+} from '../utils/capabilityConflicts';
 import { Tooltip } from './Tooltip';
 
 /**
@@ -83,6 +87,20 @@ export interface ModelPickerPanelProps {
    * mode, full-width "Browse Ollama" label).
    */
   compact?: boolean;
+  /**
+   * Kind of the active provider (`'builtin' | 'ollama' | 'openai'`), from
+   * `ConfigContext`. Selects the empty-state copy: a builtin user is sent
+   * to the Settings download picker and an openai user to the provider's
+   * model field, never to `ollama pull`. Defaults to `'ollama'`, matching
+   * ConfigContext's fallback for an unresolvable provider.
+   */
+  providerKind?: string;
+  /**
+   * Friendly display name per model id. Rows render the display name when an
+   * id has one (built-in models) and fall back to the id otherwise (Ollama /
+   * OpenAI). Selection and keys still use the id.
+   */
+  displayNames?: Record<string, string>;
 }
 
 /**
@@ -100,17 +118,30 @@ export function ModelPickerPanel({
   onClose,
   capabilities,
   compact = false,
+  providerKind = 'ollama',
+  displayNames,
 }: ModelPickerPanelProps) {
   const [filter, setFilter] = useState('');
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const listboxRef = useRef<HTMLDivElement>(null);
 
+  /** The user-facing label for a model id: its display name, else the id. */
+  const labelFor = useCallback(
+    (model: string): string => displayNames?.[model] ?? model,
+    [displayNames],
+  );
+
   const filtered = useMemo(() => {
     const trimmed = filter.trim();
     if (trimmed === '') return models;
     const needle = trimmed.toLowerCase();
-    return models.filter((m) => m.toLowerCase().includes(needle));
-  }, [filter, models]);
+    // Match the id or its friendly label so search works on what is shown.
+    return models.filter(
+      (m) =>
+        m.toLowerCase().includes(needle) ||
+        labelFor(m).toLowerCase().includes(needle),
+    );
+  }, [filter, models, labelFor]);
 
   // Inline clamp: derive the safe render index without a useEffect so
   // aria-activedescendant is consistent on the same render that filtered shrinks.
@@ -193,33 +224,35 @@ export function ModelPickerPanel({
             Larger models answer better.
           </span>
         )}
-        <Tooltip label={OLLAMA_PILL_TOOLTIP} multiline>
-          <button
-            type="button"
-            data-testid="model-picker-ollama-link"
-            aria-label="Browse Ollama models"
-            onClick={() => {
-              void invoke('open_url', { url: OLLAMA_LIBRARY_URL });
-            }}
-            className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-lg px-2 py-0.5 hover:text-primary hover:bg-primary/12 transition-colors duration-120 cursor-pointer outline-none whitespace-nowrap"
-          >
-            {compact ? 'Browse' : 'Browse Ollama'}
-            <svg
-              className="w-2.5 h-2.5"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
+        {providerKind === 'ollama' && (
+          <Tooltip label={OLLAMA_PILL_TOOLTIP} multiline>
+            <button
+              type="button"
+              data-testid="model-picker-ollama-link"
+              aria-label="Browse Ollama models"
+              onClick={() => {
+                void invoke('open_url', { url: OLLAMA_LIBRARY_URL });
+              }}
+              className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-lg px-2 py-0.5 hover:text-primary hover:bg-primary/12 transition-colors duration-120 cursor-pointer outline-none whitespace-nowrap"
             >
-              <path
-                d="M5 11l6-6m-5 0h5v5"
-                stroke="currentColor"
-                strokeWidth="1.6"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-        </Tooltip>
+              {compact ? 'Browse' : 'Browse Ollama'}
+              <svg
+                className="w-2.5 h-2.5"
+                viewBox="0 0 16 16"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M5 11l6-6m-5 0h5v5"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          </Tooltip>
+        )}
       </div>
 
       <div
@@ -234,9 +267,19 @@ export function ModelPickerPanel({
             className="px-3 py-4 text-xs text-text-secondary text-center"
             data-testid="model-picker-empty"
           >
-            No models installed. Run{' '}
-            <code className="text-text-primary">ollama pull &lt;model&gt;</code>{' '}
-            in your terminal, then come back.
+            {providerKind === 'builtin' ? (
+              BUILTIN_NO_MODELS_MESSAGE
+            ) : providerKind === 'openai' ? (
+              OPENAI_NO_MODEL_MESSAGE
+            ) : (
+              <>
+                No models installed. Run{' '}
+                <code className="text-text-primary">
+                  ollama pull &lt;model&gt;
+                </code>{' '}
+                in your terminal, then come back.
+              </>
+            )}
           </p>
         ) : filtered.length === 0 ? (
           <p className="px-3 py-4 text-xs text-text-secondary text-center">
@@ -256,8 +299,8 @@ export function ModelPickerPanel({
                 aria-selected={active}
                 aria-label={
                   capLabel
-                    ? `${model}, ${capLabel.replace(/ · /g, ', ')}`
-                    : model
+                    ? `${labelFor(model)}, ${capLabel.replace(/ · /g, ', ')}`
+                    : labelFor(model)
                 }
                 tabIndex={-1}
                 onMouseEnter={() => setHighlightedIndex(index)}
@@ -268,7 +311,7 @@ export function ModelPickerPanel({
               >
                 <span className="flex-1 min-w-0 flex flex-col gap-0.5">
                   <span className="overflow-hidden text-ellipsis whitespace-nowrap leading-tight">
-                    {model}
+                    {labelFor(model)}
                   </span>
                   {capLabel && (
                     <span

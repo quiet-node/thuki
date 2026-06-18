@@ -22,6 +22,12 @@ import type { Message } from './hooks/useModel';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { useModelSelection } from './hooks/useModelSelection';
 import { useModelCapabilities } from './hooks/useModelCapabilities';
+import { useDownloadCtx } from './contexts/DownloadContext';
+import {
+  downloadFailureMessage,
+  isDownloadInFlight,
+} from './hooks/useDownloadModel';
+import type { DownloadStripStatus } from './components/DownloadStatusStrip';
 import {
   getCapabilityConflict,
   getEnvironmentMessage,
@@ -412,10 +418,36 @@ function App() {
   const {
     activeModel,
     availableModels,
+    modelDisplayNames,
     ollamaReachable,
     refreshModels,
     setActiveModel,
   } = useModelSelection();
+
+  // App-root download machine. A built-in model download started on the
+  // onboarding picker keeps running here after the picker unmounts, so the
+  // ambient strip and the submit soft-block read from the same live state.
+  // Destructured into stable locals so the strip memo and the ready-refresh
+  // effect depend on primitives rather than the per-render context object.
+  const download = useDownloadCtx();
+  const {
+    combinedBytes: downloadCombinedBytes,
+    resumeSeedBytes: downloadResumeSeedBytes,
+    grandTotalBytes: downloadGrandTotalBytes,
+    speedBytesPerSec: downloadSpeedBytesPerSec,
+    retry: retryDownload,
+    isPaused: isDownloadPaused,
+    isPausing: isDownloadPausing,
+    pausedBytes: downloadPausedBytes,
+    activeOption: downloadActiveOption,
+    pauseDownload,
+    resumeFromPause,
+  } = download;
+  const downloadState = download.state;
+  const downloadPhase = downloadState.phase;
+  /** Display name of the model being downloaded, for the ambient strip. */
+  const downloadModelName =
+    downloadActiveOption?.starter.display_name ?? 'your model';
 
   const { capabilities: modelCapabilities, refresh: refreshModelCapabilities } =
     useModelCapabilities();
@@ -439,6 +471,18 @@ function App() {
     const timer = setTimeout(() => setShakeAskBar(false), 600);
     return () => clearTimeout(timer);
   }, [shakeAskBar]);
+
+  // A background model download finishing is not event-driven for the picker
+  // state, so refresh the installed-model list when the machine reaches
+  // `ready`. The effect re-runs only when the phase changes, so this fires once
+  // per completion; the active model then resolves via the backend fallback
+  // (only one model is installed during onboarding), clearing the submit gate
+  // and populating the chip.
+  useEffect(() => {
+    if (downloadPhase === 'ready') {
+      void refreshModels();
+    }
+  }, [downloadPhase, refreshModels]);
 
   const {
     conversationId,
@@ -637,6 +681,14 @@ function App() {
    */
   const isChatMode = messages.length > 0 || isGenerating || isSubmitPending;
   const previousIsChatModeRef = useRef(isChatMode);
+
+  // The "model ready, send your first message" nudge is a one-time prompt. Once
+  // the user has sent any message (entered chat mode), it is acknowledged for
+  // good, so it never reappears on a new conversation or the next summon.
+  const [readyNudgeAcknowledged, setReadyNudgeAcknowledged] = useState(false);
+  useEffect(() => {
+    if (isChatMode) setReadyNudgeAcknowledged(true);
+  }, [isChatMode]);
 
   /**
    * The bookmark save button is active once the AI has produced at least one
@@ -2396,11 +2448,110 @@ function App() {
     };
   }, [query, attachedImages]);
 
+  /**
+   * Ambient model-download status for the strip rendered in the onboarding
+   * intro and above the ask bar. Maps the download machine's phase onto the
+   * strip's three states; percent and ETA use the same math as the picker's
+   * combined bar (combined bytes against the card's grand total). Null in the
+   * settled phases (idle, confirm, resume), so no strip renders.
+   */
+  const downloadStripStatus = useMemo<DownloadStripStatus | null>(() => {
+    const total = downloadGrandTotalBytes;
+    const liveBytes = downloadCombinedBytes ?? downloadResumeSeedBytes;
+    const percentOf = (bytes: number | null): number =>
+      bytes !== null && total !== null && total > 0
+        ? Math.min(100, Math.floor((bytes / total) * 100))
+        : 0;
+    // Paused overrides the machine phase (idle after a cancel): the strip
+    // stays, now offering Resume / Discard.
+    if (isDownloadPaused) {
+      return {
+        kind: 'paused',
+        percent: percentOf(downloadPausedBytes),
+        onResume: resumeFromPause,
+      };
+    }
+    // Transitional: Pause clicked but the cancel has not landed yet. Shown
+    // instantly so the click is never silent.
+    if (isDownloadPausing) {
+      return { kind: 'pausing', percent: percentOf(liveBytes) };
+    }
+    // The ready prompt invites the first message; once acknowledged (the user
+    // has sent a message) it never reappears, including on a new conversation
+    // or the next summon.
+    if (downloadPhase === 'ready') {
+      return readyNudgeAcknowledged
+        ? null
+        : { kind: 'ready', modelName: downloadModelName };
+    }
+    if (downloadState.phase === 'failed') {
+      return {
+        kind: 'failed',
+        message: downloadFailureMessage(downloadState.kind),
+        onRetry: () => void retryDownload(),
+      };
+    }
+    // The integrity re-hash on resume (and the brief end-of-download verify)
+    // gets its own label, distinct from the byte-moving downloading step. It is
+    // in-flight, so this must precede the generic downloading branch below.
+    if (downloadPhase === 'verifying') {
+      return { kind: 'verifying', percent: percentOf(liveBytes) };
+    }
+    if (isDownloadInFlight(downloadPhase)) {
+      const etaSeconds =
+        liveBytes !== null &&
+        total !== null &&
+        downloadSpeedBytesPerSec !== null
+          ? Math.max(
+              0,
+              Math.round((total - liveBytes) / downloadSpeedBytesPerSec),
+            )
+          : null;
+      return {
+        kind: 'downloading',
+        modelName: downloadModelName,
+        percent: percentOf(liveBytes),
+        etaSeconds,
+        onPause: pauseDownload,
+      };
+    }
+    return null;
+  }, [
+    isDownloadPaused,
+    isDownloadPausing,
+    downloadPausedBytes,
+    downloadPhase,
+    downloadState,
+    downloadModelName,
+    readyNudgeAcknowledged,
+    downloadCombinedBytes,
+    downloadResumeSeedBytes,
+    downloadGrandTotalBytes,
+    downloadSpeedBytesPerSec,
+    retryDownload,
+    pauseDownload,
+    resumeFromPause,
+  ]);
+
+  /**
+   * True while a built-in model download is active OR paused. Drives the submit
+   * soft-block: a calm hold (no shake, no queue) because the ambient strip
+   * already shows the ETA (or the paused Resume / Discard choice).
+   */
+  const isBuiltinDownloadActive =
+    config.inference.activeProviderKind === 'builtin' &&
+    (isDownloadInFlight(downloadPhase) || isDownloadPaused);
+
   const liveCapabilityConflictMessage = useMemo(() => {
+    // The ambient download strip owns the messaging while a download is
+    // surfaced; suppress the environment/capability strip so the two never
+    // stack or contradict each other.
+    if (downloadStripStatus !== null) return null;
     const envMessage = getEnvironmentMessage(
       ollamaReachable,
       availableModels.length,
       activeModel,
+      config.inference.activeProviderKind,
     );
     if (envMessage !== null) return envMessage;
     return getCapabilityConflict(
@@ -2416,6 +2567,8 @@ function App() {
     activeModelCapabilities,
     ollamaReachable,
     availableModels.length,
+    config.inference.activeProviderKind,
+    downloadStripStatus,
   ]);
 
   /**
@@ -2433,6 +2586,7 @@ function App() {
       ollamaReachable,
       availableModels.length,
       activeModel,
+      config.inference.activeProviderKind,
     );
     if (envMessage !== null) return true;
     return isComposeCapabilityConflict(
@@ -2445,6 +2599,7 @@ function App() {
     activeModel,
     activeModelCapabilities,
     composeCapabilityState,
+    config.inference.activeProviderKind,
   ]);
 
   /**
@@ -2626,6 +2781,14 @@ function App() {
       hasExtract ||
       (utilityTrigger !== undefined &&
         (hasScreen || attachedImages.length > 0));
+
+    // Built-in download soft-block. While the model is still downloading (or
+    // paused mid-download), hold the submit calmly: no shake, nothing queued.
+    // The ambient strip already shows the state, so the refusal needs no extra
+    // cue. Checked before the shake gate below so the wait never reads as error.
+    if (!isOcrPath && isBuiltinDownloadActive) {
+      return;
+    }
 
     // Submit-time capability gate. Refuses messages whose attached content
     // the active model cannot handle (images on a text-only model) and
@@ -2816,6 +2979,7 @@ function App() {
     searchActive,
     quote.maxContextLength,
     hasBlockingConflict,
+    isBuiltinDownloadActive,
   ]);
 
   // When a pending submit exists and all images finish processing, dispatch
@@ -3235,10 +3399,15 @@ function App() {
   // panel loses key focus and rAF is throttled.
 
   if (onboardingStage !== null) {
+    // The ambient download strip is rendered INSIDE the intro card (via
+    // OnboardingView -> IntroStep) so it reads as part of that screen, not a
+    // detached floating box. Not shown during model_check (the picker matrix
+    // has its own bar).
     return (
       <OnboardingView
         stage={onboardingStage}
         onComplete={() => setOnboardingStage(null)}
+        downloadStatus={downloadStripStatus}
       />
     );
   }
@@ -3362,6 +3531,7 @@ function App() {
                                 onReplace={performReplace}
                                 searchStage={searchStage}
                                 activeModel={activeModel}
+                                modelDisplayNames={modelDisplayNames}
                                 onModelPickerToggle={
                                   ollamaReachable
                                     ? handleModelPickerToggle
@@ -3406,6 +3576,10 @@ function App() {
                                     onSelect={handleModelSelect}
                                     onClose={handleModelPickerClose}
                                     capabilities={modelCapabilities}
+                                    providerKind={
+                                      config.inference.activeProviderKind
+                                    }
+                                    displayNames={modelDisplayNames}
                                   />
                                 </motion.div>
                               ) : null}
@@ -3499,6 +3673,7 @@ function App() {
                             capabilityConflictMessage={
                               liveCapabilityConflictMessage
                             }
+                            downloadStatus={downloadStripStatus}
                             shake={shakeAskBar}
                             maxImages={config.window.maxImages}
                             onFirstKeystroke={() =>
@@ -3622,6 +3797,8 @@ function App() {
                       onSelect={handleModelSelect}
                       onClose={handleModelPickerClose}
                       capabilities={modelCapabilities}
+                      providerKind={config.inference.activeProviderKind}
+                      displayNames={modelDisplayNames}
                       compact
                     />
                   </motion.div>

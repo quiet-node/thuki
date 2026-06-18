@@ -13,11 +13,12 @@
  * validated as exactly 64 lowercase ASCII hex chars before any filesystem
  * use. An invalid digest aborts the whole download with a `Failed` event.
  *
- * Blocking contract: the verification step hashes the whole file with
- * synchronous I/O, blocking the current runtime worker for seconds on a
- * multi-GB model. `run_download` must therefore run on a spawned task of the
- * multi-threaded runtime (the Tauri command path), never on a thread the UI
- * waits on.
+ * Blocking contract: the body is hashed incrementally as it streams, but a
+ * full-length partial (or a resumed download's existing prefix) is read back
+ * through SHA-256 with synchronous I/O, blocking the current runtime worker for
+ * seconds on a multi-GB model. `run_download` must therefore run on a spawned
+ * task of the multi-threaded runtime (the Tauri command path), never on a
+ * thread the UI waits on.
  */
 
 use std::io::Write;
@@ -50,7 +51,9 @@ pub enum DownloadEvent {
     Verifying { file: String },
     /// The file verified and was installed into the blob store.
     FileDone { file: String },
-    /// Every spec finished; the model is fully installed.
+    /// Every spec finished AND the install was recorded (manifest row +
+    /// provider model). Emitted by the orchestration in `models::mod`, not by
+    /// `run_download`, so the frontend never advances past a failed finalize.
     AllDone,
     /// The user cancelled; the partial is kept for a later resume.
     Cancelled,
@@ -90,8 +93,12 @@ pub struct DownloadSpec {
 /// whose length already equals total_bytes skips the network entirely and goes
 /// straight to verify (no Range request; a 416 is therefore unreachable).
 /// Verifies + installs each file on completion (Verifying then FileDone).
-/// Emits AllDone after the last file. Cancellation: checked between chunks;
-/// emits Cancelled and returns; the partial is KEPT for resume.
+/// Does NOT emit AllDone: a successful return means every file is verified
+/// and installed, and the caller emits AllDone once the install is recorded
+/// (manifest + provider model), so the frontend cannot advance past a failed
+/// finalize. Cancellation: raced against the initial send and every body
+/// chunk, so a stalled connection cannot mask it; emits Cancelled and
+/// returns; the partial is KEPT for resume.
 /// Every failure is emitted as a Failed event; the partial is kept except
 /// where verify_and_install already deleted it (checksum mismatch).
 #[allow(clippy::result_unit_err)] // Err carries no detail by design: every failure reaches the UI as a Failed event.
@@ -131,13 +138,20 @@ pub async fn run_download(
         }
     }
 
-    emit(DownloadEvent::AllDone);
     Ok(())
 }
 
 /// Per-file result distinguishing completion from user cancellation.
 enum FileOutcome {
     Done,
+    Cancelled,
+}
+
+/// Result of streaming one file's body into the partial. On completion it
+/// carries the SHA-256 hashed live over the full file (seed prefix + streamed
+/// bytes), so the caller installs without a second read.
+enum FetchOutcome {
+    Done { sha256: String },
     Cancelled,
 }
 
@@ -150,6 +164,22 @@ async fn download_one(
     cancel: &CancellationToken,
     emit: &impl Fn(DownloadEvent),
 ) -> Result<FileOutcome, DownloadIoError> {
+    // Already installed as a verified blob: the first file of a multi-file
+    // download that finished before a later file was interrupted. Skip it so a
+    // resume does not re-download a completed file; emit Started(full) + FileDone
+    // so the combined bar still counts its bytes.
+    if store.blob_path(&spec.sha256).exists() {
+        emit(DownloadEvent::Started {
+            file: spec.file.clone(),
+            total_bytes: spec.total_bytes,
+            resumed_from: spec.total_bytes,
+        });
+        emit(DownloadEvent::FileDone {
+            file: spec.file.clone(),
+        });
+        return Ok(FileOutcome::Done);
+    }
+
     let resumed_from = store.existing_partial_len(&spec.sha256).unwrap_or(0);
     emit(DownloadEvent::Started {
         file: spec.file.clone(),
@@ -158,18 +188,19 @@ async fn download_one(
     });
 
     // A full-length partial skips the network and goes straight to verify.
+    // When we do stream, the body is hashed live so verify needs no second read.
     // Note: if upstream metadata ever overstates total_bytes, the partial can
     // never reach it and a resume Range past the real EOF returns 416, which
     // surfaces as an Http failure with the partial kept; Discard is the
     // user's recovery path.
-    if resumed_from < spec.total_bytes
-        && matches!(
-            fetch_into_partial(spec, store, client, cancel, emit, resumed_from).await?,
-            FileOutcome::Cancelled
-        )
-    {
-        return Ok(FileOutcome::Cancelled);
-    }
+    let streamed_hash = if resumed_from < spec.total_bytes {
+        match fetch_into_partial(spec, store, client, cancel, emit, resumed_from).await? {
+            FetchOutcome::Cancelled => return Ok(FileOutcome::Cancelled),
+            FetchOutcome::Done { sha256 } => Some(sha256),
+        }
+    } else {
+        None
+    };
 
     // Final 100% Progress always precedes Verifying so the UI bar completes.
     emit(DownloadEvent::Progress {
@@ -180,19 +211,27 @@ async fn download_one(
     emit(DownloadEvent::Verifying {
         file: spec.file.clone(),
     });
-    store
-        .verify_and_install(&spec.sha256)
-        .map_err(map_storage_error)?;
+    // A streamed download already has its hash, so installing only renames; a
+    // full-length partial was never hashed live, so read it back to verify.
+    match streamed_hash {
+        Some(actual) => store
+            .install_if_matches(&spec.sha256, &actual)
+            .map_err(map_storage_error)?,
+        None => store
+            .verify_and_install(&spec.sha256)
+            .map_err(map_storage_error)?,
+    };
     emit(DownloadEvent::FileDone {
         file: spec.file.clone(),
     });
     Ok(FileOutcome::Done)
 }
 
-/// Streams the response body into the store partial, resuming from
-/// `resumed_from` when it is non-zero. A 200 answer to a Range request means
-/// the server ignored the range, so the partial is truncated and rewritten
-/// from scratch.
+/// Streams the response body into the store partial, hashing the bytes live so
+/// the caller can install without a second read. Resumes from `resumed_from`
+/// when it is non-zero: a 206 seeds the hasher with the existing on-disk prefix
+/// and appends; a 200 means the server ignored the range, so the partial is
+/// truncated and the hash starts fresh over the full body.
 async fn fetch_into_partial(
     spec: &DownloadSpec,
     store: &ModelStore,
@@ -200,16 +239,23 @@ async fn fetch_into_partial(
     cancel: &CancellationToken,
     emit: &impl Fn(DownloadEvent),
     resumed_from: u64,
-) -> Result<FileOutcome, DownloadIoError> {
+) -> Result<FetchOutcome, DownloadIoError> {
+    use sha2::{Digest, Sha256};
+
     let ranged = resumed_from > 0;
     let mut request = client.get(&spec.url);
     if ranged {
         request = request.header(reqwest::header::RANGE, format!("bytes={resumed_from}-"));
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|e| DownloadIoError::Connect(e.to_string()))?;
+    // Race cancellation against the send so a stalled connection (sleep/wake,
+    // NAT drop) cannot keep the download slot wedged: the shared client has
+    // no timeouts, so an unraced await here could park forever.
+    let sent = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Ok(FetchOutcome::Cancelled),
+        sent = request.send() => sent,
+    };
+    let response = sent.map_err(|e| DownloadIoError::Connect(e.to_string()))?;
 
     // 206 continues the partial; 200 carries the full body (fresh download,
     // or a server that ignored the range). Anything else is an HTTP failure.
@@ -219,6 +265,35 @@ async fn fetch_into_partial(
         (_, 200) => 0,
         _ => return Err(DownloadIoError::HttpStatus(status)),
     };
+
+    // Seed the running hash with the bytes already on disk ONLY when the server
+    // honored the range (start > 0). A 200 truncates the partial, so the hash
+    // must cover the full body and nothing that came before it.
+    let mut hasher = Sha256::new();
+    if start > 0 {
+        match store.take_suspended_hash(&spec.sha256, start) {
+            // An in-session pause kept the running hash for this exact offset:
+            // continue it directly, skipping the prefix re-read entirely.
+            Some(suspended) => hasher = suspended,
+            // A cold resume (process restart, or no kept hash): rebuild the
+            // running hash by reading the on-disk prefix back through SHA-256.
+            // That re-read is seconds of blocking I/O on a multi-GB partial, so
+            // label it (Verifying) so the bar is not a silent frozen mystery,
+            // and make it cancellable so a pause during it lands instantly. A
+            // cancelled re-hash stops with a partial (discarded) hash; the
+            // cancel token is still set, so the stream loop below returns
+            // Cancelled at its first check before writing anything, keeping the
+            // on-disk partial intact for a later resume.
+            None => {
+                emit(DownloadEvent::Verifying {
+                    file: spec.file.clone(),
+                });
+                store
+                    .feed_partial(&spec.sha256, &mut hasher, &|| cancel.is_cancelled())
+                    .map_err(DownloadIoError::Write)?;
+            }
+        }
+    }
 
     let mut options = std::fs::OpenOptions::new();
     options.create(true);
@@ -234,13 +309,26 @@ async fn fetch_into_partial(
     let mut written = start;
     let mut throttle = ProgressThrottle::new(spec.total_bytes, written);
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        // Checked between chunks: the partial is kept for a later resume.
-        if cancel.is_cancelled() {
-            return Ok(FileOutcome::Cancelled);
-        }
+    loop {
+        // Race cancellation against every chunk await, not just between
+        // chunks: a mid-body stall would otherwise swallow the cancel and
+        // never emit Cancelled. The partial is kept for a later resume.
+        let next = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                // Keep the running hash so an in-session resume continues it
+                // instead of re-reading the prefix. `written` equals the
+                // on-disk length here (each chunk is written then hashed before
+                // the next cancel check), so the resume offset will match.
+                store.save_suspended_hash(&spec.sha256, written, hasher.clone());
+                return Ok(FetchOutcome::Cancelled);
+            }
+            next = stream.next() => next,
+        };
+        let Some(chunk) = next else { break };
         let chunk = chunk.map_err(|e| DownloadIoError::MidStream(e.to_string()))?;
         file.write_all(&chunk).map_err(DownloadIoError::Write)?;
+        hasher.update(&chunk);
         written += chunk.len() as u64;
         if throttle.should_emit(written) {
             emit(DownloadEvent::Progress {
@@ -251,7 +339,9 @@ async fn fetch_into_partial(
         }
     }
     file.flush().map_err(DownloadIoError::Write)?;
-    Ok(FileOutcome::Done)
+    Ok(FetchOutcome::Done {
+        sha256: format!("{:x}", hasher.finalize()),
+    })
 }
 
 /// Rate limiter for Progress events: emits when either
@@ -459,13 +549,15 @@ mod tests {
                 total_bytes: 4096
             }
         );
+        // FileDone is the terminal event: AllDone is the orchestration's
+        // (it fires only after the install is recorded).
         assert_eq!(
-            events[verifying_at + 1],
+            *events.last().unwrap(),
             DownloadEvent::FileDone {
                 file: "w.gguf".to_string()
             }
         );
-        assert_eq!(*events.last().unwrap(), DownloadEvent::AllDone);
+        assert_eq!(events.len(), verifying_at + 2);
         assert_eq!(std::fs::read(store.blob_path(&sha)).unwrap(), body);
     }
 
@@ -512,6 +604,159 @@ mod tests {
             }
         );
         assert_eq!(std::fs::read(store.blob_path(&sha)).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn skips_an_already_installed_blob_without_downloading() {
+        // A multi-file download whose first file already installed must not
+        // re-download it on a resume: the blob is skipped (no HTTP request) and
+        // its bytes are still counted via Started(full) + FileDone.
+        let body = body_of(8192);
+        let sha = sha256_of(&body);
+        let (_dir, store) = make_store();
+        std::fs::create_dir_all(store.blob_path(&sha).parent().unwrap()).unwrap();
+        std::fs::write(store.blob_path(&sha), &body).unwrap();
+        // An unroutable URL: if the code tried to download, this would error.
+        let spec = spec_for("http://127.0.0.1:1/nope".to_string(), "w.gguf", &body);
+        let (events, emit) = collector();
+
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            emit,
+        )
+        .await;
+
+        assert_eq!(result, Ok(()));
+        let evs = events.lock().unwrap();
+        assert_eq!(
+            evs[0],
+            DownloadEvent::Started {
+                file: "w.gguf".to_string(),
+                total_bytes: 8192,
+                resumed_from: 8192,
+            }
+        );
+        assert!(evs.contains(&DownloadEvent::FileDone {
+            file: "w.gguf".to_string()
+        }));
+    }
+
+    #[tokio::test]
+    async fn resume_emits_verifying_before_rehash() {
+        // On resume the existing prefix is re-hashed before the remaining bytes
+        // stream. That re-hash is labeled with a Verifying event so the bar is
+        // not a silent frozen mystery, so a Verifying must precede every
+        // streamed Progress (the end-of-download Verifying comes much later).
+        let server = MockServer::start().await;
+        let body = body_of(8192);
+        let sha = sha256_of(&body);
+        Mock::given(method("GET"))
+            .and(path("/q/resolve/main/w.gguf"))
+            .and(header("range", "bytes=1000-"))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(body[1000..].to_vec()))
+            .mount(&server)
+            .await;
+
+        let (_dir, store) = make_store();
+        std::fs::write(store.partial_path(&sha), &body[..1000]).unwrap();
+        let spec = spec_for(
+            format!("{}/q/resolve/main/w.gguf", server.uri()),
+            "w.gguf",
+            &body,
+        );
+        let (events, emit) = collector();
+
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            emit,
+        )
+        .await;
+        assert_eq!(result, Ok(()));
+
+        let events = events.lock().unwrap();
+        assert!(matches!(
+            events[0],
+            DownloadEvent::Started {
+                resumed_from: 1000,
+                ..
+            }
+        ));
+        let first_verifying = events
+            .iter()
+            .position(|e| matches!(e, DownloadEvent::Verifying { .. }))
+            .unwrap();
+        let first_progress = events
+            .iter()
+            .position(|e| matches!(e, DownloadEvent::Progress { .. }))
+            .unwrap();
+        assert!(
+            first_verifying < first_progress,
+            "the re-hash Verifying must precede any streamed Progress"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_reuses_a_suspended_hash_and_skips_the_rehash() {
+        // An in-session resume where the running hash of the prefix was kept in
+        // memory (a pause). The re-read is skipped: no re-hash Verifying fires
+        // before the streamed bytes, and the continued hash still verifies.
+        let server = MockServer::start().await;
+        let body = body_of(8192);
+        let sha = sha256_of(&body);
+        Mock::given(method("GET"))
+            .and(path("/q/resolve/main/w.gguf"))
+            .and(header("range", "bytes=1000-"))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(body[1000..].to_vec()))
+            .mount(&server)
+            .await;
+
+        let (_dir, store) = make_store();
+        std::fs::write(store.partial_path(&sha), &body[..1000]).unwrap();
+        // Stash the running hash of the prefix, as a pause would.
+        let mut prefix_hasher = Sha256::new();
+        prefix_hasher.update(&body[..1000]);
+        store.save_suspended_hash(&sha, 1000, prefix_hasher);
+
+        let spec = spec_for(
+            format!("{}/q/resolve/main/w.gguf", server.uri()),
+            "w.gguf",
+            &body,
+        );
+        let (events, emit) = collector();
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            emit,
+        )
+        .await;
+        assert_eq!(result, Ok(()));
+        // The blob verifies, so the kept hash was continued correctly.
+        assert_eq!(std::fs::read(store.blob_path(&sha)).unwrap(), body);
+
+        // The re-hash Verifying is gone: the only Verifying is the end verify,
+        // which comes AFTER the streamed Progress (the inverse of
+        // resume_emits_verifying_before_rehash).
+        let events = events.lock().unwrap();
+        let first_progress = events
+            .iter()
+            .position(|e| matches!(e, DownloadEvent::Progress { .. }))
+            .unwrap();
+        let first_verifying = events
+            .iter()
+            .position(|e| matches!(e, DownloadEvent::Verifying { .. }))
+            .unwrap();
+        assert!(
+            first_progress < first_verifying,
+            "reusing the suspended hash must skip the re-hash Verifying"
+        );
     }
 
     #[tokio::test]
@@ -596,7 +841,6 @@ mod tests {
                 DownloadEvent::FileDone {
                     file: "w.gguf".to_string()
                 },
-                DownloadEvent::AllDone,
             ]
         );
         assert_eq!(std::fs::read(store.blob_path(&sha)).unwrap(), body);
@@ -632,6 +876,115 @@ mod tests {
         // Partial is KEPT with the already-downloaded bytes for resume.
         assert_eq!(store.existing_partial_len(&sha), Some(100));
         assert!(!store.blob_path(&sha).exists());
+    }
+
+    #[tokio::test]
+    async fn cancel_during_stalled_send_emits_cancelled() {
+        use tokio::io::AsyncReadExt;
+
+        // Server that accepts the connection and reads the request but never
+        // answers: `send()` parks forever, so only the cancel race can free
+        // the download.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_seen_tx, request_seen) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = request_seen_tx.send(());
+            // Hold the socket open without responding until the test is done.
+            let _ = release_rx.await;
+        });
+
+        let (_dir, store) = make_store();
+        let body = body_of(1024);
+        let specs = [spec_for(format!("http://{addr}/w.gguf"), "w.gguf", &body)];
+        let client = reqwest::Client::new();
+        let (events, emit) = collector();
+
+        let cancel = CancellationToken::new();
+        let canceller = {
+            let cancel = cancel.clone();
+            async move {
+                request_seen.await.unwrap();
+                cancel.cancel();
+            }
+        };
+        let (result, ()) = tokio::join!(
+            run_download(&specs, &store, &client, cancel, emit),
+            canceller
+        );
+        assert_eq!(result, Err(()));
+        assert_eq!(last_event(&events), DownloadEvent::Cancelled);
+        let _ = release_tx.send(());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancel_during_stalled_stream_emits_cancelled_and_keeps_partial() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Server that sends headers plus a body prefix, then stalls with the
+        // connection open: the chunk await parks, so only the cancel race can
+        // free the download. The partial stays on disk for resume.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (prefix_sent_tx, prefix_sent) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 4096\r\n\r\npartial")
+                .await
+                .unwrap();
+            sock.flush().await.unwrap();
+            let _ = prefix_sent_tx.send(());
+            // Hold the socket open, never sending the rest of the body,
+            // until the test is done.
+            let _ = release_rx.await;
+        });
+
+        let (_dir, store) = make_store();
+        let body = body_of(4096);
+        let specs = [spec_for(format!("http://{addr}/w.gguf"), "w.gguf", &body)];
+        let sha = specs[0].sha256.clone();
+        let client = reqwest::Client::new();
+        let (events, emit) = collector();
+
+        let cancel = CancellationToken::new();
+        let canceller = {
+            let cancel = cancel.clone();
+            // Cancel only once the partial exists: that proves the response
+            // headers were consumed and the download is parked inside the
+            // chunk loop, so the cancel exercises the stream race, not the
+            // send race.
+            let partial = store.partial_path(&sha);
+            async move {
+                prefix_sent.await.unwrap();
+                while !partial.exists() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                cancel.cancel();
+            }
+        };
+        let (result, ()) = tokio::join!(
+            run_download(&specs, &store, &client, cancel, emit),
+            canceller
+        );
+        assert_eq!(result, Err(()));
+        assert_eq!(last_event(&events), DownloadEvent::Cancelled);
+        // The partial was opened (and possibly fed the prefix) and is KEPT.
+        assert!(store.existing_partial_len(&sha).is_some());
+        assert!(!store.blob_path(&sha).exists());
+        // The running hash was stashed at the on-disk length so a resume can
+        // continue it without re-reading the prefix.
+        let len = store.existing_partial_len(&sha).unwrap();
+        assert!(store.take_suspended_hash(&sha, len).is_some());
+        let _ = release_tx.send(());
+        server.await.unwrap();
     }
 
     // ── Failure mapping (end to end) ─────────────────────────────────────────
@@ -777,7 +1130,7 @@ mod tests {
                 ),
             }
         );
-        // verify_and_install already deleted the mismatched partial.
+        // the install step already deleted the mismatched partial.
         assert_eq!(store.existing_partial_len(&expected_sha), None);
         assert!(!store.blob_path(&expected_sha).exists());
     }
@@ -844,7 +1197,12 @@ mod tests {
             weights_done < mmproj_started,
             "mmproj must start only after the weights file is done"
         );
-        assert_eq!(*events.last().unwrap(), DownloadEvent::AllDone);
+        assert_eq!(
+            *events.last().unwrap(),
+            DownloadEvent::FileDone {
+                file: "mmproj.gguf".to_string()
+            }
+        );
         assert_eq!(
             std::fs::read(store.blob_path(&weights_sha)).unwrap(),
             weights

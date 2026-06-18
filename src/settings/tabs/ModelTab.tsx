@@ -1,10 +1,10 @@
 /**
  * AI tab.
  *
- * Holds the local Ollama endpoint, keep-warm controls, and the custom system
- * prompt. The active model picker lives in the main app overlay (see
- * ModelPickerPanel) since model selection is runtime UI state owned by
- * ActiveModelState in the backend, not a TOML-persisted field. The
+ * Holds the Providers panel (built-in engine, Ollama, and an optional
+ * OpenAI-compatible server, with the active one selectable), the per-kind
+ * memory controls (Keep Warm for Ollama, Idle Unload for the built-in
+ * engine), the context window slider, and the custom system prompt. The
  * Window/Quote knobs live in the Display tab.
  */
 
@@ -14,6 +14,11 @@ import { listen } from '@tauri-apps/api/event';
 
 import { Section, SettingRow, Dropdown, Textarea, Toggle } from '../components';
 import { SaveField } from '../components/SaveField';
+import {
+  AddOpenAiProvider,
+  BuiltinProviderCard,
+  OpenAiProviderCard,
+} from './ProviderCards';
 import { useDebouncedSave } from '../hooks/useDebouncedSave';
 import { useModelSelection } from '../../hooks/useModelSelection';
 import { isNonLocalUrl } from '../../utils/isNonLocalUrl';
@@ -22,6 +27,7 @@ import { DrawCheckIcon } from '../../components/DrawCheckIcon';
 import { Tooltip } from '../../components/Tooltip';
 import styles from '../../styles/settings.module.css';
 import type { RawAppConfig } from '../types';
+import type { EngineStatus } from '../../types/starter';
 
 interface ModelTabProps {
   config: RawAppConfig;
@@ -89,6 +95,19 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
   const [ejecting, setEjecting] = useState(false);
   const [loadedModel, setLoadedModel] = useState<string | null>(null);
 
+  // Providers panel: who is active and of which kind, derived from the
+  // config snapshot so a resync always reflects disk.
+  const providers = config.inference.providers;
+  const activeId = config.inference.active_provider;
+  const activeKind = providers.find((p) => p.id === activeId)?.kind ?? 'ollama';
+  const builtinProvider = providers.find((p) => p.kind === 'builtin');
+  const openaiProvider = providers.find((p) => p.kind === 'openai');
+
+  // Latest engine lifecycle snapshot; drives the built-in residency line and
+  // the context slider's non-blocking "Applying" hint.
+  const [engineState, setEngineState] =
+    useState<EngineStatus['state']>('stopped');
+
   // Context window: committed value drives the debounced save; local slider
   // pos updates live on drag without committing on every pixel.
   const [numCtx, setNumCtx] = useState(config.inference.num_ctx);
@@ -115,22 +134,17 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
   const { activeModel, availableModels, setActiveModel } = useModelSelection();
 
   useEffect(() => {
-    let unlistenLoaded: (() => void) | null = null;
-    let unlistenEvicted: (() => void) | null = null;
-
-    async function setup() {
-      unlistenLoaded = await listen<string>('warmup:model-loaded', (e) => {
-        setLoadedModel(e.payload);
-      });
-      unlistenEvicted = await listen<null>('warmup:model-evicted', () => {
-        setLoadedModel(null);
-      });
-      invoke<string | null>('get_loaded_model')
-        .then(setLoadedModel)
-        .catch(() => {});
-    }
-
-    setup();
+    // Cleanup chains on the listen promises (not a captured variable) so an
+    // unmount that races the registration still detaches every listener.
+    const unlistenLoaded = listen<string>('warmup:model-loaded', (e) => {
+      setLoadedModel(e.payload);
+    });
+    const unlistenEvicted = listen<null>('warmup:model-evicted', () => {
+      setLoadedModel(null);
+    });
+    invoke<string | null>('get_loaded_model')
+      .then(setLoadedModel)
+      .catch(() => {});
 
     function handleVisibilityChange() {
       if (!document.hidden) {
@@ -142,9 +156,27 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      unlistenLoaded?.();
-      unlistenEvicted?.();
+      void unlistenLoaded.then((unlisten) => unlisten());
+      void unlistenEvicted.then((unlisten) => unlisten());
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Seed from the runner's current snapshot: the backend only emits
+    // engine:status on transitions, so without this an already-loaded
+    // engine would read "stopped" (and Unload now would stay dead) until
+    // the next transition.
+    invoke<EngineStatus>('get_engine_status')
+      .then((status) => setEngineState(status.state))
+      .catch(() => {
+        // Keep the stopped default; the event stream corrects it.
+      });
+    const unlistenPromise = listen<EngineStatus>('engine:status', (e) => {
+      setEngineState(e.payload.state);
+    });
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
     };
   }, []);
 
@@ -162,6 +194,21 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
     { onSaved },
   );
 
+  // Built-in engine idle-unload minutes (replaces keep-warm when the
+  // built-in provider is active). Same raw-string editing pattern as the
+  // keep-warm minutes input above.
+  const [idleMin, setIdleMin] = useState(config.inference.idle_unload_minutes);
+  const [rawIdleMin, setRawIdleMin] = useState(
+    String(config.inference.idle_unload_minutes),
+  );
+  const idleMinFocusedRef = useRef(false);
+  const { resetTo: resetIdleMin } = useDebouncedSave(
+    'inference',
+    'idle_unload_minutes',
+    idleMin,
+    { onSaved },
+  );
+
   const prevTokenRef = useRef(resyncToken);
 
   if (prevTokenRef.current !== resyncToken) {
@@ -170,6 +217,11 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
       setInactivityMin(config.inference.keep_warm_inactivity_minutes);
       setRawMin(String(config.inference.keep_warm_inactivity_minutes));
       resetMin(config.inference.keep_warm_inactivity_minutes);
+    }
+    if (!idleMinFocusedRef.current) {
+      setIdleMin(config.inference.idle_unload_minutes);
+      setRawIdleMin(String(config.inference.idle_unload_minutes));
+      resetIdleMin(config.inference.idle_unload_minutes);
     }
     const nextCtx = config.inference.num_ctx;
     setNumCtx(nextCtx);
@@ -208,6 +260,30 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
       });
   }
 
+  function selectProvider(id: string) {
+    // Radios only fire onChange when the selection actually changes, so no
+    // same-provider guard is needed here.
+    void invoke<RawAppConfig>('set_active_provider', { providerId: id })
+      .then((cfg) => onSaved(cfg))
+      .catch(() => {
+        // Switching failed (e.g. config write error): the radio re-seeds
+        // from config on the next render.
+      });
+  }
+
+  function handleEngineEject() {
+    void invoke('evict_model').catch(() => {
+      // The engine:status event stream is the source of truth; a failed
+      // eviction simply leaves the residency line unchanged.
+    });
+  }
+
+  function providerCardClass(active: boolean): string {
+    return active
+      ? `${styles.providerCard} ${styles.providerCardActive}`
+      : styles.providerCard;
+  }
+
   const modelValue =
     activeModel && availableModels.includes(activeModel)
       ? activeModel
@@ -219,159 +295,279 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
   return (
     <>
       <Section heading="Providers">
-        <div className={styles.providerRow}>
-          <span className={styles.providerName}>Built-in (Thuki)</span>
-          <span className={styles.providerBadge}>
-            Available in an upcoming version
-          </span>
-        </div>
-
-        <div className={styles.providerName}>Ollama</div>
-        <SettingRow
-          label="Ollama URL"
-          helper={configHelp('inference', 'ollama_base_url')}
+        <div
+          className={providerCardClass(activeKind === 'builtin')}
+          data-provider-card="builtin"
         >
-          <input
-            type="text"
-            className={styles.input}
-            value={ollamaUrl}
-            aria-label="Ollama URL"
-            spellCheck={false}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            placeholder="http://127.0.0.1:11434"
-            onFocus={() => {
-              ollamaUrlFocusedRef.current = true;
-            }}
-            onChange={(e) => setOllamaUrl(e.target.value)}
-            onBlur={() => {
-              ollamaUrlFocusedRef.current = false;
-              commitOllamaUrl();
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-            }}
-          />
-        </SettingRow>
-        {isNonLocalUrl(ollamaUrl) && (
-          <p className={styles.providerWarning} role="alert">
-            This points Thuki at a non-local Ollama server. You are responsible
-            for securing it: prefer a VPN/Tailscale or SSH tunnel over exposing
-            the port directly.
-          </p>
-        )}
-        <SettingRow label="Model">
-          {availableModels.length > 0 ? (
-            <Dropdown
-              value={modelValue}
-              options={availableModels}
-              onChange={(m) => void setActiveModel(m)}
-              ariaLabel="Active Ollama model"
-            />
-          ) : (
-            <span className={styles.providerHint}>No models installed</span>
-          )}
-        </SettingRow>
-      </Section>
-
-      <Section heading="Keep Warm">
-        {/* Row 1: label + [?] on left | Release after [N] min on right */}
-        <div className={styles.keepWarmRow1}>
-          <div className={styles.keepWarmLabelLine}>
-            <span className={styles.keepWarmLabel}>
-              Keep active model in VRAM
-            </span>
-            <Tooltip label={KEEP_WARM_TOOLTIP} multiline>
-              <button
-                type="button"
-                className={styles.infoBtn}
-                aria-label="About Keep active model in VRAM"
-              >
-                ?
-              </button>
-            </Tooltip>
-          </div>
-          <div className={styles.keepWarmTimerGroup}>
-            <span className={styles.keepWarmBarFieldLabel}>Release after</span>
+          <label className={styles.providerSelectRow}>
             <input
-              type="number"
-              className={styles.keepWarmNumberInput}
-              value={rawMin}
-              min={-1}
-              max={1440}
-              aria-label="Release after N minutes"
+              type="radio"
+              className={styles.providerRadio}
+              name="active-provider"
+              aria-label="Use Built-in (Thuki)"
+              checked={activeKind === 'builtin'}
+              onChange={() => selectProvider(builtinProvider?.id ?? 'builtin')}
+            />
+            <span className={styles.providerName}>
+              {builtinProvider?.label ?? 'Built-in (Thuki)'}
+            </span>
+          </label>
+          <BuiltinProviderCard config={config} onSaved={onSaved} />
+        </div>
+
+        <div
+          className={providerCardClass(activeKind === 'ollama')}
+          data-provider-card="ollama"
+        >
+          <label className={styles.providerSelectRow}>
+            <input
+              type="radio"
+              className={styles.providerRadio}
+              name="active-provider"
+              aria-label="Use Ollama"
+              checked={activeKind === 'ollama'}
+              onChange={() => selectProvider('ollama')}
+            />
+            <span className={styles.providerName}>Ollama</span>
+          </label>
+          <SettingRow
+            label="Ollama URL"
+            helper={configHelp('inference', 'ollama_base_url')}
+          >
+            <input
+              type="text"
+              className={styles.input}
+              value={ollamaUrl}
+              aria-label="Ollama URL"
+              spellCheck={false}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              placeholder="http://127.0.0.1:11434"
               onFocus={() => {
-                minFocusedRef.current = true;
+                ollamaUrlFocusedRef.current = true;
               }}
-              onChange={(e) => {
-                const n = parseInt(e.target.value, 10);
-                if (Number.isNaN(n)) {
-                  setRawMin(e.target.value);
-                } else {
-                  const clamped = Math.max(-1, Math.min(1440, n));
-                  setRawMin(String(clamped));
-                  setInactivityMin(clamped);
-                }
-              }}
+              onChange={(e) => setOllamaUrl(e.target.value)}
               onBlur={() => {
-                minFocusedRef.current = false;
-                if (Number.isNaN(parseInt(rawMin, 10))) {
-                  setRawMin('0');
-                  setInactivityMin(0);
-                }
+                ollamaUrlFocusedRef.current = false;
+                commitOllamaUrl();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
               }}
             />
-            <span className={styles.keepWarmUnit}>min</span>
-          </div>
-        </div>
-
-        {/* Row 2: slug status on left | Unload now on right */}
-        <div className={styles.keepWarmStatusRow}>
-          <div className={styles.keepWarmStatusLeft}>
-            {loadedModel !== null ? (
-              <div className={styles.keepWarmVramSubtitle}>
-                <span
-                  className={styles.keepWarmVramDot}
-                  data-testid="vram-status-dot"
-                  aria-hidden="true"
+          </SettingRow>
+          {isNonLocalUrl(ollamaUrl) && (
+            <p className={styles.providerWarning} role="alert">
+              This points Thuki at a non-local Ollama server. You are
+              responsible for securing it: prefer a VPN/Tailscale or SSH tunnel
+              over exposing the port directly.
+            </p>
+          )}
+          {/* get_model_picker_state is scoped to the ACTIVE provider, so this
+              inventory only describes Ollama while Ollama is active. Hide the
+              row otherwise to avoid listing another provider's models here. */}
+          {activeKind === 'ollama' ? (
+            <SettingRow label="Model">
+              {availableModels.length > 0 ? (
+                <Dropdown
+                  value={modelValue}
+                  options={availableModels}
+                  onChange={(m) => void setActiveModel(m)}
+                  ariaLabel="Active Ollama model"
                 />
-                <span className={styles.keepWarmVramModelName}>
-                  {loadedModel}
-                </span>
-                <span>&nbsp;· in VRAM</span>
-              </div>
-            ) : (
-              <span className={styles.keepWarmNoModel}>No model loaded</span>
-            )}
+              ) : (
+                <span className={styles.providerHint}>No models installed</span>
+              )}
+            </SettingRow>
+          ) : null}
+        </div>
+
+        {openaiProvider ? (
+          <div
+            className={providerCardClass(activeKind === 'openai')}
+            data-provider-card="openai"
+          >
+            <label className={styles.providerSelectRow}>
+              <input
+                type="radio"
+                className={styles.providerRadio}
+                name="active-provider"
+                aria-label="Use OpenAI-compatible server"
+                checked={activeKind === 'openai'}
+                onChange={() => selectProvider(openaiProvider.id)}
+              />
+              <span className={styles.providerName}>
+                {openaiProvider.label}
+              </span>
+            </label>
+            <OpenAiProviderCard
+              provider={openaiProvider}
+              resyncToken={resyncToken}
+              onSaved={onSaved}
+            />
+          </div>
+        ) : (
+          <AddOpenAiProvider onSaved={onSaved} />
+        )}
+      </Section>
+
+      {activeKind === 'builtin' ? (
+        <Section heading="Idle Unload">
+          <SettingRow
+            label="Unload after idle"
+            helper={configHelp('inference', 'idle_unload_minutes')}
+          >
+            <div className={styles.keepWarmTimerGroup}>
+              <input
+                type="number"
+                className={styles.keepWarmNumberInput}
+                value={rawIdleMin}
+                min={0}
+                max={1440}
+                aria-label="Unload after N idle minutes"
+                onFocus={() => {
+                  idleMinFocusedRef.current = true;
+                }}
+                onChange={(e) => {
+                  const n = parseInt(e.target.value, 10);
+                  if (Number.isNaN(n)) {
+                    setRawIdleMin(e.target.value);
+                  } else {
+                    const clamped = Math.max(0, Math.min(1440, n));
+                    setRawIdleMin(String(clamped));
+                    setIdleMin(clamped);
+                  }
+                }}
+                onBlur={() => {
+                  idleMinFocusedRef.current = false;
+                  if (Number.isNaN(parseInt(rawIdleMin, 10))) {
+                    setRawIdleMin('0');
+                    setIdleMin(0);
+                  }
+                }}
+              />
+              <span className={styles.keepWarmUnit}>min</span>
+            </div>
+          </SettingRow>
+          <div className={styles.keepWarmStatusRow}>
+            <span className={styles.engineStatusLine}>
+              Engine: {engineState}
+            </span>
+            <button
+              type="button"
+              className={styles.keepWarmEjectPill}
+              aria-label="Unload now"
+              disabled={engineState !== 'loaded'}
+              onClick={handleEngineEject}
+            >
+              Unload now
+            </button>
+          </div>
+        </Section>
+      ) : null}
+
+      {activeKind === 'ollama' ? (
+        <Section heading="Keep Warm">
+          {/* Row 1: label + [?] on left | Release after [N] min on right */}
+          <div className={styles.keepWarmRow1}>
+            <div className={styles.keepWarmLabelLine}>
+              <span className={styles.keepWarmLabel}>
+                Keep active model in VRAM
+              </span>
+              <Tooltip label={KEEP_WARM_TOOLTIP} multiline>
+                <button
+                  type="button"
+                  className={styles.infoBtn}
+                  aria-label="About Keep active model in VRAM"
+                >
+                  ?
+                </button>
+              </Tooltip>
+            </div>
+            <div className={styles.keepWarmTimerGroup}>
+              <span className={styles.keepWarmBarFieldLabel}>
+                Release after
+              </span>
+              <input
+                type="number"
+                className={styles.keepWarmNumberInput}
+                value={rawMin}
+                min={-1}
+                max={1440}
+                aria-label="Release after N minutes"
+                onFocus={() => {
+                  minFocusedRef.current = true;
+                }}
+                onChange={(e) => {
+                  const n = parseInt(e.target.value, 10);
+                  if (Number.isNaN(n)) {
+                    setRawMin(e.target.value);
+                  } else {
+                    const clamped = Math.max(-1, Math.min(1440, n));
+                    setRawMin(String(clamped));
+                    setInactivityMin(clamped);
+                  }
+                }}
+                onBlur={() => {
+                  minFocusedRef.current = false;
+                  if (Number.isNaN(parseInt(rawMin, 10))) {
+                    setRawMin('0');
+                    setInactivityMin(0);
+                  }
+                }}
+              />
+              <span className={styles.keepWarmUnit}>min</span>
+            </div>
           </div>
 
-          <button
-            type="button"
-            className={styles.keepWarmEjectPill}
-            aria-label="Unload now"
-            disabled={ejecting || loadedModel === null}
-            data-ejecting={ejecting}
-            onClick={handleEject}
-          >
-            {ejecting ? (
-              <DrawCheckIcon />
-            ) : (
-              <svg
-                viewBox="0 0 16 16"
-                width="11"
-                height="11"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <polygon points="8,2 14,11 2,11" />
-                <rect x="2" y="12.5" width="12" height="2" rx="1" />
-              </svg>
-            )}
-            Unload now
-          </button>
-        </div>
-      </Section>
+          {/* Row 2: slug status on left | Unload now on right */}
+          <div className={styles.keepWarmStatusRow}>
+            <div className={styles.keepWarmStatusLeft}>
+              {loadedModel !== null ? (
+                <div className={styles.keepWarmVramSubtitle}>
+                  <span
+                    className={styles.keepWarmVramDot}
+                    data-testid="vram-status-dot"
+                    aria-hidden="true"
+                  />
+                  <span className={styles.keepWarmVramModelName}>
+                    {loadedModel}
+                  </span>
+                  <span>&nbsp;· in VRAM</span>
+                </div>
+              ) : (
+                <span className={styles.keepWarmNoModel}>No model loaded</span>
+              )}
+            </div>
+
+            <button
+              type="button"
+              className={styles.keepWarmEjectPill}
+              aria-label="Unload now"
+              disabled={ejecting || loadedModel === null}
+              data-ejecting={ejecting}
+              onClick={handleEject}
+            >
+              {ejecting ? (
+                <DrawCheckIcon />
+              ) : (
+                <svg
+                  viewBox="0 0 16 16"
+                  width="11"
+                  height="11"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <polygon points="8,2 14,11 2,11" />
+                  <rect x="2" y="12.5" width="12" height="2" rx="1" />
+                </svg>
+              )}
+              Unload now
+            </button>
+          </div>
+        </Section>
+      ) : null}
 
       <Section heading="Context Window">
         <div className={styles.ctxBlock}>
@@ -450,10 +646,22 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
             ))}
           </div>
 
+          {activeKind === 'builtin' &&
+          (engineState === 'starting' || engineState === 'stopping') ? (
+            <div className={styles.ctxApplyingHint} role="status">
+              Applying… the engine restarts with the new context on your next
+              message.
+            </div>
+          ) : null}
+
           <div className={styles.ctxHelper}>
             ~{ctxTurns.toLocaleString()} turns of context
             {' · '}
-            Ollama caps to your model&apos;s trained maximum.
+            {activeKind === 'builtin'
+              ? 'Passed to the engine as --ctx-size at start; changing it restarts the engine.'
+              : activeKind === 'openai'
+                ? 'Informational only; your server controls the actual context.'
+                : "Ollama caps to your model's trained maximum."}
           </div>
 
           <div className={styles.ctxVramNote}>

@@ -10,6 +10,8 @@ import { CommandSuggestion } from '../components/CommandSuggestion';
 import { ModelPicker } from '../components/ModelPicker';
 import { Tooltip } from '../components/Tooltip';
 import { CapabilityMismatchStrip } from '../components/CapabilityMismatchStrip';
+import { DownloadStatusStrip } from '../components/DownloadStatusStrip';
+import type { DownloadStripStatus } from '../components/DownloadStatusStrip';
 import type { CapabilityMismatchMessage } from '../components/CapabilityMismatchStrip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
@@ -205,6 +207,13 @@ interface AskBarViewProps {
    */
   capabilityConflictMessage?: CapabilityMismatchMessage | null;
   /**
+   * Ambient model-download status to render in the same slot as the
+   * capability strip. `null` (or undefined) renders nothing. Set by the host
+   * while a built-in model is downloading in the background so the ask bar
+   * shows progress, readiness, or a retry without leaving the picker.
+   */
+  downloadStatus?: DownloadStripStatus | null;
+  /**
    * When true, the input row plays a brief horizontal shake animation.
    * The host pulses this true / false to signal a refused submit.
    */
@@ -245,6 +254,7 @@ export function AskBarView({
   onModelPickerToggle,
   isModelPickerOpen,
   capabilityConflictMessage,
+  downloadStatus,
   shake = false,
   maxImages,
   onFirstKeystroke,
@@ -254,8 +264,18 @@ export function AskBarView({
 
   /** True when the UI should be locked - either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
+  // A built-in model still downloading (or paused mid-download) holds the
+  // submit (App soft-blocks it), so the send affordance is greyed to match:
+  // the input stays editable for drafting, but there is nothing to send yet.
+  const isDownloadHolding =
+    downloadStatus?.kind === 'downloading' ||
+    downloadStatus?.kind === 'pausing' ||
+    downloadStatus?.kind === 'verifying' ||
+    downloadStatus?.kind === 'paused';
   const canSubmit =
-    (query.trim().length > 0 || attachedImages.length > 0) && !isBusy;
+    (query.trim().length > 0 || attachedImages.length > 0) &&
+    !isBusy &&
+    !isDownloadHolding;
   const isAtMaxImages = attachedImages.length >= maxImages;
 
   /** True briefly after a paste attempt is rejected because max images reached. */
@@ -526,6 +546,9 @@ export function AskBarView({
       {capabilityConflictMessage && (
         <CapabilityMismatchStrip message={capabilityConflictMessage} />
       )}
+      {downloadStatus ? (
+        <DownloadStatusStrip status={downloadStatus} alternate />
+      ) : null}
       {/* Command suggestion renders above the input row in the normal DOM
           flow. Being inside the morphing container means the ResizeObserver
           detects the added height and grows the native window upward to reveal
