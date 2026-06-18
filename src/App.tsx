@@ -418,6 +418,7 @@ function App() {
   const {
     activeModel,
     availableModels,
+    modelDisplayNames,
     ollamaReachable,
     refreshModels,
     setActiveModel,
@@ -3566,6 +3567,7 @@ function App() {
                                     providerKind={
                                       config.inference.activeProviderKind
                                     }
+                                    displayNames={modelDisplayNames}
                                   />
                                 </motion.div>
                               ) : null}
@@ -3784,6 +3786,7 @@ function App() {
                       onClose={handleModelPickerClose}
                       capabilities={modelCapabilities}
                       providerKind={config.inference.activeProviderKind}
+                      displayNames={modelDisplayNames}
                       compact
                     />
                   </motion.div>

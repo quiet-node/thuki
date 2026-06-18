@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelCapabilitiesMap } from '../types/model';
 import {
@@ -95,6 +95,12 @@ export interface ModelPickerPanelProps {
    * ConfigContext's fallback for an unresolvable provider.
    */
   providerKind?: string;
+  /**
+   * Friendly display name per model id. Rows render the display name when an
+   * id has one (built-in models) and fall back to the id otherwise (Ollama /
+   * OpenAI). Selection and keys still use the id.
+   */
+  displayNames?: Record<string, string>;
 }
 
 /**
@@ -113,17 +119,29 @@ export function ModelPickerPanel({
   capabilities,
   compact = false,
   providerKind = 'ollama',
+  displayNames,
 }: ModelPickerPanelProps) {
   const [filter, setFilter] = useState('');
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const listboxRef = useRef<HTMLDivElement>(null);
 
+  /** The user-facing label for a model id: its display name, else the id. */
+  const labelFor = useCallback(
+    (model: string): string => displayNames?.[model] ?? model,
+    [displayNames],
+  );
+
   const filtered = useMemo(() => {
     const trimmed = filter.trim();
     if (trimmed === '') return models;
     const needle = trimmed.toLowerCase();
-    return models.filter((m) => m.toLowerCase().includes(needle));
-  }, [filter, models]);
+    // Match the id or its friendly label so search works on what is shown.
+    return models.filter(
+      (m) =>
+        m.toLowerCase().includes(needle) ||
+        labelFor(m).toLowerCase().includes(needle),
+    );
+  }, [filter, models, labelFor]);
 
   // Inline clamp: derive the safe render index without a useEffect so
   // aria-activedescendant is consistent on the same render that filtered shrinks.
@@ -281,8 +299,8 @@ export function ModelPickerPanel({
                 aria-selected={active}
                 aria-label={
                   capLabel
-                    ? `${model}, ${capLabel.replace(/ · /g, ', ')}`
-                    : model
+                    ? `${labelFor(model)}, ${capLabel.replace(/ · /g, ', ')}`
+                    : labelFor(model)
                 }
                 tabIndex={-1}
                 onMouseEnter={() => setHighlightedIndex(index)}
@@ -293,7 +311,7 @@ export function ModelPickerPanel({
               >
                 <span className="flex-1 min-w-0 flex flex-col gap-0.5">
                   <span className="overflow-hidden text-ellipsis whitespace-nowrap leading-tight">
-                    {model}
+                    {labelFor(model)}
                   </span>
                   {capLabel && (
                     <span

@@ -44,6 +44,48 @@ describe('ModelPickerPanel', () => {
     }
   });
 
+  const BUILTIN_ID = 'unsloth/Qwen3.5-9B-GGUF:Qwen3.5-9B-Q4_K_M.gguf';
+
+  it('renders the friendly display name for ids that have one', () => {
+    renderPanel({
+      models: [BUILTIN_ID],
+      activeModel: null,
+      displayNames: { [BUILTIN_ID]: 'Qwen3.5 9B' },
+    });
+    expect(
+      screen.getByRole('option', { name: 'Qwen3.5 9B' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(BUILTIN_ID)).not.toBeInTheDocument();
+  });
+
+  it('falls back to the id when no display name is given', () => {
+    renderPanel({
+      models: ['llama3.2:3b'],
+      activeModel: null,
+      displayNames: {},
+    });
+    expect(
+      screen.getByRole('option', { name: 'llama3.2:3b' }),
+    ).toBeInTheDocument();
+  });
+
+  it('filters by the friendly display name, not just the id', () => {
+    renderPanel({
+      models: [BUILTIN_ID, 'llama3.2:3b'],
+      activeModel: null,
+      displayNames: { [BUILTIN_ID]: 'Qwen3.5 9B' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/filter models/i), {
+      target: { value: 'qwen3.5 9b' },
+    });
+    expect(
+      screen.getByRole('option', { name: 'Qwen3.5 9B' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('option', { name: 'llama3.2:3b' }),
+    ).not.toBeInTheDocument();
+  });
+
   it('marks active model with aria-selected true, others false', () => {
     renderPanel({ activeModel: 'qwen2.5:7b' });
     expect(screen.getByRole('option', { name: 'qwen2.5:7b' })).toHaveAttribute(

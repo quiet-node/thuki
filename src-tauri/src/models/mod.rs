@@ -319,11 +319,14 @@ pub async fn get_model_picker_state(
     db: tauri::State<'_, crate::history::Database>,
 ) -> Result<serde_json::Value, String> {
     let (base_url, active_id, persisted, kind) = read_provider_model_context(&config);
-    let manifest_ids = if kind == PROVIDER_KIND_BUILTIN {
-        manifest_model_ids(&db)?
+    let manifest_rows = if kind == PROVIDER_KIND_BUILTIN {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        manifest::list(&conn).map_err(|e| e.to_string())?
     } else {
         Vec::new()
     };
+    let manifest_ids: Vec<String> = manifest_rows.iter().map(|m| m.id.clone()).collect();
+    let display_names = manifest_displays_map(&manifest_rows);
     let (installed, reachable) = picker_inventory_for_kind(
         &client,
         &kind,
@@ -349,6 +352,7 @@ pub async fn get_model_picker_state(
         resolved.as_deref(),
         &installed,
         reachable,
+        &display_names,
     ))
 }
 
@@ -447,6 +451,7 @@ pub fn build_picker_state_payload(
     active: Option<&str>,
     installed: &[String],
     ollama_reachable: bool,
+    display_names: &HashMap<String, String>,
 ) -> serde_json::Value {
     let active_value = match active {
         Some(slug) => serde_json::Value::String(slug.to_string()),
@@ -456,7 +461,19 @@ pub fn build_picker_state_payload(
         "active": active_value,
         "all": installed,
         "ollamaReachable": ollama_reachable,
+        // id -> friendly display name; populated for built-in models (whose ids
+        // are "repo:file.gguf"), empty for Ollama/OpenAI whose ids already read
+        // cleanly. The frontend falls back to the id when an entry is missing.
+        "displayNames": display_names,
     })
+}
+
+/// Maps each installed model's id to its recorded display name, for the picker
+/// to show "Qwen3.5 9B" instead of the raw "repo:file.gguf" id.
+fn manifest_displays_map(rows: &[manifest::InstalledModel]) -> HashMap<String, String> {
+    rows.iter()
+        .map(|m| (m.id.clone(), m.display_name.clone()))
+        .collect()
 }
 
 /// Persists `model` as the active model after validating its shape and
@@ -1956,10 +1973,11 @@ mod tests {
         // S1 mirrors the unreachable case: no model can be resolved, the
         // installed list is empty by definition, and the flag is false so
         // the frontend can pick the right strip copy.
-        let payload = build_picker_state_payload(None, &[], false);
+        let payload = build_picker_state_payload(None, &[], false, &HashMap::new());
         assert_eq!(payload["active"], serde_json::Value::Null);
         assert_eq!(payload["all"], serde_json::json!([]));
         assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(false));
+        assert_eq!(payload["displayNames"], serde_json::json!({}));
     }
 
     #[test]
@@ -1967,24 +1985,50 @@ mod tests {
         // S2: Ollama responded but installed list is empty. Active is null
         // (nothing to resolve to) yet ollamaReachable is true so the strip
         // can tell the user to pull a model rather than start the daemon.
-        let payload = build_picker_state_payload(None, &[], true);
+        let payload = build_picker_state_payload(None, &[], true, &HashMap::new());
         assert_eq!(payload["active"], serde_json::Value::Null);
         assert_eq!(payload["all"], serde_json::json!([]));
         assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(true));
+        assert_eq!(payload["displayNames"], serde_json::json!({}));
     }
 
     #[test]
-    fn picker_payload_reachable_with_models_carries_active_slug() {
+    fn picker_payload_reachable_with_models_carries_active_slug_and_display_names() {
         // S4 (normal): active slug is present and ollamaReachable is true.
-        // The frontend renders the chip with the slug and skips the strip.
-        let installed = vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()];
-        let payload = build_picker_state_payload(Some("gemma4:e4b"), &installed, true);
-        assert_eq!(payload["active"], serde_json::json!("gemma4:e4b"));
+        // Built-in ids carry a friendly display name so the picker shows
+        // "Qwen3.5 9B" rather than the raw "repo:file.gguf" slug.
+        let installed = vec!["org/repo:a.gguf".to_string(), "org/repo:b.gguf".to_string()];
+        let displays = HashMap::from([
+            ("org/repo:a.gguf".to_string(), "Model A".to_string()),
+            ("org/repo:b.gguf".to_string(), "Model B".to_string()),
+        ]);
+        let payload =
+            build_picker_state_payload(Some("org/repo:b.gguf"), &installed, true, &displays);
+        assert_eq!(payload["active"], serde_json::json!("org/repo:b.gguf"));
         assert_eq!(
             payload["all"],
-            serde_json::json!(["gemma4:e2b", "gemma4:e4b"])
+            serde_json::json!(["org/repo:a.gguf", "org/repo:b.gguf"])
         );
         assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(true));
+        assert_eq!(payload["displayNames"]["org/repo:a.gguf"], "Model A");
+        assert_eq!(payload["displayNames"]["org/repo:b.gguf"], "Model B");
+    }
+
+    #[test]
+    fn manifest_displays_map_keys_ids_to_display_names() {
+        let rows = vec![
+            manifest_row("org/repo:a.gguf", true, false),
+            manifest_row("org/repo:b.gguf", false, false),
+        ];
+        let map = manifest_displays_map(&rows);
+        assert_eq!(
+            map.get("org/repo:a.gguf").map(String::as_str),
+            Some("Model org/repo:a.gguf")
+        );
+        assert_eq!(
+            map.get("org/repo:b.gguf").map(String::as_str),
+            Some("Model org/repo:b.gguf")
+        );
     }
 
     // ── picker_inventory_for_kind ────────────────────────────────────────────
