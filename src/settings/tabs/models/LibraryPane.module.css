@@ -1,0 +1,222 @@
+/*
+ * Styles for the Library pane of the Models surface. Tokens (--accent,
+ * --vis, --rea, --hair, --t1..--t3, --elev-*) cascade from the Settings
+ * window, so they are referenced directly here.
+ */
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  padding: 0 4px 12px;
+}
+
+.addButton {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 560;
+  color: #16110d;
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card {
+  border: 1px solid var(--hair-soft);
+  border-radius: var(--radius-card);
+  background: var(--elev-1);
+  overflow: hidden;
+}
+
+.cardActive {
+  border-color: rgba(255, 141, 92, 0.4);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 13px 14px;
+}
+
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: var(--elev-2);
+  font-weight: 700;
+  color: var(--t2);
+  font-size: 12px;
+}
+
+.mid {
+  flex: 1;
+  min-width: 0;
+}
+
+.name {
+  font-weight: 550;
+  font-size: 13px;
+  color: var(--t1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.org {
+  font-size: 11px;
+  color: var(--t3);
+  margin-top: 3px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 560;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.badgeActive {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.badgeVision {
+  color: var(--vis);
+  background: var(--vis-bg);
+}
+
+.badgeReason {
+  color: var(--rea);
+  background: var(--rea-bg);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.useButton {
+  font-size: 12px;
+  font-weight: 540;
+  color: var(--accent);
+  border: 1px solid rgba(255, 141, 92, 0.45);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.manageButton {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--hair);
+  background: transparent;
+  display: grid;
+  place-items: center;
+  color: var(--t3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.manageRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 13px;
+  flex-wrap: wrap;
+}
+
+.confirmText {
+  font-size: 11px;
+  color: var(--t2);
+}
+
+.deleteButton {
+  font-size: 12px;
+  font-weight: 540;
+  color: #ff6b6b;
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  background: rgba(255, 107, 107, 0.1);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.ghostButton {
+  font-size: 12px;
+  font-weight: 540;
+  color: var(--t2);
+  border: 1px solid var(--hair);
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 14px;
+}
+
+.emptyText {
+  font-size: 13px;
+  color: var(--t2);
+}
+
+.browseButton {
+  font-size: 12px;
+  font-weight: 560;
+  color: #16110d;
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+
+.error {
+  font-size: 11px;
+  color: #ff6b6b;
+  margin: 8px 4px 0;
+}
+
+.footer {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 12px;
+  padding: 11px 4px 0;
+  border-top: 1px solid var(--hair-soft);
+  font-size: 11px;
+  color: var(--t3);
+  display: flex;
+  justify-content: space-between;
+}

@@ -1,0 +1,253 @@
+/**
+ * Discover pane: the in-app Hugging Face GGUF model browser.
+ *
+ * A search field (driven by {@link useHfSearch}) plus a row of family filter
+ * chips feed one debounced backend query. The result list renders one lean
+ * row per repo: the search payload carries no size or capability data, so a
+ * row shows only the avatar, the repo id, an org + downloads sub-line, and a
+ * gated indicator. "Get" expands the row into a quant accordion that lists the
+ * repo's `.gguf` files (`list_hf_repo_ggufs`) and downloads the chosen one
+ * through the shared {@link useDownloadModel} kit. A finished install lifts a
+ * fresh config snapshot through `onSaved` and collapses the row.
+ */
+
+import { useCallback, useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+
+import { DownloadProgress } from '../../../components/DownloadProgress';
+import { useDownloadModel } from '../../../hooks/useDownloadModel';
+import { useHfSearch } from './useHfSearch';
+import styles from './DiscoverPane.module.css';
+import type { HfModelSummary } from '../../../types/hf';
+import type { HfGgufFile } from '../../../types/starter';
+import type { RawAppConfig } from '../../types';
+
+/**
+ * Family filter chips. Clicking a chip sets the search query to its name;
+ * `All` (empty query) is the browse-popular default. No backend beyond the
+ * shared search: the chips just preset the query.
+ */
+const FAMILIES = [
+  'All',
+  'Qwen',
+  'Llama',
+  'Gemma',
+  'gpt-oss',
+  'DeepSeek',
+  'Phi',
+] as const;
+
+/** Bytes rendered as decimal gigabytes with one decimal (e.g. "8.2"). */
+function gb(bytes: number): string {
+  return (bytes / 1e9).toFixed(1);
+}
+
+/** The org segment of an `owner/repo` id, or the whole id when there is no slash. */
+function orgOf(id: string): string {
+  const slash = id.indexOf('/');
+  return slash === -1 ? id : id.slice(0, slash);
+}
+
+interface DiscoverPaneProps {
+  /** Lift a fresh config snapshot after a successful install. */
+  onSaved: (next: RawAppConfig) => void;
+}
+
+export function DiscoverPane({ onSaved }: DiscoverPaneProps) {
+  const { query, setQuery, results, loading } = useHfSearch();
+
+  return (
+    <div className={styles.pane}>
+      <div className={styles.search}>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" />
+        </svg>
+        <input
+          type="search"
+          className={styles.searchInput}
+          aria-label="Search Hugging Face models"
+          placeholder="Search Hugging Face models"
+          spellCheck={false}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <span className={styles.kbd}>⌘K</span>
+      </div>
+
+      <div className={styles.chips}>
+        {FAMILIES.map((family) => {
+          const target = family === 'All' ? '' : family;
+          const active = query === target;
+          return (
+            <button
+              key={family}
+              type="button"
+              aria-pressed={active}
+              className={`${styles.chip} ${active ? styles.chipOn : ''}`}
+              onClick={() => setQuery(target)}
+            >
+              {family}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className={styles.subbar}>
+        <span className={styles.count}>
+          <b>{results.length}</b> GGUF models
+        </span>
+        <span className={styles.sort}>Most downloaded</span>
+      </div>
+
+      <div className={styles.list}>
+        {loading ? <p className={styles.state}>Searching…</p> : null}
+        {!loading && results.length === 0 ? (
+          <p className={styles.state}>No models found.</p>
+        ) : null}
+        {results.map((model) => (
+          <DiscoverRow key={model.id} model={model} onSaved={onSaved} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+interface DiscoverRowProps {
+  model: HfModelSummary;
+  onSaved: (next: RawAppConfig) => void;
+}
+
+/**
+ * One repo row plus its lazy quant accordion. The GGUF file list is fetched
+ * the first time the row expands; the download state machine is local to the
+ * row so two rows cannot share an in-flight download.
+ */
+function DiscoverRow({ model, onSaved }: DiscoverRowProps) {
+  const [expanded, setExpanded] = useState(false);
+  const [files, setFiles] = useState<HfGgufFile[] | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+
+  const { state, progress, etaSeconds, startRepo, cancel, retry, reset } =
+    useDownloadModel();
+
+  const org = orgOf(model.id);
+
+  const loadFiles = useCallback(async () => {
+    setListError(null);
+    setFiles(null);
+    try {
+      const rows = await invoke<HfGgufFile[]>('list_hf_repo_ggufs', {
+        repo: model.id,
+      });
+      setFiles(Array.isArray(rows) ? rows : []);
+    } catch (err) {
+      setListError(String(err));
+    }
+  }, [model.id]);
+
+  function toggle() {
+    if (expanded) {
+      setExpanded(false);
+      return;
+    }
+    setExpanded(true);
+    void loadFiles();
+  }
+
+  // A finished install: the backend already wrote the builtin provider's
+  // model field, so lift the fresh config snapshot and collapse the row.
+  useEffect(() => {
+    if (state.phase !== 'ready') return;
+    void (async () => {
+      try {
+        onSaved(await invoke<RawAppConfig>('get_config'));
+      } catch {
+        // The focus-driven resync picks the change up on next activation.
+      }
+      reset();
+      setExpanded(false);
+    })();
+  }, [state.phase, onSaved, reset]);
+
+  const showProgress = state.phase !== 'idle';
+
+  return (
+    <div className={styles.rowWrap} data-row>
+      <div className={styles.row}>
+        <div className={styles.av} aria-hidden="true">
+          {org.charAt(0)}
+        </div>
+        <div className={styles.mid}>
+          <div className={styles.nm}>
+            {model.id}
+            {model.gated ? (
+              <span className={styles.gatedBadge}>gated</span>
+            ) : null}
+          </div>
+          <div className={styles.org}>
+            {org} · {model.downloads.toLocaleString()} downloads
+          </div>
+        </div>
+        <button
+          type="button"
+          className={styles.get}
+          aria-expanded={expanded}
+          disabled={model.gated}
+          onClick={toggle}
+        >
+          Get
+        </button>
+      </div>
+
+      {expanded ? (
+        <div className={styles.expand}>
+          {listError !== null ? (
+            <p className={styles.error}>{listError}</p>
+          ) : null}
+          {files !== null && files.length === 0 && listError === null ? (
+            <p className={styles.note}>No GGUF files in this repo.</p>
+          ) : null}
+          {!showProgress && files !== null && files.length > 0
+            ? files.map((f) => (
+                <div className={styles.quantRow} key={f.file}>
+                  <span className={styles.quantName}>{f.file}</span>
+                  <span className={styles.quantSize}>
+                    {gb(f.size_bytes)} GB
+                  </span>
+                  <button
+                    type="button"
+                    className={styles.download}
+                    onClick={() => void startRepo(model.id, f.file)}
+                  >
+                    Download
+                  </button>
+                </div>
+              ))
+            : null}
+          {showProgress ? (
+            <DownloadProgress
+              state={state}
+              progress={progress}
+              etaSeconds={etaSeconds}
+              // The repo download flow has no pre-flight confirm step (only
+              // the starter picker does), so the confirm card never renders;
+              // these required props point at the same covered handlers as
+              // their respective cards rather than dead no-op literals.
+              onConfirm={reset}
+              onCancelConfirm={reset}
+              onCancel={() => void cancel()}
+              onRetry={() => void retry()}
+              // A terminal failure must leave a path back to the quant list,
+              // not just Retry; reset returns to the file rows.
+              onChooseAnother={reset}
+            />
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}

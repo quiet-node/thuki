@@ -332,19 +332,226 @@
   background: var(--accent);
 }
 
-/* Row holding the segmented control (and, on Library, the Add-model action). */
+/* Row holding the segmented control, centered across the Models surface. */
 .barrow {
   display: flex;
   align-items: center;
+  justify-content: center;
   margin-bottom: 18px;
 }
 
-/* Interim copy for the Library / Discover panes while they are being built. */
-.modelsPlaceholder {
-  padding: 48px 8px;
+/* ─── Providers pane (Active Hero) ───────────────────────────────────────── */
+
+.shead {
+  display: flex;
+  align-items: baseline;
+  margin: 18px 2px 9px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--t3);
+}
+.shead:first-child {
+  margin-top: 0;
+}
+.sheadNote {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--t3);
+  opacity: 0.85;
+}
+
+/* Active provider hero. */
+.hero {
+  box-sizing: border-box;
+  padding: 18px;
+  border: 1px solid rgba(255, 141, 92, 0.3);
+  border-radius: 14px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 141, 92, 0.06),
+    rgba(255, 141, 92, 0.02)
+  );
+}
+.heroHead {
+  display: flex;
+  align-items: flex-start;
+}
+.heroName {
+  font-size: 15.5px;
+  font-weight: 650;
+  color: var(--t1);
+}
+.heroSub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--t3);
+}
+.heroActive {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 580;
+  color: var(--accent);
+}
+.heroLiveDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 7px var(--accent);
+}
+.heroModel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid var(--hair-soft);
+}
+.heroModel .dropdown,
+.heroModel .input {
+  flex: 1;
+  min-width: 0;
+}
+.heroModelLabel {
+  flex: none;
+  width: 64px;
+  font-size: 12.5px;
   color: var(--t2);
+}
+.heroModelLink {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 540;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* Grouped list card (Other providers + Generation). */
+.listcard {
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--hair-soft);
+  border-radius: 12px;
+  background: var(--elev-1);
+}
+
+.providerRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.providerRow + .providerRow {
+  box-shadow: 0 -1px 0 var(--hair-soft);
+}
+.providerRowName {
   font-size: 13px;
-  text-align: center;
+  font-weight: 550;
+  color: var(--t1);
+}
+.providerRowSub {
+  font-size: 11.5px;
+  color: var(--t3);
+}
+.grow {
+  flex: 1;
+}
+.switchBtn {
+  flex: none;
+  padding: 5px 11px;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--t2);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 540;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease,
+    background 140ms ease;
+}
+.switchBtn:hover:not(:disabled) {
+  color: var(--t1);
+  border-color: rgba(255, 141, 92, 0.5);
+  background: var(--accent-soft);
+}
+.switchBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Generation rows. */
+.genRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+}
+.genRow + .genRow {
+  box-shadow: 0 -1px 0 var(--hair-soft);
+}
+.genLabel {
+  flex: 1;
+  min-width: 0;
+}
+.genName {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--t1);
+}
+.genHelp {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--t3);
+}
+.genCtxControl {
+  flex: none;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.genCtxControl .ctxSlider {
+  width: 100%;
+}
+.genCtxControl .ctxTickRow {
+  position: relative;
+  height: 12px;
+}
+.genCtxValue {
+  font-size: 11px;
+  color: var(--t3);
+  text-align: right;
+}
+.genWarmControl {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.genPromptEditor {
+  padding: 0 16px 14px;
+  box-shadow: 0 -1px 0 var(--hair-soft);
+}
+.genFootnote {
+  margin-top: 12px;
+  padding: 0 2px;
+  font-size: 11px;
+  color: var(--t3);
 }
 
 /* ─── Body (scrolling content) ──────────────────────────────────────────── */
