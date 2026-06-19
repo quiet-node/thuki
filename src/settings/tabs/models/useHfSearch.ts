@@ -19,6 +19,10 @@ import type { HfModelSummary } from '../../../types/hf';
 /** Debounce window before a query change triggers a backend fetch. */
 export const HF_SEARCH_DEBOUNCE_MS = 300;
 
+/** How many more results each "Load more" press requests. Mirrors the backend
+ * page step (`HF_SEARCH_LIMIT`); the backend clamps the total to its own max. */
+export const HF_PAGE_SIZE = 30;
+
 /**
  * Runtime guard for the IPC boundary. The Rust backend is trusted, but this
  * keeps the hook robust against shape drift (schema changes, legacy builds,
@@ -48,12 +52,17 @@ function isHfModelSummaryArray(value: unknown): value is HfModelSummary[] {
 export interface UseHfSearchResult {
   /** The current query text, updated synchronously on every keystroke. */
   query: string;
-  /** Set the query. Updates immediately; the backend fetch is debounced. */
+  /** Set the query. Updates immediately; the backend fetch is debounced.
+   * A new query resets pagination back to the first page. */
   setQuery: (q: string) => void;
   /** The most recent (validated) search results, or `[]` on any failure. */
   results: HfModelSummary[];
   /** True while a debounced fetch is in flight. */
   loading: boolean;
+  /** Request the next page (one more {@link HF_PAGE_SIZE} of results). */
+  loadMore: () => void;
+  /** True when the last response filled the requested page, so more may exist. */
+  canLoadMore: boolean;
 }
 
 /**
@@ -66,7 +75,8 @@ export interface UseHfSearchResult {
  * are also dropped.
  */
 export function useHfSearch(): UseHfSearchResult {
-  const [query, setQuery] = useState('');
+  const [query, setQueryState] = useState('');
+  const [limit, setLimit] = useState(HF_PAGE_SIZE);
   const [results, setResults] = useState<HfModelSummary[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -84,13 +94,27 @@ export function useHfSearch(): UseHfSearchResult {
     return mountedRef.current && token === latestTokenRef.current;
   }, []);
 
+  // A new query starts over at the first page; growing `limit` mid-query is
+  // what "Load more" does.
+  const setQuery = useCallback((q: string) => {
+    setQueryState(q);
+    setLimit(HF_PAGE_SIZE);
+  }, []);
+
+  const loadMore = useCallback(() => {
+    setLimit((current) => current + HF_PAGE_SIZE);
+  }, []);
+
   const runSearch = useCallback(
-    async (q: string): Promise<void> => {
+    async (q: string, lim: number): Promise<void> => {
       latestTokenRef.current += 1;
       const token = latestTokenRef.current;
       setLoading(true);
       try {
-        const payload = await invoke<unknown>('search_hf_models', { query: q });
+        const payload = await invoke<unknown>('search_hf_models', {
+          query: q,
+          limit: lim,
+        });
         if (!isLatest(token)) return;
         setResults(isHfModelSummaryArray(payload) ? payload : []);
       } catch {
@@ -105,13 +129,17 @@ export function useHfSearch(): UseHfSearchResult {
 
   // Debounced fetch: a query change schedules a fetch, and any further change
   // within the window cancels and reschedules it, so a burst of keystrokes
-  // makes a single call. The empty-query mount fetch rides the same path.
+  // makes a single call. The empty-query mount fetch and "Load more" (a
+  // `limit` bump) ride the same path.
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void runSearch(query);
+      void runSearch(query, limit);
     }, HF_SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [query, runSearch]);
+  }, [query, limit, runSearch]);
 
-  return { query, setQuery, results, loading };
+  // The last response filled the page, so the Hub may hold more rows.
+  const canLoadMore = !loading && results.length >= limit;
+
+  return { query, setQuery, results, loading, loadMore, canLoadMore };
 }

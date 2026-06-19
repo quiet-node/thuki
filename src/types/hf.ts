@@ -3,18 +3,25 @@
 /**
  * IPC shapes for the in-app Hugging Face GGUF model browser (the Discover
  * pane). Mirrors the serde output of the Rust `search_hf_models` command,
- * which serializes its `HfModelSummary` struct as snake_case.
+ * which serializes its `HfModelRow` struct (a flattened `HfModelSummary` plus
+ * an estimated RAM-fit) as snake_case.
  */
+
+import type { RamFit } from './starter';
 
 /**
  * One repo row from `search_hf_models`. The search payload is deliberately
- * lean: it carries only what the Discover list needs to render a row and to
- * decide whether anonymous download is allowed.
+ * lean: it carries what the Discover list needs to render a row, decide
+ * whether anonymous download is allowed, and show an approximate RAM-fit.
  *
  * - `id` is the canonical `owner/repo` slug.
  * - `downloads` is Hugging Face's all-time download count for the repo.
  * - `gated` is true when the repo requires accepting terms or auth; an
- *   anonymous download fails, so the Discover row disables "Get" for it.
+ *   anonymous download fails, so the Discover row disables download for it.
+ * - `est_runtime_gb` / `fit` are estimated from the parameter count in the
+ *   repo id (no file size is available at search time); both are `null` when
+ *   the id carries no `<number>B` token, and `fit` is also `null` when host
+ *   RAM is unknown. Accurate per-quant fit arrives at the expand step.
  */
 export interface HfModelSummary {
   /** Canonical `owner/repo` slug. */
@@ -23,4 +30,8 @@ export interface HfModelSummary {
   downloads: number;
   /** True when the repo is gated; anonymous downloads fail. */
   gated: boolean;
+  /** Estimated resident footprint in GiB, or `null` when not derivable. */
+  est_runtime_gb?: number | null;
+  /** Estimated RAM-fit for this Mac, or `null` when not derivable. */
+  fit?: RamFit | null;
 }

@@ -1,12 +1,13 @@
 /**
  * Unit tests for the Discover pane: the in-app Hugging Face GGUF browser.
  *
- * Covers the search field wiring, family filter chips, the result list rows
- * (avatar/org parsing, gated rows), the per-row quant accordion (expand,
- * empty repo, list error), and the download flow (start, progress, ready ->
- * onSaved + collapse, cancel, retry). The download channel is captured the
- * same way ProviderCards.test.tsx does it: `onEvent` is grabbed off the
- * invoke args and driven with `simulateMessage`.
+ * Covers the search field wiring, family filter chips, the result rows (org
+ * parsing, gated rows, RAM-fit hint, the Hugging Face link), pagination (Load
+ * more), the per-row quant accordion (expand, per-quant fit, empty repo, list
+ * error), and the download flow (start, progress, ready -> onSaved + collapse,
+ * cancel, retry). The download channel is captured the same way
+ * ProviderCards.test.tsx does it: `onEvent` is grabbed off the invoke args and
+ * driven with `simulateMessage`.
  */
 
 import {
@@ -22,7 +23,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 
 import { DiscoverPane } from './DiscoverPane';
-import { HF_SEARCH_DEBOUNCE_MS } from './useHfSearch';
+import { HF_SEARCH_DEBOUNCE_MS, HF_PAGE_SIZE } from './useHfSearch';
 import type { HfModelSummary } from '../../../types/hf';
 import type { HfGgufFile } from '../../../types/starter';
 import type { RawAppConfig } from '../../types';
@@ -62,13 +63,19 @@ function mockCommands(responses: Record<string, unknown>) {
 }
 
 const RESULTS: HfModelSummary[] = [
-  { id: 'google/gemma-4-12b-it-GGUF', downloads: 1_200_000, gated: false },
+  {
+    id: 'google/gemma-4-12b-it-GGUF',
+    downloads: 1_200_000,
+    gated: false,
+    est_runtime_gb: 9.5,
+    fit: 'fits',
+  },
   { id: 'unsloth/gemma-4-27b-it-GGUF', downloads: 410_000, gated: false },
   { id: 'meta-llama/Llama-3-8B-GGUF', downloads: 9_000, gated: true },
 ];
 
 const GGUFS: HfGgufFile[] = [
-  { file: 'gemma-q4.gguf', size_bytes: 5_000_000_000 },
+  { file: 'gemma-q4.gguf', size_bytes: 5_000_000_000, fit: 'tight' },
   { file: 'gemma-q8.gguf', size_bytes: 9_000_000_000 },
 ];
 
@@ -111,19 +118,19 @@ async function renderPane(
   mockCommands(discoverResponses(overrides));
   const view = render(<DiscoverPane onSaved={onSaved} />);
   await waitFor(() =>
-    expect(invokeMock).toHaveBeenCalledWith('search_hf_models', { query: '' }),
+    expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
+      query: '',
+      limit: HF_PAGE_SIZE,
+    }),
   );
   await flush();
   return view;
 }
 
 describe('DiscoverPane', () => {
-  it('renders a row per search result with parsed avatar and org line', async () => {
+  it('renders a row per search result with the repo id and org line', async () => {
     await renderPane();
     expect(screen.getByText('google/gemma-4-12b-it-GGUF')).toBeInTheDocument();
-    // Avatar is the first letter of the org segment.
-    expect(screen.getByText('g', { selector: '*' })).toBeTruthy();
-    // Org + formatted downloads sub-line.
     expect(
       screen.getByText('google · 1,200,000 downloads'),
     ).toBeInTheDocument();
@@ -132,10 +139,17 @@ describe('DiscoverPane', () => {
 
   it('shows the result count in the sub-bar', async () => {
     await renderPane();
-    expect(screen.getByText(/GGUF models/)).toHaveTextContent('3 GGUF models');
+    expect(screen.getByText(/chat models/)).toHaveTextContent('3 chat models');
   });
 
-  it('renders the avatar from the full id when it has no org segment', async () => {
+  it('shows the estimated RAM-fit on a row when the backend provides one', async () => {
+    await renderPane();
+    // Only the first result carries a fit estimate.
+    expect(screen.getByText('Comfortable')).toBeInTheDocument();
+    expect(screen.getAllByText('Comfortable')).toHaveLength(1);
+  });
+
+  it('parses the org line from the full id when it has no org segment', async () => {
     await renderPane(() => {}, {
       search_hf_models: [
         { id: 'standalone-repo', downloads: 12, gated: false },
@@ -172,6 +186,7 @@ describe('DiscoverPane', () => {
     });
     expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
       query: 'qwen',
+      limit: HF_PAGE_SIZE,
     });
   });
 
@@ -191,6 +206,7 @@ describe('DiscoverPane', () => {
     });
     expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
       query: 'Llama',
+      limit: HF_PAGE_SIZE,
     });
     expect(screen.getByRole('button', { name: 'Llama' })).toHaveAttribute(
       'aria-pressed',
@@ -206,7 +222,6 @@ describe('DiscoverPane', () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
       await Promise.resolve();
     });
-    // All is the active chip while the query is empty.
     expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -226,7 +241,10 @@ describe('DiscoverPane', () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
       await Promise.resolve();
     });
-    expect(invokeMock).toHaveBeenCalledWith('search_hf_models', { query: '' });
+    expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
+      query: '',
+      limit: HF_PAGE_SIZE,
+    });
   });
 
   it('renders every family chip', async () => {
@@ -244,7 +262,19 @@ describe('DiscoverPane', () => {
     }
   });
 
-  it('disables Get and shows a gated note for a gated repo', async () => {
+  it('opens the repo on Hugging Face from the row link', async () => {
+    await renderPane();
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'View google/gemma-4-12b-it-GGUF on Hugging Face',
+      }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith('open_url', {
+      url: 'https://huggingface.co/google/gemma-4-12b-it-GGUF',
+    });
+  });
+
+  it('disables the download button and shows a Gated badge for a gated repo', async () => {
     await renderPane();
     const gatedRow = screen
       .getByText('meta-llama/Llama-3-8B-GGUF')
@@ -252,10 +282,10 @@ describe('DiscoverPane', () => {
     expect(
       within(gatedRow).getByRole('button', { name: 'Get' }),
     ).toBeDisabled();
-    expect(within(gatedRow).getByText('gated')).toBeInTheDocument();
+    expect(within(gatedRow).getByText('Gated')).toBeInTheDocument();
   });
 
-  it('expanding a row lists each GGUF file with its size', async () => {
+  it('expanding a row lists each GGUF file with its size and per-quant fit', async () => {
     await renderPane();
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')
@@ -267,11 +297,13 @@ describe('DiscoverPane', () => {
     });
     expect(screen.getByText('gemma-q4.gguf')).toBeInTheDocument();
     expect(screen.getByText('5.0 GB')).toBeInTheDocument();
+    // The first quant carries an accurate per-quant fit; the second does not.
+    expect(within(row).getByText('Tight')).toBeInTheDocument();
     expect(screen.getByText('gemma-q8.gguf')).toBeInTheDocument();
     expect(screen.getByText('9.0 GB')).toBeInTheDocument();
   });
 
-  it('collapses an expanded row when Get is clicked again', async () => {
+  it('collapses an expanded row when the download button is clicked again', async () => {
     await renderPane();
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')
@@ -323,7 +355,6 @@ describe('DiscoverPane', () => {
       .closest('[data-row]') as HTMLElement;
     fireEvent.click(within(row).getByRole('button', { name: 'Get' }));
     await flush();
-    // Download the second quant.
     const downloadButtons = screen.getAllByRole('button', {
       name: 'Download',
     });
@@ -336,7 +367,6 @@ describe('DiscoverPane', () => {
         file: 'gemma-q8.gguf',
       }),
     );
-    // Progress is shown via DownloadProgress.
     act(() => {
       lastChannel?.simulateMessage({
         type: 'Started',
@@ -348,7 +378,6 @@ describe('DiscoverPane', () => {
       });
     });
     expect(screen.getByText('Downloading model')).toBeInTheDocument();
-    // Completion lifts the fresh config and collapses the accordion.
     act(() => {
       lastChannel?.simulateMessage({ type: 'AllDone' });
     });
@@ -415,7 +444,6 @@ describe('DiscoverPane', () => {
       (c: unknown[]) => c[0] === 'download_repo_model',
     );
     expect(repoDownloads).toHaveLength(2);
-    // Choose another returns to the quant list.
     act(() => {
       lastChannel?.simulateMessage({
         type: 'Failed',
@@ -449,6 +477,43 @@ describe('DiscoverPane', () => {
   it('shows a no-results message when the search returns nothing', async () => {
     await renderPane(() => {}, { search_hf_models: [] });
     expect(screen.getByText('No models found.')).toBeInTheDocument();
-    expect(screen.getByText(/GGUF models/)).toHaveTextContent('0 GGUF models');
+    expect(screen.getByText(/chat models/)).toHaveTextContent('0 chat models');
+  });
+
+  it('offers Load more on a full page and pages to the next batch', async () => {
+    vi.useFakeTimers();
+    const full = (n: number): HfModelSummary[] =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `org/repo-${i}-GGUF`,
+        downloads: n - i,
+        gated: false,
+      }));
+    mockCommands(discoverResponses({ search_hf_models: full(HF_PAGE_SIZE) }));
+    render(<DiscoverPane onSaved={() => {}} />);
+    await act(async () => {
+      vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
+      await Promise.resolve();
+    });
+    const loadMore = screen.getByRole('button', { name: 'Load more' });
+    invokeMock.mockClear();
+    mockCommands(
+      discoverResponses({ search_hf_models: full(HF_PAGE_SIZE + 5) }),
+    );
+    fireEvent.click(loadMore);
+    await act(async () => {
+      vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
+      await Promise.resolve();
+    });
+    expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
+      query: '',
+      limit: HF_PAGE_SIZE * 2,
+    });
+  });
+
+  it('hides Load more when the page is not full', async () => {
+    await renderPane();
+    expect(
+      screen.queryByRole('button', { name: 'Load more' }),
+    ).not.toBeInTheDocument();
   });
 });

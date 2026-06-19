@@ -13,7 +13,11 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { invoke } from '@tauri-apps/api/core';
 
-import { useHfSearch, HF_SEARCH_DEBOUNCE_MS } from './useHfSearch';
+import {
+  useHfSearch,
+  HF_SEARCH_DEBOUNCE_MS,
+  HF_PAGE_SIZE,
+} from './useHfSearch';
 import type { HfModelSummary } from '../../../types/hf';
 
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
@@ -52,7 +56,10 @@ describe('useHfSearch', () => {
     const { result } = renderHook(() => useHfSearch());
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(invokeMock).toHaveBeenCalledWith('search_hf_models', { query: '' });
+    expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
+      query: '',
+      limit: HF_PAGE_SIZE,
+    });
     expect(result.current.results).toEqual(POPULAR);
     expect(result.current.query).toBe('');
   });
@@ -79,6 +86,7 @@ describe('useHfSearch', () => {
     });
     expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
       query: 'gemma',
+      limit: HF_PAGE_SIZE,
     });
     expect(result.current.results).toEqual(GEMMA);
   });
@@ -109,6 +117,7 @@ describe('useHfSearch', () => {
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
       query: 'gem',
+      limit: HF_PAGE_SIZE,
     });
   });
 
@@ -249,6 +258,47 @@ describe('useHfSearch', () => {
     });
     expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
       query: 'llama',
+      limit: HF_PAGE_SIZE,
     });
+  });
+
+  it('does not offer Load more when the page is not full', async () => {
+    invokeMock.mockResolvedValue(POPULAR); // one row, far below a full page
+    const { result } = renderHook(() => useHfSearch());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.canLoadMore).toBe(false);
+  });
+
+  it('Load more requests the next page and clears canLoadMore when it runs dry', async () => {
+    vi.useFakeTimers();
+    const full = (n: number): HfModelSummary[] =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `org/repo-${i}-GGUF`,
+        downloads: n - i,
+        gated: false,
+      }));
+    invokeMock.mockResolvedValueOnce(full(HF_PAGE_SIZE)); // mount fills page 1
+    const { result } = renderHook(() => useHfSearch());
+    await act(async () => {
+      vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
+      await Promise.resolve();
+    });
+    expect(result.current.results).toHaveLength(HF_PAGE_SIZE);
+    expect(result.current.canLoadMore).toBe(true);
+
+    invokeMock.mockClear();
+    // Page 2 returns fewer than the requested 60: the Hub is out of rows.
+    invokeMock.mockResolvedValueOnce(full(HF_PAGE_SIZE + 15));
+    act(() => result.current.loadMore());
+    await act(async () => {
+      vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
+      await Promise.resolve();
+    });
+    expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
+      query: '',
+      limit: HF_PAGE_SIZE * 2,
+    });
+    expect(result.current.results).toHaveLength(HF_PAGE_SIZE + 15);
+    expect(result.current.canLoadMore).toBe(false);
   });
 });

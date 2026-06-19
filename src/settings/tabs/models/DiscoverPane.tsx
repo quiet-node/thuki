@@ -2,13 +2,14 @@
  * Discover pane: the in-app Hugging Face GGUF model browser.
  *
  * A search field (driven by {@link useHfSearch}) plus a row of family filter
- * chips feed one debounced backend query. The result list renders one lean
- * row per repo: the search payload carries no size or capability data, so a
- * row shows only the avatar, the repo id, an org + downloads sub-line, and a
- * gated indicator. "Get" expands the row into a quant accordion that lists the
- * repo's `.gguf` files (`list_hf_repo_ggufs`) and downloads the chosen one
- * through the shared {@link useDownloadModel} kit. A finished install lifts a
- * fresh config snapshot through `onSaved` and collapses the row.
+ * chips feed one debounced backend query that returns chat/text-generation
+ * GGUF repos. Each lean row shows the repo id, an org + downloads sub-line, an
+ * approximate RAM-fit hint, a link out to the repo on Hugging Face, and an
+ * icon-only download button. That button expands a quant accordion listing the
+ * repo's `.gguf` files (`list_hf_repo_ggufs`, each with an accurate per-quant
+ * RAM-fit) and downloads the chosen one through the shared
+ * {@link useDownloadModel} kit. A "Load more" control pages past the first
+ * batch. A finished install lifts a fresh config snapshot and collapses the row.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -19,8 +20,24 @@ import { useDownloadModel } from '../../../hooks/useDownloadModel';
 import { useHfSearch } from './useHfSearch';
 import styles from './DiscoverPane.module.css';
 import type { HfModelSummary } from '../../../types/hf';
-import type { HfGgufFile } from '../../../types/starter';
+import type { HfGgufFile, RamFit } from '../../../types/starter';
 import type { RawAppConfig } from '../../types';
+
+const HF_BASE_URL = 'https://huggingface.co';
+
+/** RAM-fit hint label (shared vocabulary with the Library pane). */
+const FIT_LABEL: Record<RamFit, string> = {
+  fits: 'Comfortable',
+  tight: 'Tight',
+  too_big: 'Heavy',
+};
+
+/** RAM-fit hint colour class on this pane's stylesheet. */
+const FIT_CLASS: Record<RamFit, string> = {
+  fits: styles.fitOk,
+  tight: styles.fitTight,
+  too_big: styles.fitHeavy,
+};
 
 /**
  * Family filter chips. Clicking a chip sets the search query to its name;
@@ -48,13 +65,25 @@ function orgOf(id: string): string {
   return slash === -1 ? id : id.slice(0, slash);
 }
 
+const DOWNLOAD_ICON = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />
+  </svg>
+);
+const HF_LINK_ICON = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M14 3h7v7M21 3l-9 9M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
+  </svg>
+);
+
 interface DiscoverPaneProps {
   /** Lift a fresh config snapshot after a successful install. */
   onSaved: (next: RawAppConfig) => void;
 }
 
 export function DiscoverPane({ onSaved }: DiscoverPaneProps) {
-  const { query, setQuery, results, loading } = useHfSearch();
+  const { query, setQuery, results, loading, loadMore, canLoadMore } =
+    useHfSearch();
 
   return (
     <div className={styles.pane}>
@@ -75,7 +104,6 @@ export function DiscoverPane({ onSaved }: DiscoverPaneProps) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <span className={styles.kbd}>⌘K</span>
       </div>
 
       <div className={styles.chips}>
@@ -98,7 +126,7 @@ export function DiscoverPane({ onSaved }: DiscoverPaneProps) {
 
       <div className={styles.subbar}>
         <span className={styles.count}>
-          <b>{results.length}</b> GGUF models
+          <b>{results.length}</b> chat models
         </span>
         <span className={styles.sort}>Most downloaded</span>
       </div>
@@ -111,6 +139,11 @@ export function DiscoverPane({ onSaved }: DiscoverPaneProps) {
         {results.map((model) => (
           <DiscoverRow key={model.id} model={model} onSaved={onSaved} />
         ))}
+        {canLoadMore ? (
+          <button type="button" className={styles.loadMore} onClick={loadMore}>
+            Load more
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -158,6 +191,10 @@ function DiscoverRow({ model, onSaved }: DiscoverRowProps) {
     void loadFiles();
   }
 
+  function openHuggingFace() {
+    void invoke('open_url', { url: `${HF_BASE_URL}/${model.id}` });
+  }
+
   // A finished install: the backend already wrote the builtin provider's
   // model field, so lift the fresh config snapshot and collapse the row.
   useEffect(() => {
@@ -178,28 +215,39 @@ function DiscoverRow({ model, onSaved }: DiscoverRowProps) {
   return (
     <div className={styles.rowWrap} data-row>
       <div className={styles.row}>
-        <div className={styles.av} aria-hidden="true">
-          {org.charAt(0)}
-        </div>
         <div className={styles.mid}>
           <div className={styles.nm}>
             {model.id}
             {model.gated ? (
-              <span className={styles.gatedBadge}>gated</span>
+              <span className={styles.gatedBadge}>Gated</span>
             ) : null}
           </div>
           <div className={styles.org}>
             {org} · {model.downloads.toLocaleString()} downloads
           </div>
         </div>
+        {model.fit ? (
+          <span className={`${styles.fit} ${FIT_CLASS[model.fit]}`}>
+            {FIT_LABEL[model.fit]}
+          </span>
+        ) : null}
+        <button
+          type="button"
+          className={styles.extlink}
+          aria-label={`View ${model.id} on Hugging Face`}
+          onClick={openHuggingFace}
+        >
+          {HF_LINK_ICON}
+        </button>
         <button
           type="button"
           className={styles.get}
+          aria-label="Get"
           aria-expanded={expanded}
           disabled={model.gated}
           onClick={toggle}
         >
-          Get
+          {DOWNLOAD_ICON}
         </button>
       </div>
 
@@ -215,9 +263,12 @@ function DiscoverRow({ model, onSaved }: DiscoverRowProps) {
             ? files.map((f) => (
                 <div className={styles.quantRow} key={f.file}>
                   <span className={styles.quantName}>{f.file}</span>
-                  <span className={styles.quantSize}>
-                    {gb(f.size_bytes)} GB
-                  </span>
+                  {f.fit ? (
+                    <span className={`${styles.fit} ${FIT_CLASS[f.fit]}`}>
+                      {FIT_LABEL[f.fit]}
+                    </span>
+                  ) : null}
+                  <span className={styles.quantSize}>{gb(f.size_bytes)} GB</span>
                   <button
                     type="button"
                     className={styles.download}
