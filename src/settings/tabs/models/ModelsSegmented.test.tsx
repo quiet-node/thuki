@@ -11,6 +11,13 @@ describe('ModelsSegmented', () => {
     expect(screen.getByRole('tab', { name: 'Providers' })).toBeInTheDocument();
   });
 
+  it('renders a decorative icon in each tab', () => {
+    const { container } = render(
+      <ModelsSegmented value="library" onChange={() => {}} />,
+    );
+    expect(container.querySelectorAll('svg')).toHaveLength(3);
+  });
+
   it('marks the active view as selected', () => {
     render(<ModelsSegmented value="discover" onChange={() => {}} />);
     expect(screen.getByRole('tab', { name: 'Discover' })).toHaveAttribute(

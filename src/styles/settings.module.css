@@ -295,19 +295,28 @@
 
 /* ─── Models surface (segmented Library / Discover / Providers) ──────────── */
 
+/* Icon-above-label tabs in the same family as the sidebar section nav: the
+ * active view carries the accent on its icon + label inside a softly elevated
+ * bordered box (no loud filled pill). */
 .seg {
   display: inline-flex;
   box-sizing: border-box;
-  padding: 3px;
+  gap: 6px;
+  padding: 5px;
   border: 1px solid var(--hair-soft);
-  border-radius: 9px;
+  border-radius: 13px;
   background: var(--elev-1);
 }
 .segItem {
   box-sizing: border-box;
-  padding: 6px 14px;
-  border: none;
-  border-radius: 7px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  width: 96px;
+  padding: 11px 0 9px;
+  border: 1px solid transparent;
+  border-radius: 10px;
   background: transparent;
   color: var(--t2);
   font-family: inherit;
@@ -315,8 +324,19 @@
   font-weight: 540;
   cursor: pointer;
   transition:
-    color 140ms ease,
-    background 140ms ease;
+    color 150ms ease,
+    background 150ms ease,
+    border-color 150ms ease;
+}
+.segItem svg {
+  width: 20px;
+  height: 20px;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.92;
 }
 .segItem:hover:not(.segItemActive) {
   color: var(--t1);
@@ -325,11 +345,16 @@
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
-/* Active view: filled accent pill with dark text (the one accent fill on the
- * surface, matching the locked design). */
 .segItemActive {
-  color: #16110d;
-  background: var(--accent);
+  color: var(--accent);
+  background: var(--elev-2);
+  border-color: var(--hair-soft);
+}
+.segItemActive svg {
+  opacity: 1;
+}
+.segItemLabel {
+  color: inherit;
 }
 
 /* Row holding the segmented control, centered across the Models surface. */
