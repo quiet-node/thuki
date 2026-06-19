@@ -290,11 +290,13 @@ export function ConversationView({
               errorKind={msg.errorKind}
               thinkingContent={msg.thinkingContent}
               isThinkingPending={isThinkingPending}
+              // "Still thinking" reflects the real stream state, not whether
+              // /think was used: thinking tokens have arrived, the answer has
+              // not started, and the turn is still generating (isLastAssistant
+              // already implies isGenerating). This keeps the Done indicator
+              // honest even if a model reasons without an explicit /think.
               isThinking={
-                isLastAssistant &&
-                msg.fromThink === true &&
-                !msg.content &&
-                !!msg.thinkingContent
+                isLastAssistant && !msg.content && !!msg.thinkingContent
               }
               searchSources={msg.searchSources}
               searchWarnings={msg.searchWarnings}

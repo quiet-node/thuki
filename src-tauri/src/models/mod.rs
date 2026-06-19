@@ -988,20 +988,29 @@ pub async fn get_model_capabilities(
     }
 }
 
-/// Capability map for the built-in provider, derived from the installed-model
-/// manifest. Each row carries the curated vision/thinking flags recorded at
-/// download time; `max_images` stays `None` because llama-server imposes no
-/// fixed per-request image cap.
+/// Capability map for the built-in provider. For a curated starter the flags
+/// come from the current registry, not the manifest row: the row freezes the
+/// flags recorded at download time, so a later flag correction (e.g. a
+/// reasoning model previously recorded as non-thinking) would otherwise stay
+/// wrong for already-installed models. Reading the registry heals those rows on
+/// every read with no manifest migration. A pasted (non-curated) repo has no
+/// registry entry and keeps the flags its row recorded. `max_images` stays
+/// `None` because llama-server imposes no fixed per-request image cap.
 pub(crate) fn builtin_capabilities_from_manifest(
     rows: &[manifest::InstalledModel],
 ) -> HashMap<String, Capabilities> {
     rows.iter()
         .map(|row| {
+            let (vision, thinking) = registry::STARTERS
+                .iter()
+                .find(|s| s.repo == row.repo && s.file_name == row.file_name)
+                .map(|s| (s.vision, s.thinking))
+                .unwrap_or((row.vision, row.thinking));
             (
                 row.id.clone(),
                 Capabilities {
-                    vision: row.vision,
-                    thinking: row.thinking,
+                    vision,
+                    thinking,
                     max_images: None,
                 },
             )
@@ -3957,6 +3966,35 @@ mod tests {
         assert!(!caps["org/repo:think.gguf"].vision);
         assert!(caps["org/repo:think.gguf"].thinking);
         assert!(caps.values().all(|c| c.max_images.is_none()));
+    }
+
+    /// A curated starter installed before its `thinking` flag was corrected
+    /// still carries the stale flag in its manifest row. The capability view
+    /// heals it from the current registry, so the model is no longer wrongly
+    /// told it "does not emit thinking tokens" without a manifest migration.
+    #[test]
+    fn builtin_capabilities_heal_curated_flags_from_registry() {
+        let fast = registry::STARTERS
+            .iter()
+            .find(|s| s.tier == registry::Tier::Fast)
+            .unwrap();
+        // Simulate a row written before the flag fix: capabilities recorded
+        // as the old, wrong values.
+        let mut stale = registry::to_installed_model(fast);
+        stale.thinking = false;
+        stale.vision = false;
+
+        let caps = builtin_capabilities_from_manifest(&[stale]);
+
+        let healed = &caps[&registry::to_installed_model(fast).id];
+        assert!(
+            healed.thinking,
+            "registry heals the corrected reasoning flag"
+        );
+        assert!(
+            healed.vision,
+            "registry capabilities win for curated models"
+        );
     }
 
     #[test]

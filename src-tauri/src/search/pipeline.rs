@@ -516,6 +516,10 @@ async fn run_streaming_branch(
                     messages,
                     api_key: api_key.clone(),
                     flavor: *flavor,
+                    // Search synthesis answers directly; reasoning is opt-in
+                    // chat only, and on the built-in engine a thinking pass
+                    // would burn the token budget before the answer.
+                    enable_thinking: false,
                 },
                 client,
                 cancel_token,

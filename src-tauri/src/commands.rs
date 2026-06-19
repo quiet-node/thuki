@@ -280,10 +280,12 @@ async fn fetch_builtin_vision(client: &reqwest::Client, base_url: &str) -> bool 
 ///
 /// Returns the accumulated assistant content (empty on the error paths) so
 /// the caller's persistence tail treats every route identically.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn stream_builtin_chat(
     engine: &crate::engine::runner::EngineHandle,
     target: crate::engine::state::Target,
     model_id: String,
+    think: bool,
     mut messages: Vec<ChatMessage>,
     client: &reqwest::Client,
     cancel_token: CancellationToken,
@@ -326,6 +328,7 @@ pub(crate) async fn stream_builtin_chat(
                     messages,
                     api_key: None,
                     flavor: crate::openai::V1Flavor::Builtin,
+                    enable_thinking: think,
                 },
                 client,
                 cancel_token,
@@ -1181,6 +1184,7 @@ pub async fn ask_model(
                         &engine,
                         target,
                         model_id,
+                        think,
                         messages,
                         &client,
                         cancel_token.clone(),
@@ -1206,6 +1210,9 @@ pub async fn ask_model(
                     messages,
                     api_key,
                     flavor: crate::openai::V1Flavor::Remote,
+                    // `/think` reasoning control is built-in only; a remote
+                    // OpenAI-compatible server uses its own server-side defaults.
+                    enable_thinking: false,
                 },
                 &client,
                 cancel_token.clone(),
@@ -3362,6 +3369,7 @@ mod tests {
             &engine,
             engine_target(),
             "org/repo:m.gguf".to_string(),
+            false,
             vec![],
             &client,
             CancellationToken::new(),
@@ -3399,6 +3407,7 @@ mod tests {
                     &engine,
                     engine_target(),
                     "org/repo:m.gguf".to_string(),
+                    false,
                     vec![],
                     &client,
                     CancellationToken::new(),
@@ -3452,6 +3461,7 @@ mod tests {
                     &engine,
                     engine_target(),
                     "org/repo:m.gguf".to_string(),
+                    false,
                     vec![],
                     &client,
                     cancel_token,
@@ -3496,6 +3506,7 @@ mod tests {
             &engine,
             engine_target(),
             "org/repo:m.gguf".to_string(),
+            false,
             vec![],
             &client,
             CancellationToken::new(),
@@ -3612,6 +3623,7 @@ mod tests {
             &engine,
             engine_target(),
             "org/repo:m.gguf".to_string(),
+            false,
             image_message(),
             &client,
             CancellationToken::new(),

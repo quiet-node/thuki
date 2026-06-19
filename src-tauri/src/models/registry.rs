@@ -83,7 +83,7 @@ pub const STARTERS: &[Starter] = &[
         size_bytes: 5_680_522_464,
         quant: "Q4_K_M",
         vision: true,
-        thinking: false,
+        thinking: true,
         mmproj_file: Some("mmproj-BF16.gguf"),
         mmproj_sha256: Some("853698ce7aa6c7ba732478bad280240969ddf7b0fcbf93900046f63903a83383"),
         mmproj_bytes: 921_705_024,
@@ -121,7 +121,7 @@ pub const STARTERS: &[Starter] = &[
         size_bytes: 12_109_566_560,
         quant: "MXFP4",
         vision: false,
-        thinking: false,
+        thinking: true,
         mmproj_file: None,
         mmproj_sha256: None,
         mmproj_bytes: 0,
@@ -236,6 +236,18 @@ mod tests {
         assert!(smartest.mmproj_file.is_none());
         assert!(smartest.mmproj_sha256.is_none());
         assert_eq!(smartest.mmproj_bytes, 0);
+    }
+
+    /// The `thinking` flag is the passive "this model reasons" badge: it drives
+    /// the picker tag, the `/think` capability gate, and the earlier-turn
+    /// reasoning strip. It must match each curated model's real behavior, or a
+    /// reasoning model is wrongly told it "does not emit thinking tokens".
+    /// Qwen3.5 and gpt-oss are reasoning models; Gemma 4 is not.
+    #[test]
+    fn thinking_flag_per_tier() {
+        assert!(starter(Tier::Fast).thinking, "Qwen3.5 reasons");
+        assert!(!starter(Tier::Balanced).thinking, "Gemma 4 does not reason");
+        assert!(starter(Tier::Smartest).thinking, "gpt-oss reasons");
     }
 
     #[test]
