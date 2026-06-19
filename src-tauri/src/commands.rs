@@ -848,17 +848,11 @@ pub async fn stream_ollama_chat(
                                             serde_json::from_str::<OllamaChatResponse>(trimmed)
                                         {
                                             if let Some(ref msg) = json.message {
-                                                // Reasoning is opt-in: drop the
-                                                // thinking channel when off, so no
-                                                // thinking block is ever shown
-                                                // (universal display policy).
-                                                if think {
-                                                    if let Some(ref thinking) = msg.thinking {
-                                                        if !thinking.is_empty() {
-                                                            on_chunk(StreamChunk::ThinkingToken(
-                                                                thinking.clone(),
-                                                            ));
-                                                        }
+                                                if let Some(ref thinking) = msg.thinking {
+                                                    if !thinking.is_empty() {
+                                                        on_chunk(StreamChunk::ThinkingToken(
+                                                            thinking.clone(),
+                                                        ));
                                                     }
                                                 }
                                                 if let Some(ref token) = msg.content {
@@ -2622,56 +2616,6 @@ mod tests {
         assert_eq!(accumulated, "Hello");
     }
 
-    /// Reasoning is opt-in on the Ollama path too: with thinking off, a
-    /// `thinking` field in the response is dropped (no ThinkingToken). Ollama
-    /// already honors `think:false`, so this is the belt-and-suspenders display
-    /// guarantee matching the built-in path's universal policy.
-    #[tokio::test]
-    async fn stream_ollama_chat_drops_thinking_when_off() {
-        let mut server = mockito::Server::new_async().await;
-        let body = format!(
-            "{}{}{}",
-            chat_line_with_thinking("leaked reasoning", "", false),
-            chat_line_with_thinking("", "Hello", false),
-            chat_line_with_thinking("", "", true),
-        );
-        let mock = server
-            .mock("POST", "/api/chat")
-            .with_body(body)
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let token = CancellationToken::new();
-        let (chunks, callback) = collect_chunks();
-
-        let accumulated = stream_ollama_chat(
-            OllamaChatParams {
-                endpoint: format!("{}/api/chat", server.url()),
-                model: "test-model".to_string(),
-                messages: vec![],
-                think: false,
-                keep_alive: None,
-                num_ctx: DEFAULT_NUM_CTX,
-            },
-            &client,
-            token,
-            callback,
-        )
-        .await;
-
-        mock.assert_async().await;
-        let chunks = chunks.lock().unwrap();
-        assert!(
-            !chunks
-                .iter()
-                .any(|c| matches!(c, StreamChunk::ThinkingToken(_))),
-            "reasoning must be dropped when thinking is off"
-        );
-        assert!(matches!(&chunks[0], StreamChunk::Token(t) if t == "Hello"));
-        assert_eq!(accumulated, "Hello");
-    }
-
     #[tokio::test]
     async fn stream_ollama_chat_sends_think_true_in_request() {
         let mut server = mockito::Server::new_async().await;
@@ -2819,6 +2763,7 @@ mod tests {
         let caps = Capabilities {
             vision: false,
             thinking: false,
+            reasoning_always: false,
             max_images: None,
         };
         let stats = apply_capability_filter(&mut messages, &caps);
@@ -2836,6 +2781,7 @@ mod tests {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            reasoning_always: false,
             max_images: None,
         };
         let stats = apply_capability_filter(&mut messages, &caps);
@@ -2857,6 +2803,7 @@ mod tests {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            reasoning_always: false,
             max_images: Some(1),
         };
         let stats = apply_capability_filter(&mut messages, &caps);
@@ -2872,6 +2819,7 @@ mod tests {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            reasoning_always: false,
             max_images: Some(2),
         };
         let stats = apply_capability_filter(&mut messages, &caps);
@@ -2885,6 +2833,7 @@ mod tests {
         let caps = Capabilities {
             vision: false,
             thinking: false,
+            reasoning_always: false,
             max_images: None,
         };
         let stats = apply_capability_filter(&mut messages, &caps);
@@ -2904,6 +2853,7 @@ mod tests {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            reasoning_always: false,
             max_images: Some(1),
         };
         let stats = apply_capability_filter(&mut messages, &caps);

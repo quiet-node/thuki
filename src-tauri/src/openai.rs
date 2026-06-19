@@ -366,20 +366,19 @@ pub async fn stream_openai_chat(
                                 continue;
                             };
                             if let Some(choice) = event.choices.first() {
-                                // Reasoning is opt-in: when thinking is off, drop
-                                // the model's reasoning channel entirely so no
-                                // thinking block is ever shown, regardless of
-                                // whether the model honored the request-level
-                                // switch. The universal display guarantee.
-                                if enable_thinking {
-                                    if let Some(thinking) = choice
-                                        .delta
-                                        .reasoning_content
-                                        .as_deref()
-                                        .filter(|s| !s.is_empty())
-                                    {
-                                        on_chunk(StreamChunk::ThinkingToken(thinking.to_string()));
-                                    }
+                                // Whatever reasoning the model emits is always
+                                // shown (never hidden): an `Optional` model that
+                                // honored the OFF blast emits none, while a
+                                // model that always reasons gets its thinking
+                                // surfaced cleanly in the thinking block rather
+                                // than running invisibly.
+                                if let Some(thinking) = choice
+                                    .delta
+                                    .reasoning_content
+                                    .as_deref()
+                                    .filter(|s| !s.is_empty())
+                                {
+                                    on_chunk(StreamChunk::ThinkingToken(thinking.to_string()));
                                 }
                                 if let Some(token) =
                                     choice.delta.content.as_deref().filter(|s| !s.is_empty())
@@ -647,12 +646,8 @@ mod tests {
 
         let client = reqwest::Client::new();
         let (chunks, callback) = collect_chunks();
-        // Thinking is opted in, so the reasoning channel is surfaced.
         let accumulated = stream_openai_chat(
-            OpenAiChatParams {
-                enable_thinking: true,
-                ..chat_params(server.uri())
-            },
+            chat_params(server.uri()),
             &client,
             CancellationToken::new(),
             callback,
@@ -667,45 +662,6 @@ mod tests {
             accumulated, "answer",
             "thinking tokens must not be accumulated as content"
         );
-    }
-
-    /// Universal display guarantee: when thinking is off, the model's reasoning
-    /// channel is dropped (no `ThinkingToken`), so the user never sees a
-    /// thinking block no matter what the model emits. This holds even for a
-    /// model that ignored the request-level reasoning switch and reasoned
-    /// anyway.
-    #[tokio::test]
-    async fn reasoning_dropped_when_thinking_off() {
-        let server = MockServer::start().await;
-        let body = format!(
-            "data: {{\"choices\":[{{\"delta\":{{\"reasoning_content\":\"secret thoughts\"}}}}]}}\n\n{}data: [DONE]\n",
-            sse_content_line("answer"),
-        );
-        mount_sse(&server, body.into_bytes()).await;
-
-        let client = reqwest::Client::new();
-        let (chunks, callback) = collect_chunks();
-        let accumulated = stream_openai_chat(
-            OpenAiChatParams {
-                enable_thinking: false,
-                ..chat_params(server.uri())
-            },
-            &client,
-            CancellationToken::new(),
-            callback,
-        )
-        .await;
-
-        let chunks = chunks.lock().unwrap();
-        assert!(
-            !chunks
-                .iter()
-                .any(|c| matches!(c, StreamChunk::ThinkingToken(_))),
-            "reasoning must be dropped when thinking is off"
-        );
-        assert!(matches!(&chunks[0], StreamChunk::Token(t) if t == "answer"));
-        assert!(matches!(&chunks[1], StreamChunk::Done));
-        assert_eq!(accumulated, "answer");
     }
 
     /// `data: [DONE]` terminates the stream immediately: anything the server
