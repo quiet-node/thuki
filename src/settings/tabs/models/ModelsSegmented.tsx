@@ -40,7 +40,11 @@ const PROVIDERS_ICON = (
   </svg>
 );
 
-const VIEWS: ReadonlyArray<{ id: ModelsSubview; label: string; icon: ReactNode }> = [
+const VIEWS: ReadonlyArray<{
+  id: ModelsSubview;
+  label: string;
+  icon: ReactNode;
+}> = [
   { id: 'library', label: 'Library', icon: LIBRARY_ICON },
   { id: 'discover', label: 'Discover', icon: DISCOVER_ICON },
   { id: 'providers', label: 'Providers', icon: PROVIDERS_ICON },

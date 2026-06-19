@@ -75,7 +75,7 @@ export interface UseHfSearchResult {
  * are also dropped.
  */
 export function useHfSearch(): UseHfSearchResult {
-  const [query, setQueryState] = useState('');
+  const [queryText, setQueryText] = useState('');
   const [limit, setLimit] = useState(HF_PAGE_SIZE);
   const [results, setResults] = useState<HfModelSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -97,7 +97,7 @@ export function useHfSearch(): UseHfSearchResult {
   // A new query starts over at the first page; growing `limit` mid-query is
   // what "Load more" does.
   const setQuery = useCallback((q: string) => {
-    setQueryState(q);
+    setQueryText(q);
     setLimit(HF_PAGE_SIZE);
   }, []);
 
@@ -133,13 +133,20 @@ export function useHfSearch(): UseHfSearchResult {
   // `limit` bump) ride the same path.
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void runSearch(query, limit);
+      void runSearch(queryText, limit);
     }, HF_SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [query, limit, runSearch]);
+  }, [queryText, limit, runSearch]);
 
   // The last response filled the page, so the Hub may hold more rows.
   const canLoadMore = !loading && results.length >= limit;
 
-  return { query, setQuery, results, loading, loadMore, canLoadMore };
+  return {
+    query: queryText,
+    setQuery,
+    results,
+    loading,
+    loadMore,
+    canLoadMore,
+  };
 }

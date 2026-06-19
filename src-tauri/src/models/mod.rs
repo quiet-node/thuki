@@ -1625,10 +1625,7 @@ pub struct InstalledModelView {
 pub fn parse_param_billions(id: &str) -> Option<f64> {
     let mut found = None;
     for token in id.split(['/', '-', '_', ' ']) {
-        let Some(stripped) = token
-            .strip_suffix('B')
-            .or_else(|| token.strip_suffix('b'))
-        else {
+        let Some(stripped) = token.strip_suffix('B').or_else(|| token.strip_suffix('b')) else {
             continue;
         };
         if let Ok(v) = stripped.parse::<f64>() {
@@ -2170,7 +2167,8 @@ pub async fn search_hf_models(
     limit: usize,
     client: tauri::State<'_, reqwest::Client>,
 ) -> Result<Vec<HfModelRow>, String> {
-    let summaries = fetch_hf_search(&client, HF_BASE_URL, &query, clamp_search_limit(limit)).await?;
+    let summaries =
+        fetch_hf_search(&client, HF_BASE_URL, &query, clamp_search_limit(limit)).await?;
     Ok(annotate_search_rows(summaries, system_ram_bytes()))
 }
 
@@ -4806,9 +4804,14 @@ mod tests {
             .await;
         let client = reqwest::Client::new();
         // Whitespace-only query trims to empty and the search param is dropped.
-        let rows = fetch_hf_search(&client, &server.url(), "   ", crate::config::defaults::HF_SEARCH_LIMIT)
-            .await
-            .unwrap();
+        let rows = fetch_hf_search(
+            &client,
+            &server.url(),
+            "   ",
+            crate::config::defaults::HF_SEARCH_LIMIT,
+        )
+        .await
+        .unwrap();
         assert!(rows.is_empty());
     }
 
@@ -4822,18 +4825,28 @@ mod tests {
             .create_async()
             .await;
         let client = reqwest::Client::new();
-        let err = fetch_hf_search(&client, &server.url(), "q", crate::config::defaults::HF_SEARCH_LIMIT)
-            .await
-            .unwrap_err();
+        let err = fetch_hf_search(
+            &client,
+            &server.url(),
+            "q",
+            crate::config::defaults::HF_SEARCH_LIMIT,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("503"), "got: {err}");
     }
 
     #[tokio::test]
     async fn fetch_hf_search_maps_transport_error() {
         let client = reqwest::Client::new();
-        let err = fetch_hf_search(&client, "http://127.0.0.1:1", "q", crate::config::defaults::HF_SEARCH_LIMIT)
-            .await
-            .unwrap_err();
+        let err = fetch_hf_search(
+            &client,
+            "http://127.0.0.1:1",
+            "q",
+            crate::config::defaults::HF_SEARCH_LIMIT,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("failed to reach Hugging Face"), "got: {err}");
     }
 
@@ -4841,9 +4854,14 @@ mod tests {
     async fn fetch_hf_search_rejects_overlong_query() {
         let client = reqwest::Client::new();
         let long = "x".repeat(crate::config::defaults::MAX_HF_SEARCH_QUERY_LEN + 1);
-        let err = fetch_hf_search(&client, "http://127.0.0.1:9", &long, crate::config::defaults::HF_SEARCH_LIMIT)
-            .await
-            .unwrap_err();
+        let err = fetch_hf_search(
+            &client,
+            "http://127.0.0.1:9",
+            &long,
+            crate::config::defaults::HF_SEARCH_LIMIT,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("maximum length"), "got: {err}");
     }
 

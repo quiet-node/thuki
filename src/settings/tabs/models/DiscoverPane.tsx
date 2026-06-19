@@ -268,7 +268,9 @@ function DiscoverRow({ model, onSaved }: DiscoverRowProps) {
                       {FIT_LABEL[f.fit]}
                     </span>
                   ) : null}
-                  <span className={styles.quantSize}>{gb(f.size_bytes)} GB</span>
+                  <span className={styles.quantSize}>
+                    {gb(f.size_bytes)} GB
+                  </span>
                   <button
                     type="button"
                     className={styles.download}

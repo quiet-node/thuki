@@ -149,7 +149,11 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
     <div className={styles.pane}>
       <div className={styles.bar}>
         <button type="button" className={styles.addButton} onClick={onAddModel}>
-          <svg viewBox="0 0 24 24" aria-hidden="true" className={styles.addIcon}>
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            className={styles.addIcon}
+          >
             <path d="M12 5v14M5 12h14" />
           </svg>
           Add model
