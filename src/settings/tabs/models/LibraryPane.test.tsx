@@ -1,10 +1,11 @@
 /**
  * Unit tests for the Models surface's Library pane.
  *
- * Covers the installed-model list (active + non-active cards, capability
- * badges), the Use action, the Delete confirm/cancel/success/error flow,
- * the empty state, the free-disk footer, and the defensive guards around
- * the manifest and disk probes.
+ * Covers the installed-model list (active + non-active rows, capability text
+ * tags, RAM-fit hint), the popover menu (Set as active / View on Hugging Face
+ * / Delete), the delete confirm/cancel/success/error flow, menu dismissal
+ * (outside click + Escape), the empty state, the footer, and the defensive
+ * guards around the manifest and disk probes.
  *
  * `invoke` comes from the global Tauri mock; capabilities are fetched
  * through the same `get_model_capabilities` command the hook reads.
@@ -109,8 +110,10 @@ const GEMMA: InstalledModel = {
   display_name: 'gemma',
   size_bytes: 2_489_757_856,
   quant: 'Q4_K_M',
+  fit: 'fits',
 };
 
+// No `fit` here: exercises the "RAM unknown" branch (no fit pill).
 const QWEN: InstalledModel = {
   id: 'org/qwen:qwen.gguf',
   display_name: 'qwen',
@@ -185,6 +188,11 @@ async function renderPane(
   return view;
 }
 
+/** Opens the popover menu for the named model. */
+function openMenu(name: string) {
+  fireEvent.click(screen.getByRole('button', { name: `Manage ${name}` }));
+}
+
 describe('LibraryPane', () => {
   it('lists each installed model with its org line, size, and quant', async () => {
     mockCommands(libraryResponses());
@@ -195,54 +203,57 @@ describe('LibraryPane', () => {
     expect(screen.getByText('org/qwen · 9.0 GB')).toBeInTheDocument();
   });
 
-  it('renders the uppercased first character as each avatar', async () => {
+  it('shows the RAM-fit hint only when the backend provides one', async () => {
     mockCommands(libraryResponses());
     await renderPane();
-    expect(screen.getByText('G')).toBeInTheDocument();
-    expect(screen.getByText('Q')).toBeInTheDocument();
+    // gemma carries fit: 'fits'; qwen has no fit, so only one hint renders.
+    expect(screen.getByText('Comfortable')).toBeInTheDocument();
+    expect(screen.getAllByText('Comfortable')).toHaveLength(1);
   });
 
-  it('marks the active model with an Active badge and no Use button', async () => {
+  it('marks the active model and offers Set as active only on the rest', async () => {
     mockCommands(libraryResponses());
     await renderPane(makeConfig('org/gemma:gemma.gguf'));
     expect(screen.getByText('Active')).toBeInTheDocument();
-    // The active model offers no Use button; the non-active one does.
+    // The non-active model's menu offers Set as active.
+    openMenu('qwen');
     expect(
-      screen.getByRole('button', { name: 'Use qwen' }),
+      screen.getByRole('menuitem', { name: 'Set as active' }),
     ).toBeInTheDocument();
+    // The active model's menu does not.
+    openMenu('gemma');
     expect(
-      screen.queryByRole('button', { name: 'Use gemma' }),
+      screen.queryByRole('menuitem', { name: 'Set as active' }),
     ).not.toBeInTheDocument();
   });
 
-  it('shows a Vision badge only for vision-capable models', async () => {
+  it('shows a Vision tag only for vision-capable models', async () => {
     mockCommands(libraryResponses());
     await renderPane();
-    const vision = screen.getByText('Vision');
-    expect(vision).toBeInTheDocument();
-    // Only gemma is vision-capable, so exactly one Vision badge.
+    expect(screen.getByText('Vision')).toBeInTheDocument();
     expect(screen.getAllByText('Vision')).toHaveLength(1);
   });
 
-  it('shows a Reasoning badge only for thinking-capable models', async () => {
+  it('shows a Reasoning tag only for thinking-capable models', async () => {
     mockCommands(libraryResponses());
     await renderPane();
     expect(screen.getByText('Reasoning')).toBeInTheDocument();
     expect(screen.getAllByText('Reasoning')).toHaveLength(1);
   });
 
-  it('omits capability badges when no map entry exists for a model', async () => {
+  it('omits capability tags when no map entry exists for a model', async () => {
     mockCommands(libraryResponses({ get_model_capabilities: {} }));
     await renderPane();
     expect(screen.queryByText('Vision')).not.toBeInTheDocument();
     expect(screen.queryByText('Reasoning')).not.toBeInTheDocument();
   });
 
-  it('Use commits the model, lifts the config, and refreshes', async () => {
+  it('Set as active commits the model, lifts the config, and refreshes', async () => {
     mockCommands(libraryResponses({ update_provider_field: undefined }));
     const onSaved = vi.fn();
     await renderPane(makeConfig('org/gemma:gemma.gguf'), onSaved);
-    fireEvent.click(screen.getByRole('button', { name: 'Use qwen' }));
+    openMenu('qwen');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Set as active' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('update_provider_field', {
       providerId: 'builtin',
@@ -252,7 +263,7 @@ describe('LibraryPane', () => {
     expect(onSaved).toHaveBeenCalledWith(NEW_CONFIG);
   });
 
-  it('leaves the lift to the focus resync when Use cannot read the config', async () => {
+  it('leaves the lift to the focus resync when Set as active cannot read the config', async () => {
     mockCommands(
       libraryResponses({
         update_provider_field: undefined,
@@ -261,7 +272,8 @@ describe('LibraryPane', () => {
     );
     const onSaved = vi.fn();
     await renderPane(makeConfig('org/gemma:gemma.gguf'), onSaved);
-    fireEvent.click(screen.getByRole('button', { name: 'Use qwen' }));
+    openMenu('qwen');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Set as active' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('update_provider_field', {
       providerId: 'builtin',
@@ -271,7 +283,7 @@ describe('LibraryPane', () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
-  it('swallows an update_provider_field failure on Use', async () => {
+  it('swallows an update_provider_field failure on Set as active', async () => {
     mockCommands(
       libraryResponses({
         update_provider_field: new Reject(new Error('write failed')),
@@ -279,24 +291,33 @@ describe('LibraryPane', () => {
     );
     const onSaved = vi.fn();
     await renderPane(makeConfig('org/gemma:gemma.gguf'), onSaved);
-    fireEvent.click(screen.getByRole('button', { name: 'Use qwen' }));
+    openMenu('qwen');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Set as active' }));
     await flush();
     expect(onSaved).not.toHaveBeenCalled();
     expect(screen.getByText('qwen')).toBeInTheDocument();
   });
 
+  it('View on Hugging Face opens the repo page in the system browser', async () => {
+    mockCommands(libraryResponses());
+    await renderPane();
+    openMenu('gemma');
+    fireEvent.click(
+      screen.getByRole('menuitem', { name: 'View on Hugging Face' }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith('open_url', {
+      url: 'https://huggingface.co/org/gemma',
+    });
+  });
+
   it('Delete asks for confirmation and Cancel backs out without deleting', async () => {
     mockCommands(libraryResponses());
     await renderPane();
-    fireEvent.click(screen.getByRole('button', { name: 'Manage gemma' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete gemma' }));
-    expect(
-      screen.getByText('Delete gemma? Its files are removed from disk.'),
-    ).toBeInTheDocument();
+    openMenu('gemma');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete gemma' }));
+    expect(screen.getByText('Delete gemma?')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(
-      screen.queryByText('Delete gemma? Its files are removed from disk.'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Delete gemma?')).not.toBeInTheDocument();
     expect(invokeMock).not.toHaveBeenCalledWith(
       'delete_installed_model',
       expect.anything(),
@@ -316,9 +337,9 @@ describe('LibraryPane', () => {
     );
     const onSaved = vi.fn();
     await renderPane(makeConfig(''), onSaved);
-    fireEvent.click(screen.getByRole('button', { name: 'Manage gemma' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete gemma' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    openMenu('gemma');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('delete_installed_model', {
       id: 'org/gemma:gemma.gguf',
@@ -337,9 +358,9 @@ describe('LibraryPane', () => {
     );
     const onSaved = vi.fn();
     await renderPane(makeConfig(''), onSaved);
-    fireEvent.click(screen.getByRole('button', { name: 'Manage qwen' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete qwen' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    openMenu('qwen');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete qwen' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('delete_installed_model', {
       id: 'org/qwen:qwen.gguf',
@@ -352,9 +373,9 @@ describe('LibraryPane', () => {
       libraryResponses({ delete_installed_model: new Reject('file busy') }),
     );
     await renderPane();
-    fireEvent.click(screen.getByRole('button', { name: 'Manage gemma' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete gemma' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    openMenu('gemma');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await flush();
     expect(screen.getByRole('alert')).toHaveTextContent('file busy');
     expect(screen.getByText('gemma')).toBeInTheDocument();
@@ -392,19 +413,21 @@ describe('LibraryPane', () => {
   it('shows the free-disk footer and the model count when both are known', async () => {
     mockCommands(libraryResponses());
     await renderPane();
-    expect(screen.getByText('30.4 GB free on disk')).toBeInTheDocument();
-    expect(
-      screen.getByText('2 models · capabilities detected automatically'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('30.4 GB free')).toBeInTheDocument();
+    expect(screen.getByText('2 models installed')).toBeInTheDocument();
+  });
+
+  it('singularises the model count for a single install', async () => {
+    mockCommands(libraryResponses({ list_installed_models: [GEMMA] }));
+    await renderPane();
+    expect(screen.getByText('1 model installed')).toBeInTheDocument();
   });
 
   it('hides the free-disk line when the probe returns a non-number', async () => {
     mockCommands(libraryResponses({ get_models_dir_free_bytes: null }));
     await renderPane();
-    expect(screen.queryByText(/free on disk/)).not.toBeInTheDocument();
-    expect(
-      screen.getByText('2 models · capabilities detected automatically'),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/free/)).not.toBeInTheDocument();
+    expect(screen.getByText('2 models installed')).toBeInTheDocument();
   });
 
   it('hides the free-disk line when the disk probe rejects', async () => {
@@ -414,7 +437,7 @@ describe('LibraryPane', () => {
       }),
     );
     await renderPane();
-    expect(screen.queryByText(/free on disk/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/free/)).not.toBeInTheDocument();
   });
 
   it('renders the top-right Add model button and routes it to onAddModel', async () => {
@@ -428,7 +451,7 @@ describe('LibraryPane', () => {
   it('treats every model as non-active when no builtin provider exists', async () => {
     mockCommands(libraryResponses());
     // A config whose only provider is Ollama: the builtin lookup misses and
-    // the active model falls back to "", so no card is Active and both get Use.
+    // the active model falls back to "", so no row is Active.
     const ollamaOnly: RawAppConfig = {
       ...BASE_CONFIG,
       inference: {
@@ -438,27 +461,63 @@ describe('LibraryPane', () => {
     };
     await renderPane(ollamaOnly);
     expect(screen.queryByText('Active')).not.toBeInTheDocument();
+    openMenu('gemma');
     expect(
-      screen.getByRole('button', { name: 'Use gemma' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Use qwen' }),
+      screen.getByRole('menuitem', { name: 'Set as active' }),
     ).toBeInTheDocument();
   });
 
-  it('toggles the Manage menu closed when its own button is clicked again', async () => {
+  it('toggles the popover closed when its own button is clicked again', async () => {
     mockCommands(libraryResponses());
     await renderPane();
     const manage = screen.getByRole('button', { name: 'Manage gemma' });
     fireEvent.click(manage);
     expect(
-      screen.getByRole('button', { name: 'Delete gemma' }),
+      screen.getByRole('menuitem', { name: 'Delete gemma' }),
     ).toBeInTheDocument();
-    // A second click on the same Manage button collapses the row.
     fireEvent.click(manage);
     expect(
-      screen.queryByRole('button', { name: 'Delete gemma' }),
+      screen.queryByRole('menuitem', { name: 'Delete gemma' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('closes the popover on an outside click', async () => {
+    mockCommands(libraryResponses());
+    await renderPane();
+    openMenu('gemma');
+    expect(
+      screen.getByRole('menuitem', { name: 'Delete gemma' }),
+    ).toBeInTheDocument();
+    fireEvent.mouseDown(document.body);
+    expect(
+      screen.queryByRole('menuitem', { name: 'Delete gemma' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('closes the popover on Escape but ignores other keys', async () => {
+    mockCommands(libraryResponses());
+    await renderPane();
+    openMenu('gemma');
+    fireEvent.keyDown(document.body, { key: 'a' });
+    expect(
+      screen.getByRole('menuitem', { name: 'Delete gemma' }),
+    ).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(
+      screen.queryByRole('menuitem', { name: 'Delete gemma' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps the popover open when clicking inside it', async () => {
+    mockCommands(libraryResponses());
+    await renderPane();
+    openMenu('gemma');
+    fireEvent.mouseDown(
+      screen.getByRole('menuitem', { name: 'View on Hugging Face' }),
+    );
+    expect(
+      screen.getByRole('menuitem', { name: 'View on Hugging Face' }),
+    ).toBeInTheDocument();
   });
 
   it('clears a stale delete error once a later delete succeeds', async () => {
@@ -466,9 +525,9 @@ describe('LibraryPane', () => {
       libraryResponses({ delete_installed_model: new Reject('file busy') }),
     );
     await renderPane();
-    fireEvent.click(screen.getByRole('button', { name: 'Manage gemma' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete gemma' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    openMenu('gemma');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await flush();
     expect(screen.getByRole('alert')).toHaveTextContent('file busy');
 
@@ -478,9 +537,9 @@ describe('LibraryPane', () => {
         delete_installed_model: undefined,
       }),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Manage gemma' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete gemma' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    openMenu('gemma');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() =>
       expect(screen.queryByRole('alert')).not.toBeInTheDocument(),
     );

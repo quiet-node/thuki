@@ -1,7 +1,7 @@
 /*
- * Styles for the Library pane of the Models surface. Tokens (--accent,
- * --vis, --rea, --hair, --t1..--t3, --elev-*) cascade from the Settings
- * window, so they are referenced directly here.
+ * Styles for the Library pane of the Models surface. Tokens (--accent, --vis,
+ * --rea, --ok, --tight, --heavy, --danger, --hair, --t1..--t3, --elev-*)
+ * cascade from the Settings window, so they are referenced directly here.
  */
 
 .pane {
@@ -13,22 +13,41 @@
 .bar {
   display: flex;
   align-items: center;
-  padding: 0 4px 12px;
+  padding: 0 2px 14px;
 }
 
+/* Quiet ghost button: the Library is a place you manage what you have, so the
+ * add affordance is present but not the loud accent block it used to be. */
 .addButton {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   font-size: 12px;
-  font-weight: 560;
-  color: #16110d;
-  background: var(--accent);
-  border: none;
+  font-weight: 540;
+  color: var(--t2);
+  background: transparent;
+  border: 1px solid var(--hair);
   border-radius: 8px;
-  padding: 7px 12px;
+  padding: 7px 13px;
   cursor: pointer;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease,
+    background 150ms ease;
+}
+.addButton:hover {
+  color: var(--accent);
+  border-color: rgba(255, 141, 92, 0.45);
+  background: var(--accent-soft);
+}
+.addIcon {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
 }
 
 .list {
@@ -38,34 +57,38 @@
 }
 
 .card {
+  position: relative;
   border: 1px solid var(--hair-soft);
   border-radius: var(--radius-card);
   background: var(--elev-1);
-  overflow: hidden;
 }
 
 .cardActive {
   border-color: rgba(255, 141, 92, 0.4);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 141, 92, 0.05),
+    rgba(255, 141, 92, 0.015)
+  );
+}
+
+/* Accent edge marks the active model: one signal, no avatar tile. */
+.activeEdge {
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 2.5px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
 }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 13px;
-  padding: 13px 14px;
-}
-
-.avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  flex: none;
-  display: grid;
-  place-items: center;
-  background: var(--elev-2);
-  font-weight: 700;
-  color: var(--t2);
-  font-size: 12px;
+  gap: 14px;
+  padding: 14px 14px 14px 16px;
 }
 
 .mid {
@@ -74,60 +97,74 @@
 }
 
 .name {
-  font-weight: 550;
-  font-size: 13px;
+  font-weight: 580;
+  font-size: 13.5px;
   color: var(--t1);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
 }
 
 .org {
   font-size: 11px;
   color: var(--t3);
   margin-top: 3px;
+  font-variant-numeric: tabular-nums;
 }
 
-.badge {
+.activeBadge {
   display: inline-flex;
   align-items: center;
   font-size: 10.5px;
   font-weight: 560;
   padding: 2px 8px;
-  border-radius: 999px;
-}
-
-.badgeActive {
+  border-radius: var(--radius-pill);
   color: var(--accent);
   background: var(--accent-soft);
 }
 
-.badgeVision {
-  color: var(--vis);
-  background: var(--vis-bg);
-}
-
-.badgeReason {
-  color: var(--rea);
-  background: var(--rea-bg);
-}
-
-.actions {
+.right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 14px;
   flex: none;
 }
 
-.useButton {
-  font-size: 12px;
+/* Capability tags are text-only (no pill), per the locked design. */
+.tagVision {
+  font-size: 11px;
   font-weight: 540;
-  color: var(--accent);
-  border: 1px solid rgba(255, 141, 92, 0.45);
-  background: var(--accent-soft);
-  border-radius: 8px;
-  padding: 6px 12px;
-  cursor: pointer;
+  color: var(--vis);
+}
+.tagReason {
+  font-size: 11px;
+  font-weight: 540;
+  color: var(--rea);
+}
+
+/* RAM-fit hint: a coloured dot + label reusing the onboarding fit palette. */
+.fit {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 560;
+}
+.fit::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.fitOk {
+  color: var(--ok);
+}
+.fitTight {
+  color: var(--tight);
+}
+.fitHeavy {
+  color: var(--heavy);
 }
 
 .manageButton {
@@ -142,41 +179,81 @@
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
+}
+.manageButton:hover {
+  color: var(--t1);
+  border-color: rgba(255, 141, 92, 0.4);
 }
 
-.manageRow {
+/* ── Popover menu (replaces the old inline card expand) ─────────────────── */
+
+@keyframes menuIn {
+  from {
+    opacity: 0;
+    transform: scale(0.94) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.menuWrap {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: 36px;
+  z-index: 20;
+  min-width: 208px;
+  padding: 6px;
+  background: rgba(28, 23, 20, 0.98);
+  border: 1px solid var(--hair);
+  border-top-color: rgba(255, 141, 92, 0.18);
+  border-radius: 12px;
+  box-shadow:
+    0 14px 34px -10px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(255, 141, 92, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transform-origin: top right;
+  animation: menuIn 130ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+.menuItem {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 14px 13px;
-  flex-wrap: wrap;
-}
-
-.confirmText {
-  font-size: 11px;
-  color: var(--t2);
-}
-
-.deleteButton {
-  font-size: 12px;
-  font-weight: 540;
-  color: #ff6b6b;
-  border: 1px solid rgba(255, 107, 107, 0.4);
-  background: rgba(255, 107, 107, 0.1);
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
   border-radius: 8px;
-  padding: 6px 12px;
-  cursor: pointer;
-}
-
-.ghostButton {
-  font-size: 12px;
-  font-weight: 540;
-  color: var(--t2);
-  border: 1px solid var(--hair);
   background: transparent;
-  border-radius: 8px;
-  padding: 6px 12px;
+  color: var(--t1);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
   cursor: pointer;
+  transition: background 120ms ease;
+}
+.menuItem:hover {
+  background: var(--elev-2);
+}
+.menuItemDanger {
+  color: var(--danger);
+}
+.menuItemDanger:hover {
+  background: rgba(255, 122, 110, 0.12);
+}
+
+.menuSep {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--hair-soft);
 }
 
 .empty {
@@ -205,7 +282,7 @@
 
 .error {
   font-size: 11px;
-  color: #ff6b6b;
+  color: var(--danger);
   margin: 8px 4px 0;
 }
 
@@ -219,4 +296,16 @@
   color: var(--t3);
   display: flex;
   justify-content: space-between;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu {
+    animation: none;
+  }
+  .addButton,
+  .manageButton,
+  .menuItem {
+    transition: none;
+  }
 }

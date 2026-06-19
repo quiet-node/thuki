@@ -46,6 +46,11 @@
   --rea-bg: rgba(185, 164, 240, 0.1);
   --ok: #79c08e;
   --tight: #e6b56b;
+  /* RAM-fit "Heavy" (model larger than this Mac comfortably holds) and the
+   * single destructive accent (Delete). One token each so the red is not
+   * re-spelled as a literal across the model panes. */
+  --heavy: #ef6b6b;
+  --danger: #ff7a6e;
   --radius-card: 10px;
   --radius-control: 8px;
   --radius-pill: 999px;

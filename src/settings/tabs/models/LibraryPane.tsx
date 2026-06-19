@@ -1,22 +1,39 @@
 /**
  * Library pane of the Models surface: the user's installed local models.
  *
- * Each downloaded model shows as a card with its name, capability badges
- * (Vision / Reasoning, detected automatically), and its Hugging Face repo,
- * quantisation, and size. The currently selected built-in model is marked
- * Active; any other model offers a Use button that makes it the active one.
- * A per-card Manage menu reveals an inline Delete confirm that removes the
- * model from disk. When nothing is installed the pane invites the user over
- * to Discover; a footer reports free disk space and the model count.
+ * Each downloaded model shows as a quiet row: its name, an Active state, the
+ * Hugging Face repo / quantisation / size, capability text tags (Vision /
+ * Reasoning, detected automatically), and a RAM-fit hint for this Mac. A ⋮
+ * button opens a floating popover (Set as active / View on Hugging Face /
+ * Delete) instead of expanding the card. Delete routes through a confirm
+ * dialog. When nothing is installed the pane invites the user over to
+ * Discover; a footer reports the model count and free disk space.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import { useModelCapabilities } from '../../../hooks/useModelCapabilities';
+import { ConfirmDialog } from '../../components';
 import styles from './LibraryPane.module.css';
 import type { RawAppConfig } from '../../types';
-import type { InstalledModel } from '../../../types/starter';
+import type { InstalledModel, RamFit } from '../../../types/starter';
+
+const HF_BASE_URL = 'https://huggingface.co';
+
+/** RAM-fit hint label shown next to a model. */
+const FIT_LABEL: Record<RamFit, string> = {
+  fits: 'Comfortable',
+  tight: 'Tight',
+  too_big: 'Heavy',
+};
+
+/** RAM-fit hint colour class on this pane's stylesheet. */
+const FIT_CLASS: Record<RamFit, string> = {
+  fits: styles.fitOk,
+  tight: styles.fitTight,
+  too_big: styles.fitHeavy,
+};
 
 /** Bytes rendered as decimal gigabytes with one decimal (e.g. "8.2"). */
 function gb(bytes: number): string {
@@ -37,8 +54,8 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
 
   const [installed, setInstalled] = useState<InstalledModel[]>([]);
   const [freeDiskBytes, setFreeDiskBytes] = useState<number | null>(null);
-  const [managing, setManaging] = useState<string | null>(null);
-  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const { capabilities } = useModelCapabilities();
@@ -63,9 +80,30 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
       });
   }, [refreshInstalled]);
 
+  // Close the popover on an outside click or Escape so it behaves like a real
+  // menu rather than a sticky panel.
+  useEffect(() => {
+    if (openMenu === null) return;
+    const onDown = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest('[data-menu-root]')) {
+        setOpenMenu(null);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenMenu(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [openMenu]);
+
   // The backend writes the builtin provider's model field; lift the fresh
-  // snapshot so the active card moves without a tab remount.
+  // snapshot so the active row moves without a tab remount.
   function selectModel(id: string) {
+    setOpenMenu(null);
     void invoke('update_provider_field', {
       providerId: 'builtin',
       field: 'model',
@@ -80,12 +118,16 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
       });
   }
 
+  function openHuggingFace(id: string) {
+    setOpenMenu(null);
+    void invoke('open_url', { url: `${HF_BASE_URL}/${id.split(':')[0]}` });
+  }
+
   // Deletion is refcounted server-side; the backend also clears the builtin
   // provider's model field when the deleted model was the selected one, so
   // the lifted snapshot is the source of truth.
   async function handleDelete(id: string) {
-    setConfirmingDelete(null);
-    setManaging(null);
+    setConfirmDelete(null);
     try {
       await invoke('delete_installed_model', { id });
     } catch (err) {
@@ -101,10 +143,15 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
     }
   }
 
+  const confirmModel = installed.find((m) => m.id === confirmDelete);
+
   return (
     <div className={styles.pane}>
       <div className={styles.bar}>
         <button type="button" className={styles.addButton} onClick={onAddModel}>
+          <svg viewBox="0 0 24 24" aria-hidden="true" className={styles.addIcon}>
+            <path d="M12 5v14M5 12h14" />
+          </svg>
           Add model
         </button>
       </div>
@@ -131,33 +178,13 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                 key={m.id}
                 className={`${styles.card} ${active ? styles.cardActive : ''}`}
               >
+                {active ? <span className={styles.activeEdge} /> : null}
                 <div className={styles.row}>
-                  <div className={styles.avatar}>
-                    {m.display_name.charAt(0).toUpperCase()}
-                  </div>
                   <div className={styles.mid}>
                     <div className={styles.name}>
                       {m.display_name}
                       {active ? (
-                        <span
-                          className={`${styles.badge} ${styles.badgeActive}`}
-                        >
-                          Active
-                        </span>
-                      ) : null}
-                      {caps?.vision ? (
-                        <span
-                          className={`${styles.badge} ${styles.badgeVision}`}
-                        >
-                          Vision
-                        </span>
-                      ) : null}
-                      {caps?.thinking ? (
-                        <span
-                          className={`${styles.badge} ${styles.badgeReason}`}
-                        >
-                          Reasoning
-                        </span>
+                        <span className={styles.activeBadge}>Active</span>
                       ) : null}
                     </div>
                     <div className={styles.org}>
@@ -166,66 +193,69 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                       {gb(m.size_bytes)} GB
                     </div>
                   </div>
-                  <div className={styles.actions}>
-                    {active ? null : (
+                  <div className={styles.right}>
+                    {m.fit ? (
+                      <span className={`${styles.fit} ${FIT_CLASS[m.fit]}`}>
+                        {FIT_LABEL[m.fit]}
+                      </span>
+                    ) : null}
+                    {caps?.vision ? (
+                      <span className={styles.tagVision}>Vision</span>
+                    ) : null}
+                    {caps?.thinking ? (
+                      <span className={styles.tagReason}>Reasoning</span>
+                    ) : null}
+                    <div className={styles.menuWrap} data-menu-root>
                       <button
                         type="button"
-                        className={styles.useButton}
-                        aria-label={`Use ${m.display_name}`}
-                        onClick={() => selectModel(m.id)}
+                        className={styles.manageButton}
+                        aria-label={`Manage ${m.display_name}`}
+                        aria-haspopup="menu"
+                        aria-expanded={openMenu === m.id}
+                        onClick={() =>
+                          setOpenMenu((cur) => (cur === m.id ? null : m.id))
+                        }
                       >
-                        Use
+                        ⋮
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      className={styles.manageButton}
-                      aria-label={`Manage ${m.display_name}`}
-                      onClick={() =>
-                        setManaging((cur) => (cur === m.id ? null : m.id))
-                      }
-                    >
-                      ⋮
-                    </button>
+                      {openMenu === m.id ? (
+                        <div className={styles.menu} role="menu">
+                          {active ? null : (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className={styles.menuItem}
+                              onClick={() => selectModel(m.id)}
+                            >
+                              Set as active
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className={styles.menuItem}
+                            onClick={() => openHuggingFace(m.id)}
+                          >
+                            View on Hugging Face
+                          </button>
+                          <div className={styles.menuSep} />
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className={`${styles.menuItem} ${styles.menuItemDanger}`}
+                            aria-label={`Delete ${m.display_name}`}
+                            onClick={() => {
+                              setOpenMenu(null);
+                              setConfirmDelete(m.id);
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
-
-                {managing === m.id ? (
-                  <div className={styles.manageRow}>
-                    {confirmingDelete === m.id ? (
-                      <>
-                        <span className={styles.confirmText}>
-                          Delete {m.display_name}? Its files are removed from
-                          disk.
-                        </span>
-                        <button
-                          type="button"
-                          className={styles.deleteButton}
-                          aria-label="Confirm delete"
-                          onClick={() => void handleDelete(m.id)}
-                        >
-                          Delete
-                        </button>
-                        <button
-                          type="button"
-                          className={styles.ghostButton}
-                          onClick={() => setConfirmingDelete(null)}
-                        >
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        className={styles.deleteButton}
-                        aria-label={`Delete ${m.display_name}`}
-                        onClick={() => setConfirmingDelete(m.id)}
-                      >
-                        Delete
-                      </button>
-                    )}
-                  </div>
-                ) : null}
               </div>
             );
           })}
@@ -240,12 +270,24 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
 
       <div className={styles.footer}>
         <span>
-          {freeDiskBytes !== null ? `${gb(freeDiskBytes)} GB free on disk` : ''}
+          {installed.length} model{installed.length === 1 ? '' : 's'} installed
         </span>
         <span>
-          {installed.length} models · capabilities detected automatically
+          {freeDiskBytes !== null ? `${gb(freeDiskBytes)} GB free` : ''}
         </span>
       </div>
+
+      {confirmModel ? (
+        <ConfirmDialog
+          open
+          title={`Delete ${confirmModel.display_name}?`}
+          message="Its files are removed from disk."
+          confirmLabel="Delete"
+          destructive
+          onConfirm={() => void handleDelete(confirmModel.id)}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      ) : null}
     </div>
   );
 }

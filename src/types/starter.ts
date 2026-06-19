@@ -83,12 +83,17 @@ export interface InstalledModel {
   size_bytes: number;
   /** Quantisation label (e.g. "Q4_K_M"); empty when unknown. */
   quant: string;
+  /** RAM-fit on this Mac, computed by the backend from the recorded size.
+   * `null`/absent when host RAM or the size is unknown. */
+  fit?: RamFit | null;
 }
 
-/** One `.gguf` row from `list_hf_repo_ggufs`, for the paste-a-repo browser. */
+/** One `.gguf` row from `list_hf_repo_ggufs`, for the paste-a-repo browser.
+ * `fit` is the accurate per-quant RAM-fit computed from the real file size. */
 export interface HfGgufFile {
   file: string;
   size_bytes: number;
+  fit?: RamFit | null;
 }
 
 /** Engine lifecycle snapshot published on the `engine:status` event. */
