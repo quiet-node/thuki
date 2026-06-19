@@ -2,8 +2,9 @@
  * Library pane of the Models surface: the user's installed local models.
  *
  * Each downloaded model shows as a quiet row: its name with capability pills
- * (Vision / Reasoning) and an Active marker, the Hugging Face repo /
- * quantisation / size, and a RAM-fit hint (hover for a one-line explanation).
+ * (Text always, plus Vision / Thinking when applicable), the Hugging Face repo
+ * / quantisation / size, and a RAM-fit hint (hover for a one-line explanation).
+ * The active model is marked by the accent edge alone, not a textual pill.
  * A ⋮ button opens a floating popover (Set as active / View on Hugging Face /
  * Reveal in Finder / Delete) instead of expanding the card; Delete routes
  * through a confirm dialog. When nothing is installed the pane invites the
@@ -203,14 +204,20 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                   <div className={styles.mid}>
                     <div className={styles.name}>
                       {m.display_name}
+                      <span className={`${styles.pill} ${styles.pillText}`}>
+                        Text
+                      </span>
                       {caps?.vision ? (
-                        <span className={styles.pillVision}>Vision</span>
+                        <span className={`${styles.pill} ${styles.pillVision}`}>
+                          Vision
+                        </span>
                       ) : null}
                       {caps?.thinking ? (
-                        <span className={styles.pillReason}>Reasoning</span>
-                      ) : null}
-                      {active ? (
-                        <span className={styles.activeBadge}>Active</span>
+                        <span
+                          className={`${styles.pill} ${styles.pillThinking}`}
+                        >
+                          Thinking
+                        </span>
                       ) : null}
                     </div>
                     <div className={styles.org}>

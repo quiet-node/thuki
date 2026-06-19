@@ -214,7 +214,6 @@ describe('LibraryPane', () => {
   it('marks the active model and offers Set as active only on the rest', async () => {
     mockCommands(libraryResponses());
     await renderPane(makeConfig('org/gemma:gemma.gguf'));
-    expect(screen.getByText('Active')).toBeInTheDocument();
     // The non-active model's menu offers Set as active.
     openMenu('qwen');
     expect(
@@ -227,6 +226,13 @@ describe('LibraryPane', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('shows a Text pill on every model', async () => {
+    mockCommands(libraryResponses());
+    await renderPane();
+    // Text is the baseline capability, so it shows on both rows.
+    expect(screen.getAllByText('Text')).toHaveLength(2);
+  });
+
   it('shows a Vision tag only for vision-capable models', async () => {
     mockCommands(libraryResponses());
     await renderPane();
@@ -234,18 +240,27 @@ describe('LibraryPane', () => {
     expect(screen.getAllByText('Vision')).toHaveLength(1);
   });
 
-  it('shows a Reasoning tag only for thinking-capable models', async () => {
+  it('shows a Thinking tag only for thinking-capable models', async () => {
     mockCommands(libraryResponses());
     await renderPane();
-    expect(screen.getByText('Reasoning')).toBeInTheDocument();
-    expect(screen.getAllByText('Reasoning')).toHaveLength(1);
+    expect(screen.getByText('Thinking')).toBeInTheDocument();
+    expect(screen.getAllByText('Thinking')).toHaveLength(1);
   });
 
-  it('omits capability tags when no map entry exists for a model', async () => {
+  it('marks the active model with an edge, not an Active pill', async () => {
+    mockCommands(libraryResponses());
+    await renderPane(makeConfig('org/gemma:gemma.gguf'));
+    // The accent edge is the only active signal; the textual pill is gone.
+    expect(screen.queryByText('Active')).not.toBeInTheDocument();
+  });
+
+  it('omits Vision and Thinking tags when no map entry exists, keeping Text', async () => {
     mockCommands(libraryResponses({ get_model_capabilities: {} }));
     await renderPane();
     expect(screen.queryByText('Vision')).not.toBeInTheDocument();
-    expect(screen.queryByText('Reasoning')).not.toBeInTheDocument();
+    expect(screen.queryByText('Thinking')).not.toBeInTheDocument();
+    // Text is unconditional, so it survives a missing capability map.
+    expect(screen.getAllByText('Text')).toHaveLength(2);
   });
 
   it('Set as active commits the model, lifts the config, and refreshes', async () => {

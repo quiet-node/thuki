@@ -112,17 +112,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.activeBadge {
-  display: inline-flex;
-  align-items: center;
-  font-size: 10.5px;
-  font-weight: 560;
-  padding: 2px 8px;
-  border-radius: var(--radius-pill);
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-
 .right {
   display: flex;
   align-items: center;
@@ -130,23 +119,35 @@
   flex: none;
 }
 
-/* Capability pills sit in the name line, right after the model name. */
-.pillVision,
-.pillReason {
+/* Capability pills sit in the name line, right after the model name. One calm,
+ * cohesive chrome for all of them (neutral text + a faint shared background);
+ * a small colour dot is the only accent, so Text / Vision / Thinking read as a
+ * quiet family rather than a saturated rainbow. */
+.pill {
   display: inline-flex;
   align-items: center;
+  gap: 5px;
   font-size: 10.5px;
-  font-weight: 560;
+  font-weight: 540;
   padding: 2px 8px;
   border-radius: var(--radius-pill);
+  color: var(--t2);
+  background: rgba(255, 255, 255, 0.05);
 }
-.pillVision {
-  color: var(--vis);
-  background: var(--vis-bg);
+.pill::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
 }
-.pillReason {
-  color: var(--rea);
-  background: var(--rea-bg);
+.pillText::before {
+  background: var(--t3);
+}
+.pillVision::before {
+  background: var(--vis);
+}
+.pillThinking::before {
+  background: var(--rea);
 }
 
 /* RAM-fit hint: a coloured dot + label reusing the onboarding fit palette. */
