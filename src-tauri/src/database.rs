@@ -229,6 +229,11 @@ fn run_migrations(conn: &Connection) -> SqlResult<()> {
     // this migration.
     ensure_column(conn, "messages", "model_name", "TEXT")?;
 
+    // Reasoning-capability class for installed models. NULL for rows written
+    // before the dynamic classifier existed; the startup heal re-classifies
+    // those, and every new install writes a non-NULL 0/1.
+    ensure_column(conn, "installed_models", "reasoning_always", "INTEGER")?;
+
     Ok(())
 }
 

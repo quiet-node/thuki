@@ -2144,11 +2144,18 @@ pub fn run() {
                 initial_active_model,
             )));
             app.manage(models::ModelCapabilitiesCache::default());
-            app.manage(history::Database(std::sync::Mutex::new(db_conn)));
 
             // ── Model blob store + download slot for the built-in engine ──
             let model_store = models::storage::ModelStore::new(app_data_dir.join("models"))
                 .expect("failed to initialise model blob store");
+
+            // One-time heal: classify any installed models recorded before the
+            // dynamic reasoning classifier existed (reasoning_always IS NULL),
+            // reading each model's local GGUF, so the picker badge and /think
+            // gate are correct without waiting for the first chat.
+            models::heal_unclassified_reasoning(&db_conn, &model_store);
+
+            app.manage(history::Database(std::sync::Mutex::new(db_conn)));
             app.manage(model_store);
             app.manage(models::DownloadState::default());
 

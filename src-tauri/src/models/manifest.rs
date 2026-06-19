@@ -39,6 +39,11 @@ pub struct InstalledModel {
     pub vision: bool,
     /// Whether the model exposes a thinking/scratchpad token stream.
     pub thinking: bool,
+    /// Whether the model's reasoning cannot be turned off (it always reasons).
+    /// Set by the reasoning classifier at install (and corrected by the runtime
+    /// backstop). For rows written before the column existed the stored value
+    /// is `NULL`, read here as `false` and re-classified by the startup heal.
+    pub reasoning_always: bool,
     /// Filename of the vision projection blob, if any.
     pub mmproj_file: Option<String>,
     /// SHA-256 hex digest of the mmproj blob, if any.
@@ -79,8 +84,8 @@ pub fn insert(conn: &Connection, model: &InstalledModel) -> SqlResult<Vec<String
     conn.execute(
         "INSERT OR REPLACE INTO installed_models \
          (id, display_name, repo, revision, file_name, sha256, size_bytes, \
-          quant, vision, thinking, mmproj_file, mmproj_sha256, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+          quant, vision, thinking, reasoning_always, mmproj_file, mmproj_sha256, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             model.id,
             model.display_name,
@@ -92,6 +97,7 @@ pub fn insert(conn: &Connection, model: &InstalledModel) -> SqlResult<Vec<String
             model.quant,
             model.vision as i32,
             model.thinking as i32,
+            model.reasoning_always as i32,
             model.mmproj_file,
             model.mmproj_sha256,
             created_at,
@@ -130,11 +136,56 @@ pub fn insert(conn: &Connection, model: &InstalledModel) -> SqlResult<Vec<String
 pub fn list(conn: &Connection) -> SqlResult<Vec<InstalledModel>> {
     let mut stmt = conn.prepare(
         "SELECT id, display_name, repo, revision, file_name, sha256, \
-                size_bytes, quant, vision, thinking, mmproj_file, mmproj_sha256 \
+                size_bytes, quant, vision, thinking, mmproj_file, mmproj_sha256, \
+                reasoning_always \
          FROM installed_models ORDER BY display_name",
     )?;
     let rows = stmt.query_map([], row_to_model)?;
     rows.collect()
+}
+
+/// Returns the installed models whose `reasoning_always` is `NULL`: rows
+/// written before the column existed, never touched by the classifier. The
+/// startup heal re-classifies each from its local blob (or the registry for a
+/// curated row) and persists the result via [`update_classification`], so a
+/// subsequent call returns an empty list.
+pub fn list_unclassified(conn: &Connection) -> SqlResult<Vec<InstalledModel>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, display_name, repo, revision, file_name, sha256, \
+                size_bytes, quant, vision, thinking, mmproj_file, mmproj_sha256, \
+                reasoning_always \
+         FROM installed_models WHERE reasoning_always IS NULL ORDER BY display_name",
+    )?;
+    let rows = stmt.query_map([], row_to_model)?;
+    rows.collect()
+}
+
+/// Persists a reasoning classification onto an existing row: sets both
+/// `thinking` and `reasoning_always`. Used by the startup heal to populate a
+/// previously-`NULL` row. A no-op (zero rows changed) when `id` is absent.
+pub fn update_classification(
+    conn: &Connection,
+    id: &str,
+    thinking: bool,
+    reasoning_always: bool,
+) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE installed_models SET thinking = ?2, reasoning_always = ?3 WHERE id = ?1",
+        params![id, thinking as i32, reasoning_always as i32],
+    )?;
+    Ok(())
+}
+
+/// Marks a model as always-reasoning from observed runtime behavior (the
+/// backstop saw reasoning stream while reasoning was requested off). Forces
+/// both `reasoning_always` and `thinking` true, since a model that always
+/// reasons necessarily emits thinking tokens. Idempotent.
+pub fn mark_reasoning_always(conn: &Connection, id: &str) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE installed_models SET reasoning_always = 1, thinking = 1 WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
 }
 
 /// Returns the model with the given `id`, or `None` if not present.
@@ -145,7 +196,8 @@ pub fn list(conn: &Connection) -> SqlResult<Vec<InstalledModel>> {
 pub fn get(conn: &Connection, id: &str) -> SqlResult<Option<InstalledModel>> {
     conn.query_row(
         "SELECT id, display_name, repo, revision, file_name, sha256, \
-                size_bytes, quant, vision, thinking, mmproj_file, mmproj_sha256 \
+                size_bytes, quant, vision, thinking, mmproj_file, mmproj_sha256, \
+                reasoning_always \
          FROM installed_models WHERE id = ?1",
         params![id],
         row_to_model,
@@ -227,6 +279,12 @@ fn row_to_model(row: &rusqlite::Row<'_>) -> SqlResult<InstalledModel> {
         thinking: row.get::<_, i32>(9)? != 0,
         mmproj_file: row.get(10)?,
         mmproj_sha256: row.get(11)?,
+        // NULL (a pre-column row) reads as `false`; the startup heal then
+        // re-classifies it. A stored 0/1 is the classifier's verdict.
+        reasoning_always: row
+            .get::<_, Option<i32>>(12)?
+            .map(|v| v != 0)
+            .unwrap_or(false),
     })
 }
 
@@ -249,6 +307,7 @@ mod tests {
             quant: "Q4_K_M".to_string(),
             vision: false,
             thinking: false,
+            reasoning_always: false,
             mmproj_file: None,
             mmproj_sha256: None,
         }
@@ -477,6 +536,122 @@ mod tests {
         let found = get(&conn, "org/repo:vt.gguf").unwrap().unwrap();
         assert!(found.vision);
         assert!(found.thinking);
+    }
+
+    #[test]
+    fn reasoning_always_flag_roundtrips() {
+        let conn = open_in_memory().unwrap();
+        let m = InstalledModel {
+            thinking: true,
+            reasoning_always: true,
+            ..make_model("org/repo:ra.gguf", "sha_ra")
+        };
+        insert(&conn, &m).unwrap();
+        let found = get(&conn, "org/repo:ra.gguf").unwrap().unwrap();
+        assert!(found.reasoning_always);
+    }
+
+    #[test]
+    fn fresh_insert_is_not_unclassified() {
+        // insert always writes a non-NULL reasoning_always, so a freshly
+        // installed model is never picked up by the heal.
+        let conn = open_in_memory().unwrap();
+        insert(&conn, &make_model("org/repo:fresh.gguf", "sha_f")).unwrap();
+        assert!(list_unclassified(&conn).unwrap().is_empty());
+    }
+
+    /// Forces a row's `reasoning_always` back to NULL to simulate a row written
+    /// before the column existed.
+    fn null_out_reasoning(conn: &Connection, id: &str) {
+        conn.execute(
+            "UPDATE installed_models SET reasoning_always = NULL WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn null_reasoning_row_is_unclassified_and_reads_false() {
+        let conn = open_in_memory().unwrap();
+        let m = InstalledModel {
+            reasoning_always: true,
+            ..make_model("org/repo:legacy.gguf", "sha_l")
+        };
+        insert(&conn, &m).unwrap();
+        null_out_reasoning(&conn, "org/repo:legacy.gguf");
+
+        // NULL reads as false through row_to_model.
+        let found = get(&conn, "org/repo:legacy.gguf").unwrap().unwrap();
+        assert!(!found.reasoning_always);
+
+        // ...and the row surfaces in the heal list.
+        let pending = list_unclassified(&conn).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "org/repo:legacy.gguf");
+    }
+
+    #[test]
+    fn update_classification_persists_and_clears_unclassified() {
+        let conn = open_in_memory().unwrap();
+        insert(&conn, &make_model("org/repo:u.gguf", "sha_u")).unwrap();
+        null_out_reasoning(&conn, "org/repo:u.gguf");
+
+        update_classification(&conn, "org/repo:u.gguf", true, true).unwrap();
+
+        let found = get(&conn, "org/repo:u.gguf").unwrap().unwrap();
+        assert!(found.thinking);
+        assert!(found.reasoning_always);
+        assert!(list_unclassified(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn update_classification_can_set_none_class() {
+        let conn = open_in_memory().unwrap();
+        let m = InstalledModel {
+            thinking: true,
+            ..make_model("org/repo:n.gguf", "sha_n")
+        };
+        insert(&conn, &m).unwrap();
+        null_out_reasoning(&conn, "org/repo:n.gguf");
+
+        update_classification(&conn, "org/repo:n.gguf", false, false).unwrap();
+        let found = get(&conn, "org/repo:n.gguf").unwrap().unwrap();
+        assert!(!found.thinking);
+        assert!(!found.reasoning_always);
+        // No longer NULL, so cleared from the heal list.
+        assert!(list_unclassified(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mark_reasoning_always_forces_both_flags() {
+        let conn = open_in_memory().unwrap();
+        insert(&conn, &make_model("org/repo:b.gguf", "sha_b")).unwrap();
+
+        mark_reasoning_always(&conn, "org/repo:b.gguf").unwrap();
+        let found = get(&conn, "org/repo:b.gguf").unwrap().unwrap();
+        assert!(found.reasoning_always);
+        assert!(found.thinking);
+    }
+
+    #[test]
+    fn list_unclassified_propagates_sql_error_when_table_absent() {
+        let conn = open_in_memory().unwrap();
+        conn.execute_batch("DROP TABLE installed_models;").unwrap();
+        assert!(list_unclassified(&conn).is_err());
+    }
+
+    #[test]
+    fn update_classification_propagates_sql_error_when_table_absent() {
+        let conn = open_in_memory().unwrap();
+        conn.execute_batch("DROP TABLE installed_models;").unwrap();
+        assert!(update_classification(&conn, "x:y.gguf", true, true).is_err());
+    }
+
+    #[test]
+    fn mark_reasoning_always_propagates_sql_error_when_table_absent() {
+        let conn = open_in_memory().unwrap();
+        conn.execute_batch("DROP TABLE installed_models;").unwrap();
+        assert!(mark_reasoning_always(&conn, "x:y.gguf").is_err());
     }
 
     #[test]

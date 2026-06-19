@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StarterMatrix } from '../StarterMatrix';
+import { ALWAYS_THINKS_LABEL } from '../ModelPickerPanel';
 import { invoke } from '../../testUtils/mocks/tauri';
 import type { DownloadUiState } from '../../hooks/useDownloadModel';
 import type { Starter, StarterOption, StarterTier } from '../../types/starter';
@@ -125,10 +126,38 @@ describe('StarterMatrix (picker)', () => {
   it('renders Vision yes/no and the On-your-Mac fit copy', () => {
     renderMatrix(THREE_TIERS);
     expect(screen.getAllByText('Yes')).toHaveLength(2); // fast + balanced
-    expect(screen.getByText('—')).toBeInTheDocument(); // smartest text-only
+    // Dashes: 1 Vision cell (smartest text-only) + 3 Reasoning cells (every
+    // fixture has thinking:false, so all three read as "no reasoning").
+    expect(screen.getAllByText('—')).toHaveLength(4);
     expect(screen.getByText('Comfortable')).toBeInTheDocument();
     expect(screen.getByText('Tight')).toBeInTheDocument();
     expect(screen.getByText('Heavy')).toBeInTheDocument();
+  });
+
+  it('renders the reasoning class per tier (always badge, on-demand, none)', () => {
+    renderMatrix([
+      makeOption('fast', undefined, {
+        thinking: true,
+        reasoning_always: false,
+      }),
+      makeOption('balanced', undefined, {
+        thinking: false,
+        reasoning_always: false,
+      }),
+      makeOption('smartest', undefined, {
+        thinking: true,
+        reasoning_always: true,
+      }),
+    ]);
+    expect(screen.getByText('Reasoning')).toBeInTheDocument();
+    // smartest: always-reasoning pill.
+    expect(screen.getByTestId('starter-always-thinks-badge')).toHaveTextContent(
+      ALWAYS_THINKS_LABEL,
+    );
+    // fast: optional reasoning reads "On demand".
+    expect(screen.getByText('On demand')).toBeInTheDocument();
+    // balanced: no reasoning -> a dash (the none branch).
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(1);
   });
 
   it('opens the Hugging Face repo from the license cell', () => {

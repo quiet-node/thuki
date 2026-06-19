@@ -197,6 +197,7 @@ pub fn to_installed_model(s: &Starter) -> InstalledModel {
         quant: s.quant.to_string(),
         vision: s.vision,
         thinking: s.thinking,
+        reasoning_always: s.reasoning_always,
         mmproj_file: s.mmproj_file.map(str::to_string),
         mmproj_sha256: s.mmproj_sha256.map(str::to_string),
     }
@@ -421,6 +422,7 @@ mod tests {
         assert_eq!(m.quant, balanced.quant);
         assert_eq!(m.vision, balanced.vision);
         assert_eq!(m.thinking, balanced.thinking);
+        assert_eq!(m.reasoning_always, balanced.reasoning_always);
         assert_eq!(m.mmproj_file.as_deref(), balanced.mmproj_file);
         assert_eq!(m.mmproj_sha256.as_deref(), balanced.mmproj_sha256);
 

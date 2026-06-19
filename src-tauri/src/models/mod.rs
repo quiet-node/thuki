@@ -16,7 +16,9 @@
  */
 
 pub mod download;
+pub mod gguf;
 pub mod manifest;
+pub mod reasoning;
 pub mod registry;
 pub mod storage;
 
@@ -1007,14 +1009,15 @@ pub(crate) fn builtin_capabilities_from_manifest(
 ) -> HashMap<String, Capabilities> {
     rows.iter()
         .map(|row| {
-            // Curated starters carry `reasoning_always` in the registry too;
-            // pasted repos default to not-always until runtime detection marks
-            // them (a follow-up). `thinking`/`vision` heal as before.
+            // Curated starters heal `vision`/`thinking`/`reasoning_always` from
+            // the registry (highest confidence). A pasted repo has no registry
+            // entry and keeps its row's classified flags: the install-time GGUF
+            // classifier populates them, and the runtime backstop corrects them.
             let (vision, thinking, reasoning_always) = registry::STARTERS
                 .iter()
                 .find(|s| s.repo == row.repo && s.file_name == row.file_name)
                 .map(|s| (s.vision, s.thinking, s.reasoning_always))
-                .unwrap_or((row.vision, row.thinking, false));
+                .unwrap_or((row.vision, row.thinking, row.reasoning_always));
             (
                 row.id.clone(),
                 Capabilities {
@@ -1373,8 +1376,11 @@ pub struct MmprojCompanion {
 
 /// Pure parse of an HF repo listing into the spec for one target `file`.
 /// Capability rule for pasted repos: vision = an `mmproj*.gguf` sibling with
-/// complete LFS metadata exists; thinking is derived from the model name by
-/// [`detect_thinking`] when the row is recorded in [`repo_installed_model`].
+/// complete LFS metadata exists. The reasoning class is recorded in two stages:
+/// [`repo_installed_model`] seeds `thinking` from the model name via
+/// [`detect_thinking`], then `finalize_install` refines `thinking` and sets
+/// `reasoning_always` from the downloaded GGUF's chat template (falling back to
+/// the name guess when the template cannot be read).
 pub fn resolve_listing(body: &[u8], file: &str) -> Result<RepoResolved, String> {
     let info: HfRepoInfo = serde_json::from_slice(body)
         .map_err(|e| format!("failed to decode Hugging Face API response: {e}"))?;
@@ -1937,9 +1943,94 @@ pub fn repo_installed_model(
         size_bytes: resolved.weights_size_bytes,
         quant: quant_from_filename(file),
         vision: resolved.mmproj.is_some(),
+        // Name-based first guess; finalize_install refines `thinking` and sets
+        // `reasoning_always` from the downloaded GGUF's chat template, falling
+        // back to this guess when the template cannot be read.
         thinking: detect_thinking(repo, file),
+        reasoning_always: false,
         mmproj_file: resolved.mmproj.as_ref().map(|m| m.file.clone()),
         mmproj_sha256: resolved.mmproj.as_ref().map(|m| m.sha256.clone()),
+    }
+}
+
+/// The curated `(thinking, reasoning_always)` flags for a model, when it is a
+/// registry starter. `None` for a pasted/arbitrary repo. Curated flags are the
+/// highest-confidence source, so both the installer and the heal prefer them
+/// over a GGUF scan.
+pub(crate) fn curated_reasoning_flags(repo: &str, file_name: &str) -> Option<(bool, bool)> {
+    registry::STARTERS
+        .iter()
+        .find(|s| s.repo == repo && s.file_name == file_name)
+        .map(|s| (s.thinking, s.reasoning_always))
+}
+
+/// Derives `(thinking, reasoning_always)` for a pasted model from its chat
+/// template. A readable template is classified by
+/// [`reasoning::classify_reasoning`]; an absent template falls back to
+/// `fallback` (the placeholder flags), leaving the runtime backstop to correct
+/// an always-reasoning model from real output.
+pub(crate) fn pasted_reasoning_flags(
+    fallback: (bool, bool),
+    template: Option<&str>,
+    architecture: Option<&str>,
+) -> (bool, bool) {
+    match template {
+        Some(t) => reasoning::classify_reasoning(t, architecture).flags(),
+        None => fallback,
+    }
+}
+
+/// Resolves the final reasoning flags for a model: curated registry flags when
+/// it is a starter, otherwise the class read from the on-disk GGUF blob's chat
+/// template. Coverage-off: the registry lookup and template classification are
+/// tested through [`curated_reasoning_flags`] / [`pasted_reasoning_flags`]; this
+/// wrapper only adds the filesystem read of the blob.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn resolve_reasoning_flags(
+    store: &storage::ModelStore,
+    repo: &str,
+    file_name: &str,
+    sha256: &str,
+    fallback: (bool, bool),
+) -> (bool, bool) {
+    if let Some(curated) = curated_reasoning_flags(repo, file_name) {
+        return curated;
+    }
+    let meta = gguf::read_gguf_metadata_from_file(&store.blob_path(sha256));
+    let template = meta.as_ref().and_then(|m| m.chat_template.as_deref());
+    let architecture = meta.as_ref().and_then(|m| m.architecture.as_deref());
+    pasted_reasoning_flags(fallback, template, architecture)
+}
+
+/// Re-classifies installed built-in rows whose `reasoning_always` is `NULL`
+/// (rows written before the classifier existed) and persists the result so they
+/// stop appearing in [`manifest::list_unclassified`]. Best-effort: any list,
+/// blob-read, or write failure is logged and skipped, never fatal. Coverage-off:
+/// orchestration over tested helpers (`list_unclassified`, `resolve_reasoning_flags`,
+/// `update_classification`).
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn heal_unclassified_reasoning(conn: &rusqlite::Connection, store: &storage::ModelStore) {
+    let pending = match manifest::list_unclassified(conn) {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("thuki: [models] reasoning heal: failed to list rows: {e}");
+            return;
+        }
+    };
+    for row in pending {
+        let (thinking, reasoning_always) = resolve_reasoning_flags(
+            store,
+            &row.repo,
+            &row.file_name,
+            &row.sha256,
+            (row.thinking, row.reasoning_always),
+        );
+        if let Err(e) = manifest::update_classification(conn, &row.id, thinking, reasoning_always) {
+            eprintln!(
+                "thuki: [models] reasoning heal: failed to persist {}: {e}",
+                row.id
+            );
+        }
     }
 }
 
@@ -2283,14 +2374,31 @@ fn finalize_install(
     app: &tauri::AppHandle,
     model: &manifest::InstalledModel,
 ) -> Result<(), String> {
+    let store = app.state::<storage::ModelStore>();
+    // Classify reasoning from the just-downloaded GGUF's chat template so the
+    // picker badge and `/think` gate are correct the instant the install lands.
+    // Curated starters keep their registry flags; a template that cannot be read
+    // keeps the placeholder flags for the runtime backstop to correct.
+    let (thinking, reasoning_always) = resolve_reasoning_flags(
+        store.inner(),
+        &model.repo,
+        &model.file_name,
+        &model.sha256,
+        (model.thinking, model.reasoning_always),
+    );
+    let model = manifest::InstalledModel {
+        thinking,
+        reasoning_always,
+        ..model.clone()
+    };
     let orphans = {
         let db = app.state::<crate::history::Database>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        manifest::insert(&conn, model).map_err(|e| e.to_string())?
+        manifest::insert(&conn, &model).map_err(|e| e.to_string())?
     };
     // Best-effort: the install itself succeeded, so a failure to reclaim the
     // superseded blobs must not fail the download; it only leaks disk space.
-    if let Err(e) = app.state::<storage::ModelStore>().remove_blobs(&orphans) {
+    if let Err(e) = store.remove_blobs(&orphans) {
         eprintln!("thuki: [models] failed to remove superseded blobs: {e}");
     }
     let config = app.state::<parking_lot::RwLock<AppConfig>>();
@@ -3958,6 +4066,7 @@ mod tests {
             quant: "Q4_K_M".to_string(),
             vision,
             thinking,
+            reasoning_always: false,
             mmproj_file: None,
             mmproj_sha256: None,
         }
@@ -4702,6 +4811,7 @@ mod tests {
             quant: "Q4_K_M".to_string(),
             vision: false,
             thinking: false,
+            reasoning_always: false,
             mmproj_file: None,
             mmproj_sha256: None,
         };
@@ -4990,6 +5100,9 @@ mod tests {
         assert_eq!(m.quant, "Q4_K_M");
         assert!(m.vision);
         assert!(!m.thinking);
+        // Pasted rows record placeholder reasoning flags; the real class is
+        // resolved from the GGUF in finalize_install.
+        assert!(!m.reasoning_always);
         assert_eq!(m.mmproj_file.as_deref(), Some("mmproj-model-f16.gguf"));
         assert_eq!(m.mmproj_sha256.as_deref(), Some(&*"b".repeat(64)));
 
@@ -5040,6 +5153,61 @@ mod tests {
             &sample_resolved(false),
         );
         assert!(m.thinking);
+    }
+
+    // ── Reasoning-flag resolution helpers ────────────────────────────────────
+
+    #[test]
+    fn curated_reasoning_flags_match_every_starter() {
+        for s in registry::STARTERS {
+            assert_eq!(
+                curated_reasoning_flags(s.repo, s.file_name),
+                Some((s.thinking, s.reasoning_always)),
+                "curated flags must mirror the registry for {}",
+                s.repo
+            );
+        }
+    }
+
+    #[test]
+    fn curated_reasoning_flags_none_for_pasted_repo() {
+        assert_eq!(curated_reasoning_flags("nope/repo", "x.gguf"), None);
+    }
+
+    #[test]
+    fn pasted_reasoning_flags_classify_from_template() {
+        // Optional family: thinking on, no badge.
+        assert_eq!(
+            pasted_reasoning_flags(
+                (false, false),
+                Some("{% if enable_thinking %}"),
+                Some("qwen3")
+            ),
+            (true, false)
+        );
+        // Always family: thinking on, badge.
+        assert_eq!(
+            pasted_reasoning_flags((false, false), Some("<think>"), None),
+            (true, true)
+        );
+        // Non-reasoning: both off.
+        assert_eq!(
+            pasted_reasoning_flags((false, false), Some("plain instruct"), None),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn pasted_reasoning_flags_fall_back_when_template_absent() {
+        // No readable template: keep the placeholder flags for the backstop.
+        assert_eq!(
+            pasted_reasoning_flags((true, true), None, None),
+            (true, true)
+        );
+        assert_eq!(
+            pasted_reasoning_flags((false, false), None, Some("qwen3")),
+            (false, false)
+        );
     }
 
     // ── Model library: delete ────────────────────────────────────────────────

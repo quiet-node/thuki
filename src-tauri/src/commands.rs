@@ -350,6 +350,65 @@ pub(crate) async fn stream_builtin_chat(
     }
 }
 
+/// Sets `flag` when `chunk` carries reasoning output. The built-in runtime
+/// backstop wires this into the chunk pump so it learns whether a model emitted
+/// reasoning tokens even though reasoning was requested OFF.
+pub(crate) fn observe_reasoning_chunk(chunk: &StreamChunk, flag: &std::sync::atomic::AtomicBool) {
+    if matches!(chunk, StreamChunk::ThinkingToken(_)) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Decides whether the runtime backstop should mark a built-in model as
+/// always-reasoning. True only when reasoning was requested OFF (`!think`) yet
+/// the model still streamed reasoning (`reasoning_seen`), the manifest does not
+/// already record it as always (`!current_reasoning_always`), and the model is
+/// not a curated starter (`!is_curated`, whose class is registry truth and must
+/// never be overridden from behavior).
+pub(crate) fn should_backstop_mark(
+    think: bool,
+    reasoning_seen: bool,
+    current_reasoning_always: bool,
+    is_curated: bool,
+) -> bool {
+    !think && reasoning_seen && !current_reasoning_always && !is_curated
+}
+
+/// Best-effort runtime backstop for the built-in engine: when a chat streamed
+/// reasoning while reasoning was OFF, persist `reasoning_always` so the picker
+/// badge and `/think` gate self-correct on the next read. Coverage-off: the
+/// decision lives in [`should_backstop_mark`]; this wrapper only reads the row
+/// and writes the flag. Never fails the turn (every error is logged and
+/// swallowed).
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn backstop_mark_reasoning_always(
+    db: &crate::history::Database,
+    model_id: &str,
+    think: bool,
+    reasoning_seen: bool,
+) {
+    // Cheap exit before locking: only an OFF request that still saw reasoning
+    // can change anything.
+    if think || !reasoning_seen {
+        return;
+    }
+    let Ok(conn) = db.0.lock() else { return };
+    let Ok(Some(row)) = crate::models::manifest::get(&conn, model_id) else {
+        return;
+    };
+    let is_curated = crate::models::curated_reasoning_flags(&row.repo, &row.file_name).is_some();
+    if should_backstop_mark(think, reasoning_seen, row.reasoning_always, is_curated) {
+        match crate::models::manifest::mark_reasoning_always(&conn, model_id) {
+            Ok(()) => {
+                eprintln!("thuki: [models] reasoning backstop: marked {model_id} always-reasoning")
+            }
+            Err(e) => {
+                eprintln!("thuki: [models] reasoning backstop: failed to mark {model_id}: {e}")
+            }
+        }
+    }
+}
+
 /// Reads the API key for an `openai`-kind provider from the secret store.
 /// Errors degrade to `None` with a stderr log: a missing or unreadable key
 /// must not block a keyless local `/v1` server.
@@ -1180,7 +1239,18 @@ pub async fn ask_model(
             };
             match target {
                 Ok(target) => {
-                    stream_builtin_chat(
+                    // Observe whether reasoning streamed this turn so the
+                    // runtime backstop can mark a model that reasons even with
+                    // reasoning requested OFF (see `backstop_mark_reasoning_always`).
+                    let reasoning_seen =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let seen_for_pump = std::sync::Arc::clone(&reasoning_seen);
+                    let backstop_model_id = model_id.clone();
+                    let builtin_pump = move |chunk: StreamChunk| {
+                        observe_reasoning_chunk(&chunk, &seen_for_pump);
+                        pump(chunk);
+                    };
+                    let content = stream_builtin_chat(
                         &engine,
                         target,
                         model_id,
@@ -1188,9 +1258,16 @@ pub async fn ask_model(
                         messages,
                         &client,
                         cancel_token.clone(),
-                        pump,
+                        builtin_pump,
                     )
-                    .await
+                    .await;
+                    backstop_mark_reasoning_always(
+                        &db,
+                        &backstop_model_id,
+                        think,
+                        reasoning_seen.load(std::sync::atomic::Ordering::Relaxed),
+                    );
+                    content
                 }
                 Err(err) => {
                     pump(StreamChunk::Error(err));
@@ -3107,6 +3184,7 @@ mod tests {
             quant: "Q4_K_M".to_string(),
             vision: mmproj_sha256.is_some(),
             thinking: false,
+            reasoning_always: false,
             mmproj_file: mmproj_sha256.map(|_| format!("{id}-mmproj.gguf")),
             mmproj_sha256: mmproj_sha256.map(str::to_string),
         }
@@ -3546,6 +3624,32 @@ mod tests {
             "non-boolean flag fails closed"
         );
         assert!(!parse_props_vision(b"not json"), "malformed body");
+    }
+
+    #[test]
+    fn observe_reasoning_chunk_sets_flag_only_on_thinking_token() {
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        observe_reasoning_chunk(&StreamChunk::Token("hi".into()), &flag);
+        assert!(!flag.load(std::sync::atomic::Ordering::Relaxed));
+        observe_reasoning_chunk(&StreamChunk::Done, &flag);
+        assert!(!flag.load(std::sync::atomic::Ordering::Relaxed));
+        observe_reasoning_chunk(&StreamChunk::ThinkingToken("step".into()), &flag);
+        assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn should_backstop_mark_only_fires_for_surprising_pasted_reasoning() {
+        // Reasoning requested OFF, model still reasoned, not yet recorded, not
+        // curated: the one case that should mark.
+        assert!(should_backstop_mark(false, true, false, false));
+        // /think was on: expected reasoning, never a surprise.
+        assert!(!should_backstop_mark(true, true, false, false));
+        // No reasoning streamed: nothing to learn.
+        assert!(!should_backstop_mark(false, false, false, false));
+        // Already recorded as always: no redundant write.
+        assert!(!should_backstop_mark(false, true, true, false));
+        // Curated starter: registry is truth, never override from behavior.
+        assert!(!should_backstop_mark(false, true, false, true));
     }
 
     #[tokio::test]

@@ -433,6 +433,23 @@ pub const MAX_HF_SEARCH_QUERY_LEN: usize = 200;
 /// capping adversarial inputs long before any network or database work.
 pub const MAX_MODEL_SLUG_LEN: usize = 256;
 
+/// Maximum metadata key-value pairs the GGUF reader will scan before giving
+/// up. Real GGUF models carry a few dozen KV entries; 4096 never truncates a
+/// legitimate header while bounding a malformed `metadata_kv_count` so the
+/// reasoning-classifier scan cannot loop on a corrupt or hostile file.
+pub const MAX_GGUF_KV_COUNT: u64 = 4096;
+
+/// Maximum accepted byte length for a single GGUF metadata key. Keys are short
+/// dotted identifiers (`tokenizer.chat_template`); 1 KiB is far above any real
+/// key and stops a corrupt length field from forcing a huge allocation.
+pub const MAX_GGUF_KEY_BYTES: u64 = 1024;
+
+/// Maximum accepted byte length for a GGUF string value the reader actually
+/// materializes (the chat template and architecture). Real chat templates run
+/// a few KB to ~100 KB; 4 MiB never truncates one while bounding the memory a
+/// corrupt or hostile length field can demand.
+pub const MAX_GGUF_STRING_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Authoritative allowlist of `(section, key)` pairs the Settings GUI is
 /// permitted to write via the `set_config_field` Tauri command.
 ///
