@@ -182,6 +182,66 @@ describe('ProvidersPane active hero', () => {
     );
   });
 
+  it('re-fetches the picker state and shows the new provider model on switch', async () => {
+    // Built-in active first: the picker returns the built-in model id.
+    mockInvoke({
+      list_installed_models: INSTALLED,
+      get_model_picker_state: {
+        active: INSTALLED[0].id,
+        all: [INSTALLED[0].id],
+        ollamaReachable: true,
+      },
+    });
+    const builtin = { ...BUILTIN, model: INSTALLED[0].id };
+    const view = renderPane(makeConfig('builtin', [builtin, OLLAMA]));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('get_model_picker_state'),
+    );
+
+    // Now Ollama is active and its tags are different from the built-in id.
+    mockInvoke({
+      list_installed_models: INSTALLED,
+      get_model_picker_state: {
+        active: 'gemma4:e4b',
+        all: ['gemma4:e4b'],
+        ollamaReachable: true,
+      },
+    });
+    view.rerender(
+      <ProvidersPane
+        config={makeConfig('ollama', [builtin, OLLAMA])}
+        resyncToken={0}
+        onSaved={() => {}}
+        onAddModel={() => {}}
+      />,
+    );
+    // The provider-change refetch replaces the stale built-in id with the
+    // live Ollama model rather than leaving the built-in id in the dropdown.
+    const select = await screen.findByRole('combobox', {
+      name: 'Active Ollama model',
+    });
+    await waitFor(() => expect(select).toHaveValue('gemma4:e4b'));
+  });
+
+  it('appends the quant only to disambiguate duplicate display names', async () => {
+    const dupes = [
+      { ...INSTALLED[0], id: 'org/x:q4.gguf', quant: 'Q4_K_M' },
+      { ...INSTALLED[0], id: 'org/x:q8.gguf', quant: 'Q8_0' },
+    ];
+    mockInvoke({ list_installed_models: dupes });
+    renderPane(
+      makeConfig('builtin', [{ ...BUILTIN, model: 'org/x:q4.gguf' }, OLLAMA]),
+    );
+    await screen.findByRole('combobox', { name: 'Built-in model' });
+    // Shared display name -> each option disambiguates with its quant.
+    expect(
+      screen.getByRole('option', { name: 'Qwen3.5 9B · Q4_K_M' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', { name: 'Qwen3.5 9B · Q8_0' }),
+    ).toBeInTheDocument();
+  });
+
   it('shows a Choose-a-model option when the built-in model is not installed', async () => {
     mockInvoke({ list_installed_models: INSTALLED });
     renderPane(makeConfig('builtin', [{ ...BUILTIN, model: 'gone' }, OLLAMA]));

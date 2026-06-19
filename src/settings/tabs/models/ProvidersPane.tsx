@@ -178,7 +178,20 @@ export function ProvidersPane({
   // A provider switch is confirmed before it takes effect.
   const [pendingSwitch, setPendingSwitch] = useState<RawProvider | null>(null);
 
-  const { activeModel, availableModels, setActiveModel } = useModelSelection();
+  const { activeModel, availableModels, setActiveModel, refreshModels } =
+    useModelSelection();
+
+  // The picker hook fetches once on mount; re-fetch whenever the active
+  // provider changes so the hero's Model dropdown reflects the newly-active
+  // provider's inventory instead of the previous provider's cached list.
+  // Without this, switching Built-in -> Ollama would keep showing the built-in
+  // model id (the stale `availableModels`/`activeModel` from before the switch).
+  const lastProviderRef = useRef(activeId);
+  useEffect(() => {
+    if (lastProviderRef.current === activeId) return;
+    lastProviderRef.current = activeId;
+    void refreshModels();
+  }, [activeId, refreshModels]);
 
   // Re-seed local editable state from a resync without scheduling saves.
   const prevTokenRef = useRef(resyncToken);
@@ -244,6 +257,14 @@ export function ProvidersPane({
   const builtinModelValue = installed.some((m) => m.id === builtinModelId)
     ? builtinModelId
     : '';
+  // Display names match the picker / Library / running footer (friendly name,
+  // no quant). The quant is appended only to disambiguate two installs that
+  // share a display name, so the common case reads consistently everywhere.
+  const duplicateDisplayNames = new Set(
+    installed
+      .map((m) => m.display_name)
+      .filter((name, i, all) => all.indexOf(name) !== i),
+  );
 
   // Providers other than the active one, in a stable order.
   const otherProviders = providers.filter((p) => p.id !== activeId);
@@ -287,7 +308,9 @@ export function ProvidersPane({
                 {installed.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.display_name}
-                    {m.quant !== '' ? ` · ${m.quant}` : ''}
+                    {duplicateDisplayNames.has(m.display_name) && m.quant !== ''
+                      ? ` · ${m.quant}`
+                      : ''}
                   </option>
                 ))}
               </select>
@@ -637,6 +660,7 @@ export function ProvidersPane({
       {pendingSwitch ? (
         <ConfirmDialog
           open
+          primary
           title={`Switch to ${pendingSwitch.label}?`}
           message={`New chats will be answered by ${pendingSwitch.label}. The model currently held in memory is released to free up RAM.`}
           confirmLabel={`Switch to ${pendingSwitch.label}`}

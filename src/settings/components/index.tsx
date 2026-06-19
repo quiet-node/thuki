@@ -408,6 +408,7 @@ export function ConfirmDialog({
   confirmLabel,
   cancelLabel = 'Cancel',
   destructive = false,
+  primary = false,
   onConfirm,
   onCancel,
 }: {
@@ -417,6 +418,9 @@ export function ConfirmDialog({
   confirmLabel: string;
   cancelLabel?: string;
   destructive?: boolean;
+  /** Accent-fill the confirm button (the affirmative primary action). Ignored
+   * when `destructive` is set, which takes visual precedence. */
+  primary?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -455,7 +459,13 @@ export function ConfirmDialog({
           </button>
           <button
             type="button"
-            className={`${styles.button} ${destructive ? styles.buttonDestructive : ''}`}
+            className={`${styles.button} ${
+              destructive
+                ? styles.buttonDestructive
+                : primary
+                  ? styles.buttonPrimary
+                  : ''
+            }`}
             onClick={onConfirm}
             autoFocus
           >
