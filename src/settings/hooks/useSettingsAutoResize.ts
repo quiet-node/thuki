@@ -33,16 +33,26 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 
 const ANIMATE_MS = 220;
-/** Hard floor: settings panel below this is unusable on macOS. */
-const MIN_HEIGHT = 280;
+/**
+ * Hard floor. The window hugs the active section's content height, but the
+ * left sidebar (group label + five items + the pinned Running-model footer)
+ * is taller than a light section like Behavior. This floor guarantees the
+ * window is always tall enough to show the whole sidebar with the footer
+ * clearly separated from the last item, so short sections never clip it.
+ */
+const MIN_HEIGHT = 440;
 /**
  * Hard ceiling: keeps the panel comfortably small even on a 13" laptop.
  * Tabs whose natural content exceeds this (Web's full timeouts list)
  * scroll inside `.body` rather than push the window taller.
  */
 const MAX_HEIGHT = 700;
-/** Settings is intentionally a fixed-width column. */
-const SETTINGS_WIDTH = 580;
+/**
+ * Settings is a fixed width. Wide enough that the 172px left sidebar leaves
+ * the content column the room the old single-column layout had (and that the
+ * dense Models/Discover list needs).
+ */
+const SETTINGS_WIDTH = 760;
 /** Sub-pixel ResizeObserver chatter is dropped below this threshold. */
 const NEGLIGIBLE_DELTA_PX = 4;
 

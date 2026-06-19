@@ -25,6 +25,31 @@
  * NSPanel-converted main window can render past its bounds cleanly.
  * Vocabulary still mirrors .morphing-container in App.css. */
 .window {
+  /* ─── Premium token layer (Phase 3 model-settings redesign) ───────────
+   * Scoped to the Settings window so every settings surface (sidebar,
+   * Models segmented panes, reskinned standard tabs) reads one set of
+   * values. Mirrors the locked design tokens. */
+  --base: #100e0d;
+  --rail: #0b0a09;
+  --elev-1: rgba(255, 255, 255, 0.03);
+  --elev-2: rgba(255, 255, 255, 0.055);
+  --hair: rgba(255, 255, 255, 0.075);
+  --hair-soft: rgba(255, 255, 255, 0.045);
+  --t1: #eceae7;
+  --t2: rgba(236, 234, 231, 0.54);
+  --t3: rgba(236, 234, 231, 0.34);
+  --accent: #ff8d5c;
+  --accent-soft: rgba(255, 141, 92, 0.14);
+  --vis: #7fd1a6;
+  --vis-bg: rgba(127, 209, 166, 0.1);
+  --rea: #b9a4f0;
+  --rea-bg: rgba(185, 164, 240, 0.1);
+  --ok: #79c08e;
+  --tight: #e6b56b;
+  --radius-card: 10px;
+  --radius-control: 8px;
+  --radius-pill: 999px;
+
   position: fixed;
   inset: 0;
   display: flex;
@@ -33,24 +58,18 @@
    * space above the traffic-light dots — mirrors the chat overlay's
    * outer `pt-2` padding so both panels feel the same vertically. */
   padding-top: 8px;
-  background:
-    radial-gradient(
-      ellipse 70% 40% at 50% 0%,
-      rgba(255, 141, 92, 0.08) 0%,
-      transparent 65%
-    ),
-    var(--color-surface-base);
-  color: var(--color-text-primary);
+  /* Premium flat base (warm off-black), elevation comes from light overlays
+   * on the surfaces above it, not a muddy radial wash. */
+  background: var(--base);
+  color: var(--t1);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   font-size: 13px;
   user-select: none;
-  border: 1px solid var(--color-surface-border);
+  border: 1px solid var(--hair);
   border-top-color: rgba(255, 141, 92, 0.2);
   border-radius: 10px;
   overflow: hidden;
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
 }
 
 /* Glowing 1px hairline at the very top edge — matches morphing-container. */
@@ -107,69 +126,171 @@
   gap: 6px;
 }
 
-/* ─── Top bar (horizontal icon tabs, CodexBar layout) ───────────────────── */
+/* ─── Left sidebar (section nav + Running-model footer) ─────────────────── */
 
-.tabBar {
-  display: flex;
-  justify-content: center;
-  align-items: flex-end;
-  gap: 4px;
-  padding: 12px 20px 10px;
-  flex-shrink: 0;
+/* This codebase has no global box-sizing reset, so the rail boxes opt into
+ * border-box here: otherwise a width:100% item plus its padding renders
+ * wider than the rail and overflows into the content pane, where it gets
+ * clipped at the divider (the active pill "cutoff"). Scoped to the rail so
+ * the content pane keeps its existing content-box sizing. */
+.stage,
+.main,
+.side,
+.side * {
+  box-sizing: border-box;
 }
 
-.tab {
+/* The window stays a vertical column [WindowControls][banners][stage]; the
+ * stage is the horizontal split between the section rail and the active
+ * section's content. */
+.stage {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.main {
+  flex: 1;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.side {
+  width: 172px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 10px;
+  min-height: 0;
+  background: var(--rail);
+  border-right: 1px solid var(--hair-soft);
+}
+
+.sideGroup {
+  margin: 6px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--t3);
+}
+
+.sideTabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sideItem {
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 14px 8px;
+  gap: 11px;
+  width: 100%;
+  padding: 8px 10px;
   border: none;
+  border-radius: 8px;
   background: transparent;
-  color: rgba(240, 240, 242, 0.5);
-  cursor: pointer;
+  color: var(--t2);
   font-family: inherit;
-  border-radius: 10px;
-  min-width: 72px;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
   transition:
-    color 180ms ease,
-    background 180ms ease;
+    color 160ms ease,
+    background 160ms ease;
 }
-.tab:hover:not(.tabActive) {
-  color: var(--color-text-primary);
-  background: rgba(255, 255, 255, 0.025);
+.sideItem:hover:not(.sideItemActive) {
+  color: var(--t1);
+  background: var(--elev-1);
 }
-.tab:focus-visible {
+.sideItem:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.32);
 }
-.tab svg {
-  width: 22px;
-  height: 22px;
-  display: block;
-  stroke-width: 1.6;
+.sideItemActive {
+  color: var(--t1);
+  background: var(--elev-2);
 }
-.tabLabel {
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  color: inherit;
-}
-.tabActive {
-  color: var(--color-primary);
-  background: rgba(0, 0, 0, 0.28);
-  box-shadow: inset 0 0 0 1px rgba(255, 141, 92, 0.1);
-}
-.tabActive svg {
-  color: var(--color-primary);
-}
-/* Decorative wrapper kept for backward-compat with structure; in the
- * top-bar layout the icon sits inline with the label, no chrome of its
- * own. */
-.tabIcon {
+.sideItemIcon {
   display: inline-flex;
+  flex: none;
   align-items: center;
   justify-content: center;
+}
+.sideItemIcon svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.6;
+  opacity: 0.9;
+}
+/* Active section: the icon carries the accent. One active signal (orange
+ * icon + stronger fill + bright label), no separate rail bar that read as
+ * clutter against the filled pill. */
+.sideItemActive .sideItemIcon {
+  color: var(--accent);
+}
+.sideItemActive .sideItemIcon svg {
+  opacity: 1;
+}
+.sideItemLabel {
+  color: inherit;
+}
+.sideSpacer {
+  flex: 1;
+}
+
+/* Running-model footer (always visible, pinned to the sidebar bottom). The
+ * spacer above pushes it down when there is room; this margin guarantees a
+ * gap from the last section item even when the spacer collapses. */
+.runningModel {
+  margin-top: 14px;
+  padding: 9px 10px;
+  border: 1px solid var(--hair-soft);
+  border-radius: var(--radius-card);
+  background: var(--elev-1);
+}
+.runningModelEyebrow {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--t3);
+}
+.runningModelName {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 580;
+  color: var(--t1);
+}
+.runningModelDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 7px var(--accent);
+}
+.runningModelDotIdle {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  /* The active/selected model, just not resident yet: accent (no glow), never
+   * grey, which reads as "disabled". The glow distinguishes the live state. */
+  background: var(--accent);
+  opacity: 0.85;
+}
+.runningModelMeta {
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--t3);
 }
 
 /* ─── Body (scrolling content) ──────────────────────────────────────────── */
@@ -1355,8 +1476,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tab,
-  .tabIcon,
+  .sideItem,
   .input,
   .textarea,
   .button,

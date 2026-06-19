@@ -31,6 +31,7 @@ import { SearchTab } from './tabs/SearchTab';
 import { DisplayTab } from './tabs/DisplayTab';
 import { AboutTab } from './tabs/AboutTab';
 import { SavedPill } from './components';
+import { RunningModelFooter } from './components/RunningModelFooter';
 import { WindowControls } from '../components/WindowControls';
 import { UpdateBanner } from '../components/UpdateBanner';
 import { useUpdater } from '../hooks/useUpdater';
@@ -44,8 +45,8 @@ const TABS: ReadonlyArray<{
 }> = [
   {
     id: 'general',
-    label: 'AI',
-    // Brain — visual cue that this tab is for the AI itself.
+    label: 'Models',
+    // Grid — the model library / management surface.
     icon: (
       <svg
         viewBox="0 0 24 24"
@@ -56,8 +57,10 @@ const TABS: ReadonlyArray<{
         strokeLinejoin="round"
         aria-hidden
       >
-        <path d="M9.5 2a3 3 0 0 0-3 3v.5a2.5 2.5 0 0 0-2 4 3 3 0 0 0 .5 5 2.5 2.5 0 0 0 1.5 4.5 3 3 0 0 0 5.5-1.5V5a3 3 0 0 0-2.5-3z" />
-        <path d="M14.5 2a3 3 0 0 1 3 3v.5a2.5 2.5 0 0 1 2 4 3 3 0 0 1-.5 5 2.5 2.5 0 0 1-1.5 4.5 3 3 0 0 1-5.5-1.5V5a3 3 0 0 1 2.5-3z" />
+        <rect x="3" y="3" width="7" height="7" rx="1.5" />
+        <rect x="14" y="3" width="7" height="7" rx="1.5" />
+        <rect x="3" y="14" width="7" height="7" rx="1.5" />
+        <rect x="14" y="14" width="7" height="7" rx="1.5" />
       </svg>
     ),
   },
@@ -151,14 +154,17 @@ const SAVED_PILL_DURATION_MS = 1500;
 
 /**
  * Static chrome offset from inner content to total window height:
- *   window padding-top (8) + WindowControls strip (~28) + tab bar (~70)
+ *   window padding-top (8) + WindowControls strip (~28)
  *   + body padding top+bottom (18 + 24 = 42).
+ * The section nav now lives in a left sidebar beside the content, so it no
+ * longer adds vertical chrome (the old top tab bar did). The sidebar's own
+ * height is seated by the hook's MIN_HEIGHT floor instead.
  * Empirically measured against the rendered Settings window. If any of
  * the chrome surfaces change height, update this constant rather than
  * trying to read `offsetHeight` at runtime — the auto-resize hook fires
  * before paint settles, so dynamic measurement of chrome would miss.
  */
-const CHROME_HEIGHT = 148;
+const CHROME_HEIGHT = 78;
 /** Recovery banner height when the corrupt-config marker is shown. */
 const BANNER_HEIGHT = 56;
 
@@ -345,81 +351,93 @@ export function SettingsWindow() {
         />
       ) : null}
 
-      <div
-        role="tablist"
-        aria-label="Settings sections"
-        className={styles.tabBar}
-      >
-        {TABS.map((tab) => {
-          const active = tab.id === activeTab;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              aria-controls={`panel-${tab.id}`}
-              tabIndex={active ? 0 : -1}
-              className={`${styles.tab} ${active ? styles.tabActive : ''}`}
-              onClick={() => setActiveTab(tab.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-                  e.preventDefault();
-                  const idx = TABS.findIndex((t) => t.id === activeTab);
-                  const next =
-                    e.key === 'ArrowRight'
-                      ? TABS[(idx + 1) % TABS.length]
-                      : TABS[(idx - 1 + TABS.length) % TABS.length];
-                  setActiveTab(next.id);
-                }
-              }}
-            >
-              <span className={styles.tabIcon} aria-hidden>
-                {tab.icon}
-              </span>
-              <span className={styles.tabLabel}>{tab.label}</span>
-            </button>
-          );
-        })}
-      </div>
+      <div className={styles.stage}>
+        <div className={styles.side}>
+          <div className={styles.sideGroup}>Settings</div>
+          <div
+            role="tablist"
+            aria-label="Settings sections"
+            aria-orientation="vertical"
+            className={styles.sideTabs}
+          >
+            {TABS.map((tab) => {
+              const active = tab.id === activeTab;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  aria-controls={`panel-${tab.id}`}
+                  tabIndex={active ? 0 : -1}
+                  className={`${styles.sideItem} ${active ? styles.sideItemActive : ''}`}
+                  onClick={() => setActiveTab(tab.id)}
+                  onKeyDown={(e) => {
+                    const isNext =
+                      e.key === 'ArrowDown' || e.key === 'ArrowRight';
+                    const isPrev = e.key === 'ArrowUp' || e.key === 'ArrowLeft';
+                    if (isNext || isPrev) {
+                      e.preventDefault();
+                      const idx = TABS.findIndex((t) => t.id === activeTab);
+                      const next = isNext
+                        ? TABS[(idx + 1) % TABS.length]
+                        : TABS[(idx - 1 + TABS.length) % TABS.length];
+                      setActiveTab(next.id);
+                    }
+                  }}
+                >
+                  <span className={styles.sideItemIcon} aria-hidden>
+                    {tab.icon}
+                  </span>
+                  <span className={styles.sideItemLabel}>{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className={styles.sideSpacer} />
+          <RunningModelFooter config={config} />
+        </div>
 
-      <div
-        className={`${styles.body} ${bodyShouldScroll ? styles.bodyScrollable : ''}`}
-        id={`panel-${activeTab}`}
-        role="tabpanel"
-      >
-        <div ref={setContentEl}>
-          {activeTab === 'general' ? (
-            <ModelTab
-              config={config}
-              resyncToken={resyncToken}
-              onSaved={handleSaved}
-            />
-          ) : null}
-          {activeTab === 'behavior' ? (
-            <BehaviorTab
-              config={config}
-              resyncToken={resyncToken}
-              onSaved={handleSaved}
-            />
-          ) : null}
-          {activeTab === 'search' ? (
-            <SearchTab
-              config={config}
-              resyncToken={resyncToken}
-              onSaved={handleSaved}
-            />
-          ) : null}
-          {activeTab === 'display' ? (
-            <DisplayTab
-              config={config}
-              resyncToken={resyncToken}
-              onSaved={handleSaved}
-            />
-          ) : null}
-          {activeTab === 'about' ? (
-            <AboutTab onSaved={handleSaved} onReload={reload} />
-          ) : null}
+        <div className={styles.main}>
+          <div
+            className={`${styles.body} ${bodyShouldScroll ? styles.bodyScrollable : ''}`}
+            id={`panel-${activeTab}`}
+            role="tabpanel"
+          >
+            <div ref={setContentEl}>
+              {activeTab === 'general' ? (
+                <ModelTab
+                  config={config}
+                  resyncToken={resyncToken}
+                  onSaved={handleSaved}
+                />
+              ) : null}
+              {activeTab === 'behavior' ? (
+                <BehaviorTab
+                  config={config}
+                  resyncToken={resyncToken}
+                  onSaved={handleSaved}
+                />
+              ) : null}
+              {activeTab === 'search' ? (
+                <SearchTab
+                  config={config}
+                  resyncToken={resyncToken}
+                  onSaved={handleSaved}
+                />
+              ) : null}
+              {activeTab === 'display' ? (
+                <DisplayTab
+                  config={config}
+                  resyncToken={resyncToken}
+                  onSaved={handleSaved}
+                />
+              ) : null}
+              {activeTab === 'about' ? (
+                <AboutTab onSaved={handleSaved} onReload={reload} />
+              ) : null}
+            </div>
+          </div>
         </div>
       </div>
 

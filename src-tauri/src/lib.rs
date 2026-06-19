@@ -595,7 +595,7 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 /// the OS-default spawn position or previous moves.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn position_settings_window(window: &tauri::WebviewWindow) {
-    const SETTINGS_WIDTH: f64 = 580.0;
+    const SETTINGS_WIDTH: f64 = 760.0;
     // macOS menu bar is ~24 px logical on standard displays; notched MacBooks
     // push it to ~37 px. 72 px gives a comfortable ~35-48 px visual gap below
     // the menu bar on all hardware.

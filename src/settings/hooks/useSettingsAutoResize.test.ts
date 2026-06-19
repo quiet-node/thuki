@@ -5,9 +5,9 @@ import { useState } from 'react';
 import { __mockWindow } from '../../testUtils/mocks/tauri-window';
 import { useSettingsAutoResize } from './useSettingsAutoResize';
 
-const SETTINGS_WIDTH = 580;
+const SETTINGS_WIDTH = 760;
 const ANIMATE_MS = 220;
-const MIN_HEIGHT = 280;
+const MIN_HEIGHT = 440;
 const MAX_HEIGHT = 700;
 const CHROME = 148;
 
