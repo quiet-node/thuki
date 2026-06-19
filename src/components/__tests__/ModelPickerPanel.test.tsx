@@ -379,6 +379,18 @@ describe('ModelPickerPanel', () => {
     });
     expect(row).toBeInTheDocument();
   });
+
+  it('renders the "Always thinks" badge only for reasoningAlways models', () => {
+    const capabilities: ModelCapabilitiesMap = {
+      'gemma4:e2b': { vision: true, thinking: false },
+      'qwen2.5:7b': { vision: false, thinking: true, reasoningAlways: true },
+      'llama3.2:3b': { vision: false, thinking: false },
+    };
+    renderPanel({ capabilities });
+    const badges = screen.getAllByTestId('always-thinks-badge');
+    expect(badges).toHaveLength(1);
+    expect(badges[0]).toHaveTextContent('Always thinks');
+  });
 });
 
 describe('formatCapabilityLabel', () => {

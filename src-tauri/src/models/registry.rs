@@ -49,6 +49,10 @@ pub struct Starter {
     pub vision: bool,
     /// Whether the model emits a thinking/scratchpad token stream.
     pub thinking: bool,
+    /// Whether the model's reasoning cannot be turned off (it always reasons).
+    /// `true` only for structurally-always-on families (e.g. gpt-oss/Harmony);
+    /// `false` when reasoning is optional (the default-off path) or absent.
+    pub reasoning_always: bool,
     /// Vision projection file name, when the model is multimodal.
     pub mmproj_file: Option<&'static str>,
     /// Lowercase hex SHA-256 of the mmproj blob, when present.
@@ -84,6 +88,7 @@ pub const STARTERS: &[Starter] = &[
         quant: "Q4_K_M",
         vision: true,
         thinking: true,
+        reasoning_always: false,
         mmproj_file: Some("mmproj-BF16.gguf"),
         mmproj_sha256: Some("853698ce7aa6c7ba732478bad280240969ddf7b0fcbf93900046f63903a83383"),
         mmproj_bytes: 921_705_024,
@@ -103,6 +108,7 @@ pub const STARTERS: &[Starter] = &[
         quant: "Q4_0",
         vision: true,
         thinking: false,
+        reasoning_always: false,
         mmproj_file: Some("mmproj-gemma-4-12b-it-qat-q4_0.gguf"),
         mmproj_sha256: Some("e70b0e5cd80323d5d588b4ed06780356b7b1ba03995a4b8164c6ae9db0ff5989"),
         mmproj_bytes: 175_115_264,
@@ -122,6 +128,7 @@ pub const STARTERS: &[Starter] = &[
         quant: "MXFP4",
         vision: false,
         thinking: true,
+        reasoning_always: true,
         mmproj_file: None,
         mmproj_sha256: None,
         mmproj_bytes: 0,
@@ -248,6 +255,25 @@ mod tests {
         assert!(starter(Tier::Fast).thinking, "Qwen3.5 reasons");
         assert!(!starter(Tier::Balanced).thinking, "Gemma 4 does not reason");
         assert!(starter(Tier::Smartest).thinking, "gpt-oss reasons");
+    }
+
+    /// `reasoning_always` marks models whose reasoning cannot be turned off.
+    /// Only gpt-oss (Harmony) is structurally always-on; Qwen3.5's reasoning is
+    /// optional (off by default via the kwarg blast) and Gemma does not reason.
+    #[test]
+    fn reasoning_always_flag_per_tier() {
+        assert!(
+            starter(Tier::Smartest).reasoning_always,
+            "gpt-oss always reasons"
+        );
+        assert!(
+            !starter(Tier::Fast).reasoning_always,
+            "Qwen3.5 reasoning is optional"
+        );
+        assert!(
+            !starter(Tier::Balanced).reasoning_always,
+            "Gemma does not force reasoning"
+        );
     }
 
     #[test]

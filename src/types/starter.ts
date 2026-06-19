@@ -28,6 +28,9 @@ export interface Starter {
   quant: string;
   vision: boolean;
   thinking: boolean;
+  /** Whether reasoning cannot be turned off (always reasons); true for gpt-oss.
+   * Backend always sends it; optional here for test-fixture ergonomics. */
+  reasoning_always?: boolean;
   mmproj_file: string | null;
   mmproj_sha256: string | null;
   mmproj_bytes: number;

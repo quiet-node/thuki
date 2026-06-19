@@ -734,6 +734,12 @@ pub struct Capabilities {
     /// ThinkingBlock UI.
     #[serde(default)]
     pub thinking: bool,
+    /// Reasoning is structural and cannot be turned off (gpt-oss/Harmony,
+    /// DeepSeek-R1, QwQ, ...). Thuki still shows such a model's reasoning
+    /// cleanly and marks it in the picker so the user is not surprised by the
+    /// latency. `false` when reasoning is optional (off by default) or absent.
+    #[serde(default)]
+    pub reasoning_always: bool,
     /// Maximum number of images the model accepts in a single request, when
     /// known. `None` means "unknown / unbounded by Thuki" and the gate lets
     /// the request through. Today this is keyed off the model architecture
@@ -1001,16 +1007,20 @@ pub(crate) fn builtin_capabilities_from_manifest(
 ) -> HashMap<String, Capabilities> {
     rows.iter()
         .map(|row| {
-            let (vision, thinking) = registry::STARTERS
+            // Curated starters carry `reasoning_always` in the registry too;
+            // pasted repos default to not-always until runtime detection marks
+            // them (a follow-up). `thinking`/`vision` heal as before.
+            let (vision, thinking, reasoning_always) = registry::STARTERS
                 .iter()
                 .find(|s| s.repo == row.repo && s.file_name == row.file_name)
-                .map(|s| (s.vision, s.thinking))
-                .unwrap_or((row.vision, row.thinking));
+                .map(|s| (s.vision, s.thinking, s.reasoning_always))
+                .unwrap_or((row.vision, row.thinking, false));
             (
                 row.id.clone(),
                 Capabilities {
                     vision,
                     thinking,
+                    reasoning_always,
                     max_images: None,
                 },
             )
@@ -1032,6 +1042,7 @@ pub(crate) fn openai_capabilities(model: &str, vision: bool) -> HashMap<String, 
         Capabilities {
             vision,
             thinking: false,
+            reasoning_always: false,
             max_images: None,
         },
     )])
@@ -3384,6 +3395,7 @@ mod tests {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            reasoning_always: false,
             max_images: Some(1),
         };
         let v = serde_json::to_value(&caps).unwrap();
@@ -3392,6 +3404,7 @@ mod tests {
             serde_json::json!({
                 "vision": true,
                 "thinking": false,
+                "reasoningAlways": false,
                 "maxImages": 1,
             })
         );
@@ -3402,6 +3415,7 @@ mod tests {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            reasoning_always: false,
             max_images: None,
         };
         let v = serde_json::to_value(&caps).unwrap();
@@ -3995,6 +4009,24 @@ mod tests {
             healed.vision,
             "registry capabilities win for curated models"
         );
+    }
+
+    /// gpt-oss (curated Smartest) reasons unstoppably; its `reasoning_always`
+    /// capability is healed from the registry so the picker can badge it. A
+    /// pasted (non-curated) row defaults to not-always (runtime detection is a
+    /// follow-up).
+    #[test]
+    fn builtin_capabilities_reasoning_always_from_registry() {
+        let smartest = registry::STARTERS
+            .iter()
+            .find(|s| s.tier == registry::Tier::Smartest)
+            .unwrap();
+        let caps = builtin_capabilities_from_manifest(&[registry::to_installed_model(smartest)]);
+        assert!(caps[&registry::to_installed_model(smartest).id].reasoning_always);
+
+        let pasted =
+            builtin_capabilities_from_manifest(&[manifest_row("org/repo:x.gguf", false, true)]);
+        assert!(!pasted["org/repo:x.gguf"].reasoning_always);
     }
 
     #[test]

@@ -40,6 +40,14 @@ export interface ModelCapabilities {
   vision: boolean;
   thinking: boolean;
   /**
+   * Whether the model's reasoning cannot be turned off (it always reasons,
+   * e.g. gpt-oss/Harmony, DeepSeek-R1). The picker badges such models so the
+   * user is not surprised by the latency; `/think` is a no-op for them.
+   * The backend always sends it; optional here so consumers treat a missing
+   * value as "not always" and read it as `reasoningAlways === true`.
+   */
+  reasoningAlways?: boolean;
+  /**
    * Maximum number of images the model accepts in a single request, when
    * known. `null` (or omitted) means Thuki has no architecture-specific
    * cap and trusts Ollama's runner as the final authority. Today this is
