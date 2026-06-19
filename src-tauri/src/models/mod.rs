@@ -31,9 +31,8 @@ use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
     HF_API_TIMEOUT_SECS, HF_BASE_URL, HF_SEARCH_LIMIT_MAX, MAX_HF_API_BODY_BYTES,
     MAX_HF_SEARCH_QUERY_LEN, MAX_MODEL_SLUG_LEN, MAX_OLLAMA_SHOW_BODY_BYTES,
-    MAX_OLLAMA_TAGS_BODY_BYTES, OPENAI_MODELS_TIMEOUT_SECS, PARAM_GB_PER_BILLION,
-    PROVIDER_ID_BUILTIN, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
-    RUNTIME_OVERHEAD_GB,
+    MAX_OLLAMA_TAGS_BODY_BYTES, OPENAI_MODELS_TIMEOUT_SECS, PROVIDER_ID_BUILTIN,
+    PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI, RUNTIME_OVERHEAD_GB,
 };
 use crate::config::AppConfig;
 
@@ -1585,18 +1584,6 @@ pub fn parse_search_results(body: &[u8]) -> Result<Vec<HfModelSummary>, String> 
 // KV/runtime overhead) and reuse `registry::ram_fit` for the threshold. They
 // are deliberately approximate: the result is a hint, never a hard gate.
 
-/// A Hugging Face search row annotated with a best-effort RAM-fit hint for the
-/// host. The base summary carries the Hub facts; `fit` is estimated from the
-/// parameter count parsed out of the repo id (no file size is available at
-/// search time) and is `None` when the id carries no `<number>B` token or when
-/// host RAM is unknown.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct HfModelRow {
-    #[serde(flatten)]
-    pub summary: HfModelSummary,
-    pub fit: Option<registry::RamFit>,
-}
-
 /// A repo `.gguf` file annotated with the accurate per-quant RAM-fit computed
 /// from its real file size. `fit` is `None` when host RAM or the file size is
 /// unknown (both are required to judge fit).
@@ -1616,33 +1603,6 @@ pub struct InstalledModelView {
     pub fit: Option<registry::RamFit>,
 }
 
-/// Parses the parameter count in billions from a model repo id by reading the
-/// last `<number>B` token (e.g. `unsloth/Qwen3.5-9B-GGUF` -> `9.0`,
-/// `org/Model-3.8B-it` -> `3.8`). Splits on `/ - _ space` (keeping `.` so a
-/// fractional count survives) and is case-insensitive on the trailing `B`.
-/// Returns `None` when no positive `<number>B` token is present.
-pub fn parse_param_billions(id: &str) -> Option<f64> {
-    let mut found = None;
-    for token in id.split(['/', '-', '_', ' ']) {
-        let Some(stripped) = token.strip_suffix('B').or_else(|| token.strip_suffix('b')) else {
-            continue;
-        };
-        if let Ok(v) = stripped.parse::<f64>() {
-            if v.is_finite() && v > 0.0 {
-                found = Some(v);
-            }
-        }
-    }
-    found
-}
-
-/// Estimated resident memory (GiB) for a 4-bit GGUF of `params_b` billion
-/// parameters: weights (~[`PARAM_GB_PER_BILLION`]/B) plus the fixed
-/// [`RUNTIME_OVERHEAD_GB`].
-pub fn estimate_runtime_gb_from_params(params_b: f64) -> f64 {
-    params_b * PARAM_GB_PER_BILLION + RUNTIME_OVERHEAD_GB
-}
-
 /// Estimated resident memory (GiB) for a GGUF weights blob of `size_bytes`:
 /// the on-disk size plus the fixed [`RUNTIME_OVERHEAD_GB`].
 pub fn estimate_runtime_gb_from_bytes(size_bytes: u64) -> f64 {
@@ -1653,25 +1613,6 @@ pub fn estimate_runtime_gb_from_bytes(size_bytes: u64) -> f64 {
 /// runaway page count cannot request an unbounded result set.
 pub fn clamp_search_limit(limit: usize) -> usize {
     limit.clamp(1, HF_SEARCH_LIMIT_MAX)
-}
-
-/// Annotates search summaries with an estimated RAM-fit derived from the
-/// parameter count in each repo id. `ram_bytes == 0` (host RAM unknown) leaves
-/// `fit` as `None` even when the size could be estimated.
-pub fn annotate_search_rows(summaries: Vec<HfModelSummary>, ram_bytes: u64) -> Vec<HfModelRow> {
-    summaries
-        .into_iter()
-        .map(|summary| {
-            let fit = match parse_param_billions(&summary.id) {
-                Some(params_b) if ram_bytes > 0 => Some(registry::ram_fit(
-                    estimate_runtime_gb_from_params(params_b),
-                    ram_bytes,
-                )),
-                _ => None,
-            };
-            HfModelRow { summary, fit }
-        })
-        .collect()
 }
 
 /// Annotates repo `.gguf` rows with the accurate per-quant RAM-fit from each
@@ -2163,10 +2104,8 @@ pub async fn search_hf_models(
     query: String,
     limit: usize,
     client: tauri::State<'_, reqwest::Client>,
-) -> Result<Vec<HfModelRow>, String> {
-    let summaries =
-        fetch_hf_search(&client, HF_BASE_URL, &query, clamp_search_limit(limit)).await?;
-    Ok(annotate_search_rows(summaries, system_ram_bytes()))
+) -> Result<Vec<HfModelSummary>, String> {
+    fetch_hf_search(&client, HF_BASE_URL, &query, clamp_search_limit(limit)).await
 }
 
 /// Lists the models served by the configured OpenAI-compatible provider via
@@ -4647,33 +4586,7 @@ mod tests {
     // ── RAM-fit estimation + annotated views ─────────────────────────────────
 
     #[test]
-    fn parse_param_billions_reads_last_b_token() {
-        assert_eq!(parse_param_billions("unsloth/Qwen3.5-9B-GGUF"), Some(9.0));
-        assert_eq!(parse_param_billions("org/Model-3.8B-it"), Some(3.8));
-        assert_eq!(
-            parse_param_billions("bartowski/Llama-3.3-8B-Instruct-GGUF"),
-            Some(8.0)
-        );
-        // Lowercase trailing b is accepted.
-        assert_eq!(parse_param_billions("org/qwen-9b-gguf"), Some(9.0));
-        // Multiple B tokens: the rightmost positive one wins.
-        assert_eq!(parse_param_billions("org/Qwen3-235B-A22B"), Some(235.0));
-    }
-
-    #[test]
-    fn parse_param_billions_returns_none_without_a_param_token() {
-        assert_eq!(parse_param_billions("google/bert-base-uncased"), None);
-        assert_eq!(parse_param_billions(""), None);
-        // A zero count is not a usable estimate.
-        assert_eq!(parse_param_billions("org/0B-weird"), None);
-        // A non-numeric prefix before B does not parse.
-        assert_eq!(parse_param_billions("org/Model-AxB"), None);
-    }
-
-    #[test]
-    fn estimate_runtime_gb_helpers_add_overhead() {
-        // 8B * 0.65 + 2.0 overhead.
-        assert!((estimate_runtime_gb_from_params(8.0) - 7.2).abs() < 1e-9);
+    fn estimate_runtime_gb_from_bytes_adds_overhead() {
         // 1 GiB weights + 2.0 overhead.
         assert!((estimate_runtime_gb_from_bytes(1 << 30) - 3.0).abs() < 1e-9);
     }
@@ -4683,29 +4596,6 @@ mod tests {
         assert_eq!(clamp_search_limit(0), 1);
         assert_eq!(clamp_search_limit(50), 50);
         assert_eq!(clamp_search_limit(10_000), HF_SEARCH_LIMIT_MAX);
-    }
-
-    #[test]
-    fn annotate_search_rows_estimates_fit_and_handles_unknowns() {
-        let summaries = vec![
-            HfModelSummary {
-                id: "org/Tiny-1B-GGUF".to_string(),
-                downloads: 10,
-                gated: false,
-            },
-            HfModelSummary {
-                id: "org/no-param-token".to_string(),
-                downloads: 5,
-                gated: false,
-            },
-        ];
-        // 64 GiB host: the 1B model fits, the param-less row stays unannotated.
-        let rows = annotate_search_rows(summaries.clone(), 64 << 30);
-        assert_eq!(rows[0].fit, Some(registry::RamFit::Fits));
-        assert_eq!(rows[1].fit, None);
-        // Unknown host RAM drops the fit verdict even when params parse.
-        let rows = annotate_search_rows(summaries, 0);
-        assert_eq!(rows[0].fit, None);
     }
 
     #[test]
@@ -4753,24 +4643,7 @@ mod tests {
     }
 
     #[test]
-    fn view_rows_serialize_with_flattened_base_and_fit() {
-        let row = HfModelRow {
-            summary: HfModelSummary {
-                id: "o/r".to_string(),
-                downloads: 3,
-                gated: false,
-            },
-            fit: Some(registry::RamFit::Tight),
-        };
-        assert_eq!(
-            serde_json::to_value(row).unwrap(),
-            serde_json::json!({
-                "id": "o/r",
-                "downloads": 3,
-                "gated": false,
-                "fit": "tight",
-            })
-        );
+    fn gguf_file_row_serializes_with_flattened_base_and_fit() {
         let file_row = HfGgufFileRow {
             file: HfGgufFile {
                 file: "w.gguf".to_string(),

@@ -422,12 +422,6 @@ pub const HF_SEARCH_LIMIT_MAX: usize = 120;
 /// estimates live in the model registry.
 pub const RUNTIME_OVERHEAD_GB: f64 = 2.0;
 
-/// Approximate GiB of resident memory per billion parameters for a 4-bit
-/// quantised GGUF, used to estimate a Discover search row's footprint from the
-/// parameter count parsed out of its repo id (no file size is available at
-/// search time). Baked-in: feeds the RAM-fit *hint* only.
-pub const PARAM_GB_PER_BILLION: f64 = 0.65;
-
 /// Maximum accepted byte length for a Hugging Face search query before it is
 /// sent upstream. Defense-in-depth bound on attacker-influenced input: the
 /// query reaches the fixed Hub host (no SSRF) and is percent-encoded by the

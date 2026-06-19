@@ -3,11 +3,11 @@
  *
  * A search field (driven by {@link useHfSearch}) plus a row of family filter
  * chips feed one debounced backend query that returns chat/text-generation
- * GGUF repos. Each lean row shows the repo id, an org + downloads sub-line, an
- * approximate RAM-fit hint, a link out to the repo on Hugging Face, and an
- * icon-only download button. That button expands a quant accordion listing the
- * repo's `.gguf` files (`list_hf_repo_ggufs`, each with an accurate per-quant
- * RAM-fit) and downloads the chosen one through the shared
+ * GGUF repos. Each lean row shows the repo id, an org + downloads sub-line, a
+ * link out to the repo on Hugging Face, and an icon-only download button. That
+ * button expands a quant accordion listing the repo's `.gguf` files
+ * (`list_hf_repo_ggufs`, each with an accurate per-quant RAM-fit, the only
+ * place fit is shown) and downloads the chosen one through the shared
  * {@link useDownloadModel} kit. A "Load more" control pages past the first
  * batch. A finished install lifts a fresh config snapshot and collapses the row.
  */
@@ -223,13 +223,6 @@ function DiscoverRow({ model, onSaved }: DiscoverRowProps) {
             {org} · {model.downloads.toLocaleString()} downloads
           </div>
         </div>
-        {model.fit ? (
-          <Tooltip label={RAM_FIT_TOOLTIP[model.fit]} multiline placement="top">
-            <span className={`${styles.fit} ${FIT_CLASS[model.fit]}`}>
-              {RAM_FIT_LABEL[model.fit]}
-            </span>
-          </Tooltip>
-        ) : null}
         <button
           type="button"
           className={styles.get}

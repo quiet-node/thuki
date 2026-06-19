@@ -67,12 +67,7 @@ function mockCommands(responses: Record<string, unknown>) {
 }
 
 const RESULTS: HfModelSummary[] = [
-  {
-    id: 'google/gemma-4-12b-it-GGUF',
-    downloads: 1_200_000,
-    gated: false,
-    fit: 'fits',
-  },
+  { id: 'google/gemma-4-12b-it-GGUF', downloads: 1_200_000, gated: false },
   { id: 'unsloth/gemma-4-27b-it-GGUF', downloads: 410_000, gated: false },
   { id: 'meta-llama/Llama-3-8B-GGUF', downloads: 9_000, gated: true },
 ];
@@ -146,11 +141,13 @@ describe('DiscoverPane', () => {
     expect(screen.getByText(/chat models/)).toHaveTextContent('3 chat models');
   });
 
-  it('shows the estimated RAM-fit on a row when the backend provides one', async () => {
+  it('does not show a RAM-fit hint on the collapsed model row', async () => {
     await renderPane();
-    // Only the first result carries a fit estimate.
-    expect(screen.getByText('Comfortable')).toBeInTheDocument();
-    expect(screen.getAllByText('Comfortable')).toHaveLength(1);
+    // The row-level fit was an unreliable repo-id estimate and is gone; fit
+    // shows only on the per-quant rows once a row is expanded.
+    expect(screen.queryByText('Comfortable')).not.toBeInTheDocument();
+    expect(screen.queryByText('Tight')).not.toBeInTheDocument();
+    expect(screen.queryByText('Heavy')).not.toBeInTheDocument();
   });
 
   it('parses the org line from the full id when it has no org segment', async () => {
