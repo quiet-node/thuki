@@ -221,15 +221,31 @@ fn oversize_sse_line_error() -> EngineError {
 /// The per-request reasoning switch to merge into a `/v1` body as
 /// `chat_template_kwargs`, or `None` when the request must carry no such field.
 ///
-/// llama.cpp honors `chat_template_kwargs.enable_thinking` per request
-/// (verified against the pinned `b9590` sidecar with Qwen3.5): `false` answers
-/// directly, `true` runs a thinking pass first. Only the bundled engine
-/// ([`V1Flavor::Builtin`]) receives it; the field is llama.cpp-specific and an
-/// arbitrary OpenAI-compatible server may reject an unknown body key, so remote
-/// providers get nothing.
+/// llama.cpp injects these into the model's chat template and a template
+/// silently ignores any kwarg it does not read (verified against the pinned
+/// `b9590` sidecar with Qwen3.5: the full set below suppresses reasoning with
+/// no error). So one harmless "blast" covers every reasoning family that
+/// exposes a template-level switch, with no per-family detection:
+/// `enable_thinking` (Qwen3/3.5, GLM, Hunyuan, Gemma), `thinking` (IBM Granite,
+/// DeepSeek-V3.x), and `thinking_budget` (`0` = off / `-1` = unrestricted, for
+/// ByteDance Seed-OSS). `false`/`0` answers directly; `true`/`-1` reasons.
+///
+/// Families with no template switch (DeepSeek-R1 + distills, QwQ, gpt-oss
+/// Harmony, MiniMax, EXAONE, Phi-4-reasoning, ...) reason regardless; their
+/// output is dropped at the stream layer when thinking is off (see
+/// [`stream_openai_chat`]), so nothing is ever shown even though the compute
+/// cannot be stopped on this engine.
+///
+/// Only the bundled engine ([`V1Flavor::Builtin`]) receives the kwargs; the
+/// fields are llama.cpp-specific and an arbitrary OpenAI-compatible server may
+/// reject an unknown body key, so remote providers get nothing.
 fn reasoning_template_kwargs(flavor: V1Flavor, enable_thinking: bool) -> Option<serde_json::Value> {
     match flavor {
-        V1Flavor::Builtin => Some(serde_json::json!({ "enable_thinking": enable_thinking })),
+        V1Flavor::Builtin => Some(serde_json::json!({
+            "enable_thinking": enable_thinking,
+            "thinking": enable_thinking,
+            "thinking_budget": if enable_thinking { -1 } else { 0 },
+        })),
         V1Flavor::Remote => None,
     }
 }
@@ -1431,21 +1447,26 @@ mod tests {
     #[test]
     fn builtin_chat_body_disables_thinking_by_default() {
         let body = chat_request_body("m", &[user_message("hi")], V1Flavor::Builtin, false);
-        assert_eq!(
-            body["chat_template_kwargs"]["enable_thinking"],
-            serde_json::json!(false)
-        );
+        // The OFF blast covers every reasoning family that honors a template
+        // kwarg, in one harmless payload: `enable_thinking` (Qwen/GLM/Hunyuan/
+        // Gemma), `thinking` (Granite/DeepSeek-V3.x), `thinking_budget` 0
+        // (Seed-OSS). Templates ignore the kwargs they do not read.
+        let kwargs = &body["chat_template_kwargs"];
+        assert_eq!(kwargs["enable_thinking"], serde_json::json!(false));
+        assert_eq!(kwargs["thinking"], serde_json::json!(false));
+        assert_eq!(kwargs["thinking_budget"], serde_json::json!(0));
         assert_eq!(body["stream"], serde_json::json!(true));
     }
 
-    /// Built-in chat with `/think` opts in: `enable_thinking = true`.
+    /// Built-in chat with `/think` opts in: the ON blast sets every kwarg to
+    /// the reasoning-enabled value (`thinking_budget` -1 = unrestricted).
     #[test]
     fn builtin_chat_body_enables_thinking_when_opted_in() {
         let body = chat_request_body("m", &[user_message("hi")], V1Flavor::Builtin, true);
-        assert_eq!(
-            body["chat_template_kwargs"]["enable_thinking"],
-            serde_json::json!(true)
-        );
+        let kwargs = &body["chat_template_kwargs"];
+        assert_eq!(kwargs["enable_thinking"], serde_json::json!(true));
+        assert_eq!(kwargs["thinking"], serde_json::json!(true));
+        assert_eq!(kwargs["thinking_budget"], serde_json::json!(-1));
     }
 
     /// Remote `/v1` servers never receive the llama.cpp-specific
@@ -1470,10 +1491,10 @@ mod tests {
             64,
             V1Flavor::Builtin,
         );
-        assert_eq!(
-            body["chat_template_kwargs"]["enable_thinking"],
-            serde_json::json!(false)
-        );
+        let kwargs = &body["chat_template_kwargs"];
+        assert_eq!(kwargs["enable_thinking"], serde_json::json!(false));
+        assert_eq!(kwargs["thinking"], serde_json::json!(false));
+        assert_eq!(kwargs["thinking_budget"], serde_json::json!(0));
         assert_eq!(body["stream"], serde_json::json!(false));
     }
 
