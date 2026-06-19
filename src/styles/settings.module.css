@@ -103,7 +103,7 @@
   border-top-color: rgba(230, 156, 5, 0.32);
   border-radius: 10px;
   font-size: 12.5px;
-  color: var(--color-text-primary);
+  color: var(--t1);
   flex-shrink: 0;
   /* Banner content (corrupt-config path, file name) must be selectable
    * so users can copy the path. The window-wide `user-select: none` on
@@ -115,7 +115,7 @@
 }
 .bannerIcon {
   flex-shrink: 0;
-  color: var(--color-tertiary);
+  color: var(--t3);
 }
 .bannerText {
   flex: 1;
@@ -605,7 +605,7 @@
   font-weight: 600;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   margin-bottom: 14px;
 }
 
@@ -638,7 +638,7 @@
 .rowLabel {
   font-size: 13px;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 .infoBtn {
   display: inline-flex;
@@ -649,7 +649,7 @@
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   font-size: 10px;
   font-weight: 600;
   font-family: inherit;
@@ -663,11 +663,11 @@
 }
 .infoBtn:hover {
   background: rgba(255, 141, 92, 0.12);
-  color: var(--color-primary);
+  color: var(--accent);
   border-color: rgba(255, 141, 92, 0.4);
 }
 .infoBtn:focus-visible {
-  outline: 2px solid var(--color-primary);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .rowControl {
@@ -682,13 +682,13 @@
 }
 .charCounter {
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   text-align: right;
   letter-spacing: 0.02em;
 }
 .rowHelper {
   font-size: 11.5px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   line-height: 1.45;
 }
 .rowError {
@@ -706,7 +706,7 @@
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-top-color: rgba(255, 141, 92, 0.1);
   border-radius: 8px;
-  color: var(--color-text-primary);
+  color: var(--t1);
   font-family: inherit;
   font-size: 13px;
   padding: 0 12px;
@@ -755,7 +755,7 @@
   border-top-color: rgba(255, 141, 92, 0.1);
   border-radius: 8px;
   padding: 0 10px 0 12px;
-  color: var(--color-text-primary);
+  color: var(--t1);
   font-family: inherit;
   font-size: 13px;
   cursor: pointer;
@@ -779,7 +779,7 @@
 
 .button {
   background: rgba(36, 30, 26, 0.95);
-  color: var(--color-text-primary);
+  color: var(--t1);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-top-color: rgba(255, 141, 92, 0.1);
   border-radius: 8px;
@@ -813,7 +813,7 @@
   background: transparent;
   border-color: rgba(255, 255, 255, 0.06);
   border-top-color: rgba(255, 255, 255, 0.06);
-  color: var(--color-text-primary);
+  color: var(--t1);
   box-shadow: none;
 }
 .buttonGhost:hover {
@@ -882,7 +882,7 @@
 }
 .valChip {
   background: rgba(36, 30, 26, 0.95);
-  color: var(--color-text-primary);
+  color: var(--t1);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-top-color: rgba(255, 141, 92, 0.1);
   border-radius: 6px;
@@ -907,7 +907,7 @@
 }
 .ctxLabel {
   font-size: 13px;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 .ctxChipGroup {
   display: flex;
@@ -918,7 +918,7 @@
   background: rgba(36, 30, 26, 0.95);
   border: 1px solid rgba(255, 141, 92, 0.3);
   border-radius: 6px;
-  color: var(--color-primary);
+  color: var(--accent);
   font-size: 13px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -927,7 +927,7 @@
   text-align: right;
   width: 82px;
   outline: none;
-  caret-color: var(--color-primary);
+  caret-color: var(--accent);
   /* hide the native number spinners — the slider + pills are the affordance */
   -moz-appearance: textfield;
 }
@@ -937,12 +937,12 @@
   margin: 0;
 }
 .ctxChipInput:focus {
-  border-color: var(--color-primary);
+  border-color: var(--accent);
   box-shadow: 0 0 0 2.5px rgba(255, 141, 92, 0.18);
 }
 .ctxChipUnit {
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
 }
 /* Full-width log-scale slider. Fill percentage is controlled via the
  * --fill CSS custom property set inline from React state. */
@@ -958,8 +958,8 @@
    * colored portion lines up with the thumb regardless of track width. */
   background: linear-gradient(
     to right,
-    var(--color-primary) 0%,
-    var(--color-primary) calc(8px + var(--fill) * (100% - 16px) / 100%),
+    var(--accent) 0%,
+    var(--accent) calc(8px + var(--fill) * (100% - 16px) / 100%),
     rgba(255, 255, 255, 0.1) calc(8px + var(--fill) * (100% - 16px) / 100%),
     rgba(255, 255, 255, 0.1) 100%
   );
@@ -1010,7 +1010,7 @@
   position: absolute;
   transform: translateX(-50%);
   font-size: 9.5px;
-  color: var(--color-text-tertiary);
+  color: var(--t3);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1027,7 +1027,7 @@
   padding: 3px 8px;
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   cursor: pointer;
   font-family: inherit;
   transition:
@@ -1038,7 +1038,7 @@
 .ctxPill:hover {
   background: rgba(255, 141, 92, 0.1);
   border-color: rgba(255, 141, 92, 0.22);
-  color: var(--color-primary);
+  color: var(--accent);
 }
 .ctxPill:focus-visible {
   outline: none;
@@ -1047,11 +1047,11 @@
 .ctxPillActive {
   background: rgba(255, 141, 92, 0.14);
   border-color: rgba(255, 141, 92, 0.3);
-  color: var(--color-primary);
+  color: var(--accent);
 }
 .ctxHelper {
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   line-height: 1.5;
   margin-bottom: 10px;
 }
@@ -1117,7 +1117,7 @@
   height: 32px;
   background: transparent;
   border: none;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
@@ -1128,12 +1128,12 @@
 }
 .stepperBtn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.04);
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 .stepperBtn:focus-visible {
   outline: none;
   background: rgba(255, 141, 92, 0.14);
-  color: var(--color-primary);
+  color: var(--accent);
 }
 .stepperBtn:disabled {
   opacity: 0.3;
@@ -1145,7 +1145,7 @@
   text-align: center;
   font-variant-numeric: tabular-nums;
   font-size: 13px;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 
 /* ─── Saved chip (warm gradient like user bubble, but small) ────────────── */
@@ -1161,7 +1161,7 @@
     rgba(255, 141, 92, 0.22) 0%,
     rgba(224, 107, 48, 0.18) 100%
   );
-  color: var(--color-primary);
+  color: var(--accent);
   border: 1px solid rgba(255, 141, 92, 0.45);
   border-radius: 999px;
   padding: 5px 13px;
@@ -1185,7 +1185,7 @@
 .resetLink {
   background: none;
   border: none;
-  color: var(--color-primary);
+  color: var(--accent);
   font-size: 12px;
   cursor: pointer;
   padding: 0;
@@ -1235,12 +1235,12 @@
 .dialogTitle {
   font-size: 15px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--t1);
   margin: 0 0 8px;
 }
 .dialogMessage {
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   line-height: 1.55;
   margin: 0 0 20px;
 }
@@ -1304,7 +1304,7 @@
   font-size: 20px;
   font-weight: 600;
   letter-spacing: 0.01em;
-  color: var(--color-text-primary);
+  color: var(--t1);
   margin-bottom: 2px;
 }
 .aboutHeroVersion {
@@ -1317,7 +1317,7 @@
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.06em;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   font-variant-numeric: tabular-nums;
   cursor: pointer;
   text-decoration: underline transparent;
@@ -1327,17 +1327,17 @@
     text-decoration-color 150ms ease;
 }
 .aboutHeroVersion:hover {
-  color: var(--color-primary);
-  text-decoration-color: var(--color-primary);
+  color: var(--accent);
+  text-decoration-color: var(--accent);
 }
 .aboutHeroVersion:focus-visible {
   outline: none;
-  color: var(--color-primary);
-  text-decoration-color: var(--color-primary);
+  color: var(--accent);
+  text-decoration-color: var(--accent);
 }
 .aboutHeroTagline {
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   line-height: 1.5;
   margin-bottom: 14px;
   max-width: 340px;
@@ -1359,7 +1359,7 @@
   padding: 4px;
   border: none;
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   cursor: pointer;
   font-family: inherit;
   transition:
@@ -1367,22 +1367,22 @@
     transform 150ms ease;
 }
 .iconLinkBtn:hover {
-  color: var(--color-primary);
+  color: var(--accent);
   transform: translateY(-1px);
 }
 .iconLinkBtn:focus-visible {
   outline: none;
-  color: var(--color-primary);
+  color: var(--accent);
   box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.35);
   border-radius: 6px;
 }
 .aboutInfoLine {
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   line-height: 1.6;
 }
 .aboutInfoLine strong {
-  color: var(--color-text-primary);
+  color: var(--t1);
   font-weight: 600;
 }
 .aboutLinkRow {
@@ -1431,7 +1431,7 @@
     border-color 180ms ease;
 }
 .toggleOn {
-  background: var(--color-primary);
+  background: var(--accent);
   border-color: rgba(255, 141, 92, 0.5);
 }
 .toggle:focus-visible {
@@ -1473,7 +1473,7 @@
 .keepWarmLabel {
   font-size: 13px;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 /* Right-side group: "Release after" + number input + "min" */
 .keepWarmTimerGroup {
@@ -1500,13 +1500,13 @@
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   font-weight: 400;
   line-height: 1;
 }
 .keepWarmVramModelName {
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 .keepWarmNoModel {
   font-size: 11px;
@@ -1536,7 +1536,7 @@
 
 .keepWarmBarFieldLabel {
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   font-weight: 500;
   white-space: nowrap;
   flex-shrink: 0;
@@ -1546,7 +1546,7 @@
   background: transparent;
   border: none;
   border-bottom: 1px solid rgba(255, 255, 255, 0.22);
-  color: var(--color-text-primary);
+  color: var(--t1);
   font-family: inherit;
   font-size: 14px;
   font-weight: 600;
@@ -1568,7 +1568,7 @@
 }
 .keepWarmUnit {
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   margin-left: -3px;
 }
 /* Thin pipe separator between inline group and eject pill */
@@ -1588,7 +1588,7 @@
   border-radius: 8px;
   border: 1px solid rgba(255, 141, 92, 0.18);
   background: transparent;
-  color: var(--color-primary);
+  color: var(--accent);
   font-size: 12px;
   font-weight: 500;
   font-family: inherit;
@@ -1688,7 +1688,7 @@
 }
 
 .devTrigger:hover .devTriggerLabel {
-  color: var(--color-text-secondary);
+  color: var(--t2);
 }
 
 .devTrigger:focus-visible {
@@ -1778,7 +1778,7 @@
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: var(--color-tertiary);
+  background: var(--t3);
   box-shadow: 0 0 0 4px rgba(230, 156, 5, 0.18);
 }
 
@@ -1789,15 +1789,15 @@
 .updateBannerTitle {
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 .updateBannerMeta {
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   margin-top: 2px;
 }
 .updateBannerMeta a {
-  color: var(--color-primary);
+  color: var(--accent);
   text-decoration: underline;
   cursor: pointer;
 }
@@ -1814,7 +1814,7 @@
   font-weight: 500;
   background: rgba(255, 141, 92, 0.16);
   border: 1px solid rgba(255, 141, 92, 0.3);
-  color: var(--color-primary);
+  color: var(--accent);
   cursor: pointer;
 }
 .updateBannerLater {
@@ -1823,7 +1823,7 @@
   font-size: 11.5px;
   background: transparent;
   border: 1px solid transparent;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   cursor: pointer;
 }
 
@@ -1851,10 +1851,10 @@
   gap: 8px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 .updateHeroStatus[data-state='available'] {
-  color: var(--color-tertiary);
+  color: var(--t3);
 }
 
 .updateHeroCheckMark {
@@ -1879,13 +1879,13 @@
   position: absolute;
   inset: 4px;
   border-radius: 50%;
-  background: var(--color-tertiary);
+  background: var(--t3);
   box-shadow: 0 0 8px rgba(230, 156, 5, 0.6);
 }
 
 .updateHeroMeta {
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
 }
 
 .updateHeroBtn {
@@ -1897,7 +1897,7 @@
   border-radius: 8px;
   border: 1px solid rgba(255, 141, 92, 0.3);
   background: rgba(255, 141, 92, 0.12);
-  color: var(--color-primary);
+  color: var(--accent);
   font-size: 12px;
   font-weight: 500;
   font-family: inherit;
