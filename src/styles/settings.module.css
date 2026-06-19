@@ -293,6 +293,45 @@
   color: var(--t3);
 }
 
+/* ─── Models surface (segmented Library / Discover / Providers) ──────────── */
+
+.seg {
+  display: inline-flex;
+  box-sizing: border-box;
+  padding: 3px;
+  border: 1px solid var(--hair-soft);
+  border-radius: 9px;
+  background: var(--elev-1);
+}
+.segItem {
+  box-sizing: border-box;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--t2);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 540;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background 140ms ease;
+}
+.segItem:hover:not(.segItemActive) {
+  color: var(--t1);
+}
+.segItem:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+/* Active view: filled accent pill with dark text (the one accent fill on the
+ * surface, matching the locked design). */
+.segItemActive {
+  color: #16110d;
+  background: var(--accent);
+}
+
 /* ─── Body (scrolling content) ──────────────────────────────────────────── */
 
 .body {
