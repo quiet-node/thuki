@@ -314,7 +314,7 @@ describe('LibraryPane', () => {
     mockCommands(libraryResponses());
     await renderPane();
     openMenu('gemma');
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete model' }));
     expect(screen.getByText('Delete gemma?')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByText('Delete gemma?')).not.toBeInTheDocument();
@@ -338,7 +338,7 @@ describe('LibraryPane', () => {
     const onSaved = vi.fn();
     await renderPane(makeConfig(''), onSaved);
     openMenu('gemma');
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete model' }));
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('delete_installed_model', {
@@ -359,7 +359,7 @@ describe('LibraryPane', () => {
     const onSaved = vi.fn();
     await renderPane(makeConfig(''), onSaved);
     openMenu('qwen');
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete qwen' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete model' }));
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('delete_installed_model', {
@@ -374,7 +374,7 @@ describe('LibraryPane', () => {
     );
     await renderPane();
     openMenu('gemma');
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete model' }));
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await flush();
     expect(screen.getByRole('alert')).toHaveTextContent('file busy');
@@ -410,34 +410,26 @@ describe('LibraryPane', () => {
     expect(screen.getByText('No models downloaded yet.')).toBeInTheDocument();
   });
 
-  it('shows the free-disk footer and the model count when both are known', async () => {
+  it('reveals the model in Finder from the popover', async () => {
     mockCommands(libraryResponses());
     await renderPane();
-    expect(screen.getByText('30.4 GB free')).toBeInTheDocument();
-    expect(screen.getByText('2 models installed')).toBeInTheDocument();
+    openMenu('gemma');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Reveal in Finder' }));
+    expect(invokeMock).toHaveBeenCalledWith('reveal_model_in_finder', {
+      id: 'org/gemma:gemma.gguf',
+    });
   });
 
-  it('singularises the model count for a single install', async () => {
-    mockCommands(libraryResponses({ list_installed_models: [GEMMA] }));
-    await renderPane();
-    expect(screen.getByText('1 model installed')).toBeInTheDocument();
-  });
-
-  it('hides the free-disk line when the probe returns a non-number', async () => {
-    mockCommands(libraryResponses({ get_models_dir_free_bytes: null }));
-    await renderPane();
-    expect(screen.queryByText(/free/)).not.toBeInTheDocument();
-    expect(screen.getByText('2 models installed')).toBeInTheDocument();
-  });
-
-  it('hides the free-disk line when the disk probe rejects', async () => {
+  it('swallows a reveal-in-Finder failure', async () => {
     mockCommands(
-      libraryResponses({
-        get_models_dir_free_bytes: new Reject(new Error('statfs failed')),
-      }),
+      libraryResponses({ reveal_model_in_finder: new Reject('no blob') }),
     );
     await renderPane();
-    expect(screen.queryByText(/free/)).not.toBeInTheDocument();
+    openMenu('gemma');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Reveal in Finder' }));
+    await flush();
+    // The row is untouched; the failure is best-effort and silent.
+    expect(screen.getByText('gemma')).toBeInTheDocument();
   });
 
   it('renders the top-right Add model button and routes it to onAddModel', async () => {
@@ -473,11 +465,11 @@ describe('LibraryPane', () => {
     const manage = screen.getByRole('button', { name: 'Manage gemma' });
     fireEvent.click(manage);
     expect(
-      screen.getByRole('menuitem', { name: 'Delete gemma' }),
+      screen.getByRole('menuitem', { name: 'Delete model' }),
     ).toBeInTheDocument();
     fireEvent.click(manage);
     expect(
-      screen.queryByRole('menuitem', { name: 'Delete gemma' }),
+      screen.queryByRole('menuitem', { name: 'Delete model' }),
     ).not.toBeInTheDocument();
   });
 
@@ -486,11 +478,11 @@ describe('LibraryPane', () => {
     await renderPane();
     openMenu('gemma');
     expect(
-      screen.getByRole('menuitem', { name: 'Delete gemma' }),
+      screen.getByRole('menuitem', { name: 'Delete model' }),
     ).toBeInTheDocument();
     fireEvent.mouseDown(document.body);
     expect(
-      screen.queryByRole('menuitem', { name: 'Delete gemma' }),
+      screen.queryByRole('menuitem', { name: 'Delete model' }),
     ).not.toBeInTheDocument();
   });
 
@@ -500,11 +492,11 @@ describe('LibraryPane', () => {
     openMenu('gemma');
     fireEvent.keyDown(document.body, { key: 'a' });
     expect(
-      screen.getByRole('menuitem', { name: 'Delete gemma' }),
+      screen.getByRole('menuitem', { name: 'Delete model' }),
     ).toBeInTheDocument();
     fireEvent.keyDown(document.body, { key: 'Escape' });
     expect(
-      screen.queryByRole('menuitem', { name: 'Delete gemma' }),
+      screen.queryByRole('menuitem', { name: 'Delete model' }),
     ).not.toBeInTheDocument();
   });
 
@@ -526,7 +518,7 @@ describe('LibraryPane', () => {
     );
     await renderPane();
     openMenu('gemma');
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete model' }));
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await flush();
     expect(screen.getByRole('alert')).toHaveTextContent('file busy');
@@ -538,7 +530,7 @@ describe('LibraryPane', () => {
       }),
     );
     openMenu('gemma');
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete gemma' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete model' }));
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() =>
       expect(screen.queryByRole('alert')).not.toBeInTheDocument(),

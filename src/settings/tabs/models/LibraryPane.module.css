@@ -130,16 +130,23 @@
   flex: none;
 }
 
-/* Capability tags are text-only (no pill), per the locked design. */
-.tagVision {
-  font-size: 11px;
-  font-weight: 540;
-  color: var(--vis);
+/* Capability pills sit in the name line, right after the model name. */
+.pillVision,
+.pillReason {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 560;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
 }
-.tagReason {
-  font-size: 11px;
-  font-weight: 540;
+.pillVision {
+  color: var(--vis);
+  background: var(--vis-bg);
+}
+.pillReason {
   color: var(--rea);
+  background: var(--rea-bg);
 }
 
 /* RAM-fit hint: a coloured dot + label reusing the onboarding fit palette. */
@@ -227,6 +234,7 @@
 .menuItem {
   display: flex;
   align-items: center;
+  gap: 10px;
   width: 100%;
   padding: 8px 10px;
   border: none;
@@ -239,6 +247,22 @@
   text-align: left;
   cursor: pointer;
   transition: background 120ms ease;
+}
+.menuItem svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.8;
+  flex: none;
+}
+.menuExt {
+  margin-left: auto;
+  font-size: 12px;
+  opacity: 0.4;
 }
 .menuItem:hover {
   background: var(--elev-2);
@@ -284,19 +308,6 @@
   font-size: 11px;
   color: var(--danger);
   margin: 8px 4px 0;
-}
-
-.footer {
-  box-sizing: border-box;
-  width: 100%;
-  margin-top: 12px;
-  padding: 11px 4px 0;
-  border-top: 1px solid var(--hair-soft);
-  font-size: 11px;
-  color: var(--t3);
-  display: flex;
-  justify-content: space-between;
-  font-variant-numeric: tabular-nums;
 }
 
 @media (prefers-reduced-motion: reduce) {

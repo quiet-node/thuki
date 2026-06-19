@@ -24,6 +24,29 @@ export const HF_SEARCH_DEBOUNCE_MS = 300;
 export const HF_PAGE_SIZE = 30;
 
 /**
+ * Session-scoped cache of search results, keyed by `query::limit`. Switching to
+ * another tab unmounts the Discover pane, so without this every return trip
+ * would re-hit the Hub and flash "Searching…"; serving an already-seen query
+ * from cache makes the tab feel instant and avoids the redundant call. Lives
+ * for the app session (cleared on reload), since Hub rankings barely move on
+ * that timescale.
+ */
+const searchCache = new Map<string, HfModelSummary[]>();
+
+function cacheKey(query: string, limit: number): string {
+  return `${query}::${limit}`;
+}
+
+/**
+ * Clears the session search cache. Exposed for tests, which need a clean cache
+ * between cases; production never evicts (the cache is bounded by the small set
+ * of queries a user types in one session).
+ */
+export function clearHfSearchCache(): void {
+  searchCache.clear();
+}
+
+/**
  * Runtime guard for the IPC boundary. The Rust backend is trusted, but this
  * keeps the hook robust against shape drift (schema changes, legacy builds,
  * mocks) without pulling in a schema library. A malformed payload is treated
@@ -77,8 +100,14 @@ export interface UseHfSearchResult {
 export function useHfSearch(): UseHfSearchResult {
   const [queryText, setQueryText] = useState('');
   const [limit, setLimit] = useState(HF_PAGE_SIZE);
-  const [results, setResults] = useState<HfModelSummary[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Seed straight from the cache so a remount (tab switch) paints the last
+  // results with no loading flash; a cold first run still starts in `loading`.
+  const [results, setResults] = useState<HfModelSummary[]>(
+    () => searchCache.get(cacheKey('', HF_PAGE_SIZE)) ?? [],
+  );
+  const [loading, setLoading] = useState(
+    () => !searchCache.has(cacheKey('', HF_PAGE_SIZE)),
+  );
 
   const mountedRef = useRef(true);
   const latestTokenRef = useRef(0);
@@ -107,8 +136,18 @@ export function useHfSearch(): UseHfSearchResult {
 
   const runSearch = useCallback(
     async (q: string, lim: number): Promise<void> => {
+      const key = cacheKey(q, lim);
       latestTokenRef.current += 1;
       const token = latestTokenRef.current;
+      // Cache hit: serve immediately, no network, no spinner. This lives here
+      // (a callback) rather than in the effect body so it is not a synchronous
+      // setState in an effect.
+      const cached = searchCache.get(key);
+      if (cached) {
+        setResults(cached);
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       try {
         const payload = await invoke<unknown>('search_hf_models', {
@@ -116,7 +155,12 @@ export function useHfSearch(): UseHfSearchResult {
           limit: lim,
         });
         if (!isLatest(token)) return;
-        setResults(isHfModelSummaryArray(payload) ? payload : []);
+        if (isHfModelSummaryArray(payload)) {
+          searchCache.set(key, payload);
+          setResults(payload);
+        } else {
+          setResults([]);
+        }
       } catch {
         if (!isLatest(token)) return;
         setResults([]);
@@ -132,6 +176,12 @@ export function useHfSearch(): UseHfSearchResult {
   // makes a single call. The empty-query mount fetch and "Load more" (a
   // `limit` bump) ride the same path.
   useEffect(() => {
+    // A cache hit serves instantly (runSearch short-circuits to the cache); a
+    // miss is debounced so a burst of keystrokes makes one network call.
+    if (searchCache.has(cacheKey(queryText, limit))) {
+      void runSearch(queryText, limit);
+      return;
+    }
     const timer = window.setTimeout(() => {
       void runSearch(queryText, limit);
     }, HF_SEARCH_DEBOUNCE_MS);

@@ -23,7 +23,11 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 
 import { DiscoverPane } from './DiscoverPane';
-import { HF_SEARCH_DEBOUNCE_MS, HF_PAGE_SIZE } from './useHfSearch';
+import {
+  HF_SEARCH_DEBOUNCE_MS,
+  HF_PAGE_SIZE,
+  clearHfSearchCache,
+} from './useHfSearch';
 import type { HfModelSummary } from '../../../types/hf';
 import type { HfGgufFile } from '../../../types/starter';
 import type { RawAppConfig } from '../../types';
@@ -103,6 +107,7 @@ async function flush() {
 beforeEach(() => {
   invokeMock.mockReset();
   lastChannel = null;
+  clearHfSearchCache();
 });
 
 afterEach(() => {
@@ -240,10 +245,16 @@ describe('DiscoverPane', () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
       await Promise.resolve();
     });
-    expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
-      query: '',
-      limit: HF_PAGE_SIZE,
-    });
+    // The empty query was cached by the mount fetch, so returning to All is
+    // served from cache without another Hub call.
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'search_hf_models',
+      expect.anything(),
+    );
+    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
   });
 
   it('renders every family chip', async () => {
@@ -261,12 +272,10 @@ describe('DiscoverPane', () => {
     }
   });
 
-  it('opens the repo on Hugging Face from the row link', async () => {
+  it('opens the repo on Hugging Face when the title is clicked', async () => {
     await renderPane();
     fireEvent.click(
-      screen.getByRole('button', {
-        name: 'View google/gemma-4-12b-it-GGUF on Hugging Face',
-      }),
+      screen.getByRole('button', { name: 'google/gemma-4-12b-it-GGUF' }),
     );
     expect(invokeMock).toHaveBeenCalledWith('open_url', {
       url: 'https://huggingface.co/google/gemma-4-12b-it-GGUF',

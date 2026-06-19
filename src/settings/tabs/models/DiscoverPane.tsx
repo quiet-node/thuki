@@ -18,7 +18,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { DownloadProgress } from '../../../components/DownloadProgress';
 import { useDownloadModel } from '../../../hooks/useDownloadModel';
 import { useHfSearch } from './useHfSearch';
-import { RAM_FIT_LABEL } from '../../../utils/ramFit';
+import { Tooltip } from '../../../components/Tooltip';
+import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
 import styles from './DiscoverPane.module.css';
 import type { HfModelSummary } from '../../../types/hf';
 import type { HfGgufFile, RamFit } from '../../../types/starter';
@@ -64,12 +65,6 @@ const DOWNLOAD_ICON = (
     <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />
   </svg>
 );
-const HF_LINK_ICON = (
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M14 3h7v7M21 3l-9 9M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
-  </svg>
-);
-
 interface DiscoverPaneProps {
   /** Lift a fresh config snapshot after a successful install. */
   onSaved: (next: RawAppConfig) => void;
@@ -211,7 +206,15 @@ function DiscoverRow({ model, onSaved }: DiscoverRowProps) {
       <div className={styles.row}>
         <div className={styles.mid}>
           <div className={styles.nm}>
-            {model.id}
+            {/* The title opens the repo on Hugging Face, so the row needs no
+                separate link icon. */}
+            <button
+              type="button"
+              className={styles.nmLink}
+              onClick={openHuggingFace}
+            >
+              {model.id}
+            </button>
             {model.gated ? (
               <span className={styles.gatedBadge}>Gated</span>
             ) : null}
@@ -221,18 +224,12 @@ function DiscoverRow({ model, onSaved }: DiscoverRowProps) {
           </div>
         </div>
         {model.fit ? (
-          <span className={`${styles.fit} ${FIT_CLASS[model.fit]}`}>
-            {RAM_FIT_LABEL[model.fit]}
-          </span>
+          <Tooltip label={RAM_FIT_TOOLTIP[model.fit]} multiline placement="top">
+            <span className={`${styles.fit} ${FIT_CLASS[model.fit]}`}>
+              {RAM_FIT_LABEL[model.fit]}
+            </span>
+          </Tooltip>
         ) : null}
-        <button
-          type="button"
-          className={styles.extlink}
-          aria-label={`View ${model.id} on Hugging Face`}
-          onClick={openHuggingFace}
-        >
-          {HF_LINK_ICON}
-        </button>
         <button
           type="button"
           className={styles.get}
@@ -258,9 +255,15 @@ function DiscoverRow({ model, onSaved }: DiscoverRowProps) {
                 <div className={styles.quantRow} key={f.file}>
                   <span className={styles.quantName}>{f.file}</span>
                   {f.fit ? (
-                    <span className={`${styles.fit} ${FIT_CLASS[f.fit]}`}>
-                      {RAM_FIT_LABEL[f.fit]}
-                    </span>
+                    <Tooltip
+                      label={RAM_FIT_TOOLTIP[f.fit]}
+                      multiline
+                      placement="top"
+                    >
+                      <span className={`${styles.fit} ${FIT_CLASS[f.fit]}`}>
+                        {RAM_FIT_LABEL[f.fit]}
+                      </span>
+                    </Tooltip>
                   ) : null}
                   <span className={styles.quantSize}>
                     {gb(f.size_bytes)} GB

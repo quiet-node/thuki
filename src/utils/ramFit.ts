@@ -13,3 +13,11 @@ export const RAM_FIT_LABEL: Record<RamFit, string> = {
   tight: 'Tight',
   too_big: 'Heavy',
 };
+
+/** One-line explanation shown when hovering a RAM-fit label, so the verdict
+ * is not cryptic. Phrased around this Mac's memory, not raw numbers. */
+export const RAM_FIT_TOOLTIP: Record<RamFit, string> = {
+  fits: 'Runs with memory to spare on this Mac.',
+  tight: 'Runs, but close to this Mac’s memory limit.',
+  too_big: 'Larger than this Mac’s memory comfortably holds; expect slowdowns.',
+};

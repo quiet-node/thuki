@@ -17,6 +17,7 @@ import {
   useHfSearch,
   HF_SEARCH_DEBOUNCE_MS,
   HF_PAGE_SIZE,
+  clearHfSearchCache,
 } from './useHfSearch';
 import type { HfModelSummary } from '../../../types/hf';
 
@@ -33,6 +34,7 @@ const GEMMA: HfModelSummary[] = [
 
 beforeEach(() => {
   invokeMock.mockReset();
+  clearHfSearchCache();
 });
 
 afterEach(() => {
@@ -260,6 +262,25 @@ describe('useHfSearch', () => {
       query: 'llama',
       limit: HF_PAGE_SIZE,
     });
+  });
+
+  it('serves a repeated query from cache without re-fetching', async () => {
+    invokeMock.mockResolvedValue(POPULAR);
+    const first = renderHook(() => useHfSearch());
+    await waitFor(() => expect(first.result.current.loading).toBe(false));
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    // A fresh mount (a Discover tab revisit) seeds from cache: results are
+    // present immediately, there is no loading flash, and no new call fires.
+    invokeMock.mockClear();
+    const second = renderHook(() => useHfSearch());
+    expect(second.result.current.loading).toBe(false);
+    expect(second.result.current.results).toEqual(POPULAR);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it('does not offer Load more when the page is not full', async () => {

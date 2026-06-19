@@ -1,13 +1,13 @@
 /**
  * Library pane of the Models surface: the user's installed local models.
  *
- * Each downloaded model shows as a quiet row: its name, an Active state, the
- * Hugging Face repo / quantisation / size, capability text tags (Vision /
- * Reasoning, detected automatically), and a RAM-fit hint for this Mac. A ⋮
- * button opens a floating popover (Set as active / View on Hugging Face /
- * Delete) instead of expanding the card. Delete routes through a confirm
- * dialog. When nothing is installed the pane invites the user over to
- * Discover; a footer reports the model count and free disk space.
+ * Each downloaded model shows as a quiet row: its name with capability pills
+ * (Vision / Reasoning) and an Active marker, the Hugging Face repo /
+ * quantisation / size, and a RAM-fit hint (hover for a one-line explanation).
+ * A ⋮ button opens a floating popover (Set as active / View on Hugging Face /
+ * Reveal in Finder / Delete) instead of expanding the card; Delete routes
+ * through a confirm dialog. When nothing is installed the pane invites the
+ * user over to Discover.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -15,7 +15,8 @@ import { invoke } from '@tauri-apps/api/core';
 
 import { useModelCapabilities } from '../../../hooks/useModelCapabilities';
 import { ConfirmDialog } from '../../components';
-import { RAM_FIT_LABEL } from '../../../utils/ramFit';
+import { Tooltip } from '../../../components/Tooltip';
+import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
 import styles from './LibraryPane.module.css';
 import type { RawAppConfig } from '../../types';
 import type { InstalledModel, RamFit } from '../../../types/starter';
@@ -28,6 +29,28 @@ const FIT_CLASS: Record<RamFit, string> = {
   tight: styles.fitTight,
   too_big: styles.fitHeavy,
 };
+
+// Popover icons (line-art, currentColor), matching the locked menu layout.
+const SET_ACTIVE_ICON = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M5 13l4 4L19 7" />
+  </svg>
+);
+const HF_ICON = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M14 3h7v7M21 3l-9 9M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
+  </svg>
+);
+const FINDER_ICON = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H3z" />
+  </svg>
+);
+const TRASH_ICON = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" />
+  </svg>
+);
 
 /** Bytes rendered as decimal gigabytes with one decimal (e.g. "8.2"). */
 function gb(bytes: number): string {
@@ -47,7 +70,6 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
     config.inference.providers.find((p) => p.kind === 'builtin')?.model ?? '';
 
   const [installed, setInstalled] = useState<InstalledModel[]>([]);
-  const [freeDiskBytes, setFreeDiskBytes] = useState<number | null>(null);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -65,13 +87,6 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
 
   useEffect(() => {
     void refreshInstalled();
-    void invoke<number | null>('get_models_dir_free_bytes')
-      .then((bytes) => {
-        setFreeDiskBytes(typeof bytes === 'number' ? bytes : null);
-      })
-      .catch(() => {
-        // Unknown free space just hides the disk line.
-      });
   }, [refreshInstalled]);
 
   // Close the popover on an outside click or Escape so it behaves like a real
@@ -115,6 +130,13 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
   function openHuggingFace(id: string) {
     setOpenMenu(null);
     void invoke('open_url', { url: `${HF_BASE_URL}/${id.split(':')[0]}` });
+  }
+
+  function revealInFinder(id: string) {
+    setOpenMenu(null);
+    void invoke('reveal_model_in_finder', { id }).catch(() => {
+      // Best-effort: a missing blob just means nothing to reveal.
+    });
   }
 
   // Deletion is refcounted server-side; the backend also clears the builtin
@@ -181,6 +203,12 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                   <div className={styles.mid}>
                     <div className={styles.name}>
                       {m.display_name}
+                      {caps?.vision ? (
+                        <span className={styles.pillVision}>Vision</span>
+                      ) : null}
+                      {caps?.thinking ? (
+                        <span className={styles.pillReason}>Reasoning</span>
+                      ) : null}
                       {active ? (
                         <span className={styles.activeBadge}>Active</span>
                       ) : null}
@@ -193,15 +221,15 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                   </div>
                   <div className={styles.right}>
                     {m.fit ? (
-                      <span className={`${styles.fit} ${FIT_CLASS[m.fit]}`}>
-                        {RAM_FIT_LABEL[m.fit]}
-                      </span>
-                    ) : null}
-                    {caps?.vision ? (
-                      <span className={styles.tagVision}>Vision</span>
-                    ) : null}
-                    {caps?.thinking ? (
-                      <span className={styles.tagReason}>Reasoning</span>
+                      <Tooltip
+                        label={RAM_FIT_TOOLTIP[m.fit]}
+                        multiline
+                        placement="top"
+                      >
+                        <span className={`${styles.fit} ${FIT_CLASS[m.fit]}`}>
+                          {RAM_FIT_LABEL[m.fit]}
+                        </span>
+                      </Tooltip>
                     ) : null}
                     <div className={styles.menuWrap} data-menu-root>
                       <button
@@ -225,7 +253,8 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                               className={styles.menuItem}
                               onClick={() => selectModel(m.id)}
                             >
-                              Set as active
+                              {SET_ACTIVE_ICON}
+                              <span>Set as active</span>
                             </button>
                           )}
                           <button
@@ -234,20 +263,33 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                             className={styles.menuItem}
                             onClick={() => openHuggingFace(m.id)}
                           >
-                            View on Hugging Face
+                            {HF_ICON}
+                            <span>View on Hugging Face</span>
+                            <span className={styles.menuExt} aria-hidden="true">
+                              ↗
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className={styles.menuItem}
+                            onClick={() => revealInFinder(m.id)}
+                          >
+                            {FINDER_ICON}
+                            <span>Reveal in Finder</span>
                           </button>
                           <div className={styles.menuSep} />
                           <button
                             type="button"
                             role="menuitem"
                             className={`${styles.menuItem} ${styles.menuItemDanger}`}
-                            aria-label={`Delete ${m.display_name}`}
                             onClick={() => {
                               setOpenMenu(null);
                               setConfirmDelete(m.id);
                             }}
                           >
-                            Delete
+                            {TRASH_ICON}
+                            <span>Delete model</span>
                           </button>
                         </div>
                       ) : null}
@@ -265,15 +307,6 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
           {deleteError}
         </p>
       ) : null}
-
-      <div className={styles.footer}>
-        <span>
-          {installed.length} model{installed.length === 1 ? '' : 's'} installed
-        </span>
-        <span>
-          {freeDiskBytes !== null ? `${gb(freeDiskBytes)} GB free` : ''}
-        </span>
-      </div>
 
       {confirmModel ? (
         <ConfirmDialog
