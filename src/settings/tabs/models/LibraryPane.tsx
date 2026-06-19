@@ -15,20 +15,14 @@ import { invoke } from '@tauri-apps/api/core';
 
 import { useModelCapabilities } from '../../../hooks/useModelCapabilities';
 import { ConfirmDialog } from '../../components';
+import { RAM_FIT_LABEL } from '../../../utils/ramFit';
 import styles from './LibraryPane.module.css';
 import type { RawAppConfig } from '../../types';
 import type { InstalledModel, RamFit } from '../../../types/starter';
 
 const HF_BASE_URL = 'https://huggingface.co';
 
-/** RAM-fit hint label shown next to a model. */
-const FIT_LABEL: Record<RamFit, string> = {
-  fits: 'Comfortable',
-  tight: 'Tight',
-  too_big: 'Heavy',
-};
-
-/** RAM-fit hint colour class on this pane's stylesheet. */
+/** RAM-fit hint colour class on this pane's stylesheet (labels are shared). */
 const FIT_CLASS: Record<RamFit, string> = {
   fits: styles.fitOk,
   tight: styles.fitTight,
@@ -200,7 +194,7 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                   <div className={styles.right}>
                     {m.fit ? (
                       <span className={`${styles.fit} ${FIT_CLASS[m.fit]}`}>
-                        {FIT_LABEL[m.fit]}
+                        {RAM_FIT_LABEL[m.fit]}
                       </span>
                     ) : null}
                     {caps?.vision ? (

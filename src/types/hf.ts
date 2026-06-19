@@ -18,10 +18,10 @@ import type { RamFit } from './starter';
  * - `downloads` is Hugging Face's all-time download count for the repo.
  * - `gated` is true when the repo requires accepting terms or auth; an
  *   anonymous download fails, so the Discover row disables download for it.
- * - `est_runtime_gb` / `fit` are estimated from the parameter count in the
- *   repo id (no file size is available at search time); both are `null` when
- *   the id carries no `<number>B` token, and `fit` is also `null` when host
- *   RAM is unknown. Accurate per-quant fit arrives at the expand step.
+ * - `fit` is the estimated RAM-fit for this Mac, derived from the parameter
+ *   count in the repo id (no file size is available at search time); it is
+ *   `null` when the id carries no `<number>B` token or host RAM is unknown.
+ *   Accurate per-quant fit arrives at the expand step.
  */
 export interface HfModelSummary {
   /** Canonical `owner/repo` slug. */
@@ -30,8 +30,6 @@ export interface HfModelSummary {
   downloads: number;
   /** True when the repo is gated; anonymous downloads fail. */
   gated: boolean;
-  /** Estimated resident footprint in GiB, or `null` when not derivable. */
-  est_runtime_gb?: number | null;
   /** Estimated RAM-fit for this Mac, or `null` when not derivable. */
   fit?: RamFit | null;
 }

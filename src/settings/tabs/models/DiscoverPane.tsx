@@ -18,6 +18,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { DownloadProgress } from '../../../components/DownloadProgress';
 import { useDownloadModel } from '../../../hooks/useDownloadModel';
 import { useHfSearch } from './useHfSearch';
+import { RAM_FIT_LABEL } from '../../../utils/ramFit';
 import styles from './DiscoverPane.module.css';
 import type { HfModelSummary } from '../../../types/hf';
 import type { HfGgufFile, RamFit } from '../../../types/starter';
@@ -25,14 +26,7 @@ import type { RawAppConfig } from '../../types';
 
 const HF_BASE_URL = 'https://huggingface.co';
 
-/** RAM-fit hint label (shared vocabulary with the Library pane). */
-const FIT_LABEL: Record<RamFit, string> = {
-  fits: 'Comfortable',
-  tight: 'Tight',
-  too_big: 'Heavy',
-};
-
-/** RAM-fit hint colour class on this pane's stylesheet. */
+/** RAM-fit hint colour class on this pane's stylesheet (labels are shared). */
 const FIT_CLASS: Record<RamFit, string> = {
   fits: styles.fitOk,
   tight: styles.fitTight,
@@ -228,7 +222,7 @@ function DiscoverRow({ model, onSaved }: DiscoverRowProps) {
         </div>
         {model.fit ? (
           <span className={`${styles.fit} ${FIT_CLASS[model.fit]}`}>
-            {FIT_LABEL[model.fit]}
+            {RAM_FIT_LABEL[model.fit]}
           </span>
         ) : null}
         <button
@@ -265,7 +259,7 @@ function DiscoverRow({ model, onSaved }: DiscoverRowProps) {
                   <span className={styles.quantName}>{f.file}</span>
                   {f.fit ? (
                     <span className={`${styles.fit} ${FIT_CLASS[f.fit]}`}>
-                      {FIT_LABEL[f.fit]}
+                      {RAM_FIT_LABEL[f.fit]}
                     </span>
                   ) : null}
                   <span className={styles.quantSize}>

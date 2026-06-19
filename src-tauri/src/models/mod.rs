@@ -1586,15 +1586,14 @@ pub fn parse_search_results(body: &[u8]) -> Result<Vec<HfModelSummary>, String> 
 // are deliberately approximate: the result is a hint, never a hard gate.
 
 /// A Hugging Face search row annotated with a best-effort RAM-fit hint for the
-/// host. The base summary carries the Hub facts; `est_runtime_gb` and `fit`
-/// are estimated from the parameter count parsed out of the repo id (no file
-/// size is available at search time). Both are `None` when the id carries no
-/// `<number>B` token; `fit` is additionally `None` when host RAM is unknown.
+/// host. The base summary carries the Hub facts; `fit` is estimated from the
+/// parameter count parsed out of the repo id (no file size is available at
+/// search time) and is `None` when the id carries no `<number>B` token or when
+/// host RAM is unknown.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HfModelRow {
     #[serde(flatten)]
     pub summary: HfModelSummary,
-    pub est_runtime_gb: Option<f64>,
     pub fit: Option<registry::RamFit>,
 }
 
@@ -1663,17 +1662,14 @@ pub fn annotate_search_rows(summaries: Vec<HfModelSummary>, ram_bytes: u64) -> V
     summaries
         .into_iter()
         .map(|summary| {
-            let est_runtime_gb =
-                parse_param_billions(&summary.id).map(estimate_runtime_gb_from_params);
-            let fit = match est_runtime_gb {
-                Some(est) if ram_bytes > 0 => Some(registry::ram_fit(est, ram_bytes)),
+            let fit = match parse_param_billions(&summary.id) {
+                Some(params_b) if ram_bytes > 0 => Some(registry::ram_fit(
+                    estimate_runtime_gb_from_params(params_b),
+                    ram_bytes,
+                )),
                 _ => None,
             };
-            HfModelRow {
-                summary,
-                est_runtime_gb,
-                fit,
-            }
+            HfModelRow { summary, fit }
         })
         .collect()
 }
@@ -4679,12 +4675,9 @@ mod tests {
         // 64 GiB host: the 1B model fits, the param-less row stays unannotated.
         let rows = annotate_search_rows(summaries.clone(), 64 << 30);
         assert_eq!(rows[0].fit, Some(registry::RamFit::Fits));
-        assert!(rows[0].est_runtime_gb.is_some());
-        assert_eq!(rows[1].est_runtime_gb, None);
         assert_eq!(rows[1].fit, None);
-        // Unknown host RAM keeps the size estimate but drops the fit verdict.
+        // Unknown host RAM drops the fit verdict even when params parse.
         let rows = annotate_search_rows(summaries, 0);
-        assert!(rows[0].est_runtime_gb.is_some());
         assert_eq!(rows[0].fit, None);
     }
 
@@ -4740,7 +4733,6 @@ mod tests {
                 downloads: 3,
                 gated: false,
             },
-            est_runtime_gb: Some(7.0),
             fit: Some(registry::RamFit::Tight),
         };
         assert_eq!(
@@ -4749,7 +4741,6 @@ mod tests {
                 "id": "o/r",
                 "downloads": 3,
                 "gated": false,
-                "est_runtime_gb": 7.0,
                 "fit": "tight",
             })
         );

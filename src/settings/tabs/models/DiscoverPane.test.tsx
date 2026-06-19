@@ -67,7 +67,6 @@ const RESULTS: HfModelSummary[] = [
     id: 'google/gemma-4-12b-it-GGUF',
     downloads: 1_200_000,
     gated: false,
-    est_runtime_gb: 9.5,
     fit: 'fits',
   },
   { id: 'unsloth/gemma-4-27b-it-GGUF', downloads: 410_000, gated: false },
