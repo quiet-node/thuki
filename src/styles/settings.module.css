@@ -332,6 +332,21 @@
   background: var(--accent);
 }
 
+/* Row holding the segmented control (and, on Library, the Add-model action). */
+.barrow {
+  display: flex;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+/* Interim copy for the Library / Discover panes while they are being built. */
+.modelsPlaceholder {
+  padding: 48px 8px;
+  color: var(--t2);
+  font-size: 13px;
+  text-align: center;
+}
+
 /* ─── Body (scrolling content) ──────────────────────────────────────────── */
 
 .body {

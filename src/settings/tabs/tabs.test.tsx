@@ -170,7 +170,11 @@ async function renderModelTab() {
 describe('ModelTab', () => {
   it('renders Providers and Prompt sections with the expected labels', async () => {
     await renderModelTab();
-    expect(screen.getByText('Providers')).toBeInTheDocument();
+    // `selector: 'div'` targets the section heading, not the same-named
+    // segmented-control tab button.
+    expect(
+      screen.getByText('Providers', { selector: 'div' }),
+    ).toBeInTheDocument();
     expect(screen.getByText('Built-in (Thuki)')).toBeInTheDocument();
     // Built-in is selectable (no more "upcoming version" badge); Ollama is
     // the active provider in this config.
@@ -181,6 +185,34 @@ describe('ModelTab', () => {
     expect(screen.getByText('Prompt')).toBeInTheDocument();
     expect(screen.getByText('Ollama URL')).toBeInTheDocument();
     expect(screen.getByText('System prompt')).toBeInTheDocument();
+  });
+
+  it('defaults to the Providers view', async () => {
+    await renderModelTab();
+    expect(screen.getByRole('tab', { name: 'Providers' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('switches to the Discover view via the segmented control', async () => {
+    await renderModelTab();
+    fireEvent.click(screen.getByRole('tab', { name: 'Discover' }));
+    expect(
+      screen.getByText(/Browse and download Hugging Face/),
+    ).toBeInTheDocument();
+    // Providers content is unmounted while Discover is showing.
+    expect(
+      screen.queryByRole('radio', { name: 'Use Built-in (Thuki)' }),
+    ).toBeNull();
+  });
+
+  it('switches to the Library view via the segmented control', async () => {
+    await renderModelTab();
+    fireEvent.click(screen.getByRole('tab', { name: 'Library' }));
+    expect(
+      screen.getByText(/installed models will appear/),
+    ).toBeInTheDocument();
   });
 
   it('renders the Ollama URL field seeded from the active provider base_url', async () => {

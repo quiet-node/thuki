@@ -19,6 +19,7 @@ import {
   BuiltinProviderCard,
   OpenAiProviderCard,
 } from './ProviderCards';
+import { ModelsSegmented, type ModelsSubview } from './models/ModelsSegmented';
 import { useDebouncedSave } from '../hooks/useDebouncedSave';
 import { useModelSelection } from '../../hooks/useModelSelection';
 import { isNonLocalUrl } from '../../utils/isNonLocalUrl';
@@ -86,6 +87,9 @@ const CTX_TICKS = [
 ];
 
 export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
+  // Which of the three Models sub-views is showing. Providers is the default
+  // (the active provider + generation controls, the most-used surface).
+  const [view, setView] = useState<ModelsSubview>('providers');
   const [inactivityMin, setInactivityMin] = useState(
     config.inference.keep_warm_inactivity_minutes,
   );
@@ -285,455 +289,482 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
 
   return (
     <>
-      <Section heading="Providers">
-        <div
-          className={providerCardClass(activeKind === 'builtin')}
-          data-provider-card="builtin"
-        >
-          <label className={styles.providerSelectRow}>
-            <input
-              type="radio"
-              className={styles.providerRadio}
-              name="active-provider"
-              aria-label="Use Built-in (Thuki)"
-              checked={activeKind === 'builtin'}
-              onChange={() => selectProvider(builtinProvider?.id ?? 'builtin')}
-            />
-            <span className={styles.providerName}>
-              {builtinProvider?.label ?? 'Built-in (Thuki)'}
-            </span>
-          </label>
-          <BuiltinProviderCard config={config} onSaved={onSaved} />
-        </div>
+      <div className={styles.barrow}>
+        <ModelsSegmented value={view} onChange={setView} />
+      </div>
 
-        <div
-          className={providerCardClass(activeKind === 'ollama')}
-          data-provider-card="ollama"
-        >
-          <label className={styles.providerSelectRow}>
-            <input
-              type="radio"
-              className={styles.providerRadio}
-              name="active-provider"
-              aria-label="Use Ollama"
-              checked={activeKind === 'ollama'}
-              onChange={() => selectProvider('ollama')}
-            />
-            <span className={styles.providerName}>Ollama</span>
-          </label>
-          <SettingRow
-            label="Ollama URL"
-            helper={configHelp('inference', 'ollama_base_url')}
-          >
-            <input
-              type="text"
-              className={styles.input}
-              value={ollamaUrl}
-              aria-label="Ollama URL"
-              spellCheck={false}
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              placeholder="http://127.0.0.1:11434"
-              onFocus={() => {
-                ollamaUrlFocusedRef.current = true;
-              }}
-              onChange={(e) => setOllamaUrl(e.target.value)}
-              onBlur={() => {
-                ollamaUrlFocusedRef.current = false;
-                commitOllamaUrl();
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-              }}
-            />
-          </SettingRow>
-          {isNonLocalUrl(ollamaUrl) && (
-            <p className={styles.providerWarning} role="alert">
-              This points Thuki at a non-local Ollama server. You are
-              responsible for securing it: prefer a VPN/Tailscale or SSH tunnel
-              over exposing the port directly.
-            </p>
-          )}
-          {/* get_model_picker_state is scoped to the ACTIVE provider, so this
-              inventory only describes Ollama while Ollama is active. Hide the
-              row otherwise to avoid listing another provider's models here. */}
-          {activeKind === 'ollama' ? (
-            <SettingRow label="Model">
-              {availableModels.length > 0 ? (
-                <Dropdown
-                  value={modelValue}
-                  options={availableModels}
-                  onChange={(m) => void setActiveModel(m)}
-                  ariaLabel="Active Ollama model"
-                />
-              ) : (
-                <span className={styles.providerHint}>No models installed</span>
-              )}
-            </SettingRow>
-          ) : null}
+      {view === 'library' ? (
+        <div className={styles.modelsPlaceholder}>
+          Your installed models will appear here.
         </div>
+      ) : null}
 
-        {/* The OpenAI-compatible provider KIND is gated behind a
-            compile-time, dev-only flag (off in shipped builds): both the
-            management card and the "add a server" affordance are the only UI
-            paths to create or manage one, so hiding them keeps the kind out of
-            reach of end users. The shared /v1 backend stays live for the
-            built-in engine regardless. */}
-        {openaiProviderEnabled ? (
-          openaiProvider ? (
+      {view === 'discover' ? (
+        <div className={styles.modelsPlaceholder}>
+          Browse and download Hugging Face models here.
+        </div>
+      ) : null}
+
+      {view === 'providers' ? (
+        <>
+          <Section heading="Providers">
             <div
-              className={providerCardClass(activeKind === 'openai')}
-              data-provider-card="openai"
+              className={providerCardClass(activeKind === 'builtin')}
+              data-provider-card="builtin"
             >
               <label className={styles.providerSelectRow}>
                 <input
                   type="radio"
                   className={styles.providerRadio}
                   name="active-provider"
-                  aria-label="Use OpenAI-compatible server"
-                  checked={activeKind === 'openai'}
-                  onChange={() => selectProvider(openaiProvider.id)}
+                  aria-label="Use Built-in (Thuki)"
+                  checked={activeKind === 'builtin'}
+                  onChange={() =>
+                    selectProvider(builtinProvider?.id ?? 'builtin')
+                  }
                 />
                 <span className={styles.providerName}>
-                  {openaiProvider.label}
+                  {builtinProvider?.label ?? 'Built-in (Thuki)'}
                 </span>
               </label>
-              <OpenAiProviderCard
-                provider={openaiProvider}
-                resyncToken={resyncToken}
-                onSaved={onSaved}
-              />
+              <BuiltinProviderCard config={config} onSaved={onSaved} />
             </div>
-          ) : (
-            <AddOpenAiProvider onSaved={onSaved} />
-          )
-        ) : null}
-      </Section>
 
-      {/* Unified residency control: one Keep Warm knob bound to
+            <div
+              className={providerCardClass(activeKind === 'ollama')}
+              data-provider-card="ollama"
+            >
+              <label className={styles.providerSelectRow}>
+                <input
+                  type="radio"
+                  className={styles.providerRadio}
+                  name="active-provider"
+                  aria-label="Use Ollama"
+                  checked={activeKind === 'ollama'}
+                  onChange={() => selectProvider('ollama')}
+                />
+                <span className={styles.providerName}>Ollama</span>
+              </label>
+              <SettingRow
+                label="Ollama URL"
+                helper={configHelp('inference', 'ollama_base_url')}
+              >
+                <input
+                  type="text"
+                  className={styles.input}
+                  value={ollamaUrl}
+                  aria-label="Ollama URL"
+                  spellCheck={false}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  placeholder="http://127.0.0.1:11434"
+                  onFocus={() => {
+                    ollamaUrlFocusedRef.current = true;
+                  }}
+                  onChange={(e) => setOllamaUrl(e.target.value)}
+                  onBlur={() => {
+                    ollamaUrlFocusedRef.current = false;
+                    commitOllamaUrl();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter')
+                      (e.target as HTMLInputElement).blur();
+                  }}
+                />
+              </SettingRow>
+              {isNonLocalUrl(ollamaUrl) && (
+                <p className={styles.providerWarning} role="alert">
+                  This points Thuki at a non-local Ollama server. You are
+                  responsible for securing it: prefer a VPN/Tailscale or SSH
+                  tunnel over exposing the port directly.
+                </p>
+              )}
+              {/* get_model_picker_state is scoped to the ACTIVE provider, so this
+              inventory only describes Ollama while Ollama is active. Hide the
+              row otherwise to avoid listing another provider's models here. */}
+              {activeKind === 'ollama' ? (
+                <SettingRow label="Model">
+                  {availableModels.length > 0 ? (
+                    <Dropdown
+                      value={modelValue}
+                      options={availableModels}
+                      onChange={(m) => void setActiveModel(m)}
+                      ariaLabel="Active Ollama model"
+                    />
+                  ) : (
+                    <span className={styles.providerHint}>
+                      No models installed
+                    </span>
+                  )}
+                </SettingRow>
+              ) : null}
+            </div>
+
+            {/* The OpenAI-compatible provider KIND is gated behind a
+            compile-time, dev-only flag (off in shipped builds): both the
+            management card and the "add a server" affordance are the only UI
+            paths to create or manage one, so hiding them keeps the kind out of
+            reach of end users. The shared /v1 backend stays live for the
+            built-in engine regardless. */}
+            {openaiProviderEnabled ? (
+              openaiProvider ? (
+                <div
+                  className={providerCardClass(activeKind === 'openai')}
+                  data-provider-card="openai"
+                >
+                  <label className={styles.providerSelectRow}>
+                    <input
+                      type="radio"
+                      className={styles.providerRadio}
+                      name="active-provider"
+                      aria-label="Use OpenAI-compatible server"
+                      checked={activeKind === 'openai'}
+                      onChange={() => selectProvider(openaiProvider.id)}
+                    />
+                    <span className={styles.providerName}>
+                      {openaiProvider.label}
+                    </span>
+                  </label>
+                  <OpenAiProviderCard
+                    provider={openaiProvider}
+                    resyncToken={resyncToken}
+                    onSaved={onSaved}
+                  />
+                </div>
+              ) : (
+                <AddOpenAiProvider onSaved={onSaved} />
+              )
+            ) : null}
+          </Section>
+
+          {/* Unified residency control: one Keep Warm knob bound to
           keep_warm_inactivity_minutes, shown for both local providers
           (built-in engine and Ollama) and hidden for OpenAI (Thuki does not
           manage a remote server's residency). The status row branches by
           kind: the built-in engine reports its sidecar lifecycle, Ollama
           reports the model resident in VRAM. */}
-      {activeKind === 'builtin' || activeKind === 'ollama' ? (
-        <Section heading="Keep Warm">
-          {/* Row 1: label + [?] on left | Release after [N] min on right */}
-          <div className={styles.keepWarmRow1}>
-            <div className={styles.keepWarmLabelLine}>
-              <span className={styles.keepWarmLabel}>
-                Keep active model in memory
-              </span>
-              <Tooltip label={KEEP_WARM_TOOLTIP} multiline>
-                <button
-                  type="button"
-                  className={styles.infoBtn}
-                  aria-label="About Keep active model in memory"
-                >
-                  ?
-                </button>
-              </Tooltip>
-            </div>
-            <div className={styles.keepWarmTimerGroup}>
-              <span className={styles.keepWarmBarFieldLabel}>
-                Release after
-              </span>
-              <input
-                type="number"
-                className={styles.keepWarmNumberInput}
-                value={rawMin}
-                min={-1}
-                max={1440}
-                aria-label="Release after N minutes"
-                onFocus={() => {
-                  minFocusedRef.current = true;
-                }}
-                onChange={(e) => {
-                  const n = parseInt(e.target.value, 10);
-                  if (Number.isNaN(n)) {
-                    setRawMin(e.target.value);
-                  } else {
-                    const clamped = Math.max(-1, Math.min(1440, n));
-                    setRawMin(String(clamped));
-                    setInactivityMin(clamped);
-                  }
-                }}
-                onBlur={() => {
-                  minFocusedRef.current = false;
-                  if (Number.isNaN(parseInt(rawMin, 10))) {
-                    setRawMin('0');
-                    setInactivityMin(0);
-                  }
-                }}
-              />
-              <span className={styles.keepWarmUnit}>min</span>
-            </div>
-          </div>
-
-          {/* Row 2: residency status on left | Unload now on right. */}
-          {activeKind === 'builtin' ? (
-            <div className={styles.keepWarmStatusRow}>
-              <span className={styles.engineStatusLine}>
-                Engine: {engineState}
-              </span>
-              <button
-                type="button"
-                className={styles.keepWarmEjectPill}
-                aria-label="Unload now"
-                disabled={engineState !== 'loaded'}
-                onClick={handleEngineEject}
-              >
-                Unload now
-              </button>
-            </div>
-          ) : (
-            <div className={styles.keepWarmStatusRow}>
-              <div className={styles.keepWarmStatusLeft}>
-                {loadedModel !== null ? (
-                  <div className={styles.keepWarmVramSubtitle}>
-                    <span
-                      className={styles.keepWarmVramDot}
-                      data-testid="vram-status-dot"
-                      aria-hidden="true"
-                    />
-                    <span className={styles.keepWarmVramModelName}>
-                      {loadedModel}
-                    </span>
-                    <span>&nbsp;· in VRAM</span>
-                  </div>
-                ) : (
-                  <span className={styles.keepWarmNoModel}>
-                    No model loaded
+          {activeKind === 'builtin' || activeKind === 'ollama' ? (
+            <Section heading="Keep Warm">
+              {/* Row 1: label + [?] on left | Release after [N] min on right */}
+              <div className={styles.keepWarmRow1}>
+                <div className={styles.keepWarmLabelLine}>
+                  <span className={styles.keepWarmLabel}>
+                    Keep active model in memory
                   </span>
-                )}
+                  <Tooltip label={KEEP_WARM_TOOLTIP} multiline>
+                    <button
+                      type="button"
+                      className={styles.infoBtn}
+                      aria-label="About Keep active model in memory"
+                    >
+                      ?
+                    </button>
+                  </Tooltip>
+                </div>
+                <div className={styles.keepWarmTimerGroup}>
+                  <span className={styles.keepWarmBarFieldLabel}>
+                    Release after
+                  </span>
+                  <input
+                    type="number"
+                    className={styles.keepWarmNumberInput}
+                    value={rawMin}
+                    min={-1}
+                    max={1440}
+                    aria-label="Release after N minutes"
+                    onFocus={() => {
+                      minFocusedRef.current = true;
+                    }}
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      if (Number.isNaN(n)) {
+                        setRawMin(e.target.value);
+                      } else {
+                        const clamped = Math.max(-1, Math.min(1440, n));
+                        setRawMin(String(clamped));
+                        setInactivityMin(clamped);
+                      }
+                    }}
+                    onBlur={() => {
+                      minFocusedRef.current = false;
+                      if (Number.isNaN(parseInt(rawMin, 10))) {
+                        setRawMin('0');
+                        setInactivityMin(0);
+                      }
+                    }}
+                  />
+                  <span className={styles.keepWarmUnit}>min</span>
+                </div>
               </div>
 
-              <button
-                type="button"
-                className={styles.keepWarmEjectPill}
-                aria-label="Unload now"
-                disabled={ejecting || loadedModel === null}
-                data-ejecting={ejecting}
-                onClick={handleEject}
-              >
-                {ejecting ? (
-                  <DrawCheckIcon />
-                ) : (
-                  <svg
-                    viewBox="0 0 16 16"
-                    width="11"
-                    height="11"
-                    fill="currentColor"
-                    aria-hidden="true"
+              {/* Row 2: residency status on left | Unload now on right. */}
+              {activeKind === 'builtin' ? (
+                <div className={styles.keepWarmStatusRow}>
+                  <span className={styles.engineStatusLine}>
+                    Engine: {engineState}
+                  </span>
+                  <button
+                    type="button"
+                    className={styles.keepWarmEjectPill}
+                    aria-label="Unload now"
+                    disabled={engineState !== 'loaded'}
+                    onClick={handleEngineEject}
                   >
-                    <polygon points="8,2 14,11 2,11" />
-                    <rect x="2" y="12.5" width="12" height="2" rx="1" />
-                  </svg>
-                )}
-                Unload now
-              </button>
-            </div>
-          )}
-        </Section>
-      ) : null}
+                    Unload now
+                  </button>
+                </div>
+              ) : (
+                <div className={styles.keepWarmStatusRow}>
+                  <div className={styles.keepWarmStatusLeft}>
+                    {loadedModel !== null ? (
+                      <div className={styles.keepWarmVramSubtitle}>
+                        <span
+                          className={styles.keepWarmVramDot}
+                          data-testid="vram-status-dot"
+                          aria-hidden="true"
+                        />
+                        <span className={styles.keepWarmVramModelName}>
+                          {loadedModel}
+                        </span>
+                        <span>&nbsp;· in VRAM</span>
+                      </div>
+                    ) : (
+                      <span className={styles.keepWarmNoModel}>
+                        No model loaded
+                      </span>
+                    )}
+                  </div>
 
-      <Section heading="Context Window">
-        <div className={styles.ctxBlock}>
-          {/* Label row: "Context window" left + editable token chip right */}
-          <div className={styles.ctxTopRow}>
-            <span className={styles.ctxLabel}>Context window</span>
-            <div className={styles.ctxChipGroup}>
-              <input
-                type="number"
-                className={styles.ctxChipInput}
-                value={ctxChip}
-                min={CTX_MIN}
-                max={CTX_MAX}
-                aria-label="Context window tokens"
-                onChange={(e) => setCtxChip(e.target.value)}
-                onBlur={() => {
-                  const n = parseInt(ctxChip, 10);
-                  if (!Number.isNaN(n) && n >= CTX_MIN) {
-                    // Clamp upper bound so the UI mirrors the backend
-                    // BOUNDS_NUM_CTX cap and the slider stays in sync.
-                    commitCtx(Math.min(n, CTX_MAX));
-                  } else {
-                    setCtxChip(String(numCtx));
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                }}
-              />
-              <span className={styles.ctxChipUnit}>tokens</span>
-            </div>
-          </div>
-
-          {/* Log-scale slider — fill percentage tracked via CSS custom property */}
-          <input
-            type="range"
-            className={styles.ctxSlider}
-            style={{ '--fill': fillPct } as React.CSSProperties}
-            min={0}
-            max={1000}
-            step={1}
-            value={ctxPos}
-            aria-label="Context window tokens"
-            aria-valuemin={CTX_MIN}
-            aria-valuemax={CTX_MAX}
-            aria-valuenow={numCtx}
-            aria-valuetext={`${numCtx} tokens`}
-            onChange={(e) => {
-              ctxDraggingRef.current = true;
-              const pos = Number(e.target.value);
-              setCtxPos(pos);
-              setCtxChip(String(posToCtx(pos)));
-            }}
-            onMouseUp={() => {
-              ctxDraggingRef.current = false;
-              commitCtx(posToCtx(ctxPos));
-            }}
-            onTouchEnd={() => {
-              ctxDraggingRef.current = false;
-              commitCtx(posToCtx(ctxPos));
-            }}
-            onKeyUp={() => {
-              if (!ctxDraggingRef.current) commitCtx(posToCtx(ctxPos));
-            }}
-          />
-
-          <div className={styles.ctxTickRow} aria-hidden="true">
-            {CTX_TICKS.map((label, i) => (
-              <span
-                key={label}
-                className={styles.ctxTick}
-                style={{ left: `${(i / (CTX_TICKS.length - 1)) * 100}%` }}
-              >
-                {label}
-              </span>
-            ))}
-          </div>
-
-          {activeKind === 'builtin' &&
-          (engineState === 'starting' || engineState === 'stopping') ? (
-            <div className={styles.ctxApplyingHint} role="status">
-              Applying… the engine restarts with the new context on your next
-              message.
-            </div>
+                  <button
+                    type="button"
+                    className={styles.keepWarmEjectPill}
+                    aria-label="Unload now"
+                    disabled={ejecting || loadedModel === null}
+                    data-ejecting={ejecting}
+                    onClick={handleEject}
+                  >
+                    {ejecting ? (
+                      <DrawCheckIcon />
+                    ) : (
+                      <svg
+                        viewBox="0 0 16 16"
+                        width="11"
+                        height="11"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <polygon points="8,2 14,11 2,11" />
+                        <rect x="2" y="12.5" width="12" height="2" rx="1" />
+                      </svg>
+                    )}
+                    Unload now
+                  </button>
+                </div>
+              )}
+            </Section>
           ) : null}
 
-          <div className={styles.ctxHelper}>
-            ~{ctxTurns.toLocaleString()} turns of context
-            {' · '}
-            {activeKind === 'builtin'
-              ? 'Passed to the engine as --ctx-size at start; changing it restarts the engine.'
-              : activeKind === 'openai'
-                ? 'Informational only; your server controls the actual context.'
-                : "Ollama caps to your model's trained maximum."}
-          </div>
-
-          <div className={styles.ctxVramNote}>
-            <span className={styles.ctxVramIcon} aria-hidden="true">
-              ⚠
-            </span>
-            <span>
-              The KV cache scales linearly with context length, so doubling the
-              context roughly doubles its memory footprint (model weights stay
-              the same). Benchmark with your hardware before pushing it high.{' '}
-              <button
-                type="button"
-                className={styles.ctxVramLink}
-                onClick={() => {
-                  void invoke('open_url', {
-                    url: 'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md#the-5-minute-benchmark-recipe',
-                  });
-                }}
-              >
-                Learn how to tune Context Window in 5 minute ↗
-              </button>
-            </span>
-          </div>
-        </div>
-      </Section>
-
-      <Section heading="Prompt">
-        <SaveField
-          section="prompt"
-          fieldKey="system"
-          label="System prompt"
-          helper={configHelp('prompt', 'system')}
-          vertical
-          initialValue={config.prompt.system}
-          resyncToken={resyncToken}
-          onSaved={onSaved}
-          render={(value, setValue) => (
-            <>
-              <Textarea
-                value={value}
-                onChange={setValue}
-                placeholder="Persona prompt…"
-                maxLength={PROMPT_MAX_CHARS}
-                ariaLabel="System prompt"
-                rows={PROMPT_TEXTAREA_ROWS}
-              />
-              <div className={styles.charCounter}>
-                {value.length} / {PROMPT_MAX_CHARS}
+          <Section heading="Context Window">
+            <div className={styles.ctxBlock}>
+              {/* Label row: "Context window" left + editable token chip right */}
+              <div className={styles.ctxTopRow}>
+                <span className={styles.ctxLabel}>Context window</span>
+                <div className={styles.ctxChipGroup}>
+                  <input
+                    type="number"
+                    className={styles.ctxChipInput}
+                    value={ctxChip}
+                    min={CTX_MIN}
+                    max={CTX_MAX}
+                    aria-label="Context window tokens"
+                    onChange={(e) => setCtxChip(e.target.value)}
+                    onBlur={() => {
+                      const n = parseInt(ctxChip, 10);
+                      if (!Number.isNaN(n) && n >= CTX_MIN) {
+                        // Clamp upper bound so the UI mirrors the backend
+                        // BOUNDS_NUM_CTX cap and the slider stays in sync.
+                        commitCtx(Math.min(n, CTX_MAX));
+                      } else {
+                        setCtxChip(String(numCtx));
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter')
+                        (e.target as HTMLInputElement).blur();
+                    }}
+                  />
+                  <span className={styles.ctxChipUnit}>tokens</span>
+                </div>
               </div>
-            </>
-          )}
-        />
-      </Section>
 
-      <div className={styles.devSection}>
-        <button
-          type="button"
-          className={styles.devTrigger}
-          aria-expanded={devOpen}
-          aria-controls="dev-diagnostics"
-          onClick={() => setDevOpen((o) => !o)}
-        >
-          <span className={styles.devTriggerLabel}>Diagnostics</span>
-          <span className={styles.devTag}>DEV</span>
-          <svg
-            className={`${styles.devChevron} ${devOpen ? styles.devChevronOpen : ''}`}
-            viewBox="0 0 10 10"
-            fill="currentColor"
-            aria-hidden
-          >
-            <path
-              d="M3 2l4 3-4 3"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              fill="none"
-            />
-          </svg>
-        </button>
-        {devOpen && (
-          <div id="dev-diagnostics">
+              {/* Log-scale slider — fill percentage tracked via CSS custom property */}
+              <input
+                type="range"
+                className={styles.ctxSlider}
+                style={{ '--fill': fillPct } as React.CSSProperties}
+                min={0}
+                max={1000}
+                step={1}
+                value={ctxPos}
+                aria-label="Context window tokens"
+                aria-valuemin={CTX_MIN}
+                aria-valuemax={CTX_MAX}
+                aria-valuenow={numCtx}
+                aria-valuetext={`${numCtx} tokens`}
+                onChange={(e) => {
+                  ctxDraggingRef.current = true;
+                  const pos = Number(e.target.value);
+                  setCtxPos(pos);
+                  setCtxChip(String(posToCtx(pos)));
+                }}
+                onMouseUp={() => {
+                  ctxDraggingRef.current = false;
+                  commitCtx(posToCtx(ctxPos));
+                }}
+                onTouchEnd={() => {
+                  ctxDraggingRef.current = false;
+                  commitCtx(posToCtx(ctxPos));
+                }}
+                onKeyUp={() => {
+                  if (!ctxDraggingRef.current) commitCtx(posToCtx(ctxPos));
+                }}
+              />
+
+              <div className={styles.ctxTickRow} aria-hidden="true">
+                {CTX_TICKS.map((label, i) => (
+                  <span
+                    key={label}
+                    className={styles.ctxTick}
+                    style={{ left: `${(i / (CTX_TICKS.length - 1)) * 100}%` }}
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+
+              {activeKind === 'builtin' &&
+              (engineState === 'starting' || engineState === 'stopping') ? (
+                <div className={styles.ctxApplyingHint} role="status">
+                  Applying… the engine restarts with the new context on your
+                  next message.
+                </div>
+              ) : null}
+
+              <div className={styles.ctxHelper}>
+                ~{ctxTurns.toLocaleString()} turns of context
+                {' · '}
+                {activeKind === 'builtin'
+                  ? 'Passed to the engine as --ctx-size at start; changing it restarts the engine.'
+                  : activeKind === 'openai'
+                    ? 'Informational only; your server controls the actual context.'
+                    : "Ollama caps to your model's trained maximum."}
+              </div>
+
+              <div className={styles.ctxVramNote}>
+                <span className={styles.ctxVramIcon} aria-hidden="true">
+                  ⚠
+                </span>
+                <span>
+                  The KV cache scales linearly with context length, so doubling
+                  the context roughly doubles its memory footprint (model
+                  weights stay the same). Benchmark with your hardware before
+                  pushing it high.{' '}
+                  <button
+                    type="button"
+                    className={styles.ctxVramLink}
+                    onClick={() => {
+                      void invoke('open_url', {
+                        url: 'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md#the-5-minute-benchmark-recipe',
+                      });
+                    }}
+                  >
+                    Learn how to tune Context Window in 5 minute ↗
+                  </button>
+                </span>
+              </div>
+            </div>
+          </Section>
+
+          <Section heading="Prompt">
             <SaveField
-              section="debug"
-              fieldKey="trace_enabled"
-              label="Trace recording"
-              helper={configHelp('debug', 'trace_enabled')}
-              initialValue={config.debug.trace_enabled}
+              section="prompt"
+              fieldKey="system"
+              label="System prompt"
+              helper={configHelp('prompt', 'system')}
+              vertical
+              initialValue={config.prompt.system}
               resyncToken={resyncToken}
               onSaved={onSaved}
-              tooltipPlacement="top"
-              rightAlign
               render={(value, setValue) => (
-                <Toggle
-                  checked={value}
-                  onChange={setValue}
-                  ariaLabel="Enable trace recording"
-                />
+                <>
+                  <Textarea
+                    value={value}
+                    onChange={setValue}
+                    placeholder="Persona prompt…"
+                    maxLength={PROMPT_MAX_CHARS}
+                    ariaLabel="System prompt"
+                    rows={PROMPT_TEXTAREA_ROWS}
+                  />
+                  <div className={styles.charCounter}>
+                    {value.length} / {PROMPT_MAX_CHARS}
+                  </div>
+                </>
               )}
             />
+          </Section>
+
+          <div className={styles.devSection}>
+            <button
+              type="button"
+              className={styles.devTrigger}
+              aria-expanded={devOpen}
+              aria-controls="dev-diagnostics"
+              onClick={() => setDevOpen((o) => !o)}
+            >
+              <span className={styles.devTriggerLabel}>Diagnostics</span>
+              <span className={styles.devTag}>DEV</span>
+              <svg
+                className={`${styles.devChevron} ${devOpen ? styles.devChevronOpen : ''}`}
+                viewBox="0 0 10 10"
+                fill="currentColor"
+                aria-hidden
+              >
+                <path
+                  d="M3 2l4 3-4 3"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  fill="none"
+                />
+              </svg>
+            </button>
+            {devOpen && (
+              <div id="dev-diagnostics">
+                <SaveField
+                  section="debug"
+                  fieldKey="trace_enabled"
+                  label="Trace recording"
+                  helper={configHelp('debug', 'trace_enabled')}
+                  initialValue={config.debug.trace_enabled}
+                  resyncToken={resyncToken}
+                  onSaved={onSaved}
+                  tooltipPlacement="top"
+                  rightAlign
+                  render={(value, setValue) => (
+                    <Toggle
+                      checked={value}
+                      onChange={setValue}
+                      ariaLabel="Enable trace recording"
+                    />
+                  )}
+                />
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      ) : null}
     </>
   );
 }

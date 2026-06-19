@@ -567,10 +567,11 @@ describe('SettingsWindow left sidebar (Phase 3)', () => {
   it('renders the section nav as a vertical sidebar', async () => {
     render(<SettingsWindow />);
     await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
-    expect(screen.getByRole('tablist')).toHaveAttribute(
-      'aria-orientation',
-      'vertical',
-    );
+    // Scope to the sidebar: the Models pane also renders a (horizontal)
+    // segmented tablist for Library/Discover/Providers.
+    expect(
+      screen.getByRole('tablist', { name: 'Settings sections' }),
+    ).toHaveAttribute('aria-orientation', 'vertical');
   });
 
   it('renders Models as the first section label', async () => {
