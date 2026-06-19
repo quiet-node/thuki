@@ -29,10 +29,11 @@ use tauri::Manager;
 
 use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
-    HF_API_TIMEOUT_SECS, HF_BASE_URL, HF_SEARCH_LIMIT, MAX_HF_API_BODY_BYTES,
+    HF_API_TIMEOUT_SECS, HF_BASE_URL, HF_SEARCH_LIMIT_MAX, MAX_HF_API_BODY_BYTES,
     MAX_HF_SEARCH_QUERY_LEN, MAX_MODEL_SLUG_LEN, MAX_OLLAMA_SHOW_BODY_BYTES,
-    MAX_OLLAMA_TAGS_BODY_BYTES, OPENAI_MODELS_TIMEOUT_SECS, PROVIDER_ID_BUILTIN,
-    PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+    MAX_OLLAMA_TAGS_BODY_BYTES, OPENAI_MODELS_TIMEOUT_SECS, PARAM_GB_PER_BILLION,
+    PROVIDER_ID_BUILTIN, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+    RUNTIME_OVERHEAD_GB,
 };
 use crate::config::AppConfig;
 
@@ -1575,6 +1576,152 @@ pub fn parse_search_results(body: &[u8]) -> Result<Vec<HfModelSummary>, String> 
         .collect())
 }
 
+// ─── RAM-fit estimation + annotated view rows ────────────────────────────────
+//
+// The model-settings UI surfaces a "will this fit in your Mac's RAM" hint in
+// both Discover and Library. The authoritative per-starter estimate lives in
+// the registry; for arbitrary downloaded/searched models there is no curated
+// number, so these helpers estimate the resident footprint (weights + a fixed
+// KV/runtime overhead) and reuse `registry::ram_fit` for the threshold. They
+// are deliberately approximate: the result is a hint, never a hard gate.
+
+/// A Hugging Face search row annotated with a best-effort RAM-fit hint for the
+/// host. The base summary carries the Hub facts; `est_runtime_gb` and `fit`
+/// are estimated from the parameter count parsed out of the repo id (no file
+/// size is available at search time). Both are `None` when the id carries no
+/// `<number>B` token; `fit` is additionally `None` when host RAM is unknown.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HfModelRow {
+    #[serde(flatten)]
+    pub summary: HfModelSummary,
+    pub est_runtime_gb: Option<f64>,
+    pub fit: Option<registry::RamFit>,
+}
+
+/// A repo `.gguf` file annotated with the accurate per-quant RAM-fit computed
+/// from its real file size. `fit` is `None` when host RAM or the file size is
+/// unknown (both are required to judge fit).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HfGgufFileRow {
+    #[serde(flatten)]
+    pub file: HfGgufFile,
+    pub fit: Option<registry::RamFit>,
+}
+
+/// An installed model annotated with its RAM-fit on the host, computed from the
+/// recorded weights size. `fit` is `None` when host RAM or the size is unknown.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct InstalledModelView {
+    #[serde(flatten)]
+    pub model: manifest::InstalledModel,
+    pub fit: Option<registry::RamFit>,
+}
+
+/// Parses the parameter count in billions from a model repo id by reading the
+/// last `<number>B` token (e.g. `unsloth/Qwen3.5-9B-GGUF` -> `9.0`,
+/// `org/Model-3.8B-it` -> `3.8`). Splits on `/ - _ space` (keeping `.` so a
+/// fractional count survives) and is case-insensitive on the trailing `B`.
+/// Returns `None` when no positive `<number>B` token is present.
+pub fn parse_param_billions(id: &str) -> Option<f64> {
+    let mut found = None;
+    for token in id.split(['/', '-', '_', ' ']) {
+        let Some(stripped) = token
+            .strip_suffix('B')
+            .or_else(|| token.strip_suffix('b'))
+        else {
+            continue;
+        };
+        if let Ok(v) = stripped.parse::<f64>() {
+            if v.is_finite() && v > 0.0 {
+                found = Some(v);
+            }
+        }
+    }
+    found
+}
+
+/// Estimated resident memory (GiB) for a 4-bit GGUF of `params_b` billion
+/// parameters: weights (~[`PARAM_GB_PER_BILLION`]/B) plus the fixed
+/// [`RUNTIME_OVERHEAD_GB`].
+pub fn estimate_runtime_gb_from_params(params_b: f64) -> f64 {
+    params_b * PARAM_GB_PER_BILLION + RUNTIME_OVERHEAD_GB
+}
+
+/// Estimated resident memory (GiB) for a GGUF weights blob of `size_bytes`:
+/// the on-disk size plus the fixed [`RUNTIME_OVERHEAD_GB`].
+pub fn estimate_runtime_gb_from_bytes(size_bytes: u64) -> f64 {
+    size_bytes as f64 / (1u64 << 30) as f64 + RUNTIME_OVERHEAD_GB
+}
+
+/// Clamps a requested search page size to `1..=`[`HF_SEARCH_LIMIT_MAX`] so a
+/// runaway page count cannot request an unbounded result set.
+pub fn clamp_search_limit(limit: usize) -> usize {
+    limit.clamp(1, HF_SEARCH_LIMIT_MAX)
+}
+
+/// Annotates search summaries with an estimated RAM-fit derived from the
+/// parameter count in each repo id. `ram_bytes == 0` (host RAM unknown) leaves
+/// `fit` as `None` even when the size could be estimated.
+pub fn annotate_search_rows(summaries: Vec<HfModelSummary>, ram_bytes: u64) -> Vec<HfModelRow> {
+    summaries
+        .into_iter()
+        .map(|summary| {
+            let est_runtime_gb =
+                parse_param_billions(&summary.id).map(estimate_runtime_gb_from_params);
+            let fit = match est_runtime_gb {
+                Some(est) if ram_bytes > 0 => Some(registry::ram_fit(est, ram_bytes)),
+                _ => None,
+            };
+            HfModelRow {
+                summary,
+                est_runtime_gb,
+                fit,
+            }
+        })
+        .collect()
+}
+
+/// Annotates repo `.gguf` rows with the accurate per-quant RAM-fit from each
+/// file's real size. A row gets `None` when host RAM or the file size is 0.
+pub fn annotate_gguf_rows(files: Vec<HfGgufFile>, ram_bytes: u64) -> Vec<HfGgufFileRow> {
+    files
+        .into_iter()
+        .map(|file| {
+            let fit = if ram_bytes > 0 && file.size_bytes > 0 {
+                Some(registry::ram_fit(
+                    estimate_runtime_gb_from_bytes(file.size_bytes),
+                    ram_bytes,
+                ))
+            } else {
+                None
+            };
+            HfGgufFileRow { file, fit }
+        })
+        .collect()
+}
+
+/// Annotates installed models with their RAM-fit on the host, from the recorded
+/// weights size. A model gets `None` when host RAM or the size is 0.
+pub fn build_installed_views(
+    models: Vec<manifest::InstalledModel>,
+    ram_bytes: u64,
+) -> Vec<InstalledModelView> {
+    models
+        .into_iter()
+        .map(|model| {
+            let fit = if ram_bytes > 0 && model.size_bytes > 0 {
+                Some(registry::ram_fit(
+                    estimate_runtime_gb_from_bytes(model.size_bytes),
+                    ram_bytes,
+                ))
+            } else {
+                None
+            };
+            InstalledModelView { model, fit }
+        })
+        .collect()
+}
+
 /// Validates the query length, runs the Hugging Face GGUF model search against
 /// `base_url`, and parses the result. `base_url` is parameterized so tests
 /// point at a mock server; production passes [`HF_BASE_URL`].
@@ -1582,6 +1729,7 @@ pub async fn fetch_hf_search(
     client: &reqwest::Client,
     base_url: &str,
     query: &str,
+    limit: usize,
 ) -> Result<Vec<HfModelSummary>, String> {
     let query = query.trim();
     if query.len() > MAX_HF_SEARCH_QUERY_LEN {
@@ -1595,7 +1743,7 @@ pub async fn fetch_hf_search(
         query,
         std::time::Duration::from_secs(HF_API_TIMEOUT_SECS),
         MAX_HF_API_BODY_BYTES,
-        HF_SEARCH_LIMIT,
+        limit,
     )
     .await?;
     parse_search_results(&body)
@@ -1617,8 +1765,13 @@ async fn fetch_hf_search_inner(
 ) -> Result<Vec<u8>, String> {
     let endpoint = format!("{}/api/models", base_url.trim_end_matches('/'));
     let limit = limit.to_string();
+    // `pipeline_tag=text-generation` keeps the results to chat/instruct models;
+    // without it an empty query returns the most-downloaded GGUF repos overall,
+    // which are dominated by embedding/reranker repos (sentence-transformers,
+    // BERT) that Thuki cannot run as a chat model.
     let mut params: Vec<(&str, &str)> = vec![
         ("library", "gguf"),
+        ("pipeline_tag", "text-generation"),
         ("sort", "downloads"),
         ("direction", "-1"),
         ("limit", &limit),
@@ -2002,8 +2155,9 @@ pub async fn download_repo_model(
 pub async fn list_hf_repo_ggufs(
     repo: String,
     client: tauri::State<'_, reqwest::Client>,
-) -> Result<Vec<HfGgufFile>, String> {
-    fetch_repo_gguf_listing(&client, HF_BASE_URL, &repo).await
+) -> Result<Vec<HfGgufFileRow>, String> {
+    let files = fetch_repo_gguf_listing(&client, HF_BASE_URL, &repo).await?;
+    Ok(annotate_gguf_rows(files, system_ram_bytes()))
 }
 
 /// Searches Hugging Face for GGUF model repos matching `query`, most-downloaded
@@ -2013,9 +2167,11 @@ pub async fn list_hf_repo_ggufs(
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn search_hf_models(
     query: String,
+    limit: usize,
     client: tauri::State<'_, reqwest::Client>,
-) -> Result<Vec<HfModelSummary>, String> {
-    fetch_hf_search(&client, HF_BASE_URL, &query).await
+) -> Result<Vec<HfModelRow>, String> {
+    let summaries = fetch_hf_search(&client, HF_BASE_URL, &query, clamp_search_limit(limit)).await?;
+    Ok(annotate_search_rows(summaries, system_ram_bytes()))
 }
 
 /// Lists the models served by the configured OpenAI-compatible provider via
@@ -2058,9 +2214,10 @@ pub fn discard_partial_download(
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn list_installed_models(
     db: tauri::State<'_, crate::history::Database>,
-) -> Result<Vec<manifest::InstalledModel>, String> {
+) -> Result<Vec<InstalledModelView>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    manifest::list(&conn).map_err(|e| e.to_string())
+    let models = manifest::list(&conn).map_err(|e| e.to_string())?;
+    Ok(build_installed_views(models, system_ram_bytes()))
 }
 
 /// Deletes an installed model: manifest row, orphaned blobs, and (when it was
@@ -4466,6 +4623,151 @@ mod tests {
         );
     }
 
+    // ── RAM-fit estimation + annotated views ─────────────────────────────────
+
+    #[test]
+    fn parse_param_billions_reads_last_b_token() {
+        assert_eq!(parse_param_billions("unsloth/Qwen3.5-9B-GGUF"), Some(9.0));
+        assert_eq!(parse_param_billions("org/Model-3.8B-it"), Some(3.8));
+        assert_eq!(
+            parse_param_billions("bartowski/Llama-3.3-8B-Instruct-GGUF"),
+            Some(8.0)
+        );
+        // Lowercase trailing b is accepted.
+        assert_eq!(parse_param_billions("org/qwen-9b-gguf"), Some(9.0));
+        // Multiple B tokens: the rightmost positive one wins.
+        assert_eq!(parse_param_billions("org/Qwen3-235B-A22B"), Some(235.0));
+    }
+
+    #[test]
+    fn parse_param_billions_returns_none_without_a_param_token() {
+        assert_eq!(parse_param_billions("google/bert-base-uncased"), None);
+        assert_eq!(parse_param_billions(""), None);
+        // A zero count is not a usable estimate.
+        assert_eq!(parse_param_billions("org/0B-weird"), None);
+        // A non-numeric prefix before B does not parse.
+        assert_eq!(parse_param_billions("org/Model-AxB"), None);
+    }
+
+    #[test]
+    fn estimate_runtime_gb_helpers_add_overhead() {
+        // 8B * 0.65 + 2.0 overhead.
+        assert!((estimate_runtime_gb_from_params(8.0) - 7.2).abs() < 1e-9);
+        // 1 GiB weights + 2.0 overhead.
+        assert!((estimate_runtime_gb_from_bytes(1 << 30) - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clamp_search_limit_bounds_the_page_size() {
+        assert_eq!(clamp_search_limit(0), 1);
+        assert_eq!(clamp_search_limit(50), 50);
+        assert_eq!(clamp_search_limit(10_000), HF_SEARCH_LIMIT_MAX);
+    }
+
+    #[test]
+    fn annotate_search_rows_estimates_fit_and_handles_unknowns() {
+        let summaries = vec![
+            HfModelSummary {
+                id: "org/Tiny-1B-GGUF".to_string(),
+                downloads: 10,
+                gated: false,
+            },
+            HfModelSummary {
+                id: "org/no-param-token".to_string(),
+                downloads: 5,
+                gated: false,
+            },
+        ];
+        // 64 GiB host: the 1B model fits, the param-less row stays unannotated.
+        let rows = annotate_search_rows(summaries.clone(), 64 << 30);
+        assert_eq!(rows[0].fit, Some(registry::RamFit::Fits));
+        assert!(rows[0].est_runtime_gb.is_some());
+        assert_eq!(rows[1].est_runtime_gb, None);
+        assert_eq!(rows[1].fit, None);
+        // Unknown host RAM keeps the size estimate but drops the fit verdict.
+        let rows = annotate_search_rows(summaries, 0);
+        assert!(rows[0].est_runtime_gb.is_some());
+        assert_eq!(rows[0].fit, None);
+    }
+
+    #[test]
+    fn annotate_gguf_rows_uses_real_sizes() {
+        let files = vec![
+            HfGgufFile {
+                file: "a.gguf".to_string(),
+                size_bytes: 1 << 30,
+            },
+            HfGgufFile {
+                file: "b.gguf".to_string(),
+                size_bytes: 0,
+            },
+        ];
+        let rows = annotate_gguf_rows(files.clone(), 64 << 30);
+        assert_eq!(rows[0].fit, Some(registry::RamFit::Fits));
+        // A zero size cannot be judged.
+        assert_eq!(rows[1].fit, None);
+        // Unknown host RAM drops every verdict.
+        let rows = annotate_gguf_rows(files, 0);
+        assert_eq!(rows[0].fit, None);
+    }
+
+    #[test]
+    fn build_installed_views_annotates_fit() {
+        let model = manifest::InstalledModel {
+            id: "org/Repo:weights.gguf".to_string(),
+            display_name: "Repo".to_string(),
+            repo: "org/Repo".to_string(),
+            revision: "0".repeat(40),
+            file_name: "weights.gguf".to_string(),
+            sha256: "a".repeat(64),
+            size_bytes: 1 << 30,
+            quant: "Q4_K_M".to_string(),
+            vision: false,
+            thinking: false,
+            mmproj_file: None,
+            mmproj_sha256: None,
+        };
+        let views = build_installed_views(vec![model.clone()], 64 << 30);
+        assert_eq!(views[0].fit, Some(registry::RamFit::Fits));
+        // Unknown host RAM drops the verdict.
+        let views = build_installed_views(vec![model], 0);
+        assert_eq!(views[0].fit, None);
+    }
+
+    #[test]
+    fn view_rows_serialize_with_flattened_base_and_fit() {
+        let row = HfModelRow {
+            summary: HfModelSummary {
+                id: "o/r".to_string(),
+                downloads: 3,
+                gated: false,
+            },
+            est_runtime_gb: Some(7.0),
+            fit: Some(registry::RamFit::Tight),
+        };
+        assert_eq!(
+            serde_json::to_value(row).unwrap(),
+            serde_json::json!({
+                "id": "o/r",
+                "downloads": 3,
+                "gated": false,
+                "est_runtime_gb": 7.0,
+                "fit": "tight",
+            })
+        );
+        let file_row = HfGgufFileRow {
+            file: HfGgufFile {
+                file: "w.gguf".to_string(),
+                size_bytes: 42,
+            },
+            fit: None,
+        };
+        assert_eq!(
+            serde_json::to_value(file_row).unwrap(),
+            serde_json::json!({"file": "w.gguf", "size_bytes": 42, "fit": serde_json::Value::Null})
+        );
+    }
+
     #[tokio::test]
     async fn fetch_hf_search_returns_rows_and_sends_filtered_query() {
         let mut server = mockito::Server::new_async().await;
@@ -4473,8 +4775,10 @@ mod tests {
             .mock("GET", "/api/models")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("library".into(), "gguf".into()),
+                mockito::Matcher::UrlEncoded("pipeline_tag".into(), "text-generation".into()),
                 mockito::Matcher::UrlEncoded("search".into(), "qwen".into()),
                 mockito::Matcher::UrlEncoded("sort".into(), "downloads".into()),
+                mockito::Matcher::UrlEncoded("limit".into(), "60".into()),
             ]))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -4482,7 +4786,7 @@ mod tests {
             .create_async()
             .await;
         let client = reqwest::Client::new();
-        let rows = fetch_hf_search(&client, &server.url(), "qwen")
+        let rows = fetch_hf_search(&client, &server.url(), "qwen", 60)
             .await
             .unwrap();
         mock.assert_async().await;
@@ -4502,7 +4806,7 @@ mod tests {
             .await;
         let client = reqwest::Client::new();
         // Whitespace-only query trims to empty and the search param is dropped.
-        let rows = fetch_hf_search(&client, &server.url(), "   ")
+        let rows = fetch_hf_search(&client, &server.url(), "   ", crate::config::defaults::HF_SEARCH_LIMIT)
             .await
             .unwrap();
         assert!(rows.is_empty());
@@ -4518,7 +4822,7 @@ mod tests {
             .create_async()
             .await;
         let client = reqwest::Client::new();
-        let err = fetch_hf_search(&client, &server.url(), "q")
+        let err = fetch_hf_search(&client, &server.url(), "q", crate::config::defaults::HF_SEARCH_LIMIT)
             .await
             .unwrap_err();
         assert!(err.contains("503"), "got: {err}");
@@ -4527,7 +4831,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_hf_search_maps_transport_error() {
         let client = reqwest::Client::new();
-        let err = fetch_hf_search(&client, "http://127.0.0.1:1", "q")
+        let err = fetch_hf_search(&client, "http://127.0.0.1:1", "q", crate::config::defaults::HF_SEARCH_LIMIT)
             .await
             .unwrap_err();
         assert!(err.contains("failed to reach Hugging Face"), "got: {err}");
@@ -4537,7 +4841,7 @@ mod tests {
     async fn fetch_hf_search_rejects_overlong_query() {
         let client = reqwest::Client::new();
         let long = "x".repeat(crate::config::defaults::MAX_HF_SEARCH_QUERY_LEN + 1);
-        let err = fetch_hf_search(&client, "http://127.0.0.1:9", &long)
+        let err = fetch_hf_search(&client, "http://127.0.0.1:9", &long, crate::config::defaults::HF_SEARCH_LIMIT)
             .await
             .unwrap_err();
         assert!(err.contains("maximum length"), "got: {err}");

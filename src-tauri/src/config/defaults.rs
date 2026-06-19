@@ -404,11 +404,29 @@ pub const OPENAI_MODELS_TIMEOUT_SECS: u64 = 5;
 /// the integrity guarantees that make the curated starter registry safe.
 pub const HF_BASE_URL: &str = "https://huggingface.co";
 
-/// Page size for the in-app Hugging Face GGUF model search. Baked-in: a fixed
-/// number of most-downloaded results per query is enough for the browser;
-/// cursor pagination beyond this is intentionally out of scope until the UI
-/// needs it.
+/// Page size for the in-app Hugging Face GGUF model search. The Discover
+/// "Load more" control raises the requested limit in multiples of this value.
+/// Baked-in: the per-page step for the browser, not a user preference.
 pub const HF_SEARCH_LIMIT: usize = 30;
+
+/// Hard cap on a single Hugging Face search request's page size. "Load more"
+/// grows the requested limit in [`HF_SEARCH_LIMIT`] steps; this bounds the
+/// largest single request so a runaway page count cannot ask the Hub for an
+/// unbounded result set. Baked-in: defense-in-depth bound on request size.
+pub const HF_SEARCH_LIMIT_MAX: usize = 120;
+
+/// Approximate resident-memory overhead in GiB added on top of a model's
+/// weights size when estimating whether it fits in this Mac's RAM (the KV
+/// cache at the default context plus runtime buffers). Baked-in: feeds the
+/// RAM-fit *hint* in Library/Discover only; the authoritative per-starter
+/// estimates live in the model registry.
+pub const RUNTIME_OVERHEAD_GB: f64 = 2.0;
+
+/// Approximate GiB of resident memory per billion parameters for a 4-bit
+/// quantised GGUF, used to estimate a Discover search row's footprint from the
+/// parameter count parsed out of its repo id (no file size is available at
+/// search time). Baked-in: feeds the RAM-fit *hint* only.
+pub const PARAM_GB_PER_BILLION: f64 = 0.65;
 
 /// Maximum accepted byte length for a Hugging Face search query before it is
 /// sent upstream. Defense-in-depth bound on attacker-influenced input: the
