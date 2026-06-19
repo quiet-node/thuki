@@ -1957,14 +1957,7 @@
   background: rgba(94, 201, 138, 0.06);
 }
 
-/* ─── Providers section (AI tab) ─────────────────────────────────────────── */
-.providerRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 0;
-}
+/* ─── Providers section (legacy OpenAI card) ─────────────────────────────── */
 .providerName {
   font-size: 13px;
   font-weight: 600;

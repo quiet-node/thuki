@@ -19,7 +19,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
-import { Textarea, Toggle } from '../../components';
+import { ConfirmDialog, Textarea, Toggle } from '../../components';
 import { SaveField } from '../../components/SaveField';
 import { OpenAiProviderCard, AddOpenAiProvider } from '../ProviderCards';
 import { useDebouncedSave } from '../../hooks/useDebouncedSave';
@@ -65,11 +65,6 @@ function posToCtx(pos: number): number {
   );
 }
 const CTX_TICKS = ['2K', '8K', '32K', '128K', '512K', '1M'];
-
-/** Bytes rendered as decimal gigabytes with one decimal. */
-function gb(bytes: number): string {
-  return (bytes / 1e9).toFixed(1);
-}
 
 /** One-line description shown under a provider's name. */
 function providerSubtitle(p: RawProvider): string {
@@ -168,8 +163,20 @@ export function ProvidersPane({
   const [ollamaUrl, setOllamaUrl] = useState(ollamaBaseUrl);
   const ollamaUrlFocusedRef = useRef(false);
 
+  // System prompt (debounced save); the editor mounts inline under the
+  // Generation list with a single header, so it does not use SaveField's row.
+  const [promptValue, setPromptValue] = useState(config.prompt.system);
+  const { resetTo: resetPrompt } = useDebouncedSave(
+    'prompt',
+    'system',
+    promptValue,
+    { onSaved },
+  );
+
   const [promptOpen, setPromptOpen] = useState(false);
   const [devOpen, setDevOpen] = useState(false);
+  // A provider switch is confirmed before it takes effect.
+  const [pendingSwitch, setPendingSwitch] = useState<RawProvider | null>(null);
 
   const { activeModel, availableModels, setActiveModel } = useModelSelection();
 
@@ -187,6 +194,8 @@ export function ProvidersPane({
     setCtxPos(ctxToPos(nextCtx));
     setCtxChip(String(nextCtx));
     resetNumCtx(nextCtx);
+    setPromptValue(config.prompt.system);
+    resetPrompt(config.prompt.system);
     if (!ollamaUrlFocusedRef.current) setOllamaUrl(ollamaBaseUrl);
   }
 
@@ -235,7 +244,6 @@ export function ProvidersPane({
   const builtinModelValue = installed.some((m) => m.id === builtinModelId)
     ? builtinModelId
     : '';
-  const activeBuiltin = installed.find((m) => m.id === builtinModelValue);
 
   // Providers other than the active one, in a stable order.
   const otherProviders = providers.filter((p) => p.id !== activeId);
@@ -373,7 +381,7 @@ export function ProvidersPane({
               <button
                 type="button"
                 className={styles.switchBtn}
-                onClick={() => selectProvider(p.id)}
+                onClick={() => setPendingSwitch(p)}
               >
                 Switch
               </button>
@@ -518,10 +526,26 @@ export function ProvidersPane({
           </div>
         </div>
 
-        {/* System prompt */}
+        {/* System prompt: one header (with the ? help), Edit/Done toggles the
+            inline editor below it. */}
         <div className={styles.genRow}>
           <div className={styles.genLabel}>
-            <div className={styles.genName}>System prompt</div>
+            <div className={styles.genName}>
+              System prompt
+              <Tooltip
+                label={configHelp('prompt', 'system')}
+                multiline
+                placement="top"
+              >
+                <button
+                  type="button"
+                  className={styles.infoBtn}
+                  aria-label="About System prompt"
+                >
+                  ?
+                </button>
+              </Tooltip>
+            </div>
             <div className={styles.genHelp}>
               Persona sent at the start of every chat
             </div>
@@ -537,42 +561,27 @@ export function ProvidersPane({
         </div>
         {promptOpen ? (
           <div className={styles.genPromptEditor}>
-            <SaveField
-              section="prompt"
-              fieldKey="system"
-              label="System prompt"
-              helper={configHelp('prompt', 'system')}
-              vertical
-              initialValue={config.prompt.system}
-              resyncToken={resyncToken}
-              onSaved={onSaved}
-              render={(value, setValue) => (
-                <>
-                  <Textarea
-                    value={value}
-                    onChange={setValue}
-                    placeholder="Persona prompt…"
-                    maxLength={PROMPT_MAX_CHARS}
-                    ariaLabel="System prompt"
-                    rows={PROMPT_TEXTAREA_ROWS}
-                  />
-                  <div className={styles.charCounter}>
-                    {value.length} / {PROMPT_MAX_CHARS}
-                  </div>
-                </>
-              )}
+            <Textarea
+              value={promptValue}
+              onChange={setPromptValue}
+              placeholder="Persona prompt…"
+              maxLength={PROMPT_MAX_CHARS}
+              ariaLabel="System prompt"
+              rows={PROMPT_TEXTAREA_ROWS}
             />
+            <div className={styles.charCounter}>
+              {promptValue.length} / {PROMPT_MAX_CHARS}
+            </div>
           </div>
         ) : null}
       </div>
 
-      {/* A small free-disk + count footer mirrors the other panes. */}
+      {/* A small installed-count footer mirrors the other panes. The active
+          model's identity already lives in the hero and the Running footer, so
+          this stays a neutral count rather than restating it. */}
       <div className={styles.genFootnote}>
         {installed.length} installed{' '}
         {installed.length === 1 ? 'model' : 'models'}
-        {builtinProvider && activeBuiltin
-          ? ` · built-in active: ${gb(activeBuiltin.size_bytes)} GB`
-          : ''}
       </div>
 
       <div className={styles.devSection}>
@@ -624,6 +633,20 @@ export function ProvidersPane({
           </div>
         )}
       </div>
+
+      {pendingSwitch ? (
+        <ConfirmDialog
+          open
+          title={`Switch to ${pendingSwitch.label}?`}
+          message={`New chats will be answered by ${pendingSwitch.label}. The model currently held in memory is released to free up RAM.`}
+          confirmLabel={`Switch to ${pendingSwitch.label}`}
+          onConfirm={() => {
+            selectProvider(pendingSwitch.id);
+            setPendingSwitch(null);
+          }}
+          onCancel={() => setPendingSwitch(null)}
+        />
+      ) : null}
     </>
   );
 }

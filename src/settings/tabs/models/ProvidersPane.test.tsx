@@ -316,6 +316,8 @@ describe('ProvidersPane other providers', () => {
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]), { onSaved });
     const switches = screen.getAllByRole('button', { name: 'Switch' });
     fireEvent.click(switches[0]);
+    // The switch is confirmed in a dialog before it takes effect.
+    fireEvent.click(screen.getByRole('button', { name: /^Switch to / }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith('set_active_provider', {
         providerId: 'builtin',
@@ -324,10 +326,22 @@ describe('ProvidersPane other providers', () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith(next));
   });
 
+  it('cancels a provider switch without changing the active provider', () => {
+    renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Switch' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('button', { name: /^Switch to / })).toBeNull();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'set_active_provider',
+      expect.anything(),
+    );
+  });
+
   it('swallows a failed provider switch', async () => {
     mockInvoke({ set_active_provider: new Error('x') });
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
     fireEvent.click(screen.getAllByRole('button', { name: 'Switch' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: /^Switch to / }));
     await Promise.resolve();
   });
 
@@ -536,15 +550,6 @@ describe('ProvidersPane robustness', () => {
     // Focused fields are not clobbered: still the original values.
     expect(min).toHaveValue(0);
     expect(url).toHaveValue('http://127.0.0.1:11434');
-  });
-
-  it('shows the built-in active size in the footnote', async () => {
-    const builtin = { ...BUILTIN, model: INSTALLED[0].id };
-    mockInvoke({ list_installed_models: INSTALLED });
-    renderPane(makeConfig('builtin', [builtin, OLLAMA]));
-    await waitFor(() =>
-      expect(screen.getByText(/built-in active: 6.6 GB/)).toBeInTheDocument(),
-    );
   });
 
   it('pluralises the installed count in the footnote', () => {
