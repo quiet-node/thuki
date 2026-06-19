@@ -242,6 +242,17 @@ export function ProvidersPane({
       .catch(() => {});
   }
 
+  // Ollama selection persists onto the active provider's model field via
+  // set_active_model; lift the fresh config so the Running footer (and the
+  // hero) re-render with the newly-selected model instead of the old name.
+  function commitOllamaModel(model: string) {
+    void setActiveModel(model)
+      .then(async () => onSaved(await invoke<RawAppConfig>('get_config')))
+      .catch(() => {
+        // The focus-driven resync picks the change up on next activation.
+      });
+  }
+
   function handleEngineEject() {
     void invoke('evict_model').catch(() => {});
   }
@@ -367,7 +378,7 @@ export function ProvidersPane({
                   className={styles.dropdown}
                   aria-label="Active Ollama model"
                   value={ollamaModelValue}
-                  onChange={(e) => void setActiveModel(e.target.value)}
+                  onChange={(e) => commitOllamaModel(e.target.value)}
                 >
                   {availableModels.map((m) => (
                     <option key={m} value={m}>

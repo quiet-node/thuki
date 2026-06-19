@@ -301,6 +301,59 @@ describe('ProvidersPane active hero', () => {
     );
   });
 
+  it('lifts a fresh config after selecting a different Ollama model', async () => {
+    const lifted = makeConfig('ollama', [
+      BUILTIN,
+      { ...OLLAMA, model: 'llama3.2:3b' },
+    ]);
+    mockInvoke({
+      get_model_picker_state: {
+        active: 'gemma4:e4b',
+        all: ['gemma4:e4b', 'llama3.2:3b'],
+        ollamaReachable: true,
+      },
+      get_config: lifted,
+    });
+    const onSaved = vi.fn();
+    renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]), { onSaved });
+    const select = await screen.findByRole('combobox', {
+      name: 'Active Ollama model',
+    });
+    fireEvent.change(select, { target: { value: 'llama3.2:3b' } });
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('set_active_model', {
+        model: 'llama3.2:3b',
+      }),
+    );
+    // The lifted config (carrying the newly-selected Ollama model) reaches the
+    // parent so the Running footer re-renders with the new name.
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(lifted));
+  });
+
+  it('swallows a failed Ollama model selection without lifting config', async () => {
+    const onSaved = vi.fn();
+    mockInvoke({
+      get_model_picker_state: {
+        active: 'gemma4:e4b',
+        all: ['gemma4:e4b', 'llama3.2:3b'],
+        ollamaReachable: true,
+      },
+      set_active_model: new Error('nope'),
+    });
+    renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]), { onSaved });
+    const select = await screen.findByRole('combobox', {
+      name: 'Active Ollama model',
+    });
+    fireEvent.change(select, { target: { value: 'llama3.2:3b' } });
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('set_active_model', {
+        model: 'llama3.2:3b',
+      }),
+    );
+    await Promise.resolve();
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
   it('shows a no-models hint when Ollama has none', () => {
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
     expect(screen.getByText('No models installed')).toBeInTheDocument();
