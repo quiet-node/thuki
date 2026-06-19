@@ -2273,6 +2273,8 @@ pub fn run() {
             #[cfg(not(coverage))]
             models::delete_installed_model,
             #[cfg(not(coverage))]
+            models::reveal_model_in_finder,
+            #[cfg(not(coverage))]
             history::save_conversation,
             #[cfg(not(coverage))]
             history::persist_message,

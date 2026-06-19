@@ -1758,12 +1758,13 @@ async fn fetch_hf_search_inner(
 ) -> Result<Vec<u8>, String> {
     let endpoint = format!("{}/api/models", base_url.trim_end_matches('/'));
     let limit = limit.to_string();
-    // `pipeline_tag=text-generation` keeps the results to chat/instruct models;
-    // without it an empty query returns the most-downloaded GGUF repos overall,
-    // which are dominated by embedding/reranker repos (sentence-transformers,
-    // BERT) that Thuki cannot run as a chat model.
+    // `filter=gguf` matches repos *tagged* gguf (the dedicated quant repos that
+    // actually ship `.gguf` files), and `pipeline_tag=text-generation` keeps
+    // them to chat/instruct models. `library=gguf` is deliberately NOT used: it
+    // also matches base repos that merely link to GGUF quants elsewhere, so the
+    // rows would have no downloadable `.gguf` files of their own.
     let mut params: Vec<(&str, &str)> = vec![
-        ("library", "gguf"),
+        ("filter", "gguf"),
         ("pipeline_tag", "text-generation"),
         ("sort", "downloads"),
         ("direction", "-1"),
@@ -2236,6 +2237,32 @@ pub fn delete_installed_model(
         persist_active_provider_model(&app, &config, PROVIDER_ID_BUILTIN, "")?;
     }
     Ok(())
+}
+
+/// Reveals an installed model's weights blob in Finder. Thin FFI wrapper
+/// (excluded from coverage) over `open -R`, mirroring
+/// [`crate::settings_commands::reveal_config_in_finder`]; the manifest lookup
+/// and content-addressed path are covered through `manifest::get` and
+/// `storage::ModelStore::blob_path`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn reveal_model_in_finder(
+    id: String,
+    db: tauri::State<'_, crate::history::Database>,
+    store: tauri::State<'_, storage::ModelStore>,
+) -> Result<(), String> {
+    let model = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        manifest::get(&conn, &id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("model not installed: {id}"))?
+    };
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(store.blob_path(&model.sha256))
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Maps the `finalize_install` outcome onto the terminal download event:
@@ -4763,7 +4790,7 @@ mod tests {
         let mock = server
             .mock("GET", "/api/models")
             .match_query(mockito::Matcher::AllOf(vec![
-                mockito::Matcher::UrlEncoded("library".into(), "gguf".into()),
+                mockito::Matcher::UrlEncoded("filter".into(), "gguf".into()),
                 mockito::Matcher::UrlEncoded("pipeline_tag".into(), "text-generation".into()),
                 mockito::Matcher::UrlEncoded("search".into(), "qwen".into()),
                 mockito::Matcher::UrlEncoded("sort".into(), "downloads".into()),
