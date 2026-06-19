@@ -29,9 +29,10 @@ use tauri::Manager;
 
 use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
-    HF_API_TIMEOUT_SECS, HF_BASE_URL, MAX_HF_API_BODY_BYTES, MAX_MODEL_SLUG_LEN,
-    MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES, OPENAI_MODELS_TIMEOUT_SECS,
-    PROVIDER_ID_BUILTIN, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+    HF_API_TIMEOUT_SECS, HF_BASE_URL, HF_SEARCH_LIMIT, MAX_HF_API_BODY_BYTES,
+    MAX_HF_SEARCH_QUERY_LEN, MAX_MODEL_SLUG_LEN, MAX_OLLAMA_SHOW_BODY_BYTES,
+    MAX_OLLAMA_TAGS_BODY_BYTES, OPENAI_MODELS_TIMEOUT_SECS, PROVIDER_ID_BUILTIN,
+    PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
 };
 use crate::config::AppConfig;
 
@@ -1252,6 +1253,35 @@ pub fn quant_from_filename(file: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Marker substrings that flag a GGUF model as emitting explicit reasoning
+/// tokens (rendered in the ThinkingBlock UI). There is no machine-readable
+/// thinking signal in GGUF metadata or the Hugging Face API, so detection reads
+/// the publisher's own naming: an explicit reasoning self-label
+/// (`thinking`/`reasoning`/`reasoner`) or a known reasoning-first family. The
+/// list is kept narrow to avoid false positives; curated starters set the flag
+/// explicitly in the registry and never consult it, and a user override is the
+/// authority whenever the guess is wrong.
+const THINKING_MARKERS: &[&str] = &[
+    "thinking",
+    "reasoning",
+    "reasoner",
+    "deepseek-r1",
+    "qwq",
+    "gpt-oss",
+    "magistral",
+];
+
+/// Best-effort detection of whether an arbitrary GGUF model is a reasoning
+/// model, matching [`THINKING_MARKERS`] case-insensitively against both the
+/// repo id and the file name. Returns `false` when nothing matches.
+pub fn detect_thinking(repo: &str, file: &str) -> bool {
+    let repo = repo.to_ascii_lowercase();
+    let file = file.to_ascii_lowercase();
+    THINKING_MARKERS
+        .iter()
+        .any(|marker| repo.contains(marker) || file.contains(marker))
+}
+
 /// A `.gguf` entry in a Hugging Face repo listing, for the paste-a-repo UI.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HfGgufFile {
@@ -1323,7 +1353,8 @@ pub struct MmprojCompanion {
 
 /// Pure parse of an HF repo listing into the spec for one target `file`.
 /// Capability rule for pasted repos: vision = an `mmproj*.gguf` sibling with
-/// complete LFS metadata exists; thinking = false (full detection is not yet implemented).
+/// complete LFS metadata exists; thinking is derived from the model name by
+/// [`detect_thinking`] when the row is recorded in [`repo_installed_model`].
 pub fn resolve_listing(body: &[u8], file: &str) -> Result<RepoResolved, String> {
     let info: HfRepoInfo = serde_json::from_slice(body)
         .map_err(|e| format!("failed to decode Hugging Face API response: {e}"))?;
@@ -1479,6 +1510,161 @@ pub async fn fetch_repo_gguf_listing(
     }
     let body = fetch_hf_repo_listing(client, base_url, repo).await?;
     parse_gguf_listing(&body)
+}
+
+// ─── Hugging Face model search ───────────────────────────────────────────────
+
+/// One repo row from a Hugging Face model search, trimmed to the fields the
+/// in-app browser needs to identify, rank, and gate a model.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HfModelSummary {
+    /// Repo id, e.g. `unsloth/Qwen3.5-9B-GGUF`; the install target.
+    pub id: String,
+    /// Lifetime download count. The search is sorted by it and the UI shows it
+    /// as a trust signal; `0` when the API omits the field.
+    pub downloads: u64,
+    /// True when the repo is access-gated (license click-through or manual
+    /// approval). Gated repos cannot be fetched anonymously, so the UI can flag
+    /// them instead of offering a download that would fail.
+    pub gated: bool,
+}
+
+/// One entry in the Hugging Face `/api/models` search response. Only the fields
+/// surfaced by [`HfModelSummary`] are decoded; everything else is ignored so
+/// upstream additions cannot break decoding.
+#[derive(Deserialize)]
+struct HfSearchEntry {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    downloads: u64,
+    /// HF reports `gated` as `false` or a strategy string (`"auto"`/`"manual"`);
+    /// [`deserialize_gated`] normalizes it to a bool. Absent on some rows, so it
+    /// defaults to `false`.
+    #[serde(default, deserialize_with = "deserialize_gated")]
+    gated: bool,
+}
+
+/// Normalizes Hugging Face's polymorphic `gated` field (a bool `false` or a
+/// strategy string like `"manual"`) into a plain bool: any string means gated,
+/// `true` means gated, everything else (including `null`) means not gated.
+fn deserialize_gated<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Bool(b) => b,
+        serde_json::Value::String(_) => true,
+        _ => false,
+    })
+}
+
+/// Pure parse of an `/api/models` search body into summary rows. Rows with an
+/// empty `id` are dropped rather than surfaced as un-installable blanks.
+pub fn parse_search_results(body: &[u8]) -> Result<Vec<HfModelSummary>, String> {
+    let entries: Vec<HfSearchEntry> = serde_json::from_slice(body)
+        .map_err(|e| format!("failed to decode Hugging Face search response: {e}"))?;
+    Ok(entries
+        .into_iter()
+        .filter(|e| !e.id.is_empty())
+        .map(|e| HfModelSummary {
+            id: e.id,
+            downloads: e.downloads,
+            gated: e.gated,
+        })
+        .collect())
+}
+
+/// Validates the query length, runs the Hugging Face GGUF model search against
+/// `base_url`, and parses the result. `base_url` is parameterized so tests
+/// point at a mock server; production passes [`HF_BASE_URL`].
+pub async fn fetch_hf_search(
+    client: &reqwest::Client,
+    base_url: &str,
+    query: &str,
+) -> Result<Vec<HfModelSummary>, String> {
+    let query = query.trim();
+    if query.len() > MAX_HF_SEARCH_QUERY_LEN {
+        return Err(format!(
+            "search query exceeds maximum length of {MAX_HF_SEARCH_QUERY_LEN} bytes"
+        ));
+    }
+    let body = fetch_hf_search_inner(
+        client,
+        base_url,
+        query,
+        std::time::Duration::from_secs(HF_API_TIMEOUT_SECS),
+        MAX_HF_API_BODY_BYTES,
+        HF_SEARCH_LIMIT,
+    )
+    .await?;
+    parse_search_results(&body)
+}
+
+/// Innermost search fetcher with timeout, body cap, and result limit
+/// configurable so the cap branches are testable. Every query parameter is
+/// percent-encoded by `Url::parse_with_params` (no manual string building) so a
+/// query cannot smuggle URL syntax, and the host stays fixed to `base_url` so
+/// there is no SSRF surface. The body cap is enforced incrementally during the
+/// streaming read, mirroring [`fetch_hf_repo_listing_inner`].
+async fn fetch_hf_search_inner(
+    client: &reqwest::Client,
+    base_url: &str,
+    query: &str,
+    timeout: std::time::Duration,
+    max_body_bytes: usize,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    let endpoint = format!("{}/api/models", base_url.trim_end_matches('/'));
+    let limit = limit.to_string();
+    let mut params: Vec<(&str, &str)> = vec![
+        ("library", "gguf"),
+        ("sort", "downloads"),
+        ("direction", "-1"),
+        ("limit", &limit),
+    ];
+    // An empty query browses the most-downloaded GGUF repos; only attach the
+    // search term when the user actually typed one.
+    if !query.is_empty() {
+        params.push(("search", query));
+    }
+    let url = reqwest::Url::parse_with_params(&endpoint, params)
+        .map_err(|e| format!("failed to build Hugging Face search URL: {e}"))?;
+    let response = client
+        .get(url)
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach Hugging Face: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Hugging Face API returned HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+
+    if let Some(declared_len) = response.content_length() {
+        if declared_len as usize > max_body_bytes {
+            return Err(format!(
+                "Hugging Face search response exceeded {max_body_bytes} bytes"
+            ));
+        }
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("failed to read Hugging Face search body: {e}"))?;
+        if buf.len() + chunk.len() > max_body_bytes {
+            return Err(format!(
+                "Hugging Face search response exceeded {max_body_bytes} bytes"
+            ));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    Ok(buf)
 }
 
 // ─── OpenAI-compatible model listing ─────────────────────────────────────────
@@ -1643,7 +1829,7 @@ pub fn repo_installed_model(
         size_bytes: resolved.weights_size_bytes,
         quant: quant_from_filename(file),
         vision: resolved.mmproj.is_some(),
-        thinking: false,
+        thinking: detect_thinking(repo, file),
         mmproj_file: resolved.mmproj.as_ref().map(|m| m.file.clone()),
         mmproj_sha256: resolved.mmproj.as_ref().map(|m| m.sha256.clone()),
     }
@@ -1818,6 +2004,18 @@ pub async fn list_hf_repo_ggufs(
     client: tauri::State<'_, reqwest::Client>,
 ) -> Result<Vec<HfGgufFile>, String> {
     fetch_repo_gguf_listing(&client, HF_BASE_URL, &repo).await
+}
+
+/// Searches Hugging Face for GGUF model repos matching `query`, most-downloaded
+/// first. Backs the in-app model browser; an empty query returns the most
+/// popular GGUF repos.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn search_hf_models(
+    query: String,
+    client: tauri::State<'_, reqwest::Client>,
+) -> Result<Vec<HfModelSummary>, String> {
+    fetch_hf_search(&client, HF_BASE_URL, &query).await
 }
 
 /// Lists the models served by the configured OpenAI-compatible provider via
@@ -4197,6 +4395,259 @@ mod tests {
         assert_eq!(files[0].file, "model-Q4_K_M.gguf");
     }
 
+    // ── Model library: Hugging Face search ───────────────────────────────────
+
+    /// Search fixture exercising every `gated` shape (bool, strategy string,
+    /// absent, null) plus an empty-id row that must be dropped.
+    fn search_fixture() -> serde_json::Value {
+        serde_json::json!([
+            {"id": "org/alpha-GGUF", "downloads": 1000, "gated": false},
+            {"id": "org/beta-GGUF", "downloads": 500, "gated": "manual"},
+            {"id": "org/gamma-GGUF"},
+            {"id": "org/delta-GGUF", "downloads": 1, "gated": true},
+            {"id": "org/epsilon-GGUF", "downloads": 2, "gated": null},
+            {"id": "", "downloads": 9}
+        ])
+    }
+
+    #[test]
+    fn parse_search_results_maps_rows_and_normalizes_gated() {
+        let body = search_fixture().to_string();
+        let rows = parse_search_results(body.as_bytes()).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                HfModelSummary {
+                    id: "org/alpha-GGUF".to_string(),
+                    downloads: 1000,
+                    gated: false,
+                },
+                HfModelSummary {
+                    id: "org/beta-GGUF".to_string(),
+                    downloads: 500,
+                    gated: true,
+                },
+                HfModelSummary {
+                    id: "org/gamma-GGUF".to_string(),
+                    downloads: 0,
+                    gated: false,
+                },
+                HfModelSummary {
+                    id: "org/delta-GGUF".to_string(),
+                    downloads: 1,
+                    gated: true,
+                },
+                HfModelSummary {
+                    id: "org/epsilon-GGUF".to_string(),
+                    downloads: 2,
+                    gated: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_search_results_rejects_invalid_json() {
+        let err = parse_search_results(b"not json").unwrap_err();
+        assert!(err.contains("failed to decode"), "got: {err}");
+    }
+
+    #[test]
+    fn hf_model_summary_serializes_snake_case() {
+        let v = serde_json::to_value(HfModelSummary {
+            id: "o/r".to_string(),
+            downloads: 7,
+            gated: true,
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"id": "o/r", "downloads": 7, "gated": true})
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_returns_rows_and_sends_filtered_query() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/models")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("library".into(), "gguf".into()),
+                mockito::Matcher::UrlEncoded("search".into(), "qwen".into()),
+                mockito::Matcher::UrlEncoded("sort".into(), "downloads".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(search_fixture().to_string())
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let rows = fetch_hf_search(&client, &server.url(), "qwen")
+            .await
+            .unwrap();
+        mock.assert_async().await;
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].id, "org/alpha-GGUF");
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_omits_blank_query() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/models")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        // Whitespace-only query trims to empty and the search param is dropped.
+        let rows = fetch_hf_search(&client, &server.url(), "   ")
+            .await
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_maps_http_error() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/models")
+            .match_query(mockito::Matcher::Any)
+            .with_status(503)
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let err = fetch_hf_search(&client, &server.url(), "q")
+            .await
+            .unwrap_err();
+        assert!(err.contains("503"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_maps_transport_error() {
+        let client = reqwest::Client::new();
+        let err = fetch_hf_search(&client, "http://127.0.0.1:1", "q")
+            .await
+            .unwrap_err();
+        assert!(err.contains("failed to reach Hugging Face"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_rejects_overlong_query() {
+        let client = reqwest::Client::new();
+        let long = "x".repeat(crate::config::defaults::MAX_HF_SEARCH_QUERY_LEN + 1);
+        let err = fetch_hf_search(&client, "http://127.0.0.1:9", &long)
+            .await
+            .unwrap_err();
+        assert!(err.contains("maximum length"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_inner_rejects_body_over_cap_via_content_length() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/models")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body("x".repeat(100))
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let err = fetch_hf_search_inner(
+            &client,
+            &server.url(),
+            "q",
+            std::time::Duration::from_secs(5),
+            32,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeded"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_inner_rejects_body_over_cap_when_chunked() {
+        // Chunked response (no Content-Length): the incremental cap must reject.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut request_buf = [0u8; 1024];
+            let _ = conn.read(&mut request_buf);
+            let _ = conn.write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0\r\n\r\n",
+            );
+        });
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let err = fetch_hf_search_inner(
+            &client,
+            &base,
+            "q",
+            std::time::Duration::from_secs(5),
+            20,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeded"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_inner_maps_body_read_error() {
+        // Headers promise 100 body bytes, then the server hangs up.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
+            );
+        });
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let err = fetch_hf_search_inner(
+            &client,
+            &base,
+            "q",
+            std::time::Duration::from_secs(5),
+            4 * 1024 * 1024,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains("failed to read Hugging Face search body"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_inner_rejects_unparseable_base_url() {
+        let client = reqwest::Client::new();
+        let err = fetch_hf_search_inner(
+            &client,
+            "not a url",
+            "q",
+            std::time::Duration::from_secs(5),
+            4 * 1024 * 1024,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("failed to build"), "got: {err}");
+    }
+
     // ── Model library: repo spec/model mapping ───────────────────────────────
 
     fn sample_resolved(with_mmproj: bool) -> RepoResolved {
@@ -4264,6 +4715,48 @@ mod tests {
         assert!(!m.vision);
         assert_eq!(m.mmproj_file, None);
         assert_eq!(m.mmproj_sha256, None);
+    }
+
+    // ── Capability detection: thinking heuristic ─────────────────────────────
+
+    #[test]
+    fn detect_thinking_matches_reasoning_self_labels() {
+        // A repo or file whose own name advertises reasoning.
+        assert!(detect_thinking("acme/Model-Thinking", "model.gguf"));
+        assert!(detect_thinking("acme/model", "model-reasoning-Q4_K_M.gguf"));
+        assert!(detect_thinking("acme/reasoner-7b", "w.gguf"));
+    }
+
+    #[test]
+    fn detect_thinking_matches_known_reasoning_families() {
+        assert!(detect_thinking("deepseek-ai/DeepSeek-R1-GGUF", "x.gguf"));
+        assert!(detect_thinking("org/QwQ-32B-GGUF", "x.gguf"));
+        assert!(detect_thinking("ggml-org/gpt-oss-20b-GGUF", "x.gguf"));
+        assert!(detect_thinking("mistralai/Magistral-Small-GGUF", "x.gguf"));
+    }
+
+    #[test]
+    fn detect_thinking_is_case_insensitive() {
+        assert!(detect_thinking("ORG/GPT-OSS-20B", "MODEL.GGUF"));
+    }
+
+    #[test]
+    fn detect_thinking_defaults_false_without_markers() {
+        assert!(!detect_thinking(
+            "google/gemma-4-12b-it",
+            "gemma-4-12b-it-Q4_K_M.gguf"
+        ));
+        assert!(!detect_thinking("o/r", "w-Q4_K_M.gguf"));
+    }
+
+    #[test]
+    fn repo_installed_model_flags_thinking_from_name() {
+        let m = repo_installed_model(
+            "ggml-org/gpt-oss-20b-GGUF",
+            "gpt-oss-20b-Q4_K_M.gguf",
+            &sample_resolved(false),
+        );
+        assert!(m.thinking);
     }
 
     // ── Model library: delete ────────────────────────────────────────────────

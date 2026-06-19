@@ -2259,6 +2259,8 @@ pub fn run() {
             #[cfg(not(coverage))]
             models::list_hf_repo_ggufs,
             #[cfg(not(coverage))]
+            models::search_hf_models,
+            #[cfg(not(coverage))]
             models::list_openai_models,
             #[cfg(not(coverage))]
             models::cancel_model_download,

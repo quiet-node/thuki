@@ -404,6 +404,18 @@ pub const OPENAI_MODELS_TIMEOUT_SECS: u64 = 5;
 /// the integrity guarantees that make the curated starter registry safe.
 pub const HF_BASE_URL: &str = "https://huggingface.co";
 
+/// Page size for the in-app Hugging Face GGUF model search. Baked-in: a fixed
+/// number of most-downloaded results per query is enough for the browser;
+/// cursor pagination beyond this is intentionally out of scope until the UI
+/// needs it.
+pub const HF_SEARCH_LIMIT: usize = 30;
+
+/// Maximum accepted byte length for a Hugging Face search query before it is
+/// sent upstream. Defense-in-depth bound on attacker-influenced input: the
+/// query reaches the fixed Hub host (no SSRF) and is percent-encoded by the
+/// client, but an unbounded string is still rejected to cap request size.
+pub const MAX_HF_SEARCH_QUERY_LEN: usize = 200;
+
 /// Maximum accepted byte length for a model slug passed to `set_active_model`.
 /// Real Ollama slugs are a handful of characters; 256 is generous while still
 /// capping adversarial inputs long before any network or database work.
