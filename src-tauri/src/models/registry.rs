@@ -1,15 +1,21 @@
 /*!
- * Curated starter model registry for the built-in llama.cpp engine.
+ * Curated model registry for the built-in llama.cpp engine.
  *
- * Three tiers (Fast / Balanced / Smartest) cover the RAM spectrum of Apple
- * Silicon Macs. Every entry pins a Hugging Face repo at an exact git revision
- * and carries the SHA-256 of each blob, so a starter download is reproducible
- * and verifiable end to end (the digests feed straight into
- * [`crate::models::download::DownloadSpec`] which verifies them on install).
+ * This is the Staff Picks catalog: a small, deeply-vetted set of models grouped
+ * into use-case sections (Everyday chat / Compact & fast / Deep reasoning).
+ * Three of the entries double as the onboarding heroes (one per tier, see
+ * [`ONBOARDING_HERO_IDS`]); the rest exist only in the catalog. Every entry
+ * pins a Hugging Face repo at an exact git revision and carries the SHA-256 of
+ * each blob, so a download is reproducible and verifiable end to end (the
+ * digests feed straight into [`crate::models::download::DownloadSpec`] which
+ * verifies them on install). Provenance comes from the pinned revision and a
+ * trusted GGUF source (the maker's own repo, `unsloth`, `bartowski`, or
+ * `ggml-org`); the SHA-256 is an integrity check only.
  *
  * Hashes and sizes were read from the Hugging Face tree-at-revision API
- * (`/api/models/<repo>/tree/<revision>`) on 2026-06-17, so each digest
- * matches the pinned commit, not whatever `main` later points to.
+ * (`/api/models/<repo>/tree/<revision>`): the three heroes on 2026-06-17, the
+ * rest of the catalog on 2026-06-20, so each digest matches its pinned commit,
+ * not whatever `main` later points to.
  */
 
 use crate::config::defaults::HF_BASE_URL;
@@ -161,6 +167,170 @@ pub const STARTERS: &[Starter] = &[
         origin: "OpenAI",
         origin_repo: "openai/gpt-oss-20b",
     },
+    // ── Everyday chat ──────────────────────────────────────────────────────
+    Starter {
+        id: "llama-3.1-8b",
+        tier: Tier::Balanced,
+        family: "Llama",
+        category: "Everyday chat",
+        display_name: "Llama 3.1 8B",
+        repo: "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+        revision: "bf5b95e96dac0462e2a09145ec66cae9a3f12067",
+        file_name: "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        sha256: "7b064f5842bf9532c91456deda288a1b672397a54fa729aa665952863033557c",
+        size_bytes: 4_920_739_232,
+        quant: "Q4_K_M",
+        vision: false,
+        thinking: false,
+        reasoning_always: false,
+        mmproj_file: None,
+        mmproj_sha256: None,
+        mmproj_bytes: 0,
+        est_runtime_gb: 7.0,
+        license_note: "Llama 3.1 Community",
+        origin: "Meta",
+        origin_repo: "meta-llama/Llama-3.1-8B-Instruct",
+    },
+    Starter {
+        id: "mistral-nemo-12b",
+        tier: Tier::Balanced,
+        family: "Mistral",
+        category: "Everyday chat",
+        display_name: "Mistral Nemo 12B",
+        repo: "bartowski/Mistral-Nemo-Instruct-2407-GGUF",
+        revision: "a2dd64a0a76ea1bdb2bb6ab6fa5496b003c7c908",
+        file_name: "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
+        sha256: "7c1a10d202d8788dbe5628dc962254d10654c853cae6aaeca0618f05490d4a46",
+        size_bytes: 7_477_208_192,
+        quant: "Q4_K_M",
+        vision: false,
+        thinking: false,
+        reasoning_always: false,
+        mmproj_file: None,
+        mmproj_sha256: None,
+        mmproj_bytes: 0,
+        est_runtime_gb: 9.9,
+        license_note: "Apache 2.0",
+        origin: "Mistral",
+        origin_repo: "mistralai/Mistral-Nemo-Instruct-2407",
+    },
+    // ── Compact & fast ─────────────────────────────────────────────────────
+    Starter {
+        id: "phi-4-mini-3.8b",
+        tier: Tier::Fast,
+        family: "Phi",
+        category: "Compact & fast",
+        display_name: "Phi-4 Mini 3.8B",
+        repo: "unsloth/Phi-4-mini-instruct-GGUF",
+        revision: "78eb92a46fc37e6b524df991ed9aca9bc6aa7b80",
+        file_name: "Phi-4-mini-instruct-Q4_K_M.gguf",
+        sha256: "88c00229914083cd112853aab84ed51b87bdf6b9ce42f532d8c85c7c63b1730a",
+        size_bytes: 2_491_874_272,
+        quant: "Q4_K_M",
+        vision: false,
+        thinking: false,
+        reasoning_always: false,
+        mmproj_file: None,
+        mmproj_sha256: None,
+        mmproj_bytes: 0,
+        est_runtime_gb: 4.7,
+        license_note: "MIT",
+        origin: "Microsoft",
+        origin_repo: "microsoft/Phi-4-mini-instruct",
+    },
+    Starter {
+        id: "llama-3.2-3b",
+        tier: Tier::Fast,
+        family: "Llama",
+        category: "Compact & fast",
+        display_name: "Llama 3.2 3B",
+        repo: "bartowski/Llama-3.2-3B-Instruct-GGUF",
+        revision: "5ab33fa94d1d04e903623ae72c95d1696f09f9e8",
+        file_name: "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+        sha256: "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff",
+        size_bytes: 2_019_377_696,
+        quant: "Q4_K_M",
+        vision: false,
+        thinking: false,
+        reasoning_always: false,
+        mmproj_file: None,
+        mmproj_sha256: None,
+        mmproj_bytes: 0,
+        est_runtime_gb: 4.0,
+        license_note: "Llama 3.2 Community",
+        origin: "Meta",
+        origin_repo: "meta-llama/Llama-3.2-3B-Instruct",
+    },
+    Starter {
+        id: "gemma-4-e4b",
+        tier: Tier::Fast,
+        family: "Gemma",
+        category: "Compact & fast",
+        display_name: "Gemma 4 E4B",
+        repo: "google/gemma-4-E4B-it-qat-q4_0-gguf",
+        revision: "bb3b92e6f031fa438b409f898dd9f14f499a0cb0",
+        file_name: "gemma-4-E4B_q4_0-it.gguf",
+        sha256: "e8b6a059ba86947a44ace84d6e5679795bc41862c25c30513142588f0e9dba1d",
+        size_bytes: 5_154_939_136,
+        quant: "Q4_0",
+        vision: true,
+        thinking: false,
+        reasoning_always: false,
+        mmproj_file: Some("gemma-4-E4B-it-mmproj.gguf"),
+        mmproj_sha256: Some("c6398448d84a4836fdedf58f9775979e69ae0cc4dfdf4d697b5597693a555b12"),
+        mmproj_bytes: 991_551_904,
+        est_runtime_gb: 7.4,
+        license_note: "Gemma",
+        origin: "Google",
+        origin_repo: "google/gemma-4-E4B-it",
+    },
+    // ── Deep reasoning ─────────────────────────────────────────────────────
+    Starter {
+        id: "phi-4-reasoning-plus-14b",
+        tier: Tier::Smartest,
+        family: "Phi",
+        category: "Deep reasoning",
+        display_name: "Phi-4 Reasoning Plus 14B",
+        repo: "unsloth/Phi-4-reasoning-plus-GGUF",
+        revision: "80fff8542dc7b88dba725b660beefd80e91e80c9",
+        file_name: "Phi-4-reasoning-plus-Q4_K_M.gguf",
+        sha256: "faf720745e20df40f52ee218be14c72b33070f7aacc508b3fbc61d47f32b4ffe",
+        size_bytes: 9_053_117_120,
+        quant: "Q4_K_M",
+        vision: false,
+        thinking: true,
+        reasoning_always: true,
+        mmproj_file: None,
+        mmproj_sha256: None,
+        mmproj_bytes: 0,
+        est_runtime_gb: 12.0,
+        license_note: "MIT",
+        origin: "Microsoft",
+        origin_repo: "microsoft/Phi-4-reasoning-plus",
+    },
+    Starter {
+        id: "deepseek-r1-distill-8b",
+        tier: Tier::Balanced,
+        family: "DeepSeek",
+        category: "Deep reasoning",
+        display_name: "DeepSeek-R1 Distill 8B",
+        repo: "unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF",
+        revision: "615f8936e16dfde29dcc00be71145d4d5ce8ed53",
+        file_name: "DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf",
+        sha256: "0addb1339a82385bcd973186cd80d18dcc71885d45eabd899781a118d03827d9",
+        size_bytes: 4_920_737_216,
+        quant: "Q4_K_M",
+        vision: false,
+        thinking: true,
+        reasoning_always: true,
+        mmproj_file: None,
+        mmproj_sha256: None,
+        mmproj_bytes: 0,
+        est_runtime_gb: 7.0,
+        license_note: "MIT",
+        origin: "DeepSeek",
+        origin_repo: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+    },
 ];
 
 /// Ids of the three onboarding hero starters, in tier order
@@ -306,6 +476,114 @@ mod tests {
         );
         for id in ONBOARDING_HERO_IDS {
             assert!(by_id(id).is_some(), "hero id missing from registry: {id}");
+        }
+    }
+
+    #[test]
+    fn catalog_is_the_vetted_models_grouped_by_category() {
+        // The curated Staff Picks catalog: deeply-vetted models, grouped into
+        // the use-case sections the Discover surface renders. Locks the exact
+        // set so a stray add/remove is a deliberate, reviewed change.
+        use std::collections::BTreeMap;
+        let mut by_cat: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for s in STARTERS {
+            by_cat.entry(s.category).or_default().push(s.id);
+        }
+        for v in by_cat.values_mut() {
+            v.sort_unstable();
+        }
+        let mut expected: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        expected.insert(
+            "Everyday chat",
+            vec![
+                "gemma-4-12b",
+                "llama-3.1-8b",
+                "mistral-nemo-12b",
+                "qwen3.5-9b",
+            ],
+        );
+        expected.insert(
+            "Compact & fast",
+            vec!["gemma-4-e4b", "llama-3.2-3b", "phi-4-mini-3.8b"],
+        );
+        expected.insert(
+            "Deep reasoning",
+            vec![
+                "deepseek-r1-distill-8b",
+                "gpt-oss-20b",
+                "phi-4-reasoning-plus-14b",
+            ],
+        );
+        for v in expected.values_mut() {
+            v.sort_unstable();
+        }
+        assert_eq!(by_cat, expected);
+    }
+
+    #[test]
+    fn every_entry_carries_origin_and_license() {
+        for s in STARTERS {
+            assert!(!s.license_note.is_empty(), "{}: empty license", s.id);
+            assert!(!s.origin.is_empty(), "{}: empty origin", s.id);
+            assert!(!s.display_name.is_empty(), "{}: empty display_name", s.id);
+            assert!(!s.family.is_empty(), "{}: empty family", s.id);
+            // origin_repo is an "org/name" slug the picker turns into an HF URL.
+            assert_eq!(
+                s.origin_repo.split('/').count(),
+                2,
+                "{}: origin_repo is not org/name: {}",
+                s.id,
+                s.origin_repo
+            );
+        }
+    }
+
+    #[test]
+    fn mmproj_fields_are_internally_consistent() {
+        for s in STARTERS {
+            // The mmproj file, its digest, and a non-zero byte count travel
+            // together, and a vision entry ships a projector while a text entry
+            // does not (llama.cpp needs the mmproj to see images).
+            assert_eq!(
+                s.mmproj_file.is_some(),
+                s.mmproj_sha256.is_some(),
+                "{}: mmproj file/sha presence mismatch",
+                s.id
+            );
+            assert_eq!(
+                s.mmproj_file.is_some(),
+                s.mmproj_bytes > 0,
+                "{}: mmproj file/bytes presence mismatch",
+                s.id
+            );
+            assert_eq!(
+                s.vision,
+                s.mmproj_file.is_some(),
+                "{}: vision/mmproj mismatch",
+                s.id
+            );
+        }
+    }
+
+    #[test]
+    fn reasoning_always_entries_also_emit_thinking() {
+        // A model whose reasoning cannot be turned off must also be flagged as
+        // a thinking model, or the picker badge and `/think` gate disagree.
+        for s in STARTERS {
+            if s.reasoning_always {
+                assert!(s.thinking, "{}: reasoning_always implies thinking", s.id);
+            }
+        }
+    }
+
+    #[test]
+    fn every_entry_has_a_positive_runtime_estimate() {
+        for s in STARTERS {
+            assert!(
+                s.est_runtime_gb > 0.0,
+                "{}: non-positive est_runtime_gb",
+                s.id
+            );
         }
     }
 
