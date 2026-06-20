@@ -59,7 +59,7 @@ function renderHost() {
 
 /** Staff picks is showing when its curated hint is on screen. */
 function staffPicksVisible(): boolean {
-  return screen.queryByText(/Hand-picked by Thuki/) !== null;
+  return screen.queryByText(/Pick by what you want to do/) !== null;
 }
 
 /** Browse all is showing when its Hugging Face search box is on screen. */
