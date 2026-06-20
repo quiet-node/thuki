@@ -402,10 +402,18 @@ pub fn download_specs(s: &Starter) -> Vec<DownloadSpec> {
     specs
 }
 
-/// Manifest row for an installed starter. id = `"<repo>:<file_name>"`.
+/// The manifest-row id for a starter: `"<repo>:<file_name>"`. The single source
+/// of truth for how a curated entry maps onto its installed-manifest key, so the
+/// installed-state probe can resolve the id without building a whole
+/// [`InstalledModel`] just to read one field.
+pub fn installed_model_id(s: &Starter) -> String {
+    format!("{}:{}", s.repo, s.file_name)
+}
+
+/// Manifest row for an installed starter. id = [`installed_model_id`].
 pub fn to_installed_model(s: &Starter) -> InstalledModel {
     InstalledModel {
-        id: format!("{}:{}", s.repo, s.file_name),
+        id: installed_model_id(s),
         display_name: s.display_name.to_string(),
         repo: s.repo.to_string(),
         revision: s.revision.to_string(),
@@ -789,6 +797,16 @@ mod tests {
                 smartest.repo, smartest.revision, smartest.file_name
             )
         );
+    }
+
+    #[test]
+    fn installed_model_id_is_repo_colon_file() {
+        // The manifest-row id is "<repo>:<file_name>"; `installed_model_id` is
+        // its single source of truth, so `to_installed_model` never drifts from
+        // the installed-state probe.
+        let s = &STARTERS[0];
+        assert_eq!(installed_model_id(s), format!("{}:{}", s.repo, s.file_name));
+        assert_eq!(to_installed_model(s).id, installed_model_id(s));
     }
 
     #[test]

@@ -1205,7 +1205,7 @@ fn annotate_starter(
         starter: s.clone(),
         fit: registry::ram_fit(s.est_runtime_gb, ram_bytes),
         installed: matches!(
-            manifest::get(conn, &registry::to_installed_model(s).id),
+            manifest::get(conn, &registry::installed_model_id(s)),
             Ok(Some(_))
         ),
         partial_bytes: store.existing_partial_len(s.sha256),
