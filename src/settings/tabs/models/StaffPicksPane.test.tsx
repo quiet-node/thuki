@@ -200,30 +200,32 @@ describe('StaffPicksPane', () => {
     expect(screen.queryByText(/Recommended/)).not.toBeInTheDocument();
   });
 
-  it('shows the name, pills, size and maker, and fit on a row', async () => {
+  it('shows the name, pills, the size · context · maker sub-line, and fit', async () => {
     await renderPane();
     const row = rowFor('Gemma 4 12B');
     expect(within(row).getByText('Text')).toBeInTheDocument();
     expect(within(row).getByText('Vision')).toBeInTheDocument();
     expect(within(row).queryByText('Thinking')).not.toBeInTheDocument();
-    expect(within(row).getByText('7.2 GB · Google')).toBeInTheDocument();
+    // Context window sits in the metadata sub-line, between size and maker.
+    expect(within(row).getByText('7.2 GB · 128K · Google')).toBeInTheDocument();
     expect(within(row).getByText('Comfortable')).toBeInTheDocument();
   });
 
-  it('shows the context-window pill, formatted compactly', async () => {
+  it('places the context window between size and maker for each model', async () => {
     await renderPane();
-    expect(within(rowFor('Gemma 4 12B')).getByText('128K')).toBeInTheDocument();
-    expect(within(rowFor('Qwen3.5 9B')).getByText('256K')).toBeInTheDocument();
+    expect(
+      within(rowFor('Qwen3.5 9B')).getByText('7.2 GB · 256K · Alibaba'),
+    ).toBeInTheDocument();
   });
 
-  it('omits the context pill for a model with no context window', async () => {
+  it('falls back to size · maker when a model has no context window', async () => {
     await renderPane(() => {}, {
       get_staff_picks: [
         option({ context_length: undefined, display_name: 'Mystery 7B' }),
       ],
     });
     const row = rowFor('Mystery 7B');
-    expect(within(row).queryByText(/K$/)).not.toBeInTheDocument();
+    expect(within(row).getByText('7.2 GB · Google')).toBeInTheDocument();
   });
 
   it('shows a Thinking pill on a thinking model and omits Vision on a text-only one', async () => {

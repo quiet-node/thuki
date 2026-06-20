@@ -97,12 +97,6 @@
 .pillThinking {
   color: var(--cap-think);
 }
-/* Context window is a spec, not a capability, so it reads in a neutral metadata
- * tone rather than one of the accent capability colours. */
-.pillContext {
-  color: var(--t3);
-  font-variant-numeric: tabular-nums;
-}
 
 .sub {
   font-size: 10.5px;

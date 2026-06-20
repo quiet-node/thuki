@@ -236,17 +236,11 @@ function ModelRow({
                   Thinking
                 </span>
               ) : null}
-              {contextLabel ? (
-                <Tooltip label="Context window" placement="top">
-                  <span className={`${styles.pill} ${styles.pillContext}`}>
-                    {contextLabel}
-                  </span>
-                </Tooltip>
-              ) : null}
             </span>
           </div>
           <div className={styles.sub}>
-            {gb(totalBytes(option))} GB · {starter.origin}
+            {gb(totalBytes(option))} GB
+            {contextLabel ? ` · ${contextLabel}` : ''} · {starter.origin}
           </div>
         </div>
         {!showProgress ? (
