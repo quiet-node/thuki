@@ -22,6 +22,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { clearEventHandlers } from '../../testUtils/mocks/tauri';
 
 import { ModelTab } from './ModelTab';
+import { DownloadProvider } from '../../contexts/DownloadContext';
 import { DisplayTab } from './DisplayTab';
 import { SearchTab } from './SearchTab';
 import { AboutTab } from './AboutTab';
@@ -131,6 +132,7 @@ afterEach(() => {
 async function renderModelTab() {
   const view = render(
     <ModelTab config={CONFIG} resyncToken={0} onSaved={() => {}} />,
+    { wrapper: DownloadProvider },
   );
   await act(async () => {
     await Promise.resolve();
@@ -182,6 +184,7 @@ describe('ModelTab (router)', () => {
     };
     render(
       <ModelTab config={builtinActive} resyncToken={0} onSaved={() => {}} />,
+      { wrapper: DownloadProvider },
     );
     await act(async () => {
       await Promise.resolve();

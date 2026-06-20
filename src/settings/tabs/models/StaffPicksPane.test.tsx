@@ -24,6 +24,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 
 import { StaffPicksPane } from './StaffPicksPane';
+import { DownloadProvider } from '../../../contexts/DownloadContext';
 import type { RawAppConfig } from '../../types';
 import type { Starter, StarterOption } from '../../../types/starter';
 
@@ -160,7 +161,9 @@ async function renderPane(
   overrides: Record<string, unknown> = {},
 ) {
   mockCommands(picksResponses(overrides));
-  const view = render(<StaffPicksPane onSaved={onSaved} />);
+  const view = render(<StaffPicksPane onSaved={onSaved} />, {
+    wrapper: DownloadProvider,
+  });
   await waitFor(() =>
     expect(invokeMock).toHaveBeenCalledWith('get_staff_picks'),
   );
@@ -275,6 +278,20 @@ describe('StaffPicksPane', () => {
       'download_staff_pick',
       expect.objectContaining({ id: 'gemma-4-12b' }),
     );
+  });
+
+  it('disables other rows while one model is downloading', async () => {
+    await renderPane();
+    fireEvent.click(
+      within(rowFor('Gemma 4 12B')).getByRole('button', { name: 'Download' }),
+    );
+    await flush();
+    // The active row shows progress; the other rows' Download buttons disable so
+    // a second click cannot collide with the single backend download slot and
+    // surface "a download is already in progress".
+    expect(
+      within(rowFor('Qwen3.5 9B')).getByRole('button', { name: 'Download' }),
+    ).toBeDisabled();
   });
 
   it('lifts a fresh config and refreshes when a download completes', async () => {

@@ -20,11 +20,11 @@
  * too); `activeId` tracks which row owns the progress card.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import { DownloadProgress } from '../../../components/DownloadProgress';
-import { useDownloadModel } from '../../../hooks/useDownloadModel';
+import { useDownloadCtx } from '../../../contexts/DownloadContext';
 import { useStaffPicks } from '../../../components/StarterPicker';
 import { Tooltip } from '../../../components/Tooltip';
 import { formatContextWindow } from '../../../utils/contextWindow';
@@ -100,20 +100,26 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
   const { options, refresh } = useStaffPicks();
   const sections = useMemo(() => groupByCategory(options ?? []), [options]);
 
-  // One download at a time; activeId names the row that owns the progress card.
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // The download machine lives at the app root (DownloadProvider) so a Staff
+  // picks / Browse all tab switch, which unmounts this pane, never drops an
+  // in-flight download: the single-slot backend download outlives the pane, so
+  // the frontend view of it must too. `activeDownload` names the row that owns
+  // the shared progress card; it survives the remount and re-binds the row to
+  // the live progress instead of re-reading the partial as a stale "Paused".
   const {
     state,
     progress,
     etaSeconds,
     combinedBytes,
     speedBytesPerSec,
-    startById,
+    startStaffPick,
     cancel,
     retry,
     reset,
     discard,
-  } = useDownloadModel();
+    activeDownload,
+    clearActiveDownload,
+  } = useDownloadCtx();
 
   // A finished install (phase 'ready') lifts the fresh config, clears the
   // active row, and refreshes the rows so the new model flips to Installed.
@@ -127,35 +133,35 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
         // The focus-driven resync picks the change up on next activation.
       }
       reset();
-      setActiveId(null);
+      clearActiveDownload();
       await refresh();
     })();
-  }, [state.phase, onSaved, reset, refresh]);
-
-  // Download and resume both run the same id-keyed verified path; the backend
-  // resumes from a kept partial via Range, so resume is just starting again.
-  function startDownload(id: string) {
-    setActiveId(id);
-    void startById(id);
-  }
+  }, [state.phase, onSaved, reset, clearActiveDownload, refresh]);
 
   async function discardPartial(sha256: string) {
     await discard(sha256);
     await refresh();
   }
 
-  // Cancelling leaves the partial on disk; re-read the options so the row flips
-  // straight to its Paused/Resume state instead of snapping back to a fresh
-  // download until the next remount.
+  // Cancelling leaves the partial on disk; forget the active row and re-read the
+  // options so the row flips straight to its Paused/Resume state instead of
+  // snapping back to a fresh download until the next remount.
   async function cancelDownload() {
     await cancel();
+    clearActiveDownload();
     await refresh();
   }
 
   function returnToPicker() {
     reset();
-    setActiveId(null);
+    clearActiveDownload();
   }
+
+  // The engine downloads one model at a time, so while any download is in flight
+  // every other row's Download / Resume / Discard is disabled: the owning row
+  // shows the progress card, the rest wait rather than colliding with the
+  // single backend slot and surfacing "a download is already in progress".
+  const anyInFlight = state.phase !== 'idle';
 
   if (options !== null && sections.length === 0) {
     return (
@@ -176,14 +182,18 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
             <ModelRow
               key={o.starter.id}
               option={o}
-              active={activeId === o.starter.id}
+              active={
+                activeDownload?.kind === 'staff' &&
+                activeDownload.id === o.starter.id
+              }
+              anyInFlight={anyInFlight}
               state={state}
               progress={progress}
               etaSeconds={etaSeconds}
               combinedBytes={combinedBytes}
               speedBytesPerSec={speedBytesPerSec}
-              onDownload={startDownload}
-              onResume={startDownload}
+              onDownload={startStaffPick}
+              onResume={startStaffPick}
               onDiscard={discardPartial}
               onCancel={() => void cancelDownload()}
               onRetry={() => void retry()}
@@ -199,8 +209,10 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
 interface ModelRowProps {
   option: StaffPickOption;
   active: boolean;
-  state: ReturnType<typeof useDownloadModel>['state'];
-  progress: ReturnType<typeof useDownloadModel>['progress'];
+  /** True while any model is downloading, so this row's actions are disabled. */
+  anyInFlight: boolean;
+  state: ReturnType<typeof useDownloadCtx>['state'];
+  progress: ReturnType<typeof useDownloadCtx>['progress'];
   etaSeconds: number | null;
   combinedBytes: number | null;
   speedBytesPerSec: number | null;
@@ -215,6 +227,7 @@ interface ModelRowProps {
 function ModelRow({
   option,
   active,
+  anyInFlight,
   state,
   progress,
   etaSeconds,
@@ -281,6 +294,7 @@ function ModelRow({
                 <button
                   type="button"
                   className={styles.resumeBtn}
+                  disabled={anyInFlight}
                   onClick={() => onResume(starter.id)}
                 >
                   Resume
@@ -289,6 +303,7 @@ function ModelRow({
                   type="button"
                   className={styles.discardBtn}
                   aria-label="Discard"
+                  disabled={anyInFlight}
                   onClick={() => onDiscard(starter.sha256)}
                 >
                   Discard
@@ -298,6 +313,7 @@ function ModelRow({
               <RowAction
                 option={option}
                 installed={installed}
+                anyInFlight={anyInFlight}
                 onDownload={onDownload}
               />
             )}
@@ -331,6 +347,8 @@ function ModelRow({
 interface RowActionProps {
   option: StaffPickOption;
   installed: boolean;
+  /** True while any model is downloading, so the download button is disabled. */
+  anyInFlight: boolean;
   onDownload: (id: string) => void;
 }
 
@@ -345,7 +363,12 @@ const DOWNLOAD_ICON = (
  * surface the absence of a download is the signal. The interrupted-partial
  * resume/discard pair is owned by the row itself; this renders the plain icon
  * download button otherwise. */
-function RowAction({ option, installed, onDownload }: RowActionProps) {
+function RowAction({
+  option,
+  installed,
+  anyInFlight,
+  onDownload,
+}: RowActionProps) {
   const { starter } = option;
 
   if (installed) {
@@ -357,6 +380,7 @@ function RowAction({ option, installed, onDownload }: RowActionProps) {
       type="button"
       className={styles.getBtn}
       aria-label="Download"
+      disabled={anyInFlight}
       onClick={() => onDownload(starter.id)}
     >
       {DOWNLOAD_ICON}

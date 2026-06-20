@@ -14,11 +14,11 @@
  * batch. A finished install lifts a fresh config snapshot and collapses the row.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import { DownloadProgress } from '../../../components/DownloadProgress';
-import { useDownloadModel } from '../../../hooks/useDownloadModel';
+import { useDownloadCtx } from '../../../contexts/DownloadContext';
 import { useHfSearch } from './useHfSearch';
 import { Tooltip } from '../../../components/Tooltip';
 import { formatContextWindow } from '../../../utils/contextWindow';
@@ -160,15 +160,34 @@ interface BrowseAllRowProps {
  * row so two rows cannot share an in-flight download.
  */
 function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
-  const [expanded, setExpanded] = useState(false);
+  // The download machine lives at the app root (DownloadProvider), shared with
+  // every other row and pane, so a tab switch that unmounts Browse all never
+  // drops an in-flight download: the single-slot backend download outlives the
+  // pane. `activeDownload` names the repo + file that owns it.
+  const {
+    state,
+    progress,
+    etaSeconds,
+    startRepoDownload,
+    cancel,
+    retry,
+    reset,
+    activeDownload,
+    clearActiveDownload,
+  } = useDownloadCtx();
+
+  // The file this repo's row is currently downloading, or null when another row
+  // (or no download) owns the single in-flight slot. Drives which quant swaps to
+  // the live progress card and, on a remount after a tab switch, the re-expand.
+  const activeRepoFile =
+    activeDownload?.kind === 'repo' && activeDownload.repo === model.id
+      ? activeDownload.file
+      : null;
+  const ownsActiveDownload = activeRepoFile !== null;
+
+  const [expanded, setExpanded] = useState(ownsActiveDownload);
   const [files, setFiles] = useState<HfGgufFile[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
-  // The file the user pressed download on, so its row (and only its row) shows
-  // the in-flight progress while the rest of the quant list stays put.
-  const [activeFile, setActiveFile] = useState<string | null>(null);
-
-  const { state, progress, etaSeconds, startRepo, cancel, retry, reset } =
-    useDownloadModel();
 
   const org = orgOf(model.id);
 
@@ -185,6 +204,14 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
     }
   }, [model.id]);
 
+  // A remount that lands on the row owning the in-flight download (re-expanded
+  // above) loads its quant list once so the live progress shows again instead
+  // of staying behind a collapsed row. Fires only on mount.
+  const restoreActiveRow = useRef(ownsActiveDownload);
+  useEffect(() => {
+    if (restoreActiveRow.current) void loadFiles();
+  }, [loadFiles]);
+
   function toggle() {
     if (expanded) {
       setExpanded(false);
@@ -198,10 +225,11 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
     void invoke('open_url', { url: `${HF_BASE_URL}/${model.id}` });
   }
 
-  // A finished install: the backend already wrote the builtin provider's
-  // model field, so lift the fresh config snapshot and collapse the row.
+  // A finished install: the backend already wrote the builtin provider's model
+  // field, so lift the fresh config snapshot and collapse the row. The machine
+  // is shared across rows, so only the row that owns the download reacts.
   useEffect(() => {
-    if (state.phase !== 'ready') return;
+    if (state.phase !== 'ready' || !ownsActiveDownload) return;
     void (async () => {
       try {
         onSaved(await invoke<RawAppConfig>('get_config'));
@@ -209,9 +237,10 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
         // The focus-driven resync picks the change up on next activation.
       }
       reset();
+      clearActiveDownload();
       setExpanded(false);
     })();
-  }, [state.phase, onSaved, reset]);
+  }, [state.phase, ownsActiveDownload, onSaved, reset, clearActiveDownload]);
 
   // Silent re-read of the listing (no loading flash): the rows carry fresh
   // `partial_bytes`, so a file flips to/from its Paused state in place.
@@ -226,11 +255,19 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
     }
   }, [model.id]);
 
-  // Cancelling leaves the partial on disk; re-read the listing so the file
-  // flips straight to its Paused / Resume / Discard controls.
+  // Cancelling leaves the partial on disk; forget the active row and re-read the
+  // listing so the file flips straight to its Paused / Resume / Discard controls.
   async function cancelDownload() {
     await cancel();
+    clearActiveDownload();
     await refetchFiles();
+  }
+
+  // A terminal card's exit (Choose a different model, and the unused confirm
+  // fallbacks): return to the quant list and forget the active row.
+  function returnToList() {
+    reset();
+    clearActiveDownload();
   }
 
   async function discardFile(sha256: string) {
@@ -238,7 +275,9 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
     await refetchFiles();
   }
 
-  const showProgress = state.phase !== 'idle';
+  // True while ANY download runs (the engine handles one at a time): every other
+  // row's controls disable; the owning file swaps to the live progress card.
+  const anyInFlight = state.phase !== 'idle';
   // The context window is a per-repo property (the search carries it via
   // expand[]=gguf), so it shows on the collapsed row without expanding. Empty
   // when unknown, which skips it.
@@ -289,12 +328,12 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
           ) : null}
           {files !== null && files.length > 0
             ? files.map((f) => {
-                // Only the row whose file is downloading swaps its controls for
-                // the inline progress. A file with an interrupted partial reads
-                // as Paused with Resume / Discard; everything else is a normal,
-                // browsable quant. Resume and Discard are disabled while any
-                // download runs, since the engine handles one at a time.
-                const downloading = showProgress && activeFile === f.file;
+                // Only the file that owns the in-flight download swaps its
+                // controls for the inline progress. A file with an interrupted
+                // partial reads as Paused with Resume / Discard; everything else
+                // is a normal, browsable quant. Resume and Discard are disabled
+                // while any download runs, since the engine handles one at a time.
+                const downloading = anyInFlight && activeRepoFile === f.file;
                 const paused = !downloading && f.partial_bytes !== null;
                 const pausedPct =
                   f.partial_bytes !== null
@@ -315,13 +354,13 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
                         // (only the starter picker does), so the confirm card
                         // never renders; these required props point at the same
                         // covered handlers rather than dead no-op literals.
-                        onConfirm={reset}
-                        onCancelConfirm={reset}
+                        onConfirm={returnToList}
+                        onCancelConfirm={returnToList}
                         onCancel={() => void cancelDownload()}
                         onRetry={() => void retry()}
                         // A terminal failure must leave a path back to the quant
-                        // list, not just Retry; reset returns to the file rows.
-                        onChooseAnother={reset}
+                        // list, not just Retry; this returns to the file rows.
+                        onChooseAnother={returnToList}
                       />
                     ) : (
                       <>
@@ -345,11 +384,10 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
                             <button
                               type="button"
                               className={styles.quantResume}
-                              disabled={showProgress}
-                              onClick={() => {
-                                setActiveFile(f.file);
-                                void startRepo(model.id, f.file);
-                              }}
+                              disabled={anyInFlight}
+                              onClick={() =>
+                                startRepoDownload(model.id, f.file)
+                              }
                             >
                               Resume
                             </button>
@@ -357,7 +395,7 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
                               type="button"
                               className={styles.quantDiscard}
                               aria-label="Discard"
-                              disabled={showProgress}
+                              disabled={anyInFlight}
                               onClick={() => void discardFile(f.sha256)}
                             >
                               Discard
@@ -372,11 +410,10 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
                               type="button"
                               className={styles.quantGet}
                               aria-label="Download"
-                              disabled={showProgress}
-                              onClick={() => {
-                                setActiveFile(f.file);
-                                void startRepo(model.id, f.file);
-                              }}
+                              disabled={anyInFlight}
+                              onClick={() =>
+                                startRepoDownload(model.id, f.file)
+                              }
                             >
                               {DOWNLOAD_ICON}
                             </button>

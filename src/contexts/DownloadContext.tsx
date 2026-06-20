@@ -32,6 +32,18 @@ import {
 import { useConfig } from './ConfigContext';
 import type { StarterOption, StarterTier } from '../types/starter';
 
+/**
+ * Identity of the Settings → Discover download in flight, kept here (above the
+ * panes) so the owning row re-shows live progress after a Staff-picks /
+ * Browse-all tab switch unmounts and remounts it. The single-slot backend
+ * download outlives a pane unmount, so the frontend's view of it must too:
+ * `'staff'` is a curated catalog entry keyed by its stable id; `'repo'` is a
+ * Browse-all repo + GGUF file.
+ */
+export type ActiveDownload =
+  | { kind: 'staff'; id: string }
+  | { kind: 'repo'; repo: string; file: string };
+
 export interface DownloadContextValue extends UseDownloadModel {
   /** Tier whose download is in flight; null when idle. */
   downloadingTier: StarterTier | null;
@@ -76,6 +88,18 @@ export interface DownloadContextValue extends UseDownloadModel {
   pauseDownload: () => void;
   /** Resume a paused download from where it stopped. */
   resumeFromPause: () => void;
+  /**
+   * Which Discover row owns the in-flight download, or null when none does.
+   * Survives a pane unmount so the row re-binds to the live progress on
+   * remount instead of re-reading the on-disk partial as a stale "Paused".
+   */
+  activeDownload: ActiveDownload | null;
+  /** Start (or resume) a Staff Picks catalog download and record its row id. */
+  startStaffPick: (id: string) => void;
+  /** Start (or resume) a Browse-all repo download and record its row identity. */
+  startRepoDownload: (repo: string, file: string) => void;
+  /** Forget the active Discover download row (terminal card dismissed/paused). */
+  clearActiveDownload: () => void;
 }
 
 const DownloadContext = createContext<DownloadContextValue | null>(null);
@@ -89,8 +113,19 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   const [activeOption, setActiveOption] = useState<StarterOption | null>(null);
   const [pauseRequested, setPauseRequested] = useState(false);
   const [pausedBytes, setPausedBytes] = useState(0);
+  const [activeDownload, setActiveDownload] = useState<ActiveDownload | null>(
+    null,
+  );
 
-  const { start, resume, cancel, discard, combinedBytes } = download;
+  const {
+    start,
+    resume,
+    startById,
+    startRepo,
+    cancel,
+    discard,
+    combinedBytes,
+  } = download;
   const downloadPhase = download.state.phase;
 
   // A pause is only *committed* once the cancel has fully landed (machine back
@@ -182,6 +217,26 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     resumeDownload(activeOption!.starter.tier, activeOption!, pausedBytes);
   }, [activeOption, pausedBytes, resumeDownload]);
 
+  // Discover (Settings) download identity. A resume runs the same start path
+  // (the backend resumes the kept partial via Range), so resume reuses these.
+  const startStaffPick = useCallback(
+    (id: string) => {
+      setActiveDownload({ kind: 'staff', id });
+      void startById(id);
+    },
+    [startById],
+  );
+
+  const startRepoDownload = useCallback(
+    (repo: string, file: string) => {
+      setActiveDownload({ kind: 'repo', repo, file });
+      void startRepo(repo, file);
+    },
+    [startRepo],
+  );
+
+  const clearActiveDownload = useCallback(() => setActiveDownload(null), []);
+
   const grandTotalBytes =
     activeOption === null
       ? null
@@ -201,6 +256,10 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       pausedBytes,
       pauseDownload,
       resumeFromPause,
+      activeDownload,
+      startStaffPick,
+      startRepoDownload,
+      clearActiveDownload,
     }),
     [
       download,
@@ -215,6 +274,10 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       pausedBytes,
       pauseDownload,
       resumeFromPause,
+      activeDownload,
+      startStaffPick,
+      startRepoDownload,
+      clearActiveDownload,
     ],
   );
 

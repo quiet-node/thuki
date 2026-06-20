@@ -24,6 +24,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 
 import { BrowseAllPane } from './BrowseAllPane';
+import { DownloadProvider } from '../../../contexts/DownloadContext';
 import {
   HF_SEARCH_DEBOUNCE_MS,
   HF_PAGE_SIZE,
@@ -139,7 +140,9 @@ async function renderPane(
   overrides: Record<string, unknown> = {},
 ) {
   mockCommands(discoverResponses(overrides));
-  const view = render(<BrowseAllPane onSaved={onSaved} />);
+  const view = render(<BrowseAllPane onSaved={onSaved} />, {
+    wrapper: DownloadProvider,
+  });
   await waitFor(() =>
     expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
       query: '',
@@ -190,7 +193,7 @@ describe('BrowseAllPane', () => {
   it('typing in the search drives a debounced fetch and re-renders results', async () => {
     vi.useFakeTimers();
     mockCommands(discoverResponses());
-    render(<BrowseAllPane onSaved={() => {}} />);
+    render(<BrowseAllPane onSaved={() => {}} />, { wrapper: DownloadProvider });
     await act(async () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
       await Promise.resolve();
@@ -219,7 +222,7 @@ describe('BrowseAllPane', () => {
   it('clicking a family chip sets the query to that family', async () => {
     vi.useFakeTimers();
     mockCommands(discoverResponses());
-    render(<BrowseAllPane onSaved={() => {}} />);
+    render(<BrowseAllPane onSaved={() => {}} />, { wrapper: DownloadProvider });
     await act(async () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
       await Promise.resolve();
@@ -243,7 +246,7 @@ describe('BrowseAllPane', () => {
   it('the All chip clears the query and is active by default', async () => {
     vi.useFakeTimers();
     mockCommands(discoverResponses());
-    render(<BrowseAllPane onSaved={() => {}} />);
+    render(<BrowseAllPane onSaved={() => {}} />, { wrapper: DownloadProvider });
     await act(async () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
       await Promise.resolve();
@@ -618,7 +621,7 @@ describe('BrowseAllPane', () => {
       resolveSearch = res;
     });
     mockCommands(discoverResponses({ search_hf_models: pending }));
-    render(<BrowseAllPane onSaved={() => {}} />);
+    render(<BrowseAllPane onSaved={() => {}} />, { wrapper: DownloadProvider });
     await flush();
     expect(screen.getByText('Searching…')).toBeInTheDocument();
     await act(async () => {
@@ -645,7 +648,7 @@ describe('BrowseAllPane', () => {
         gated: false,
       }));
     mockCommands(discoverResponses({ search_hf_models: full(HF_PAGE_SIZE) }));
-    render(<BrowseAllPane onSaved={() => {}} />);
+    render(<BrowseAllPane onSaved={() => {}} />, { wrapper: DownloadProvider });
     await act(async () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
       await Promise.resolve();

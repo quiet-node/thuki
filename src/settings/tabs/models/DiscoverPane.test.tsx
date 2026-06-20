@@ -5,13 +5,20 @@
  * own suites; here we only test the tab control and which pane it shows.
  */
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { invoke } from '@tauri-apps/api/core';
 
 import { DiscoverPane } from './DiscoverPane';
 import { clearHfSearchCache } from './useHfSearch';
+import { DownloadProvider } from '../../../contexts/DownloadContext';
 import type { Starter, StarterOption } from '../../../types/starter';
 
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
@@ -55,7 +62,9 @@ beforeEach(() => {
 });
 
 function renderHost() {
-  return render(<DiscoverPane onSaved={() => {}} />);
+  return render(<DiscoverPane onSaved={() => {}} />, {
+    wrapper: DownloadProvider,
+  });
 }
 
 /** Staff picks is showing when its curated use-case sections are on screen. */
@@ -119,6 +128,150 @@ describe('DiscoverPane host', () => {
     expect(screen.getByRole('tab', { name: 'Staff picks' })).toHaveAttribute(
       'aria-selected',
       'true',
+    );
+  });
+});
+
+describe('DiscoverPane download persistence', () => {
+  type MockChannel = { simulateMessage: (msg: unknown) => void };
+  let channel: MockChannel | null = null;
+
+  async function flush() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    clearHfSearchCache();
+    channel = null;
+    invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        if (args && 'onEvent' in args) {
+          channel = args.onEvent as unknown as MockChannel;
+        }
+        if (cmd === 'get_staff_picks') return [STARTER];
+        if (cmd === 'search_hf_models') {
+          return [
+            {
+              id: 'google/gemma-4-12b-it-GGUF',
+              downloads: 1_200_000,
+              gated: false,
+            },
+          ];
+        }
+        if (cmd === 'list_hf_repo_ggufs') {
+          return [
+            {
+              file: 'gemma-q4.gguf',
+              size_bytes: 5_000_000_000,
+              fit: 'tight',
+              sha256: 'a'.repeat(64),
+              partial_bytes: null,
+            },
+          ];
+        }
+        return undefined;
+      },
+    );
+  });
+
+  // The bug: starting a download in Staff picks, switching to Browse all, then
+  // back drops the live progress (the pane owned a component-local download
+  // machine that died on unmount while the single-slot backend download kept
+  // running). The shared app-root machine must keep the progress alive.
+  it('keeps a live Staff-picks download visible across a Browse-all round trip', async () => {
+    render(<DiscoverPane onSaved={() => {}} />, { wrapper: DownloadProvider });
+    await waitFor(() => expect(staffPicksVisible()).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+    await flush();
+    act(() =>
+      channel?.simulateMessage({
+        type: 'Started',
+        data: {
+          file: 'gemma.gguf',
+          total_bytes: 7_000_000_000,
+          resumed_from: 0,
+        },
+      }),
+    );
+    act(() =>
+      channel?.simulateMessage({
+        type: 'Progress',
+        data: {
+          file: 'gemma.gguf',
+          bytes: 2_520_000_000,
+          total_bytes: 7_000_000_000,
+        },
+      }),
+    );
+    expect(screen.getByTestId('download-figures')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Browse all' }));
+    await waitFor(() => expect(browseAllVisible()).toBe(true));
+    fireEvent.click(screen.getByRole('tab', { name: 'Staff picks' }));
+    await waitFor(() => expect(staffPicksVisible()).toBe(true));
+
+    // Live progress is still on screen: no Paused row, no "already in progress".
+    expect(screen.getByTestId('download-figures')).toBeInTheDocument();
+    expect(screen.queryByText(/^Paused · /)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('a download is already in progress'),
+    ).not.toBeInTheDocument();
+  });
+
+  // The symmetric case for the advanced pathway: a Browse-all repo download must
+  // also survive a Staff-picks round trip, re-binding to the owning row (which
+  // re-expands) instead of resetting to a collapsed, idle row.
+  it('keeps a live Browse-all download visible across a Staff-picks round trip', async () => {
+    render(<DiscoverPane onSaved={() => {}} />, { wrapper: DownloadProvider });
+    await waitFor(() => expect(staffPicksVisible()).toBe(true));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Browse all' }));
+    await waitFor(() => expect(browseAllVisible()).toBe(true));
+    await waitFor(() =>
+      expect(
+        screen.getByText('google/gemma-4-12b-it-GGUF'),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Show files' }));
+    await waitFor(() =>
+      expect(screen.getByText('gemma-q4.gguf')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+    await flush();
+    act(() =>
+      channel?.simulateMessage({
+        type: 'Started',
+        data: {
+          file: 'gemma-q4.gguf',
+          total_bytes: 5_000_000_000,
+          resumed_from: 0,
+        },
+      }),
+    );
+    act(() =>
+      channel?.simulateMessage({
+        type: 'Progress',
+        data: {
+          file: 'gemma-q4.gguf',
+          bytes: 1_500_000_000,
+          total_bytes: 5_000_000_000,
+        },
+      }),
+    );
+    expect(screen.getByTestId('download-figures')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Staff picks' }));
+    await waitFor(() => expect(staffPicksVisible()).toBe(true));
+    fireEvent.click(screen.getByRole('tab', { name: 'Browse all' }));
+    await waitFor(() => expect(browseAllVisible()).toBe(true));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('download-figures')).toBeInTheDocument(),
     );
   });
 });

@@ -159,6 +159,25 @@ describe('SettingsWindow', () => {
     );
   });
 
+  // Regression: the Settings window is its own webview root. The Discover panes
+  // read the app-root download context, so the Settings tree must provide a
+  // DownloadProvider or opening Discover throws and blanks the window.
+  it('opens Discover without crashing the Settings window', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_staff_picks') return [];
+      return defaultInvoke(cmd);
+    });
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Discover' }));
+      await Promise.resolve();
+    });
+    expect(
+      await screen.findByRole('tab', { name: 'Staff picks' }),
+    ).toBeInTheDocument();
+  });
+
   it('switching tabs swaps the active tab body', async () => {
     render(<SettingsWindow />);
     await waitFor(() => screen.getByRole('tab', { name: /Display/ }));

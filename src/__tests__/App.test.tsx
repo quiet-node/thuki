@@ -81,6 +81,10 @@ function makeDownloadCtx(
     pausedBytes: 0,
     pauseDownload: vi.fn(),
     resumeFromPause: vi.fn(),
+    activeDownload: null,
+    startStaffPick: vi.fn(),
+    startRepoDownload: vi.fn(),
+    clearActiveDownload: vi.fn(),
     ...overrides,
   };
 }
