@@ -295,9 +295,28 @@ export function ProvidersPane({
   // is actually resident (drives the status dot color: green when warm).
   const engineWarm =
     activeKind === 'builtin' ? engineState === 'loaded' : loadedModel !== null;
+  // Friendly name of the selected built-in model, for the residency line
+  // (matching the built-in model dropdown below).
+  const builtinDisplayName =
+    installed.find((m) => m.id === builtinModelId)?.display_name ?? '';
+  // Built-in residency reads like Ollama's wording, driven by the live engine
+  // state (the warmup:* events only fire for Ollama): loaded → "<model> in
+  // VRAM", starting → "Loading…", otherwise → "No model loaded". "loaded"
+  // means the llama-server sidecar is up and serving.
+  let builtinResidency: string;
+  if (engineState === 'loaded') {
+    builtinResidency =
+      builtinDisplayName !== ''
+        ? `${builtinDisplayName} in VRAM`
+        : 'No model loaded';
+  } else if (engineState === 'starting') {
+    builtinResidency = 'Loading…';
+  } else {
+    builtinResidency = 'No model loaded';
+  }
   const warmStatusText =
     activeKind === 'builtin'
-      ? `Engine: ${engineState}`
+      ? builtinResidency
       : loadedModel !== null
         ? `${loadedModel} in VRAM`
         : 'No model loaded';

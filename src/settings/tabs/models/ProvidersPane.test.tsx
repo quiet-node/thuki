@@ -53,6 +53,10 @@ const INSTALLED = [
   },
 ];
 
+// A built-in provider whose selected model resolves to INSTALLED[0], so the
+// keep-warm status line can name it (e.g. "Qwen3.5 9B in VRAM").
+const BUILTIN_LOADED: RawProvider = { ...BUILTIN, model: INSTALLED[0].id };
+
 function makeConfig(
   activeProvider: string,
   providers: RawProvider[],
@@ -637,18 +641,42 @@ describe('ProvidersPane generation', () => {
     expect(input).toHaveValue(0);
   });
 
-  it('shows the built-in engine state and gates Unload until loaded', () => {
-    mockInvoke({ get_engine_status: engineStatus('loaded') });
-    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+  it('names the resident built-in model in VRAM and enables Unload when loaded', () => {
+    mockInvoke({
+      get_engine_status: engineStatus('loaded'),
+      list_installed_models: INSTALLED,
+    });
+    renderPane(makeConfig('builtin', [BUILTIN_LOADED, OLLAMA]));
     return waitFor(() => {
-      expect(screen.getByText('Engine: loaded')).toBeInTheDocument();
+      expect(screen.getByText('Qwen3.5 9B in VRAM')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Unload now' })).toBeEnabled();
     });
   });
 
-  it('disables Unload while the built-in engine is stopped', () => {
+  it('shows Loading… while the built-in engine is starting', () => {
+    mockInvoke({
+      get_engine_status: engineStatus('starting'),
+      list_installed_models: INSTALLED,
+    });
+    renderPane(makeConfig('builtin', [BUILTIN_LOADED, OLLAMA]));
+    return waitFor(() => {
+      expect(screen.getByText('Loading…')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+    });
+  });
+
+  it('falls back to no-model-loaded when the engine is loaded but the model is unknown', () => {
+    mockInvoke({ get_engine_status: engineStatus('loaded') });
+    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+    return waitFor(() =>
+      expect(screen.getByText('No model loaded')).toBeInTheDocument(),
+    );
+  });
+
+  it('disables Unload and shows no-model-loaded while the built-in engine is stopped', () => {
     renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
     expect(screen.getByRole('button', { name: 'Unload now' })).toBeDisabled();
+    expect(screen.getByText('No model loaded')).toBeInTheDocument();
   });
 
   it('ejects the model on Unload click when loaded', async () => {
@@ -688,18 +716,21 @@ describe('ProvidersPane generation', () => {
   });
 
   it('greens the status dot when a model is resident', async () => {
-    mockInvoke({ get_engine_status: engineStatus('loaded') });
-    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+    mockInvoke({
+      get_engine_status: engineStatus('loaded'),
+      list_installed_models: INSTALLED,
+    });
+    renderPane(makeConfig('builtin', [BUILTIN_LOADED, OLLAMA]));
     await waitFor(() =>
-      expect(screen.getByText('Engine: loaded')).toBeInTheDocument(),
+      expect(screen.getByText('Qwen3.5 9B in VRAM')).toBeInTheDocument(),
     );
-    const dot = screen.getByText('Engine: loaded').querySelector('span');
+    const dot = screen.getByText('Qwen3.5 9B in VRAM').querySelector('span');
     expect(dot).toHaveClass(styles.genStatusDotLive);
   });
 
   it('dims the status dot when the engine is stopped', () => {
     renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
-    const dot = screen.getByText('Engine: stopped').querySelector('span');
+    const dot = screen.getByText('No model loaded').querySelector('span');
     expect(dot).toHaveClass(styles.genStatusDot);
     expect(dot).not.toHaveClass(styles.genStatusDotLive);
   });
@@ -818,14 +849,15 @@ describe('ProvidersPane robustness', () => {
   });
 
   it('reflects the engine:status event stream for the built-in engine', async () => {
-    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+    mockInvoke({ list_installed_models: INSTALLED });
+    renderPane(makeConfig('builtin', [BUILTIN_LOADED, OLLAMA]));
     await act(async () => {
       await Promise.resolve();
     });
     await act(async () => {
       emitTauriEvent('engine:status', engineStatus('loaded'));
     });
-    expect(screen.getByText('Engine: loaded')).toBeInTheDocument();
+    expect(screen.getByText('Qwen3.5 9B in VRAM')).toBeInTheDocument();
   });
 
   it('falls back to the first Ollama model when the active one is not listed', async () => {
