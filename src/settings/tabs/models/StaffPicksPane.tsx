@@ -106,6 +106,8 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
     state,
     progress,
     etaSeconds,
+    combinedBytes,
+    speedBytesPerSec,
     startById,
     cancel,
     retry,
@@ -170,6 +172,8 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
               state={state}
               progress={progress}
               etaSeconds={etaSeconds}
+              combinedBytes={combinedBytes}
+              speedBytesPerSec={speedBytesPerSec}
               onDownload={startDownload}
               onResume={startDownload}
               onDiscard={discardPartial}
@@ -190,6 +194,8 @@ interface ModelRowProps {
   state: ReturnType<typeof useDownloadModel>['state'];
   progress: ReturnType<typeof useDownloadModel>['progress'];
   etaSeconds: number | null;
+  combinedBytes: number | null;
+  speedBytesPerSec: number | null;
   onDownload: (id: string) => void;
   onResume: (id: string) => void;
   onDiscard: (sha256: string) => void;
@@ -204,6 +210,8 @@ function ModelRow({
   state,
   progress,
   etaSeconds,
+  combinedBytes,
+  speedBytesPerSec,
   onDownload,
   onResume,
   onDiscard,
@@ -267,6 +275,9 @@ function ModelRow({
             state={state}
             progress={progress}
             etaSeconds={etaSeconds}
+            combinedBytes={combinedBytes}
+            grandTotalBytes={totalBytes(option)}
+            speedBytesPerSec={speedBytesPerSec}
             // The curated path has no pre-flight confirm card, so onConfirm /
             // onCancelConfirm never fire; they point at the same covered
             // handlers rather than dead no-op literals.

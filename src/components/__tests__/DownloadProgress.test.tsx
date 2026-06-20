@@ -125,51 +125,42 @@ describe('DownloadProgress', () => {
       totalBytes: 8_200_000_000,
     };
 
-    it('shows percent, byte counts, ETA, and a working Cancel', () => {
+    it('shows the unified percent, byte figures, and a working Cancel', () => {
       const { onCancel } = renderProgress(
         { phase: 'downloading' },
-        { progress, etaSeconds: 300 },
+        { combinedBytes: 1.2e9, grandTotalBytes: 2.0e9, etaSeconds: 240 },
       );
-      expect(screen.getByText('Downloading model')).toBeInTheDocument();
-      expect(screen.getByText('30%')).toBeInTheDocument();
-      expect(screen.getByText('2.5 GB of 8.2 GB')).toBeInTheDocument();
-      expect(screen.getByText('About 5m left')).toBeInTheDocument();
+      expect(screen.getByTestId('download-figures')).toHaveTextContent(
+        '60% · 1.2 / 2.0 GB · ~4m',
+      );
+      // The boxy "Downloading model" headline is gone in the hairline design.
+      expect(screen.queryByText('Downloading model')).not.toBeInTheDocument();
 
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
       expect(onCancel).toHaveBeenCalledTimes(1);
     });
 
-    it('labels the mmproj phase as the vision companion', () => {
+    it('falls back to per-file figures for a single-file repo download', () => {
+      renderProgress({ phase: 'downloading' }, { progress, etaSeconds: 300 });
+      expect(screen.getByTestId('download-figures')).toHaveTextContent(
+        '30% · 2.5 / 8.2 GB · ~5m',
+      );
+    });
+
+    it('keeps one continuous bar and notes the vision companion leg', () => {
       renderProgress(
         { phase: 'downloading_mmproj' },
-        { progress, etaSeconds: null },
+        { combinedBytes: 1.8e9, grandTotalBytes: 2.0e9 },
       );
-      expect(
-        screen.getByText('Downloading vision companion'),
-      ).toBeInTheDocument();
-      expect(screen.queryByText(/left$/)).not.toBeInTheDocument();
+      expect(screen.getByTestId('download-figures')).toHaveTextContent(
+        '90% · 1.8 / 2.0 GB · finishing vision',
+      );
     });
 
-    it('falls back to 0% before the first Started event lands', () => {
+    it('shows 0% with no byte figures before the first bytes land', () => {
       renderProgress({ phase: 'downloading' });
-      expect(screen.getByText('0%')).toBeInTheDocument();
-      expect(screen.queryByText(/GB of/)).not.toBeInTheDocument();
-    });
-
-    it('guards the percent math against a zero total', () => {
-      renderProgress(
-        { phase: 'downloading' },
-        { progress: { file: 'w.gguf', bytes: 10, totalBytes: 0 } },
-      );
-      expect(screen.getByText('0%')).toBeInTheDocument();
-    });
-
-    it('formats sub-minute and multi-hour ETAs', () => {
-      renderProgress({ phase: 'downloading' }, { progress, etaSeconds: 45 });
-      expect(screen.getByText('About 45s left')).toBeInTheDocument();
-
-      renderProgress({ phase: 'downloading' }, { progress, etaSeconds: 7300 });
-      expect(screen.getByText('About 2h 1m left')).toBeInTheDocument();
+      expect(screen.getByTestId('download-figures')).toHaveTextContent('0%');
+      expect(screen.queryByText(/GB/)).not.toBeInTheDocument();
     });
   });
 

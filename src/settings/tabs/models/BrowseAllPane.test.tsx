@@ -400,7 +400,7 @@ describe('BrowseAllPane', () => {
         },
       });
     });
-    expect(screen.getByText('Downloading model')).toBeInTheDocument();
+    expect(screen.getByTestId('download-figures')).toBeInTheDocument();
     act(() => {
       lastChannel?.simulateMessage({ type: 'AllDone' });
     });
@@ -439,7 +439,7 @@ describe('BrowseAllPane', () => {
     await flush();
     fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
-    expect(screen.getByText('Downloading model')).toBeInTheDocument();
+    expect(screen.getByTestId('download-figures')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('cancel_model_download');

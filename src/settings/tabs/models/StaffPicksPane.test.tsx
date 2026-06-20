@@ -283,7 +283,7 @@ describe('StaffPicksPane', () => {
     const row = rowFor('Gemma 4 12B');
     fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
     await flush();
-    expect(screen.getByText('Downloading model')).toBeInTheDocument();
+    expect(screen.getByTestId('download-figures')).toBeInTheDocument();
     act(() => {
       lastChannel?.simulateMessage({ type: 'AllDone' });
     });
