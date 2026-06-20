@@ -1,5 +1,7 @@
 /**
- * Discover pane: the in-app Hugging Face GGUF model browser.
+ * Browse-all pane: the in-app Hugging Face GGUF model browser, the advanced
+ * pathway of Discover (behind the "Browse all" tab; the curated "Staff picks"
+ * accordion is the default front door).
  *
  * A search field (driven by {@link useHfSearch}) plus a row of family filter
  * chips feed one debounced backend query that returns chat/text-generation
@@ -20,7 +22,7 @@ import { useDownloadModel } from '../../../hooks/useDownloadModel';
 import { useHfSearch } from './useHfSearch';
 import { Tooltip } from '../../../components/Tooltip';
 import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
-import styles from './DiscoverPane.module.css';
+import styles from './BrowseAllPane.module.css';
 import type { HfModelSummary } from '../../../types/hf';
 import type { HfGgufFile, RamFit } from '../../../types/starter';
 import type { RawAppConfig } from '../../types';
@@ -65,12 +67,12 @@ const DOWNLOAD_ICON = (
     <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />
   </svg>
 );
-interface DiscoverPaneProps {
+interface BrowseAllPaneProps {
   /** Lift a fresh config snapshot after a successful install. */
   onSaved: (next: RawAppConfig) => void;
 }
 
-export function DiscoverPane({ onSaved }: DiscoverPaneProps) {
+export function BrowseAllPane({ onSaved }: BrowseAllPaneProps) {
   const { query, setQuery, results, loading, loadMore, canLoadMore } =
     useHfSearch();
 
@@ -126,7 +128,7 @@ export function DiscoverPane({ onSaved }: DiscoverPaneProps) {
           <p className={styles.state}>No models found.</p>
         ) : null}
         {results.map((model) => (
-          <DiscoverRow key={model.id} model={model} onSaved={onSaved} />
+          <BrowseAllRow key={model.id} model={model} onSaved={onSaved} />
         ))}
         {canLoadMore ? (
           <button type="button" className={styles.loadMore} onClick={loadMore}>
@@ -138,7 +140,7 @@ export function DiscoverPane({ onSaved }: DiscoverPaneProps) {
   );
 }
 
-interface DiscoverRowProps {
+interface BrowseAllRowProps {
   model: HfModelSummary;
   onSaved: (next: RawAppConfig) => void;
 }
@@ -148,7 +150,7 @@ interface DiscoverRowProps {
  * the first time the row expands; the download state machine is local to the
  * row so two rows cannot share an in-flight download.
  */
-function DiscoverRow({ model, onSaved }: DiscoverRowProps) {
+function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
   const [expanded, setExpanded] = useState(false);
   const [files, setFiles] = useState<HfGgufFile[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);

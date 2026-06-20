@@ -12,7 +12,7 @@ import { useState } from 'react';
 import { ModelsSegmented, type ModelsSubview } from './models/ModelsSegmented';
 import { ProvidersPane } from './models/ProvidersPane';
 import { LibraryPane } from './models/LibraryPane';
-import { DiscoverPane } from './models/DiscoverPane';
+import { BrowseAllPane } from './models/BrowseAllPane';
 import styles from '../../styles/settings.module.css';
 import type { RawAppConfig } from '../types';
 
@@ -42,7 +42,7 @@ export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
         />
       ) : null}
 
-      {view === 'discover' ? <DiscoverPane onSaved={onSaved} /> : null}
+      {view === 'discover' ? <BrowseAllPane onSaved={onSaved} /> : null}
 
       {view === 'providers' ? (
         <ProvidersPane
