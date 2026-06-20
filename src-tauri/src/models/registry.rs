@@ -86,6 +86,12 @@ pub struct Starter {
     /// sliding-window-aware cache). Sanity-check any new entry against a
     /// real load before trusting the estimate.
     pub est_runtime_gb: f64,
+    /// Maximum context window in tokens the model was trained for: its GGUF
+    /// `context_length` metadata (llama.cpp's `n_ctx_train`), vetted against the
+    /// maker's published config. Surfaced in the picker so a user can see how
+    /// much a model can attend to. Display only: the engine loads the user's
+    /// separate, clamped `num_ctx`, never this value.
+    pub context_length: u32,
     /// Short license label surfaced next to the download button.
     pub license_note: &'static str,
     /// Model maker (e.g. "OpenAI"), shown in the picker's Origin row.
@@ -117,6 +123,7 @@ pub const STARTERS: &[Starter] = &[
         mmproj_sha256: Some("853698ce7aa6c7ba732478bad280240969ddf7b0fcbf93900046f63903a83383"),
         mmproj_bytes: 921_705_024,
         est_runtime_gb: 8.5,
+        context_length: 262_144,
         license_note: "Apache 2.0",
         origin: "Alibaba",
         origin_repo: "Qwen/Qwen3.5-9B",
@@ -140,6 +147,7 @@ pub const STARTERS: &[Starter] = &[
         mmproj_sha256: Some("e70b0e5cd80323d5d588b4ed06780356b7b1ba03995a4b8164c6ae9db0ff5989"),
         mmproj_bytes: 175_115_264,
         est_runtime_gb: 9.5,
+        context_length: 262_144,
         license_note: "Apache 2.0",
         origin: "Google",
         origin_repo: "google/gemma-4-12B-it",
@@ -163,6 +171,7 @@ pub const STARTERS: &[Starter] = &[
         mmproj_sha256: None,
         mmproj_bytes: 0,
         est_runtime_gb: 13.3,
+        context_length: 131_072,
         license_note: "Apache 2.0",
         origin: "OpenAI",
         origin_repo: "openai/gpt-oss-20b",
@@ -187,6 +196,7 @@ pub const STARTERS: &[Starter] = &[
         mmproj_sha256: None,
         mmproj_bytes: 0,
         est_runtime_gb: 9.9,
+        context_length: 131_072,
         license_note: "Apache 2.0",
         origin: "Mistral",
         origin_repo: "mistralai/Mistral-Nemo-Instruct-2407",
@@ -211,6 +221,7 @@ pub const STARTERS: &[Starter] = &[
         mmproj_sha256: None,
         mmproj_bytes: 0,
         est_runtime_gb: 4.7,
+        context_length: 131_072,
         license_note: "MIT",
         origin: "Microsoft",
         origin_repo: "microsoft/Phi-4-mini-instruct",
@@ -234,6 +245,7 @@ pub const STARTERS: &[Starter] = &[
         mmproj_sha256: None,
         mmproj_bytes: 0,
         est_runtime_gb: 4.0,
+        context_length: 131_072,
         license_note: "Llama 3.2 Community",
         origin: "Meta",
         origin_repo: "meta-llama/Llama-3.2-3B-Instruct",
@@ -257,6 +269,7 @@ pub const STARTERS: &[Starter] = &[
         mmproj_sha256: Some("c6398448d84a4836fdedf58f9775979e69ae0cc4dfdf4d697b5597693a555b12"),
         mmproj_bytes: 991_551_904,
         est_runtime_gb: 7.4,
+        context_length: 131_072,
         license_note: "Gemma",
         origin: "Google",
         origin_repo: "google/gemma-4-E4B-it",
@@ -281,6 +294,7 @@ pub const STARTERS: &[Starter] = &[
         mmproj_sha256: None,
         mmproj_bytes: 0,
         est_runtime_gb: 12.0,
+        context_length: 32_768,
         license_note: "MIT",
         origin: "Microsoft",
         origin_repo: "microsoft/Phi-4-reasoning-plus",
@@ -304,6 +318,7 @@ pub const STARTERS: &[Starter] = &[
         mmproj_sha256: None,
         mmproj_bytes: 0,
         est_runtime_gb: 7.0,
+        context_length: 131_072,
         license_note: "MIT",
         origin: "DeepSeek",
         origin_repo: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
@@ -500,6 +515,46 @@ mod tests {
             v.sort_unstable();
         }
         assert_eq!(by_cat, expected);
+    }
+
+    #[test]
+    fn context_windows_match_the_vetted_values() {
+        // The model's trained max context (GGUF `context_length`), vetted per
+        // entry against the maker's config; Mistral Nemo is corrected from its
+        // GGUF's inflated 1,024,000 down to its real 131,072.
+        let want: &[(&str, u32)] = &[
+            ("qwen3.5-9b", 262_144),
+            ("gemma-4-12b", 262_144),
+            ("mistral-nemo-12b", 131_072),
+            ("phi-4-mini-3.8b", 131_072),
+            ("llama-3.2-3b", 131_072),
+            ("gemma-4-e4b", 131_072),
+            ("gpt-oss-20b", 131_072),
+            ("phi-4-reasoning-plus-14b", 32_768),
+            ("deepseek-r1-distill-8b", 131_072),
+        ];
+        for (id, ctx) in want {
+            assert_eq!(
+                by_id(id).unwrap().context_length,
+                *ctx,
+                "{id} context window"
+            );
+        }
+    }
+
+    #[test]
+    fn every_entry_has_a_sane_context_window() {
+        // Display-only trained max; a floor/ceiling guards against a typo and
+        // documents that the value is bounded. The real KV allocation is the
+        // user's separate, clamped `num_ctx`, never this number.
+        for s in STARTERS {
+            assert!(
+                (2048..=1_048_576).contains(&s.context_length),
+                "{}: context_length {} out of sane range",
+                s.id,
+                s.context_length
+            );
+        }
     }
 
     #[test]
