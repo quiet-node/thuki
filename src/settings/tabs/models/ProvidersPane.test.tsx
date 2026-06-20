@@ -14,7 +14,6 @@ import {
 } from '../../../testUtils/mocks/tauri';
 
 import { ProvidersPane } from './ProvidersPane';
-import styles from '../../../styles/settings.module.css';
 import type { RawAppConfig, RawProvider } from '../../types';
 
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
@@ -713,26 +712,6 @@ describe('ProvidersPane generation', () => {
   it('shows no-model-loaded for Ollama when nothing is resident', () => {
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
     expect(screen.getByText('No model loaded')).toBeInTheDocument();
-  });
-
-  it('greens the status dot when a model is resident', async () => {
-    mockInvoke({
-      get_engine_status: engineStatus('loaded'),
-      list_installed_models: INSTALLED,
-    });
-    renderPane(makeConfig('builtin', [BUILTIN_LOADED, OLLAMA]));
-    await waitFor(() =>
-      expect(screen.getByText('Qwen3.5 9B in VRAM')).toBeInTheDocument(),
-    );
-    const dot = screen.getByText('Qwen3.5 9B in VRAM').querySelector('span');
-    expect(dot).toHaveClass(styles.genStatusDotLive);
-  });
-
-  it('dims the status dot when the engine is stopped', () => {
-    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
-    const dot = screen.getByText('No model loaded').querySelector('span');
-    expect(dot).toHaveClass(styles.genStatusDot);
-    expect(dot).not.toHaveClass(styles.genStatusDotLive);
   });
 
   it('reflects warmup load + evict events', async () => {

@@ -291,10 +291,7 @@ export function ProvidersPane({
 
   const fillPct = `${ctxPos / 10}%`;
 
-  // Keep-warm live status: the text shown beside the name, plus whether a model
-  // is actually resident (drives the status dot color: green when warm).
-  const engineWarm =
-    activeKind === 'builtin' ? engineState === 'loaded' : loadedModel !== null;
+  // Keep-warm live status: the text shown beside the name.
   // Friendly name of the selected built-in model, for the residency line
   // (matching the built-in model dropdown below).
   const builtinDisplayName =
@@ -617,17 +614,7 @@ export function ProvidersPane({
                 </button>
               </Tooltip>
             </div>
-            <span className={styles.genWarmStatus}>
-              <span
-                className={
-                  engineWarm
-                    ? `${styles.genStatusDot} ${styles.genStatusDotLive}`
-                    : styles.genStatusDot
-                }
-                aria-hidden="true"
-              />
-              {warmStatusText}
-            </span>
+            <span className={styles.genWarmStatus}>{warmStatusText}</span>
           </div>
           <div className={styles.genWarmControls}>
             <span className={styles.genWarmPrefix}>Release after</span>
