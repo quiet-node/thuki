@@ -379,6 +379,36 @@ describe('useDownloadModel', () => {
     });
   });
 
+  it('starts a Staff Picks download through download_staff_pick', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.startById('gemma-4-12b'));
+    expect(result.current.state).toEqual({ phase: 'downloading' });
+    expect(invoke).toHaveBeenCalledWith('download_staff_pick', {
+      id: 'gemma-4-12b',
+      onEvent: expect.anything(),
+    });
+    act(() => channel().simulateMessage({ type: 'AllDone' }));
+    expect(result.current.state).toEqual({ phase: 'ready' });
+  });
+
+  it('retries the last Staff Picks download after a failure', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.startById('gpt-oss-20b'));
+    act(() =>
+      channel().simulateMessage({
+        type: 'Failed',
+        data: { kind: 'http', message: 'HTTP 500' },
+      }),
+    );
+
+    await act(() => result.current.retry());
+    expect(result.current.state).toEqual({ phase: 'downloading' });
+    expect(invoke).toHaveBeenLastCalledWith('download_staff_pick', {
+      id: 'gpt-oss-20b',
+      onEvent: expect.anything(),
+    });
+  });
+
   it('reset returns failed to idle and clears the stale progress', async () => {
     const { result } = renderHook(() => useDownloadModel());
     await act(() => result.current.start('smartest'));

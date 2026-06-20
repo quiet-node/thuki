@@ -154,6 +154,13 @@ export interface UseDownloadModel {
    */
   startRepo: (repo: string, file: string) => Promise<void>;
   /**
+   * idle -> downloading for a Staff Picks catalog entry, keyed by its stable
+   * `id`; invokes `download_staff_pick` with a channel. Same event stream and
+   * terminal states as `start`; `retry` replays it, and a resume is just
+   * calling it again (the backend resumes the partial via Range).
+   */
+  startById: (id: string) => Promise<void>;
+  /**
    * Invokes `cancel_model_download`. The state flips back to idle when the
    * backend's Cancelled event lands; the partial is KEPT, so the caller
    * refreshes options to surface resume_pending.
@@ -379,6 +386,15 @@ export function useDownloadModel(
     [run],
   );
 
+  const startById = useCallback(
+    async (id: string) => {
+      const replay = () => run('download_staff_pick', { id });
+      lastStartRef.current = replay;
+      await replay();
+    },
+    [run],
+  );
+
   const cancel = useCallback(async () => {
     await invoke('cancel_model_download');
   }, []);
@@ -429,6 +445,7 @@ export function useDownloadModel(
     cancelConfirm,
     start,
     startRepo,
+    startById,
     cancel,
     retry,
     resume: start,

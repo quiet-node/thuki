@@ -63,6 +63,7 @@ function makeDownloadCtx(
     cancelConfirm: vi.fn(),
     start: vi.fn(async () => {}),
     startRepo: vi.fn(async () => {}),
+    startById: vi.fn(async () => {}),
     cancel: vi.fn(async () => {}),
     retry: vi.fn(async () => {}),
     resume: vi.fn(async () => {}),

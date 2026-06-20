@@ -9,7 +9,12 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { RamFit, StarterOption, StarterTier } from '../types/starter';
+import type {
+  RamFit,
+  StaffPickOption,
+  StarterOption,
+  StarterTier,
+} from '../types/starter';
 
 const HF_BASE_URL = 'https://huggingface.co';
 
@@ -64,6 +69,38 @@ export function useStarterOptions(): UseStarterOptionsResult {
       const rows = await invoke<StarterOption[]>('get_starter_options');
       // Guard the IPC boundary: a malformed (non-array) payload becomes an
       // empty list so consumers that iterate the rows never crash.
+      setOptions(Array.isArray(rows) ? rows : []);
+    } catch {
+      setOptions([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return { options, refresh };
+}
+
+export interface UseStaffPicksResult {
+  /** The Staff Picks catalog rows; `null` while the first fetch is in flight. */
+  options: StaffPickOption[] | null;
+  /** Re-fetch (e.g. after a cancel kept a resumable partial). */
+  refresh: () => Promise<void>;
+}
+
+/**
+ * Loads the full Staff Picks catalog from the backend. A fetch failure (or a
+ * malformed non-array payload) degrades to an empty list so the pane renders
+ * nothing rather than crashing. Sibling of {@link useStarterOptions}: the
+ * catalog is id-keyed and category-grouped, not capped at one model per tier.
+ */
+export function useStaffPicks(): UseStaffPicksResult {
+  const [options, setOptions] = useState<StaffPickOption[] | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const rows = await invoke<StaffPickOption[]>('get_staff_picks');
       setOptions(Array.isArray(rows) ? rows : []);
     } catch {
       setOptions([]);

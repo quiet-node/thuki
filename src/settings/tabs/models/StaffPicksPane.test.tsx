@@ -6,7 +6,7 @@
  * category alphabetically; within a section models are alphabetical. Each
  * compact row shows the model name, capability pills (Text always, plus Vision
  * / Thinking), a `size · maker` sub-line, a RAM-fit hint, and a single icon
- * download that runs the VERIFIED starter path (`download_starter`, pinned
+ * download that runs the VERIFIED starter path (`download_staff_pick`, pinned
  * revision + sha256). The download channel is captured the same way
  * BrowseAllPane.test.tsx does it.
  */
@@ -58,6 +58,7 @@ function mockCommands(responses: Record<string, unknown>) {
 
 function starter(over: Partial<Starter>): Starter {
   return {
+    id: 'gemma-4-12b',
     tier: 'balanced',
     family: 'Gemma',
     category: 'Everyday chat',
@@ -97,6 +98,7 @@ function option(
 
 /** Two everyday models + one reasoning model (deliberately NOT alpha order). */
 const QWEN = option({
+  id: 'qwen3.5-9b',
   tier: 'fast',
   family: 'Qwen',
   category: 'Everyday chat',
@@ -110,6 +112,7 @@ const QWEN = option({
 });
 const GEMMA = option({});
 const GPT_OSS = option({
+  id: 'gpt-oss-20b',
   tier: 'smartest',
   family: 'gpt-oss',
   category: 'Deep reasoning',
@@ -132,7 +135,7 @@ const CONFIG_AFTER_INSTALL = { marker: 'fresh' } as unknown as RawAppConfig;
 
 function picksResponses(overrides: Record<string, unknown> = {}) {
   return {
-    get_starter_options: STARTERS,
+    get_staff_picks: STARTERS,
     get_config: CONFIG_AFTER_INSTALL,
     ...overrides,
   };
@@ -157,7 +160,7 @@ async function renderPane(
   mockCommands(picksResponses(overrides));
   const view = render(<StaffPicksPane onSaved={onSaved} />);
   await waitFor(() =>
-    expect(invokeMock).toHaveBeenCalledWith('get_starter_options'),
+    expect(invokeMock).toHaveBeenCalledWith('get_staff_picks'),
   );
   await flush();
   return view;
@@ -217,9 +220,10 @@ describe('StaffPicksPane', () => {
 
   it('appends an unrecognized category after the known sections', async () => {
     await renderPane(() => {}, {
-      get_starter_options: [
+      get_staff_picks: [
         GEMMA,
         option({
+          id: 'qwen3-coder-7b',
           tier: 'fast',
           category: 'Coding',
           display_name: 'Qwen3 Coder 7B',
@@ -234,7 +238,7 @@ describe('StaffPicksPane', () => {
 
   it('buckets a model with no category under Other', async () => {
     await renderPane(() => {}, {
-      get_starter_options: [
+      get_staff_picks: [
         option({ category: undefined, display_name: 'Mystery 7B' }),
       ],
     });
@@ -248,8 +252,8 @@ describe('StaffPicksPane', () => {
     fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith(
-      'download_starter',
-      expect.objectContaining({ tier: 'balanced' }),
+      'download_staff_pick',
+      expect.objectContaining({ id: 'gemma-4-12b' }),
     );
   });
 
@@ -307,7 +311,7 @@ describe('StaffPicksPane', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await flush();
     const starts = invokeMock.mock.calls.filter(
-      (c: unknown[]) => c[0] === 'download_starter',
+      (c: unknown[]) => c[0] === 'download_staff_pick',
     );
     expect(starts).toHaveLength(2);
   });
@@ -333,7 +337,7 @@ describe('StaffPicksPane', () => {
 
   it('shows no download button and no label for an installed model', async () => {
     await renderPane(() => {}, {
-      get_starter_options: [{ ...GEMMA, installed: true }, QWEN, GPT_OSS],
+      get_staff_picks: [{ ...GEMMA, installed: true }, QWEN, GPT_OSS],
     });
     const row = rowFor('Gemma 4 12B');
     // Already installed: no download affordance and no "Installed" badge; the
@@ -347,7 +351,7 @@ describe('StaffPicksPane', () => {
 
   it('offers Resume and Discard for an interrupted partial', async () => {
     await renderPane(() => {}, {
-      get_starter_options: [
+      get_staff_picks: [
         { ...GEMMA, partial_bytes: 2_000_000_000 },
         QWEN,
         GPT_OSS,
@@ -357,14 +361,14 @@ describe('StaffPicksPane', () => {
     fireEvent.click(within(row).getByRole('button', { name: /Resume/ }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith(
-      'download_starter',
-      expect.objectContaining({ tier: 'balanced' }),
+      'download_staff_pick',
+      expect.objectContaining({ id: 'gemma-4-12b' }),
     );
   });
 
   it('discards an interrupted partial and refreshes', async () => {
     await renderPane(() => {}, {
-      get_starter_options: [
+      get_staff_picks: [
         { ...GEMMA, partial_bytes: 2_000_000_000 },
         QWEN,
         GPT_OSS,
@@ -379,13 +383,13 @@ describe('StaffPicksPane', () => {
   });
 
   it('shows an empty state when no starters are available', async () => {
-    await renderPane(() => {}, { get_starter_options: [] });
+    await renderPane(() => {}, { get_staff_picks: [] });
     expect(screen.getByText(/No curated models/)).toBeInTheDocument();
   });
 
   it('degrades to the empty state when the probe rejects', async () => {
     await renderPane(() => {}, {
-      get_starter_options: new Reject(new Error('probe failed')),
+      get_staff_picks: new Reject(new Error('probe failed')),
     });
     expect(screen.getByText(/No curated models/)).toBeInTheDocument();
   });

@@ -18,6 +18,7 @@ const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
 const STARTER: StarterOption = {
   starter: {
+    id: 'gemma-4-12b',
     tier: 'balanced',
     family: 'Gemma',
     display_name: 'Gemma 4 12B',
@@ -47,7 +48,7 @@ beforeEach(() => {
   invokeMock.mockReset();
   clearHfSearchCache();
   invokeMock.mockImplementation(async (cmd: string) => {
-    if (cmd === 'get_starter_options') return [STARTER];
+    if (cmd === 'get_staff_picks') return [STARTER];
     if (cmd === 'search_hf_models') return [];
     return undefined;
   });

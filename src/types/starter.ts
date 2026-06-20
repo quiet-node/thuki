@@ -18,6 +18,10 @@ export type RamFit = 'fits' | 'tight' | 'too_big';
 
 /** One curated starter model from the compile-time registry. */
 export interface Starter {
+  /** Stable slug, unique across the registry; the Staff Picks row key and the
+   * id-keyed download key. Backend always sends it; optional here for
+   * test-fixture ergonomics (onboarding keys on `tier` and never reads it). */
+  id?: string;
   tier: StarterTier;
   /** Model family this entry belongs to (e.g. "Gemma", "Qwen", "gpt-oss").
    * Backend always sends it; optional here for test-fixture ergonomics. */
@@ -55,6 +59,13 @@ export interface StarterOption {
   fit: RamFit;
   installed: boolean;
   partial_bytes: number | null;
+}
+
+/** One Staff Picks catalog row. Same shape as {@link StarterOption}, but the
+ * catalog is id-keyed: `starter.id` is always present, so the pane keys rows
+ * and starts downloads by it. */
+export interface StaffPickOption extends StarterOption {
+  starter: Starter & { id: string };
 }
 
 /** Failure category carried by a `Failed` download event. */

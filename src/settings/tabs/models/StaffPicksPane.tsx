@@ -7,15 +7,17 @@
  * extra category alphabetically; within a section models are alphabetical. Each
  * compact row shows the model name, capability pills (Text always, plus Vision
  * / Thinking), a `size · maker` sub-line, a RAM-fit hint, and a single icon
- * download that runs the VERIFIED starter path (`download_starter`, pinned
- * revision + sha256), unlike the Browse-all pane's arbitrary repo downloads. A
- * finished install lifts a fresh config snapshot.
+ * download that runs the VERIFIED catalog path (`download_staff_pick`, keyed by
+ * the entry's stable id, pinned revision + sha256), unlike the Browse-all
+ * pane's arbitrary repo downloads. A finished install lifts a fresh config
+ * snapshot.
  *
- * Data comes from {@link useStarterOptions} (the same rows onboarding's picker
- * uses); the download state machine is the shared {@link useDownloadModel}, so
- * the in-flight / failed UI is the same {@link DownloadProgress} card the rest
- * of the app shows. At most one model downloads at a time (the backend enforces
- * it too); `activeTier` tracks which row owns the progress card.
+ * Data comes from {@link useStaffPicks}, the id-keyed catalog (decoupled from
+ * onboarding's three tier heroes so a category can hold any number of models);
+ * the download state machine is the shared {@link useDownloadModel}, so the
+ * in-flight / failed UI is the same {@link DownloadProgress} card the rest of
+ * the app shows. At most one model downloads at a time (the backend enforces it
+ * too); `activeId` tracks which row owns the progress card.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -23,16 +25,12 @@ import { invoke } from '@tauri-apps/api/core';
 
 import { DownloadProgress } from '../../../components/DownloadProgress';
 import { useDownloadModel } from '../../../hooks/useDownloadModel';
-import { useStarterOptions } from '../../../components/StarterPicker';
+import { useStaffPicks } from '../../../components/StarterPicker';
 import { Tooltip } from '../../../components/Tooltip';
 import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
 import styles from './StaffPicksPane.module.css';
 import type { RawAppConfig } from '../../types';
-import type {
-  RamFit,
-  StarterOption,
-  StarterTier,
-} from '../../../types/starter';
+import type { RamFit, StaffPickOption } from '../../../types/starter';
 
 /** RAM-fit hint colour class on this pane's stylesheet (labels are shared). */
 const FIT_CLASS: Record<RamFit, string> = {
@@ -54,21 +52,21 @@ function gb(bytes: number): string {
 }
 
 /** Weights + vision companion: the full on-disk cost of one starter. */
-function totalBytes(o: StarterOption): number {
+function totalBytes(o: StaffPickOption): number {
   return o.starter.size_bytes + o.starter.mmproj_bytes;
 }
 
 /** One use-case section: its label and the models under it. */
 interface Section {
   category: string;
-  options: StarterOption[];
+  options: StaffPickOption[];
 }
 
 /** Groups models into use-case sections: known categories first in their fixed
  * order, then any extra category alphabetically; models within a section are
  * alphabetical by name. */
-function groupByCategory(options: StarterOption[]): Section[] {
-  const buckets = new Map<string, StarterOption[]>();
+function groupByCategory(options: StaffPickOption[]): Section[] {
+  const buckets = new Map<string, StaffPickOption[]>();
   for (const o of options) {
     const category = o.starter.category ?? UNCATEGORIZED;
     const list = buckets.get(category);
@@ -84,7 +82,7 @@ function groupByCategory(options: StarterOption[]): Section[] {
     .sort();
   return [...known, ...extra].map((category) => ({
     category,
-    options: (buckets.get(category) as StarterOption[]).sort((a, b) =>
+    options: (buckets.get(category) as StaffPickOption[]).sort((a, b) =>
       a.starter.display_name.localeCompare(b.starter.display_name, undefined, {
         sensitivity: 'base',
       }),
@@ -98,17 +96,16 @@ interface StaffPicksPaneProps {
 }
 
 export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
-  const { options, refresh } = useStarterOptions();
+  const { options, refresh } = useStaffPicks();
   const sections = useMemo(() => groupByCategory(options ?? []), [options]);
 
-  // One download at a time; activeTier names the row that owns the progress card.
-  const [activeTier, setActiveTier] = useState<StarterTier | null>(null);
+  // One download at a time; activeId names the row that owns the progress card.
+  const [activeId, setActiveId] = useState<string | null>(null);
   const {
     state,
     progress,
     etaSeconds,
-    start,
-    resume,
+    startById,
     cancel,
     retry,
     reset,
@@ -127,19 +124,16 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
         // The focus-driven resync picks the change up on next activation.
       }
       reset();
-      setActiveTier(null);
+      setActiveId(null);
       await refresh();
     })();
   }, [state.phase, onSaved, reset, refresh]);
 
-  function startDownload(tier: StarterTier) {
-    setActiveTier(tier);
-    void start(tier);
-  }
-
-  function resumeDownload(tier: StarterTier) {
-    setActiveTier(tier);
-    void resume(tier);
+  // Download and resume both run the same id-keyed verified path; the backend
+  // resumes from a kept partial via Range, so resume is just starting again.
+  function startDownload(id: string) {
+    setActiveId(id);
+    void startById(id);
   }
 
   async function discardPartial(sha256: string) {
@@ -149,7 +143,7 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
 
   function returnToPicker() {
     reset();
-    setActiveTier(null);
+    setActiveId(null);
   }
 
   if (options !== null && sections.length === 0) {
@@ -169,14 +163,14 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
           </div>
           {section.options.map((o) => (
             <ModelRow
-              key={o.starter.tier}
+              key={o.starter.id}
               option={o}
-              active={activeTier === o.starter.tier}
+              active={activeId === o.starter.id}
               state={state}
               progress={progress}
               etaSeconds={etaSeconds}
               onDownload={startDownload}
-              onResume={resumeDownload}
+              onResume={startDownload}
               onDiscard={discardPartial}
               onCancel={() => void cancel()}
               onRetry={() => void retry()}
@@ -190,13 +184,13 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
 }
 
 interface ModelRowProps {
-  option: StarterOption;
+  option: StaffPickOption;
   active: boolean;
   state: ReturnType<typeof useDownloadModel>['state'];
   progress: ReturnType<typeof useDownloadModel>['progress'];
   etaSeconds: number | null;
-  onDownload: (tier: StarterTier) => void;
-  onResume: (tier: StarterTier) => void;
+  onDownload: (id: string) => void;
+  onResume: (id: string) => void;
   onDiscard: (sha256: string) => void;
   onCancel: () => void;
   onRetry: () => void;
@@ -220,7 +214,7 @@ function ModelRow({
   const showProgress = active && state.phase !== 'idle';
 
   return (
-    <div className={styles.row} data-model-row data-tier={starter.tier}>
+    <div className={styles.row} data-model-row data-id={starter.id}>
       <div className={styles.rowMain}>
         <div className={styles.mid}>
           <div className={styles.top}>
@@ -285,11 +279,11 @@ function ModelRow({
 }
 
 interface RowActionProps {
-  option: StarterOption;
+  option: StaffPickOption;
   installed: boolean;
   partialBytes: number | null;
-  onDownload: (tier: StarterTier) => void;
-  onResume: (tier: StarterTier) => void;
+  onDownload: (id: string) => void;
+  onResume: (id: string) => void;
   onDiscard: (sha256: string) => void;
 }
 
@@ -323,7 +317,7 @@ function RowAction({
         <button
           type="button"
           className={styles.resumeBtn}
-          onClick={() => onResume(starter.tier)}
+          onClick={() => onResume(starter.id)}
         >
           Resume ({gb(partialBytes)} GB)
         </button>
@@ -343,7 +337,7 @@ function RowAction({
       type="button"
       className={styles.getBtn}
       aria-label="Download"
-      onClick={() => onDownload(starter.tier)}
+      onClick={() => onDownload(starter.id)}
     >
       {DOWNLOAD_ICON}
     </button>
