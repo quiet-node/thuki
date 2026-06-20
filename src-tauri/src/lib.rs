@@ -135,13 +135,55 @@ use _thuki_panel::ThukiPanel;
 #[cfg(target_os = "macos")]
 mod _settings_panel {
     use tauri::Manager;
+    use tauri_nspanel::TrackingAreaOptions;
     tauri_nspanel::tauri_panel! {
         panel!(ThukiSettingsPanel {
             config: {
                 can_become_key_window: true,
                 is_floating_panel: true
             }
+            with: {
+                // Same hover-activate rationale as ThukiPanel. Settings is a
+                // nonactivating panel with hides_on_deactivate(false), so once
+                // it is defocused (the user clicks another app) a plain click
+                // can never regain key on modern macOS and the webview drops
+                // clicks, drag, and hover - the form inputs go dead. An
+                // `active_always` tracking area keeps mouse events flowing while
+                // the app is inactive, and the mouse-entered callback (wired in
+                // `init_settings_panel`) makes the panel key on cursor-enter so
+                // the inputs come back without activating the app.
+                tracking_area: {
+                    options: TrackingAreaOptions::new()
+                        .active_always()
+                        .mouse_entered_and_exited()
+                        .mouse_moved()
+                        .cursor_update(),
+                    auto_resize: true
+                }
+            }
         })
+        panel_event!(ThukiSettingsEventsInner {})
+    }
+
+    /// Constructs the mouse-event handler and attaches it to the Settings panel.
+    ///
+    /// Mirrors `attach_overlay_event_handler` for ThukiPanel: the mouse-entered
+    /// callback makes the Settings overlay the key window the instant the cursor
+    /// enters it, restoring clicks/drag/typing after the panel has been
+    /// defocused (see the tracking-area comment on the panel).
+    pub fn attach_settings_event_handler(app_handle: tauri::AppHandle) {
+        use tauri_nspanel::ManagerExt;
+        let Ok(panel) = app_handle.get_webview_panel("settings") else {
+            return;
+        };
+        let cb_handle = app_handle.clone();
+        let events = ThukiSettingsEventsInner::new();
+        events.on_mouse_entered(move |_event| {
+            if let Ok(p) = cb_handle.get_webview_panel("settings") {
+                p.make_key_window();
+            }
+        });
+        panel.set_event_handler(Some(events.as_ref()));
     }
 }
 #[cfg(target_os = "macos")]
@@ -157,13 +199,55 @@ use _settings_panel::ThukiSettingsPanel;
 #[cfg(target_os = "macos")]
 mod _update_panel {
     use tauri::Manager;
+    use tauri_nspanel::TrackingAreaOptions;
     tauri_nspanel::tauri_panel! {
         panel!(ThukiUpdatePanel {
             config: {
                 can_become_key_window: true,
                 is_floating_panel: true
             }
+            with: {
+                // Same hover-activate rationale as ThukiPanel. The update panel
+                // is nonactivating with hides_on_deactivate(false), so after it
+                // is defocused a plain click can never regain key on modern
+                // macOS and the webview drops clicks, drag, and hover - the four
+                // action buttons go dead. An `active_always` tracking area keeps
+                // mouse events flowing while the app is inactive, and the
+                // mouse-entered callback (wired in `init_update_panel`) makes the
+                // panel key on cursor-enter so the buttons come back without
+                // activating the app.
+                tracking_area: {
+                    options: TrackingAreaOptions::new()
+                        .active_always()
+                        .mouse_entered_and_exited()
+                        .mouse_moved()
+                        .cursor_update(),
+                    auto_resize: true
+                }
+            }
         })
+        panel_event!(ThukiUpdateEventsInner {})
+    }
+
+    /// Constructs the mouse-event handler and attaches it to the update panel.
+    ///
+    /// Mirrors `attach_overlay_event_handler` for ThukiPanel: the mouse-entered
+    /// callback makes the update overlay the key window the instant the cursor
+    /// enters it, restoring clicks after the panel has been defocused (see the
+    /// tracking-area comment on the panel).
+    pub fn attach_update_event_handler(app_handle: tauri::AppHandle) {
+        use tauri_nspanel::ManagerExt;
+        let Ok(panel) = app_handle.get_webview_panel("update") else {
+            return;
+        };
+        let cb_handle = app_handle.clone();
+        let events = ThukiUpdateEventsInner::new();
+        events.on_mouse_entered(move |_event| {
+            if let Ok(p) = cb_handle.get_webview_panel("update") {
+                p.make_key_window();
+            }
+        });
+        panel.set_event_handler(Some(events.as_ref()));
     }
 }
 #[cfg(target_os = "macos")]
@@ -1470,6 +1554,11 @@ fn init_settings_panel(app_handle: &tauri::AppHandle) {
                     .can_join_all_spaces()
                     .into(),
             );
+            // Hover-activate: take key focus the moment the cursor enters the
+            // Settings overlay, mirroring init_panel. Pairs with the
+            // `active_always` tracking area on ThukiSettingsPanel so a defocused
+            // nonactivating panel regains key without activating the app.
+            _settings_panel::attach_settings_event_handler(app_handle.clone());
         }
         Err(e) => {
             eprintln!("thuki: [settings] NSPanel conversion failed: {e:?}");
@@ -1515,6 +1604,11 @@ fn init_update_panel(app_handle: &tauri::AppHandle) {
                     .can_join_all_spaces()
                     .into(),
             );
+            // Hover-activate: take key focus the moment the cursor enters the
+            // update overlay, mirroring init_panel. Pairs with the
+            // `active_always` tracking area on ThukiUpdatePanel so a defocused
+            // nonactivating panel regains key without activating the app.
+            _update_panel::attach_update_event_handler(app_handle.clone());
         }
         Err(e) => {
             eprintln!("thuki: [update] NSPanel conversion failed: {e:?}");
