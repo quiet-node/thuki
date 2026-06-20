@@ -316,6 +316,37 @@ describe('StaffPicksPane', () => {
     expect(invokeMock).toHaveBeenCalledWith('cancel_model_download');
   });
 
+  it('shows the paused row immediately after cancel, without a tab switch', async () => {
+    let calls = 0;
+    await renderPane(() => {}, {
+      // The post-cancel refresh re-reads the options; the partial now exists.
+      get_staff_picks: () => {
+        calls += 1;
+        return calls <= 1
+          ? STARTERS
+          : [{ ...GEMMA, partial_bytes: 1_000_000_000 }, QWEN, GPT_OSS];
+      },
+    });
+    fireEvent.click(
+      within(rowFor('Gemma 4 12B')).getByRole('button', { name: 'Download' }),
+    );
+    await flush();
+    expect(
+      within(rowFor('Gemma 4 12B')).getByTestId('download-figures'),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await flush();
+    act(() => lastChannel?.simulateMessage({ type: 'Cancelled' }));
+    await flush();
+    await waitFor(() => {
+      const row = rowFor('Gemma 4 12B');
+      expect(within(row).getByText(/^Paused · \d+%$/)).toBeInTheDocument();
+      expect(
+        within(row).getByRole('button', { name: /Resume/ }),
+      ).toBeInTheDocument();
+    });
+  });
+
   it('retries after a failed download', async () => {
     await renderPane();
     const row = rowFor('Gemma 4 12B');
@@ -386,9 +417,9 @@ describe('StaffPicksPane', () => {
     );
   });
 
-  it('shows the paused percent and hides the fit hint for a partial', async () => {
+  it('shows the paused percent and keeps the fit hint for a partial', async () => {
     await renderPane(() => {}, {
-      get_starter_options: [
+      get_staff_picks: [
         { ...GEMMA, partial_bytes: 2_000_000_000 },
         QWEN,
         GPT_OSS,
@@ -396,7 +427,7 @@ describe('StaffPicksPane', () => {
     });
     const row = rowFor('Gemma 4 12B');
     expect(within(row).getByText(/^Paused · \d+%$/)).toBeInTheDocument();
-    expect(within(row).queryByText('Comfortable')).not.toBeInTheDocument();
+    expect(within(row).getByText('Comfortable')).toBeInTheDocument();
   });
 
   it('discards an interrupted partial and refreshes', async () => {

@@ -144,6 +144,14 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
     await refresh();
   }
 
+  // Cancelling leaves the partial on disk; re-read the options so the row flips
+  // straight to its Paused/Resume state instead of snapping back to a fresh
+  // download until the next remount.
+  async function cancelDownload() {
+    await cancel();
+    await refresh();
+  }
+
   function returnToPicker() {
     reset();
     setActiveId(null);
@@ -177,7 +185,7 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
               onDownload={startDownload}
               onResume={startDownload}
               onDiscard={discardPartial}
-              onCancel={() => void cancel()}
+              onCancel={() => void cancelDownload()}
               onRetry={() => void retry()}
               onChooseAnother={returnToPicker}
             />
@@ -263,6 +271,11 @@ function ModelRow({
         </div>
         {!showProgress ? (
           <div className={styles.right}>
+            <Tooltip label={RAM_FIT_TOOLTIP[fit]} placement="top">
+              <span className={`${styles.fit} ${FIT_CLASS[fit]}`}>
+                {RAM_FIT_LABEL[fit]}
+              </span>
+            </Tooltip>
             {paused ? (
               <>
                 <button
@@ -282,18 +295,11 @@ function ModelRow({
                 </button>
               </>
             ) : (
-              <>
-                <Tooltip label={RAM_FIT_TOOLTIP[fit]} placement="top">
-                  <span className={`${styles.fit} ${FIT_CLASS[fit]}`}>
-                    {RAM_FIT_LABEL[fit]}
-                  </span>
-                </Tooltip>
-                <RowAction
-                  option={option}
-                  installed={installed}
-                  onDownload={onDownload}
-                />
-              </>
+              <RowAction
+                option={option}
+                installed={installed}
+                onDownload={onDownload}
+              />
             )}
           </div>
         ) : null}
