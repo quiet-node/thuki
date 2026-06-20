@@ -150,7 +150,7 @@ describe('Tooltip', () => {
     expect(wrapper?.classList.contains('inline-flex')).toBe(true);
   });
 
-  it('renders multiline tooltips at a fixed 225px width so the box stays directly below the trigger near edges', () => {
+  it('caps multiline tooltips at 225px max-width so short content hugs and long content wraps', () => {
     render(
       <Tooltip label={'Open by design: browse and pull any model.'} multiline>
         <button type="button">Trigger</button>
@@ -164,10 +164,13 @@ describe('Tooltip', () => {
       '[style*="position: fixed"]',
     ) as HTMLElement | null;
     expect(fixedBox).not.toBeNull();
-    // The inner content div (under the fixed-positioned outer + motion
-    // wrapper) carries the explicit 225px width style.
-    const inner = fixedBox?.querySelector('div[style*="width"]');
+    // The inner content div carries a max-width (not a fixed width) so the box
+    // shrinks to short content instead of always being 225px wide.
+    const inner = fixedBox?.querySelector(
+      'div[style*="max-width"]',
+    ) as HTMLElement | null;
     expect(inner).not.toBeNull();
-    expect((inner as HTMLElement).style.width).toBe('225px');
+    expect(inner!.style.maxWidth).toBe('225px');
+    expect(inner!.style.width).toBe('');
   });
 });

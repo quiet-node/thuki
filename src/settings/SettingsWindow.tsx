@@ -31,7 +31,6 @@ import { SearchTab } from './tabs/SearchTab';
 import { DisplayTab } from './tabs/DisplayTab';
 import { AboutTab } from './tabs/AboutTab';
 import { SavedPill } from './components';
-import { RunningModelFooter } from './components/RunningModelFooter';
 import { WindowControls } from '../components/WindowControls';
 import { UpdateBanner } from '../components/UpdateBanner';
 import { useUpdater } from '../hooks/useUpdater';
@@ -395,7 +394,6 @@ export function SettingsWindow() {
             })}
           </div>
           <div className={styles.sideSpacer} />
-          <RunningModelFooter config={config} />
         </div>
 
         <div className={styles.main}>

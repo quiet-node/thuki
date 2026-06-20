@@ -250,56 +250,6 @@
   flex: 1;
 }
 
-/* Running-model footer (always visible, pinned to the sidebar bottom). The
- * spacer above pushes it down when there is room; this margin guarantees a
- * gap from the last section item even when the spacer collapses. */
-.runningModel {
-  margin-top: 14px;
-  padding: 9px 10px;
-  border: 1px solid var(--hair-soft);
-  border-radius: var(--radius-card);
-  background: var(--elev-1);
-}
-.runningModelEyebrow {
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--t3);
-}
-.runningModelName {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-  font-size: 12px;
-  font-weight: 580;
-  color: var(--t1);
-}
-.runningModelDot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 7px var(--accent);
-}
-.runningModelDotIdle {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  /* The active/selected model, just not resident yet: accent (no glow), never
-   * grey, which reads as "disabled". The glow distinguishes the live state. */
-  background: var(--accent);
-  opacity: 0.85;
-}
-.runningModelMeta {
-  margin-top: 3px;
-  font-size: 10.5px;
-  color: var(--t3);
-}
-
 /* ─── Models surface (segmented Library / Discover / Providers) ──────────── */
 
 /* Icon-above-label tabs that mirror the original Settings section nav: a plain
