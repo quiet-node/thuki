@@ -1,0 +1,309 @@
+/*
+ * Styles for the Staff-picks pane: Discover's curated family accordion. The
+ * premium tokens (--accent, --t1..--t3, --hair, --ok, --tight, --heavy, etc.)
+ * cascade from the Settings window root, so they are referenced via var() here.
+ */
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.hint {
+  font-size: 11.5px;
+  color: var(--t3);
+  margin: 0 2px 13px;
+  line-height: 1.5;
+}
+
+.empty {
+  padding: 36px 14px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--t2);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+/* ── Family accordion section ─────────────────────────────────────────────── */
+
+.fam {
+  border: 1px solid var(--hair-soft);
+  border-radius: var(--radius-card);
+  background: var(--elev-1);
+  overflow: hidden;
+}
+
+.famHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 15px;
+  border: none;
+  background: transparent;
+  color: var(--t1);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+.famHead:hover {
+  background: var(--elev-2);
+}
+
+.famText {
+  flex: 1;
+  min-width: 0;
+}
+
+.famName {
+  display: block;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--t1);
+}
+
+.famSub {
+  display: block;
+  font-size: 11px;
+  color: var(--t3);
+  margin-top: 3px;
+}
+
+.chevWrap {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--t3);
+  transition: transform 150ms ease;
+}
+.chevOpen {
+  transform: rotate(90deg);
+}
+.chev {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.famBody {
+  border-top: 1px solid var(--hair-soft);
+}
+
+/* ── Model row ────────────────────────────────────────────────────────────── */
+
+.row {
+  padding: 0 4px;
+}
+.row + .row {
+  box-shadow: 0 -1px 0 var(--hair-soft);
+}
+
+.rowMain {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 12px 11px;
+}
+
+.mid {
+  flex: 1;
+  min-width: 0;
+}
+
+.name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  font-weight: 560;
+  font-size: 13px;
+  color: var(--t1);
+}
+
+.recommended {
+  font-size: 10px;
+  font-weight: 640;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+}
+.recommended::before {
+  content: '★ ';
+}
+
+/* Calm capability pills: one cohesive chrome, a small colour dot the only
+ * accent, matching the Library pane's vocabulary. */
+.pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 540;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  color: var(--t2);
+  background: rgba(255, 255, 255, 0.05);
+}
+.pill::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+.pillText::before {
+  background: var(--t3);
+}
+.pillVision::before {
+  background: var(--vis);
+}
+.pillThinking::before {
+  background: var(--rea);
+}
+
+.meta {
+  font-size: 11px;
+  color: var(--t3);
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hfLink {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--t3);
+  cursor: pointer;
+  transition: color 140ms ease;
+}
+.hfLink:hover {
+  color: var(--accent);
+}
+
+.right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  flex: none;
+}
+
+/* RAM-fit hint: a coloured dot + label reusing the shared fit palette. */
+.fit {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 560;
+  white-space: nowrap;
+}
+.fit::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.fitOk {
+  color: var(--ok);
+}
+.fitTight {
+  color: var(--tight);
+}
+.fitHeavy {
+  color: var(--heavy);
+}
+
+/* ── Row actions ──────────────────────────────────────────────────────────── */
+
+.getBtn {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 540;
+  color: var(--accent);
+  border: 1px solid rgba(255, 141, 92, 0.4);
+  border-radius: var(--radius-control);
+  padding: 6px 14px;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease;
+}
+.getBtn:hover {
+  border-color: rgba(255, 141, 92, 0.6);
+  background: var(--accent-soft);
+}
+.getPrimary {
+  color: #16110d;
+  border-color: transparent;
+  background: var(--accent);
+}
+.getPrimary:hover {
+  background: var(--accent);
+  filter: brightness(1.05);
+}
+
+.installed {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ok);
+}
+
+.resumeWrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.resumeBtn {
+  font-size: 11.5px;
+  font-weight: 540;
+  color: var(--accent);
+  border: 1px solid rgba(255, 141, 92, 0.4);
+  border-radius: var(--radius-control);
+  padding: 6px 12px;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+.discardBtn {
+  font-size: 10.5px;
+  font-weight: 540;
+  color: var(--t3);
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+.discardBtn:hover {
+  color: var(--t2);
+}
+
+.progress {
+  padding: 0 11px 13px;
+}
