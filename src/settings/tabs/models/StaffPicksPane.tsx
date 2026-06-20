@@ -162,9 +162,6 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
 
   return (
     <div className={styles.pane}>
-      <p className={styles.hint}>
-        Pick by what you want to do. Thuki chose one build of each.
-      </p>
       {sections.map((section) => (
         <div className={styles.section} key={section.category}>
           <div className={styles.secLabel} data-testid="staff-section-label">

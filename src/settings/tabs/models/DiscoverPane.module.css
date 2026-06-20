@@ -2,9 +2,9 @@
  * Styles for the Discover host: the pathway tab control over the Staff-picks
  * and Browse-all panes. Premium tokens cascade from the Settings window root.
  *
- * The tabs are a quiet segmented pill (the active pathway gets the accent fill),
- * deliberately smaller and lighter than the Models section nav above it so the
- * two tab rows do not compete.
+ * The tabs are a centered, icon-free underline control: text only, the active
+ * pathway carrying a short accent underline. Quieter and more editorial than a
+ * filled pill, and it does not compete with the Models section nav above it.
  */
 
 .host {
@@ -14,52 +14,45 @@
 }
 
 .tabs {
-  display: inline-flex;
-  align-self: flex-start;
-  gap: 3px;
-  padding: 3px;
-  margin-bottom: 14px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--hair-soft);
-  background: var(--elev-1);
+  display: flex;
+  justify-content: center;
+  gap: 26px;
+  margin-bottom: 16px;
 }
 
 .tab {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 14px;
+  padding: 7px 2px 11px;
   border: none;
-  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--t2);
   font-family: inherit;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 560;
   cursor: pointer;
-  transition:
-    color 140ms ease,
-    background 140ms ease;
-}
-.tab svg {
-  width: 13px;
-  height: 13px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  transition: color 140ms ease;
 }
 .tab:hover:not(.tabActive) {
   color: var(--t1);
 }
 .tab:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--accent-soft);
+  color: var(--t1);
 }
 
 .tabActive {
-  color: #16110d;
+  color: var(--t1);
+}
+.tabActive::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
   background: var(--accent);
 }
 

@@ -133,20 +133,12 @@
   background: rgba(255, 255, 255, 0.05);
 }
 
-/* RAM-fit hint: a coloured dot + label reusing the onboarding fit palette. */
+/* RAM-fit hint: a coloured label (no dot) reusing the onboarding fit palette. */
 .fit {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
   font-size: 11px;
   font-weight: 560;
-}
-.fit::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
 }
 .fitOk {
   color: var(--ok);

@@ -22,25 +22,9 @@ import type { RawAppConfig } from '../../types';
 
 type Pathway = 'staff' | 'browse';
 
-const STAR_ICON = (
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M12 2l2.6 6.3L21 9l-5 4.3L17.6 20 12 16.5 6.4 20 8 13.3 3 9l6.4-.7z" />
-  </svg>
-);
-const SEARCH_ICON = (
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <circle cx="11" cy="11" r="7" />
-    <path d="m20 20-3.5-3.5" />
-  </svg>
-);
-
-const TABS: ReadonlyArray<{
-  id: Pathway;
-  label: string;
-  icon: React.ReactNode;
-}> = [
-  { id: 'staff', label: 'Staff picks', icon: STAR_ICON },
-  { id: 'browse', label: 'Browse all', icon: SEARCH_ICON },
+const TABS: ReadonlyArray<{ id: Pathway; label: string }> = [
+  { id: 'staff', label: 'Staff picks' },
+  { id: 'browse', label: 'Browse all' },
 ];
 
 interface DiscoverPaneProps {
@@ -82,7 +66,6 @@ export function DiscoverPane({ onSaved }: DiscoverPaneProps) {
                 }
               }}
             >
-              {tab.icon}
               <span className={styles.tabLabel}>{tab.label}</span>
             </button>
           );

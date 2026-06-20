@@ -57,9 +57,9 @@ function renderHost() {
   return render(<DiscoverPane onSaved={() => {}} />);
 }
 
-/** Staff picks is showing when its curated hint is on screen. */
+/** Staff picks is showing when its curated use-case sections are on screen. */
 function staffPicksVisible(): boolean {
-  return screen.queryByText(/Pick by what you want to do/) !== null;
+  return screen.queryByTestId('staff-section-label') !== null;
 }
 
 /** Browse all is showing when its Hugging Face search box is on screen. */

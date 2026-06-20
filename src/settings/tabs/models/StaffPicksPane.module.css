@@ -10,13 +10,6 @@
   min-height: 0;
 }
 
-.hint {
-  font-size: 11.5px;
-  color: var(--t3);
-  margin: 0 2px 14px;
-  line-height: 1.5;
-}
-
 .empty {
   padding: 36px 14px;
   text-align: center;
@@ -110,21 +103,13 @@
   flex: none;
 }
 
-/* RAM-fit hint: a coloured dot + label reusing the shared fit palette. */
+/* RAM-fit hint: a coloured label (no dot) reusing the shared fit palette. */
 .fit {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
   font-size: 11px;
   font-weight: 560;
   white-space: nowrap;
-}
-.fit::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
 }
 .fitOk {
   color: var(--ok);
