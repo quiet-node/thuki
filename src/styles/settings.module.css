@@ -40,6 +40,12 @@
   --t3: rgba(236, 234, 231, 0.34);
   --accent: #ff8d5c;
   --accent-soft: rgba(255, 141, 92, 0.14);
+  /* Capability-pill text colours: a calm warm trio, each distinct and none
+   * reusing a status colour (or purple/blue/green). Text = stone, Vision =
+   * dusty rose, Thinking = wheat gold. */
+  --cap-text: #b8aa9a;
+  --cap-vision: #d59aad;
+  --cap-think: #d9c27e;
   --ok: #79c08e;
   --tight: #e6b56b;
   /* RAM-fit "Heavy" (model larger than this Mac comfortably holds) and the

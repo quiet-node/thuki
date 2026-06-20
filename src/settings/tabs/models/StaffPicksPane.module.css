@@ -73,7 +73,8 @@
   color: var(--t1);
 }
 
-/* Calm capability pills: neutral text chips, no colour dot. */
+/* Calm capability pills: a neutral chip, the colour carried in the text only.
+ * Each capability has its own warm hue (stone / rose / gold). */
 .pills {
   display: inline-flex;
   gap: 5px;
@@ -85,8 +86,16 @@
   font-weight: 540;
   padding: 2px 7px;
   border-radius: var(--radius-pill);
-  color: var(--t2);
   background: rgba(255, 255, 255, 0.05);
+}
+.pillText {
+  color: var(--cap-text);
+}
+.pillVision {
+  color: var(--cap-vision);
+}
+.pillThinking {
+  color: var(--cap-think);
 }
 
 .sub {
@@ -152,14 +161,6 @@
 .getBtn:hover {
   border-color: rgba(255, 141, 92, 0.6);
   background: var(--accent-soft);
-}
-
-.installed {
-  display: inline-flex;
-  align-items: center;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--ok);
 }
 
 .resumeWrap {

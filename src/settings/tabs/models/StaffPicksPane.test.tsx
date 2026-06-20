@@ -331,15 +331,18 @@ describe('StaffPicksPane', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows Installed instead of a download button', async () => {
+  it('shows no download button and no label for an installed model', async () => {
     await renderPane(() => {}, {
       get_starter_options: [{ ...GEMMA, installed: true }, QWEN, GPT_OSS],
     });
     const row = rowFor('Gemma 4 12B');
-    expect(within(row).getByText('Installed')).toBeInTheDocument();
+    // Already installed: no download affordance and no "Installed" badge; the
+    // row still shows the model and its fit.
     expect(
       within(row).queryByRole('button', { name: 'Download' }),
     ).not.toBeInTheDocument();
+    expect(within(row).queryByText('Installed')).not.toBeInTheDocument();
+    expect(within(row).getByText('Comfortable')).toBeInTheDocument();
   });
 
   it('offers Resume and Discard for an interrupted partial', async () => {

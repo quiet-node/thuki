@@ -228,12 +228,16 @@ function ModelRow({
               {starter.display_name}
             </span>
             <span className={styles.pills}>
-              <span className={styles.pill}>Text</span>
+              <span className={`${styles.pill} ${styles.pillText}`}>Text</span>
               {starter.vision ? (
-                <span className={styles.pill}>Vision</span>
+                <span className={`${styles.pill} ${styles.pillVision}`}>
+                  Vision
+                </span>
               ) : null}
               {starter.thinking ? (
-                <span className={styles.pill}>Thinking</span>
+                <span className={`${styles.pill} ${styles.pillThinking}`}>
+                  Thinking
+                </span>
               ) : null}
             </span>
           </div>
@@ -295,8 +299,10 @@ const DOWNLOAD_ICON = (
   </svg>
 );
 
-/** The per-row affordance: an installed marker, a resume/discard pair when an
- * interrupted partial exists, or the icon download button. */
+/** The per-row affordance. An already-installed model shows nothing (no
+ * download button, no badge): it lives in Library, so on this Discover surface
+ * the absence of a download is the signal. A resume/discard pair shows when an
+ * interrupted partial exists; otherwise the icon download button. */
 function RowAction({
   option,
   installed,
@@ -308,7 +314,7 @@ function RowAction({
   const { starter } = option;
 
   if (installed) {
-    return <span className={styles.installed}>Installed</span>;
+    return null;
   }
 
   if (partialBytes !== null) {

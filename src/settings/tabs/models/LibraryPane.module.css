@@ -119,9 +119,9 @@
   flex: none;
 }
 
-/* Capability pills sit in the name line, right after the model name. One calm,
- * cohesive chrome for all of them: neutral text on a faint shared background,
- * no colour dot, so Text / Vision / Thinking read as a quiet family. */
+/* Capability pills sit in the name line, right after the model name. A neutral
+ * chip with the colour carried in the text only: each capability has its own
+ * warm hue (stone / rose / gold), a quiet family rather than a loud rainbow. */
 .pill {
   display: inline-flex;
   align-items: center;
@@ -129,8 +129,16 @@
   font-weight: 540;
   padding: 2px 8px;
   border-radius: var(--radius-pill);
-  color: var(--t2);
   background: rgba(255, 255, 255, 0.05);
+}
+.pillText {
+  color: var(--cap-text);
+}
+.pillVision {
+  color: var(--cap-vision);
+}
+.pillThinking {
+  color: var(--cap-think);
 }
 
 /* RAM-fit hint: a coloured label (no dot) reusing the onboarding fit palette. */
