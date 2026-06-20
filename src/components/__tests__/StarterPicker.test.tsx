@@ -273,6 +273,13 @@ describe('useStarterOptions', () => {
     expect(result.current.options).toEqual([]);
   });
 
+  it('coerces a malformed non-array payload to an empty list', async () => {
+    invoke.mockResolvedValueOnce({ not: 'an array' });
+    const { result } = renderHook(() => useStarterOptions());
+    await act(async () => {});
+    expect(result.current.options).toEqual([]);
+  });
+
   it('re-fetches on refresh', async () => {
     invoke.mockResolvedValueOnce([]);
     const { result } = renderHook(() => useStarterOptions());

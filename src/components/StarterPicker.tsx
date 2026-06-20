@@ -61,7 +61,10 @@ export function useStarterOptions(): UseStarterOptionsResult {
 
   const refresh = useCallback(async () => {
     try {
-      setOptions(await invoke<StarterOption[]>('get_starter_options'));
+      const rows = await invoke<StarterOption[]>('get_starter_options');
+      // Guard the IPC boundary: a malformed (non-array) payload becomes an
+      // empty list so consumers that iterate the rows never crash.
+      setOptions(Array.isArray(rows) ? rows : []);
     } catch {
       setOptions([]);
     }
