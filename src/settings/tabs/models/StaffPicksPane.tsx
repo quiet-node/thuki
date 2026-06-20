@@ -27,6 +27,7 @@ import { DownloadProgress } from '../../../components/DownloadProgress';
 import { useDownloadModel } from '../../../hooks/useDownloadModel';
 import { useStaffPicks } from '../../../components/StarterPicker';
 import { Tooltip } from '../../../components/Tooltip';
+import { formatContextWindow } from '../../../utils/contextWindow';
 import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
 import styles from './StaffPicksPane.module.css';
 import type { RawAppConfig } from '../../types';
@@ -212,6 +213,8 @@ function ModelRow({
 }: ModelRowProps) {
   const { starter, fit, installed, partial_bytes } = option;
   const showProgress = active && state.phase !== 'idle';
+  // Empty when the model carries no context window, so the pill is skipped.
+  const contextLabel = formatContextWindow(starter.context_length ?? 0);
 
   return (
     <div className={styles.row} data-model-row data-id={starter.id}>
@@ -232,6 +235,13 @@ function ModelRow({
                 <span className={`${styles.pill} ${styles.pillThinking}`}>
                   Thinking
                 </span>
+              ) : null}
+              {contextLabel ? (
+                <Tooltip label="Context window" placement="top">
+                  <span className={`${styles.pill} ${styles.pillContext}`}>
+                    {contextLabel}
+                  </span>
+                </Tooltip>
               ) : null}
             </span>
           </div>

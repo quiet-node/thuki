@@ -100,6 +100,7 @@ function option(
 const QWEN = option({
   id: 'qwen3.5-9b',
   tier: 'fast',
+  context_length: 262_144,
   family: 'Qwen',
   category: 'Everyday chat',
   display_name: 'Qwen3.5 9B',
@@ -110,10 +111,11 @@ const QWEN = option({
   thinking: true,
   origin: 'Alibaba',
 });
-const GEMMA = option({});
+const GEMMA = option({ context_length: 131_072 });
 const GPT_OSS = option({
   id: 'gpt-oss-20b',
   tier: 'smartest',
+  context_length: 131_072,
   family: 'gpt-oss',
   category: 'Deep reasoning',
   display_name: 'gpt-oss 20B',
@@ -206,6 +208,22 @@ describe('StaffPicksPane', () => {
     expect(within(row).queryByText('Thinking')).not.toBeInTheDocument();
     expect(within(row).getByText('7.2 GB · Google')).toBeInTheDocument();
     expect(within(row).getByText('Comfortable')).toBeInTheDocument();
+  });
+
+  it('shows the context-window pill, formatted compactly', async () => {
+    await renderPane();
+    expect(within(rowFor('Gemma 4 12B')).getByText('128K')).toBeInTheDocument();
+    expect(within(rowFor('Qwen3.5 9B')).getByText('256K')).toBeInTheDocument();
+  });
+
+  it('omits the context pill for a model with no context window', async () => {
+    await renderPane(() => {}, {
+      get_staff_picks: [
+        option({ context_length: undefined, display_name: 'Mystery 7B' }),
+      ],
+    });
+    const row = rowFor('Mystery 7B');
+    expect(within(row).queryByText(/K$/)).not.toBeInTheDocument();
   });
 
   it('shows a Thinking pill on a thinking model and omits Vision on a text-only one', async () => {

@@ -46,6 +46,10 @@ export interface Starter {
   mmproj_sha256: string | null;
   mmproj_bytes: number;
   est_runtime_gb: number;
+  /** Maximum context window in tokens the model was trained for (its GGUF
+   * `context_length`). Backend always sends it for catalog rows; optional here
+   * for test-fixture ergonomics and for sources that cannot determine it. */
+  context_length?: number;
   license_note: string;
   /** Model maker shown in the Origin row (e.g. "OpenAI"). */
   origin: string;
