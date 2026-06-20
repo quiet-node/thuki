@@ -19,6 +19,10 @@ export type RamFit = 'fits' | 'tight' | 'too_big';
 /** One curated starter model from the compile-time registry. */
 export interface Starter {
   tier: StarterTier;
+  /** Model family the Discover staff-picks accordion groups this entry under
+   * (e.g. "Gemma", "Qwen", "gpt-oss"). Backend always sends it; optional here
+   * for test-fixture ergonomics. */
+  family?: string;
   display_name: string;
   repo: string;
   revision: string;

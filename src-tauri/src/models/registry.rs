@@ -31,6 +31,10 @@ pub enum Tier {
 pub struct Starter {
     /// Which speed/quality tier this entry fills.
     pub tier: Tier,
+    /// Model family the Discover staff-picks accordion groups this entry under
+    /// (e.g. "Gemma", "Qwen", "gpt-oss"). Several starters can share a family
+    /// when the catalog offers more than one size of the same model.
+    pub family: &'static str,
     /// Human-readable label shown in the picker (e.g. "Gemma 4 12B").
     pub display_name: &'static str,
     /// Hugging Face repo slug.
@@ -79,6 +83,7 @@ pub struct Starter {
 pub const STARTERS: &[Starter] = &[
     Starter {
         tier: Tier::Fast,
+        family: "Qwen",
         display_name: "Qwen3.5 9B",
         repo: "unsloth/Qwen3.5-9B-GGUF",
         revision: "3885219b6810b007914f3a7950a8d1b469d598a5",
@@ -99,6 +104,7 @@ pub const STARTERS: &[Starter] = &[
     },
     Starter {
         tier: Tier::Balanced,
+        family: "Gemma",
         display_name: "Gemma 4 12B",
         repo: "google/gemma-4-12B-it-qat-q4_0-gguf",
         revision: "f6e7774e6148da3b7f201e42ba37cf084c1db35f",
@@ -119,6 +125,7 @@ pub const STARTERS: &[Starter] = &[
     },
     Starter {
         tier: Tier::Smartest,
+        family: "gpt-oss",
         display_name: "gpt-oss 20B",
         repo: "ggml-org/gpt-oss-20b-GGUF",
         revision: "e1dc459feff949ff451ce107337a2026daa80df8",
@@ -225,6 +232,18 @@ mod tests {
             STARTERS.iter().map(|s| s.tier).collect::<Vec<_>>(),
             vec![Tier::Fast, Tier::Balanced, Tier::Smartest]
         );
+    }
+
+    #[test]
+    fn family_per_tier() {
+        // The Discover staff-picks accordion groups starters by family, so
+        // every entry carries a non-empty family label.
+        assert_eq!(starter(Tier::Fast).family, "Qwen");
+        assert_eq!(starter(Tier::Balanced).family, "Gemma");
+        assert_eq!(starter(Tier::Smartest).family, "gpt-oss");
+        for s in STARTERS {
+            assert!(!s.family.is_empty(), "{}: family is empty", s.repo);
+        }
     }
 
     #[test]
