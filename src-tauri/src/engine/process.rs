@@ -118,7 +118,7 @@ pub struct TokioEngineProcess {
 }
 
 /// Pure: the `llama-server` command line for one spawn:
-/// `-m <model> [--mmproj <p>] --ctx-size <n> --host 127.0.0.1 --port <p> --no-webui`.
+/// `-m <model> [--mmproj <p>] --ctx-size <n> --host 127.0.0.1 --port <p> --no-webui --parallel 1`.
 fn llama_server_args(args: &SpawnArgs) -> Vec<std::ffi::OsString> {
     let mut argv: Vec<std::ffi::OsString> = vec!["-m".into(), args.model_path.clone().into()];
     if let Some(mmproj) = &args.mmproj_path {
@@ -132,6 +132,14 @@ fn llama_server_args(args: &SpawnArgs) -> Vec<std::ffi::OsString> {
     argv.push("--port".into());
     argv.push(args.port.to_string().into());
     argv.push("--no-webui".into());
+    // Single decode slot. Thuki is single-user, so it never needs parallel
+    // slots, and the default (n_parallel = 4) actively hurts: the summon-time
+    // warm-up prime and the user's first message can land on different KV
+    // slots, so the first message re-does the full system-prompt prefill cold
+    // instead of reusing the prime's cache (slow first turn, fast after). One
+    // slot also gives the conversation the full --ctx-size instead of ctx / 4.
+    argv.push("--parallel".into());
+    argv.push("1".into());
     argv
 }
 
@@ -215,6 +223,8 @@ mod tests {
                 "--port",
                 "4242",
                 "--no-webui",
+                "--parallel",
+                "1",
             ]
         );
     }
@@ -235,6 +245,8 @@ mod tests {
                 "--port",
                 "4242",
                 "--no-webui",
+                "--parallel",
+                "1",
             ]
         );
     }
