@@ -14,8 +14,8 @@ use toml_edit::DocumentMut;
 use super::{
     add_openai_provider_to_disk, builtin_deactivated, cleanup_provider_secrets,
     coerce_json_to_toml, is_allowed_field, is_allowed_section, is_http_url, json_type_name,
-    json_value_to_toml_item, keep_warm_idle_minutes_changed, patch_document, read_document,
-    remove_openai_provider_from_disk, reset_section_on_disk, trace_enabled_changed,
+    json_value_to_toml_item, keep_warm_idle_minutes_changed, ollama_deactivated, patch_document,
+    read_document, remove_openai_provider_from_disk, reset_section_on_disk, trace_enabled_changed,
     validate_provider_value, write_active_provider_to_disk, write_field_to_disk,
     write_provider_field_to_disk,
 };
@@ -1653,6 +1653,36 @@ fn builtin_deactivated_ignores_non_builtin_transitions_and_no_ops() {
     ));
     // Unresolved prior kind (empty) never counts as builtin.
     assert!(!builtin_deactivated("", &config_with_active("ollama")));
+}
+
+// ─── ollama_deactivated ──────────────────────────────────────────────────────
+
+#[test]
+fn ollama_deactivated_detects_switch_away_from_ollama() {
+    // ollama -> builtin and ollama -> openai both free the Ollama model.
+    assert!(ollama_deactivated("ollama", &config_with_active("builtin")));
+    assert!(ollama_deactivated("ollama", &config_with_active("openai")));
+}
+
+#[test]
+fn ollama_deactivated_ignores_switch_onto_ollama() {
+    assert!(!ollama_deactivated(
+        "builtin",
+        &config_with_active("ollama")
+    ));
+}
+
+#[test]
+fn ollama_deactivated_ignores_non_ollama_transitions_and_no_ops() {
+    // ollama -> ollama: nothing changed.
+    assert!(!ollama_deactivated("ollama", &config_with_active("ollama")));
+    // builtin -> builtin: never an Ollama deactivation.
+    assert!(!ollama_deactivated(
+        "builtin",
+        &config_with_active("builtin")
+    ));
+    // Unresolved prior kind (empty) never counts as ollama.
+    assert!(!ollama_deactivated("", &config_with_active("builtin")));
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
