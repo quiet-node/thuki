@@ -67,6 +67,16 @@ pub const DEFAULT_NUM_CTX: u32 = 16384;
 /// current consumer model including the largest 1 M-context variants.
 pub const BOUNDS_NUM_CTX: (u32, u32) = (2048, 1_048_576);
 
+/// Upper bound on a model's context window that Thuki will trust and display
+/// from external GGUF metadata (the `context_length` field of an arbitrary
+/// Hugging Face repo, shown in the Browse-all listing). Defense-in-depth: the
+/// field is attacker-controllable and editable (`gguf_set_metadata.py`), so a
+/// value above this sane ceiling is treated as untrustworthy and dropped rather
+/// than rendered. Mirrors the [`BOUNDS_NUM_CTX`] upper bound: 1 M tokens covers
+/// every current model. Why not tunable: it bounds attacker-controlled data, a
+/// security guard rather than a user preference.
+pub const MAX_MODEL_CONTEXT_LENGTH: u32 = 1_048_576;
+
 /// Accepted range for `keep_warm_inactivity_minutes`.
 /// -1 = keep resident forever, 0 = provider's natural short default (~5 min),
 /// 1..=1440 = explicit timeout. Values below -1 or above 1440 are clamped to

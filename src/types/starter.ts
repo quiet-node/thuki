@@ -119,6 +119,9 @@ export interface HfGgufFile {
   file: string;
   size_bytes: number;
   fit?: RamFit | null;
+  /** Model's trained context window in tokens, from the repo's parsed GGUF
+   * `context_length` metadata; `null`/absent when unknown or untrusted. */
+  context_length?: number | null;
 }
 
 /** Engine lifecycle snapshot published on the `engine:status` event. */

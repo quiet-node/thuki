@@ -21,6 +21,7 @@ import { DownloadProgress } from '../../../components/DownloadProgress';
 import { useDownloadModel } from '../../../hooks/useDownloadModel';
 import { useHfSearch } from './useHfSearch';
 import { Tooltip } from '../../../components/Tooltip';
+import { formatContextWindow } from '../../../utils/contextWindow';
 import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
 import styles from './BrowseAllPane.module.css';
 import type { HfModelSummary } from '../../../types/hf';
@@ -210,6 +211,9 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
   }, [state.phase, onSaved, reset]);
 
   const showProgress = state.phase !== 'idle';
+  // The context window is a repo-level property (identical across quants), so
+  // it is shown once above the quant list. Empty when unknown, which skips it.
+  const contextLabel = formatContextWindow(files?.[0]?.context_length ?? 0);
 
   return (
     <div className={styles.rowWrap} data-row>
@@ -252,6 +256,12 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
           ) : null}
           {files !== null && files.length === 0 && listError === null ? (
             <p className={styles.note}>No GGUF files in this repo.</p>
+          ) : null}
+          {!showProgress &&
+          files !== null &&
+          files.length > 0 &&
+          contextLabel ? (
+            <div className={styles.ctxLine}>{contextLabel} context window</div>
           ) : null}
           {!showProgress && files !== null && files.length > 0
             ? files.map((f) => (

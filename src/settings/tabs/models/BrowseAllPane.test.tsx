@@ -74,8 +74,13 @@ const RESULTS: HfModelSummary[] = [
 ];
 
 const GGUFS: HfGgufFile[] = [
-  { file: 'gemma-q4.gguf', size_bytes: 5_000_000_000, fit: 'tight' },
-  { file: 'gemma-q8.gguf', size_bytes: 9_000_000_000 },
+  {
+    file: 'gemma-q4.gguf',
+    size_bytes: 5_000_000_000,
+    fit: 'tight',
+    context_length: 131_072,
+  },
+  { file: 'gemma-q8.gguf', size_bytes: 9_000_000_000, context_length: 131_072 },
 ];
 
 const CONFIG_AFTER_INSTALL = { marker: 'fresh' } as unknown as RawAppConfig;
@@ -307,6 +312,31 @@ describe('BrowseAllPane', () => {
     expect(within(row).getByText('Tight')).toBeInTheDocument();
     expect(screen.getByText('gemma-q8.gguf')).toBeInTheDocument();
     expect(screen.getByText('9.0 GB')).toBeInTheDocument();
+  });
+
+  it('shows the repo context window once above the quant list', async () => {
+    await renderPane();
+    const row = screen
+      .getByText('google/gemma-4-12b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
+    await flush();
+    // One context line for the whole repo, not one per quant row.
+    expect(within(row).getByText('128K context window')).toBeInTheDocument();
+  });
+
+  it('omits the context line when the repo reports no context window', async () => {
+    await renderPane(() => {}, {
+      list_hf_repo_ggufs: [
+        { file: 'x.gguf', size_bytes: 1, context_length: null },
+      ],
+    });
+    const row = screen
+      .getByText('google/gemma-4-12b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
+    await flush();
+    expect(within(row).queryByText(/context window/)).not.toBeInTheDocument();
   });
 
   it('collapses an expanded row when the download button is clicked again', async () => {
