@@ -1,5 +1,5 @@
 /*
- * Styles for the Staff-picks pane: Discover's flat curated model cards. The
+ * Styles for the Staff-picks pane: Discover's compact use-case sections. The
  * premium tokens (--accent, --t1..--t3, --hair, --ok, --tight, --heavy, etc.)
  * cascade from the Settings window root, so they are referenced via var() here.
  */
@@ -13,7 +13,7 @@
 .hint {
   font-size: 11.5px;
   color: var(--t3);
-  margin: 0 2px 13px;
+  margin: 0 2px 14px;
   line-height: 1.5;
 }
 
@@ -24,25 +24,42 @@
   color: var(--t2);
 }
 
-.list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* ── Use-case section ─────────────────────────────────────────────────────── */
+
+.section {
+  margin-bottom: 16px;
+}
+.section:last-child {
+  margin-bottom: 0;
 }
 
-/* ── Model card ───────────────────────────────────────────────────────────── */
+/* Quiet uppercase label, no icon. */
+.secLabel {
+  font-size: 10.5px;
+  font-weight: 640;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--t3);
+  margin: 0 2px 8px;
+}
 
-.card {
+/* ── Compact model row ────────────────────────────────────────────────────── */
+
+.row {
   border: 1px solid var(--hair-soft);
-  border-radius: var(--radius-card);
+  border-radius: 9px;
   background: var(--elev-1);
+  margin-bottom: 6px;
+}
+.row:last-child {
+  margin-bottom: 0;
 }
 
-.cardMain {
+.rowMain {
   display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  padding: 13px 14px;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
 }
 
 .mid {
@@ -50,79 +67,46 @@
   min-width: 0;
 }
 
+.top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .name {
-  font-weight: 580;
-  font-size: 13.5px;
+  font-weight: 560;
+  font-size: 12.5px;
   color: var(--t1);
 }
 
-.maker {
-  font-size: 11px;
-  color: var(--t3);
-  margin-top: 4px;
-}
-
-/* Calm capability pills: one cohesive chrome, a small colour dot the only
- * accent, matching the Library pane's vocabulary. */
+/* Calm capability pills: neutral text chips, no colour dot. */
 .pills {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 9px;
+  display: inline-flex;
+  gap: 5px;
 }
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 10.5px;
+  font-size: 9.5px;
   font-weight: 540;
-  padding: 2px 8px;
+  padding: 2px 7px;
   border-radius: var(--radius-pill);
   color: var(--t2);
   background: rgba(255, 255, 255, 0.05);
 }
-.pill::before {
-  content: '';
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-}
-.pillText::before {
-  background: var(--t3);
-}
-.pillVision::before {
-  background: var(--vis);
-}
-.pillThinking::before {
-  background: var(--rea);
-}
 
-.meta {
-  font-size: 11px;
+.sub {
+  font-size: 10.5px;
   color: var(--t3);
-  margin-top: 9px;
+  margin-top: 3px;
   font-variant-numeric: tabular-nums;
-}
-
-.hfLink {
-  border: none;
-  background: transparent;
-  padding: 0;
-  font-family: inherit;
-  font-size: 11px;
-  color: var(--t3);
-  cursor: pointer;
-  transition: color 140ms ease;
-}
-.hfLink:hover {
-  color: var(--accent);
 }
 
 .right {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 10px;
+  align-items: center;
+  gap: 12px;
   flex: none;
 }
 
@@ -152,13 +136,13 @@
   color: var(--heavy);
 }
 
-/* ── Card actions ─────────────────────────────────────────────────────────── */
+/* ── Row actions ──────────────────────────────────────────────────────────── */
 
 /* Icon-only download button: the accent download-arrow, matching the Browse-all
  * quant rows so "download" reads the same everywhere. */
 .getBtn {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   flex: none;
   display: grid;
   place-items: center;
@@ -172,8 +156,8 @@
     background 140ms ease;
 }
 .getBtn svg {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
@@ -188,16 +172,15 @@
 .installed {
   display: inline-flex;
   align-items: center;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--ok);
 }
 
 .resumeWrap {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
 }
 .resumeBtn {
   font-size: 11.5px;
@@ -224,5 +207,5 @@
 }
 
 .progress {
-  padding: 0 14px 13px;
+  padding: 0 12px 12px;
 }

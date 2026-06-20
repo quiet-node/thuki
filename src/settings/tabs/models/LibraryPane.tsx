@@ -204,20 +204,12 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                   <div className={styles.mid}>
                     <div className={styles.name}>
                       {m.display_name}
-                      <span className={`${styles.pill} ${styles.pillText}`}>
-                        Text
-                      </span>
+                      <span className={styles.pill}>Text</span>
                       {caps?.vision ? (
-                        <span className={`${styles.pill} ${styles.pillVision}`}>
-                          Vision
-                        </span>
+                        <span className={styles.pill}>Vision</span>
                       ) : null}
                       {caps?.thinking ? (
-                        <span
-                          className={`${styles.pill} ${styles.pillThinking}`}
-                        >
-                          Thinking
-                        </span>
+                        <span className={styles.pill}>Thinking</span>
                       ) : null}
                     </div>
                     <div className={styles.org}>

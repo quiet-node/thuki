@@ -1,11 +1,12 @@
 /**
  * Unit tests for the Staff-picks pane: Discover's curated front door.
  *
- * A flat, alphabetically-ordered list of rich model cards (no family grouping,
- * no recommended highlight). Each card shows the model name, its maker and a
- * one-line blurb, capability pills (Text always, plus Vision / Thinking), the
- * one quant Thuki chose with its size and license, a RAM-fit hint, and a single
- * icon download that runs the VERIFIED starter path (`download_starter`, pinned
+ * Models are grouped into use-case sections (Everyday chat / Compact & fast /
+ * Deep reasoning), known sections first in a fixed order, then any extra
+ * category alphabetically; within a section models are alphabetical. Each
+ * compact row shows the model name, capability pills (Text always, plus Vision
+ * / Thinking), a `size · maker` sub-line, a RAM-fit hint, and a single icon
+ * download that runs the VERIFIED starter path (`download_starter`, pinned
  * revision + sha256). The download channel is captured the same way
  * BrowseAllPane.test.tsx does it.
  */
@@ -59,6 +60,7 @@ function starter(over: Partial<Starter>): Starter {
   return {
     tier: 'balanced',
     family: 'Gemma',
+    category: 'Everyday chat',
     display_name: 'Gemma 4 12B',
     repo: 'google/gemma-4-12B-it-qat-q4_0-gguf',
     revision: 'a'.repeat(40),
@@ -93,10 +95,11 @@ function option(
   };
 }
 
-/** Three models, mirroring the shipped registry (deliberately NOT alpha order). */
+/** Two everyday models + one reasoning model (deliberately NOT alpha order). */
 const QWEN = option({
   tier: 'fast',
   family: 'Qwen',
+  category: 'Everyday chat',
   display_name: 'Qwen3.5 9B',
   repo: 'unsloth/Qwen3.5-9B-GGUF',
   file_name: 'Qwen3.5-9B-Q4_K_M.gguf',
@@ -109,6 +112,7 @@ const GEMMA = option({});
 const GPT_OSS = option({
   tier: 'smartest',
   family: 'gpt-oss',
+  category: 'Deep reasoning',
   display_name: 'gpt-oss 20B',
   repo: 'ggml-org/gpt-oss-20b-GGUF',
   file_name: 'gpt-oss-20b-mxfp4.gguf',
@@ -159,90 +163,89 @@ async function renderPane(
   return view;
 }
 
-/** The card element wrapping a model name. */
-function cardFor(name: string): HTMLElement {
-  return screen.getByText(name).closest('[data-model-card]') as HTMLElement;
+/** The row element wrapping a model name. */
+function rowFor(name: string): HTMLElement {
+  return screen.getByText(name).closest('[data-model-row]') as HTMLElement;
 }
 
 describe('StaffPicksPane', () => {
-  it('renders every model as a flat card, all visible at once', async () => {
+  it('renders a section only for categories that have models', async () => {
     await renderPane();
-    expect(screen.getByText('Gemma 4 12B')).toBeInTheDocument();
-    expect(screen.getByText('Qwen3.5 9B')).toBeInTheDocument();
-    expect(screen.getByText('gpt-oss 20B')).toBeInTheDocument();
+    expect(screen.getByText('Everyday chat')).toBeInTheDocument();
+    expect(screen.getByText('Deep reasoning')).toBeInTheDocument();
+    // No model carries "Compact & fast", so that section never renders.
+    expect(screen.queryByText('Compact & fast')).not.toBeInTheDocument();
   });
 
-  it('orders the cards alphabetically by model name', async () => {
+  it('orders sections by the known order and models alphabetically within', async () => {
     await renderPane();
+    const sections = screen
+      .getAllByTestId('staff-section-label')
+      .map((el) => el.textContent);
+    expect(sections).toEqual(['Everyday chat', 'Deep reasoning']);
     const names = screen
       .getAllByTestId('staff-model-name')
       .map((el) => el.textContent);
-    expect(names).toEqual(['Gemma 4 12B', 'gpt-oss 20B', 'Qwen3.5 9B']);
+    // Everyday: Gemma before Qwen (alpha); then the reasoning section.
+    expect(names).toEqual(['Gemma 4 12B', 'Qwen3.5 9B', 'gpt-oss 20B']);
   });
 
-  it('shows no Recommended badge on any card', async () => {
+  it('shows no Recommended badge on any row', async () => {
     await renderPane();
     expect(screen.queryByText(/Recommended/)).not.toBeInTheDocument();
   });
 
-  it('shows the maker, blurb, pills, quant, size, license and fit on a card', async () => {
+  it('shows the name, pills, size and maker, and fit on a row', async () => {
     await renderPane();
-    const card = cardFor('Gemma 4 12B');
-    expect(
-      within(card).getByText(/Google · Well-rounded, reads images/),
-    ).toBeInTheDocument();
-    expect(within(card).getByText('Text')).toBeInTheDocument();
-    expect(within(card).getByText('Vision')).toBeInTheDocument();
-    expect(within(card).queryByText('Thinking')).not.toBeInTheDocument();
-    expect(within(card).getByText(/Q4_0/)).toBeInTheDocument();
-    expect(within(card).getByText(/7\.2 GB/)).toBeInTheDocument();
-    expect(within(card).getByText(/Apache 2\.0/)).toBeInTheDocument();
-    expect(within(card).getByText('Comfortable')).toBeInTheDocument();
+    const row = rowFor('Gemma 4 12B');
+    expect(within(row).getByText('Text')).toBeInTheDocument();
+    expect(within(row).getByText('Vision')).toBeInTheDocument();
+    expect(within(row).queryByText('Thinking')).not.toBeInTheDocument();
+    expect(within(row).getByText('7.2 GB · Google')).toBeInTheDocument();
+    expect(within(row).getByText('Comfortable')).toBeInTheDocument();
   });
 
   it('shows a Thinking pill on a thinking model and omits Vision on a text-only one', async () => {
     await renderPane();
-    const qwen = cardFor('Qwen3.5 9B');
+    const qwen = rowFor('Qwen3.5 9B');
     expect(within(qwen).getByText('Thinking')).toBeInTheDocument();
     expect(within(qwen).getByText('Vision')).toBeInTheDocument();
-    const oss = cardFor('gpt-oss 20B');
+    const oss = rowFor('gpt-oss 20B');
     expect(within(oss).getByText('Thinking')).toBeInTheDocument();
     expect(within(oss).queryByText('Vision')).not.toBeInTheDocument();
   });
 
-  it('falls back to the maker alone when a model has no blurb', async () => {
+  it('appends an unrecognized category after the known sections', async () => {
     await renderPane(() => {}, {
       get_starter_options: [
+        GEMMA,
         option({
-          family: 'Llama',
-          display_name: 'Llama 3.3 8B',
-          origin: 'Meta',
+          tier: 'fast',
+          category: 'Coding',
+          display_name: 'Qwen3 Coder 7B',
         }),
       ],
     });
-    const card = cardFor('Llama 3.3 8B');
-    // No blurb for the Llama family: the maker line is just the maker.
-    expect(within(card).getByText('Meta')).toBeInTheDocument();
+    const sections = screen
+      .getAllByTestId('staff-section-label')
+      .map((el) => el.textContent);
+    expect(sections).toEqual(['Everyday chat', 'Coding']);
   });
 
-  it('shows just the maker when a model carries no family at all', async () => {
+  it('buckets a model with no category under Other', async () => {
     await renderPane(() => {}, {
       get_starter_options: [
-        option({
-          family: undefined,
-          display_name: 'Mystery 7B',
-          origin: 'Acme',
-        }),
+        option({ category: undefined, display_name: 'Mystery 7B' }),
       ],
     });
-    const card = cardFor('Mystery 7B');
-    expect(within(card).getByText('Acme')).toBeInTheDocument();
+    expect(screen.getByText('Other')).toBeInTheDocument();
+    expect(screen.getByText('Mystery 7B')).toBeInTheDocument();
   });
 
   it('downloads a model through the verified starter path', async () => {
     await renderPane();
-    const card = cardFor('Gemma 4 12B');
-    fireEvent.click(within(card).getByRole('button', { name: 'Download' }));
+    const row = rowFor('Gemma 4 12B');
+    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith(
       'download_starter',
@@ -253,8 +256,8 @@ describe('StaffPicksPane', () => {
   it('lifts a fresh config and refreshes when a download completes', async () => {
     const onSaved = vi.fn();
     await renderPane(onSaved);
-    const card = cardFor('Gemma 4 12B');
-    fireEvent.click(within(card).getByRole('button', { name: 'Download' }));
+    const row = rowFor('Gemma 4 12B');
+    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
     await flush();
     expect(screen.getByText('Downloading model')).toBeInTheDocument();
     act(() => {
@@ -269,8 +272,8 @@ describe('StaffPicksPane', () => {
     await renderPane(onSaved, {
       get_config: new Reject(new Error('read failed')),
     });
-    const card = cardFor('Gemma 4 12B');
-    fireEvent.click(within(card).getByRole('button', { name: 'Download' }));
+    const row = rowFor('Gemma 4 12B');
+    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
     await flush();
     act(() => {
       lastChannel?.simulateMessage({ type: 'AllDone' });
@@ -281,8 +284,8 @@ describe('StaffPicksPane', () => {
 
   it('cancels an in-flight download', async () => {
     await renderPane();
-    const card = cardFor('Gemma 4 12B');
-    fireEvent.click(within(card).getByRole('button', { name: 'Download' }));
+    const row = rowFor('Gemma 4 12B');
+    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
     await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await flush();
@@ -291,8 +294,8 @@ describe('StaffPicksPane', () => {
 
   it('retries after a failed download', async () => {
     await renderPane();
-    const card = cardFor('Gemma 4 12B');
-    fireEvent.click(within(card).getByRole('button', { name: 'Download' }));
+    const row = rowFor('Gemma 4 12B');
+    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
     await flush();
     act(() => {
       lastChannel?.simulateMessage({
@@ -309,10 +312,10 @@ describe('StaffPicksPane', () => {
     expect(starts).toHaveLength(2);
   });
 
-  it('returns to the card from a terminal failure via Choose a different model', async () => {
+  it('returns to the row from a terminal failure via Choose a different model', async () => {
     await renderPane();
-    const card = cardFor('Gemma 4 12B');
-    fireEvent.click(within(card).getByRole('button', { name: 'Download' }));
+    const row = rowFor('Gemma 4 12B');
+    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
     await flush();
     act(() => {
       lastChannel?.simulateMessage({
@@ -323,9 +326,8 @@ describe('StaffPicksPane', () => {
     fireEvent.click(
       screen.getByRole('button', { name: 'Choose a different model' }),
     );
-    // The Gemma card is back to its download button, not stuck on the failure.
     expect(
-      within(cardFor('Gemma 4 12B')).getByRole('button', { name: 'Download' }),
+      within(rowFor('Gemma 4 12B')).getByRole('button', { name: 'Download' }),
     ).toBeInTheDocument();
   });
 
@@ -333,10 +335,10 @@ describe('StaffPicksPane', () => {
     await renderPane(() => {}, {
       get_starter_options: [{ ...GEMMA, installed: true }, QWEN, GPT_OSS],
     });
-    const card = cardFor('Gemma 4 12B');
-    expect(within(card).getByText('Installed')).toBeInTheDocument();
+    const row = rowFor('Gemma 4 12B');
+    expect(within(row).getByText('Installed')).toBeInTheDocument();
     expect(
-      within(card).queryByRole('button', { name: 'Download' }),
+      within(row).queryByRole('button', { name: 'Download' }),
     ).not.toBeInTheDocument();
   });
 
@@ -348,8 +350,8 @@ describe('StaffPicksPane', () => {
         GPT_OSS,
       ],
     });
-    const card = cardFor('Gemma 4 12B');
-    fireEvent.click(within(card).getByRole('button', { name: /Resume/ }));
+    const row = rowFor('Gemma 4 12B');
+    fireEvent.click(within(row).getByRole('button', { name: /Resume/ }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith(
       'download_starter',
@@ -365,20 +367,11 @@ describe('StaffPicksPane', () => {
         GPT_OSS,
       ],
     });
-    const card = cardFor('Gemma 4 12B');
-    fireEvent.click(within(card).getByRole('button', { name: 'Discard' }));
+    const row = rowFor('Gemma 4 12B');
+    fireEvent.click(within(row).getByRole('button', { name: 'Discard' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('discard_partial_download', {
       sha256: 'b'.repeat(64),
-    });
-  });
-
-  it('opens the model on Hugging Face from its provenance link', async () => {
-    await renderPane();
-    const card = cardFor('Gemma 4 12B');
-    fireEvent.click(within(card).getByRole('button', { name: /Hugging Face/ }));
-    expect(invokeMock).toHaveBeenCalledWith('open_url', {
-      url: 'https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf',
     });
   });
 

@@ -1,7 +1,7 @@
 /*
- * Styles for the Library pane of the Models surface. Tokens (--accent, --vis,
- * --rea, --ok, --tight, --heavy, --danger, --hair, --t1..--t3, --elev-*)
- * cascade from the Settings window, so they are referenced directly here.
+ * Styles for the Library pane of the Models surface. Tokens (--accent, --ok,
+ * --tight, --heavy, --danger, --hair, --t1..--t3, --elev-*) cascade from the
+ * Settings window, so they are referenced directly here.
  */
 
 .pane {
@@ -120,34 +120,17 @@
 }
 
 /* Capability pills sit in the name line, right after the model name. One calm,
- * cohesive chrome for all of them (neutral text + a faint shared background);
- * a small colour dot is the only accent, so Text / Vision / Thinking read as a
- * quiet family rather than a saturated rainbow. */
+ * cohesive chrome for all of them: neutral text on a faint shared background,
+ * no colour dot, so Text / Vision / Thinking read as a quiet family. */
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
   font-size: 10.5px;
   font-weight: 540;
   padding: 2px 8px;
   border-radius: var(--radius-pill);
   color: var(--t2);
   background: rgba(255, 255, 255, 0.05);
-}
-.pill::before {
-  content: '';
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-}
-.pillText::before {
-  background: var(--t3);
-}
-.pillVision::before {
-  background: var(--vis);
-}
-.pillThinking::before {
-  background: var(--rea);
 }
 
 /* RAM-fit hint: a coloured dot + label reusing the onboarding fit palette. */

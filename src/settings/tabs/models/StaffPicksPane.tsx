@@ -1,20 +1,21 @@
 /**
  * Staff-picks pane: the curated front door of Discover.
  *
- * A flat, alphabetically-ordered list of rich model cards. Thuki hand-picks a
- * short catalog and shows each model directly (no family grouping, no
- * recommended highlight): its friendly name, maker and a one-line blurb,
- * capability pills (Text always, plus Vision / Thinking), the one quant Thuki
- * chose with its size and license, a RAM-fit hint, and a single icon download
- * that runs the VERIFIED starter path (`download_starter`, pinned revision +
- * sha256), unlike the Browse-all pane's arbitrary repo downloads. A finished
- * install lifts a fresh config snapshot.
+ * Thuki hand-picks a short catalog and groups it into use-case sections
+ * ("Everyday chat", "Compact & fast", "Deep reasoning", ...) so a non-expert
+ * can pick by intent. Known sections show first in a fixed order, then any
+ * extra category alphabetically; within a section models are alphabetical. Each
+ * compact row shows the model name, capability pills (Text always, plus Vision
+ * / Thinking), a `size · maker` sub-line, a RAM-fit hint, and a single icon
+ * download that runs the VERIFIED starter path (`download_starter`, pinned
+ * revision + sha256), unlike the Browse-all pane's arbitrary repo downloads. A
+ * finished install lifts a fresh config snapshot.
  *
  * Data comes from {@link useStarterOptions} (the same rows onboarding's picker
  * uses); the download state machine is the shared {@link useDownloadModel}, so
  * the in-flight / failed UI is the same {@link DownloadProgress} card the rest
  * of the app shows. At most one model downloads at a time (the backend enforces
- * it too); `activeTier` tracks which card owns the progress card.
+ * it too); `activeTier` tracks which row owns the progress card.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -33,8 +34,6 @@ import type {
   StarterTier,
 } from '../../../types/starter';
 
-const HF_BASE_URL = 'https://huggingface.co';
-
 /** RAM-fit hint colour class on this pane's stylesheet (labels are shared). */
 const FIT_CLASS: Record<RamFit, string> = {
   fits: styles.fitOk,
@@ -42,20 +41,12 @@ const FIT_CLASS: Record<RamFit, string> = {
   too_big: styles.fitHeavy,
 };
 
-/** A plain-language line about what a model is good for, shown after the maker.
- * Keyed by family so several sizes of one model share it; a model with no entry
- * shows just its maker. Presentational only. */
-const MODEL_BLURB: Record<string, string> = {
-  Qwen: 'Fast, capable all-rounder',
-  Gemma: 'Well-rounded, reads images',
-  'gpt-oss': 'Strongest reasoning',
-};
+/** The order use-case sections appear in. Categories outside this list follow
+ * it, alphabetically. */
+const CATEGORY_ORDER = ['Everyday chat', 'Compact & fast', 'Deep reasoning'];
 
-const DOWNLOAD_ICON = (
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />
-  </svg>
-);
+/** Bucket for a model that carries no category. */
+const UNCATEGORIZED = 'Other';
 
 /** Bytes rendered as decimal gigabytes with one decimal (e.g. "8.2"). */
 function gb(bytes: number): string {
@@ -67,10 +58,38 @@ function totalBytes(o: StarterOption): number {
   return o.starter.size_bytes + o.starter.mmproj_bytes;
 }
 
-/** The maker line: the maker, plus a blurb when the family has one. */
-function makerLine(o: StarterOption): string {
-  const blurb = o.starter.family ? MODEL_BLURB[o.starter.family] : undefined;
-  return blurb ? `${o.starter.origin} · ${blurb}` : o.starter.origin;
+/** One use-case section: its label and the models under it. */
+interface Section {
+  category: string;
+  options: StarterOption[];
+}
+
+/** Groups models into use-case sections: known categories first in their fixed
+ * order, then any extra category alphabetically; models within a section are
+ * alphabetical by name. */
+function groupByCategory(options: StarterOption[]): Section[] {
+  const buckets = new Map<string, StarterOption[]>();
+  for (const o of options) {
+    const category = o.starter.category ?? UNCATEGORIZED;
+    const list = buckets.get(category);
+    if (list) {
+      list.push(o);
+    } else {
+      buckets.set(category, [o]);
+    }
+  }
+  const known = CATEGORY_ORDER.filter((c) => buckets.has(c));
+  const extra = [...buckets.keys()]
+    .filter((c) => !CATEGORY_ORDER.includes(c))
+    .sort();
+  return [...known, ...extra].map((category) => ({
+    category,
+    options: (buckets.get(category) as StarterOption[]).sort((a, b) =>
+      a.starter.display_name.localeCompare(b.starter.display_name, undefined, {
+        sensitivity: 'base',
+      }),
+    ),
+  }));
 }
 
 interface StaffPicksPaneProps {
@@ -80,23 +99,9 @@ interface StaffPicksPaneProps {
 
 export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
   const { options, refresh } = useStarterOptions();
+  const sections = useMemo(() => groupByCategory(options ?? []), [options]);
 
-  // Flat, case-insensitive alphabetical order by model name.
-  const ordered = useMemo(
-    () =>
-      [...(options ?? [])].sort((a, b) =>
-        a.starter.display_name.localeCompare(
-          b.starter.display_name,
-          undefined,
-          {
-            sensitivity: 'base',
-          },
-        ),
-      ),
-    [options],
-  );
-
-  // One download at a time; activeTier names the card that owns the progress card.
+  // One download at a time; activeTier names the row that owns the progress card.
   const [activeTier, setActiveTier] = useState<StarterTier | null>(null);
   const {
     state,
@@ -111,7 +116,7 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
   } = useDownloadModel();
 
   // A finished install (phase 'ready') lifts the fresh config, clears the
-  // active card, and refreshes the rows so the new model flips to Installed.
+  // active row, and refreshes the rows so the new model flips to Installed.
   // An effect (not a render-time call) so it fires exactly once per transition.
   useEffect(() => {
     if (state.phase !== 'ready') return;
@@ -147,7 +152,7 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
     setActiveTier(null);
   }
 
-  if (options !== null && ordered.length === 0) {
+  if (options !== null && sections.length === 0) {
     return (
       <div className={styles.pane}>
         <p className={styles.empty}>No curated models are available.</p>
@@ -158,31 +163,36 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
   return (
     <div className={styles.pane}>
       <p className={styles.hint}>
-        Hand-picked by Thuki and tuned for Apple Silicon.
+        Pick by what you want to do. Thuki chose one build of each.
       </p>
-      <div className={styles.list}>
-        {ordered.map((o) => (
-          <ModelCard
-            key={o.starter.tier}
-            option={o}
-            active={activeTier === o.starter.tier}
-            state={state}
-            progress={progress}
-            etaSeconds={etaSeconds}
-            onDownload={startDownload}
-            onResume={resumeDownload}
-            onDiscard={discardPartial}
-            onCancel={() => void cancel()}
-            onRetry={() => void retry()}
-            onChooseAnother={returnToPicker}
-          />
-        ))}
-      </div>
+      {sections.map((section) => (
+        <div className={styles.section} key={section.category}>
+          <div className={styles.secLabel} data-testid="staff-section-label">
+            {section.category}
+          </div>
+          {section.options.map((o) => (
+            <ModelRow
+              key={o.starter.tier}
+              option={o}
+              active={activeTier === o.starter.tier}
+              state={state}
+              progress={progress}
+              etaSeconds={etaSeconds}
+              onDownload={startDownload}
+              onResume={resumeDownload}
+              onDiscard={discardPartial}
+              onCancel={() => void cancel()}
+              onRetry={() => void retry()}
+              onChooseAnother={returnToPicker}
+            />
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
 
-interface ModelCardProps {
+interface ModelRowProps {
   option: StarterOption;
   active: boolean;
   state: ReturnType<typeof useDownloadModel>['state'];
@@ -196,7 +206,7 @@ interface ModelCardProps {
   onChooseAnother: () => void;
 }
 
-function ModelCard({
+function ModelRow({
   option,
   active,
   state,
@@ -208,45 +218,30 @@ function ModelCard({
   onCancel,
   onRetry,
   onChooseAnother,
-}: ModelCardProps) {
+}: ModelRowProps) {
   const { starter, fit, installed, partial_bytes } = option;
   const showProgress = active && state.phase !== 'idle';
 
   return (
-    <div className={styles.card} data-model-card data-tier={starter.tier}>
-      <div className={styles.cardMain}>
+    <div className={styles.row} data-model-row data-tier={starter.tier}>
+      <div className={styles.rowMain}>
         <div className={styles.mid}>
-          <div className={styles.name} data-testid="staff-model-name">
-            {starter.display_name}
+          <div className={styles.top}>
+            <span className={styles.name} data-testid="staff-model-name">
+              {starter.display_name}
+            </span>
+            <span className={styles.pills}>
+              <span className={styles.pill}>Text</span>
+              {starter.vision ? (
+                <span className={styles.pill}>Vision</span>
+              ) : null}
+              {starter.thinking ? (
+                <span className={styles.pill}>Thinking</span>
+              ) : null}
+            </span>
           </div>
-          <div className={styles.maker}>{makerLine(option)}</div>
-          <div className={styles.pills}>
-            <span className={`${styles.pill} ${styles.pillText}`}>Text</span>
-            {starter.vision ? (
-              <span className={`${styles.pill} ${styles.pillVision}`}>
-                Vision
-              </span>
-            ) : null}
-            {starter.thinking ? (
-              <span className={`${styles.pill} ${styles.pillThinking}`}>
-                Thinking
-              </span>
-            ) : null}
-          </div>
-          <div className={styles.meta}>
-            {starter.quant} · {gb(totalBytes(option))} GB ·{' '}
-            <button
-              type="button"
-              className={styles.hfLink}
-              onClick={() =>
-                void invoke('open_url', {
-                  url: `${HF_BASE_URL}/${starter.repo}`,
-                })
-              }
-              aria-label={`View ${starter.display_name} on Hugging Face`}
-            >
-              {starter.license_note} ↗
-            </button>
+          <div className={styles.sub}>
+            {gb(totalBytes(option))} GB · {starter.origin}
           </div>
         </div>
         {!showProgress ? (
@@ -256,7 +251,7 @@ function ModelCard({
                 {RAM_FIT_LABEL[fit]}
               </span>
             </Tooltip>
-            <CardAction
+            <RowAction
               option={option}
               installed={installed}
               partialBytes={partial_bytes}
@@ -288,7 +283,7 @@ function ModelCard({
   );
 }
 
-interface CardActionProps {
+interface RowActionProps {
   option: StarterOption;
   installed: boolean;
   partialBytes: number | null;
@@ -297,16 +292,22 @@ interface CardActionProps {
   onDiscard: (sha256: string) => void;
 }
 
-/** The per-card affordance: an installed marker, a resume/discard pair when an
+const DOWNLOAD_ICON = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />
+  </svg>
+);
+
+/** The per-row affordance: an installed marker, a resume/discard pair when an
  * interrupted partial exists, or the icon download button. */
-function CardAction({
+function RowAction({
   option,
   installed,
   partialBytes,
   onDownload,
   onResume,
   onDiscard,
-}: CardActionProps) {
+}: RowActionProps) {
   const { starter } = option;
 
   if (installed) {
