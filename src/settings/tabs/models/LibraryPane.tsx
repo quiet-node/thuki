@@ -17,6 +17,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useModelCapabilities } from '../../../hooks/useModelCapabilities';
 import { ConfirmDialog } from '../../components';
 import { Tooltip } from '../../../components/Tooltip';
+import { formatContextWindow } from '../../../utils/contextWindow';
 import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
 import styles from './LibraryPane.module.css';
 import type { RawAppConfig } from '../../types';
@@ -194,6 +195,8 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
             const active = m.id === activeModel;
             const caps = capabilities[m.id];
             const repo = m.id.split(':')[0];
+            // Empty when the model carries no context window, which skips it.
+            const contextLabel = formatContextWindow(m.context_length ?? 0);
             return (
               <div
                 key={m.id}
@@ -224,6 +227,7 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                       {repo}
                       {m.quant !== '' ? ` · ${m.quant}` : ''} ·{' '}
                       {gb(m.size_bytes)} GB
+                      {contextLabel ? ` · ${contextLabel}` : ''}
                     </div>
                   </div>
                   <div className={styles.right}>

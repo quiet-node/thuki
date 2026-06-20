@@ -111,6 +111,7 @@ const GEMMA: InstalledModel = {
   size_bytes: 2_489_757_856,
   quant: 'Q4_K_M',
   fit: 'fits',
+  context_length: 262_144,
 };
 
 // No `fit` here: exercises the "RAM unknown" branch (no fit pill).
@@ -198,8 +199,11 @@ describe('LibraryPane', () => {
     mockCommands(libraryResponses());
     await renderPane();
     expect(screen.getByText('gemma')).toBeInTheDocument();
-    expect(screen.getByText('org/gemma · Q4_K_M · 2.5 GB')).toBeInTheDocument();
-    // Empty quant drops out of the org line.
+    // Curated model: context window healed from the registry, after the size.
+    expect(
+      screen.getByText('org/gemma · Q4_K_M · 2.5 GB · 256K'),
+    ).toBeInTheDocument();
+    // Empty quant and (here) no context drop out of the org line.
     expect(screen.getByText('org/qwen · 9.0 GB')).toBeInTheDocument();
   });
 

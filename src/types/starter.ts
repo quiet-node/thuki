@@ -111,6 +111,9 @@ export interface InstalledModel {
   /** RAM-fit on this Mac, computed by the backend from the recorded size.
    * `null`/absent when host RAM or the size is unknown. */
   fit?: RamFit | null;
+  /** Trained context window in tokens, healed from the curated registry by the
+   * backend; `null`/absent for a pasted model with no registry entry. */
+  context_length?: number | null;
 }
 
 /** One `.gguf` row from `list_hf_repo_ggufs`, for the paste-a-repo browser.

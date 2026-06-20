@@ -1014,11 +1014,10 @@ pub(crate) fn builtin_capabilities_from_manifest(
             // the registry (highest confidence). A pasted repo has no registry
             // entry and keeps its row's classified flags: the install-time GGUF
             // classifier populates them, and the runtime backstop corrects them.
-            let (vision, thinking, reasoning_always) = registry::STARTERS
-                .iter()
-                .find(|s| s.repo == row.repo && s.file_name == row.file_name)
-                .map(|s| (s.vision, s.thinking, s.reasoning_always))
-                .unwrap_or((row.vision, row.thinking, row.reasoning_always));
+            let (vision, thinking, reasoning_always) =
+                registry::by_repo_file(&row.repo, &row.file_name)
+                    .map(|s| (s.vision, s.thinking, s.reasoning_always))
+                    .unwrap_or((row.vision, row.thinking, row.reasoning_always));
             (
                 row.id.clone(),
                 Capabilities {
@@ -1686,6 +1685,10 @@ pub struct InstalledModelView {
     #[serde(flatten)]
     pub model: manifest::InstalledModel,
     pub fit: Option<registry::RamFit>,
+    /// Trained context window in tokens, healed from the curated registry by
+    /// repo + file. `None` for a pasted model with no registry entry (its
+    /// context is not recorded in the manifest).
+    pub context_length: Option<u32>,
 }
 
 /// Estimated resident memory (GiB) for a GGUF weights blob of `size_bytes`:
@@ -1736,7 +1739,15 @@ pub fn build_installed_views(
             } else {
                 None
             };
-            InstalledModelView { model, fit }
+            // Curated models heal their context window from the registry; a
+            // pasted repo has no entry, so it shows none.
+            let context_length =
+                registry::by_repo_file(&model.repo, &model.file_name).map(|s| s.context_length);
+            InstalledModelView {
+                model,
+                fit,
+                context_length,
+            }
         })
         .collect()
 }
@@ -4982,9 +4993,19 @@ mod tests {
         };
         let views = build_installed_views(vec![model.clone()], 64 << 30);
         assert_eq!(views[0].fit, Some(registry::RamFit::Fits));
+        // A pasted repo has no registry entry, so its context window is unknown.
+        assert_eq!(views[0].context_length, None);
         // Unknown host RAM drops the verdict.
         let views = build_installed_views(vec![model], 0);
         assert_eq!(views[0].fit, None);
+
+        // A curated model heals its context window from the registry.
+        let curated = registry::to_installed_model(&registry::STARTERS[0]);
+        let views = build_installed_views(vec![curated], 64 << 30);
+        assert_eq!(
+            views[0].context_length,
+            Some(registry::STARTERS[0].context_length)
+        );
     }
 
     #[test]

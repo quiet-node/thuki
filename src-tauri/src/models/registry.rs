@@ -338,6 +338,17 @@ pub fn by_id(id: &str) -> Option<&'static Starter> {
     STARTERS.iter().find(|s| s.id == id)
 }
 
+/// The registry entry matching this repo + weights file name, if any. An
+/// installed model heals its curated facts (capabilities, context window) from
+/// the registry through here, so a later flag or pin correction reaches models
+/// downloaded before it. A pasted (non-curated) repo has no entry and yields
+/// `None`.
+pub fn by_repo_file(repo: &str, file_name: &str) -> Option<&'static Starter> {
+    STARTERS
+        .iter()
+        .find(|s| s.repo == repo && s.file_name == file_name)
+}
+
 /// The three onboarding hero starters, resolved from [`ONBOARDING_HERO_IDS`] in
 /// tier order. Any id that is absent from the registry is skipped, so the
 /// result is the heroes that actually exist; a registry test asserts all three
@@ -453,6 +464,16 @@ mod tests {
             assert!(!s.id.is_empty(), "{}: id is empty", s.repo);
             assert!(seen.insert(s.id), "duplicate id: {}", s.id);
         }
+    }
+
+    #[test]
+    fn by_repo_file_matches_repo_and_weights_file() {
+        // Heals an installed model's curated facts from the registry: it matches
+        // on repo + weights file, and misses when either differs.
+        let s = &STARTERS[0];
+        assert_eq!(by_repo_file(s.repo, s.file_name).unwrap().id, s.id);
+        assert!(by_repo_file(s.repo, "other.gguf").is_none());
+        assert!(by_repo_file("other/repo", s.file_name).is_none());
     }
 
     #[test]
