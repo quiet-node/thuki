@@ -67,6 +67,14 @@ const DOWNLOAD_ICON = (
     <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />
   </svg>
 );
+// A disclosure chevron for the repo row: it expands the quant list, so it must
+// NOT wear the download icon (which now lives on the rows that actually
+// download). The chevron rotates to point up when the row is open.
+const CHEVRON_ICON = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M6 9l6 6 6-6" />
+  </svg>
+);
 interface BrowseAllPaneProps {
   /** Lift a fresh config snapshot after a successful install. */
   onSaved: (next: RawAppConfig) => void;
@@ -227,13 +235,13 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
         </div>
         <button
           type="button"
-          className={styles.get}
-          aria-label="Get"
+          className={`${styles.disclose} ${expanded ? styles.discloseOpen : ''}`}
+          aria-label="Show files"
           aria-expanded={expanded}
           disabled={model.gated}
           onClick={toggle}
         >
-          {DOWNLOAD_ICON}
+          {CHEVRON_ICON}
         </button>
       </div>
 
@@ -265,10 +273,11 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
                   </span>
                   <button
                     type="button"
-                    className={styles.download}
+                    className={styles.quantGet}
+                    aria-label="Download"
                     onClick={() => void startRepo(model.id, f.file)}
                   >
-                    Download
+                    {DOWNLOAD_ICON}
                   </button>
                 </div>
               ))

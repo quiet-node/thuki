@@ -214,37 +214,42 @@
   color: var(--heavy);
 }
 
-/* Icon-only download / open-quants button. */
-.get {
+/* Quiet disclosure button on the repo row: it expands the quant list, so it is
+ * a neutral chevron, not the accent download icon. The chevron flips up when
+ * the row is open. */
+.disclose {
   flex: none;
   width: 30px;
   height: 30px;
   display: grid;
   place-items: center;
-  color: var(--accent);
-  border: 1px solid rgba(255, 141, 92, 0.4);
+  color: var(--t3);
+  border: 1px solid var(--hair);
   border-radius: var(--radius-control);
   background: transparent;
   cursor: pointer;
   transition:
     color 140ms ease,
-    border-color 140ms ease,
-    background 140ms ease;
+    border-color 140ms ease;
 }
-.get svg {
-  width: 15px;
-  height: 15px;
+.disclose svg {
+  width: 16px;
+  height: 16px;
   stroke: currentColor;
   stroke-width: 1.7;
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;
+  transition: transform 150ms ease;
 }
-.get:hover:not(:disabled) {
-  border-color: rgba(255, 141, 92, 0.6);
-  background: var(--accent-soft);
+.discloseOpen svg {
+  transform: rotate(180deg);
 }
-.get:disabled {
+.disclose:hover:not(:disabled) {
+  color: var(--t1);
+  border-color: rgba(255, 141, 92, 0.4);
+}
+.disclose:disabled {
   color: var(--t3);
   border-color: var(--hair-soft);
   opacity: 0.6;
@@ -305,17 +310,35 @@
   color: var(--t3);
 }
 
-.download {
+/* Icon-only download button on a quant row: the accent download-arrow, the
+ * one control that actually starts a download. */
+.quantGet {
   flex: none;
-  font-size: 11.5px;
-  font-weight: 540;
-  color: #16110d;
-  border: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  border: 1px solid rgba(255, 141, 92, 0.4);
   border-radius: var(--radius-control);
-  padding: 5px 12px;
-  background: var(--accent);
-  font-family: inherit;
+  background: transparent;
   cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease;
+}
+.quantGet svg {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.quantGet:hover {
+  border-color: rgba(255, 141, 92, 0.6);
+  background: var(--accent-soft);
 }
 
 /* ── Inline notes (gated, loading, empty, error) ──────────────────────── */

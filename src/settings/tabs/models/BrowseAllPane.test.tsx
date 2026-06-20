@@ -286,7 +286,7 @@ describe('BrowseAllPane', () => {
       .getByText('meta-llama/Llama-3-8B-GGUF')
       .closest('[data-row]') as HTMLElement;
     expect(
-      within(gatedRow).getByRole('button', { name: 'Get' }),
+      within(gatedRow).getByRole('button', { name: 'Show files' }),
     ).toBeDisabled();
     expect(within(gatedRow).getByText('Gated')).toBeInTheDocument();
   });
@@ -296,7 +296,7 @@ describe('BrowseAllPane', () => {
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')
       .closest('[data-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Get' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('list_hf_repo_ggufs', {
       repo: 'google/gemma-4-12b-it-GGUF',
@@ -314,10 +314,10 @@ describe('BrowseAllPane', () => {
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')
       .closest('[data-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Get' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
     expect(screen.getByText('gemma-q4.gguf')).toBeInTheDocument();
-    fireEvent.click(within(row).getByRole('button', { name: 'Get' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     expect(screen.queryByText('gemma-q4.gguf')).not.toBeInTheDocument();
   });
 
@@ -326,7 +326,7 @@ describe('BrowseAllPane', () => {
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')
       .closest('[data-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Get' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
     expect(screen.getByText('No GGUF files in this repo.')).toBeInTheDocument();
   });
@@ -336,7 +336,7 @@ describe('BrowseAllPane', () => {
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')
       .closest('[data-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Get' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
     expect(screen.getByText('No GGUF files in this repo.')).toBeInTheDocument();
   });
@@ -348,7 +348,7 @@ describe('BrowseAllPane', () => {
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')
       .closest('[data-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Get' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
     expect(screen.getByText(/repo unavailable/)).toBeInTheDocument();
   });
@@ -359,7 +359,7 @@ describe('BrowseAllPane', () => {
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')
       .closest('[data-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Get' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
     const downloadButtons = screen.getAllByRole('button', {
       name: 'Download',
@@ -402,7 +402,7 @@ describe('BrowseAllPane', () => {
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')
       .closest('[data-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Get' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
     fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
@@ -418,7 +418,7 @@ describe('BrowseAllPane', () => {
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')
       .closest('[data-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Get' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
     fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
@@ -433,7 +433,7 @@ describe('BrowseAllPane', () => {
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')
       .closest('[data-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Get' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
     fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
