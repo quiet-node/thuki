@@ -213,6 +213,31 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
     })();
   }, [state.phase, onSaved, reset]);
 
+  // Silent re-read of the listing (no loading flash): the rows carry fresh
+  // `partial_bytes`, so a file flips to/from its Paused state in place.
+  const refetchFiles = useCallback(async () => {
+    try {
+      // The listing was already validated on first load; trust the typed array.
+      setFiles(
+        await invoke<HfGgufFile[]>('list_hf_repo_ggufs', { repo: model.id }),
+      );
+    } catch {
+      // Keep the current list; the partial indicator self-heals on next expand.
+    }
+  }, [model.id]);
+
+  // Cancelling leaves the partial on disk; re-read the listing so the file
+  // flips straight to its Paused / Resume / Discard controls.
+  async function cancelDownload() {
+    await cancel();
+    await refetchFiles();
+  }
+
+  async function discardFile(sha256: string) {
+    await invoke('discard_partial_download', { sha256 });
+    await refetchFiles();
+  }
+
   const showProgress = state.phase !== 'idle';
   // The context window is a per-repo property (the search carries it via
   // expand[]=gguf), so it shows on the collapsed row without expanding. Empty
@@ -265,10 +290,19 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
           {files !== null && files.length > 0
             ? files.map((f) => {
                 // Only the row whose file is downloading swaps its controls for
-                // the inline progress; every other row stays a normal,
-                // browsable quant (its download disabled until this one ends,
-                // since the engine runs one download at a time).
+                // the inline progress. A file with an interrupted partial reads
+                // as Paused with Resume / Discard; everything else is a normal,
+                // browsable quant. Resume and Discard are disabled while any
+                // download runs, since the engine handles one at a time.
                 const downloading = showProgress && activeFile === f.file;
+                const paused = !downloading && f.partial_bytes !== null;
+                const pausedPct =
+                  f.partial_bytes !== null
+                    ? Math.min(
+                        100,
+                        Math.floor((f.partial_bytes / f.size_bytes) * 100),
+                      )
+                    : 0;
                 return (
                   <div className={styles.quantRow} key={f.file}>
                     <span className={styles.quantName}>{f.file}</span>
@@ -283,7 +317,7 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
                         // covered handlers rather than dead no-op literals.
                         onConfirm={reset}
                         onCancelConfirm={reset}
-                        onCancel={() => void cancel()}
+                        onCancel={() => void cancelDownload()}
                         onRetry={() => void retry()}
                         // A terminal failure must leave a path back to the quant
                         // list, not just Retry; reset returns to the file rows.
@@ -303,21 +337,51 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
                             </span>
                           </Tooltip>
                         ) : null}
-                        <span className={styles.quantSize}>
-                          {gb(f.size_bytes)} GB
-                        </span>
-                        <button
-                          type="button"
-                          className={styles.quantGet}
-                          aria-label="Download"
-                          disabled={showProgress}
-                          onClick={() => {
-                            setActiveFile(f.file);
-                            void startRepo(model.id, f.file);
-                          }}
-                        >
-                          {DOWNLOAD_ICON}
-                        </button>
+                        {paused ? (
+                          <>
+                            <span className={styles.quantPaused}>
+                              Paused · {pausedPct}%
+                            </span>
+                            <button
+                              type="button"
+                              className={styles.quantResume}
+                              disabled={showProgress}
+                              onClick={() => {
+                                setActiveFile(f.file);
+                                void startRepo(model.id, f.file);
+                              }}
+                            >
+                              Resume
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.quantDiscard}
+                              aria-label="Discard"
+                              disabled={showProgress}
+                              onClick={() => void discardFile(f.sha256)}
+                            >
+                              Discard
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <span className={styles.quantSize}>
+                              {gb(f.size_bytes)} GB
+                            </span>
+                            <button
+                              type="button"
+                              className={styles.quantGet}
+                              aria-label="Download"
+                              disabled={showProgress}
+                              onClick={() => {
+                                setActiveFile(f.file);
+                                void startRepo(model.id, f.file);
+                              }}
+                            >
+                              {DOWNLOAD_ICON}
+                            </button>
+                          </>
+                        )}
                       </>
                     )}
                   </div>

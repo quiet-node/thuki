@@ -80,8 +80,25 @@ const RESULTS: HfModelSummary[] = [
 ];
 
 const GGUFS: HfGgufFile[] = [
-  { file: 'gemma-q4.gguf', size_bytes: 5_000_000_000, fit: 'tight' },
-  { file: 'gemma-q8.gguf', size_bytes: 9_000_000_000 },
+  {
+    file: 'gemma-q4.gguf',
+    size_bytes: 5_000_000_000,
+    fit: 'tight',
+    sha256: 'a'.repeat(64),
+    partial_bytes: null,
+  },
+  {
+    file: 'gemma-q8.gguf',
+    size_bytes: 9_000_000_000,
+    sha256: 'b'.repeat(64),
+    partial_bytes: null,
+  },
+];
+
+/** GGUFS with an interrupted partial on the first quant. */
+const GGUFS_PARTIAL: HfGgufFile[] = [
+  { ...GGUFS[0], partial_bytes: 1_000_000_000 },
+  GGUFS[1],
 ];
 
 const CONFIG_AFTER_INSTALL = { marker: 'fresh' } as unknown as RawAppConfig;
@@ -443,6 +460,102 @@ describe('BrowseAllPane', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('cancel_model_download');
+  });
+
+  async function expandRepo(): Promise<HTMLElement> {
+    const row = screen
+      .getByText('google/gemma-4-12b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
+    await flush();
+    return row;
+  }
+
+  it('shows Paused with Resume and Discard for an interrupted partial', async () => {
+    await renderPane(() => {}, { list_hf_repo_ggufs: GGUFS_PARTIAL });
+    await expandRepo();
+    expect(screen.getByText(/^Paused · \d+%$/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeInTheDocument();
+  });
+
+  it('resumes an interrupted partial', async () => {
+    await renderPane(() => {}, { list_hf_repo_ggufs: GGUFS_PARTIAL });
+    await expandRepo();
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    await flush();
+    expect(invokeMock).toHaveBeenCalledWith(
+      'download_repo_model',
+      expect.objectContaining({
+        repo: 'google/gemma-4-12b-it-GGUF',
+        file: 'gemma-q4.gguf',
+      }),
+    );
+  });
+
+  it('discards an interrupted partial and refetches the listing', async () => {
+    let calls = 0;
+    await renderPane(() => {}, {
+      list_hf_repo_ggufs: () => {
+        calls += 1;
+        return calls <= 1 ? GGUFS_PARTIAL : GGUFS;
+      },
+    });
+    await expandRepo();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    await flush();
+    expect(invokeMock).toHaveBeenCalledWith('discard_partial_download', {
+      sha256: 'a'.repeat(64),
+    });
+    // The refetch returns no partial: the row drops back to a Download control.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: 'Resume' }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it('flips a file to Paused immediately after cancel', async () => {
+    let calls = 0;
+    await renderPane(() => {}, {
+      list_hf_repo_ggufs: () => {
+        calls += 1;
+        return calls <= 1 ? GGUFS : GGUFS_PARTIAL;
+      },
+    });
+    await expandRepo();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    await flush();
+    expect(screen.getByTestId('download-figures')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await flush();
+    act(() => lastChannel?.simulateMessage({ type: 'Cancelled' }));
+    await flush();
+    await waitFor(() => {
+      expect(screen.getByText(/^Paused · \d+%$/)).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Resume' }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('keeps the listing when the post-discard refetch fails', async () => {
+    let calls = 0;
+    await renderPane(() => {}, {
+      list_hf_repo_ggufs: () => {
+        calls += 1;
+        if (calls === 1) return GGUFS_PARTIAL;
+        throw new Error('list failed');
+      },
+    });
+    await expandRepo();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    await flush();
+    expect(invokeMock).toHaveBeenCalledWith('discard_partial_download', {
+      sha256: 'a'.repeat(64),
+    });
+    // The refetch threw: the row stays exactly as it was, no crash.
+    expect(screen.getByText(/^Paused · \d+%$/)).toBeInTheDocument();
   });
 
   it('keeps the other quant rows visible and downloadable while one downloads', async () => {

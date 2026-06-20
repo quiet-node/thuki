@@ -1343,6 +1343,12 @@ pub struct HfGgufFile {
     pub file: String,
     /// File size in bytes; 0 when the API reports no size.
     pub size_bytes: u64,
+    /// LFS content digest: the blob key used to resume or discard the partial.
+    /// Empty when the repo file is not LFS-backed (rare for GGUF weights).
+    pub sha256: String,
+    /// Length of an interrupted partial for this file on disk, or `None` when
+    /// there is none. Drives the Browse-all Paused / Resume / Discard row.
+    pub partial_bytes: Option<u64>,
 }
 
 /// Subset of the HF `/api/models/<repo>?blobs=true` response Thuki consumes.
@@ -1479,9 +1485,16 @@ pub fn parse_gguf_listing(body: &[u8]) -> Result<Vec<HfGgufFile>, String> {
         .filter(|s| s.rfilename.ends_with(".gguf") && !s.rfilename.starts_with("mmproj"))
         .map(|s| {
             let size_bytes = s.lfs.as_ref().and_then(|l| l.size).or(s.size).unwrap_or(0);
+            let sha256 = s
+                .lfs
+                .as_ref()
+                .and_then(|l| l.sha256.clone())
+                .unwrap_or_default();
             HfGgufFile {
                 file: s.rfilename,
                 size_bytes,
+                sha256,
+                partial_bytes: None,
             }
         })
         .collect())
@@ -1718,6 +1731,24 @@ pub fn annotate_gguf_rows(files: Vec<HfGgufFile>, ram_bytes: u64) -> Vec<HfGgufF
                 None
             };
             HfGgufFileRow { file, fit }
+        })
+        .collect()
+}
+
+/// Fills each row's `partial_bytes` from the blob store so Browse-all can offer
+/// Resume / Discard for any file with an interrupted partial on disk. A row
+/// whose `sha256` is empty (a non-LFS file) has no content-addressed partial
+/// and stays `None`.
+pub fn attach_partials(
+    rows: Vec<HfGgufFileRow>,
+    store: &storage::ModelStore,
+) -> Vec<HfGgufFileRow> {
+    rows.into_iter()
+        .map(|mut row| {
+            if !row.file.sha256.is_empty() {
+                row.file.partial_bytes = store.existing_partial_len(&row.file.sha256);
+            }
+            row
         })
         .collect()
 }
@@ -2312,9 +2343,13 @@ pub async fn download_repo_model(
 pub async fn list_hf_repo_ggufs(
     repo: String,
     client: tauri::State<'_, reqwest::Client>,
+    store: tauri::State<'_, storage::ModelStore>,
 ) -> Result<Vec<HfGgufFileRow>, String> {
     let files = fetch_repo_gguf_listing(&client, HF_BASE_URL, &repo).await?;
-    Ok(annotate_gguf_rows(files, system_ram_bytes()))
+    Ok(attach_partials(
+        annotate_gguf_rows(files, system_ram_bytes()),
+        &store,
+    ))
 }
 
 /// Searches Hugging Face for GGUF model repos matching `query`, most-downloaded
@@ -4548,14 +4583,20 @@ mod tests {
                 HfGgufFile {
                     file: "model-Q4_K_M.gguf".to_string(),
                     size_bytes: 1000,
+                    sha256: "a".repeat(64),
+                    partial_bytes: None,
                 },
                 HfGgufFile {
                     file: "extra.gguf".to_string(),
                     size_bytes: 7,
+                    sha256: String::new(),
+                    partial_bytes: None,
                 },
                 HfGgufFile {
                     file: "bare.gguf".to_string(),
                     size_bytes: 0,
+                    sha256: String::new(),
+                    partial_bytes: None,
                 },
             ]
         );
@@ -4577,6 +4618,42 @@ mod tests {
     }
 
     #[test]
+    fn attach_partials_reports_planted_and_skips_empty_sha() {
+        let (_dir, store) = make_store();
+        let sha = "a".repeat(64);
+        // Plant a 9-byte partial for the LFS-backed row.
+        let path = store.partial_path(&sha);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, [0u8; 9]).unwrap();
+
+        let rows = vec![
+            HfGgufFileRow {
+                file: HfGgufFile {
+                    file: "weights.gguf".to_string(),
+                    size_bytes: 100,
+                    sha256: sha.clone(),
+                    partial_bytes: None,
+                },
+                fit: None,
+            },
+            HfGgufFileRow {
+                file: HfGgufFile {
+                    file: "no-lfs.gguf".to_string(),
+                    size_bytes: 50,
+                    sha256: String::new(),
+                    partial_bytes: None,
+                },
+                fit: None,
+            },
+        ];
+        let out = attach_partials(rows, &store);
+        // The LFS-backed row reflects the planted partial; the empty-sha row is
+        // skipped entirely.
+        assert_eq!(out[0].file.partial_bytes, Some(9));
+        assert_eq!(out[1].file.partial_bytes, None);
+    }
+
+    #[test]
     fn parse_gguf_listing_rejects_invalid_json() {
         let err = parse_gguf_listing(b"not json").unwrap_err();
         assert!(err.contains("failed to decode"), "got: {err}");
@@ -4587,9 +4664,19 @@ mod tests {
         let v = serde_json::to_value(HfGgufFile {
             file: "x.gguf".to_string(),
             size_bytes: 5,
+            sha256: "a".repeat(64),
+            partial_bytes: Some(3),
         })
         .unwrap();
-        assert_eq!(v, serde_json::json!({"file": "x.gguf", "size_bytes": 5}));
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "file": "x.gguf",
+                "size_bytes": 5,
+                "sha256": "a".repeat(64),
+                "partial_bytes": 3,
+            })
+        );
     }
 
     // ── Model library: resolve_listing (pure) ───────────────────────────────
@@ -4959,10 +5046,14 @@ mod tests {
             HfGgufFile {
                 file: "a.gguf".to_string(),
                 size_bytes: 1 << 30,
+                sha256: String::new(),
+                partial_bytes: None,
             },
             HfGgufFile {
                 file: "b.gguf".to_string(),
                 size_bytes: 0,
+                sha256: String::new(),
+                partial_bytes: None,
             },
         ];
         let rows = annotate_gguf_rows(files.clone(), 64 << 30);
@@ -5014,12 +5105,20 @@ mod tests {
             file: HfGgufFile {
                 file: "w.gguf".to_string(),
                 size_bytes: 42,
+                sha256: String::new(),
+                partial_bytes: None,
             },
             fit: None,
         };
         assert_eq!(
             serde_json::to_value(file_row).unwrap(),
-            serde_json::json!({"file": "w.gguf", "size_bytes": 42, "fit": serde_json::Value::Null})
+            serde_json::json!({
+                "file": "w.gguf",
+                "size_bytes": 42,
+                "sha256": "",
+                "partial_bytes": serde_json::Value::Null,
+                "fit": serde_json::Value::Null,
+            })
         );
     }
 

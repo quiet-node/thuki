@@ -122,6 +122,10 @@ export interface HfGgufFile {
   file: string;
   size_bytes: number;
   fit?: RamFit | null;
+  /** LFS content digest; the key used to discard this file's partial. */
+  sha256: string;
+  /** Bytes of an interrupted partial for this file on disk, or null when none. */
+  partial_bytes: number | null;
 }
 
 /** Engine lifecycle snapshot published on the `engine:status` event. */
