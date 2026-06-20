@@ -386,6 +386,19 @@ describe('StaffPicksPane', () => {
     );
   });
 
+  it('shows the paused percent and hides the fit hint for a partial', async () => {
+    await renderPane(() => {}, {
+      get_starter_options: [
+        { ...GEMMA, partial_bytes: 2_000_000_000 },
+        QWEN,
+        GPT_OSS,
+      ],
+    });
+    const row = rowFor('Gemma 4 12B');
+    expect(within(row).getByText(/^Paused · \d+%$/)).toBeInTheDocument();
+    expect(within(row).queryByText('Comfortable')).not.toBeInTheDocument();
+  });
+
   it('discards an interrupted partial and refreshes', async () => {
     await renderPane(() => {}, {
       get_staff_picks: [

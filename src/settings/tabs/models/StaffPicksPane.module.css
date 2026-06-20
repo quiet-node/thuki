@@ -163,18 +163,12 @@
   background: var(--accent-soft);
 }
 
-.resumeWrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 .resumeBtn {
   font-size: 11.5px;
-  font-weight: 540;
+  font-weight: 700;
   color: var(--accent);
-  border: 1px solid rgba(255, 141, 92, 0.4);
-  border-radius: var(--radius-control);
-  padding: 6px 12px;
+  border: none;
+  padding: 4px 4px;
   background: transparent;
   font-family: inherit;
   cursor: pointer;

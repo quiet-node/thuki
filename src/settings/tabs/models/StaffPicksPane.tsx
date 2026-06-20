@@ -223,6 +223,13 @@ function ModelRow({
   const showProgress = active && state.phase !== 'idle';
   // Empty when the model carries no context window, so the pill is skipped.
   const contextLabel = formatContextWindow(starter.context_length ?? 0);
+  // An interrupted partial (not installed, not actively downloading) reads as a
+  // calm "Paused · N%" rather than a size line, with quiet resume/discard.
+  const paused = !showProgress && !installed && partial_bytes !== null;
+  const pausedPct =
+    partial_bytes !== null
+      ? Math.min(100, Math.floor((partial_bytes / totalBytes(option)) * 100))
+      : 0;
 
   return (
     <div className={styles.row} data-model-row data-id={starter.id}>
@@ -247,25 +254,47 @@ function ModelRow({
             </span>
           </div>
           <div className={styles.sub}>
-            {gb(totalBytes(option))} GB
-            {contextLabel ? ` · ${contextLabel}` : ''} · {starter.origin}
+            {paused
+              ? `Paused · ${pausedPct}%`
+              : `${gb(totalBytes(option))} GB${
+                  contextLabel ? ` · ${contextLabel}` : ''
+                } · ${starter.origin}`}
           </div>
         </div>
         {!showProgress ? (
           <div className={styles.right}>
-            <Tooltip label={RAM_FIT_TOOLTIP[fit]} placement="top">
-              <span className={`${styles.fit} ${FIT_CLASS[fit]}`}>
-                {RAM_FIT_LABEL[fit]}
-              </span>
-            </Tooltip>
-            <RowAction
-              option={option}
-              installed={installed}
-              partialBytes={partial_bytes}
-              onDownload={onDownload}
-              onResume={onResume}
-              onDiscard={onDiscard}
-            />
+            {paused ? (
+              <>
+                <button
+                  type="button"
+                  className={styles.resumeBtn}
+                  onClick={() => onResume(starter.id)}
+                >
+                  Resume
+                </button>
+                <button
+                  type="button"
+                  className={styles.discardBtn}
+                  aria-label="Discard"
+                  onClick={() => onDiscard(starter.sha256)}
+                >
+                  Discard
+                </button>
+              </>
+            ) : (
+              <>
+                <Tooltip label={RAM_FIT_TOOLTIP[fit]} placement="top">
+                  <span className={`${styles.fit} ${FIT_CLASS[fit]}`}>
+                    {RAM_FIT_LABEL[fit]}
+                  </span>
+                </Tooltip>
+                <RowAction
+                  option={option}
+                  installed={installed}
+                  onDownload={onDownload}
+                />
+              </>
+            )}
           </div>
         ) : null}
       </div>
@@ -296,10 +325,7 @@ function ModelRow({
 interface RowActionProps {
   option: StaffPickOption;
   installed: boolean;
-  partialBytes: number | null;
   onDownload: (id: string) => void;
-  onResume: (id: string) => void;
-  onDiscard: (sha256: string) => void;
 }
 
 const DOWNLOAD_ICON = (
@@ -308,43 +334,16 @@ const DOWNLOAD_ICON = (
   </svg>
 );
 
-/** The per-row affordance. An already-installed model shows nothing (no
- * download button, no badge): it lives in Library, so on this Discover surface
- * the absence of a download is the signal. A resume/discard pair shows when an
- * interrupted partial exists; otherwise the icon download button. */
-function RowAction({
-  option,
-  installed,
-  partialBytes,
-  onDownload,
-  onResume,
-  onDiscard,
-}: RowActionProps) {
+/** The per-row download affordance. An already-installed model shows nothing
+ * (no download button, no badge): it lives in Library, so on this Discover
+ * surface the absence of a download is the signal. The interrupted-partial
+ * resume/discard pair is owned by the row itself; this renders the plain icon
+ * download button otherwise. */
+function RowAction({ option, installed, onDownload }: RowActionProps) {
   const { starter } = option;
 
   if (installed) {
     return null;
-  }
-
-  if (partialBytes !== null) {
-    return (
-      <span className={styles.resumeWrap}>
-        <button
-          type="button"
-          className={styles.resumeBtn}
-          onClick={() => onResume(starter.id)}
-        >
-          Resume ({gb(partialBytes)} GB)
-        </button>
-        <button
-          type="button"
-          className={styles.discardBtn}
-          onClick={() => onDiscard(starter.sha256)}
-        >
-          Discard
-        </button>
-      </span>
-    );
   }
 
   return (
