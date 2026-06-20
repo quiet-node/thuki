@@ -517,10 +517,9 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
     // Pre-load the active model so the user's first message does not pay
     // the cold-start penalty. Fires on all show paths: double-tap, tray,
     // and first-launch auto-show. Branches by the active provider's kind:
-    // Ollama keeps its native /api/chat warmup, the built-in engine gets a
-    // /v1 prime ONLY when it is already serving (summoning the overlay must
-    // never load a model implicitly), and openai providers get no warmup
-    // (nothing local to warm).
+    // Ollama warms via its native /api/chat, the built-in engine starts
+    // (or reuses) its sidecar and primes the KV cache, and openai providers
+    // get no warmup (nothing local to warm).
     let warmup_kind = app_handle
         .state::<parking_lot::RwLock<crate::config::AppConfig>>()
         .read()
@@ -568,29 +567,44 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
             }
         }
         crate::config::defaults::PROVIDER_KIND_BUILTIN => {
-            let status = app_handle
-                .state::<engine::runner::EngineHandle>()
-                .status()
-                .borrow()
-                .clone();
-            if let Some(port) = warmup::builtin_prime_port(&status) {
-                let (model, system_prompt) = {
-                    let cfg = app_handle
-                        .state::<parking_lot::RwLock<crate::config::AppConfig>>()
-                        .read()
-                        .clone();
-                    (
-                        cfg.inference.active_provider_model().to_string(),
-                        cfg.prompt.resolved_system.clone(),
-                    )
+            let (model_id, num_ctx, system_prompt) = {
+                let cfg_state = app_handle.state::<parking_lot::RwLock<crate::config::AppConfig>>();
+                let cfg = cfg_state.read();
+                (
+                    cfg.inference.active_provider_model().to_string(),
+                    cfg.inference.num_ctx,
+                    cfg.prompt.resolved_system.clone(),
+                )
+            };
+            if warmup::builtin_should_warm(&model_id) {
+                let store = app_handle.state::<models::storage::ModelStore>();
+                let db = app_handle.state::<history::Database>();
+                // Resolve the manifest row to an engine Target inside a scope so
+                // the connection guard drops before the spawned load. A poisoned
+                // lock is recovered: an unrelated panic does not invalidate it.
+                let target = {
+                    let conn = match db.0.lock() {
+                        Ok(conn) => conn,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    crate::commands::builtin_target(&conn, &store, &model_id, num_ctx)
                 };
-                let client = app_handle.state::<reqwest::Client>().inner().clone();
-                tauri::async_runtime::spawn(warmup::prime_builtin(
-                    port,
-                    model,
-                    system_prompt,
-                    client,
-                ));
+                // A missing/uninstalled model yields an Err; warmup is
+                // best-effort, so just skip rather than surfacing anything.
+                if let Ok(target) = target {
+                    let engine = app_handle
+                        .state::<engine::runner::EngineHandle>()
+                        .inner()
+                        .clone();
+                    let client = app_handle.state::<reqwest::Client>().inner().clone();
+                    tauri::async_runtime::spawn(warmup::warm_builtin(
+                        engine,
+                        target,
+                        model_id,
+                        system_prompt,
+                        client,
+                    ));
+                }
             }
         }
         _ => {}

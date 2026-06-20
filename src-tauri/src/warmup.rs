@@ -99,15 +99,12 @@ pub(crate) fn vram_poll_active(kind: &str) -> bool {
     kind == PROVIDER_KIND_OLLAMA
 }
 
-/// The engine port to prime, when the built-in engine already serves a model.
-/// `None` for every other lifecycle state: summoning the overlay must never
-/// load a model implicitly (loads happen on explicit chat or download).
-pub(crate) fn builtin_prime_port(status: &crate::engine::runner::EngineStatus) -> Option<u16> {
-    if status.state == "loaded" {
-        status.port
-    } else {
-        None
-    }
+/// Whether the built-in engine should warm-load on the chat-intent signal:
+/// only when a model is actually selected. Mirrors the Ollama arm, which also
+/// no-ops without a model. An empty id means no built-in model has been picked
+/// yet, so there is nothing to load.
+pub(crate) fn builtin_should_warm(model_id: &str) -> bool {
+    !model_id.is_empty()
 }
 
 /// Builds the prime request body for the built-in engine: a plain
@@ -144,6 +141,25 @@ pub(crate) async fn prime_builtin(
         .json(&body)
         .send()
         .await;
+}
+
+/// Built-in arm of `warm_up_model`: starts (or reuses) the engine so the
+/// selected model is resident by the time the user submits, then primes the
+/// KV cache for the system-prompt prefix. Best-effort: a superseded or failed
+/// load, or a failed prime, is swallowed exactly like the Ollama warmup.
+/// Coverage-off: `ensure_loaded` is covered by the runner tests, `prime_builtin`
+/// by its own; this only sequences them.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) async fn warm_builtin(
+    engine: crate::engine::runner::EngineHandle,
+    target: crate::engine::state::Target,
+    model: String,
+    system_prompt: String,
+    client: reqwest::Client,
+) {
+    if let Ok(port) = engine.ensure_loaded(target).await {
+        prime_builtin(port, model, system_prompt, client).await;
+    }
 }
 
 /// Built-in arm of `evict_model`: stops the engine sidecar and resolves once
@@ -258,6 +274,8 @@ pub fn warm_up_model(
     config: tauri::State<parking_lot::RwLock<crate::config::AppConfig>>,
     client: tauri::State<reqwest::Client>,
     engine: tauri::State<crate::engine::runner::EngineHandle>,
+    db: tauri::State<crate::history::Database>,
+    store: tauri::State<crate::models::storage::ModelStore>,
 ) {
     let kind = config.read().inference.active_provider_kind().to_string();
     match kind.as_str() {
@@ -292,14 +310,37 @@ pub fn warm_up_model(
             }
         }
         PROVIDER_KIND_BUILTIN => {
-            let status = engine.status().borrow().clone();
-            if let Some(port) = builtin_prime_port(&status) {
+            let (model_id, num_ctx, system_prompt) = {
                 let cfg = config.read();
-                let model = cfg.inference.active_provider_model().to_string();
-                let system_prompt = cfg.prompt.resolved_system.clone();
-                drop(cfg);
-                let client = client.inner().clone();
-                tauri::async_runtime::spawn(prime_builtin(port, model, system_prompt, client));
+                (
+                    cfg.inference.active_provider_model().to_string(),
+                    cfg.inference.num_ctx,
+                    cfg.prompt.resolved_system.clone(),
+                )
+            };
+            if !builtin_should_warm(&model_id) {
+                return;
+            }
+            // Resolve the manifest row to an engine Target inside a scope so the
+            // connection guard drops before the spawned load. A poisoned lock is
+            // recovered: an unrelated panic does not invalidate the connection.
+            let target = {
+                let conn = match db.0.lock() {
+                    Ok(conn) => conn,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                crate::commands::builtin_target(&conn, &store, &model_id, num_ctx)
+            };
+            // A missing/uninstalled model yields an Err; warmup is best-effort,
+            // so just skip rather than surfacing anything.
+            if let Ok(target) = target {
+                tauri::async_runtime::spawn(warm_builtin(
+                    engine.inner().clone(),
+                    target,
+                    model_id,
+                    system_prompt,
+                    client.inner().clone(),
+                ));
             }
         }
         _ => {}
@@ -1485,13 +1526,14 @@ mod tests {
     }
 
     #[test]
-    fn prime_skipped_when_engine_not_loaded() {
-        assert_eq!(builtin_prime_port(&engine_status("stopped", None)), None);
-        assert_eq!(builtin_prime_port(&engine_status("starting", None)), None);
-        assert_eq!(builtin_prime_port(&engine_status("failed", None)), None);
-        assert_eq!(
-            builtin_prime_port(&engine_status("loaded", Some(40123))),
-            Some(40123)
+    fn builtin_should_warm_requires_a_selected_model() {
+        assert!(
+            !builtin_should_warm(""),
+            "no picked model means nothing to warm-load"
+        );
+        assert!(
+            builtin_should_warm("org/repo:m.gguf"),
+            "a selected model warms the engine on the chat-intent signal"
         );
     }
 
