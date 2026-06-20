@@ -34,11 +34,14 @@ const SEARCH_ICON = (
   </svg>
 );
 
-const TABS: ReadonlyArray<{ id: Pathway; label: string; icon: React.ReactNode }> =
-  [
-    { id: 'staff', label: 'Staff picks', icon: STAR_ICON },
-    { id: 'browse', label: 'Browse all', icon: SEARCH_ICON },
-  ];
+const TABS: ReadonlyArray<{
+  id: Pathway;
+  label: string;
+  icon: React.ReactNode;
+}> = [
+  { id: 'staff', label: 'Staff picks', icon: STAR_ICON },
+  { id: 'browse', label: 'Browse all', icon: SEARCH_ICON },
+];
 
 interface DiscoverPaneProps {
   /** Lift a fresh config snapshot after a successful install. */
@@ -50,7 +53,11 @@ export function DiscoverPane({ onSaved }: DiscoverPaneProps) {
 
   return (
     <div className={styles.host}>
-      <div className={styles.tabs} role="tablist" aria-label="Discover pathways">
+      <div
+        className={styles.tabs}
+        role="tablist"
+        aria-label="Discover pathways"
+      >
         {TABS.map((tab) => {
           const active = tab.id === pathway;
           return (

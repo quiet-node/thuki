@@ -80,7 +80,10 @@ function starter(over: Partial<Starter>): Starter {
   };
 }
 
-function option(over: Partial<Starter>, opts: Partial<StarterOption> = {}): StarterOption {
+function option(
+  over: Partial<Starter>,
+  opts: Partial<StarterOption> = {},
+): StarterOption {
   return {
     starter: starter(over),
     fit: 'fits',
@@ -103,23 +106,21 @@ const QWEN = option({
   origin: 'Alibaba',
 });
 const GEMMA = option({});
-const GPT_OSS = option(
-  {
-    tier: 'smartest',
-    family: 'gpt-oss',
-    display_name: 'gpt-oss 20B',
-    repo: 'ggml-org/gpt-oss-20b-GGUF',
-    file_name: 'gpt-oss-20b-mxfp4.gguf',
-    quant: 'MXFP4',
-    vision: false,
-    thinking: true,
-    reasoning_always: true,
-    mmproj_file: null,
-    mmproj_sha256: null,
-    mmproj_bytes: 0,
-    origin: 'OpenAI',
-  },
-);
+const GPT_OSS = option({
+  tier: 'smartest',
+  family: 'gpt-oss',
+  display_name: 'gpt-oss 20B',
+  repo: 'ggml-org/gpt-oss-20b-GGUF',
+  file_name: 'gpt-oss-20b-mxfp4.gguf',
+  quant: 'MXFP4',
+  vision: false,
+  thinking: true,
+  reasoning_always: true,
+  mmproj_file: null,
+  mmproj_sha256: null,
+  mmproj_bytes: 0,
+  origin: 'OpenAI',
+});
 
 const STARTERS: StarterOption[] = [QWEN, GEMMA, GPT_OSS];
 
@@ -379,9 +380,7 @@ describe('StaffPicksPane', () => {
     const row = screen
       .getByText('Gemma 4 12B')
       .closest('[data-model-row]') as HTMLElement;
-    fireEvent.click(
-      within(row).getByRole('button', { name: /Hugging Face/ }),
-    );
+    fireEvent.click(within(row).getByRole('button', { name: /Hugging Face/ }));
     expect(invokeMock).toHaveBeenCalledWith('open_url', {
       url: 'https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf',
     });

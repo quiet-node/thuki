@@ -16,7 +16,7 @@
  * it too); `activeTier` tracks which row owns the progress card.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import { DownloadProgress } from '../../../components/DownloadProgress';
@@ -26,7 +26,11 @@ import { Tooltip } from '../../../components/Tooltip';
 import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
 import styles from './StaffPicksPane.module.css';
 import type { RawAppConfig } from '../../types';
-import type { RamFit, StarterOption, StarterTier } from '../../../types/starter';
+import type {
+  RamFit,
+  StarterOption,
+  StarterTier,
+} from '../../../types/starter';
 
 const HF_BASE_URL = 'https://huggingface.co';
 
@@ -109,16 +113,11 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
     return new Set(pick ? [pick.family] : []);
   }, [groups]);
 
-  // Seed the open set ONCE, when the catalog first resolves (the mount fetch
-  // arrives after the initial empty render). A later refresh must not collapse
-  // families the user opened, so this never re-seeds.
-  const [open, setOpen] = useState<Set<string>>(new Set());
-  const seededRef = useRef(false);
-  useEffect(() => {
-    if (seededRef.current || groups.length === 0) return;
-    seededRef.current = true;
-    setOpen(defaultOpen);
-  }, [groups, defaultOpen]);
+  // `null` means the user has not toggled a family yet, so the recommended
+  // family (defaultOpen) shows open; the first toggle replaces it with the
+  // user's own set, which then sticks across refreshes. No seeding effect.
+  const [open, setOpen] = useState<Set<string> | null>(null);
+  const effectiveOpen = open ?? defaultOpen;
 
   // One download at a time; activeTier names the row that owns the progress card.
   const [activeTier, setActiveTier] = useState<StarterTier | null>(null);
@@ -153,7 +152,7 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
 
   function toggle(family: string) {
     setOpen((cur) => {
-      const next = new Set(cur);
+      const next = new Set(cur ?? defaultOpen);
       if (next.has(family)) {
         next.delete(family);
       } else {
@@ -198,7 +197,7 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
       </p>
       <div className={styles.list}>
         {groups.map((group) => {
-          const expanded = open.has(group.family);
+          const expanded = effectiveOpen.has(group.family);
           return (
             <div className={styles.fam} key={group.family}>
               <button
