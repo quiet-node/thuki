@@ -406,22 +406,6 @@
   font-size: 12px;
   color: var(--t3);
 }
-.heroActive {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  font-size: 11px;
-  font-weight: 580;
-  color: var(--accent);
-}
-.heroLiveDot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 7px var(--accent);
-}
 .heroModel {
   display: flex;
   align-items: center;
@@ -530,45 +514,110 @@
   font-weight: 500;
   color: var(--t1);
 }
-.genHelp {
-  margin-top: 3px;
-  font-size: 11px;
-  color: var(--t3);
-}
-.genCtxControl {
-  flex: none;
-  width: 280px;
-  display: flex;
+/* Context window row: a compact header (label left, token readout right) over a
+   full-width slider track. */
+.genRowCtx {
   flex-direction: column;
-  gap: 8px;
+  align-items: stretch;
+  gap: 10px;
 }
-.genCtxControl .ctxSlider {
-  width: 100%;
-}
-.genCtxControl .ctxTickRow {
-  position: relative;
-  height: 12px;
+.genCtxHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .genCtxValue {
-  font-size: 11px;
-  color: var(--t3);
-  text-align: right;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
 }
-.genWarmControl {
+/* Editable token field: type a count or let the slider drive it. */
+.genCtxInput {
+  width: 86px;
+  height: 30px;
+  text-align: right;
+  background: rgba(36, 30, 26, 0.6);
+  border: 1px solid rgba(255, 141, 92, 0.3);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  -moz-appearance: textfield;
+}
+.genCtxInput::-webkit-inner-spin-button,
+.genCtxInput::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.genCtxInput:focus-visible {
+  border-color: rgba(255, 141, 92, 0.6);
+  box-shadow: 0 0 0 3px rgba(255, 141, 92, 0.12);
+}
+.genCtxValueUnit {
+  font-size: 12px;
+  color: var(--t3);
+}
+/* Icon-button deep link to the tuning guide, sat next to the info tooltip.
+   The compound selector beats .infoBtn's cursor: help so the link reads as
+   clickable. */
+.infoBtn.genCtxLearnBtn {
+  cursor: pointer;
+}
+.genCtxLearnBtn svg {
+  width: 10px;
+  height: 10px;
+}
+/* Keep model warm row: header line (name + live status) over a controls line
+   (release timer + Unload). */
+.genRowWarm {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 11px;
+}
+.genWarmHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.genWarmStatus {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--t2);
+}
+.genStatusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
   flex: none;
+  background: var(--t3);
+}
+.genStatusDotLive {
+  background: var(--ok);
+  box-shadow: 0 0 7px var(--ok);
+}
+.genWarmControls {
   display: flex;
   align-items: center;
   gap: 8px;
 }
+.genWarmPrefix {
+  font-size: 11.5px;
+  color: var(--t3);
+}
+.genWarmUnload {
+  margin-left: auto;
+}
 .genPromptEditor {
   padding: 0 16px 14px;
   box-shadow: 0 -1px 0 var(--hair-soft);
-}
-.genFootnote {
-  margin-top: 12px;
-  padding: 0 2px;
-  font-size: 11px;
-  color: var(--t3);
 }
 
 /* ─── Body (scrolling content) ──────────────────────────────────────────── */

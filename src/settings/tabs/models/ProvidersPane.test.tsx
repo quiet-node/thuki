@@ -14,6 +14,7 @@ import {
 } from '../../../testUtils/mocks/tauri';
 
 import { ProvidersPane } from './ProvidersPane';
+import styles from '../../../styles/settings.module.css';
 import type { RawAppConfig, RawProvider } from '../../types';
 
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
@@ -153,7 +154,6 @@ describe('ProvidersPane active hero', () => {
     expect(screen.getByText('Active provider')).toBeInTheDocument();
     expect(screen.getByText('Ollama')).toBeInTheDocument();
     expect(screen.getByText('http://127.0.0.1:11434')).toBeInTheDocument();
-    expect(screen.getByText('Active')).toBeInTheDocument();
   });
 
   it('falls back to Ollama labelling when the active id matches no provider', () => {
@@ -485,7 +485,133 @@ describe('ProvidersPane generation', () => {
     });
     fireEvent.change(slider, { target: { value: '800' } });
     fireEvent.mouseUp(slider);
-    expect(screen.getByText(/tokens ·/)).toBeInTheDocument();
+    expect(screen.getByText('tokens')).toBeInTheDocument();
+  });
+
+  it('shows the token value in an editable field with no turns line', () => {
+    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA], { num_ctx: 32768 }));
+    expect(
+      screen.getByRole('spinbutton', { name: 'Context window size in tokens' }),
+    ).toHaveValue(32768);
+    expect(screen.getByText('tokens')).toBeInTheDocument();
+    expect(screen.queryByText(/turns/)).toBeNull();
+  });
+
+  it('commits a typed token value and moves the slider', () => {
+    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+    const input = screen.getByRole('spinbutton', {
+      name: 'Context window size in tokens',
+    });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '65536' } });
+    fireEvent.blur(input);
+    expect(input).toHaveValue(65536);
+    expect(
+      screen.getByRole('slider', { name: 'Context window tokens' }),
+    ).toHaveAttribute('aria-valuenow', '65536');
+  });
+
+  it('clamps a typed token value above the maximum', () => {
+    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+    const input = screen.getByRole('spinbutton', {
+      name: 'Context window size in tokens',
+    });
+    fireEvent.change(input, { target: { value: '9999999' } });
+    fireEvent.blur(input);
+    expect(input).toHaveValue(1048576);
+  });
+
+  it('reverts a non-numeric token entry to the current value', () => {
+    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA], { num_ctx: 32768 }));
+    const input = screen.getByRole('spinbutton', {
+      name: 'Context window size in tokens',
+    });
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+    expect(input).toHaveValue(32768);
+  });
+
+  it('commits the token field on Enter and ignores other keys', () => {
+    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+    const input = screen.getByRole('spinbutton', {
+      name: 'Context window size in tokens',
+    });
+    fireEvent.change(input, { target: { value: '8192' } });
+    // A non-Enter key does not blur/commit; Enter does.
+    fireEvent.keyDown(input, { key: 'a' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input).toHaveValue(8192);
+  });
+
+  it('keeps the focused token field unchanged across a resync', () => {
+    const { rerender } = renderPane(
+      makeConfig('builtin', [BUILTIN, OLLAMA], { num_ctx: 16384 }),
+    );
+    const input = screen.getByRole('spinbutton', {
+      name: 'Context window size in tokens',
+    });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '65536' } });
+    rerender(
+      <ProvidersPane
+        config={makeConfig('builtin', [BUILTIN, OLLAMA], { num_ctx: 32768 })}
+        resyncToken={5}
+        onSaved={() => {}}
+        onAddModel={() => {}}
+      />,
+    );
+    // Focused: the resync must not clobber the in-progress entry.
+    expect(input).toHaveValue(65536);
+  });
+
+  it('opens the tuning guide from the Learn link', () => {
+    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /Learn how to tune Context Window/,
+      }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith('open_url', {
+      url: 'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md#the-5-minute-benchmark-recipe',
+    });
+  });
+
+  it('spaces the doubling milestones evenly across the track', () => {
+    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+    // Each milestone doubles the last, so on the log track they sit at equal
+    // ~11.1% gaps and the thumb lands on the milestone it reads.
+    const leftOf = (label: string) =>
+      (screen.getByText(label) as HTMLElement).style.left;
+    expect(leftOf('2K')).toBe('0%');
+    expect(leftOf('4K')).toBe('11.1%');
+    expect(leftOf('8K')).toBe('22.2%');
+    expect(leftOf('16K')).toBe('33.3%');
+    expect(leftOf('32K')).toBe('44.4%');
+    expect(leftOf('64K')).toBe('55.6%');
+    expect(leftOf('128K')).toBe('66.7%');
+    expect(leftOf('256K')).toBe('77.8%');
+    expect(leftOf('512K')).toBe('88.9%');
+    expect(leftOf('1M')).toBe('100%');
+  });
+
+  it('explains the context window through a tooltip, not a subtitle', () => {
+    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+    expect(
+      screen.getByRole('button', { name: 'About Context window' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('How much conversation the model remembers'),
+    ).toBeNull();
+  });
+
+  it('drops the system prompt subtitle in favour of its tooltip', () => {
+    renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
+    expect(
+      screen.getByRole('button', { name: 'About System prompt' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('Persona sent at the start of every chat'),
+    ).toBeNull();
   });
 
   it('commits a context-window change via touch and keyboard', () => {
@@ -559,6 +685,23 @@ describe('ProvidersPane generation', () => {
   it('shows no-model-loaded for Ollama when nothing is resident', () => {
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
     expect(screen.getByText('No model loaded')).toBeInTheDocument();
+  });
+
+  it('greens the status dot when a model is resident', async () => {
+    mockInvoke({ get_engine_status: engineStatus('loaded') });
+    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+    await waitFor(() =>
+      expect(screen.getByText('Engine: loaded')).toBeInTheDocument(),
+    );
+    const dot = screen.getByText('Engine: loaded').querySelector('span');
+    expect(dot).toHaveClass(styles.genStatusDotLive);
+  });
+
+  it('dims the status dot when the engine is stopped', () => {
+    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+    const dot = screen.getByText('Engine: stopped').querySelector('span');
+    expect(dot).toHaveClass(styles.genStatusDot);
+    expect(dot).not.toHaveClass(styles.genStatusDotLive);
   });
 
   it('reflects warmup load + evict events', async () => {
@@ -665,17 +808,13 @@ describe('ProvidersPane robustness', () => {
     expect(url).toHaveValue('http://127.0.0.1:11434');
   });
 
-  it('pluralises the installed count in the footnote', () => {
-    renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
-    expect(screen.getByText(/0 installed models/)).toBeInTheDocument();
-  });
-
-  it('singularises one installed model', async () => {
+  it('does not render an installed-count footnote', async () => {
     mockInvoke({ list_installed_models: INSTALLED });
-    renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
-    await waitFor(() =>
-      expect(screen.getByText(/1 installed model/)).toBeInTheDocument(),
+    renderPane(
+      makeConfig('builtin', [{ ...BUILTIN, model: INSTALLED[0].id }, OLLAMA]),
     );
+    await screen.findByRole('combobox', { name: 'Built-in model' });
+    expect(screen.queryByText(/installed model/)).toBeNull();
   });
 
   it('reflects the engine:status event stream for the built-in engine', async () => {
@@ -718,7 +857,7 @@ describe('ProvidersPane robustness', () => {
 
   it('tolerates a config with no built-in provider', () => {
     renderPane(makeConfig('ollama', [OLLAMA]));
-    expect(screen.getByText(/0 installed models/)).toBeInTheDocument();
+    expect(screen.getByText('Active provider')).toBeInTheDocument();
   });
 
   it('renders no openai card in the hero when the dev flag is off', () => {

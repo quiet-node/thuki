@@ -41,7 +41,6 @@ interface ProvidersPaneProps {
 
 const PROMPT_MAX_CHARS = 32000;
 const PROMPT_TEXTAREA_ROWS = 12;
-const TOKENS_PER_TURN_ESTIMATE = 400;
 
 const KEEP_WARM_TOOLTIP =
   'Keep Warm holds your active model resident in memory after each use, ' +
@@ -50,10 +49,25 @@ const KEEP_WARM_TOOLTIP =
   'Unload now releases it immediately. ' +
   'If set to 0, each provider uses its natural short default (about 5 minutes).';
 
-// Log-scale context window slider: slider pos [0..1000] maps to a token count.
+// Context window slider: slider pos [0..1000] maps logarithmically to a token
+// count between CTX_MIN and CTX_MAX. The milestones double each step (2K, 4K,
+// ... 1M), so on the log track they land at equal intervals and the thumb
+// always sits on the milestone it reads.
 const CTX_MIN = 2048;
 const CTX_MAX = 1_048_576;
 const CTX_LOG_RATIO = Math.log(CTX_MAX / CTX_MIN);
+const CTX_TICKS: { label: string; value: number }[] = [
+  { label: '2K', value: 2048 },
+  { label: '4K', value: 4096 },
+  { label: '8K', value: 8192 },
+  { label: '16K', value: 16384 },
+  { label: '32K', value: 32768 },
+  { label: '64K', value: 65536 },
+  { label: '128K', value: 131072 },
+  { label: '256K', value: 262144 },
+  { label: '512K', value: 524288 },
+  { label: '1M', value: 1048576 },
+];
 
 function ctxToPos(v: number): number {
   return Math.round((1000 * Math.log(v / CTX_MIN)) / CTX_LOG_RATIO);
@@ -64,7 +78,10 @@ function posToCtx(pos: number): number {
     1024
   );
 }
-const CTX_TICKS = ['2K', '8K', '32K', '128K', '512K', '1M'];
+
+// Deep link to the 5-minute benchmark recipe, opened via the open_url command.
+const CTX_TUNING_URL =
+  'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md#the-5-minute-benchmark-recipe';
 
 /** One-line description shown under a provider's name. */
 function providerSubtitle(p: RawProvider): string {
@@ -150,6 +167,7 @@ export function ProvidersPane({
   );
   const [ctxChip, setCtxChip] = useState(String(config.inference.num_ctx));
   const ctxDraggingRef = useRef(false);
+  const ctxInputFocusedRef = useRef(false);
   const { resetTo: resetNumCtx } = useDebouncedSave(
     'inference',
     'num_ctx',
@@ -202,11 +220,13 @@ export function ProvidersPane({
       setRawMin(String(config.inference.keep_warm_inactivity_minutes));
       resetMin(config.inference.keep_warm_inactivity_minutes);
     }
-    const nextCtx = config.inference.num_ctx;
-    setNumCtx(nextCtx);
-    setCtxPos(ctxToPos(nextCtx));
-    setCtxChip(String(nextCtx));
-    resetNumCtx(nextCtx);
+    if (!ctxInputFocusedRef.current) {
+      const nextCtx = config.inference.num_ctx;
+      setNumCtx(nextCtx);
+      setCtxPos(ctxToPos(nextCtx));
+      setCtxChip(String(nextCtx));
+      resetNumCtx(nextCtx);
+    }
     setPromptValue(config.prompt.system);
     resetPrompt(config.prompt.system);
     if (!ollamaUrlFocusedRef.current) setOllamaUrl(ollamaBaseUrl);
@@ -216,6 +236,18 @@ export function ProvidersPane({
     setNumCtx(v);
     setCtxPos(ctxToPos(v));
     setCtxChip(String(v));
+  }
+
+  // The token field accepts a typed value: commit it clamped to the valid
+  // range on blur/Enter, or revert to the current value when it is not a number.
+  function commitCtxInput() {
+    ctxInputFocusedRef.current = false;
+    const n = parseInt(ctxChip, 10);
+    if (Number.isNaN(n)) {
+      setCtxChip(String(numCtx));
+    } else {
+      commitCtx(Math.max(CTX_MIN, Math.min(CTX_MAX, n)));
+    }
   }
 
   function commitOllamaUrl() {
@@ -257,8 +289,18 @@ export function ProvidersPane({
     void invoke('evict_model').catch(() => {});
   }
 
-  const ctxTurns = Math.round(numCtx / TOKENS_PER_TURN_ESTIMATE);
   const fillPct = `${ctxPos / 10}%`;
+
+  // Keep-warm live status: the text shown beside the name, plus whether a model
+  // is actually resident (drives the status dot color: green when warm).
+  const engineWarm =
+    activeKind === 'builtin' ? engineState === 'loaded' : loadedModel !== null;
+  const warmStatusText =
+    activeKind === 'builtin'
+      ? `Engine: ${engineState}`
+      : loadedModel !== null
+        ? `${loadedModel} in VRAM`
+        : 'No model loaded';
 
   // The active Ollama model value, constrained to the installed list.
   const ollamaModelValue =
@@ -295,10 +337,6 @@ export function ProvidersPane({
                 : 'Local or remote Ollama'}
             </div>
           </div>
-          <span className={styles.heroActive}>
-            <span className={styles.heroLiveDot} aria-hidden />
-            Active
-          </span>
         </div>
 
         {activeKind === 'builtin' ? (
@@ -437,15 +475,68 @@ export function ProvidersPane({
         </span>
       </div>
       <div className={styles.listcard}>
-        {/* Context window */}
-        <div className={styles.genRow}>
-          <div className={styles.genLabel}>
-            <div className={styles.genName}>Context window</div>
-            <div className={styles.genHelp}>
-              How much conversation the model remembers
+        {/* Context window: the header carries the label, an info tooltip, a
+            deep link to the tuning guide, and an editable token field; the
+            slider spans the full card width below. */}
+        <div className={`${styles.genRow} ${styles.genRowCtx}`}>
+          <div className={styles.genCtxHead}>
+            <div className={styles.genName}>
+              Context window
+              <Tooltip label={configHelp('inference', 'num_ctx')} multiline>
+                <button
+                  type="button"
+                  className={styles.infoBtn}
+                  aria-label="About Context window"
+                >
+                  ?
+                </button>
+              </Tooltip>
+              <Tooltip label="Learn how to tune Context Window ↗">
+                <button
+                  type="button"
+                  className={`${styles.infoBtn} ${styles.genCtxLearnBtn}`}
+                  aria-label="Learn how to tune Context Window"
+                  onClick={() =>
+                    void invoke('open_url', { url: CTX_TUNING_URL })
+                  }
+                >
+                  <svg
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M9 3.5h3.5V7" />
+                    <path d="M12.5 3.5 7.5 8.5" />
+                    <path d="M11 9.5V12a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5V5.5A.5.5 0 0 1 4 5h2.5" />
+                  </svg>
+                </button>
+              </Tooltip>
             </div>
+            <span className={styles.genCtxValue}>
+              <input
+                type="number"
+                className={styles.genCtxInput}
+                value={ctxChip}
+                min={CTX_MIN}
+                max={CTX_MAX}
+                aria-label="Context window size in tokens"
+                onFocus={() => {
+                  ctxInputFocusedRef.current = true;
+                }}
+                onChange={(e) => setCtxChip(e.target.value)}
+                onBlur={commitCtxInput}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                }}
+              />
+              <span className={styles.genCtxValueUnit}>tokens</span>
+            </span>
           </div>
-          <div className={styles.genCtxControl}>
+          <div>
             <input
               type="range"
               className={styles.ctxSlider}
@@ -478,26 +569,23 @@ export function ProvidersPane({
               }}
             />
             <div className={styles.ctxTickRow} aria-hidden="true">
-              {CTX_TICKS.map((label, i) => (
+              {CTX_TICKS.map(({ label, value }) => (
                 <span
                   key={label}
                   className={styles.ctxTick}
-                  style={{ left: `${(i / (CTX_TICKS.length - 1)) * 100}%` }}
+                  style={{ left: `${ctxToPos(value) / 10}%` }}
                 >
                   {label}
                 </span>
               ))}
             </div>
-            <div className={styles.genCtxValue}>
-              {Number(ctxChip).toLocaleString()} tokens ·{' '}
-              {ctxTurns.toLocaleString()} turns
-            </div>
           </div>
         </div>
 
-        {/* Keep model warm */}
-        <div className={styles.genRow}>
-          <div className={styles.genLabel}>
+        {/* Keep model warm: status rides the header line next to the name; the
+            release timer and Unload sit on their own row beneath it. */}
+        <div className={`${styles.genRow} ${styles.genRowWarm}`}>
+          <div className={styles.genWarmHead}>
             <div className={styles.genName}>
               Keep model warm
               <Tooltip label={KEEP_WARM_TOOLTIP} multiline>
@@ -510,15 +598,20 @@ export function ProvidersPane({
                 </button>
               </Tooltip>
             </div>
-            <div className={styles.genHelp}>
-              {activeKind === 'builtin'
-                ? `Engine: ${engineState}`
-                : loadedModel !== null
-                  ? `${loadedModel} in VRAM`
-                  : 'No model loaded'}
-            </div>
+            <span className={styles.genWarmStatus}>
+              <span
+                className={
+                  engineWarm
+                    ? `${styles.genStatusDot} ${styles.genStatusDotLive}`
+                    : styles.genStatusDot
+                }
+                aria-hidden="true"
+              />
+              {warmStatusText}
+            </span>
           </div>
-          <div className={styles.genWarmControl}>
+          <div className={styles.genWarmControls}>
+            <span className={styles.genWarmPrefix}>Release after</span>
             <input
               type="number"
               className={styles.keepWarmNumberInput}
@@ -550,7 +643,7 @@ export function ProvidersPane({
             <span className={styles.keepWarmUnit}>min</span>
             <button
               type="button"
-              className={styles.switchBtn}
+              className={`${styles.switchBtn} ${styles.genWarmUnload}`}
               aria-label="Unload now"
               disabled={activeKind === 'builtin' && engineState !== 'loaded'}
               onClick={handleEngineEject}
@@ -580,9 +673,6 @@ export function ProvidersPane({
                 </button>
               </Tooltip>
             </div>
-            <div className={styles.genHelp}>
-              Persona sent at the start of every chat
-            </div>
           </div>
           <button
             type="button"
@@ -608,14 +698,6 @@ export function ProvidersPane({
             </div>
           </div>
         ) : null}
-      </div>
-
-      {/* A small installed-count footer mirrors the other panes. The active
-          model's identity already lives in the hero and the Running footer, so
-          this stays a neutral count rather than restating it. */}
-      <div className={styles.genFootnote}>
-        {installed.length} installed{' '}
-        {installed.length === 1 ? 'model' : 'models'}
       </div>
 
       <div className={styles.devSection}>
