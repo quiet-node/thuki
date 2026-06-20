@@ -228,11 +228,7 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                   </div>
                   <div className={styles.right}>
                     {m.fit ? (
-                      <Tooltip
-                        label={RAM_FIT_TOOLTIP[m.fit]}
-                        multiline
-                        placement="top"
-                      >
+                      <Tooltip label={RAM_FIT_TOOLTIP[m.fit]} placement="top">
                         <span className={`${styles.fit} ${FIT_CLASS[m.fit]}`}>
                           {RAM_FIT_LABEL[m.fit]}
                         </span>

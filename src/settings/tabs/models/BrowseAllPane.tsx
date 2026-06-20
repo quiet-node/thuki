@@ -258,11 +258,7 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
                 <div className={styles.quantRow} key={f.file}>
                   <span className={styles.quantName}>{f.file}</span>
                   {f.fit ? (
-                    <Tooltip
-                      label={RAM_FIT_TOOLTIP[f.fit]}
-                      multiline
-                      placement="top"
-                    >
+                    <Tooltip label={RAM_FIT_TOOLTIP[f.fit]} placement="top">
                       <span className={`${styles.fit} ${FIT_CLASS[f.fit]}`}>
                         {RAM_FIT_LABEL[f.fit]}
                       </span>

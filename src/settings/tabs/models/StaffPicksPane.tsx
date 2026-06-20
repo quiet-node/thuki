@@ -247,7 +247,7 @@ function ModelRow({
         </div>
         {!showProgress ? (
           <div className={styles.right}>
-            <Tooltip label={RAM_FIT_TOOLTIP[fit]} multiline placement="top">
+            <Tooltip label={RAM_FIT_TOOLTIP[fit]} placement="top">
               <span className={`${styles.fit} ${FIT_CLASS[fit]}`}>
                 {RAM_FIT_LABEL[fit]}
               </span>
