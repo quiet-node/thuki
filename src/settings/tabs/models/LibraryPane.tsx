@@ -25,6 +25,14 @@ import type { InstalledModel, RamFit } from '../../../types/starter';
 
 const HF_BASE_URL = 'https://huggingface.co';
 
+/**
+ * Approximate height (px) the popover needs below the ⋮ trigger. When the space
+ * beneath it is tighter than this, the menu flips above the button so it is
+ * never clipped: the Settings window auto-hugs its content and `.body` hides
+ * overflow, so a downward menu on the last row would spill past the window.
+ */
+const MENU_DROP_ESTIMATE_PX = 210;
+
 /** RAM-fit hint colour class on this pane's stylesheet (labels are shared). */
 const FIT_CLASS: Record<RamFit, string> = {
   fits: styles.fitOk,
@@ -73,6 +81,7 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
 
   const [installed, setInstalled] = useState<InstalledModel[]>([]);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [menuDropUp, setMenuDropUp] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -110,6 +119,20 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
       document.removeEventListener('keydown', onKey);
     };
   }, [openMenu]);
+
+  // Open the popover for `id` (or close it if already open). On open, flip the
+  // menu above the trigger when there is not enough room below: rows near the
+  // window's bottom edge would otherwise be clipped by the hidden body overflow.
+  function toggleMenu(id: string, trigger: HTMLElement) {
+    if (openMenu === id) {
+      setOpenMenu(null);
+      return;
+    }
+    const spaceBelow =
+      window.innerHeight - trigger.getBoundingClientRect().bottom;
+    setMenuDropUp(spaceBelow < MENU_DROP_ESTIMATE_PX);
+    setOpenMenu(id);
+  }
 
   // The backend writes the builtin provider's model field; lift the fresh
   // snapshot so the active row moves without a tab remount.
@@ -245,14 +268,16 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                         aria-label={`Manage ${m.display_name}`}
                         aria-haspopup="menu"
                         aria-expanded={openMenu === m.id}
-                        onClick={() =>
-                          setOpenMenu((cur) => (cur === m.id ? null : m.id))
-                        }
+                        onClick={(e) => toggleMenu(m.id, e.currentTarget)}
                       >
                         ⋮
                       </button>
                       {openMenu === m.id ? (
-                        <div className={styles.menu} role="menu">
+                        <div
+                          className={styles.menu}
+                          role="menu"
+                          data-side={menuDropUp ? 'top' : 'bottom'}
+                        >
                           {active ? null : (
                             <button
                               type="button"

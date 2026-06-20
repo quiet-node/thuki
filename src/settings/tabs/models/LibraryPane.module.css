@@ -215,6 +215,14 @@
   animation: menuIn 130ms cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 
+/* Flip above the trigger when a downward menu would be clipped by the
+ * auto-sized window's hidden overflow (set by the pane for tight bottom rows). */
+.menu[data-side='top'] {
+  top: auto;
+  bottom: 36px;
+  transform-origin: bottom right;
+}
+
 .menuItem {
   display: flex;
   align-items: center;

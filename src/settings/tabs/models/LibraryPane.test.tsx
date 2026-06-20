@@ -478,6 +478,25 @@ describe('LibraryPane', () => {
     ).toBeInTheDocument();
   });
 
+  it('drops the popover below the trigger when there is room beneath it', async () => {
+    mockCommands(libraryResponses());
+    await renderPane();
+    openMenu('gemma');
+    expect(screen.getByRole('menu')).toHaveAttribute('data-side', 'bottom');
+  });
+
+  it('flips the popover above the trigger when the space below is tight', async () => {
+    mockCommands(libraryResponses());
+    await renderPane();
+    const manage = screen.getByRole('button', { name: 'Manage qwen' });
+    // Simulate the trigger sitting near the window's bottom edge, where a
+    // downward menu would be clipped by the Settings window's hidden overflow.
+    manage.getBoundingClientRect = () =>
+      ({ bottom: window.innerHeight - 8 }) as unknown as DOMRect;
+    fireEvent.click(manage);
+    expect(screen.getByRole('menu')).toHaveAttribute('data-side', 'top');
+  });
+
   it('toggles the popover closed when its own button is clicked again', async () => {
     mockCommands(libraryResponses());
     await renderPane();
