@@ -169,29 +169,6 @@ pub const STARTERS: &[Starter] = &[
     },
     // ── Everyday chat ──────────────────────────────────────────────────────
     Starter {
-        id: "llama-3.1-8b",
-        tier: Tier::Balanced,
-        family: "Llama",
-        category: "Everyday chat",
-        display_name: "Llama 3.1 8B",
-        repo: "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
-        revision: "bf5b95e96dac0462e2a09145ec66cae9a3f12067",
-        file_name: "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-        sha256: "7b064f5842bf9532c91456deda288a1b672397a54fa729aa665952863033557c",
-        size_bytes: 4_920_739_232,
-        quant: "Q4_K_M",
-        vision: false,
-        thinking: false,
-        reasoning_always: false,
-        mmproj_file: None,
-        mmproj_sha256: None,
-        mmproj_bytes: 0,
-        est_runtime_gb: 7.0,
-        license_note: "Llama 3.1 Community",
-        origin: "Meta",
-        origin_repo: "meta-llama/Llama-3.1-8B-Instruct",
-    },
-    Starter {
         id: "mistral-nemo-12b",
         tier: Tier::Balanced,
         family: "Mistral",
@@ -489,9 +466,11 @@ mod tests {
 
     #[test]
     fn catalog_is_the_vetted_models_grouped_by_category() {
-        // The curated Staff Picks catalog: deeply-vetted models, grouped into
-        // the use-case sections the Discover surface renders. Locks the exact
-        // set so a stray add/remove is a deliberate, reviewed change.
+        // The curated Staff Picks catalog: nine deeply-vetted models, exactly
+        // three per use-case section the Discover surface renders. The three
+        // onboarding heroes are among them, so a model downloaded during
+        // onboarding shows up here as Installed with no duplicate row. Locks the
+        // exact set so a stray add/remove is a deliberate, reviewed change.
         use std::collections::BTreeMap;
         let mut by_cat: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for s in STARTERS {
@@ -503,12 +482,7 @@ mod tests {
         let mut expected: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         expected.insert(
             "Everyday chat",
-            vec![
-                "gemma-4-12b",
-                "llama-3.1-8b",
-                "mistral-nemo-12b",
-                "qwen3.5-9b",
-            ],
+            vec!["gemma-4-12b", "mistral-nemo-12b", "qwen3.5-9b"],
         );
         expected.insert(
             "Compact & fast",
@@ -526,6 +500,24 @@ mod tests {
             v.sort_unstable();
         }
         assert_eq!(by_cat, expected);
+    }
+
+    #[test]
+    fn every_category_holds_exactly_three_models() {
+        // The Discover surface is balanced: nine models, exactly three per
+        // use-case section, so no section dwarfs the others.
+        use std::collections::BTreeMap;
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for s in STARTERS {
+            *counts.entry(s.category).or_default() += 1;
+        }
+        assert_eq!(STARTERS.len(), 9, "catalog should hold nine models");
+        for (category, n) in counts {
+            assert_eq!(
+                n, 3,
+                "category {category} should hold exactly three, has {n}"
+            );
+        }
     }
 
     #[test]
