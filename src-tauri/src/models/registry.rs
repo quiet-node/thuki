@@ -29,7 +29,14 @@ pub enum Tier {
 /// need, baked in at compile time.
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
 pub struct Starter {
-    /// Which speed/quality tier this entry fills.
+    /// Stable slug, unique across the registry (e.g. `"gemma-4-12b"`). The
+    /// download key and the React row key for the Staff Picks catalog, where a
+    /// single category can hold many models. Onboarding keys on `tier` instead
+    /// and shows only the three [`ONBOARDING_HERO_IDS`] heroes.
+    pub id: &'static str,
+    /// Coarse speed/quality dial for the model. Onboarding's 3-up comparison
+    /// shows one hero per tier; in the Staff Picks catalog several entries can
+    /// share a tier, so it is a size/speed hint there, not a unique key.
     pub tier: Tier,
     /// Model family this entry belongs to (e.g. "Gemma", "Qwen", "gpt-oss").
     /// Several starters can share a family when the catalog offers more than one
@@ -86,6 +93,7 @@ pub struct Starter {
 /// The curated starters, ordered Fast, Balanced, Smartest.
 pub const STARTERS: &[Starter] = &[
     Starter {
+        id: "qwen3.5-9b",
         tier: Tier::Fast,
         family: "Qwen",
         category: "Everyday chat",
@@ -108,6 +116,7 @@ pub const STARTERS: &[Starter] = &[
         origin_repo: "Qwen/Qwen3.5-9B",
     },
     Starter {
+        id: "gemma-4-12b",
         tier: Tier::Balanced,
         family: "Gemma",
         category: "Everyday chat",
@@ -130,6 +139,7 @@ pub const STARTERS: &[Starter] = &[
         origin_repo: "google/gemma-4-12B-it",
     },
     Starter {
+        id: "gpt-oss-20b",
         tier: Tier::Smartest,
         family: "gpt-oss",
         category: "Deep reasoning",
@@ -152,6 +162,30 @@ pub const STARTERS: &[Starter] = &[
         origin_repo: "openai/gpt-oss-20b",
     },
 ];
+
+/// Ids of the three onboarding hero starters, in tier order
+/// (Fast, Balanced, Smartest). Onboarding's 3-up comparison selects exactly
+/// these by id; the Staff Picks catalog may hold any number of other entries
+/// without disturbing the onboarding heroes.
+pub const ONBOARDING_HERO_IDS: [&str; 3] = ["qwen3.5-9b", "gemma-4-12b", "gpt-oss-20b"];
+
+/// The registry entry with this id, if any. The id-keyed download path and the
+/// onboarding-hero lookup both resolve entries through here, so a bad id yields
+/// `None` rather than a panic.
+pub fn by_id(id: &str) -> Option<&'static Starter> {
+    STARTERS.iter().find(|s| s.id == id)
+}
+
+/// The three onboarding hero starters, resolved from [`ONBOARDING_HERO_IDS`] in
+/// tier order. Any id that is absent from the registry is skipped, so the
+/// result is the heroes that actually exist; a registry test asserts all three
+/// resolve, so in practice the list is always length three.
+pub fn onboarding_heroes() -> Vec<&'static Starter> {
+    ONBOARDING_HERO_IDS
+        .iter()
+        .filter_map(|id| by_id(id))
+        .collect()
+}
 
 /// RAM-fit hint rendered as a badge on each starter row.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
@@ -228,17 +262,51 @@ mod tests {
         s.len() == len && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     }
 
+    /// Resolves the onboarding hero for a tier by id, not by find-first-of-tier:
+    /// the catalog can hold several entries of the same tier, so only the hero
+    /// ids identify the three onboarding models unambiguously.
     fn starter(tier: Tier) -> &'static Starter {
-        STARTERS.iter().find(|s| s.tier == tier).unwrap()
+        let idx = match tier {
+            Tier::Fast => 0,
+            Tier::Balanced => 1,
+            Tier::Smartest => 2,
+        };
+        by_id(ONBOARDING_HERO_IDS[idx]).unwrap()
     }
 
     #[test]
-    fn three_tiers_present() {
-        assert_eq!(STARTERS.len(), 3);
+    fn ids_are_present_and_unique() {
+        // The Staff Picks catalog and the id-keyed download path key on `id`,
+        // so every entry needs a non-empty slug and no two may collide.
+        let mut seen = std::collections::HashSet::new();
+        for s in STARTERS {
+            assert!(!s.id.is_empty(), "{}: id is empty", s.repo);
+            assert!(seen.insert(s.id), "duplicate id: {}", s.id);
+        }
+    }
+
+    #[test]
+    fn by_id_resolves_present_and_misses_unknown() {
+        // by_id finds a present entry and returns None for an unknown slug,
+        // so the lookup never panics on a bad id.
+        assert_eq!(by_id(STARTERS[0].id).unwrap().id, STARTERS[0].id);
+        assert!(by_id("no-such-model").is_none());
+    }
+
+    #[test]
+    fn onboarding_heroes_are_three_in_tier_order() {
+        // The onboarding picker shows exactly three heroes, one per tier, in
+        // Fast/Balanced/Smartest order; each id resolves to a real entry.
+        assert_eq!(ONBOARDING_HERO_IDS.len(), 3);
+        let heroes = onboarding_heroes();
+        assert_eq!(heroes.len(), 3);
         assert_eq!(
-            STARTERS.iter().map(|s| s.tier).collect::<Vec<_>>(),
+            heroes.iter().map(|s| s.tier).collect::<Vec<_>>(),
             vec![Tier::Fast, Tier::Balanced, Tier::Smartest]
         );
+        for id in ONBOARDING_HERO_IDS {
+            assert!(by_id(id).is_some(), "hero id missing from registry: {id}");
+        }
     }
 
     #[test]
@@ -394,7 +462,7 @@ mod tests {
             (32, [RamFit::Fits, RamFit::Fits, RamFit::Fits]),
         ];
         for (ram_gib, expected) in table {
-            for (s, want) in STARTERS.iter().zip(expected) {
+            for (s, want) in onboarding_heroes().iter().zip(expected) {
                 let got = ram_fit(s.est_runtime_gb, ram_gib * GIB);
                 assert_eq!(
                     got, *want,

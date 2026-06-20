@@ -1192,42 +1192,73 @@ pub struct StarterOption {
     pub partial_bytes: Option<u64>,
 }
 
-/// Builds the starter picker rows from the manifest, the blob store's partial
-/// slots, and the machine's RAM. A manifest read error degrades to "not
-/// installed" rather than failing the whole picker.
+/// Annotates one registry entry with the machine-specific facts the picker
+/// renders next to it: RAM fit, installed state, and resumable-partial size. A
+/// manifest read error degrades to "not installed" rather than failing the row.
+fn annotate_starter(
+    s: &registry::Starter,
+    conn: &rusqlite::Connection,
+    store: &storage::ModelStore,
+    ram_bytes: u64,
+) -> StarterOption {
+    StarterOption {
+        starter: s.clone(),
+        fit: registry::ram_fit(s.est_runtime_gb, ram_bytes),
+        installed: matches!(
+            manifest::get(conn, &registry::to_installed_model(s).id),
+            Ok(Some(_))
+        ),
+        partial_bytes: store.existing_partial_len(s.sha256),
+    }
+}
+
+/// The onboarding starter picker rows: exactly the three tier heroes, annotated
+/// for this machine. Onboarding's 3-up comparison is fixed at one model per
+/// tier, so it draws only the heroes even as the Staff Picks catalog grows.
 pub fn build_starter_options(
+    conn: &rusqlite::Connection,
+    store: &storage::ModelStore,
+    ram_bytes: u64,
+) -> Vec<StarterOption> {
+    registry::onboarding_heroes()
+        .into_iter()
+        .map(|s| annotate_starter(s, conn, store, ram_bytes))
+        .collect()
+}
+
+/// The full Staff Picks catalog: every curated registry entry annotated for
+/// this machine. The frontend groups the rows by `starter.category`; unlike
+/// [`build_starter_options`] this is not capped at one model per tier.
+pub fn build_staff_picks(
     conn: &rusqlite::Connection,
     store: &storage::ModelStore,
     ram_bytes: u64,
 ) -> Vec<StarterOption> {
     registry::STARTERS
         .iter()
-        .map(|s| StarterOption {
-            starter: s.clone(),
-            fit: registry::ram_fit(s.est_runtime_gb, ram_bytes),
-            installed: matches!(
-                manifest::get(conn, &registry::to_installed_model(s).id),
-                Ok(Some(_))
-            ),
-            partial_bytes: store.existing_partial_len(s.sha256),
-        })
+        .map(|s| annotate_starter(s, conn, store, ram_bytes))
         .collect()
 }
 
-/// Maps a frontend tier string (`"fast" | "balanced" | "smartest"`) onto its
-/// curated starter. Every [`registry::Tier`] has exactly one `STARTERS`
-/// entry (asserted by registry tests), so the lookup is total.
+/// Maps a Staff Picks `id` onto its curated registry entry. An unknown id
+/// yields an error rather than a panic, so a stale frontend id can never crash
+/// the download path.
+pub fn starter_for_id(id: &str) -> Result<&'static registry::Starter, String> {
+    registry::by_id(id).ok_or_else(|| format!("unknown staff pick id: {id}"))
+}
+
+/// Maps a frontend tier string (`"fast" | "balanced" | "smartest"`) onto the
+/// onboarding hero for that tier. The hero is resolved by id from
+/// [`registry::ONBOARDING_HERO_IDS`], so adding more models of the same tier to
+/// the Staff Picks catalog never changes which model onboarding downloads.
 pub fn starter_for_tier(tier: &str) -> Result<&'static registry::Starter, String> {
-    let tier = match tier {
-        "fast" => registry::Tier::Fast,
-        "balanced" => registry::Tier::Balanced,
-        "smartest" => registry::Tier::Smartest,
+    let idx = match tier {
+        "fast" => 0,
+        "balanced" => 1,
+        "smartest" => 2,
         other => return Err(format!("unknown starter tier: {other}")),
     };
-    Ok(registry::STARTERS
-        .iter()
-        .find(|s| s.tier == tier)
-        .expect("every tier has a starter"))
+    starter_for_id(registry::ONBOARDING_HERO_IDS[idx])
 }
 
 /// The builtin provider's currently configured model id (empty when none).
@@ -2133,6 +2164,19 @@ pub fn get_starter_options(
     Ok(build_starter_options(&conn, &store, system_ram_bytes()))
 }
 
+/// Returns the full Staff Picks catalog: every curated registry entry annotated
+/// with RAM fit, installed state, and resumable-partial size. The frontend
+/// groups the rows by `starter.category` into use-case sections.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn get_staff_picks(
+    db: tauri::State<'_, crate::history::Database>,
+    store: tauri::State<'_, storage::ModelStore>,
+) -> Result<Vec<StarterOption>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(build_staff_picks(&conn, &store, system_ram_bytes()))
+}
+
 /// Total physical RAM in bytes, for frontend sizing copy.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
@@ -2160,6 +2204,30 @@ pub fn download_starter(
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     let starter = starter_for_tier(&tier)?;
+    let token = claim_download(&download_state)?;
+    spawn_model_download(
+        app,
+        registry::download_specs(starter),
+        registry::to_installed_model(starter),
+        token,
+        on_event,
+    );
+    Ok(())
+}
+
+/// Starts downloading a Staff Picks catalog entry by its stable `id`. Same
+/// verified path as [`download_starter`] (pinned revision + sha256, manifest
+/// record on success), but keyed by id so a category can hold any number of
+/// models. Progress streams over `on_event`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn download_staff_pick(
+    id: String,
+    on_event: tauri::ipc::Channel<download::DownloadEvent>,
+    app: tauri::AppHandle,
+    download_state: tauri::State<'_, DownloadState>,
+) -> Result<(), String> {
+    let starter = starter_for_id(&id)?;
     let token = claim_download(&download_state)?;
     spawn_model_download(
         app,
@@ -4196,21 +4264,26 @@ mod tests {
     }
 
     #[test]
-    fn build_starter_options_marks_installed_and_partial() {
+    fn build_starter_options_returns_annotated_onboarding_heroes() {
         let conn = crate::database::open_in_memory().unwrap();
         let (_dir, store) = make_store();
 
-        // First starter is installed (manifest row present); second has an
-        // in-flight partial; third is untouched.
-        let starters = registry::STARTERS;
-        manifest::insert(&conn, &registry::to_installed_model(&starters[0])).unwrap();
-        std::fs::write(store.partial_path(starters[1].sha256), [0u8; 10]).unwrap();
+        // Onboarding draws exactly the three tier heroes, in tier order. First
+        // hero is installed (manifest row present); second has an in-flight
+        // partial; third is untouched.
+        let heroes = registry::onboarding_heroes();
+        manifest::insert(&conn, &registry::to_installed_model(heroes[0])).unwrap();
+        std::fs::write(store.partial_path(heroes[1].sha256), [0u8; 10]).unwrap();
 
         const GIB: u64 = 1 << 30;
         let opts = build_starter_options(&conn, &store, 16 * GIB);
 
-        assert_eq!(opts.len(), starters.len());
-        assert_eq!(opts[0].starter, starters[0]);
+        assert_eq!(opts.len(), heroes.len());
+        assert_eq!(
+            opts.iter().map(|o| o.starter.id).collect::<Vec<_>>(),
+            registry::ONBOARDING_HERO_IDS.to_vec()
+        );
+        assert_eq!(&opts[0].starter, heroes[0]);
         assert!(opts[0].installed);
         assert_eq!(opts[0].partial_bytes, None);
         assert!(!opts[1].installed);
@@ -4218,7 +4291,7 @@ mod tests {
         assert!(!opts[2].installed);
         assert_eq!(opts[2].partial_bytes, None);
         // Fit hints come straight from registry::ram_fit at the given RAM.
-        for (opt, s) in opts.iter().zip(starters) {
+        for (opt, s) in opts.iter().zip(heroes) {
             assert_eq!(opt.fit, registry::ram_fit(s.est_runtime_gb, 16 * GIB));
         }
     }
@@ -4263,6 +4336,39 @@ mod tests {
         assert!(starter_for_tier("Fast").is_err());
         assert!(starter_for_tier("").is_err());
         assert!(starter_for_tier("turbo").is_err());
+    }
+
+    #[test]
+    fn starter_for_id_resolves_and_rejects() {
+        // The id-keyed Staff Picks download path resolves a real slug and
+        // rejects an unknown one with an error rather than a panic.
+        assert_eq!(starter_for_id("qwen3.5-9b").unwrap().id, "qwen3.5-9b");
+        assert_eq!(starter_for_id("gpt-oss-20b").unwrap().id, "gpt-oss-20b");
+        assert!(starter_for_id("not-a-real-id").is_err());
+    }
+
+    #[test]
+    fn build_staff_picks_covers_every_registry_entry() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let (_dir, store) = make_store();
+        // Install the first catalog entry; only it must read back as installed.
+        manifest::insert(&conn, &registry::to_installed_model(&registry::STARTERS[0])).unwrap();
+
+        const GIB: u64 = 1 << 30;
+        let opts = build_staff_picks(&conn, &store, 16 * GIB);
+
+        // Every registry entry is present, in registry order.
+        assert_eq!(opts.len(), registry::STARTERS.len());
+        assert_eq!(
+            opts.iter().map(|o| o.starter.id).collect::<Vec<_>>(),
+            registry::STARTERS.iter().map(|s| s.id).collect::<Vec<_>>()
+        );
+        assert!(opts[0].installed);
+        assert!(opts[1..].iter().all(|o| !o.installed));
+        // Fit comes straight from registry::ram_fit at the given RAM.
+        for (opt, s) in opts.iter().zip(registry::STARTERS) {
+            assert_eq!(opt.fit, registry::ram_fit(s.est_runtime_gb, 16 * GIB));
+        }
     }
 
     // ── Model library: download claim ────────────────────────────────────────
