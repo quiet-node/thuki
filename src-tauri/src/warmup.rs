@@ -169,18 +169,27 @@ pub(crate) async fn evict_builtin(engine: &crate::engine::runner::EngineHandle) 
     engine.unload().await;
 }
 
-/// Built-in arm of `get_loaded_model`: the provider's configured model id
-/// when the engine status watch reports a loaded model, `None` otherwise
-/// (including when no model has been picked yet).
+/// Built-in arm of `get_loaded_model`: the display name of the model the engine
+/// is *actually* serving, resolved from the live status's `model_path` against
+/// `installed` (each entry a `(display_name, weights blob path)` pair), or
+/// `None` when the engine is not loaded or the resident blob matches no row.
+///
+/// This reads true VRAM residency, never the frontend-selected model: switching
+/// the active model rewrites config immediately, but the sidecar keeps serving
+/// the previous model until a reload, so the configured id would misreport what
+/// occupies memory.
 pub(crate) fn builtin_loaded_model(
     status: &crate::engine::runner::EngineStatus,
-    model_id: &str,
+    installed: &[(String, std::path::PathBuf)],
 ) -> Option<String> {
-    if status.state == "loaded" && !model_id.is_empty() {
-        Some(model_id.to_string())
-    } else {
-        None
+    if status.state != "loaded" || status.model_path.is_empty() {
+        return None;
     }
+    let resident = std::path::Path::new(&status.model_path);
+    installed
+        .iter()
+        .find(|(_, path)| path.as_path() == resident)
+        .map(|(name, _)| name.clone())
 }
 
 impl Default for WarmupState {
@@ -408,13 +417,28 @@ pub async fn get_loaded_model(
     config: tauri::State<'_, parking_lot::RwLock<crate::config::AppConfig>>,
     client: tauri::State<'_, reqwest::Client>,
     engine: tauri::State<'_, crate::engine::runner::EngineHandle>,
+    db: tauri::State<'_, crate::history::Database>,
+    store: tauri::State<'_, crate::models::storage::ModelStore>,
 ) -> Result<Option<String>, String> {
     let kind = config.read().inference.active_provider_kind().to_string();
     match kind.as_str() {
         PROVIDER_KIND_BUILTIN => {
-            let model_id = config.read().inference.active_provider_model().to_string();
             let status = engine.status().borrow().clone();
-            Ok(builtin_loaded_model(&status, &model_id))
+            // Resolve the engine's resident blob back to its installed name. A
+            // poisoned lock is recovered: an unrelated panic must not blind the
+            // residency line.
+            let installed = {
+                let conn = match db.0.lock() {
+                    Ok(conn) => conn,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                crate::models::manifest::list(&conn)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|m| (m.display_name, store.blob_path(&m.sha256)))
+                    .collect::<Vec<_>>()
+            };
+            Ok(builtin_loaded_model(&status, &installed))
         }
         PROVIDER_KIND_OLLAMA => {
             let model = models.0.lock().ok().and_then(|g| g.clone());
@@ -1569,19 +1593,38 @@ mod tests {
     }
 
     #[test]
-    fn get_loaded_model_builtin_from_status() {
+    fn builtin_loaded_model_names_the_resident_blob_not_the_selection() {
+        use std::path::PathBuf;
+        let resident = PathBuf::from("/blobs/sha_mistral");
+        let installed = vec![
+            ("Gemma 4 12B".to_string(), PathBuf::from("/blobs/sha_gemma")),
+            ("Mistral Nemo 12B".to_string(), resident.clone()),
+        ];
+
+        // Loaded: the engine is serving the Mistral blob, so the resident model
+        // is named from the live `model_path`, independent of any selection.
+        let mut loaded = engine_status("loaded", Some(40123));
+        loaded.model_path = resident.display().to_string();
         assert_eq!(
-            builtin_loaded_model(&engine_status("loaded", Some(40123)), "org/repo:m.gguf"),
-            Some("org/repo:m.gguf".to_string())
+            builtin_loaded_model(&loaded, &installed),
+            Some("Mistral Nemo 12B".to_string())
         );
+
+        // Not loaded: nothing is resident even if a path lingers in the status.
+        let mut stopped = engine_status("stopped", None);
+        stopped.model_path = resident.display().to_string();
+        assert_eq!(builtin_loaded_model(&stopped, &installed), None);
+
+        // Loaded but the resident blob matches no installed row: report nothing
+        // rather than guessing a name.
+        let mut orphan = engine_status("loaded", Some(40123));
+        orphan.model_path = "/blobs/sha_unknown".to_string();
+        assert_eq!(builtin_loaded_model(&orphan, &installed), None);
+
+        // Loaded with an empty path (defensive): nothing to name.
         assert_eq!(
-            builtin_loaded_model(&engine_status("stopped", None), "org/repo:m.gguf"),
+            builtin_loaded_model(&engine_status("loaded", Some(40123)), &installed),
             None
-        );
-        assert_eq!(
-            builtin_loaded_model(&engine_status("loaded", Some(40123)), ""),
-            None,
-            "no picked model means nothing to report even while loaded"
         );
     }
 

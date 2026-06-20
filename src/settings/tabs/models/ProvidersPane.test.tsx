@@ -640,14 +640,20 @@ describe('ProvidersPane generation', () => {
     expect(input).toHaveValue(0);
   });
 
-  it('names the resident built-in model in VRAM and enables Unload when loaded', () => {
+  it('names the model the engine is actually serving, not the selected one', () => {
+    // The selection is Qwen, but the engine is still serving Mistral: switching
+    // the active model does not reload the sidecar, so the label must follow
+    // what the backend reports as resident, never the frontend selection.
     mockInvoke({
       get_engine_status: engineStatus('loaded'),
+      get_loaded_model: 'Mistral Nemo 12B',
       list_installed_models: INSTALLED,
     });
     renderPane(makeConfig('builtin', [BUILTIN_LOADED, OLLAMA]));
     return waitFor(() => {
-      expect(screen.getByText('Qwen3.5 9B in VRAM')).toBeInTheDocument();
+      expect(screen.getByText('Mistral Nemo 12B in VRAM')).toBeInTheDocument();
+      // The selected (but not-yet-resident) model is never shown as resident.
+      expect(screen.queryByText('Qwen3.5 9B in VRAM')).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Unload now' })).toBeEnabled();
     });
   });
@@ -827,16 +833,26 @@ describe('ProvidersPane robustness', () => {
     expect(screen.queryByText(/installed model/)).toBeNull();
   });
 
-  it('reflects the engine:status event stream for the built-in engine', async () => {
-    mockInvoke({ list_installed_models: INSTALLED });
+  it('refreshes the resident built-in model when an engine:status event arrives', async () => {
+    // Mount with nothing resident yet.
+    mockInvoke({ list_installed_models: INSTALLED, get_loaded_model: null });
     renderPane(makeConfig('builtin', [BUILTIN_LOADED, OLLAMA]));
     await act(async () => {
       await Promise.resolve();
     });
+    expect(screen.getByText('No model loaded')).toBeInTheDocument();
+    // The engine finishes loading: the status event drives a fresh backend read
+    // that names the now-resident model.
+    mockInvoke({
+      list_installed_models: INSTALLED,
+      get_loaded_model: 'Qwen3.5 9B',
+    });
     await act(async () => {
       emitTauriEvent('engine:status', engineStatus('loaded'));
     });
-    expect(screen.getByText('Qwen3.5 9B in VRAM')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText('Qwen3.5 9B in VRAM')).toBeInTheDocument(),
+    );
   });
 
   it('falls back to the first Ollama model when the active one is not listed', async () => {

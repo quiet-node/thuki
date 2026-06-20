@@ -118,20 +118,27 @@ export function ProvidersPane({
       .catch(() => setInstalled([]));
   }, [builtinModelId]);
 
-  // Engine lifecycle + Ollama VRAM residency for the keep-warm status line.
+  // Engine lifecycle + the active provider's resident model, for the keep-warm
+  // status line.
   const [engineState, setEngineState] =
     useState<EngineStatus['state']>('stopped');
   const [loadedModel, setLoadedModel] = useState<string | null>(null);
   useEffect(() => {
+    // Re-reads which model the active provider actually has resident. The
+    // built-in engine names it from its loaded blob, so this must be re-run on
+    // every engine transition rather than derived from the frontend selection.
+    const refreshLoaded = () =>
+      void invoke<string | null>('get_loaded_model')
+        .then(setLoadedModel)
+        .catch(() => {});
     invoke<EngineStatus>('get_engine_status')
       .then((s) => setEngineState(s.state))
       .catch(() => {});
-    invoke<string | null>('get_loaded_model')
-      .then(setLoadedModel)
-      .catch(() => {});
-    const unlistenStatus = listen<EngineStatus>('engine:status', (e) =>
-      setEngineState(e.payload.state),
-    );
+    refreshLoaded();
+    const unlistenStatus = listen<EngineStatus>('engine:status', (e) => {
+      setEngineState(e.payload.state);
+      refreshLoaded();
+    });
     const unlistenLoaded = listen<string>('warmup:model-loaded', (e) =>
       setLoadedModel(e.payload),
     );
@@ -291,32 +298,18 @@ export function ProvidersPane({
 
   const fillPct = `${ctxPos / 10}%`;
 
-  // Keep-warm live status: the text shown beside the name.
-  // Friendly name of the selected built-in model, for the residency line
-  // (matching the built-in model dropdown below).
-  const builtinDisplayName =
-    installed.find((m) => m.id === builtinModelId)?.display_name ?? '';
-  // Built-in residency reads like Ollama's wording, driven by the live engine
-  // state (the warmup:* events only fire for Ollama): loaded → "<model> in
-  // VRAM", starting → "Loading…", otherwise → "No model loaded". "loaded"
-  // means the llama-server sidecar is up and serving.
-  let builtinResidency: string;
-  if (engineState === 'loaded') {
-    builtinResidency =
-      builtinDisplayName !== ''
-        ? `${builtinDisplayName} in VRAM`
-        : 'No model loaded';
-  } else if (engineState === 'starting') {
-    builtinResidency = 'Loading…';
+  // Keep-warm live status: the text shown beside the name. `loadedModel` is the
+  // display name of the model the active provider actually has resident (the
+  // built-in engine's loaded blob, or Ollama's /api/ps), never the frontend
+  // selection. While the built-in engine is mid-load it reports "Loading…".
+  let warmStatusText: string;
+  if (loadedModel) {
+    warmStatusText = `${loadedModel} in VRAM`;
+  } else if (activeKind === 'builtin' && engineState === 'starting') {
+    warmStatusText = 'Loading…';
   } else {
-    builtinResidency = 'No model loaded';
+    warmStatusText = 'No model loaded';
   }
-  const warmStatusText =
-    activeKind === 'builtin'
-      ? builtinResidency
-      : loadedModel !== null
-        ? `${loadedModel} in VRAM`
-        : 'No model loaded';
 
   // The active Ollama model value, constrained to the installed list.
   const ollamaModelValue =
