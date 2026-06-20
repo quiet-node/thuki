@@ -1,19 +1,20 @@
 /**
  * Staff-picks pane: the curated front door of Discover.
  *
- * Thuki hand-picks a short catalog of models, grouped by family. Each family is
- * a collapsible accordion section; the one holding the recommended pick is open
- * by default. A model row shows its friendly name, the one quant Thuki chose for
- * it, size, capability pills (Text always, plus Vision / Thinking), a RAM-fit
- * hint, and a single Download that runs the VERIFIED starter path
- * (`download_starter`, pinned revision + sha256), unlike the Browse-all pane's
- * arbitrary repo downloads. A finished install lifts a fresh config snapshot.
+ * A flat, alphabetically-ordered list of rich model cards. Thuki hand-picks a
+ * short catalog and shows each model directly (no family grouping, no
+ * recommended highlight): its friendly name, maker and a one-line blurb,
+ * capability pills (Text always, plus Vision / Thinking), the one quant Thuki
+ * chose with its size and license, a RAM-fit hint, and a single icon download
+ * that runs the VERIFIED starter path (`download_starter`, pinned revision +
+ * sha256), unlike the Browse-all pane's arbitrary repo downloads. A finished
+ * install lifts a fresh config snapshot.
  *
  * Data comes from {@link useStarterOptions} (the same rows onboarding's picker
  * uses); the download state machine is the shared {@link useDownloadModel}, so
  * the in-flight / failed UI is the same {@link DownloadProgress} card the rest
  * of the app shows. At most one model downloads at a time (the backend enforces
- * it too); `activeTier` tracks which row owns the progress card.
+ * it too); `activeTier` tracks which card owns the progress card.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -34,9 +35,6 @@ import type {
 
 const HF_BASE_URL = 'https://huggingface.co';
 
-/** The tier marked as the recommended pick (and whose family opens by default). */
-const RECOMMENDED_TIER: StarterTier = 'balanced';
-
 /** RAM-fit hint colour class on this pane's stylesheet (labels are shared). */
 const FIT_CLASS: Record<RamFit, string> = {
   fits: styles.fitOk,
@@ -44,13 +42,20 @@ const FIT_CLASS: Record<RamFit, string> = {
   too_big: styles.fitHeavy,
 };
 
-/** A plain-language line about what a family is good for, falling back to the
- * model maker when a family has no hand-written blurb. Presentational only. */
-const FAMILY_BLURB: Record<string, string> = {
+/** A plain-language line about what a model is good for, shown after the maker.
+ * Keyed by family so several sizes of one model share it; a model with no entry
+ * shows just its maker. Presentational only. */
+const MODEL_BLURB: Record<string, string> = {
   Qwen: 'Fast, capable all-rounder',
   Gemma: 'Well-rounded, reads images',
   'gpt-oss': 'Strongest reasoning',
 };
+
+const DOWNLOAD_ICON = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />
+  </svg>
+);
 
 /** Bytes rendered as decimal gigabytes with one decimal (e.g. "8.2"). */
 function gb(bytes: number): string {
@@ -62,37 +67,11 @@ function totalBytes(o: StarterOption): number {
   return o.starter.size_bytes + o.starter.mmproj_bytes;
 }
 
-/** One family group: its label and the curated models under it, registry order. */
-interface FamilyGroup {
-  family: string;
-  blurb: string;
-  options: StarterOption[];
+/** The maker line: the maker, plus a blurb when the family has one. */
+function makerLine(o: StarterOption): string {
+  const blurb = o.starter.family ? MODEL_BLURB[o.starter.family] : undefined;
+  return blurb ? `${o.starter.origin} · ${blurb}` : o.starter.origin;
 }
-
-/** Groups starter rows by family, preserving first-seen (registry) order. */
-function groupByFamily(options: StarterOption[]): FamilyGroup[] {
-  const groups: FamilyGroup[] = [];
-  for (const o of options) {
-    const family = o.starter.family ?? o.starter.display_name;
-    const existing = groups.find((g) => g.family === family);
-    if (existing) {
-      existing.options.push(o);
-    } else {
-      groups.push({
-        family,
-        blurb: FAMILY_BLURB[family] ?? o.starter.origin,
-        options: [o],
-      });
-    }
-  }
-  return groups;
-}
-
-const CHEVRON = (
-  <svg viewBox="0 0 10 10" aria-hidden="true" className={styles.chev}>
-    <path d="M3 2l4 3-4 3" />
-  </svg>
-);
 
 interface StaffPicksPaneProps {
   /** Lift a fresh config snapshot after a successful install. */
@@ -101,25 +80,23 @@ interface StaffPicksPaneProps {
 
 export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
   const { options, refresh } = useStarterOptions();
-  const groups = useMemo(() => groupByFamily(options ?? []), [options]);
 
-  // The family holding the recommended tier opens by default; if the catalog
-  // has no recommended tier, the first family opens so the pane is never blank.
-  const defaultOpen = useMemo(() => {
-    const recommended = groups.find((g) =>
-      g.options.some((o) => o.starter.tier === RECOMMENDED_TIER),
-    );
-    const pick = recommended ?? groups[0];
-    return new Set(pick ? [pick.family] : []);
-  }, [groups]);
+  // Flat, case-insensitive alphabetical order by model name.
+  const ordered = useMemo(
+    () =>
+      [...(options ?? [])].sort((a, b) =>
+        a.starter.display_name.localeCompare(
+          b.starter.display_name,
+          undefined,
+          {
+            sensitivity: 'base',
+          },
+        ),
+      ),
+    [options],
+  );
 
-  // `null` means the user has not toggled a family yet, so the recommended
-  // family (defaultOpen) shows open; the first toggle replaces it with the
-  // user's own set, which then sticks across refreshes. No seeding effect.
-  const [open, setOpen] = useState<Set<string> | null>(null);
-  const effectiveOpen = open ?? defaultOpen;
-
-  // One download at a time; activeTier names the row that owns the progress card.
+  // One download at a time; activeTier names the card that owns the progress card.
   const [activeTier, setActiveTier] = useState<StarterTier | null>(null);
   const {
     state,
@@ -134,7 +111,7 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
   } = useDownloadModel();
 
   // A finished install (phase 'ready') lifts the fresh config, clears the
-  // active row, and refreshes the rows so the new model flips to Installed.
+  // active card, and refreshes the rows so the new model flips to Installed.
   // An effect (not a render-time call) so it fires exactly once per transition.
   useEffect(() => {
     if (state.phase !== 'ready') return;
@@ -149,18 +126,6 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
       await refresh();
     })();
   }, [state.phase, onSaved, reset, refresh]);
-
-  function toggle(family: string) {
-    setOpen((cur) => {
-      const next = new Set(cur ?? defaultOpen);
-      if (next.has(family)) {
-        next.delete(family);
-      } else {
-        next.add(family);
-      }
-      return next;
-    });
-  }
 
   function startDownload(tier: StarterTier) {
     setActiveTier(tier);
@@ -182,7 +147,7 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
     setActiveTier(null);
   }
 
-  if (options !== null && groups.length === 0) {
+  if (options !== null && ordered.length === 0) {
     return (
       <div className={styles.pane}>
         <p className={styles.empty}>No curated models are available.</p>
@@ -193,64 +158,32 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
   return (
     <div className={styles.pane}>
       <p className={styles.hint}>
-        Hand-picked by Thuki, grouped by family. Open a family to choose a size.
+        Hand-picked by Thuki and tuned for Apple Silicon.
       </p>
       <div className={styles.list}>
-        {groups.map((group) => {
-          const expanded = effectiveOpen.has(group.family);
-          return (
-            <div className={styles.fam} key={group.family}>
-              <button
-                type="button"
-                className={styles.famHead}
-                aria-expanded={expanded}
-                onClick={() => toggle(group.family)}
-              >
-                <span className={styles.famText}>
-                  <span className={styles.famName}>{group.family}</span>
-                  <span className={styles.famSub}>
-                    {group.blurb} · {group.options.length}{' '}
-                    {group.options.length === 1 ? 'model' : 'models'}
-                  </span>
-                </span>
-                <span
-                  className={`${styles.chevWrap} ${expanded ? styles.chevOpen : ''}`}
-                >
-                  {CHEVRON}
-                </span>
-              </button>
-              {expanded ? (
-                <div className={styles.famBody}>
-                  {group.options.map((o) => (
-                    <ModelRow
-                      key={o.starter.tier}
-                      option={o}
-                      recommended={o.starter.tier === RECOMMENDED_TIER}
-                      active={activeTier === o.starter.tier}
-                      state={state}
-                      progress={progress}
-                      etaSeconds={etaSeconds}
-                      onDownload={startDownload}
-                      onResume={resumeDownload}
-                      onDiscard={discardPartial}
-                      onCancel={() => void cancel()}
-                      onRetry={() => void retry()}
-                      onChooseAnother={returnToPicker}
-                    />
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
+        {ordered.map((o) => (
+          <ModelCard
+            key={o.starter.tier}
+            option={o}
+            active={activeTier === o.starter.tier}
+            state={state}
+            progress={progress}
+            etaSeconds={etaSeconds}
+            onDownload={startDownload}
+            onResume={resumeDownload}
+            onDiscard={discardPartial}
+            onCancel={() => void cancel()}
+            onRetry={() => void retry()}
+            onChooseAnother={returnToPicker}
+          />
+        ))}
       </div>
     </div>
   );
 }
 
-interface ModelRowProps {
+interface ModelCardProps {
   option: StarterOption;
-  recommended: boolean;
   active: boolean;
   state: ReturnType<typeof useDownloadModel>['state'];
   progress: ReturnType<typeof useDownloadModel>['progress'];
@@ -263,9 +196,8 @@ interface ModelRowProps {
   onChooseAnother: () => void;
 }
 
-function ModelRow({
+function ModelCard({
   option,
-  recommended,
   active,
   state,
   progress,
@@ -276,20 +208,18 @@ function ModelRow({
   onCancel,
   onRetry,
   onChooseAnother,
-}: ModelRowProps) {
+}: ModelCardProps) {
   const { starter, fit, installed, partial_bytes } = option;
   const showProgress = active && state.phase !== 'idle';
 
   return (
-    <div className={styles.row} data-model-row data-tier={starter.tier}>
-      <div className={styles.rowMain}>
+    <div className={styles.card} data-model-card data-tier={starter.tier}>
+      <div className={styles.cardMain}>
         <div className={styles.mid}>
-          <div className={styles.name}>
+          <div className={styles.name} data-testid="staff-model-name">
             {starter.display_name}
-            {recommended ? (
-              <span className={styles.recommended}>Recommended</span>
-            ) : null}
           </div>
+          <div className={styles.maker}>{makerLine(option)}</div>
           <div className={styles.pills}>
             <span className={`${styles.pill} ${styles.pillText}`}>Text</span>
             {starter.vision ? (
@@ -326,9 +256,8 @@ function ModelRow({
                 {RAM_FIT_LABEL[fit]}
               </span>
             </Tooltip>
-            <RowAction
+            <CardAction
               option={option}
-              recommended={recommended}
               installed={installed}
               partialBytes={partial_bytes}
               onDownload={onDownload}
@@ -359,9 +288,8 @@ function ModelRow({
   );
 }
 
-interface RowActionProps {
+interface CardActionProps {
   option: StarterOption;
-  recommended: boolean;
   installed: boolean;
   partialBytes: number | null;
   onDownload: (tier: StarterTier) => void;
@@ -369,17 +297,16 @@ interface RowActionProps {
   onDiscard: (sha256: string) => void;
 }
 
-/** The per-row affordance: an installed marker, a resume/discard pair when an
- * interrupted partial exists, or the plain download button. */
-function RowAction({
+/** The per-card affordance: an installed marker, a resume/discard pair when an
+ * interrupted partial exists, or the icon download button. */
+function CardAction({
   option,
-  recommended,
   installed,
   partialBytes,
   onDownload,
   onResume,
   onDiscard,
-}: RowActionProps) {
+}: CardActionProps) {
   const { starter } = option;
 
   if (installed) {
@@ -410,10 +337,11 @@ function RowAction({
   return (
     <button
       type="button"
-      className={`${styles.getBtn} ${recommended ? styles.getPrimary : ''}`}
+      className={styles.getBtn}
+      aria-label="Download"
       onClick={() => onDownload(starter.tier)}
     >
-      Download
+      {DOWNLOAD_ICON}
     </button>
   );
 }

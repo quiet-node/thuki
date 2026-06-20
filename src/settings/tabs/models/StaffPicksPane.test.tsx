@@ -1,13 +1,13 @@
 /**
  * Unit tests for the Staff-picks pane: Discover's curated front door.
  *
- * Covers the family accordion (grouping, default-expanded recommended family,
- * expand/collapse), the model rows (name, recommended star, capability pills,
- * quant/size/license meta, RAM-fit hint), and the verified starter download
- * flow (download -> progress -> ready lifts config + refreshes; installed;
- * resume/discard of a partial; failure). The download channel is captured the
- * same way BrowseAllPane.test.tsx does it: `onEvent` is grabbed off the invoke
- * args and driven with `simulateMessage`.
+ * A flat, alphabetically-ordered list of rich model cards (no family grouping,
+ * no recommended highlight). Each card shows the model name, its maker and a
+ * one-line blurb, capability pills (Text always, plus Vision / Thinking), the
+ * one quant Thuki chose with its size and license, a RAM-fit hint, and a single
+ * icon download that runs the VERIFIED starter path (`download_starter`, pinned
+ * revision + sha256). The download channel is captured the same way
+ * BrowseAllPane.test.tsx does it.
  */
 
 import {
@@ -93,7 +93,7 @@ function option(
   };
 }
 
-/** Three single-model families, mirroring the shipped registry. */
+/** Three models, mirroring the shipped registry (deliberately NOT alpha order). */
 const QWEN = option({
   tier: 'fast',
   family: 'Qwen',
@@ -159,77 +159,90 @@ async function renderPane(
   return view;
 }
 
-/** The accordion header button for a family. */
-function familyHeader(name: string): HTMLElement {
-  return screen.getByRole('button', { name: new RegExp(`^${name}`) });
+/** The card element wrapping a model name. */
+function cardFor(name: string): HTMLElement {
+  return screen.getByText(name).closest('[data-model-card]') as HTMLElement;
 }
 
 describe('StaffPicksPane', () => {
-  it('renders a section per family with its name', async () => {
+  it('renders every model as a flat card, all visible at once', async () => {
     await renderPane();
-    expect(familyHeader('Qwen')).toBeInTheDocument();
-    expect(familyHeader('Gemma')).toBeInTheDocument();
-    expect(familyHeader('gpt-oss')).toBeInTheDocument();
-  });
-
-  it('expands the recommended family by default and collapses the rest', async () => {
-    await renderPane();
-    // Gemma holds the balanced (recommended) tier, so its model row is shown.
     expect(screen.getByText('Gemma 4 12B')).toBeInTheDocument();
-    // The other families start collapsed.
-    expect(screen.queryByText('Qwen3.5 9B')).not.toBeInTheDocument();
-    expect(screen.queryByText('gpt-oss 20B')).not.toBeInTheDocument();
-  });
-
-  it('expands a collapsed family on click and collapses it again', async () => {
-    await renderPane();
-    fireEvent.click(familyHeader('Qwen'));
     expect(screen.getByText('Qwen3.5 9B')).toBeInTheDocument();
-    fireEvent.click(familyHeader('Qwen'));
-    expect(screen.queryByText('Qwen3.5 9B')).not.toBeInTheDocument();
+    expect(screen.getByText('gpt-oss 20B')).toBeInTheDocument();
   });
 
-  it('marks the recommended model and shows its meta and pills', async () => {
+  it('orders the cards alphabetically by model name', async () => {
     await renderPane();
-    const row = screen
-      .getByText('Gemma 4 12B')
-      .closest('[data-model-row]') as HTMLElement;
-    expect(within(row).getByText('Recommended')).toBeInTheDocument();
-    expect(within(row).getByText('Text')).toBeInTheDocument();
-    expect(within(row).getByText('Vision')).toBeInTheDocument();
-    expect(within(row).queryByText('Thinking')).not.toBeInTheDocument();
-    expect(within(row).getByText(/Q4_0/)).toBeInTheDocument();
-    expect(within(row).getByText(/7\.2 GB/)).toBeInTheDocument();
-    expect(within(row).getByText('Comfortable')).toBeInTheDocument();
+    const names = screen
+      .getAllByTestId('staff-model-name')
+      .map((el) => el.textContent);
+    expect(names).toEqual(['Gemma 4 12B', 'gpt-oss 20B', 'Qwen3.5 9B']);
   });
 
-  it('shows a Thinking pill on a thinking-capable model', async () => {
+  it('shows no Recommended badge on any card', async () => {
     await renderPane();
-    fireEvent.click(familyHeader('Qwen'));
-    const row = screen
-      .getByText('Qwen3.5 9B')
-      .closest('[data-model-row]') as HTMLElement;
-    expect(within(row).getByText('Thinking')).toBeInTheDocument();
-    expect(within(row).getByText('Vision')).toBeInTheDocument();
+    expect(screen.queryByText(/Recommended/)).not.toBeInTheDocument();
   });
 
-  it('omits the Vision pill on a text-only model', async () => {
+  it('shows the maker, blurb, pills, quant, size, license and fit on a card', async () => {
     await renderPane();
-    fireEvent.click(familyHeader('gpt-oss'));
-    const row = screen
-      .getByText('gpt-oss 20B')
-      .closest('[data-model-row]') as HTMLElement;
-    expect(within(row).getByText('Text')).toBeInTheDocument();
-    expect(within(row).getByText('Thinking')).toBeInTheDocument();
-    expect(within(row).queryByText('Vision')).not.toBeInTheDocument();
+    const card = cardFor('Gemma 4 12B');
+    expect(
+      within(card).getByText(/Google · Well-rounded, reads images/),
+    ).toBeInTheDocument();
+    expect(within(card).getByText('Text')).toBeInTheDocument();
+    expect(within(card).getByText('Vision')).toBeInTheDocument();
+    expect(within(card).queryByText('Thinking')).not.toBeInTheDocument();
+    expect(within(card).getByText(/Q4_0/)).toBeInTheDocument();
+    expect(within(card).getByText(/7\.2 GB/)).toBeInTheDocument();
+    expect(within(card).getByText(/Apache 2\.0/)).toBeInTheDocument();
+    expect(within(card).getByText('Comfortable')).toBeInTheDocument();
+  });
+
+  it('shows a Thinking pill on a thinking model and omits Vision on a text-only one', async () => {
+    await renderPane();
+    const qwen = cardFor('Qwen3.5 9B');
+    expect(within(qwen).getByText('Thinking')).toBeInTheDocument();
+    expect(within(qwen).getByText('Vision')).toBeInTheDocument();
+    const oss = cardFor('gpt-oss 20B');
+    expect(within(oss).getByText('Thinking')).toBeInTheDocument();
+    expect(within(oss).queryByText('Vision')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the maker alone when a model has no blurb', async () => {
+    await renderPane(() => {}, {
+      get_starter_options: [
+        option({
+          family: 'Llama',
+          display_name: 'Llama 3.3 8B',
+          origin: 'Meta',
+        }),
+      ],
+    });
+    const card = cardFor('Llama 3.3 8B');
+    // No blurb for the Llama family: the maker line is just the maker.
+    expect(within(card).getByText('Meta')).toBeInTheDocument();
+  });
+
+  it('shows just the maker when a model carries no family at all', async () => {
+    await renderPane(() => {}, {
+      get_starter_options: [
+        option({
+          family: undefined,
+          display_name: 'Mystery 7B',
+          origin: 'Acme',
+        }),
+      ],
+    });
+    const card = cardFor('Mystery 7B');
+    expect(within(card).getByText('Acme')).toBeInTheDocument();
   });
 
   it('downloads a model through the verified starter path', async () => {
     await renderPane();
-    const row = screen
-      .getByText('Gemma 4 12B')
-      .closest('[data-model-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
+    const card = cardFor('Gemma 4 12B');
+    fireEvent.click(within(card).getByRole('button', { name: 'Download' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith(
       'download_starter',
@@ -240,10 +253,8 @@ describe('StaffPicksPane', () => {
   it('lifts a fresh config and refreshes when a download completes', async () => {
     const onSaved = vi.fn();
     await renderPane(onSaved);
-    const row = screen
-      .getByText('Gemma 4 12B')
-      .closest('[data-model-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
+    const card = cardFor('Gemma 4 12B');
+    fireEvent.click(within(card).getByRole('button', { name: 'Download' }));
     await flush();
     expect(screen.getByText('Downloading model')).toBeInTheDocument();
     act(() => {
@@ -258,10 +269,8 @@ describe('StaffPicksPane', () => {
     await renderPane(onSaved, {
       get_config: new Reject(new Error('read failed')),
     });
-    const row = screen
-      .getByText('Gemma 4 12B')
-      .closest('[data-model-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
+    const card = cardFor('Gemma 4 12B');
+    fireEvent.click(within(card).getByRole('button', { name: 'Download' }));
     await flush();
     act(() => {
       lastChannel?.simulateMessage({ type: 'AllDone' });
@@ -272,10 +281,8 @@ describe('StaffPicksPane', () => {
 
   it('cancels an in-flight download', async () => {
     await renderPane();
-    const row = screen
-      .getByText('Gemma 4 12B')
-      .closest('[data-model-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
+    const card = cardFor('Gemma 4 12B');
+    fireEvent.click(within(card).getByRole('button', { name: 'Download' }));
     await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await flush();
@@ -284,10 +291,8 @@ describe('StaffPicksPane', () => {
 
   it('retries after a failed download', async () => {
     await renderPane();
-    const row = screen
-      .getByText('Gemma 4 12B')
-      .closest('[data-model-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
+    const card = cardFor('Gemma 4 12B');
+    fireEvent.click(within(card).getByRole('button', { name: 'Download' }));
     await flush();
     act(() => {
       lastChannel?.simulateMessage({
@@ -304,12 +309,10 @@ describe('StaffPicksPane', () => {
     expect(starts).toHaveLength(2);
   });
 
-  it('returns to the row from a terminal failure via Choose a different model', async () => {
+  it('returns to the card from a terminal failure via Choose a different model', async () => {
     await renderPane();
-    const row = screen
-      .getByText('Gemma 4 12B')
-      .closest('[data-model-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
+    const card = cardFor('Gemma 4 12B');
+    fireEvent.click(within(card).getByRole('button', { name: 'Download' }));
     await flush();
     act(() => {
       lastChannel?.simulateMessage({
@@ -320,8 +323,9 @@ describe('StaffPicksPane', () => {
     fireEvent.click(
       screen.getByRole('button', { name: 'Choose a different model' }),
     );
+    // The Gemma card is back to its download button, not stuck on the failure.
     expect(
-      screen.getByRole('button', { name: 'Download' }),
+      within(cardFor('Gemma 4 12B')).getByRole('button', { name: 'Download' }),
     ).toBeInTheDocument();
   });
 
@@ -329,12 +333,10 @@ describe('StaffPicksPane', () => {
     await renderPane(() => {}, {
       get_starter_options: [{ ...GEMMA, installed: true }, QWEN, GPT_OSS],
     });
-    const row = screen
-      .getByText('Gemma 4 12B')
-      .closest('[data-model-row]') as HTMLElement;
-    expect(within(row).getByText('Installed')).toBeInTheDocument();
+    const card = cardFor('Gemma 4 12B');
+    expect(within(card).getByText('Installed')).toBeInTheDocument();
     expect(
-      within(row).queryByRole('button', { name: 'Download' }),
+      within(card).queryByRole('button', { name: 'Download' }),
     ).not.toBeInTheDocument();
   });
 
@@ -346,10 +348,8 @@ describe('StaffPicksPane', () => {
         GPT_OSS,
       ],
     });
-    const row = screen
-      .getByText('Gemma 4 12B')
-      .closest('[data-model-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: /Resume/ }));
+    const card = cardFor('Gemma 4 12B');
+    fireEvent.click(within(card).getByRole('button', { name: /Resume/ }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith(
       'download_starter',
@@ -365,10 +365,8 @@ describe('StaffPicksPane', () => {
         GPT_OSS,
       ],
     });
-    const row = screen
-      .getByText('Gemma 4 12B')
-      .closest('[data-model-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Discard' }));
+    const card = cardFor('Gemma 4 12B');
+    fireEvent.click(within(card).getByRole('button', { name: 'Discard' }));
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('discard_partial_download', {
       sha256: 'b'.repeat(64),
@@ -377,10 +375,8 @@ describe('StaffPicksPane', () => {
 
   it('opens the model on Hugging Face from its provenance link', async () => {
     await renderPane();
-    const row = screen
-      .getByText('Gemma 4 12B')
-      .closest('[data-model-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: /Hugging Face/ }));
+    const card = cardFor('Gemma 4 12B');
+    fireEvent.click(within(card).getByRole('button', { name: /Hugging Face/ }));
     expect(invokeMock).toHaveBeenCalledWith('open_url', {
       url: 'https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf',
     });
@@ -396,50 +392,5 @@ describe('StaffPicksPane', () => {
       get_starter_options: new Reject(new Error('probe failed')),
     });
     expect(screen.getByText(/No curated models/)).toBeInTheDocument();
-  });
-
-  it('groups several sizes of one family under a single section', async () => {
-    const gemma4b = option({
-      tier: 'fast',
-      family: 'Gemma',
-      display_name: 'Gemma 4 4B',
-      file_name: 'gemma-4-4b.gguf',
-    });
-    const gemma12b = option({}); // balanced Gemma 4 12B
-    await renderPane(() => {}, {
-      get_starter_options: [gemma4b, gemma12b],
-    });
-    // One Gemma section (it holds the recommended tier, so it is open) lists
-    // both sizes, and the header counts them.
-    const header = familyHeader('Gemma');
-    expect(header).toHaveTextContent('2 models');
-    expect(screen.getByText('Gemma 4 4B')).toBeInTheDocument();
-    expect(screen.getByText('Gemma 4 12B')).toBeInTheDocument();
-  });
-
-  it('falls back to the maker blurb and display name for an unlabelled family', async () => {
-    const orphan = option({
-      tier: 'balanced',
-      family: undefined,
-      display_name: 'Mystery 7B',
-      origin: 'Acme',
-    });
-    await renderPane(() => {}, { get_starter_options: [orphan] });
-    // No family label: the section is keyed by the model name and its blurb
-    // falls back to the maker.
-    const header = familyHeader('Mystery 7B');
-    expect(header).toHaveTextContent('Acme');
-  });
-
-  it('falls back to expanding the first family when none is recommended', async () => {
-    // A catalog with no balanced tier: the first family expands so the pane is
-    // never fully collapsed.
-    const fastOnly = option({
-      tier: 'fast',
-      family: 'Qwen',
-      display_name: 'Qwen3.5 9B',
-    });
-    await renderPane(() => {}, { get_starter_options: [fastOnly] });
-    expect(screen.getByText('Qwen3.5 9B')).toBeInTheDocument();
   });
 });

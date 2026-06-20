@@ -1,5 +1,5 @@
 /*
- * Styles for the Staff-picks pane: Discover's curated family accordion. The
+ * Styles for the Staff-picks pane: Discover's flat curated model cards. The
  * premium tokens (--accent, --t1..--t3, --hair, --ok, --tight, --heavy, etc.)
  * cascade from the Settings window root, so they are referenced via var() here.
  */
@@ -27,93 +27,22 @@
 .list {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 8px;
 }
 
-/* ── Family accordion section ─────────────────────────────────────────────── */
+/* ── Model card ───────────────────────────────────────────────────────────── */
 
-.fam {
+.card {
   border: 1px solid var(--hair-soft);
   border-radius: var(--radius-card);
   background: var(--elev-1);
-  overflow: hidden;
 }
 
-.famHead {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 13px 15px;
-  border: none;
-  background: transparent;
-  color: var(--t1);
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background 140ms ease;
-}
-.famHead:hover {
-  background: var(--elev-2);
-}
-
-.famText {
-  flex: 1;
-  min-width: 0;
-}
-
-.famName {
-  display: block;
-  font-weight: 600;
-  font-size: 13.5px;
-  color: var(--t1);
-}
-
-.famSub {
-  display: block;
-  font-size: 11px;
-  color: var(--t3);
-  margin-top: 3px;
-}
-
-.chevWrap {
-  flex: none;
-  display: grid;
-  place-items: center;
-  color: var(--t3);
-  transition: transform 150ms ease;
-}
-.chevOpen {
-  transform: rotate(90deg);
-}
-.chev {
-  width: 10px;
-  height: 10px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.famBody {
-  border-top: 1px solid var(--hair-soft);
-}
-
-/* ── Model row ────────────────────────────────────────────────────────────── */
-
-.row {
-  padding: 0 4px;
-}
-.row + .row {
-  box-shadow: 0 -1px 0 var(--hair-soft);
-}
-
-.rowMain {
+.cardMain {
   display: flex;
   align-items: flex-start;
   gap: 14px;
-  padding: 12px 11px;
+  padding: 13px 14px;
 }
 
 .mid {
@@ -122,27 +51,15 @@
 }
 
 .name {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  flex-wrap: wrap;
-  font-weight: 560;
-  font-size: 13px;
+  font-weight: 580;
+  font-size: 13.5px;
   color: var(--t1);
 }
 
-.recommended {
-  font-size: 10px;
-  font-weight: 640;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--accent);
-  background: var(--accent-soft);
-  padding: 2px 7px;
-  border-radius: var(--radius-pill);
-}
-.recommended::before {
-  content: '★ ';
+.maker {
+  font-size: 11px;
+  color: var(--t3);
+  margin-top: 4px;
 }
 
 /* Calm capability pills: one cohesive chrome, a small colour dot the only
@@ -151,7 +68,7 @@
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  margin-top: 8px;
+  margin-top: 9px;
 }
 .pill {
   display: inline-flex;
@@ -183,7 +100,7 @@
 .meta {
   font-size: 11px;
   color: var(--t3);
-  margin-top: 8px;
+  margin-top: 9px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -235,35 +152,37 @@
   color: var(--heavy);
 }
 
-/* ── Row actions ──────────────────────────────────────────────────────────── */
+/* ── Card actions ─────────────────────────────────────────────────────────── */
 
+/* Icon-only download button: the accent download-arrow, matching the Browse-all
+ * quant rows so "download" reads the same everywhere. */
 .getBtn {
+  width: 32px;
+  height: 32px;
   flex: none;
-  font-size: 11.5px;
-  font-weight: 540;
+  display: grid;
+  place-items: center;
   color: var(--accent);
   border: 1px solid rgba(255, 141, 92, 0.4);
   border-radius: var(--radius-control);
-  padding: 6px 14px;
   background: transparent;
-  font-family: inherit;
   cursor: pointer;
   transition:
     border-color 140ms ease,
     background 140ms ease;
 }
+.getBtn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .getBtn:hover {
   border-color: rgba(255, 141, 92, 0.6);
   background: var(--accent-soft);
-}
-.getPrimary {
-  color: #16110d;
-  border-color: transparent;
-  background: var(--accent);
-}
-.getPrimary:hover {
-  background: var(--accent);
-  filter: brightness(1.05);
 }
 
 .installed {
@@ -305,5 +224,5 @@
 }
 
 .progress {
-  padding: 0 11px 13px;
+  padding: 0 14px 13px;
 }
