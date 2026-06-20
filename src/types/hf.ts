@@ -25,4 +25,8 @@ export interface HfModelSummary {
   downloads: number;
   /** True when the repo is gated; anonymous downloads fail. */
   gated: boolean;
+  /** Model's trained context window in tokens, from the repo's parsed GGUF
+   * metadata (a per-repo property shared by every quant); `null`/absent when
+   * unknown or untrusted. */
+  context_length?: number | null;
 }

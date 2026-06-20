@@ -1344,11 +1344,6 @@ pub struct HfGgufFile {
     pub file: String,
     /// File size in bytes; 0 when the API reports no size.
     pub size_bytes: u64,
-    /// Model's trained context window in tokens, from the repo's parsed GGUF
-    /// `context_length` metadata (same for every quant of a repo). `None` when
-    /// the API does not report it or the value fails the trust check in
-    /// [`sanitize_context_length`].
-    pub context_length: Option<u32>,
 }
 
 /// Subset of the HF `/api/models/<repo>?blobs=true` response Thuki consumes.
@@ -1360,14 +1355,11 @@ struct HfRepoInfo {
     sha: Option<String>,
     #[serde(default)]
     siblings: Vec<HfSibling>,
-    /// HF-parsed GGUF metadata for the repo (present for GGUF repos). Only the
-    /// model's context window is consumed; everything else is ignored.
-    #[serde(default)]
-    gguf: Option<HfGgufMeta>,
 }
 
 /// The slice of HF's parsed `gguf` metadata block Thuki reads: the model's
-/// trained context window. Untrusted external input, sanitized before use.
+/// trained context window. Present on a search row when the query requests
+/// `expand[]=gguf`. Untrusted external input, sanitized before use.
 #[derive(Deserialize)]
 struct HfGgufMeta {
     #[serde(default)]
@@ -1482,9 +1474,6 @@ pub fn resolve_listing(body: &[u8], file: &str) -> Result<RepoResolved, String> 
 pub fn parse_gguf_listing(body: &[u8]) -> Result<Vec<HfGgufFile>, String> {
     let info: HfRepoInfo = serde_json::from_slice(body)
         .map_err(|e| format!("failed to decode Hugging Face API response: {e}"))?;
-    // The context window is a repo-level property (identical across quants), so
-    // it is resolved once and stamped onto every row.
-    let context_length = sanitize_context_length(info.gguf.and_then(|g| g.context_length));
     Ok(info
         .siblings
         .into_iter()
@@ -1494,7 +1483,6 @@ pub fn parse_gguf_listing(body: &[u8]) -> Result<Vec<HfGgufFile>, String> {
             HfGgufFile {
                 file: s.rfilename,
                 size_bytes,
-                context_length,
             }
         })
         .collect())
@@ -1615,6 +1603,10 @@ pub struct HfModelSummary {
     /// approval). Gated repos cannot be fetched anonymously, so the UI can flag
     /// them instead of offering a download that would fail.
     pub gated: bool,
+    /// Model's trained context window in tokens, from the repo's parsed GGUF
+    /// `context_length` metadata (a per-repo property, identical across quants).
+    /// `None` when the API omits it or the value fails [`sanitize_context_length`].
+    pub context_length: Option<u32>,
 }
 
 /// One entry in the Hugging Face `/api/models` search response. Only the fields
@@ -1631,6 +1623,10 @@ struct HfSearchEntry {
     /// defaults to `false`.
     #[serde(default, deserialize_with = "deserialize_gated")]
     gated: bool,
+    /// HF-parsed GGUF metadata, present because the search requests
+    /// `expand[]=gguf`. Only the context window is read; sanitized before use.
+    #[serde(default)]
+    gguf: Option<HfGgufMeta>,
 }
 
 /// Normalizes Hugging Face's polymorphic `gated` field (a bool `false` or a
@@ -1659,6 +1655,7 @@ pub fn parse_search_results(body: &[u8]) -> Result<Vec<HfModelSummary>, String> 
             id: e.id,
             downloads: e.downloads,
             gated: e.gated,
+            context_length: sanitize_context_length(e.gguf.and_then(|g| g.context_length)),
         })
         .collect())
 }
@@ -1798,6 +1795,10 @@ async fn fetch_hf_search_inner(
         ("sort", "downloads"),
         ("direction", "-1"),
         ("limit", &limit),
+        // `expand[]=gguf` asks the search to include each repo's parsed GGUF
+        // metadata (the model's context window) inline, so the browser can show
+        // it on every row without a second request per repo.
+        ("expand[]", "gguf"),
     ];
     // An empty query browses the most-downloaded GGUF repos; only attach the
     // search term when the user actually typed one.
@@ -4514,7 +4515,6 @@ mod tests {
     fn hf_fixture() -> serde_json::Value {
         serde_json::json!({
             "sha": "c".repeat(40),
-            "gguf": {"context_length": 131072},
             "siblings": [
                 {"rfilename": "README.md", "size": 10},
                 {"rfilename": "model-Q4_K_M.gguf",
@@ -4537,44 +4537,16 @@ mod tests {
                 HfGgufFile {
                     file: "model-Q4_K_M.gguf".to_string(),
                     size_bytes: 1000,
-                    context_length: Some(131072),
                 },
                 HfGgufFile {
                     file: "extra.gguf".to_string(),
                     size_bytes: 7,
-                    context_length: Some(131072),
                 },
                 HfGgufFile {
                     file: "bare.gguf".to_string(),
                     size_bytes: 0,
-                    context_length: Some(131072),
                 },
             ]
-        );
-    }
-
-    #[test]
-    fn parse_gguf_listing_omits_context_when_absent_or_implausible() {
-        // No `gguf` block at all -> no context window.
-        let body = serde_json::json!({
-            "sha": "c".repeat(40),
-            "siblings": [{"rfilename": "model-Q4_K_M.gguf", "size": 1}],
-        })
-        .to_string();
-        assert_eq!(
-            parse_gguf_listing(body.as_bytes()).unwrap()[0].context_length,
-            None
-        );
-        // An implausibly large declared context is dropped, not shown.
-        let body = serde_json::json!({
-            "sha": "c".repeat(40),
-            "gguf": {"context_length": 9_000_000_000u64},
-            "siblings": [{"rfilename": "model-Q4_K_M.gguf", "size": 1}],
-        })
-        .to_string();
-        assert_eq!(
-            parse_gguf_listing(body.as_bytes()).unwrap()[0].context_length,
-            None
         );
     }
 
@@ -4604,13 +4576,9 @@ mod tests {
         let v = serde_json::to_value(HfGgufFile {
             file: "x.gguf".to_string(),
             size_bytes: 5,
-            context_length: Some(8192),
         })
         .unwrap();
-        assert_eq!(
-            v,
-            serde_json::json!({"file": "x.gguf", "size_bytes": 5, "context_length": 8192})
-        );
+        assert_eq!(v, serde_json::json!({"file": "x.gguf", "size_bytes": 5}));
     }
 
     // ── Model library: resolve_listing (pure) ───────────────────────────────
@@ -4882,46 +4850,55 @@ mod tests {
     /// absent, null) plus an empty-id row that must be dropped.
     fn search_fixture() -> serde_json::Value {
         serde_json::json!([
-            {"id": "org/alpha-GGUF", "downloads": 1000, "gated": false},
+            {"id": "org/alpha-GGUF", "downloads": 1000, "gated": false,
+             "gguf": {"context_length": 131072}},
             {"id": "org/beta-GGUF", "downloads": 500, "gated": "manual"},
             {"id": "org/gamma-GGUF"},
-            {"id": "org/delta-GGUF", "downloads": 1, "gated": true},
+            {"id": "org/delta-GGUF", "downloads": 1, "gated": true,
+             "gguf": {"context_length": 9000000000u64}},
             {"id": "org/epsilon-GGUF", "downloads": 2, "gated": null},
             {"id": "", "downloads": 9}
         ])
     }
 
     #[test]
-    fn parse_search_results_maps_rows_and_normalizes_gated() {
+    fn parse_search_results_maps_rows_normalizes_gated_and_context() {
         let body = search_fixture().to_string();
         let rows = parse_search_results(body.as_bytes()).unwrap();
         assert_eq!(
             rows,
             vec![
+                // alpha carries a valid context window from its expanded gguf.
                 HfModelSummary {
                     id: "org/alpha-GGUF".to_string(),
                     downloads: 1000,
                     gated: false,
+                    context_length: Some(131072),
                 },
                 HfModelSummary {
                     id: "org/beta-GGUF".to_string(),
                     downloads: 500,
                     gated: true,
+                    context_length: None,
                 },
                 HfModelSummary {
                     id: "org/gamma-GGUF".to_string(),
                     downloads: 0,
                     gated: false,
+                    context_length: None,
                 },
+                // delta's declared context is implausibly large, so it is dropped.
                 HfModelSummary {
                     id: "org/delta-GGUF".to_string(),
                     downloads: 1,
                     gated: true,
+                    context_length: None,
                 },
                 HfModelSummary {
                     id: "org/epsilon-GGUF".to_string(),
                     downloads: 2,
                     gated: false,
+                    context_length: None,
                 },
             ]
         );
@@ -4939,11 +4916,14 @@ mod tests {
             id: "o/r".to_string(),
             downloads: 7,
             gated: true,
+            context_length: Some(131072),
         })
         .unwrap();
         assert_eq!(
             v,
-            serde_json::json!({"id": "o/r", "downloads": 7, "gated": true})
+            serde_json::json!({
+                "id": "o/r", "downloads": 7, "gated": true, "context_length": 131072,
+            })
         );
     }
 
@@ -4968,12 +4948,10 @@ mod tests {
             HfGgufFile {
                 file: "a.gguf".to_string(),
                 size_bytes: 1 << 30,
-                context_length: None,
             },
             HfGgufFile {
                 file: "b.gguf".to_string(),
                 size_bytes: 0,
-                context_length: None,
             },
         ];
         let rows = annotate_gguf_rows(files.clone(), 64 << 30);
@@ -5015,18 +4993,12 @@ mod tests {
             file: HfGgufFile {
                 file: "w.gguf".to_string(),
                 size_bytes: 42,
-                context_length: Some(131072),
             },
             fit: None,
         };
         assert_eq!(
             serde_json::to_value(file_row).unwrap(),
-            serde_json::json!({
-                "file": "w.gguf",
-                "size_bytes": 42,
-                "context_length": 131072,
-                "fit": serde_json::Value::Null,
-            })
+            serde_json::json!({"file": "w.gguf", "size_bytes": 42, "fit": serde_json::Value::Null})
         );
     }
 

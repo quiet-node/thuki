@@ -339,14 +339,6 @@
   font-size: 11px;
   color: var(--t3);
 }
-/* Repo-level context window, shown once above the quant rows in a neutral
- * metadata tone. */
-.ctxLine {
-  font-size: 11px;
-  color: var(--t3);
-  padding: 2px 0 4px;
-  font-variant-numeric: tabular-nums;
-}
 
 .error {
   font-size: 11px;

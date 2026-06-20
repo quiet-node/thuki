@@ -68,19 +68,20 @@ function mockCommands(responses: Record<string, unknown>) {
 }
 
 const RESULTS: HfModelSummary[] = [
-  { id: 'google/gemma-4-12b-it-GGUF', downloads: 1_200_000, gated: false },
+  {
+    id: 'google/gemma-4-12b-it-GGUF',
+    downloads: 1_200_000,
+    gated: false,
+    context_length: 262_144,
+  },
+  // No context window: covers the "skip the segment" path.
   { id: 'unsloth/gemma-4-27b-it-GGUF', downloads: 410_000, gated: false },
   { id: 'meta-llama/Llama-3-8B-GGUF', downloads: 9_000, gated: true },
 ];
 
 const GGUFS: HfGgufFile[] = [
-  {
-    file: 'gemma-q4.gguf',
-    size_bytes: 5_000_000_000,
-    fit: 'tight',
-    context_length: 131_072,
-  },
-  { file: 'gemma-q8.gguf', size_bytes: 9_000_000_000, context_length: 131_072 },
+  { file: 'gemma-q4.gguf', size_bytes: 5_000_000_000, fit: 'tight' },
+  { file: 'gemma-q8.gguf', size_bytes: 9_000_000_000 },
 ];
 
 const CONFIG_AFTER_INSTALL = { marker: 'fresh' } as unknown as RawAppConfig;
@@ -137,8 +138,9 @@ describe('BrowseAllPane', () => {
     await renderPane();
     expect(screen.getByText('google/gemma-4-12b-it-GGUF')).toBeInTheDocument();
     expect(
-      screen.getByText('google · 1,200,000 downloads'),
+      screen.getByText('google · 1,200,000 downloads · 256K'),
     ).toBeInTheDocument();
+    // The second result has no context window, so the segment is omitted.
     expect(screen.getByText('unsloth · 410,000 downloads')).toBeInTheDocument();
   });
 
@@ -314,29 +316,14 @@ describe('BrowseAllPane', () => {
     expect(screen.getByText('9.0 GB')).toBeInTheDocument();
   });
 
-  it('shows the repo context window once above the quant list', async () => {
+  it('shows the per-repo context window on the collapsed row, after downloads', async () => {
     await renderPane();
-    const row = screen
-      .getByText('google/gemma-4-12b-it-GGUF')
-      .closest('[data-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
-    await flush();
-    // One context line for the whole repo, not one per quant row.
-    expect(within(row).getByText('128K context window')).toBeInTheDocument();
-  });
-
-  it('omits the context line when the repo reports no context window', async () => {
-    await renderPane(() => {}, {
-      list_hf_repo_ggufs: [
-        { file: 'x.gguf', size_bytes: 1, context_length: null },
-      ],
-    });
-    const row = screen
-      .getByText('google/gemma-4-12b-it-GGUF')
-      .closest('[data-row]') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
-    await flush();
-    expect(within(row).queryByText(/context window/)).not.toBeInTheDocument();
+    // No need to expand: the search call already carried the context window.
+    expect(
+      screen.getByText('google · 1,200,000 downloads · 256K'),
+    ).toBeInTheDocument();
+    // A repo with no context window keeps the plain org · downloads line.
+    expect(screen.getByText('unsloth · 410,000 downloads')).toBeInTheDocument();
   });
 
   it('collapses an expanded row when the download button is clicked again', async () => {
