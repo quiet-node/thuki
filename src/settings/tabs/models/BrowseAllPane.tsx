@@ -163,6 +163,9 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
   const [expanded, setExpanded] = useState(false);
   const [files, setFiles] = useState<HfGgufFile[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
+  // The file the user pressed download on, so its row (and only its row) shows
+  // the in-flight progress while the rest of the quant list stays put.
+  const [activeFile, setActiveFile] = useState<string | null>(null);
 
   const { state, progress, etaSeconds, startRepo, cancel, retry, reset } =
     useDownloadModel();
@@ -259,49 +262,68 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
           {files !== null && files.length === 0 && listError === null ? (
             <p className={styles.note}>No GGUF files in this repo.</p>
           ) : null}
-          {!showProgress && files !== null && files.length > 0
-            ? files.map((f) => (
-                <div className={styles.quantRow} key={f.file}>
-                  <span className={styles.quantName}>{f.file}</span>
-                  {f.fit ? (
-                    <Tooltip label={RAM_FIT_TOOLTIP[f.fit]} placement="top">
-                      <span className={`${styles.fit} ${FIT_CLASS[f.fit]}`}>
-                        {RAM_FIT_LABEL[f.fit]}
-                      </span>
-                    </Tooltip>
-                  ) : null}
-                  <span className={styles.quantSize}>
-                    {gb(f.size_bytes)} GB
-                  </span>
-                  <button
-                    type="button"
-                    className={styles.quantGet}
-                    aria-label="Download"
-                    onClick={() => void startRepo(model.id, f.file)}
-                  >
-                    {DOWNLOAD_ICON}
-                  </button>
-                </div>
-              ))
+          {files !== null && files.length > 0
+            ? files.map((f) => {
+                // Only the row whose file is downloading swaps its controls for
+                // the inline progress; every other row stays a normal,
+                // browsable quant (its download disabled until this one ends,
+                // since the engine runs one download at a time).
+                const downloading = showProgress && activeFile === f.file;
+                return (
+                  <div className={styles.quantRow} key={f.file}>
+                    <span className={styles.quantName}>{f.file}</span>
+                    {downloading ? (
+                      <DownloadProgress
+                        state={state}
+                        progress={progress}
+                        etaSeconds={etaSeconds}
+                        // The repo download flow has no pre-flight confirm step
+                        // (only the starter picker does), so the confirm card
+                        // never renders; these required props point at the same
+                        // covered handlers rather than dead no-op literals.
+                        onConfirm={reset}
+                        onCancelConfirm={reset}
+                        onCancel={() => void cancel()}
+                        onRetry={() => void retry()}
+                        // A terminal failure must leave a path back to the quant
+                        // list, not just Retry; reset returns to the file rows.
+                        onChooseAnother={reset}
+                      />
+                    ) : (
+                      <>
+                        {f.fit ? (
+                          <Tooltip
+                            label={RAM_FIT_TOOLTIP[f.fit]}
+                            placement="top"
+                          >
+                            <span
+                              className={`${styles.fit} ${FIT_CLASS[f.fit]}`}
+                            >
+                              {RAM_FIT_LABEL[f.fit]}
+                            </span>
+                          </Tooltip>
+                        ) : null}
+                        <span className={styles.quantSize}>
+                          {gb(f.size_bytes)} GB
+                        </span>
+                        <button
+                          type="button"
+                          className={styles.quantGet}
+                          aria-label="Download"
+                          disabled={showProgress}
+                          onClick={() => {
+                            setActiveFile(f.file);
+                            void startRepo(model.id, f.file);
+                          }}
+                        >
+                          {DOWNLOAD_ICON}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                );
+              })
             : null}
-          {showProgress ? (
-            <DownloadProgress
-              state={state}
-              progress={progress}
-              etaSeconds={etaSeconds}
-              // The repo download flow has no pre-flight confirm step (only
-              // the starter picker does), so the confirm card never renders;
-              // these required props point at the same covered handlers as
-              // their respective cards rather than dead no-op literals.
-              onConfirm={reset}
-              onCancelConfirm={reset}
-              onCancel={() => void cancel()}
-              onRetry={() => void retry()}
-              // A terminal failure must leave a path back to the quant list,
-              // not just Retry; reset returns to the file rows.
-              onChooseAnother={reset}
-            />
-          ) : null}
         </div>
       ) : null}
     </div>

@@ -445,6 +445,26 @@ describe('BrowseAllPane', () => {
     expect(invokeMock).toHaveBeenCalledWith('cancel_model_download');
   });
 
+  it('keeps the other quant rows visible and downloadable while one downloads', async () => {
+    await renderPane();
+    const row = screen
+      .getByText('google/gemma-4-12b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
+    await flush();
+    // Start the first quant's download.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    await flush();
+    // The active row shows progress...
+    expect(screen.getByTestId('download-figures')).toBeInTheDocument();
+    // ...and the OTHER quant file is still listed, not hidden.
+    expect(screen.getByText('gemma-q8.gguf')).toBeInTheDocument();
+    // Its Download button stays (disabled, since one download runs at a time).
+    const others = screen.getAllByRole('button', { name: 'Download' });
+    expect(others).toHaveLength(1);
+    expect(others[0]).toBeDisabled();
+  });
+
   it('retries after a failure and offers a path back to the quant list', async () => {
     await renderPane();
     const row = screen
