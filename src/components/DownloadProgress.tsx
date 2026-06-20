@@ -249,19 +249,25 @@ export function DownloadProgress({
       );
     case 'failed':
       return (
-        <Card>
-          <Headline>{failureHeadline(state.kind, state.message)}</Headline>
-          {state.kind === 'http' ? <Detail>{state.message}</Detail> : null}
-          <ButtonRow>
-            <FlowButton label="Retry" primary onClick={onRetry} />
-            {onChooseAnother ? (
-              <FlowButton
-                label="Choose a different model"
-                onClick={onChooseAnother}
-              />
+        <Hairline edge={<Edge percent={100} tone="red" />}>
+          <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: '#ff7a6e' }}>
+              {failureHeadline(state.kind, state.message)}
+            </span>
+            {state.kind === 'http' ? (
+              <span style={FIGURES_STYLE}>{state.message}</span>
             ) : null}
-          </ButtonRow>
-        </Card>
+          </span>
+          <span style={{ flex: 1 }} />
+          <GhostButton label="Retry" tone="accent" onClick={onRetry} />
+          {onChooseAnother ? (
+            <GhostButton
+              label="Choose a different model"
+              tone="muted"
+              onClick={onChooseAnother}
+            />
+          ) : null}
+        </Hairline>
       );
     default:
       // idle and resume_pending have no progress UI; the picker owns them.
@@ -375,8 +381,14 @@ function Edge({
 }: {
   percent?: number;
   indeterminate?: boolean;
-  tone: 'accent' | 'green';
+  tone: 'accent' | 'green' | 'red';
 }) {
+  const fill =
+    tone === 'green'
+      ? '#5fcf86'
+      : tone === 'red'
+        ? '#ef6b6b'
+        : 'linear-gradient(90deg, #ffa06f, #d45a1e)';
   return (
     <span
       data-progress-bar
@@ -400,13 +412,40 @@ function Edge({
           bottom: 0,
           width: indeterminate ? '40%' : `${percent}%`,
           borderRadius: 999,
-          background:
-            tone === 'green'
-              ? '#5fcf86'
-              : 'linear-gradient(90deg, #ffa06f, #d45a1e)',
+          background: fill,
         }}
       />
     </span>
+  );
+}
+
+/** A borderless text button for the inline hairline actions (Retry, etc.). */
+function GhostButton({
+  label,
+  tone,
+  onClick,
+}: {
+  label: string;
+  tone: 'accent' | 'muted';
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: 'transparent',
+        border: 'none',
+        fontFamily: 'inherit',
+        fontSize: 11.5,
+        fontWeight: 700,
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+        padding: '2px 4px',
+        color: tone === 'accent' ? '#ff8d5c' : 'rgba(236,234,231,0.54)',
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
