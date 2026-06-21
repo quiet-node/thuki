@@ -194,11 +194,6 @@ describe('BrowseAllPane', () => {
     expect(screen.getByText('unsloth · 410,000 downloads')).toBeInTheDocument();
   });
 
-  it('shows the result count in the sub-bar', async () => {
-    await renderPane();
-    expect(screen.getByText(/chat models/)).toHaveTextContent('3 chat models');
-  });
-
   it('renders capability pills per row from the repo capabilities', async () => {
     await renderPane();
     const visionRow = screen
@@ -760,7 +755,6 @@ describe('BrowseAllPane', () => {
   it('shows a no-results message when the search returns nothing', async () => {
     await renderPane(() => {}, { search_hf_models: pageOf([]) });
     expect(screen.getByText('No models found.')).toBeInTheDocument();
-    expect(screen.getByText(/chat models/)).toHaveTextContent('0 chat models');
   });
 
   it('offers Load more on a full page and pages to the next batch', async () => {

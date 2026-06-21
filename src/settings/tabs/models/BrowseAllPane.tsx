@@ -130,9 +130,6 @@ export function BrowseAllPane({ onSaved }: BrowseAllPaneProps) {
       </div>
 
       <div className={styles.subbar}>
-        <span className={styles.count}>
-          <b>{results.length}</b> chat models
-        </span>
         <span className={styles.sort}>Most downloaded</span>
       </div>
 

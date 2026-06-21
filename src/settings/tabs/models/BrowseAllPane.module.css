@@ -80,7 +80,7 @@
   background: var(--elev-2);
 }
 
-/* ── Sub-bar: result count + sort label ───────────────────────────────── */
+/* ── Sub-bar: sort label ──────────────────────────────────────────────── */
 
 .subbar {
   display: flex;
@@ -88,16 +88,6 @@
   margin-top: 11px;
   padding-bottom: 11px;
   border-bottom: 1px solid var(--hair-soft);
-}
-
-.count {
-  font-size: 11.5px;
-  color: var(--t3);
-}
-
-.count b {
-  color: var(--t2);
-  font-weight: 590;
 }
 
 .sort {
