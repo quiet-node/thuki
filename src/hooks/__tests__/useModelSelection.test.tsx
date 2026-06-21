@@ -1,11 +1,18 @@
 import { renderHook, act } from '@testing-library/react';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useModelSelection } from '../useModelSelection';
-import { invoke } from '../../testUtils/mocks/tauri';
+import {
+  invoke,
+  listen,
+  emitTauriEvent,
+  clearEventHandlers,
+} from '../../testUtils/mocks/tauri';
 
 describe('useModelSelection', () => {
   beforeEach(() => {
     invoke.mockReset();
+    listen.mockClear();
+    clearEventHandlers();
   });
 
   it('loads active and installed models from the backend', async () => {
@@ -383,5 +390,91 @@ describe('useModelSelection', () => {
     await act(async () => {
       rejectLate(new Error('late'));
     });
+  });
+
+  it('refreshes the picker when thuki://config-updated fires', async () => {
+    // A model change made from the other window (the Settings panel) writes
+    // config and broadcasts config-updated; the picker must re-pull so its
+    // active model and list match the new backend truth without a remount.
+    invoke
+      .mockResolvedValueOnce({
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
+      })
+      .mockResolvedValueOnce({
+        active: 'qwen2.5:7b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
+      });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+    expect(result.current.activeModel).toBe('gemma4:e2b');
+
+    await act(async () => {
+      emitTauriEvent('thuki://config-updated', null);
+    });
+
+    expect(result.current.activeModel).toBe('qwen2.5:7b');
+  });
+
+  it('stops refreshing on config-updated after unmount', async () => {
+    invoke.mockResolvedValue({
+      active: 'gemma4:e2b',
+      all: ['gemma4:e2b'],
+      ollamaReachable: true,
+    });
+
+    const { unmount } = renderHook(() => useModelSelection());
+    await act(async () => {});
+    const callsBeforeUnmount = invoke.mock.calls.length;
+
+    unmount();
+    await act(async () => {
+      emitTauriEvent('thuki://config-updated', null);
+    });
+
+    expect(invoke.mock.calls.length).toBe(callsBeforeUnmount);
+  });
+
+  it('survives a config-updated listen rejection without crashing', async () => {
+    listen.mockRejectedValueOnce(new Error('event bridge missing'));
+    invoke.mockResolvedValueOnce({
+      active: 'gemma4:e2b',
+      all: ['gemma4:e2b'],
+      ollamaReachable: true,
+    });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+
+    expect(result.current.activeModel).toBe('gemma4:e2b');
+  });
+
+  it('drops a late-arriving config-updated subscription after unmount', async () => {
+    let resolveListen!: (fn: () => void) => void;
+    const unlistenSpy = vi.fn();
+    listen.mockImplementationOnce(
+      () =>
+        new Promise<() => void>((resolve) => {
+          resolveListen = resolve;
+        }),
+    );
+    invoke.mockResolvedValueOnce({
+      active: 'gemma4:e2b',
+      all: ['gemma4:e2b'],
+      ollamaReachable: true,
+    });
+
+    const { unmount } = renderHook(() => useModelSelection());
+    await act(async () => {});
+    unmount();
+
+    await act(async () => {
+      resolveListen(unlistenSpy);
+    });
+
+    expect(unlistenSpy).toHaveBeenCalledTimes(1);
   });
 });

@@ -7,6 +7,11 @@ import {
   __emitFocus,
   __resetFocusListeners,
 } from '../../testUtils/mocks/tauri-window';
+import {
+  listen,
+  emitTauriEvent,
+  clearEventHandlers,
+} from '../../testUtils/mocks/tauri';
 import { useConfigSync } from './useConfigSync';
 import type { RawAppConfig } from '../types';
 
@@ -85,11 +90,14 @@ const CONFIG_B: RawAppConfig = {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  listen.mockClear();
   __resetFocusListeners();
+  clearEventHandlers();
 });
 
 afterEach(() => {
   __resetFocusListeners();
+  clearEventHandlers();
 });
 
 describe('useConfigSync', () => {
@@ -203,6 +211,86 @@ describe('useConfigSync', () => {
     invokeMock.mockClear();
     __emitFocus(true);
     // Listener was removed; no further reload invokes.
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('refreshes from get_config (not reload) when thuki://config-updated fires', async () => {
+    // An in-app write from either window broadcasts config-updated. The
+    // Settings window must pick the change up live via the read-only
+    // get_config: calling reload_config_from_disk here would re-emit the
+    // same event and loop, and would run residency side-effects again.
+    invokeMock.mockResolvedValueOnce(CONFIG_A).mockResolvedValueOnce(CONFIG_B);
+
+    const { result } = renderHook(() => useConfigSync());
+    await waitFor(() => expect(result.current.config).toEqual(CONFIG_A));
+
+    await act(async () => {
+      emitTauriEvent('thuki://config-updated', null);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.config).toEqual(CONFIG_B));
+    expect(invokeMock).toHaveBeenCalledWith('get_config');
+    expect(invokeMock).not.toHaveBeenCalledWith('reload_config_from_disk');
+  });
+
+  it('keeps the last good config when the config-updated refresh rejects', async () => {
+    invokeMock
+      .mockResolvedValueOnce(CONFIG_A)
+      .mockRejectedValueOnce(new Error('boom'));
+
+    const { result } = renderHook(() => useConfigSync());
+    await waitFor(() => expect(result.current.config).toEqual(CONFIG_A));
+
+    await act(async () => {
+      emitTauriEvent('thuki://config-updated', null);
+      await Promise.resolve();
+    });
+
+    expect(result.current.config).toEqual(CONFIG_A);
+  });
+
+  it('survives a config-updated listen rejection without crashing hydrate', async () => {
+    listen.mockRejectedValueOnce(new Error('event bridge missing'));
+    invokeMock.mockResolvedValue(CONFIG_A);
+
+    const { result } = renderHook(() => useConfigSync());
+    await waitFor(() => expect(result.current.config).toEqual(CONFIG_A));
+  });
+
+  it('drops a late-arriving config-updated subscription after unmount', async () => {
+    let resolveListen!: (fn: () => void) => void;
+    const unlistenSpy = vi.fn();
+    listen.mockImplementationOnce(
+      () =>
+        new Promise<() => void>((resolve) => {
+          resolveListen = resolve;
+        }),
+    );
+    invokeMock.mockResolvedValue(CONFIG_A);
+
+    const { result, unmount } = renderHook(() => useConfigSync());
+    await waitFor(() => expect(result.current.config).toEqual(CONFIG_A));
+    unmount();
+
+    await act(async () => {
+      resolveListen(unlistenSpy);
+    });
+
+    expect(unlistenSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops refreshing on config-updated after unmount', async () => {
+    invokeMock.mockResolvedValue(CONFIG_A);
+    const { result, unmount } = renderHook(() => useConfigSync());
+    await waitFor(() => expect(result.current.config).toEqual(CONFIG_A));
+
+    unmount();
+    invokeMock.mockClear();
+    await act(async () => {
+      emitTauriEvent('thuki://config-updated', null);
+    });
+
     expect(invokeMock).not.toHaveBeenCalled();
   });
 });

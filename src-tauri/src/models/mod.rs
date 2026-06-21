@@ -27,7 +27,7 @@ use std::sync::Mutex;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
@@ -398,6 +398,13 @@ fn persist_active_provider_model(
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         *guard = mirror;
     }
+    // Broadcast the same config-change event every settings_commands writer
+    // emits, so the other webview (the overlay's picker, or the Settings panel)
+    // resyncs live. set_active_model is otherwise the only model-write path
+    // that left other windows stale; this also covers finalize_install's
+    // auto-select and the delete-clear path. The listeners refresh via the
+    // read-only get_config, never reload_config_from_disk, so this cannot loop.
+    let _ = app.emit(crate::settings_commands::CONFIG_UPDATED_EVENT, ());
     Ok(())
 }
 
