@@ -275,7 +275,7 @@ export function DownloadProgress({
   }
 }
 
-function Card({ children }: { children: React.ReactNode }) {
+export function Card({ children }: { children: React.ReactNode }) {
   return (
     <div
       data-download-progress
@@ -294,7 +294,7 @@ function Card({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Headline({ children }: { children: React.ReactNode }) {
+export function Headline({ children }: { children: React.ReactNode }) {
   return (
     <p
       style={{
@@ -311,7 +311,7 @@ function Headline({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Detail({
+export function Detail({
   children,
   warn = false,
 }: {
@@ -503,7 +503,11 @@ interface FlowButtonProps {
   primary?: boolean;
 }
 
-function FlowButton({ label, onClick, primary = false }: FlowButtonProps) {
+export function FlowButton({
+  label,
+  onClick,
+  primary = false,
+}: FlowButtonProps) {
   return (
     <button
       onClick={onClick}
@@ -526,7 +530,7 @@ function FlowButton({ label, onClick, primary = false }: FlowButtonProps) {
   );
 }
 
-function ButtonRow({ children }: { children: React.ReactNode }) {
+export function ButtonRow({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>{children}</div>
   );

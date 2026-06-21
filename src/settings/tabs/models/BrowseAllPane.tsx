@@ -24,6 +24,7 @@ import {
 } from '../../../contexts/DownloadsContext';
 import { downloadKey } from '../../../hooks/downloadKey';
 import { CapabilityPills } from './CapabilityPills';
+import { DownloadRiskConfirm } from './DownloadRiskConfirm';
 import { useHfSearch } from './useHfSearch';
 import { Tooltip } from '../../../components/Tooltip';
 import { formatContextWindow } from '../../../utils/contextWindow';
@@ -81,6 +82,14 @@ const CHEVRON_ICON = (
     <path d="M6 9l6 6 6-6" />
   </svg>
 );
+// Amber caution triangle bookending the live-fetch notice.
+const CAUTION_ICON = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h16.9a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+    <path d="M12 9v4" />
+    <path d="M12 17h.01" />
+  </svg>
+);
 interface BrowseAllPaneProps {
   /** Lift a fresh config snapshot after a successful install. */
   onSaved: (next: RawAppConfig) => void;
@@ -129,9 +138,12 @@ export function BrowseAllPane({ onSaved }: BrowseAllPaneProps) {
         })}
       </div>
 
-      <div className={styles.subbar}>
-        <span className={styles.sort}>Most downloaded</span>
-      </div>
+      <p className={styles.notice}>
+        {CAUTION_ICON}
+        Live from Hugging Face. Quality and safety vary. Research any model
+        before you download it.
+        {CAUTION_ICON}
+      </p>
 
       <div className={styles.list}>
         {loading ? <p className={styles.state}>Searching…</p> : null}
@@ -328,6 +340,10 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
   const { clear } = downloads;
   const downloading = entry !== undefined;
   const phase = entry?.state.phase;
+  // Browse-all is a live Hugging Face fetch, so a fresh download click first
+  // asks the user to accept an unreviewed third-party model. Resume of an
+  // already-accepted partial skips this.
+  const [confirming, setConfirming] = useState(false);
 
   // A finished install: the backend recorded the model, so lift the fresh config
   // and re-read the listing (the quant flips to its installed state) and drop
@@ -367,6 +383,22 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
     file.partial_bytes !== null
       ? Math.min(100, Math.floor((file.partial_bytes / file.size_bytes) * 100))
       : 0;
+
+  if (confirming) {
+    return (
+      <div className={styles.quantRow}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <DownloadRiskConfirm
+            onConfirm={() => {
+              setConfirming(false);
+              downloads.startRepoDownload(repo, file.file);
+            }}
+            onCancel={() => setConfirming(false)}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={styles.quantRow}>
@@ -426,7 +458,7 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
                 type="button"
                 className={styles.quantGet}
                 aria-label="Download"
-                onClick={() => downloads.startRepoDownload(repo, file.file)}
+                onClick={() => setConfirming(true)}
               >
                 {DOWNLOAD_ICON}
               </button>

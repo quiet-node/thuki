@@ -80,20 +80,33 @@
   background: var(--elev-2);
 }
 
-/* ── Sub-bar: sort label ──────────────────────────────────────────────── */
+/* ── Notice: live-fetch / do-your-own-research caution ────────────────── */
 
-.subbar {
+/* Browse-all is an unfiltered live Hugging Face fetch, so a calm caution line
+ * sets the expectation that results are unreviewed and downloads are at the
+ * user's own risk. No box: just the amber icon and the statement, so it reads
+ * as a quiet heads-up rather than an alarm. */
+.notice {
   display: flex;
   align-items: center;
+  justify-content: center;
+  gap: 9px;
   margin-top: 11px;
-  padding-bottom: 11px;
-  border-bottom: 1px solid var(--hair-soft);
+  font-size: 11px;
+  color: var(--t2);
+  line-height: 1.45;
+  text-align: center;
 }
 
-.sort {
-  margin-left: auto;
-  font-size: 11.5px;
-  color: var(--t2);
+.notice svg {
+  width: 14px;
+  height: 14px;
+  stroke: var(--tight);
+  stroke-width: 1.7;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
 }
 
 /* ── Result list ──────────────────────────────────────────────────────── */

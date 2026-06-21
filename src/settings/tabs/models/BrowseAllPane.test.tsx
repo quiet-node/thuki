@@ -154,6 +154,16 @@ async function flush() {
   });
 }
 
+/**
+ * Clicks a quant's Download button and accepts the Browse-all
+ * at-your-own-risk confirmation, mirroring a real download start (every
+ * Browse-all download is gated behind this per-download confirm).
+ */
+function confirmDownload(button: HTMLElement) {
+  fireEvent.click(button);
+  fireEvent.click(screen.getByRole('button', { name: 'Download anyway' }));
+}
+
 beforeEach(() => {
   invokeMock.mockReset();
   lastChannel = null;
@@ -467,7 +477,7 @@ describe('BrowseAllPane', () => {
     const downloadButtons = screen.getAllByRole('button', {
       name: 'Download',
     });
-    fireEvent.click(downloadButtons[1]);
+    confirmDownload(downloadButtons[1]);
     await flush();
     expect(invokeMock).toHaveBeenCalledWith(
       'download_repo_model',
@@ -512,7 +522,7 @@ describe('BrowseAllPane', () => {
       .closest('[data-row]') as HTMLElement;
     fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
-    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    confirmDownload(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
     act(() => {
       lastChannel?.simulateMessage({ type: 'AllDone' });
@@ -528,7 +538,7 @@ describe('BrowseAllPane', () => {
       .closest('[data-row]') as HTMLElement;
     fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
-    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    confirmDownload(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
     expect(screen.getByTestId('download-figures')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -548,7 +558,7 @@ describe('BrowseAllPane', () => {
 
     fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
-    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    confirmDownload(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
     act(() => {
       lastChannel?.simulateMessage({
@@ -576,7 +586,7 @@ describe('BrowseAllPane', () => {
       .closest('[data-row]') as HTMLElement;
     fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
-    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    confirmDownload(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
 
     act(() => lastChannel?.simulateMessage({ type: 'Verifying' }));
@@ -625,7 +635,7 @@ describe('BrowseAllPane', () => {
     await expandRepo();
     // Two quants, two download buttons before any install.
     expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(2);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    confirmDownload(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
     expect(screen.getByTestId('download-figures')).toBeInTheDocument();
     act(() => lastChannel?.simulateMessage({ type: 'AllDone' }));
@@ -692,7 +702,7 @@ describe('BrowseAllPane', () => {
       },
     });
     await expandRepo();
-    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    confirmDownload(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
     expect(screen.getByTestId('download-figures')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -734,7 +744,7 @@ describe('BrowseAllPane', () => {
     fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
     // Start the first quant's download.
-    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    confirmDownload(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
     // The active quant shows progress...
     expect(screen.getByTestId('download-figures')).toBeInTheDocument();
@@ -744,7 +754,7 @@ describe('BrowseAllPane', () => {
     const others = screen.getAllByRole('button', { name: 'Download' });
     expect(others).toHaveLength(1);
     expect(others[0]).toBeEnabled();
-    fireEvent.click(others[0]);
+    confirmDownload(others[0]);
     await flush();
     const repoStarts = invokeMock.mock.calls.filter(
       (c: unknown[]) => c[0] === 'download_repo_model',
@@ -759,7 +769,7 @@ describe('BrowseAllPane', () => {
       .closest('[data-row]') as HTMLElement;
     fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
     await flush();
-    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    confirmDownload(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
     act(() => {
       lastChannel?.simulateMessage({
@@ -854,5 +864,53 @@ describe('BrowseAllPane', () => {
     expect(
       screen.queryByRole('button', { name: 'Load more' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows the live-fetch caution notice', async () => {
+    await renderPane();
+    expect(
+      screen.getByText(
+        'Live from Hugging Face. Quality and safety vary. Research any model before you download it.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('confirms before a fresh download and only starts on accept', async () => {
+    await renderPane();
+    await expandRepo();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    // The confirm replaces the download control; nothing is downloaded yet.
+    expect(screen.getByText('Before you download')).toBeInTheDocument();
+    expect(
+      invokeMock.mock.calls.filter(
+        (c: unknown[]) => c[0] === 'download_repo_model',
+      ),
+    ).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download anyway' }));
+    await flush();
+    expect(invokeMock).toHaveBeenCalledWith(
+      'download_repo_model',
+      expect.objectContaining({
+        repo: 'google/gemma-4-12b-it-GGUF',
+        file: 'gemma-q4.gguf',
+      }),
+    );
+  });
+
+  it('cancelling the confirm restores the download control without downloading', async () => {
+    await renderPane();
+    await expandRepo();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    expect(screen.getByText('Before you download')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByText('Before you download')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(2);
+    expect(
+      invokeMock.mock.calls.filter(
+        (c: unknown[]) => c[0] === 'download_repo_model',
+      ),
+    ).toHaveLength(0);
   });
 });

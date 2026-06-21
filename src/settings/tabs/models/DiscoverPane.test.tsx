@@ -248,6 +248,8 @@ describe('DiscoverPane download persistence', () => {
       expect(screen.getByText('gemma-q4.gguf')).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+    // Browse-all gates every download behind a per-download confirm.
+    fireEvent.click(screen.getByRole('button', { name: 'Download anyway' }));
     await flush();
     act(() =>
       channel?.simulateMessage({
