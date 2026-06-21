@@ -124,6 +124,24 @@ describe('DownloadsContext', () => {
     });
   });
 
+  it('ignores a re-entrant start while the same key is already downloading', async () => {
+    const { result } = renderHook(() => useDownloads(), { wrapper });
+    await act(async () => {
+      result.current.startStaffPick('gemma-4-12b');
+    });
+    // A second click before the row hides its button must not fire a second
+    // backend download (which claim_download would reject as a spurious flash).
+    await act(async () => {
+      result.current.startStaffPick('gemma-4-12b');
+    });
+    expect(
+      invoke.mock.calls.filter((c) => c[0] === 'download_staff_pick'),
+    ).toHaveLength(1);
+    expect(result.current.get(STAFF_KEY)?.state).toEqual({
+      phase: 'downloading',
+    });
+  });
+
   it('cancel targets the keyed download', async () => {
     const { result } = renderHook(() => useDownloads(), { wrapper });
     await act(async () => {

@@ -28,6 +28,7 @@ import {
   type DownloadAccumulator,
   type DownloadProgressInfo,
   type DownloadUiState,
+  isDownloadInFlight,
   reduceDownloadEvent,
   startingAccumulator,
 } from '../hooks/downloadReducer';
@@ -126,6 +127,15 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
 
   const begin = useCallback((identity: RegistryIdentity) => {
     const key = downloadKey(identity);
+    // A fast double-click, or a click landing before the row re-renders to hide
+    // its button, would fire a second backend download that claim_download
+    // rejects, flashing a spurious failure over the live one. Ignore re-entry
+    // while this key is already downloading; a retry of a terminal
+    // (failed/ready) entry is not in flight, so it still proceeds.
+    const existing = entriesRef.current.get(key);
+    if (existing && isDownloadInFlight(existing.acc.state.phase)) {
+      return;
+    }
     const [command, args] = commandFor(identity);
     setEntries((prev) => {
       const next = new Map(prev);
