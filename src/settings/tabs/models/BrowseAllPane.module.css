@@ -178,6 +178,36 @@
   background: rgba(230, 181, 107, 0.1);
 }
 
+/* Per-family live download status on the (possibly collapsed) repo row: counts
+ * only, one pill per active state, colour tracking the phase. Colours come from
+ * the shared phase tokens; the soft backgrounds are mixed from those same tokens
+ * so the hue is defined once. */
+.statusPills {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.statusPill {
+  font-size: 11px;
+  font-weight: 560;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+}
+.pillDownloading {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.pillVerifying {
+  color: var(--cap-think);
+  background: color-mix(in srgb, var(--cap-think) 14%, transparent);
+}
+.pillFailed {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
 /* Per-quant RAM-fit hint: a coloured label (no dot). */
 .fit {
   flex: none;

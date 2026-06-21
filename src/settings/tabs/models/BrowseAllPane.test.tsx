@@ -538,6 +538,60 @@ describe('BrowseAllPane', () => {
     });
   });
 
+  it('shows a download-status pill on the repo row that survives collapse', async () => {
+    await renderPane();
+    const row = screen
+      .getByText('google/gemma-4-12b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    // No download yet: the collapsed row carries no status pill.
+    expect(within(row).queryByText('1 downloading')).not.toBeInTheDocument();
+
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
+    await flush();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    await flush();
+    act(() => {
+      lastChannel?.simulateMessage({
+        type: 'Started',
+        data: {
+          file: 'gemma-q4.gguf',
+          total_bytes: 5_000_000_000,
+          resumed_from: 0,
+        },
+      });
+    });
+    expect(within(row).getByText('1 downloading')).toBeInTheDocument();
+
+    // Collapsing the row hides the quant list but keeps the at-a-glance status.
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
+    await flush();
+    expect(within(row).queryByText('gemma-q4.gguf')).not.toBeInTheDocument();
+    expect(within(row).getByText('1 downloading')).toBeInTheDocument();
+  });
+
+  it('reflects verifying then failed states in the repo row pill', async () => {
+    await renderPane();
+    const row = screen
+      .getByText('google/gemma-4-12b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
+    await flush();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    await flush();
+
+    act(() => lastChannel?.simulateMessage({ type: 'Verifying' }));
+    expect(within(row).getByText('1 verifying')).toBeInTheDocument();
+    expect(within(row).queryByText('1 downloading')).not.toBeInTheDocument();
+
+    act(() =>
+      lastChannel?.simulateMessage({
+        type: 'Failed',
+        data: { kind: 'http', message: 'HTTP 500' },
+      }),
+    );
+    expect(within(row).getByText('1 failed')).toBeInTheDocument();
+  });
+
   async function expandRepo(): Promise<HTMLElement> {
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')

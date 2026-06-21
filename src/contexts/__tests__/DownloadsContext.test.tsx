@@ -204,6 +204,98 @@ describe('DownloadsContext', () => {
     });
   });
 
+  it('reports zero counts for a repo with no live downloads', () => {
+    const { result } = renderHook(() => useDownloads(), { wrapper });
+    expect(result.current.repoDownloadSummary('org/repo')).toEqual({
+      downloading: 0,
+      verifying: 0,
+      failed: 0,
+    });
+  });
+
+  it("counts a repo's live downloads by state, mmproj as downloading, excluding ready and other repos", async () => {
+    const { result } = renderHook(() => useDownloads(), { wrapper });
+
+    // a.gguf: plain downloading (default phase on start).
+    await act(async () => {
+      result.current.startRepoDownload('org/repo', 'a.gguf');
+    });
+
+    // b.gguf: a second Started flips it to downloading_mmproj (still downloading).
+    await act(async () => {
+      result.current.startRepoDownload('org/repo', 'b.gguf');
+    });
+    const chB = channel();
+    act(() =>
+      chB.simulateMessage({
+        type: 'Started',
+        data: { file: 'b.gguf', total_bytes: 100, resumed_from: 0 },
+      }),
+    );
+    act(() =>
+      chB.simulateMessage({
+        type: 'Started',
+        data: { file: 'b.mmproj', total_bytes: 50, resumed_from: 0 },
+      }),
+    );
+
+    // c.gguf: verifying.
+    await act(async () => {
+      result.current.startRepoDownload('org/repo', 'c.gguf');
+    });
+    act(() =>
+      channel().simulateMessage({
+        type: 'Verifying',
+        data: { file: 'c.gguf' },
+      }),
+    );
+
+    // d.gguf: failed.
+    await act(async () => {
+      result.current.startRepoDownload('org/repo', 'd.gguf');
+    });
+    act(() =>
+      channel().simulateMessage({
+        type: 'Failed',
+        data: { kind: 'http', message: 'HTTP 500' },
+      }),
+    );
+
+    // e.gguf: ready is terminal-success and must not appear as a live pill.
+    await act(async () => {
+      result.current.startRepoDownload('org/repo', 'e.gguf');
+    });
+    act(() => channel().simulateMessage({ type: 'AllDone' }));
+
+    // A different repo's download must not leak into org/repo's counts.
+    await act(async () => {
+      result.current.startRepoDownload('other/repo', 'z.gguf');
+    });
+
+    expect(result.current.repoDownloadSummary('org/repo')).toEqual({
+      downloading: 2,
+      verifying: 1,
+      failed: 1,
+    });
+    expect(result.current.repoDownloadSummary('other/repo')).toEqual({
+      downloading: 1,
+      verifying: 0,
+      failed: 0,
+    });
+  });
+
+  it('excludes Staff Picks downloads from a repo summary', async () => {
+    const { result } = renderHook(() => useDownloads(), { wrapper });
+    await act(async () => {
+      result.current.startStaffPick('gemma-4-12b');
+    });
+    expect(result.current.repoDownloadSummary('org/repo')).toEqual({
+      downloading: 0,
+      verifying: 0,
+      failed: 0,
+    });
+  });
+
   it('ignores a late channel event after its entry is cleared', async () => {
     const { result } = renderHook(() => useDownloads(), { wrapper });
     await act(async () => {

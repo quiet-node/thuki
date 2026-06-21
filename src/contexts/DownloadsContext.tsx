@@ -49,6 +49,20 @@ export interface DownloadView {
   speedBytesPerSec: number | null;
 }
 
+/**
+ * Per-repo roll-up of a family's live downloads, by state, for the collapsed
+ * Browse-all row pills. Counts only the in-memory registry's active states:
+ * `downloading` (weights or its mmproj companion), `verifying`, and `failed`.
+ * Terminal-success (`ready`) is omitted (it clears immediately), and paused
+ * partials are not registry state at all (they live in the per-file listing
+ * read on expand), so neither is summarisable here.
+ */
+export interface RepoDownloadSummary {
+  downloading: number;
+  verifying: number;
+  failed: number;
+}
+
 /** Internal record: the identity (for retry replay) plus its accumulator. */
 interface RegistryEntry {
   identity: RegistryIdentity;
@@ -64,6 +78,12 @@ export interface DownloadsContextValue {
    * list (which would reveal the per-file downloads) has been fetched.
    */
   hasRepoDownload: (repo: string) => boolean;
+  /**
+   * Live download counts for `repo`, by state, for the collapsed-row pills.
+   * Counts only repo-kind downloads belonging to `repo`; see
+   * {@link RepoDownloadSummary}.
+   */
+  repoDownloadSummary: (repo: string) => RepoDownloadSummary;
   /** Start (or resume) a Staff Picks catalog download by its stable id. */
   startStaffPick: (id: string) => void;
   /** Start (or resume) a Browse-all repo download by repo + GGUF file. */
@@ -205,10 +225,40 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
     [entries],
   );
 
+  const repoDownloadSummary = useCallback(
+    (repo: string): RepoDownloadSummary => {
+      const summary: RepoDownloadSummary = {
+        downloading: 0,
+        verifying: 0,
+        failed: 0,
+      };
+      for (const entry of entries.values()) {
+        if (entry.identity.kind !== 'repo' || entry.identity.repo !== repo) {
+          continue;
+        }
+        switch (entry.acc.state.phase) {
+          case 'downloading':
+          case 'downloading_mmproj':
+            summary.downloading += 1;
+            break;
+          case 'verifying':
+            summary.verifying += 1;
+            break;
+          case 'failed':
+            summary.failed += 1;
+            break;
+        }
+      }
+      return summary;
+    },
+    [entries],
+  );
+
   const value = useMemo<DownloadsContextValue>(
     () => ({
       get,
       hasRepoDownload,
+      repoDownloadSummary,
       startStaffPick,
       startRepoDownload,
       cancel,
@@ -219,6 +269,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
     [
       get,
       hasRepoDownload,
+      repoDownloadSummary,
       startStaffPick,
       startRepoDownload,
       cancel,

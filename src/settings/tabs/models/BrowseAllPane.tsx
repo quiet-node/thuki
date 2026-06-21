@@ -225,6 +225,19 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
   // when unknown, which skips it.
   const contextLabel = formatContextWindow(model.context_length ?? 0);
 
+  // Live download counts for this family, surfaced as pills on the row so a
+  // collapsed repo still tells you what it has in flight. Reads the registry,
+  // so it survives the accordion collapse that hides the per-quant rows. One
+  // pill per active state with a non-zero count, in active-first order.
+  const dl = downloads.repoDownloadSummary(model.id);
+  const statusPills = (
+    [
+      [dl.downloading, 'downloading', styles.pillDownloading],
+      [dl.verifying, 'verifying', styles.pillVerifying],
+      [dl.failed, 'failed', styles.pillFailed],
+    ] as const
+  ).filter(([count]) => count > 0);
+
   return (
     <div className={styles.rowWrap} data-row>
       <div className={styles.row}>
@@ -249,6 +262,15 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
             {contextLabel ? ` · ${contextLabel}` : ''}
           </div>
         </div>
+        {statusPills.length > 0 ? (
+          <div className={styles.statusPills}>
+            {statusPills.map(([count, label, cls]) => (
+              <span key={label} className={`${styles.statusPill} ${cls}`}>
+                {count} {label}
+              </span>
+            ))}
+          </div>
+        ) : null}
         <button
           type="button"
           className={`${styles.disclose} ${expanded ? styles.discloseOpen : ''}`}
