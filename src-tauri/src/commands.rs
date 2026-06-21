@@ -96,6 +96,11 @@ pub enum EngineErrorKind {
     /// The bundled engine's sidecar process failed to launch or crashed before
     /// passing its health check.
     EngineStartFailed,
+    /// The selected model's architecture is not supported by the bundled
+    /// engine build, so `llama-server` refused to load it. A setup nudge (try
+    /// another model), not a crash: the frontend renders it with the amber
+    /// warning accent rather than the red failure accent.
+    ModelUnsupported,
     /// The requested model has not been pulled yet (HTTP 404).
     ModelNotFound,
     /// No active model has been selected. The user must pick a model from
@@ -259,6 +264,64 @@ async fn fetch_builtin_vision(client: &reqwest::Client, base_url: &str) -> bool 
     }
 }
 
+/// Condenses a multi-line engine failure detail into the single most
+/// informative line for the error subtitle (which renders as one paragraph).
+/// The captured stderr tail can be many timestamped lines, so this prefers the
+/// FIRST line mentioning an error or failure: llama.cpp prints the specific
+/// root cause first ("error loading model: <reason>") then generic trailers
+/// ("failed to load", "exiting due to model loading error"), so the first
+/// match is the actionable one. Falls back to the last non-empty line; a
+/// single-line detail (e.g. a health-check message) is returned unchanged.
+/// Classification upstream still sees the full detail.
+fn concise_detail(detail: &str) -> String {
+    let lines: Vec<&str> = detail
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    match lines.as_slice() {
+        [] => detail.trim().to_string(),
+        [single] => (*single).to_string(),
+        many => many
+            .iter()
+            .find(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower.contains("error") || lower.contains("failed")
+            })
+            .copied()
+            .unwrap_or(many[many.len() - 1])
+            .to_string(),
+    }
+}
+
+/// Maps a built-in engine start failure (the engine's own captured stderr, or
+/// a health-check message) onto a user-facing [`EngineError`]. A llama.cpp
+/// "unknown model architecture" failure means the bundled engine cannot run
+/// this model, so it becomes a `ModelUnsupported` nudge to pick another model;
+/// every other failure surfaces the concise reason under the generic
+/// engine-start title so OOM, context-size, and projector mismatches stay
+/// actionable.
+///
+/// Pure so the classification and exact copy are unit-tested without a Tauri
+/// runtime. Shared by `stream_builtin_chat` and `resolve_llm_transport`.
+pub fn engine_start_error(detail: &str) -> EngineError {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("unknown model architecture") || lower.contains("unknown architecture") {
+        EngineError {
+            kind: EngineErrorKind::ModelUnsupported,
+            message: "Unsupported model\nThuki's engine doesn't support this arch yet. Try another model. Engine improves over time and may support it down the road.".to_string(),
+        }
+    } else {
+        EngineError {
+            kind: EngineErrorKind::EngineStartFailed,
+            message: format!(
+                "Thuki's engine could not start.\n{}",
+                concise_detail(detail)
+            ),
+        }
+    }
+}
+
 /// Runs the built-in-engine stage of a chat turn: mark activity, ensure the
 /// engine serves `target`, then stream via the `/v1` client at the engine's
 /// port. An engine activity guard is held for the whole turn (ensure,
@@ -341,10 +404,7 @@ pub(crate) async fn stream_builtin_chat(
             String::new()
         }
         Some(Err(crate::engine::runner::EnsureError::StartFailed(detail))) => {
-            on_chunk(StreamChunk::Error(EngineError {
-                kind: EngineErrorKind::EngineStartFailed,
-                message: format!("Thuki's engine could not start.\n{detail}"),
-            }));
+            on_chunk(StreamChunk::Error(engine_start_error(&detail)));
             String::new()
         }
     }
@@ -588,10 +648,7 @@ pub(crate) async fn resolve_llm_transport(
                     Err(TransportError::Superseded)
                 }
                 Some(Err(crate::engine::runner::EnsureError::StartFailed(detail))) => {
-                    Err(TransportError::Engine(EngineError {
-                        kind: EngineErrorKind::EngineStartFailed,
-                        message: format!("Thuki's engine could not start.\n{detail}"),
-                    }))
+                    Err(TransportError::Engine(engine_start_error(&detail)))
                 }
             }
         }
@@ -1418,6 +1475,73 @@ mod tests {
             "{{\"message\":{{\"role\":\"assistant\",\"content\":\"{}\"}},\"done\":{}}}\n",
             content, done
         )
+    }
+
+    #[test]
+    fn engine_start_error_unknown_architecture_is_model_unsupported() {
+        let err = engine_start_error(
+            "error loading model: unknown model architecture: 'deepseek4_mtp_support'",
+        );
+        assert_eq!(err.kind, EngineErrorKind::ModelUnsupported);
+        assert_eq!(
+            err.message,
+            "Unsupported model\nThuki's engine doesn't support this arch yet. Try another model. Engine improves over time and may support it down the road."
+        );
+    }
+
+    #[test]
+    fn engine_start_error_matches_short_unknown_architecture_phrasing() {
+        assert_eq!(
+            engine_start_error("llama_model_load: unknown architecture").kind,
+            EngineErrorKind::ModelUnsupported
+        );
+    }
+
+    #[test]
+    fn engine_start_error_other_failures_surface_raw_reason() {
+        let err = engine_start_error("engine health check returned HTTP 500");
+        assert_eq!(err.kind, EngineErrorKind::EngineStartFailed);
+        assert_eq!(
+            err.message,
+            "Thuki's engine could not start.\nengine health check returned HTTP 500"
+        );
+    }
+
+    #[test]
+    fn engine_start_error_condenses_a_multiline_non_arch_tail() {
+        let detail = "0.06 I log_info: loading\n0.06 E common_init: error loading model: out of memory\n0.06 I srv exiting";
+        let err = engine_start_error(detail);
+        assert_eq!(err.kind, EngineErrorKind::EngineStartFailed);
+        assert_eq!(
+            err.message,
+            "Thuki's engine could not start.\n0.06 E common_init: error loading model: out of memory"
+        );
+    }
+
+    #[test]
+    fn concise_detail_returns_a_single_line_unchanged() {
+        assert_eq!(
+            concise_detail("engine did not become healthy before the deadline"),
+            "engine did not become healthy before the deadline"
+        );
+    }
+
+    #[test]
+    fn concise_detail_falls_back_to_the_last_line_without_an_error_marker() {
+        assert_eq!(concise_detail("first\nsecond\nthird"), "third");
+    }
+
+    #[test]
+    fn concise_detail_prefers_the_first_error_line_over_a_generic_trailer() {
+        // llama.cpp prints the root cause first, then generic "exiting due to
+        // ... error" trailers: the first match must win.
+        let tail = "I loading model\nE error loading model: out of memory\nE failed to load model\nE exiting due to model loading error";
+        assert_eq!(concise_detail(tail), "E error loading model: out of memory");
+    }
+
+    #[test]
+    fn concise_detail_empty_detail_is_empty() {
+        assert_eq!(concise_detail("  \n  "), "");
     }
 
     #[tokio::test]
@@ -3379,6 +3503,16 @@ mod tests {
         async fn kill(&mut self) {
             let _ = self.exit_tx.send(true);
         }
+        fn stderr_tail(&self) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn scripted_child_has_no_stderr_tail() {
+        let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
+        let child = ScriptedChild { exit_tx, exit_rx };
+        assert_eq!(crate::engine::process::EngineChild::stderr_tail(&child), "");
     }
 
     #[async_trait::async_trait]

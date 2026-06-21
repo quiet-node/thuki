@@ -129,6 +129,25 @@ pub const ENGINE_IDLE_CHECK_INTERVAL_SECS: u64 = 30;
 /// normal use.
 pub const ENGINE_COMMAND_QUEUE_CAPACITY: usize = 64;
 
+/// Number of trailing `llama-server` stderr lines the runner retains so a
+/// crash can report the engine's own reason (e.g. "unknown model
+/// architecture") instead of a generic message. Not user-tunable:
+/// defense-in-depth bound on subprocess output; 20 lines covers the final
+/// load-error block llama.cpp prints without retaining its whole log.
+pub const ENGINE_STDERR_TAIL_LINES: usize = 20;
+
+/// Maximum bytes buffered (and retained) per captured engine stderr line. Not
+/// user-tunable: defense-in-depth bound so one pathological newline-less line
+/// (e.g. an enormous architecture string echoed from crafted GGUF metadata)
+/// cannot force an unbounded read allocation; bytes past the cap are dropped.
+pub const ENGINE_STDERR_TAIL_LINE_MAX_BYTES: usize = 500;
+
+/// Reason reported when the built-in engine process exits without leaving any
+/// stderr we could capture (e.g. an external SIGKILL). Not user-tunable:
+/// internal diagnostic fallback surfaced only when the real reason is
+/// unavailable.
+pub const ENGINE_CRASH_FALLBACK_MESSAGE: &str = "engine process exited unexpectedly";
+
 /// Minimum interval between Progress events emitted during a model download.
 /// Bounds IPC channel traffic: a fast local connection can deliver thousands
 /// of chunks per second and the UI only needs a few updates per second. Not

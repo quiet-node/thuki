@@ -69,6 +69,40 @@ describe('ErrorCard', () => {
     expect(bar?.getAttribute('data-kind')).toBe('ModelNotFound');
   });
 
+  it('applies amber accent bar for ModelUnsupported', () => {
+    const { container } = render(
+      <ErrorCard
+        kind="ModelUnsupported"
+        message={
+          "Unsupported model\nThuki's engine doesn't support this arch yet."
+        }
+      />,
+    );
+    const bar = container.querySelector('[data-error-bar]');
+    expect(bar?.getAttribute('data-kind')).toBe('ModelUnsupported');
+    // JSDOM normalizes hex to rgb; assert the amber family (same as ModelNotFound).
+    expect((bar as HTMLElement | null)?.style.background).toBe(
+      'rgb(245, 158, 11)',
+    );
+  });
+
+  it('renders the ModelUnsupported copy (title and subtitle)', () => {
+    render(
+      <ErrorCard
+        kind="ModelUnsupported"
+        message={
+          "Unsupported model\nThuki's engine doesn't support this arch yet. Try another model. Engine improves over time and may support it down the road."
+        }
+      />,
+    );
+    expect(screen.getByText('Unsupported model')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Thuki's engine doesn't support this arch yet. Try another model. Engine improves over time and may support it down the road.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it('applies neutral accent bar for Other', () => {
     const { container } = render(
       <ErrorCard kind="Other" message={'Something went wrong\nHTTP 500'} />,

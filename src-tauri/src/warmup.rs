@@ -1835,6 +1835,16 @@ mod tests {
         async fn kill(&mut self) {
             let _ = self.exit_tx.send(true);
         }
+        fn stderr_tail(&self) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn instant_child_has_no_stderr_tail() {
+        let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
+        let child = InstantChild { exit_tx, exit_rx };
+        assert_eq!(crate::engine::process::EngineChild::stderr_tail(&child), "");
     }
 
     #[async_trait::async_trait]
