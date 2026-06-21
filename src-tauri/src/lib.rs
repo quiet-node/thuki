@@ -2310,6 +2310,14 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     while status_rx.changed().await.is_ok() {
                         let status = status_rx.borrow_and_update().clone();
+                        // A load left memory (idle-unload, model switch, crash):
+                        // drop the built-in warm-up dedup so the next load primes
+                        // fresh even when the OS reuses the same port. The dedup
+                        // is keyed on port, so a stale primed record would
+                        // otherwise skip the cold reload's prime.
+                        if status.state != "loaded" {
+                            status_handle.state::<warmup::BuiltinWarmState>().reset();
+                        }
                         let _ = status_handle.emit("engine:status", status);
                     }
                 });

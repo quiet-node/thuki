@@ -207,6 +207,18 @@ impl BuiltinWarmState {
     pub fn is_warming(&self) -> bool {
         self.inner.lock().unwrap().in_flight.is_some()
     }
+
+    /// Drops all dedup state so the next warm primes fresh. Called when the
+    /// engine leaves the `loaded` state (idle-unload, model switch, crash): the
+    /// primed port belongs to a process that no longer exists, and the OS can
+    /// hand the next load that exact port again. Without this clear, the cold
+    /// reload would match the dead port's primed record, dedup to a no-op, and
+    /// leave the user's first message to eat the full cold prefill.
+    pub fn reset(&self) {
+        let mut g = self.inner.lock().unwrap();
+        g.in_flight = None;
+        g.primed_port = None;
+    }
 }
 
 /// Built-in arm of `warm_up_model`: starts (or reuses) the engine so the
@@ -1766,6 +1778,24 @@ mod tests {
         assert!(
             !s.try_begin(40001),
             "finish(40001, true) still recorded 40001 as primed"
+        );
+    }
+
+    #[test]
+    fn warm_state_reset_clears_dedup_after_teardown() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000));
+        s.finish(40000, true);
+        assert!(s.try_begin(40001), "a second load primes on its own port");
+        assert!(s.is_warming(), "the 40001 prime is in flight");
+        // Engine torn down: the next load can reuse either port. reset() drops
+        // both the primed record and the in-flight slot so a reused port primes
+        // fresh instead of deduping against the dead process.
+        s.reset();
+        assert!(!s.is_warming(), "reset clears the in-flight slot");
+        assert!(
+            s.try_begin(40000),
+            "reset clears the primed record so a reused port primes fresh"
         );
     }
 
