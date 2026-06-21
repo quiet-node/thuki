@@ -322,7 +322,10 @@ export function ModelPickerPanel({
                 }`}
               >
                 <span className="flex-1 min-w-0 flex flex-col gap-0.5">
-                  <span className="overflow-hidden text-ellipsis whitespace-nowrap leading-tight">
+                  <span
+                    className="overflow-hidden text-ellipsis whitespace-nowrap leading-tight"
+                    title={labelFor(model)}
+                  >
                     {labelFor(model)}
                   </span>
                   {capLabel && (

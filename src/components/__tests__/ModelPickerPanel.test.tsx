@@ -56,6 +56,11 @@ describe('ModelPickerPanel', () => {
       screen.getByRole('option', { name: 'Qwen3.5 9B' }),
     ).toBeInTheDocument();
     expect(screen.queryByText(BUILTIN_ID)).not.toBeInTheDocument();
+    // The truncated name carries the full label as a native hover tooltip.
+    expect(screen.getByText('Qwen3.5 9B')).toHaveAttribute(
+      'title',
+      'Qwen3.5 9B',
+    );
   });
 
   it('falls back to the id when no display name is given', () => {

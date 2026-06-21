@@ -124,6 +124,8 @@ function mockInvoke(over: Record<string, unknown> = {}) {
         return false;
       case 'get_model_picker_state':
         return { active: null, all: [], ollamaReachable: true };
+      case 'get_model_capabilities':
+        return {};
       default:
         return makeConfig('ollama', [BUILTIN, OLLAMA]);
     }
@@ -174,11 +176,12 @@ describe('ProvidersPane active hero', () => {
     mockInvoke({ list_installed_models: INSTALLED });
     const onSaved = vi.fn();
     renderPane(makeConfig('builtin', [builtin, OLLAMA]), { onSaved });
-    const select = await screen.findByRole('combobox', {
+    const trigger = await screen.findByRole('button', {
       name: 'Built-in model',
     });
-    expect(select).toHaveValue(INSTALLED[0].id);
-    fireEvent.change(select, { target: { value: INSTALLED[0].id } });
+    expect(trigger).toHaveTextContent('Qwen3.5 9B');
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole('option', { name: /Qwen3\.5 9B/ }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith('update_provider_field', {
         providerId: 'builtin',
@@ -223,10 +226,10 @@ describe('ProvidersPane active hero', () => {
     );
     // The provider-change refetch replaces the stale built-in id with the
     // live Ollama model rather than leaving the built-in id in the dropdown.
-    const select = await screen.findByRole('combobox', {
+    const trigger = await screen.findByRole('button', {
       name: 'Active Ollama model',
     });
-    await waitFor(() => expect(select).toHaveValue('gemma4:e4b'));
+    await waitFor(() => expect(trigger).toHaveTextContent('gemma4:e4b'));
   });
 
   it('appends the quant only to disambiguate duplicate display names', async () => {
@@ -238,24 +241,25 @@ describe('ProvidersPane active hero', () => {
     renderPane(
       makeConfig('builtin', [{ ...BUILTIN, model: 'org/x:q4.gguf' }, OLLAMA]),
     );
-    await screen.findByRole('combobox', { name: 'Built-in model' });
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Built-in model' }),
+    );
     // Shared display name -> each option disambiguates with its quant.
     expect(
-      screen.getByRole('option', { name: 'Qwen3.5 9B · Q4_K_M' }),
+      screen.getByRole('option', { name: /Qwen3\.5 9B · Q4_K_M/ }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('option', { name: 'Qwen3.5 9B · Q8_0' }),
+      screen.getByRole('option', { name: /Qwen3\.5 9B · Q8_0/ }),
     ).toBeInTheDocument();
   });
 
   it('shows a Choose-a-model option when the built-in model is not installed', async () => {
     mockInvoke({ list_installed_models: INSTALLED });
     renderPane(makeConfig('builtin', [{ ...BUILTIN, model: 'gone' }, OLLAMA]));
-    const select = await screen.findByRole('combobox', {
+    const trigger = await screen.findByRole('button', {
       name: 'Built-in model',
     });
-    expect(select).toHaveValue('');
-    expect(screen.getByText('Choose a model')).toBeInTheDocument();
+    expect(trigger).toHaveTextContent('Choose a model');
   });
 
   it('offers a Discover link when no built-in models are installed', async () => {
@@ -275,10 +279,10 @@ describe('ProvidersPane active hero', () => {
       update_provider_field: new Error('nope'),
     });
     renderPane(makeConfig('builtin', [builtin, OLLAMA]));
-    const select = await screen.findByRole('combobox', {
-      name: 'Built-in model',
-    });
-    fireEvent.change(select, { target: { value: INSTALLED[0].id } });
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Built-in model' }),
+    );
+    fireEvent.click(screen.getByRole('option', { name: /Qwen3\.5 9B/ }));
     // No throw.
     await Promise.resolve();
   });
@@ -295,11 +299,12 @@ describe('ProvidersPane active hero', () => {
     expect(screen.getByRole('textbox', { name: 'Ollama URL' })).toHaveValue(
       'http://127.0.0.1:11434',
     );
-    const select = await screen.findByRole('combobox', {
+    const trigger = await screen.findByRole('button', {
       name: 'Active Ollama model',
     });
-    expect(select).toHaveValue('llama3.1:8b');
-    fireEvent.change(select, { target: { value: 'llama3.1:8b' } });
+    expect(trigger).toHaveTextContent('llama3.1:8b');
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('option', { name: 'llama3.1:8b' }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith('set_active_model', {
         model: 'llama3.1:8b',
@@ -322,10 +327,11 @@ describe('ProvidersPane active hero', () => {
     });
     const onSaved = vi.fn();
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]), { onSaved });
-    const select = await screen.findByRole('combobox', {
+    const trigger = await screen.findByRole('button', {
       name: 'Active Ollama model',
     });
-    fireEvent.change(select, { target: { value: 'llama3.2:3b' } });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('option', { name: 'llama3.2:3b' }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith('set_active_model', {
         model: 'llama3.2:3b',
@@ -347,10 +353,11 @@ describe('ProvidersPane active hero', () => {
       set_active_model: new Error('nope'),
     });
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]), { onSaved });
-    const select = await screen.findByRole('combobox', {
+    const trigger = await screen.findByRole('button', {
       name: 'Active Ollama model',
     });
-    fireEvent.change(select, { target: { value: 'llama3.2:3b' } });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('option', { name: 'llama3.2:3b' }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith('set_active_model', {
         model: 'llama3.2:3b',
@@ -898,7 +905,7 @@ describe('ProvidersPane robustness', () => {
     renderPane(
       makeConfig('builtin', [{ ...BUILTIN, model: INSTALLED[0].id }, OLLAMA]),
     );
-    await screen.findByRole('combobox', { name: 'Built-in model' });
+    await screen.findByRole('button', { name: 'Built-in model' });
     expect(screen.queryByText(/installed model/)).toBeNull();
   });
 
@@ -935,10 +942,10 @@ describe('ProvidersPane robustness', () => {
       },
     });
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
-    const select = await screen.findByRole('combobox', {
+    const trigger = await screen.findByRole('button', {
       name: 'Active Ollama model',
     });
-    expect(select).toHaveValue('m1');
+    expect(trigger).toHaveTextContent('m1');
   });
 
   it('uses generic subtitles when provider URLs are empty', () => {
@@ -995,10 +1002,11 @@ describe('ProvidersPane robustness', () => {
     renderPane(
       makeConfig('builtin', [{ ...BUILTIN, model: noQuant.id }, OLLAMA]),
     );
-    const select = await screen.findByRole('combobox', {
+    const trigger = await screen.findByRole('button', {
       name: 'Built-in model',
     });
-    expect(select).toHaveValue(noQuant.id);
+    // With an empty quant the trigger shows the bare display name (no "· …").
+    expect(trigger.textContent).toBe('Qwen3.5 9B');
   });
 
   it('handles a config with no Ollama provider', () => {

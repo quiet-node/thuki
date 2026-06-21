@@ -370,7 +370,6 @@
   padding-top: 13px;
   border-top: 1px solid var(--hair-soft);
 }
-.heroModel .dropdown,
 .heroModel .input {
   flex: 1;
   min-width: 0;

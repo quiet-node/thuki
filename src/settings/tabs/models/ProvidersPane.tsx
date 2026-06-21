@@ -24,9 +24,12 @@ import { SaveField } from '../../components/SaveField';
 import { OpenAiProviderCard, AddOpenAiProvider } from '../ProviderCards';
 import { useDebouncedSave } from '../../hooks/useDebouncedSave';
 import { useModelSelection } from '../../../hooks/useModelSelection';
+import { useModelCapabilities } from '../../../hooks/useModelCapabilities';
 import { isNonLocalUrl } from '../../../utils/isNonLocalUrl';
+import { formatContextWindow } from '../../../utils/contextWindow';
 import { configHelp } from '../../configHelpers';
 import { Tooltip } from '../../../components/Tooltip';
+import { ModelSelect, type ModelSelectItem } from './ModelSelect';
 import styles from '../../../styles/settings.module.css';
 import type { RawAppConfig, RawProvider } from '../../types';
 import type { EngineStatus, InstalledModel } from '../../../types/starter';
@@ -82,6 +85,11 @@ function posToCtx(pos: number): number {
 // Deep link to the 5-minute benchmark recipe, opened via the open_url command.
 const CTX_TUNING_URL =
   'https://github.com/quiet-node/thuki/blob/main/docs/tuning-context-window.md#the-5-minute-benchmark-recipe';
+
+/** Bytes rendered as decimal gigabytes with one decimal (e.g. "8.2"). */
+function gb(bytes: number): string {
+  return (bytes / 1e9).toFixed(1);
+}
 
 /** One-line description shown under a provider's name. */
 function providerSubtitle(p: RawProvider): string {
@@ -225,6 +233,9 @@ export function ProvidersPane({
   const { activeModel, availableModels, setActiveModel, refreshModels } =
     useModelSelection();
 
+  // Per-model capabilities (vision/thinking) drive the built-in picker's pills.
+  const { capabilities } = useModelCapabilities();
+
   // The picker hook fetches once on mount; re-fetch whenever the active
   // provider changes so the hero's Model dropdown reflects the newly-active
   // provider's inventory instead of the previous provider's cached list.
@@ -355,6 +366,42 @@ export function ProvidersPane({
       .filter((name, i, all) => all.indexOf(name) !== i),
   );
 
+  // Built-in picker rows: name (quant-disambiguated only when a display name
+  // repeats), capability pills, a `size · context · maker · quant` sub-line, and
+  // a RAM-fit badge. Mirrors the Library pane's grammar so the two surfaces read
+  // the same.
+  const builtinItems: ModelSelectItem[] = installed.map((m) => {
+    const caps = capabilities[m.id];
+    const maker = m.origin || m.id.split(':')[0];
+    const totalBytes = m.size_bytes + (m.mmproj_bytes ?? 0);
+    const sub = [
+      `${gb(totalBytes)} GB`,
+      formatContextWindow(m.context_length ?? 0),
+      maker,
+      m.quant,
+    ]
+      .filter((part) => part !== '')
+      .join(' · ');
+    const quantSuffix =
+      duplicateDisplayNames.has(m.display_name) && m.quant !== ''
+        ? ` · ${m.quant}`
+        : '';
+    return {
+      id: m.id,
+      label: `${m.display_name}${quantSuffix}`,
+      sub,
+      vision: !!caps?.vision,
+      thinking: !!caps?.thinking,
+      fit: m.fit ?? null,
+    };
+  });
+
+  // Ollama exposes no capability metadata, so its rows fall back to the slug.
+  const ollamaItems: ModelSelectItem[] = availableModels.map((m) => ({
+    id: m,
+    label: m,
+  }));
+
   // Providers other than the active one, in a stable order.
   const otherProviders = providers.filter((p) => p.id !== activeId);
 
@@ -379,26 +426,13 @@ export function ProvidersPane({
           <div className={styles.heroModel}>
             <span className={styles.heroModelLabel}>Model</span>
             {installed.length > 0 ? (
-              <select
-                className={styles.dropdown}
-                aria-label="Built-in model"
+              <ModelSelect
                 value={builtinModelValue}
-                onChange={(e) => commitBuiltinModel(e.target.value)}
-              >
-                {builtinModelValue === '' ? (
-                  <option value="" disabled>
-                    Choose a model
-                  </option>
-                ) : null}
-                {installed.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.display_name}
-                    {duplicateDisplayNames.has(m.display_name) && m.quant !== ''
-                      ? ` · ${m.quant}`
-                      : ''}
-                  </option>
-                ))}
-              </select>
+                items={builtinItems}
+                onChange={commitBuiltinModel}
+                ariaLabel="Built-in model"
+                placeholder="Choose a model"
+              />
             ) : (
               <button
                 type="button"
@@ -448,18 +482,12 @@ export function ProvidersPane({
             <div className={styles.heroModel}>
               <span className={styles.heroModelLabel}>Model</span>
               {availableModels.length > 0 ? (
-                <select
-                  className={styles.dropdown}
-                  aria-label="Active Ollama model"
+                <ModelSelect
                   value={ollamaModelValue}
-                  onChange={(e) => commitOllamaModel(e.target.value)}
-                >
-                  {availableModels.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
+                  items={ollamaItems}
+                  onChange={commitOllamaModel}
+                  ariaLabel="Active Ollama model"
+                />
               ) : (
                 <span className={styles.providerHint}>No models installed</span>
               )}
