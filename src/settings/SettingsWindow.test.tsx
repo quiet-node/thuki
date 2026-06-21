@@ -163,7 +163,14 @@ describe('SettingsWindow', () => {
   // read the app-root download context, so the Settings tree must provide a
   // DownloadProvider or opening Discover throws and blanks the window.
   it('opens Discover without crashing the Settings window', async () => {
+    // Built-in active so Discover renders ungated; this test guards the
+    // DownloadProvider wiring, not the non-built-in gate (covered in ModelTab).
+    const builtinActive: RawAppConfig = {
+      ...SAMPLE,
+      inference: { ...SAMPLE.inference, active_provider: 'builtin' },
+    };
     invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_config') return builtinActive;
       if (cmd === 'get_staff_picks') return [];
       return defaultInvoke(cmd);
     });
