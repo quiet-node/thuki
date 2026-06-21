@@ -192,12 +192,14 @@ pub struct PromptSection {
     /// slash-command appendix).
     pub system: String,
     /// Set to `true` the first time the user explicitly saves the system
-    /// prompt via Settings. Guards upgrade migration: configs from before
-    /// the Settings UI was added have `system = ""` because that was the
-    /// old compiled default, not an intentional clear. The loader resets
-    /// an empty `system` to the built-in default when this flag is
-    /// `false`, preserving the intentional-clear semantic for users who
-    /// actively cleared the field in the new UI.
+    /// prompt via Settings. While `false`, the persisted `system` is not
+    /// authoritative (it is only a cached copy of the default seeded at
+    /// first run), so the loader always refreshes it to the current
+    /// `DEFAULT_SYSTEM_PROMPT_BASE`. Once `true`, the stored value is kept
+    /// verbatim, including an explicit empty (which sends no persona). This
+    /// both heals pre-Settings-UI configs (where `system = ""` was the old
+    /// compiled default) and propagates later edits of the built-in prompt
+    /// to every non-customizing install.
     pub system_customized: bool,
     /// Composed runtime value (base prompt plus slash-command appendix).
     /// Not serialized; computed by the loader.

@@ -65,11 +65,15 @@ base_url = "http://127.0.0.1:11434"
 model = ""
 
 [prompt]
-# The full secretary persona prompt. Seeded on first run so this file is the
-# single source of truth: edit it to tune behavior. Clearing it sends only
-# the slash-command appendix, which Thuki always appends at runtime so slash
-# commands keep working.
+# The full secretary persona prompt. Seeded on first run. Save changes via
+# Settings, which marks the prompt customized so your edit is kept; a hand edit
+# made directly here only survives if you also set system_customized = true.
+# While system_customized is false the stored value is treated as a cached
+# default and refreshed to the built-in prompt on the next load. Clearing the
+# prompt via Settings sends only the slash-command appendix, which Thuki always
+# appends at runtime so slash commands keep working.
 system = "..."
+system_customized = false
 
 [window]
 overlay_width = 600

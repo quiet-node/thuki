@@ -150,9 +150,10 @@ pub const SLASH_COMMAND_PROMPT_APPENDIX: &str =
     include_str!("../../prompts/generated/slash_commands.txt");
 
 /// Whether the user has explicitly saved a system prompt via Settings. Starts
-/// `false` so the upgrade-migration path in the loader can distinguish old
-/// configs (where `system = ""` was the compiled default) from a deliberate
-/// clear made through the Settings UI.
+/// `false`, which marks the persisted `system` as a non-authoritative cached
+/// default: the loader refreshes it to `DEFAULT_SYSTEM_PROMPT_BASE` on every
+/// load (healing old configs where `system = ""` and propagating later prompt
+/// edits) until the user saves through the Settings UI and flips this to `true`.
 pub const DEFAULT_SYSTEM_CUSTOMIZED: bool = false;
 
 /// Window defaults (logical pixels and counts). Only the user-tunable knobs
