@@ -298,14 +298,14 @@ export function ProvidersPane({
 
   const fillPct = `${ctxPos / 10}%`;
 
-  // Keep-warm live status: the text shown beside the name. `loadedModel` is the
-  // display name of the model the active provider actually has resident (the
-  // built-in engine's loaded blob, or Ollama's /api/ps), never the frontend
-  // selection. While the built-in engine is mid-load it reports "Loading…".
+  // Keep-warm live status. `loadedModel` is the display name of the model the
+  // active provider actually has resident (the built-in engine's loaded blob,
+  // or Ollama's /api/ps), never the frontend selection; when set it renders as
+  // a truncating name + "in VRAM" suffix in the JSX below so a long name can
+  // never break the row. This fallback text covers the two non-resident states
+  // (mid-load for the built-in engine, otherwise nothing loaded).
   let warmStatusText: string;
-  if (loadedModel) {
-    warmStatusText = `${loadedModel} in VRAM`;
-  } else if (activeKind === 'builtin' && engineState === 'starting') {
+  if (activeKind === 'builtin' && engineState === 'starting') {
     warmStatusText = 'Loading…';
   } else {
     warmStatusText = 'No model loaded';
@@ -607,7 +607,21 @@ export function ProvidersPane({
                 </button>
               </Tooltip>
             </div>
-            <span className={styles.genWarmStatus}>{warmStatusText}</span>
+            <span
+              className={styles.genWarmStatus}
+              data-testid="keep-warm-status"
+            >
+              {loadedModel ? (
+                <>
+                  <span className={styles.genWarmModel} title={loadedModel}>
+                    {loadedModel}
+                  </span>
+                  <span className={styles.genWarmSuffix}>in VRAM</span>
+                </>
+              ) : (
+                warmStatusText
+              )}
+            </span>
           </div>
           <div className={styles.genWarmControls}>
             <span className={styles.genWarmPrefix}>Release after</span>

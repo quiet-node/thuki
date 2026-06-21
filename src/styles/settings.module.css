@@ -539,11 +539,32 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+}
+/* The label stays whole: only the resident-model name (right) ever truncates. */
+.genWarmHead .genName {
+  flex: none;
+  white-space: nowrap;
 }
 .genWarmStatus {
   margin-left: auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
   font-size: 11.5px;
   color: var(--t2);
+}
+/* A long resident-model name truncates with an ellipsis (full name on hover via
+ * the title attribute) instead of wrapping and breaking the row. */
+.genWarmModel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.genWarmSuffix {
+  flex: none;
 }
 .genWarmControls {
   display: flex;

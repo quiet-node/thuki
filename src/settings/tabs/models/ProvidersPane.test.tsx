@@ -4,6 +4,7 @@ import {
   fireEvent,
   act,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -651,9 +652,11 @@ describe('ProvidersPane generation', () => {
     });
     renderPane(makeConfig('builtin', [BUILTIN_LOADED, OLLAMA]));
     return waitFor(() => {
-      expect(screen.getByText('Mistral Nemo 12B in VRAM')).toBeInTheDocument();
+      const status = screen.getByTestId('keep-warm-status');
+      expect(status).toHaveTextContent('Mistral Nemo 12B');
+      expect(within(status).getByText('in VRAM')).toBeInTheDocument();
       // The selected (but not-yet-resident) model is never shown as resident.
-      expect(screen.queryByText('Qwen3.5 9B in VRAM')).not.toBeInTheDocument();
+      expect(within(status).queryByText('Qwen3.5 9B')).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Unload now' })).toBeEnabled();
     });
   });
@@ -711,7 +714,9 @@ describe('ProvidersPane generation', () => {
     mockInvoke({ get_loaded_model: 'llama3.1:8b' });
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
     await waitFor(() =>
-      expect(screen.getByText('llama3.1:8b in VRAM')).toBeInTheDocument(),
+      expect(screen.getByTestId('keep-warm-status')).toHaveTextContent(
+        'llama3.1:8b',
+      ),
     );
   });
 
@@ -729,7 +734,7 @@ describe('ProvidersPane generation', () => {
     await act(async () => {
       emitTauriEvent('warmup:model-loaded', 'phi4');
     });
-    expect(screen.getByText('phi4 in VRAM')).toBeInTheDocument();
+    expect(screen.getByTestId('keep-warm-status')).toHaveTextContent('phi4');
     await act(async () => {
       emitTauriEvent('warmup:model-evicted', null);
     });
@@ -851,7 +856,9 @@ describe('ProvidersPane robustness', () => {
       emitTauriEvent('engine:status', engineStatus('loaded'));
     });
     await waitFor(() =>
-      expect(screen.getByText('Qwen3.5 9B in VRAM')).toBeInTheDocument(),
+      expect(screen.getByTestId('keep-warm-status')).toHaveTextContent(
+        'Qwen3.5 9B',
+      ),
     );
   });
 
