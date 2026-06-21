@@ -25,7 +25,7 @@ import {
 import { downloadKey } from '../../../hooks/downloadKey';
 import { CapabilityPills } from './CapabilityPills';
 import { DownloadRiskConfirm } from './DownloadRiskConfirm';
-import { useHfSearch } from './useHfSearch';
+import { HF_SEARCH_QUERY_MAX_LEN, useHfSearch } from './useHfSearch';
 import { Tooltip } from '../../../components/Tooltip';
 import { formatContextWindow } from '../../../utils/contextWindow';
 import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
@@ -115,6 +115,7 @@ export function BrowseAllPane({ onSaved }: BrowseAllPaneProps) {
           autoComplete="off"
           autoCorrect="off"
           autoCapitalize="off"
+          maxLength={HF_SEARCH_QUERY_MAX_LEN}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />

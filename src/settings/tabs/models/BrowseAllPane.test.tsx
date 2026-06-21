@@ -28,6 +28,7 @@ import { DownloadsProvider } from '../../../contexts/DownloadsContext';
 import {
   HF_SEARCH_DEBOUNCE_MS,
   HF_PAGE_SIZE,
+  HF_SEARCH_QUERY_MAX_LEN,
   clearHfSearchCache,
 } from './useHfSearch';
 import type { HfModelSummary, HfSearchPage } from '../../../types/hf';
@@ -202,6 +203,14 @@ describe('BrowseAllPane', () => {
     ).toBeInTheDocument();
     // The second result has no context window, so the segment is omitted.
     expect(screen.getByText('unsloth · 410,000 downloads')).toBeInTheDocument();
+  });
+
+  it('caps the search input at the backend query length', async () => {
+    await renderPane();
+    expect(screen.getByRole('searchbox')).toHaveAttribute(
+      'maxLength',
+      String(HF_SEARCH_QUERY_MAX_LEN),
+    );
   });
 
   it('renders capability pills per row from the repo capabilities', async () => {

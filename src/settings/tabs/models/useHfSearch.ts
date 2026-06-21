@@ -23,6 +23,12 @@ export const HF_SEARCH_DEBOUNCE_MS = 300;
  * page step (`HF_SEARCH_LIMIT`); the backend clamps the total to its own max. */
 export const HF_PAGE_SIZE = 30;
 
+/** Max search length the input accepts. Mirrors the backend's
+ * `MAX_HF_SEARCH_QUERY_LEN` byte cap; capping the field keeps an over-long
+ * paste from reaching the backend, which rejects it and silently empties the
+ * results. A character cap, exact for the ASCII model names searched here. */
+export const HF_SEARCH_QUERY_MAX_LEN = 200;
+
 /**
  * Session-scoped cache of search pages, keyed by `query::limit`. Switching to
  * another tab unmounts the Discover pane, so without this every return trip
