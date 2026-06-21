@@ -3,9 +3,12 @@
  *
  * The hook debounces the query, serializes overlapping fetches with a
  * monotonic token, drops post-unmount resolutions, and guards the IPC
- * payload at runtime. The tests drive the debounce with fake timers and
- * control resolution order with externally-settled promises so the
- * stale-token path is exercised deterministically.
+ * payload at runtime. The backend returns a {@link HfSearchPage}
+ * (`{ rows, has_more }`); `canLoadMore` follows `has_more`, not the row count,
+ * so the backend's chat-model allowlist cannot end pagination early. The tests
+ * drive the debounce with fake timers and control resolution order with
+ * externally-settled promises so the stale-token path is exercised
+ * deterministically.
  */
 
 import { act, renderHook, waitFor } from '@testing-library/react';
@@ -19,17 +22,40 @@ import {
   HF_PAGE_SIZE,
   clearHfSearchCache,
 } from './useHfSearch';
-import type { HfModelSummary } from '../../../types/hf';
+import type { HfModelSummary, HfSearchPage } from '../../../types/hf';
 
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
+/** Wraps rows in the page envelope the backend returns. */
+function page(rows: HfModelSummary[], hasMore = false): HfSearchPage {
+  return { rows, has_more: hasMore };
+}
+
 const POPULAR: HfModelSummary[] = [
-  { id: 'google/gemma-popular-GGUF', downloads: 1_000_000, gated: false },
+  {
+    id: 'google/gemma-popular-GGUF',
+    downloads: 1_000_000,
+    gated: false,
+    vision: false,
+    thinking: false,
+  },
 ];
 
 const GEMMA: HfModelSummary[] = [
-  { id: 'google/gemma-4-12b-it-GGUF', downloads: 1_200_000, gated: false },
-  { id: 'unsloth/gemma-4-27b-it-GGUF', downloads: 410_000, gated: false },
+  {
+    id: 'google/gemma-4-12b-it-GGUF',
+    downloads: 1_200_000,
+    gated: false,
+    vision: true,
+    thinking: false,
+  },
+  {
+    id: 'unsloth/gemma-4-27b-it-GGUF',
+    downloads: 410_000,
+    gated: false,
+    vision: false,
+    thinking: false,
+  },
 ];
 
 beforeEach(() => {
@@ -54,7 +80,7 @@ function deferred<T>() {
 
 describe('useHfSearch', () => {
   it('fetches the popular browse list on mount with an empty query', async () => {
-    invokeMock.mockResolvedValue(POPULAR);
+    invokeMock.mockResolvedValue(page(POPULAR));
     const { result } = renderHook(() => useHfSearch());
 
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -68,14 +94,14 @@ describe('useHfSearch', () => {
 
   it('sets the query immediately but debounces the fetch', async () => {
     vi.useFakeTimers();
-    invokeMock.mockResolvedValue(POPULAR);
+    invokeMock.mockResolvedValue(page(POPULAR));
     const { result } = renderHook(() => useHfSearch());
     // Drain the mount fetch.
     await act(async () => {
       await Promise.resolve();
     });
     invokeMock.mockClear();
-    invokeMock.mockResolvedValue(GEMMA);
+    invokeMock.mockResolvedValue(page(GEMMA));
 
     act(() => result.current.setQuery('gemma'));
     // Query is visible immediately; no fetch has fired yet.
@@ -95,13 +121,13 @@ describe('useHfSearch', () => {
 
   it('coalesces rapid input into a single fetch', async () => {
     vi.useFakeTimers();
-    invokeMock.mockResolvedValue(POPULAR);
+    invokeMock.mockResolvedValue(page(POPULAR));
     const { result } = renderHook(() => useHfSearch());
     await act(async () => {
       await Promise.resolve();
     });
     invokeMock.mockClear();
-    invokeMock.mockResolvedValue(GEMMA);
+    invokeMock.mockResolvedValue(page(GEMMA));
 
     act(() => {
       result.current.setQuery('g');
@@ -125,10 +151,10 @@ describe('useHfSearch', () => {
 
   it('drops a stale response that resolves after a newer one', async () => {
     vi.useFakeTimers();
-    const first = deferred<HfModelSummary[]>();
-    const second = deferred<HfModelSummary[]>();
+    const first = deferred<HfSearchPage>();
+    const second = deferred<HfSearchPage>();
     // Mount fetch resolves immediately so the two we care about are #2 and #3.
-    invokeMock.mockResolvedValueOnce(POPULAR);
+    invokeMock.mockResolvedValueOnce(page(POPULAR));
     invokeMock.mockReturnValueOnce(first.promise);
     invokeMock.mockReturnValueOnce(second.promise);
     const { result } = renderHook(() => useHfSearch());
@@ -150,12 +176,12 @@ describe('useHfSearch', () => {
 
     // Resolve the NEWER request first, then the older one.
     await act(async () => {
-      second.resolve(GEMMA);
+      second.resolve(page(GEMMA));
       await Promise.resolve();
     });
     expect(result.current.results).toEqual(GEMMA);
     await act(async () => {
-      first.resolve(POPULAR);
+      first.resolve(page(POPULAR));
       await Promise.resolve();
     });
     // The stale (older) response must not overwrite the newer result.
@@ -163,48 +189,87 @@ describe('useHfSearch', () => {
   });
 
   it('drops a resolution that lands after unmount', async () => {
-    const pending = deferred<HfModelSummary[]>();
+    const pending = deferred<HfSearchPage>();
     invokeMock.mockReturnValue(pending.promise);
     const { result, unmount } = renderHook(() => useHfSearch());
     expect(result.current.loading).toBe(true);
     unmount();
     // Resolving after unmount must not throw or update state.
     await act(async () => {
-      pending.resolve(POPULAR);
+      pending.resolve(page(POPULAR));
       await Promise.resolve();
     });
     // No assertion on state (unmounted); the test passes if nothing throws.
   });
 
-  it('treats a malformed payload as an empty result', async () => {
-    invokeMock.mockResolvedValue({ not: 'an array' });
+  it('treats a non-object payload as an empty result', async () => {
+    invokeMock.mockResolvedValue('nope');
+    const { result } = renderHook(() => useHfSearch());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.results).toEqual([]);
+    expect(result.current.canLoadMore).toBe(false);
+  });
+
+  it('treats a payload with a non-boolean has_more as an empty result', async () => {
+    invokeMock.mockResolvedValue({ rows: POPULAR, has_more: 'yes' });
     const { result } = renderHook(() => useHfSearch());
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.results).toEqual([]);
   });
 
-  it('treats an array with a malformed item as an empty result', async () => {
-    invokeMock.mockResolvedValue([
-      { id: 'ok/repo', downloads: 1, gated: false },
-      { id: 5 },
-    ]);
+  it('treats a payload whose rows are not an array as an empty result', async () => {
+    invokeMock.mockResolvedValue({ rows: 'nope', has_more: false });
     const { result } = renderHook(() => useHfSearch());
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.results).toEqual([]);
   });
 
-  it('treats an array containing a null item as an empty result', async () => {
-    invokeMock.mockResolvedValue([null]);
-    const { result } = renderHook(() => useHfSearch());
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.results).toEqual([]);
+  it('rejects rows with any malformed field', async () => {
+    // Each row trips a different guard branch: bad id, downloads, gated,
+    // vision, thinking, a non-object row, and a null row.
+    const malformed = [
+      { id: 5, downloads: 1, gated: false, vision: false, thinking: false },
+      {
+        id: 'a/b',
+        downloads: 'x',
+        gated: false,
+        vision: false,
+        thinking: false,
+      },
+      { id: 'a/b', downloads: 1, gated: 'x', vision: false, thinking: false },
+      { id: 'a/b', downloads: 1, gated: false, vision: 'x', thinking: false },
+      { id: 'a/b', downloads: 1, gated: false, vision: false, thinking: 'x' },
+      'not-an-object',
+      null,
+    ];
+    for (const bad of malformed) {
+      clearHfSearchCache();
+      invokeMock.mockReset();
+      invokeMock.mockResolvedValue({
+        rows: [
+          {
+            id: 'ok/repo',
+            downloads: 1,
+            gated: false,
+            vision: false,
+            thinking: false,
+          },
+          bad,
+        ],
+        has_more: false,
+      });
+      const { result, unmount } = renderHook(() => useHfSearch());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.results).toEqual([]);
+      unmount();
+    }
   });
 
   it('drops a stale rejection that lands after a newer success', async () => {
     vi.useFakeTimers();
-    const first = deferred<HfModelSummary[]>();
-    const second = deferred<HfModelSummary[]>();
-    invokeMock.mockResolvedValueOnce(POPULAR);
+    const first = deferred<HfSearchPage>();
+    const second = deferred<HfSearchPage>();
+    invokeMock.mockResolvedValueOnce(page(POPULAR));
     invokeMock.mockReturnValueOnce(first.promise);
     invokeMock.mockReturnValueOnce(second.promise);
     const { result } = renderHook(() => useHfSearch());
@@ -224,7 +289,7 @@ describe('useHfSearch', () => {
 
     // Newer request succeeds first; the older one then rejects.
     await act(async () => {
-      second.resolve(GEMMA);
+      second.resolve(page(GEMMA));
       await Promise.resolve();
     });
     expect(result.current.results).toEqual(GEMMA);
@@ -245,13 +310,13 @@ describe('useHfSearch', () => {
 
   it('passes a non-empty query verbatim', async () => {
     vi.useFakeTimers();
-    invokeMock.mockResolvedValue(POPULAR);
+    invokeMock.mockResolvedValue(page(POPULAR));
     const { result } = renderHook(() => useHfSearch());
     await act(async () => {
       await Promise.resolve();
     });
     invokeMock.mockClear();
-    invokeMock.mockResolvedValue(GEMMA);
+    invokeMock.mockResolvedValue(page(GEMMA));
 
     act(() => result.current.setQuery('llama'));
     await act(async () => {
@@ -265,7 +330,7 @@ describe('useHfSearch', () => {
   });
 
   it('serves a repeated query from cache without re-fetching', async () => {
-    invokeMock.mockResolvedValue(POPULAR);
+    invokeMock.mockResolvedValue(page(POPULAR));
     const first = renderHook(() => useHfSearch());
     await waitFor(() => expect(first.result.current.loading).toBe(false));
     expect(invokeMock).toHaveBeenCalledTimes(1);
@@ -283,8 +348,18 @@ describe('useHfSearch', () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it('does not offer Load more when the page is not full', async () => {
-    invokeMock.mockResolvedValue(POPULAR); // one row, far below a full page
+  it('follows has_more for Load more, regardless of the row count', async () => {
+    // A short page that still reports more is offered Load more: the count is a
+    // poor signal once the backend drops non-chat rows, so has_more is the truth.
+    invokeMock.mockResolvedValue(page(POPULAR, true));
+    const { result } = renderHook(() => useHfSearch());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.results).toEqual(POPULAR);
+    expect(result.current.canLoadMore).toBe(true);
+  });
+
+  it('does not offer Load more when the Hub reports no more', async () => {
+    invokeMock.mockResolvedValue(page(POPULAR, false));
     const { result } = renderHook(() => useHfSearch());
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.canLoadMore).toBe(false);
@@ -297,8 +372,10 @@ describe('useHfSearch', () => {
         id: `org/repo-${i}-GGUF`,
         downloads: n - i,
         gated: false,
+        vision: false,
+        thinking: false,
       }));
-    invokeMock.mockResolvedValueOnce(full(HF_PAGE_SIZE)); // mount fills page 1
+    invokeMock.mockResolvedValueOnce(page(full(HF_PAGE_SIZE), true));
     const { result } = renderHook(() => useHfSearch());
     await act(async () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
@@ -308,8 +385,8 @@ describe('useHfSearch', () => {
     expect(result.current.canLoadMore).toBe(true);
 
     invokeMock.mockClear();
-    // Page 2 returns fewer than the requested 60: the Hub is out of rows.
-    invokeMock.mockResolvedValueOnce(full(HF_PAGE_SIZE + 15));
+    // Page 2 reports the Hub is exhausted: Load more disappears.
+    invokeMock.mockResolvedValueOnce(page(full(HF_PAGE_SIZE + 15), false));
     act(() => result.current.loadMore());
     await act(async () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);

@@ -56,7 +56,7 @@ beforeEach(() => {
   clearHfSearchCache();
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === 'get_staff_picks') return [STARTER];
-    if (cmd === 'search_hf_models') return [];
+    if (cmd === 'search_hf_models') return { rows: [], has_more: false };
     return undefined;
   });
 });
@@ -154,13 +154,18 @@ describe('DiscoverPane download persistence', () => {
         }
         if (cmd === 'get_staff_picks') return [STARTER];
         if (cmd === 'search_hf_models') {
-          return [
-            {
-              id: 'google/gemma-4-12b-it-GGUF',
-              downloads: 1_200_000,
-              gated: false,
-            },
-          ];
+          return {
+            rows: [
+              {
+                id: 'google/gemma-4-12b-it-GGUF',
+                downloads: 1_200_000,
+                gated: false,
+                vision: false,
+                thinking: false,
+              },
+            ],
+            has_more: false,
+          };
         }
         if (cmd === 'list_hf_repo_ggufs') {
           return [

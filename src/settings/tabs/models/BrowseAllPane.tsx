@@ -23,6 +23,7 @@ import {
   type DownloadsContextValue,
 } from '../../../contexts/DownloadsContext';
 import { downloadKey } from '../../../hooks/downloadKey';
+import { CapabilityPills } from './CapabilityPills';
 import { useHfSearch } from './useHfSearch';
 import { Tooltip } from '../../../components/Tooltip';
 import { formatContextWindow } from '../../../utils/contextWindow';
@@ -241,6 +242,7 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
             >
               {model.id}
             </button>
+            <CapabilityPills vision={model.vision} thinking={model.thinking} />
             {model.gated ? (
               <span className={styles.gatedBadge}>Gated</span>
             ) : null}

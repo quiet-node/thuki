@@ -30,7 +30,7 @@ import {
   HF_PAGE_SIZE,
   clearHfSearchCache,
 } from './useHfSearch';
-import type { HfModelSummary } from '../../../types/hf';
+import type { HfModelSummary, HfSearchPage } from '../../../types/hf';
 import type { HfGgufFile } from '../../../types/starter';
 import type { RawAppConfig } from '../../types';
 
@@ -69,16 +69,38 @@ function mockCommands(responses: Record<string, unknown>) {
 }
 
 const RESULTS: HfModelSummary[] = [
+  // A vision model (mmproj companion), used for the Vision pill assertion.
   {
     id: 'google/gemma-4-12b-it-GGUF',
     downloads: 1_200_000,
     gated: false,
     context_length: 262_144,
+    vision: true,
+    thinking: false,
   },
-  // No context window: covers the "skip the segment" path.
-  { id: 'unsloth/gemma-4-27b-it-GGUF', downloads: 410_000, gated: false },
-  { id: 'meta-llama/Llama-3-8B-GGUF', downloads: 9_000, gated: true },
+  // No context window and no capabilities: covers the "skip the segment" path
+  // and the text-only pill case.
+  {
+    id: 'unsloth/gemma-4-27b-it-GGUF',
+    downloads: 410_000,
+    gated: false,
+    vision: false,
+    thinking: false,
+  },
+  // A thinking model, used for the Thinking pill assertion.
+  {
+    id: 'meta-llama/Llama-3-8B-GGUF',
+    downloads: 9_000,
+    gated: true,
+    vision: false,
+    thinking: true,
+  },
 ];
+
+/** Wraps rows in the page envelope the backend returns. */
+function pageOf(rows: HfModelSummary[], hasMore = false): HfSearchPage {
+  return { rows, has_more: hasMore };
+}
 
 const GGUFS: HfGgufFile[] = [
   {
@@ -118,7 +140,7 @@ const CONFIG_AFTER_INSTALL = { marker: 'fresh' } as unknown as RawAppConfig;
  */
 function discoverResponses(overrides: Record<string, unknown> = {}) {
   return {
-    search_hf_models: RESULTS,
+    search_hf_models: pageOf(RESULTS),
     list_hf_repo_ggufs: GGUFS,
     get_config: CONFIG_AFTER_INSTALL,
     ...overrides,
@@ -177,6 +199,29 @@ describe('BrowseAllPane', () => {
     expect(screen.getByText(/chat models/)).toHaveTextContent('3 chat models');
   });
 
+  it('renders capability pills per row from the repo capabilities', async () => {
+    await renderPane();
+    const visionRow = screen
+      .getByText('google/gemma-4-12b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    expect(within(visionRow).getByText('Text')).toBeInTheDocument();
+    expect(within(visionRow).getByText('Vision')).toBeInTheDocument();
+    expect(within(visionRow).queryByText('Thinking')).not.toBeInTheDocument();
+
+    const thinkingRow = screen
+      .getByText('meta-llama/Llama-3-8B-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    expect(within(thinkingRow).getByText('Thinking')).toBeInTheDocument();
+    expect(within(thinkingRow).queryByText('Vision')).not.toBeInTheDocument();
+
+    const plainRow = screen
+      .getByText('unsloth/gemma-4-27b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    expect(within(plainRow).getByText('Text')).toBeInTheDocument();
+    expect(within(plainRow).queryByText('Vision')).not.toBeInTheDocument();
+    expect(within(plainRow).queryByText('Thinking')).not.toBeInTheDocument();
+  });
+
   it('does not show a RAM-fit hint on the collapsed model row', async () => {
     await renderPane();
     // The row-level fit was an unreliable repo-id estimate and is gone; fit
@@ -188,9 +233,15 @@ describe('BrowseAllPane', () => {
 
   it('parses the org line from the full id when it has no org segment', async () => {
     await renderPane(() => {}, {
-      search_hf_models: [
-        { id: 'standalone-repo', downloads: 12, gated: false },
-      ],
+      search_hf_models: pageOf([
+        {
+          id: 'standalone-repo',
+          downloads: 12,
+          gated: false,
+          vision: false,
+          thinking: false,
+        },
+      ]),
     });
     expect(screen.getByText('standalone-repo')).toBeInTheDocument();
     expect(
@@ -211,9 +262,15 @@ describe('BrowseAllPane', () => {
     invokeMock.mockClear();
     mockCommands(
       discoverResponses({
-        search_hf_models: [
-          { id: 'qwen/Qwen3-GGUF', downloads: 50, gated: false },
-        ],
+        search_hf_models: pageOf([
+          {
+            id: 'qwen/Qwen3-GGUF',
+            downloads: 50,
+            gated: false,
+            vision: false,
+            thinking: false,
+          },
+        ]),
       }),
     );
     fireEvent.change(screen.getByRole('searchbox'), {
@@ -681,8 +738,8 @@ describe('BrowseAllPane', () => {
   });
 
   it('shows a loading hint while the search is in flight', async () => {
-    let resolveSearch!: (value: HfModelSummary[]) => void;
-    const pending = new Promise<HfModelSummary[]>((res) => {
+    let resolveSearch!: (value: HfSearchPage) => void;
+    const pending = new Promise<HfSearchPage>((res) => {
       resolveSearch = res;
     });
     mockCommands(discoverResponses({ search_hf_models: pending }));
@@ -692,7 +749,7 @@ describe('BrowseAllPane', () => {
     await flush();
     expect(screen.getByText('Searching…')).toBeInTheDocument();
     await act(async () => {
-      resolveSearch(RESULTS);
+      resolveSearch(pageOf(RESULTS));
       await Promise.resolve();
     });
     await waitFor(() =>
@@ -701,7 +758,7 @@ describe('BrowseAllPane', () => {
   });
 
   it('shows a no-results message when the search returns nothing', async () => {
-    await renderPane(() => {}, { search_hf_models: [] });
+    await renderPane(() => {}, { search_hf_models: pageOf([]) });
     expect(screen.getByText('No models found.')).toBeInTheDocument();
     expect(screen.getByText(/chat models/)).toHaveTextContent('0 chat models');
   });
@@ -713,8 +770,12 @@ describe('BrowseAllPane', () => {
         id: `org/repo-${i}-GGUF`,
         downloads: n - i,
         gated: false,
+        vision: false,
+        thinking: false,
       }));
-    mockCommands(discoverResponses({ search_hf_models: full(HF_PAGE_SIZE) }));
+    mockCommands(
+      discoverResponses({ search_hf_models: pageOf(full(HF_PAGE_SIZE), true) }),
+    );
     render(<BrowseAllPane onSaved={() => {}} />, {
       wrapper: DownloadsProvider,
     });
@@ -725,7 +786,9 @@ describe('BrowseAllPane', () => {
     const loadMore = screen.getByRole('button', { name: 'Load more' });
     invokeMock.mockClear();
     mockCommands(
-      discoverResponses({ search_hf_models: full(HF_PAGE_SIZE + 5) }),
+      discoverResponses({
+        search_hf_models: pageOf(full(HF_PAGE_SIZE + 5), false),
+      }),
     );
     fireEvent.click(loadMore);
     await act(async () => {

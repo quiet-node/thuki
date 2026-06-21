@@ -1379,13 +1379,23 @@ struct HfRepoInfo {
     siblings: Vec<HfSibling>,
 }
 
-/// The slice of HF's parsed `gguf` metadata block Thuki reads: the model's
-/// trained context window. Present on a search row when the query requests
-/// `expand[]=gguf`. Untrusted external input, sanitized before use.
+/// The slice of HF's parsed `gguf` metadata block Thuki reads. Present on a
+/// search row when the query requests `expand[]=gguf`. Untrusted external input:
+/// the context window is sanitized before use, and the chat template is only fed
+/// to the never-panicking [`reasoning::classify_reasoning`] classifier.
 #[derive(Deserialize)]
 struct HfGgufMeta {
     #[serde(default)]
     context_length: Option<u64>,
+    /// The model's embedded chat template, the highest-signal reasoning class
+    /// source. Already carried by `expand[]=gguf` (the same block that holds the
+    /// context window), so reading it costs no extra request.
+    #[serde(default)]
+    chat_template: Option<String>,
+    /// `general.architecture`, a secondary reasoning signal (e.g. gpt-oss is
+    /// always-on even when its template omits the channel marker).
+    #[serde(default)]
+    architecture: Option<String>,
 }
 
 /// Trust check for an externally-reported context window. Accepts a positive
@@ -1446,6 +1456,13 @@ pub struct MmprojCompanion {
     pub size_bytes: u64,
 }
 
+/// True when `name` is an `mmproj*.gguf` vision projection companion. The
+/// presence of one is Thuki's ground-truth vision signal: llama.cpp cannot do
+/// image input without it, regardless of how the base model is tagged.
+fn is_mmproj(name: &str) -> bool {
+    name.starts_with("mmproj") && name.ends_with(".gguf")
+}
+
 /// Pure parse of an HF repo listing into the spec for one target `file`.
 /// Capability rule for pasted repos: vision = an `mmproj*.gguf` sibling with
 /// complete LFS metadata exists. The reasoning class is recorded in two stages:
@@ -1474,7 +1491,7 @@ pub fn resolve_listing(body: &[u8], file: &str) -> Result<RepoResolved, String> 
     let mmproj = info
         .siblings
         .iter()
-        .filter(|s| s.rfilename.starts_with("mmproj") && s.rfilename.ends_with(".gguf"))
+        .filter(|s| is_mmproj(&s.rfilename))
         .find_map(|s| {
             lfs_digest(s).map(|(sha256, size_bytes)| MmprojCompanion {
                 file: s.rfilename.clone(),
@@ -1499,7 +1516,7 @@ pub fn parse_gguf_listing(body: &[u8]) -> Result<Vec<HfGgufFile>, String> {
     Ok(info
         .siblings
         .into_iter()
-        .filter(|s| s.rfilename.ends_with(".gguf") && !s.rfilename.starts_with("mmproj"))
+        .filter(|s| s.rfilename.ends_with(".gguf") && !is_mmproj(&s.rfilename))
         .map(|s| {
             let size_bytes = s.lfs.as_ref().and_then(|l| l.size).or(s.size).unwrap_or(0);
             let sha256 = s
@@ -1620,7 +1637,7 @@ pub async fn fetch_repo_gguf_listing(
 // ─── Hugging Face model search ───────────────────────────────────────────────
 
 /// One repo row from a Hugging Face model search, trimmed to the fields the
-/// in-app browser needs to identify, rank, and gate a model.
+/// in-app browser needs to identify, rank, gate, and label a model.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HfModelSummary {
     /// Repo id, e.g. `unsloth/Qwen3.5-9B-GGUF`; the install target.
@@ -1636,11 +1653,35 @@ pub struct HfModelSummary {
     /// `context_length` metadata (a per-repo property, identical across quants).
     /// `None` when the API omits it or the value fails [`sanitize_context_length`].
     pub context_length: Option<u32>,
+    /// True when the repo ships an `mmproj*.gguf` vision companion (see
+    /// [`is_mmproj`]). A capability of the model, shared by every quant, so the
+    /// pill belongs on the repo row, not the per-quant list.
+    pub vision: bool,
+    /// True when the model emits reasoning tokens, from its chat template via
+    /// [`reasoning::classify_reasoning`], or the repo name via [`detect_thinking`]
+    /// when the template is absent. Also a per-repo capability.
+    pub thinking: bool,
 }
 
+/// A page of search rows plus whether the Hub holds more. The flag is derived
+/// from the raw entry count, not the kept-row count, so the per-row pipeline
+/// allowlist (which drops non-chat repos) cannot prematurely end pagination.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HfSearchPage {
+    pub rows: Vec<HfModelSummary>,
+    pub has_more: bool,
+}
+
+/// HF `pipeline_tag`s Thuki surfaces in Browse-all: plain text chat and
+/// multimodal (image+text) chat. Every other tag (embeddings, translation,
+/// text-to-video, ...) is not a usable chat model and is dropped. This is an
+/// allowlist applied per row, replacing a single server-side `pipeline_tag`
+/// filter that could not express "text OR image-text" and so hid vision repos.
+const SEARCHABLE_PIPELINE_TAGS: &[&str] = &["text-generation", "image-text-to-text"];
+
 /// One entry in the Hugging Face `/api/models` search response. Only the fields
-/// surfaced by [`HfModelSummary`] are decoded; everything else is ignored so
-/// upstream additions cannot break decoding.
+/// surfaced by [`HfModelSummary`] (and the `pipeline_tag` allowlist gate) are
+/// decoded; everything else is ignored so upstream additions cannot break it.
 #[derive(Deserialize)]
 struct HfSearchEntry {
     #[serde(default)]
@@ -1652,10 +1693,57 @@ struct HfSearchEntry {
     /// defaults to `false`.
     #[serde(default, deserialize_with = "deserialize_gated")]
     gated: bool,
+    /// HF pipeline tag, present because the search requests `expand[]=pipeline_tag`.
+    /// Gated against [`SEARCHABLE_PIPELINE_TAGS`]; an absent tag drops the row.
+    #[serde(default)]
+    pipeline_tag: Option<String>,
     /// HF-parsed GGUF metadata, present because the search requests
-    /// `expand[]=gguf`. Only the context window is read; sanitized before use.
+    /// `expand[]=gguf`: the context window and the chat template / architecture.
     #[serde(default)]
     gguf: Option<HfGgufMeta>,
+    /// Repo file listing, present because the search requests `expand[]=siblings`.
+    /// Scanned for an `mmproj*.gguf` companion to derive the vision flag.
+    #[serde(default)]
+    siblings: Vec<HfSibling>,
+}
+
+/// Projects one raw search entry onto a summary row, or `None` when the row is
+/// not a usable chat model (empty id, or a `pipeline_tag` outside
+/// [`SEARCHABLE_PIPELINE_TAGS`]).
+fn search_entry_to_summary(entry: HfSearchEntry) -> Option<HfModelSummary> {
+    let HfSearchEntry {
+        id,
+        downloads,
+        gated,
+        pipeline_tag,
+        gguf,
+        siblings,
+    } = entry;
+    if id.is_empty() {
+        return None;
+    }
+    if !pipeline_tag
+        .as_deref()
+        .is_some_and(|tag| SEARCHABLE_PIPELINE_TAGS.contains(&tag))
+    {
+        return None;
+    }
+    let vision = siblings.iter().any(|s| is_mmproj(&s.rfilename));
+    // Reasoning runs through the one shared derivation so a search row and the
+    // install it leads to can never disagree. A search row has no chosen file,
+    // so the name fallback (used only when no template ships) sees the repo only.
+    let chat_template = gguf.as_ref().and_then(|g| g.chat_template.as_deref());
+    let architecture = gguf.as_ref().and_then(|g| g.architecture.as_deref());
+    let (thinking, _) = reasoning_flags_from_metadata(chat_template, architecture, &id, "");
+    let context_length = sanitize_context_length(gguf.and_then(|g| g.context_length));
+    Some(HfModelSummary {
+        id,
+        downloads,
+        gated,
+        context_length,
+        vision,
+        thinking,
+    })
 }
 
 /// Normalizes Hugging Face's polymorphic `gated` field (a bool `false` or a
@@ -1672,21 +1760,19 @@ where
     })
 }
 
-/// Pure parse of an `/api/models` search body into summary rows. Rows with an
-/// empty `id` are dropped rather than surfaced as un-installable blanks.
-pub fn parse_search_results(body: &[u8]) -> Result<Vec<HfModelSummary>, String> {
+/// Pure parse of an `/api/models` search body into a page of summary rows.
+/// Non-chat and empty-id rows are dropped per [`search_entry_to_summary`];
+/// `has_more` is set from the raw entry count against `limit` so dropped rows
+/// never cut pagination short.
+pub fn parse_search_results(body: &[u8], limit: usize) -> Result<HfSearchPage, String> {
     let entries: Vec<HfSearchEntry> = serde_json::from_slice(body)
         .map_err(|e| format!("failed to decode Hugging Face search response: {e}"))?;
-    Ok(entries
+    let has_more = entries.len() >= limit;
+    let rows = entries
         .into_iter()
-        .filter(|e| !e.id.is_empty())
-        .map(|e| HfModelSummary {
-            id: e.id,
-            downloads: e.downloads,
-            gated: e.gated,
-            context_length: sanitize_context_length(e.gguf.and_then(|g| g.context_length)),
-        })
-        .collect())
+        .filter_map(search_entry_to_summary)
+        .collect();
+    Ok(HfSearchPage { rows, has_more })
 }
 
 // ─── RAM-fit estimation + annotated view rows ────────────────────────────────
@@ -1847,7 +1933,7 @@ pub async fn fetch_hf_search(
     base_url: &str,
     query: &str,
     limit: usize,
-) -> Result<Vec<HfModelSummary>, String> {
+) -> Result<HfSearchPage, String> {
     let query = query.trim();
     if query.len() > MAX_HF_SEARCH_QUERY_LEN {
         return Err(format!(
@@ -1863,7 +1949,7 @@ pub async fn fetch_hf_search(
         limit,
     )
     .await?;
-    parse_search_results(&body)
+    parse_search_results(&body, limit)
 }
 
 /// Innermost search fetcher with timeout, body cap, and result limit
@@ -1883,20 +1969,25 @@ async fn fetch_hf_search_inner(
     let endpoint = format!("{}/api/models", base_url.trim_end_matches('/'));
     let limit = limit.to_string();
     // `filter=gguf` matches repos *tagged* gguf (the dedicated quant repos that
-    // actually ship `.gguf` files), and `pipeline_tag=text-generation` keeps
-    // them to chat/instruct models. `library=gguf` is deliberately NOT used: it
+    // actually ship `.gguf` files). `library=gguf` is deliberately NOT used: it
     // also matches base repos that merely link to GGUF quants elsewhere, so the
-    // rows would have no downloadable `.gguf` files of their own.
+    // rows would have no downloadable `.gguf` files of their own. The chat-model
+    // gate is NOT a server `pipeline_tag` filter: that param takes a single value
+    // and so cannot express "text-generation OR image-text-to-text", which hid
+    // every multimodal repo. Instead each row's `pipeline_tag` is expanded and
+    // checked against `SEARCHABLE_PIPELINE_TAGS` in `search_entry_to_summary`.
     let mut params: Vec<(&str, &str)> = vec![
         ("filter", "gguf"),
-        ("pipeline_tag", "text-generation"),
         ("sort", "downloads"),
         ("direction", "-1"),
         ("limit", &limit),
-        // `expand[]=gguf` asks the search to include each repo's parsed GGUF
-        // metadata (the model's context window) inline, so the browser can show
-        // it on every row without a second request per repo.
+        // One expand set carries everything a row needs in a single request, so
+        // there is no per-repo follow-up call: `gguf` (context window + chat
+        // template + architecture), `siblings` (the file list, scanned for an
+        // mmproj vision companion), and `pipeline_tag` (the chat-model allowlist).
         ("expand[]", "gguf"),
+        ("expand[]", "siblings"),
+        ("expand[]", "pipeline_tag"),
     ];
     // An empty query browses the most-downloaded GGUF repos; only attach the
     // search term when the user actually typed one.
@@ -2125,34 +2216,39 @@ pub(crate) fn curated_reasoning_flags(repo: &str, file_name: &str) -> Option<(bo
         .map(|s| (s.thinking, s.reasoning_always))
 }
 
-/// Derives `(thinking, reasoning_always)` for a pasted model from its chat
-/// template. A readable template is classified by
-/// [`reasoning::classify_reasoning`]; an absent template falls back to
-/// `fallback` (the placeholder flags), leaving the runtime backstop to correct
-/// an always-reasoning model from real output.
-pub(crate) fn pasted_reasoning_flags(
-    fallback: (bool, bool),
-    template: Option<&str>,
+/// Derives `(thinking, reasoning_always)` for a non-curated model from its GGUF
+/// metadata: a readable chat template is classified by
+/// [`reasoning::classify_reasoning`]; an absent or empty template falls back to
+/// the repo/file name via [`detect_thinking`], leaving `reasoning_always` off
+/// for the runtime backstop to correct an always-reasoning model from real
+/// output. The single reasoning-derivation point: the Browse-all search rows and
+/// the install/heal path both route through it, so identical metadata always
+/// yields identical flags. The name is only the inputs here; for a repo-level
+/// search row with no chosen file, pass an empty `file`.
+pub(crate) fn reasoning_flags_from_metadata(
+    chat_template: Option<&str>,
     architecture: Option<&str>,
+    repo: &str,
+    file: &str,
 ) -> (bool, bool) {
-    match template {
-        Some(t) => reasoning::classify_reasoning(t, architecture).flags(),
-        None => fallback,
+    match chat_template {
+        Some(t) if !t.is_empty() => reasoning::classify_reasoning(t, architecture).flags(),
+        _ => (detect_thinking(repo, file), false),
     }
 }
 
 /// Resolves the final reasoning flags for a model: curated registry flags when
-/// it is a starter, otherwise the class read from the on-disk GGUF blob's chat
-/// template. Coverage-off: the registry lookup and template classification are
-/// tested through [`curated_reasoning_flags`] / [`pasted_reasoning_flags`]; this
-/// wrapper only adds the filesystem read of the blob.
+/// it is a starter, otherwise the class derived from the on-disk GGUF blob's
+/// chat template (with the name fallback baked into
+/// [`reasoning_flags_from_metadata`]). Coverage-off: the registry lookup and the
+/// derivation are tested through [`curated_reasoning_flags`] /
+/// [`reasoning_flags_from_metadata`]; this wrapper only adds the blob read.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn resolve_reasoning_flags(
     store: &storage::ModelStore,
     repo: &str,
     file_name: &str,
     sha256: &str,
-    fallback: (bool, bool),
 ) -> (bool, bool) {
     if let Some(curated) = curated_reasoning_flags(repo, file_name) {
         return curated;
@@ -2160,7 +2256,7 @@ fn resolve_reasoning_flags(
     let meta = gguf::read_gguf_metadata_from_file(&store.blob_path(sha256));
     let template = meta.as_ref().and_then(|m| m.chat_template.as_deref());
     let architecture = meta.as_ref().and_then(|m| m.architecture.as_deref());
-    pasted_reasoning_flags(fallback, template, architecture)
+    reasoning_flags_from_metadata(template, architecture, repo, file_name)
 }
 
 /// Re-classifies installed built-in rows whose `reasoning_always` is `NULL`
@@ -2179,13 +2275,8 @@ pub fn heal_unclassified_reasoning(conn: &rusqlite::Connection, store: &storage:
         }
     };
     for row in pending {
-        let (thinking, reasoning_always) = resolve_reasoning_flags(
-            store,
-            &row.repo,
-            &row.file_name,
-            &row.sha256,
-            (row.thinking, row.reasoning_always),
-        );
+        let (thinking, reasoning_always) =
+            resolve_reasoning_flags(store, &row.repo, &row.file_name, &row.sha256);
         if let Err(e) = manifest::update_classification(conn, &row.id, thinking, reasoning_always) {
             eprintln!(
                 "thuki: [models] reasoning heal: failed to persist {}: {e}",
@@ -2423,7 +2514,7 @@ pub async fn search_hf_models(
     query: String,
     limit: usize,
     client: tauri::State<'_, reqwest::Client>,
-) -> Result<Vec<HfModelSummary>, String> {
+) -> Result<HfSearchPage, String> {
     fetch_hf_search(&client, HF_BASE_URL, &query, clamp_search_limit(limit)).await
 }
 
@@ -2577,8 +2668,10 @@ fn spawn_model_download(
 
 /// Records a completed download: manifest insert, removal of blobs the
 /// replaced row no longer references (a re-download whose upstream content
-/// changed must not strand the old multi-GB blob), then the builtin
-/// provider's `model` field (the active provider is never changed here).
+/// changed must not strand the old multi-GB blob), then adopts the model as the
+/// builtin provider's selection ONLY when none is chosen yet (the active
+/// provider is never changed here). A later install must not steal the active
+/// model from a model the user already selected.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn finalize_install(
     app: &tauri::AppHandle,
@@ -2589,13 +2682,8 @@ fn finalize_install(
     // picker badge and `/think` gate are correct the instant the install lands.
     // Curated starters keep their registry flags; a template that cannot be read
     // keeps the placeholder flags for the runtime backstop to correct.
-    let (thinking, reasoning_always) = resolve_reasoning_flags(
-        store.inner(),
-        &model.repo,
-        &model.file_name,
-        &model.sha256,
-        (model.thinking, model.reasoning_always),
-    );
+    let (thinking, reasoning_always) =
+        resolve_reasoning_flags(store.inner(), &model.repo, &model.file_name, &model.sha256);
     let model = manifest::InstalledModel {
         thinking,
         reasoning_always,
@@ -5068,67 +5156,117 @@ mod tests {
 
     // ── Model library: Hugging Face search ───────────────────────────────────
 
-    /// Search fixture exercising every `gated` shape (bool, strategy string,
-    /// absent, null) plus an empty-id row that must be dropped.
+    /// Search fixture exercising the capability derivation and the pipeline
+    /// allowlist: each `gated` shape (bool, strategy string, absent, null),
+    /// vision from an mmproj sibling, thinking from the chat template (template
+    /// class wins over a reasoning-y name) with a name fallback when no template
+    /// is present, a non-chat pipeline that is dropped, an untagged repo that is
+    /// dropped, and an empty-id row that is dropped.
     fn search_fixture() -> serde_json::Value {
         serde_json::json!([
+            // alpha: chat model that ships an mmproj companion and an optional
+            // (`enable_thinking`) template -> vision + thinking, with context.
             {"id": "org/alpha-GGUF", "downloads": 1000, "gated": false,
-             "gguf": {"context_length": 131072}},
-            {"id": "org/beta-GGUF", "downloads": 500, "gated": "manual"},
-            {"id": "org/gamma-GGUF"},
-            {"id": "org/delta-GGUF", "downloads": 1, "gated": true,
-             "gguf": {"context_length": 9000000000u64}},
-            {"id": "org/epsilon-GGUF", "downloads": 2, "gated": null},
-            {"id": "", "downloads": 9}
+             "pipeline_tag": "text-generation",
+             "gguf": {"context_length": 131072,
+                      "chat_template": "{%- if enable_thinking %}<think>{% endif %}",
+                      "architecture": "qwen3"},
+             "siblings": [{"rfilename": "alpha-Q4_K_M.gguf"},
+                          {"rfilename": "mmproj-f16.gguf"}]},
+            // beta: a multimodal pipeline tag is allowlisted; no mmproj sibling
+            // means no vision, and an always-on `<think>` template means thinking.
+            {"id": "org/beta-GGUF", "downloads": 500, "gated": "manual",
+             "pipeline_tag": "image-text-to-text",
+             "gguf": {"chat_template": "<|im_start|>assistant\\n<think>\\n"},
+             "siblings": [{"rfilename": "beta.gguf"}]},
+            // gamma: no expanded gguf at all, so thinking falls back to the name
+            // (`QwQ` is a known reasoning family); no mmproj means no vision.
+            {"id": "org/QwQ-32B-GGUF", "downloads": 7,
+             "pipeline_tag": "text-generation"},
+            // delta: a non-chat pipeline (embeddings) is dropped by the allowlist
+            // even though it is the most downloaded.
+            {"id": "org/embed-GGUF", "downloads": 99999,
+             "pipeline_tag": "feature-extraction"},
+            // epsilon: a plain instruct template classifies as non-thinking and
+            // overrides the reasoning-y repo name; its context is implausibly
+            // large so it is dropped; no mmproj means no vision.
+            {"id": "org/Reasoner-GGUF", "downloads": 2, "gated": null,
+             "pipeline_tag": "text-generation",
+             "gguf": {"context_length": 9000000000u64,
+                      "chat_template": "<|user|>{{x}}<|assistant|>",
+                      "architecture": "llama"},
+             "siblings": [{"rfilename": "r.gguf"}]},
+            // zeta: no pipeline tag at all is dropped (the allowlist requires an
+            // explicit chat-capable tag).
+            {"id": "org/untagged-GGUF", "downloads": 3},
+            // empty id is dropped.
+            {"id": "", "downloads": 9, "pipeline_tag": "text-generation"}
         ])
     }
 
     #[test]
-    fn parse_search_results_maps_rows_normalizes_gated_and_context() {
+    fn parse_search_results_maps_capabilities_and_drops_non_chat_rows() {
         let body = search_fixture().to_string();
-        let rows = parse_search_results(body.as_bytes()).unwrap();
+        // A generous limit keeps `has_more` false so this case stays about rows.
+        let page = parse_search_results(body.as_bytes(), 100).unwrap();
+        assert!(!page.has_more);
         assert_eq!(
-            rows,
+            page.rows,
             vec![
-                // alpha carries a valid context window from its expanded gguf.
                 HfModelSummary {
                     id: "org/alpha-GGUF".to_string(),
                     downloads: 1000,
                     gated: false,
                     context_length: Some(131072),
+                    vision: true,
+                    thinking: true,
                 },
                 HfModelSummary {
                     id: "org/beta-GGUF".to_string(),
                     downloads: 500,
                     gated: true,
                     context_length: None,
+                    vision: false,
+                    thinking: true,
                 },
+                // gamma: thinking healed from the `QwQ` name when no template ships.
                 HfModelSummary {
-                    id: "org/gamma-GGUF".to_string(),
-                    downloads: 0,
+                    id: "org/QwQ-32B-GGUF".to_string(),
+                    downloads: 7,
                     gated: false,
                     context_length: None,
+                    vision: false,
+                    thinking: true,
                 },
-                // delta's declared context is implausibly large, so it is dropped.
+                // epsilon: the plain template wins over the reasoning-y name.
                 HfModelSummary {
-                    id: "org/delta-GGUF".to_string(),
-                    downloads: 1,
-                    gated: true,
-                    context_length: None,
-                },
-                HfModelSummary {
-                    id: "org/epsilon-GGUF".to_string(),
+                    id: "org/Reasoner-GGUF".to_string(),
                     downloads: 2,
                     gated: false,
                     context_length: None,
+                    vision: false,
+                    thinking: false,
                 },
             ]
         );
     }
 
     #[test]
+    fn parse_search_results_flags_has_more_when_the_page_is_full() {
+        let body = serde_json::json!([
+            {"id": "org/a-GGUF", "downloads": 2, "pipeline_tag": "text-generation"},
+            {"id": "org/b-GGUF", "downloads": 1, "pipeline_tag": "text-generation"}
+        ])
+        .to_string();
+        // Two raw entries: a page of two is full (more may exist on the Hub)...
+        assert!(parse_search_results(body.as_bytes(), 2).unwrap().has_more);
+        // ...but a page asking for three was not filled, so the Hub is exhausted.
+        assert!(!parse_search_results(body.as_bytes(), 3).unwrap().has_more);
+    }
+
+    #[test]
     fn parse_search_results_rejects_invalid_json() {
-        let err = parse_search_results(b"not json").unwrap_err();
+        let err = parse_search_results(b"not json", 30).unwrap_err();
         assert!(err.contains("failed to decode"), "got: {err}");
     }
 
@@ -5139,14 +5277,27 @@ mod tests {
             downloads: 7,
             gated: true,
             context_length: Some(131072),
+            vision: true,
+            thinking: false,
         })
         .unwrap();
         assert_eq!(
             v,
             serde_json::json!({
                 "id": "o/r", "downloads": 7, "gated": true, "context_length": 131072,
+                "vision": true, "thinking": false,
             })
         );
+    }
+
+    #[test]
+    fn hf_search_page_serializes_snake_case() {
+        let v = serde_json::to_value(HfSearchPage {
+            rows: vec![],
+            has_more: true,
+        })
+        .unwrap();
+        assert_eq!(v, serde_json::json!({ "rows": [], "has_more": true }));
     }
 
     // ── RAM-fit estimation + annotated views ─────────────────────────────────
@@ -5258,16 +5409,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_hf_search_returns_rows_and_sends_filtered_query() {
+    async fn fetch_hf_search_returns_rows_and_sends_widened_query() {
         let mut server = mockito::Server::new_async().await;
+        // The query no longer pins `pipeline_tag=text-generation` (that excluded
+        // multimodal `image-text-to-text` repos); chat-vs-non-chat is now an
+        // allowlist applied to each row's expanded `pipeline_tag`. The expand set
+        // carries the gguf block (context + chat template), the file list (mmproj
+        // -> vision), and the pipeline tag (the allowlist) in one request.
         let mock = server
             .mock("GET", "/api/models")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("filter".into(), "gguf".into()),
-                mockito::Matcher::UrlEncoded("pipeline_tag".into(), "text-generation".into()),
                 mockito::Matcher::UrlEncoded("search".into(), "qwen".into()),
                 mockito::Matcher::UrlEncoded("sort".into(), "downloads".into()),
                 mockito::Matcher::UrlEncoded("limit".into(), "60".into()),
+                // The widened query expands the gguf block, the file list, and
+                // the pipeline tag, and (critically) no longer pins
+                // `pipeline_tag=text-generation`, which had hidden vision repos.
+                mockito::Matcher::Regex("expand%5B%5D=gguf".into()),
+                mockito::Matcher::Regex("expand%5B%5D=siblings".into()),
+                mockito::Matcher::Regex("expand%5B%5D=pipeline_tag".into()),
             ]))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -5275,12 +5436,16 @@ mod tests {
             .create_async()
             .await;
         let client = reqwest::Client::new();
-        let rows = fetch_hf_search(&client, &server.url(), "qwen", 60)
+        let page = fetch_hf_search(&client, &server.url(), "qwen", 60)
             .await
             .unwrap();
         mock.assert_async().await;
-        assert_eq!(rows.len(), 5);
-        assert_eq!(rows[0].id, "org/alpha-GGUF");
+        // Four chat rows survive the allowlist; the multimodal beta row proves
+        // the widened query surfaces a repo the old filter would have dropped.
+        assert_eq!(page.rows.len(), 4);
+        assert_eq!(page.rows[0].id, "org/alpha-GGUF");
+        assert!(page.rows.iter().any(|r| r.id == "org/beta-GGUF"));
+        assert!(!page.has_more);
     }
 
     #[tokio::test]
@@ -5295,7 +5460,7 @@ mod tests {
             .await;
         let client = reqwest::Client::new();
         // Whitespace-only query trims to empty and the search param is dropped.
-        let rows = fetch_hf_search(
+        let page = fetch_hf_search(
             &client,
             &server.url(),
             "   ",
@@ -5303,7 +5468,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(rows.is_empty());
+        assert!(page.rows.is_empty());
+        assert!(!page.has_more);
     }
 
     #[tokio::test]
@@ -5595,38 +5761,55 @@ mod tests {
     }
 
     #[test]
-    fn pasted_reasoning_flags_classify_from_template() {
+    fn reasoning_flags_from_metadata_classify_from_template() {
         // Optional family: thinking on, no badge.
         assert_eq!(
-            pasted_reasoning_flags(
-                (false, false),
+            reasoning_flags_from_metadata(
                 Some("{% if enable_thinking %}"),
-                Some("qwen3")
+                Some("qwen3"),
+                "any/repo",
+                "x.gguf"
             ),
             (true, false)
         );
         // Always family: thinking on, badge.
         assert_eq!(
-            pasted_reasoning_flags((false, false), Some("<think>"), None),
+            reasoning_flags_from_metadata(Some("<think>"), None, "any/repo", "x.gguf"),
             (true, true)
         );
         // Non-reasoning: both off.
         assert_eq!(
-            pasted_reasoning_flags((false, false), Some("plain instruct"), None),
+            reasoning_flags_from_metadata(Some("plain instruct"), None, "any/repo", "x.gguf"),
+            (false, false)
+        );
+        // A readable template wins over a reasoning-y name.
+        assert_eq!(
+            reasoning_flags_from_metadata(Some("plain instruct"), None, "org/QwQ-32B", "x.gguf"),
             (false, false)
         );
     }
 
     #[test]
-    fn pasted_reasoning_flags_fall_back_when_template_absent() {
-        // No readable template: keep the placeholder flags for the backstop.
+    fn reasoning_flags_from_metadata_falls_back_to_name_without_template() {
+        // No template: the name decides thinking; `reasoning_always` stays off
+        // for the runtime backstop. Marker in the repo, then in the file name.
         assert_eq!(
-            pasted_reasoning_flags((true, true), None, None),
-            (true, true)
+            reasoning_flags_from_metadata(None, None, "org/QwQ-32B", "x.gguf"),
+            (true, false)
         );
         assert_eq!(
-            pasted_reasoning_flags((false, false), None, Some("qwen3")),
+            reasoning_flags_from_metadata(None, None, "org/plain", "model-reasoning.gguf"),
+            (true, false)
+        );
+        // No template and no marker: both off.
+        assert_eq!(
+            reasoning_flags_from_metadata(None, None, "org/plain", "model.gguf"),
             (false, false)
+        );
+        // An empty template is treated as no template and falls back to the name.
+        assert_eq!(
+            reasoning_flags_from_metadata(Some(""), None, "org/QwQ-32B", "x.gguf"),
+            (true, false)
         );
     }
 

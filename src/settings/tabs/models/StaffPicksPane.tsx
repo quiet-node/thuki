@@ -29,6 +29,7 @@ import {
   type DownloadsContextValue,
 } from '../../../contexts/DownloadsContext';
 import { downloadKey } from '../../../hooks/downloadKey';
+import { CapabilityPills } from './CapabilityPills';
 import { useStaffPicks } from '../../../components/StarterPicker';
 import { Tooltip } from '../../../components/Tooltip';
 import { formatContextWindow } from '../../../utils/contextWindow';
@@ -217,19 +218,10 @@ function ModelRow({ option, downloads, onSaved, refresh }: ModelRowProps) {
             >
               {starter.display_name}
             </button>
-            <span className={styles.pills}>
-              <span className={`${styles.pill} ${styles.pillText}`}>Text</span>
-              {starter.vision ? (
-                <span className={`${styles.pill} ${styles.pillVision}`}>
-                  Vision
-                </span>
-              ) : null}
-              {starter.thinking ? (
-                <span className={`${styles.pill} ${styles.pillThinking}`}>
-                  Thinking
-                </span>
-              ) : null}
-            </span>
+            <CapabilityPills
+              vision={starter.vision}
+              thinking={starter.thinking}
+            />
           </div>
           <div className={styles.sub}>
             {paused
