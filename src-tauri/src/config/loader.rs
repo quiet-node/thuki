@@ -138,13 +138,16 @@ pub(crate) fn resolve(config: &mut AppConfig) {
     // Inference section: providers list, active pointer, migration, clamps.
     resolve_inference(&mut config.inference);
 
-    // Prompt section: if the user has never explicitly saved a system prompt
-    // (system_customized is false) and the on-disk value is empty, restore
-    // the built-in default. This heals configs from before the Settings UI
-    // existed, where system="" was the old compiled default rather than an
-    // intentional clear. Once the user saves via Settings, system_customized
-    // is set to true and an explicit empty is respected.
-    if !config.prompt.system_customized && config.prompt.system.trim().is_empty() {
+    // Prompt section: when the user has never explicitly saved a system prompt
+    // (system_customized is false), the persisted `system` is not authoritative.
+    // It is only a cached copy of whatever the compiled default was when the
+    // file was seeded. Always replace it with the current built-in default, so
+    // edits to DEFAULT_SYSTEM_PROMPT_BASE reach every non-customizing install
+    // and configs seeded with a now-stale prompt are healed (including the old
+    // pre-Settings-UI case where system=""). Once the user saves via Settings,
+    // system_customized is set to true and the stored value is respected
+    // verbatim, including an explicit empty (which means "send no persona").
+    if !config.prompt.system_customized {
         config.prompt.system = DEFAULT_SYSTEM_PROMPT_BASE.to_string();
     }
     config.prompt.resolved_system =

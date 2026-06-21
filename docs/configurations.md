@@ -65,11 +65,15 @@ base_url = "http://127.0.0.1:11434"
 model = ""
 
 [prompt]
-# The full secretary persona prompt. Seeded on first run so this file is the
-# single source of truth: edit it to tune behavior. Clearing it sends only
-# the slash-command appendix, which Thuki always appends at runtime so slash
-# commands keep working.
+# The full secretary persona prompt. Seeded on first run. Save changes via
+# Settings, which marks the prompt customized so your edit is kept; a hand edit
+# made directly here only survives if you also set system_customized = true.
+# While system_customized is false the stored value is treated as a cached
+# default and refreshed to the built-in prompt on the next load. Clearing the
+# prompt via Settings sends only the slash-command appendix, which Thuki always
+# appends at runtime so slash commands keep working.
 system = "..."
+system_customized = false
 
 [window]
 overlay_width = 600
@@ -195,9 +199,9 @@ Controls the personality and instructions Thuki gives to the AI at the start of 
 
 | Constant                        | Default                                | Tunable? | Why not tunable                                                                                                                                       | Bounds     | Description                                                                                                                                                                                                                                            |
 | :------------------------------ | :------------------------------------- | :------- | :---------------------------------------------------------------------------------------------------------------------------------------------------- | :--------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `system`                        | full built-in body (~17 KB)            | Yes      | —                                                                                                                                                     | any string | The full secretary personality prompt. Seeded into your `config.toml` on first run so the file is the single source of truth: edit, tweak, or replace it. Clearing the field via Settings sends no persona at all. Clearing it by hand in the TOML (without ever saving via Settings) is treated as an old-config migration artifact and the default is restored on the next boot. The slash-command appendix is always added on top, so `/search` etc. work either way. |
-| `DEFAULT_SYSTEM_CUSTOMIZED`    | `false`                                | No       | Internal migration flag. Set to `true` the first time the user saves the system prompt via Settings. Guards the upgrade path that distinguishes configs where `system = ""` was the old compiled default from a deliberate clear made in the Settings UI. Not user-tunable because exposing it would let users suppress the safety net that restores the built-in persona on upgrade. | — | Tracks whether the user has ever explicitly saved a system prompt through the Settings UI. |
-| `DEFAULT_SYSTEM_PROMPT_BASE`    | `prompts/system_prompt.txt`            | No       | The shipped seed for `system` on first run. Once your `config.toml` exists, only the file matters; this constant is no longer consulted at runtime. | —          | Source-of-truth file used to seed `system` on first run.                                                                                                                                                                                                                                  |
+| `system`                        | full built-in body (~6 KB)             | Yes      | —                                                                                                                                                     | any string | The full secretary personality prompt, seeded into your `config.toml` on first run. It becomes authoritative only once you save it through Settings (which sets `system_customized = true`); until then it is treated as a cached copy of the built-in default and is refreshed to the current `DEFAULT_SYSTEM_PROMPT_BASE` on every load, so app upgrades that ship a new prompt reach you automatically. To make a hand edit in the TOML stick, also set `system_customized = true`. Saving an empty value via Settings sends no persona at all. The slash-command appendix is always added on top, so `/search` etc. work either way. |
+| `DEFAULT_SYSTEM_CUSTOMIZED`    | `false`                                | No       | Internal authority flag. Set to `true` the first time the user saves the system prompt via Settings. While `false`, the persisted `system` is treated as a cached default and is overwritten by `DEFAULT_SYSTEM_PROMPT_BASE` on every load; once `true`, the stored value (including an explicit empty) is respected verbatim. Not user-tunable because exposing it would let users suppress the safety net that keeps non-customizing installs on the current built-in persona across upgrades. | — | Tracks whether the user has ever explicitly saved a system prompt through the Settings UI. |
+| `DEFAULT_SYSTEM_PROMPT_BASE`    | `prompts/system_prompt.txt`            | No       | The shipped built-in prompt. Seeds `system` on first run, and is reapplied on every load for any config not customized via Settings (`system_customized = false`), so edits to this file reach all non-customizing installs. | —          | Source-of-truth file used to seed and refresh `system`.                                                                                                                                                                                                                                  |
 | `SLASH_COMMAND_PROMPT_APPENDIX` | `prompts/generated/slash_commands.txt` | No       | Auto-generated from the slash-command registry at build time. Editing by hand would desync the AI's understanding of the commands from the real ones. | —          | The list of slash commands (`/search`, `/screen`, etc.) Thuki tells the AI about so it knows what each one does. Always added on top of your `system` prompt.                                                                                          |
 
 ### `[window]`
