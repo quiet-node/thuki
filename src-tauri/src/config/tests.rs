@@ -634,6 +634,7 @@ fn resolve_custom_system_prompt_flows_through_with_appendix() {
         r#"
             [prompt]
             system = "You are a custom assistant."
+            system_customized = true
         "#,
     )
     .unwrap();
@@ -646,6 +647,34 @@ fn resolve_custom_system_prompt_flows_through_with_appendix() {
         .prompt
         .resolved_system
         .contains(SLASH_COMMAND_PROMPT_APPENDIX.trim()));
+}
+
+#[test]
+fn resolve_stale_noncustomized_system_prompt_is_refreshed_to_default() {
+    // Migration path: a config seeded with an older build's prompt holds a
+    // non-empty `system` with system_customized=false. The persisted text is
+    // not authoritative, so resolve replaces it with the current compiled
+    // default rather than letting the stale prompt flow through.
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [prompt]
+            system = "An older default prompt that should be refreshed."
+        "#,
+    )
+    .unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(config.prompt.system, DEFAULT_SYSTEM_PROMPT_BASE);
+    assert!(!config
+        .prompt
+        .resolved_system
+        .contains("An older default prompt that should be refreshed."));
+    assert!(config
+        .prompt
+        .resolved_system
+        .contains(DEFAULT_SYSTEM_PROMPT_BASE.trim()));
 }
 
 #[test]
