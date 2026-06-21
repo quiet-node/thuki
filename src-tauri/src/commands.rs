@@ -267,12 +267,15 @@ async fn fetch_builtin_vision(client: &reqwest::Client, base_url: &str) -> bool 
 /// Condenses a multi-line engine failure detail into the single most
 /// informative line for the error subtitle (which renders as one paragraph).
 /// The captured stderr tail can be many timestamped lines, so this prefers the
-/// FIRST line mentioning an error or failure: llama.cpp prints the specific
+/// FIRST line that reads like an actual error message ("error:", "error
+/// loading", "failed to", "failed:") over one that merely contains the word
+/// (a startup banner such as "log level: error"). llama.cpp prints the specific
 /// root cause first ("error loading model: <reason>") then generic trailers
 /// ("failed to load", "exiting due to model loading error"), so the first
-/// match is the actionable one. Falls back to the last non-empty line; a
-/// single-line detail (e.g. a health-check message) is returned unchanged.
-/// Classification upstream still sees the full detail.
+/// actionable match is the one to show. It falls back to any error/failure
+/// mention, then to the last non-empty line; a single-line detail (e.g. a
+/// health-check message) is returned unchanged. Classification upstream still
+/// sees the full detail.
 fn concise_detail(detail: &str) -> String {
     let lines: Vec<&str> = detail
         .lines()
@@ -286,7 +289,16 @@ fn concise_detail(detail: &str) -> String {
             .iter()
             .find(|line| {
                 let lower = line.to_ascii_lowercase();
-                lower.contains("error") || lower.contains("failed")
+                lower.contains("error:")
+                    || lower.contains("error loading")
+                    || lower.contains("failed to")
+                    || lower.contains("failed:")
+            })
+            .or_else(|| {
+                many.iter().find(|line| {
+                    let lower = line.to_ascii_lowercase();
+                    lower.contains("error") || lower.contains("failed")
+                })
             })
             .copied()
             .unwrap_or(many[many.len() - 1])
@@ -1537,6 +1549,22 @@ mod tests {
         // ... error" trailers: the first match must win.
         let tail = "I loading model\nE error loading model: out of memory\nE failed to load model\nE exiting due to model loading error";
         assert_eq!(concise_detail(tail), "E error loading model: out of memory");
+    }
+
+    #[test]
+    fn concise_detail_skips_a_benign_error_word_for_the_real_cause() {
+        // A startup banner mentions "error" as a log level; the actionable line
+        // is the real loading failure further down. The banner must not win.
+        let tail = "I log level set to error\nI loading model\nE error loading model: bad magic";
+        assert_eq!(concise_detail(tail), "E error loading model: bad magic");
+    }
+
+    #[test]
+    fn concise_detail_falls_back_to_any_failure_mention() {
+        // No "error:"/"error loading"/"failed to" line, but a bare mention is
+        // still more informative than the last line, so it is preferred.
+        let tail = "I starting up\nW cuda error detected\nI shutting down";
+        assert_eq!(concise_detail(tail), "W cuda error detected");
     }
 
     #[test]
