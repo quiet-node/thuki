@@ -1,0 +1,334 @@
+/*
+ * Styles for the Library pane of the Models surface. Tokens (--accent, --ok,
+ * --tight, --heavy, --danger, --hair, --t1..--t3, --elev-*) cascade from the
+ * Settings window, so they are referenced directly here.
+ */
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  padding: 0 2px 14px;
+}
+
+/* Quiet ghost button: the Library is a place you manage what you have, so the
+ * add affordance is present but not the loud accent block it used to be. */
+.addButton {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 540;
+  color: var(--t2);
+  background: transparent;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  padding: 7px 13px;
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease,
+    background 150ms ease;
+}
+.addButton:hover {
+  color: var(--accent);
+  border-color: rgba(255, 141, 92, 0.45);
+  background: var(--accent-soft);
+}
+.addIcon {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card {
+  position: relative;
+  border: 1px solid var(--hair-soft);
+  border-radius: var(--radius-card);
+  background: var(--elev-1);
+}
+
+.cardActive {
+  border-color: rgba(255, 141, 92, 0.4);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 141, 92, 0.05),
+    rgba(255, 141, 92, 0.015)
+  );
+}
+
+/* Accent edge marks the active model: one signal, no avatar tile. */
+.activeEdge {
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 2.5px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 14px 14px 16px;
+}
+
+.mid {
+  flex: 1;
+  min-width: 0;
+}
+
+.name {
+  font-weight: 580;
+  font-size: 13.5px;
+  color: var(--t1);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+/* Model name doubles as the link to the repo on Hugging Face: a plain button
+ * that reads as text until hover, matching Browse-all's row link. */
+.nameLink {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  font-weight: 580;
+  font-size: 13.5px;
+  color: var(--t1);
+  text-align: left;
+  cursor: pointer;
+  transition: color 140ms ease;
+}
+.nameLink:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.nameLink:focus-visible {
+  outline: none;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.org {
+  font-size: 11px;
+  color: var(--t3);
+  margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: none;
+}
+
+/* Capability pills sit in the name line, right after the model name. A neutral
+ * chip with the colour carried in the text only: each capability has its own
+ * warm hue (stone / rose / gold), a quiet family rather than a loud rainbow. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 540;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.05);
+}
+.pillText {
+  color: var(--cap-text);
+}
+.pillVision {
+  color: var(--cap-vision);
+}
+.pillThinking {
+  color: var(--cap-think);
+}
+
+/* RAM-fit hint: a coloured label (no dot) reusing the onboarding fit palette. */
+.fit {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 560;
+}
+.fitOk {
+  color: var(--ok);
+}
+.fitTight {
+  color: var(--tight);
+}
+.fitHeavy {
+  color: var(--heavy);
+}
+
+.manageButton {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--hair);
+  background: transparent;
+  display: grid;
+  place-items: center;
+  color: var(--t3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
+}
+.manageButton:hover {
+  color: var(--t1);
+  border-color: rgba(255, 141, 92, 0.4);
+}
+
+/* ── Popover menu (replaces the old inline card expand) ─────────────────── */
+
+@keyframes menuIn {
+  from {
+    opacity: 0;
+    transform: scale(0.94) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.menuWrap {
+  position: relative;
+}
+
+/* Fixed to the viewport (top/right set inline from the trigger's rect) so the
+ * popover escapes the Settings window's hidden overflow instead of being
+ * clipped by `.body` / `.window`. */
+.menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 208px;
+  padding: 6px;
+  background: rgba(28, 23, 20, 0.98);
+  border: 1px solid var(--hair);
+  border-top-color: rgba(255, 141, 92, 0.18);
+  border-radius: 12px;
+  box-shadow:
+    0 14px 34px -10px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(255, 141, 92, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transform-origin: top right;
+  animation: menuIn 130ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+/* When the menu flips above a bottom-edge trigger, grow the open animation from
+ * the bottom edge so it reads as rising out of the button. */
+.menu[data-side='top'] {
+  transform-origin: bottom right;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--t1);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.menuItem svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.8;
+  flex: none;
+}
+.menuItem:hover {
+  background: var(--elev-2);
+}
+.menuItemDanger {
+  color: var(--danger);
+}
+.menuItemDanger:hover {
+  background: rgba(255, 122, 110, 0.12);
+}
+
+.menuSep {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--hair-soft);
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 14px;
+}
+
+.emptyText {
+  font-size: 13px;
+  color: var(--t2);
+}
+
+.browseButton {
+  font-size: 12px;
+  font-weight: 560;
+  color: #16110d;
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+
+.error {
+  font-size: 11px;
+  color: var(--danger);
+  margin: 8px 4px 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu {
+    animation: none;
+  }
+  .addButton,
+  .manageButton,
+  .menuItem {
+    transition: none;
+  }
+}

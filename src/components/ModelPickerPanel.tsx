@@ -22,6 +22,16 @@ export const OLLAMA_LIBRARY_URL = 'https://ollama.com/library';
 export const OLLAMA_PILL_TOOLTIP =
   'Browse and pull any model on Ollama. Thuki auto-detects it.';
 
+/**
+ * Pill shown on models whose reasoning cannot be turned off (capability
+ * `reasoningAlways`). Positive, non-alarming framing per industry practice
+ * (Anthropic/OpenAI/Gemini never present reasoning as a caveat): the goal is
+ * to set expectations, not warn. `/think` is a no-op for these models.
+ */
+export const ALWAYS_THINKS_LABEL = 'Always thinks';
+export const ALWAYS_THINKS_TOOLTIP =
+  'This model reasons before every answer, so expect a brief pause. Its thinking shows in a collapsible block above each reply.';
+
 const CHECK_ICON_PATH = (
   <path
     d="M3 8l3.5 3.5L13 5"
@@ -290,6 +300,8 @@ export function ModelPickerPanel({
             const active = model === activeModel;
             const highlighted = index === safeHighlightedIndex;
             const capLabel = formatCapabilityLabel(capabilities, model);
+            const alwaysThinks =
+              capabilities?.[model]?.reasoningAlways === true;
             return (
               <button
                 key={model}
@@ -310,7 +322,10 @@ export function ModelPickerPanel({
                 }`}
               >
                 <span className="flex-1 min-w-0 flex flex-col gap-0.5">
-                  <span className="overflow-hidden text-ellipsis whitespace-nowrap leading-tight">
+                  <span
+                    className="overflow-hidden text-ellipsis whitespace-nowrap leading-tight"
+                    title={labelFor(model)}
+                  >
                     {labelFor(model)}
                   </span>
                   {capLabel && (
@@ -322,6 +337,18 @@ export function ModelPickerPanel({
                     </span>
                   )}
                 </span>
+                {alwaysThinks && (
+                  // A plain span with a native title: the row is a <button>,
+                  // so the Tooltip component (which wraps children in a <div>)
+                  // cannot be nested here without invalid phrasing content.
+                  <span
+                    data-testid="always-thinks-badge"
+                    title={ALWAYS_THINKS_TOOLTIP}
+                    className="shrink-0 self-center inline-flex items-center text-[10px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-md px-1.5 py-0.5 whitespace-nowrap"
+                  >
+                    {ALWAYS_THINKS_LABEL}
+                  </span>
+                )}
                 <svg
                   className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary"
                   style={{ opacity: active ? 1 : 0 }}

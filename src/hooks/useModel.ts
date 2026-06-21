@@ -13,6 +13,7 @@ import type {
 export type EngineErrorKind =
   | 'EngineUnreachable'
   | 'EngineStartFailed'
+  | 'ModelUnsupported'
   | 'ModelNotFound'
   | 'NoModelSelected'
   | 'Other';

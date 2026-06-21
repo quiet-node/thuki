@@ -23,6 +23,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
+import { DownloadsProvider } from '../contexts/DownloadsContext';
 import { useConfigSync } from './hooks/useConfigSync';
 import { useSettingsAutoResize } from './hooks/useSettingsAutoResize';
 import { ModelTab } from './tabs/ModelTab';
@@ -44,8 +45,8 @@ const TABS: ReadonlyArray<{
 }> = [
   {
     id: 'general',
-    label: 'AI',
-    // Brain — visual cue that this tab is for the AI itself.
+    label: 'Models',
+    // Grid — the model library / management surface.
     icon: (
       <svg
         viewBox="0 0 24 24"
@@ -56,8 +57,10 @@ const TABS: ReadonlyArray<{
         strokeLinejoin="round"
         aria-hidden
       >
-        <path d="M9.5 2a3 3 0 0 0-3 3v.5a2.5 2.5 0 0 0-2 4 3 3 0 0 0 .5 5 2.5 2.5 0 0 0 1.5 4.5 3 3 0 0 0 5.5-1.5V5a3 3 0 0 0-2.5-3z" />
-        <path d="M14.5 2a3 3 0 0 1 3 3v.5a2.5 2.5 0 0 1 2 4 3 3 0 0 1-.5 5 2.5 2.5 0 0 1-1.5 4.5 3 3 0 0 1-5.5-1.5V5a3 3 0 0 1 2.5-3z" />
+        <rect x="3" y="3" width="7" height="7" rx="1.5" />
+        <rect x="14" y="3" width="7" height="7" rx="1.5" />
+        <rect x="3" y="14" width="7" height="7" rx="1.5" />
+        <rect x="14" y="14" width="7" height="7" rx="1.5" />
       </svg>
     ),
   },
@@ -151,14 +154,17 @@ const SAVED_PILL_DURATION_MS = 1500;
 
 /**
  * Static chrome offset from inner content to total window height:
- *   window padding-top (8) + WindowControls strip (~28) + tab bar (~70)
+ *   window padding-top (8) + WindowControls strip (~28)
  *   + body padding top+bottom (18 + 24 = 42).
+ * The section nav now lives in a left sidebar beside the content, so it no
+ * longer adds vertical chrome (the old top tab bar did). The sidebar's own
+ * height is seated by the hook's MIN_HEIGHT floor instead.
  * Empirically measured against the rendered Settings window. If any of
  * the chrome surfaces change height, update this constant rather than
  * trying to read `offsetHeight` at runtime — the auto-resize hook fires
  * before paint settles, so dynamic measurement of chrome would miss.
  */
-const CHROME_HEIGHT = 148;
+const CHROME_HEIGHT = 78;
 /** Recovery banner height when the corrupt-config marker is shown. */
 const BANNER_HEIGHT = 56;
 
@@ -299,132 +305,152 @@ export function SettingsWindow() {
 
   if (!config) return null;
 
+  // The Settings window is its own webview root (see `main.tsx`), so it hosts
+  // its own download registry: the Discover panes read their downloads from it,
+  // and hosting it here (above the section nav and the Models segmented control)
+  // keeps every in-flight download alive across each in-window tab switch. It is
+  // independent of the main overlay's onboarding provider; the backend's keyed
+  // slots are the real cross-window coordinator.
   return (
-    <div className={styles.window} onMouseDown={handleDragStart}>
-      <WindowControls onClose={handleHide} />
+    <DownloadsProvider>
+      <div className={styles.window} onMouseDown={handleDragStart}>
+        <WindowControls onClose={handleHide} />
 
-      {marker && !markerDismissed ? (
-        <div className={styles.banner} role="alert">
-          <span className={styles.bannerIcon} aria-hidden>
-            ⚠
-          </span>
-          <span className={styles.bannerText}>
-            Your previous <code>config.toml</code> had a syntax error and was
-            saved as <code>{baseName(marker.path)}</code>. Defaults are now
-            active.
-          </span>
-          <span className={styles.bannerActions}>
-            <button
-              type="button"
-              className={`${styles.button} ${styles.buttonGhost}`}
-              onClick={() =>
-                void invoke('open_url', {
-                  url: `file://${encodeURI(marker.path).replace(/'/g, '%27')}`,
-                })
-              }
-            >
-              Reveal
-            </button>
-            <button
-              type="button"
-              className={`${styles.button} ${styles.buttonGhost}`}
-              onClick={() => setMarkerDismissed(true)}
-            >
-              Dismiss
-            </button>
-          </span>
-        </div>
-      ) : null}
-
-      {updater.state.update && !settingsSnoozed ? (
-        <UpdateBanner
-          version={updater.state.update.version}
-          notesUrl={updater.state.update.notes_url}
-          onInstall={() => void updater.openWindow()}
-          onLater={() => void updater.snoozeSettings(24)}
-        />
-      ) : null}
-
-      <div
-        role="tablist"
-        aria-label="Settings sections"
-        className={styles.tabBar}
-      >
-        {TABS.map((tab) => {
-          const active = tab.id === activeTab;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              aria-controls={`panel-${tab.id}`}
-              tabIndex={active ? 0 : -1}
-              className={`${styles.tab} ${active ? styles.tabActive : ''}`}
-              onClick={() => setActiveTab(tab.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-                  e.preventDefault();
-                  const idx = TABS.findIndex((t) => t.id === activeTab);
-                  const next =
-                    e.key === 'ArrowRight'
-                      ? TABS[(idx + 1) % TABS.length]
-                      : TABS[(idx - 1 + TABS.length) % TABS.length];
-                  setActiveTab(next.id);
+        {marker && !markerDismissed ? (
+          <div className={styles.banner} role="alert">
+            <span className={styles.bannerIcon} aria-hidden>
+              ⚠
+            </span>
+            <span className={styles.bannerText}>
+              Your previous <code>config.toml</code> had a syntax error and was
+              saved as <code>{baseName(marker.path)}</code>. Defaults are now
+              active.
+            </span>
+            <span className={styles.bannerActions}>
+              <button
+                type="button"
+                className={`${styles.button} ${styles.buttonGhost}`}
+                onClick={() =>
+                  void invoke('open_url', {
+                    url: `file://${encodeURI(marker.path).replace(/'/g, '%27')}`,
+                  })
                 }
-              }}
+              >
+                Reveal
+              </button>
+              <button
+                type="button"
+                className={`${styles.button} ${styles.buttonGhost}`}
+                onClick={() => setMarkerDismissed(true)}
+              >
+                Dismiss
+              </button>
+            </span>
+          </div>
+        ) : null}
+
+        {updater.state.update && !settingsSnoozed ? (
+          <UpdateBanner
+            version={updater.state.update.version}
+            notesUrl={updater.state.update.notes_url}
+            onInstall={() => void updater.openWindow()}
+            onLater={() => void updater.snoozeSettings(24)}
+          />
+        ) : null}
+
+        <div className={styles.stage}>
+          <div className={styles.side}>
+            <div className={styles.sideGroup}>Settings</div>
+            <div
+              role="tablist"
+              aria-label="Settings sections"
+              aria-orientation="vertical"
+              className={styles.sideTabs}
             >
-              <span className={styles.tabIcon} aria-hidden>
-                {tab.icon}
-              </span>
-              <span className={styles.tabLabel}>{tab.label}</span>
-            </button>
-          );
-        })}
-      </div>
+              {TABS.map((tab) => {
+                const active = tab.id === activeTab;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    aria-controls={`panel-${tab.id}`}
+                    tabIndex={active ? 0 : -1}
+                    className={`${styles.sideItem} ${active ? styles.sideItemActive : ''}`}
+                    onClick={() => setActiveTab(tab.id)}
+                    onKeyDown={(e) => {
+                      const isNext =
+                        e.key === 'ArrowDown' || e.key === 'ArrowRight';
+                      const isPrev =
+                        e.key === 'ArrowUp' || e.key === 'ArrowLeft';
+                      if (isNext || isPrev) {
+                        e.preventDefault();
+                        const idx = TABS.findIndex((t) => t.id === activeTab);
+                        const next = isNext
+                          ? TABS[(idx + 1) % TABS.length]
+                          : TABS[(idx - 1 + TABS.length) % TABS.length];
+                        setActiveTab(next.id);
+                      }
+                    }}
+                  >
+                    <span className={styles.sideItemIcon} aria-hidden>
+                      {tab.icon}
+                    </span>
+                    <span className={styles.sideItemLabel}>{tab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className={styles.sideSpacer} />
+          </div>
 
-      <div
-        className={`${styles.body} ${bodyShouldScroll ? styles.bodyScrollable : ''}`}
-        id={`panel-${activeTab}`}
-        role="tabpanel"
-      >
-        <div ref={setContentEl}>
-          {activeTab === 'general' ? (
-            <ModelTab
-              config={config}
-              resyncToken={resyncToken}
-              onSaved={handleSaved}
-            />
-          ) : null}
-          {activeTab === 'behavior' ? (
-            <BehaviorTab
-              config={config}
-              resyncToken={resyncToken}
-              onSaved={handleSaved}
-            />
-          ) : null}
-          {activeTab === 'search' ? (
-            <SearchTab
-              config={config}
-              resyncToken={resyncToken}
-              onSaved={handleSaved}
-            />
-          ) : null}
-          {activeTab === 'display' ? (
-            <DisplayTab
-              config={config}
-              resyncToken={resyncToken}
-              onSaved={handleSaved}
-            />
-          ) : null}
-          {activeTab === 'about' ? (
-            <AboutTab onSaved={handleSaved} onReload={reload} />
-          ) : null}
+          <div className={styles.main}>
+            <div
+              className={`${styles.body} ${bodyShouldScroll ? styles.bodyScrollable : ''}`}
+              id={`panel-${activeTab}`}
+              role="tabpanel"
+            >
+              <div ref={setContentEl}>
+                {activeTab === 'general' ? (
+                  <ModelTab
+                    config={config}
+                    resyncToken={resyncToken}
+                    onSaved={handleSaved}
+                  />
+                ) : null}
+                {activeTab === 'behavior' ? (
+                  <BehaviorTab
+                    config={config}
+                    resyncToken={resyncToken}
+                    onSaved={handleSaved}
+                  />
+                ) : null}
+                {activeTab === 'search' ? (
+                  <SearchTab
+                    config={config}
+                    resyncToken={resyncToken}
+                    onSaved={handleSaved}
+                  />
+                ) : null}
+                {activeTab === 'display' ? (
+                  <DisplayTab
+                    config={config}
+                    resyncToken={resyncToken}
+                    onSaved={handleSaved}
+                  />
+                ) : null}
+                {activeTab === 'about' ? (
+                  <AboutTab onSaved={handleSaved} onReload={reload} />
+                ) : null}
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
 
-      <SavedPill visible={savedVisible} />
-    </div>
+        <SavedPill visible={savedVisible} />
+      </div>
+    </DownloadsProvider>
   );
 }
 

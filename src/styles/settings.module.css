@@ -25,6 +25,38 @@
  * NSPanel-converted main window can render past its bounds cleanly.
  * Vocabulary still mirrors .morphing-container in App.css. */
 .window {
+  /* ─── Premium token layer (Phase 3 model-settings redesign) ───────────
+   * Scoped to the Settings window so every settings surface (sidebar,
+   * Models segmented panes, reskinned standard tabs) reads one set of
+   * values. Mirrors the locked design tokens. */
+  --base: #100e0d;
+  --rail: #0b0a09;
+  --elev-1: rgba(255, 255, 255, 0.03);
+  --elev-2: rgba(255, 255, 255, 0.055);
+  --hair: rgba(255, 255, 255, 0.075);
+  --hair-soft: rgba(255, 255, 255, 0.045);
+  --t1: #eceae7;
+  --t2: rgba(236, 234, 231, 0.54);
+  --t3: rgba(236, 234, 231, 0.34);
+  --accent: #ff8d5c;
+  --accent-soft: rgba(255, 141, 92, 0.14);
+  /* Capability-pill text colours: a calm warm trio, each distinct and none
+   * reusing a status colour (or purple/blue/green). Text = stone, Vision =
+   * dusty rose, Thinking = wheat gold. */
+  --cap-text: #b8aa9a;
+  --cap-vision: #d59aad;
+  --cap-think: #d9c27e;
+  --ok: #79c08e;
+  --tight: #e6b56b;
+  /* RAM-fit "Heavy" (model larger than this Mac comfortably holds) and the
+   * single destructive accent (Delete). One token each so the red is not
+   * re-spelled as a literal across the model panes. */
+  --heavy: #ef6b6b;
+  --danger: #ff7a6e;
+  --radius-card: 10px;
+  --radius-control: 8px;
+  --radius-pill: 999px;
+
   position: fixed;
   inset: 0;
   display: flex;
@@ -33,24 +65,18 @@
    * space above the traffic-light dots — mirrors the chat overlay's
    * outer `pt-2` padding so both panels feel the same vertically. */
   padding-top: 8px;
-  background:
-    radial-gradient(
-      ellipse 70% 40% at 50% 0%,
-      rgba(255, 141, 92, 0.08) 0%,
-      transparent 65%
-    ),
-    var(--color-surface-base);
-  color: var(--color-text-primary);
+  /* Premium flat base (warm off-black), elevation comes from light overlays
+   * on the surfaces above it, not a muddy radial wash. */
+  background: var(--base);
+  color: var(--t1);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   font-size: 13px;
   user-select: none;
-  border: 1px solid var(--color-surface-border);
+  border: 1px solid var(--hair);
   border-top-color: rgba(255, 141, 92, 0.2);
   border-radius: 10px;
   overflow: hidden;
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
 }
 
 /* Glowing 1px hairline at the very top edge — matches morphing-container. */
@@ -84,7 +110,7 @@
   border-top-color: rgba(230, 156, 5, 0.32);
   border-radius: 10px;
   font-size: 12.5px;
-  color: var(--color-text-primary);
+  color: var(--t1);
   flex-shrink: 0;
   /* Banner content (corrupt-config path, file name) must be selectable
    * so users can copy the path. The window-wide `user-select: none` on
@@ -96,7 +122,7 @@
 }
 .bannerIcon {
   flex-shrink: 0;
-  color: var(--color-tertiary);
+  color: var(--t3);
 }
 .bannerText {
   flex: 1;
@@ -107,69 +133,453 @@
   gap: 6px;
 }
 
-/* ─── Top bar (horizontal icon tabs, CodexBar layout) ───────────────────── */
+/* ─── Left sidebar (section nav + Running-model footer) ─────────────────── */
 
-.tabBar {
-  display: flex;
-  justify-content: center;
-  align-items: flex-end;
-  gap: 4px;
-  padding: 12px 20px 10px;
-  flex-shrink: 0;
+/* This codebase has no global box-sizing reset, so the rail boxes opt into
+ * border-box here: otherwise a width:100% item plus its padding renders
+ * wider than the rail and overflows into the content pane, where it gets
+ * clipped at the divider (the active pill "cutoff"). Scoped to the rail so
+ * the content pane keeps its existing content-box sizing. */
+.stage,
+.main,
+.side,
+.side * {
+  box-sizing: border-box;
 }
 
-.tab {
+/* The window stays a vertical column [WindowControls][banners][stage]; the
+ * stage is the horizontal split between the section rail and the active
+ * section's content. */
+.stage {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.main {
+  flex: 1;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.side {
+  width: 172px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 10px;
+  min-height: 0;
+  background: var(--rail);
+  border-right: 1px solid var(--hair-soft);
+}
+
+.sideGroup {
+  margin: 6px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--t3);
+}
+
+.sideTabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sideItem {
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 14px 8px;
+  gap: 11px;
+  width: 100%;
+  padding: 8px 10px;
   border: none;
+  border-radius: 8px;
   background: transparent;
-  color: rgba(240, 240, 242, 0.5);
-  cursor: pointer;
+  color: var(--t2);
   font-family: inherit;
-  border-radius: 10px;
-  min-width: 72px;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
   transition:
-    color 180ms ease,
-    background 180ms ease;
+    color 160ms ease,
+    background 160ms ease;
 }
-.tab:hover:not(.tabActive) {
-  color: var(--color-text-primary);
-  background: rgba(255, 255, 255, 0.025);
+.sideItem:hover:not(.sideItemActive) {
+  color: var(--t1);
+  background: var(--elev-1);
 }
-.tab:focus-visible {
+.sideItem:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.32);
 }
-.tab svg {
-  width: 22px;
-  height: 22px;
-  display: block;
-  stroke-width: 1.6;
+.sideItemActive {
+  color: var(--t1);
+  background: var(--elev-2);
 }
-.tabLabel {
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
+.sideItemIcon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+.sideItemIcon svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.6;
+  opacity: 0.9;
+}
+/* Active section: the icon carries the accent. One active signal (orange
+ * icon + stronger fill + bright label), no separate rail bar that read as
+ * clutter against the filled pill. */
+.sideItemActive .sideItemIcon {
+  color: var(--accent);
+}
+.sideItemActive .sideItemIcon svg {
+  opacity: 1;
+}
+.sideItemLabel {
   color: inherit;
 }
-.tabActive {
-  color: var(--color-primary);
+.sideSpacer {
+  flex: 1;
+}
+
+/* ─── Models surface (segmented Library / Discover / Providers) ──────────── */
+
+/* Icon-above-label tabs that mirror the original Settings section nav: a plain
+ * centered row with no container box, the active view carrying the accent on
+ * its icon + label over a subtle dark inset (not a loud elevated pill). */
+.seg {
+  display: inline-flex;
+  box-sizing: border-box;
+  gap: 4px;
+}
+.segItem {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 72px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--t2);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    background 150ms ease;
+}
+.segItem svg {
+  width: 22px;
+  height: 22px;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.segItem:hover:not(.segItemActive) {
+  color: var(--t1);
+}
+.segItem:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.segItemActive {
+  color: var(--accent);
   background: rgba(0, 0, 0, 0.28);
   box-shadow: inset 0 0 0 1px rgba(255, 141, 92, 0.1);
 }
-.tabActive svg {
-  color: var(--color-primary);
+.segItemLabel {
+  color: inherit;
 }
-/* Decorative wrapper kept for backward-compat with structure; in the
- * top-bar layout the icon sits inline with the label, no chrome of its
- * own. */
-.tabIcon {
-  display: inline-flex;
+
+/* Row holding the segmented control, centered across the Models surface. */
+.barrow {
+  display: flex;
   align-items: center;
   justify-content: center;
+  margin-bottom: 18px;
+}
+
+/* ─── Providers pane (Active Hero) ───────────────────────────────────────── */
+
+.shead {
+  display: flex;
+  align-items: baseline;
+  margin: 18px 2px 9px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--t3);
+}
+.shead:first-child {
+  margin-top: 0;
+}
+.sheadNote {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--t3);
+  opacity: 0.85;
+}
+
+/* Active provider hero. */
+.hero {
+  box-sizing: border-box;
+  padding: 18px;
+  border: 1px solid rgba(255, 141, 92, 0.3);
+  border-radius: 14px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 141, 92, 0.06),
+    rgba(255, 141, 92, 0.02)
+  );
+}
+.heroHead {
+  display: flex;
+  align-items: flex-start;
+}
+.heroName {
+  font-size: 15.5px;
+  font-weight: 650;
+  color: var(--t1);
+}
+.heroSub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--t3);
+}
+.heroModel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid var(--hair-soft);
+}
+.heroModel .input {
+  flex: 1;
+  min-width: 0;
+}
+.heroModelLabel {
+  flex: none;
+  width: 64px;
+  font-size: 12.5px;
+  color: var(--t2);
+}
+.heroModelLink {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 540;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* Grouped list card (Other providers + Generation). */
+.listcard {
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--hair-soft);
+  border-radius: 12px;
+  background: var(--elev-1);
+}
+
+.providerRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.providerRow + .providerRow {
+  box-shadow: 0 -1px 0 var(--hair-soft);
+}
+.providerRowName {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--t1);
+}
+.providerRowSub {
+  font-size: 11.5px;
+  color: var(--t3);
+}
+.grow {
+  flex: 1;
+}
+.switchBtn {
+  flex: none;
+  padding: 5px 11px;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--t2);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 540;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease,
+    background 140ms ease;
+}
+.switchBtn:hover:not(:disabled) {
+  color: var(--t1);
+  border-color: rgba(255, 141, 92, 0.5);
+  background: var(--accent-soft);
+}
+.switchBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Generation rows. */
+.genRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+}
+.genRow + .genRow {
+  box-shadow: 0 -1px 0 var(--hair-soft);
+}
+.genLabel {
+  flex: 1;
+  min-width: 0;
+}
+.genName {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--t1);
+}
+/* Context window row: a compact header (label left, token readout right) over a
+   full-width slider track. */
+.genRowCtx {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.genCtxHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.genCtxValue {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+/* Editable token field: type a count or let the slider drive it. */
+.genCtxInput {
+  width: 86px;
+  height: 30px;
+  text-align: right;
+  background: rgba(36, 30, 26, 0.6);
+  border: 1px solid rgba(255, 141, 92, 0.3);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  -moz-appearance: textfield;
+}
+.genCtxInput::-webkit-inner-spin-button,
+.genCtxInput::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.genCtxInput:focus-visible {
+  border-color: rgba(255, 141, 92, 0.6);
+  box-shadow: 0 0 0 3px rgba(255, 141, 92, 0.12);
+}
+.genCtxValueUnit {
+  font-size: 12px;
+  color: var(--t3);
+}
+/* Icon-button deep link to the tuning guide, sat next to the info tooltip.
+   The compound selector beats .infoBtn's cursor: help so the link reads as
+   clickable. */
+.infoBtn.genCtxLearnBtn {
+  cursor: pointer;
+}
+.genCtxLearnBtn svg {
+  width: 10px;
+  height: 10px;
+}
+/* Keep model warm row: header line (name + live status) over a controls line
+   (release timer + Unload). */
+.genRowWarm {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 11px;
+}
+.genWarmHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* The label stays whole: only the resident-model name (right) ever truncates. */
+.genWarmHead .genName {
+  flex: none;
+  white-space: nowrap;
+}
+.genWarmStatus {
+  margin-left: auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--t2);
+}
+/* A long resident-model name truncates with an ellipsis (full name on hover via
+ * the title attribute) instead of wrapping and breaking the row. */
+.genWarmModel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.genWarmSuffix {
+  flex: none;
+}
+.genWarmControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.genWarmPrefix {
+  font-size: 11.5px;
+  color: var(--t3);
+}
+.genWarmUnload {
+  margin-left: auto;
+}
+.genPromptEditor {
+  padding: 0 16px 14px;
+  box-shadow: 0 -1px 0 var(--hair-soft);
 }
 
 /* ─── Body (scrolling content) ──────────────────────────────────────────── */
@@ -223,7 +633,7 @@
   font-weight: 600;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   margin-bottom: 14px;
 }
 
@@ -256,7 +666,7 @@
 .rowLabel {
   font-size: 13px;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 .infoBtn {
   display: inline-flex;
@@ -267,7 +677,7 @@
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   font-size: 10px;
   font-weight: 600;
   font-family: inherit;
@@ -281,11 +691,11 @@
 }
 .infoBtn:hover {
   background: rgba(255, 141, 92, 0.12);
-  color: var(--color-primary);
+  color: var(--accent);
   border-color: rgba(255, 141, 92, 0.4);
 }
 .infoBtn:focus-visible {
-  outline: 2px solid var(--color-primary);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .rowControl {
@@ -300,13 +710,13 @@
 }
 .charCounter {
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   text-align: right;
   letter-spacing: 0.02em;
 }
 .rowHelper {
   font-size: 11.5px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   line-height: 1.45;
 }
 .rowError {
@@ -324,7 +734,7 @@
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-top-color: rgba(255, 141, 92, 0.1);
   border-radius: 8px;
-  color: var(--color-text-primary);
+  color: var(--t1);
   font-family: inherit;
   font-size: 13px;
   padding: 0 12px;
@@ -373,7 +783,7 @@
   border-top-color: rgba(255, 141, 92, 0.1);
   border-radius: 8px;
   padding: 0 10px 0 12px;
-  color: var(--color-text-primary);
+  color: var(--t1);
   font-family: inherit;
   font-size: 13px;
   cursor: pointer;
@@ -397,7 +807,7 @@
 
 .button {
   background: rgba(36, 30, 26, 0.95);
-  color: var(--color-text-primary);
+  color: var(--t1);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-top-color: rgba(255, 141, 92, 0.1);
   border-radius: 8px;
@@ -431,7 +841,7 @@
   background: transparent;
   border-color: rgba(255, 255, 255, 0.06);
   border-top-color: rgba(255, 255, 255, 0.06);
-  color: var(--color-text-primary);
+  color: var(--t1);
   box-shadow: none;
 }
 .buttonGhost:hover {
@@ -447,6 +857,31 @@
 .buttonDestructive:hover {
   background: rgba(48, 34, 32, 0.95);
   border-color: rgba(255, 138, 128, 0.5);
+}
+/* Affirmative primary action (e.g. the confirm in a Switch dialog). The accent
+ * reads as a calm tint, not a solid fill, so it names the action without
+ * shouting (restraint over decoration). Hover blooms a soft, slow accent glow:
+ * the override transition below is intentionally a touch longer than the base
+ * button's so the warm ring feels like it eases in rather than snaps. */
+.buttonPrimary {
+  background: var(--accent-soft);
+  border-color: rgba(255, 141, 92, 0.38);
+  border-top-color: rgba(255, 141, 92, 0.45);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transition:
+    background 220ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 220ms cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 260ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.buttonPrimary:hover {
+  background: rgba(255, 141, 92, 0.22);
+  border-color: rgba(255, 141, 92, 0.6);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 0 4px rgba(255, 141, 92, 0.1),
+    0 2px 10px -4px rgba(255, 141, 92, 0.35);
 }
 
 /* ─── Slider (hairline rail with warm gradient thumb) ───────────────────── */
@@ -500,7 +935,7 @@
 }
 .valChip {
   background: rgba(36, 30, 26, 0.95);
-  color: var(--color-text-primary);
+  color: var(--t1);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-top-color: rgba(255, 141, 92, 0.1);
   border-radius: 6px;
@@ -525,7 +960,7 @@
 }
 .ctxLabel {
   font-size: 13px;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 .ctxChipGroup {
   display: flex;
@@ -536,7 +971,7 @@
   background: rgba(36, 30, 26, 0.95);
   border: 1px solid rgba(255, 141, 92, 0.3);
   border-radius: 6px;
-  color: var(--color-primary);
+  color: var(--accent);
   font-size: 13px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -545,7 +980,7 @@
   text-align: right;
   width: 82px;
   outline: none;
-  caret-color: var(--color-primary);
+  caret-color: var(--accent);
   /* hide the native number spinners — the slider + pills are the affordance */
   -moz-appearance: textfield;
 }
@@ -555,12 +990,12 @@
   margin: 0;
 }
 .ctxChipInput:focus {
-  border-color: var(--color-primary);
+  border-color: var(--accent);
   box-shadow: 0 0 0 2.5px rgba(255, 141, 92, 0.18);
 }
 .ctxChipUnit {
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
 }
 /* Full-width log-scale slider. Fill percentage is controlled via the
  * --fill CSS custom property set inline from React state. */
@@ -576,8 +1011,8 @@
    * colored portion lines up with the thumb regardless of track width. */
   background: linear-gradient(
     to right,
-    var(--color-primary) 0%,
-    var(--color-primary) calc(8px + var(--fill) * (100% - 16px) / 100%),
+    var(--accent) 0%,
+    var(--accent) calc(8px + var(--fill) * (100% - 16px) / 100%),
     rgba(255, 255, 255, 0.1) calc(8px + var(--fill) * (100% - 16px) / 100%),
     rgba(255, 255, 255, 0.1) 100%
   );
@@ -628,7 +1063,7 @@
   position: absolute;
   transform: translateX(-50%);
   font-size: 9.5px;
-  color: var(--color-text-tertiary);
+  color: var(--t3);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -645,7 +1080,7 @@
   padding: 3px 8px;
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   cursor: pointer;
   font-family: inherit;
   transition:
@@ -656,7 +1091,7 @@
 .ctxPill:hover {
   background: rgba(255, 141, 92, 0.1);
   border-color: rgba(255, 141, 92, 0.22);
-  color: var(--color-primary);
+  color: var(--accent);
 }
 .ctxPill:focus-visible {
   outline: none;
@@ -665,11 +1100,11 @@
 .ctxPillActive {
   background: rgba(255, 141, 92, 0.14);
   border-color: rgba(255, 141, 92, 0.3);
-  color: var(--color-primary);
+  color: var(--accent);
 }
 .ctxHelper {
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   line-height: 1.5;
   margin-bottom: 10px;
 }
@@ -735,7 +1170,7 @@
   height: 32px;
   background: transparent;
   border: none;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
@@ -746,12 +1181,12 @@
 }
 .stepperBtn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.04);
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 .stepperBtn:focus-visible {
   outline: none;
   background: rgba(255, 141, 92, 0.14);
-  color: var(--color-primary);
+  color: var(--accent);
 }
 .stepperBtn:disabled {
   opacity: 0.3;
@@ -763,7 +1198,7 @@
   text-align: center;
   font-variant-numeric: tabular-nums;
   font-size: 13px;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 
 /* ─── Saved chip (warm gradient like user bubble, but small) ────────────── */
@@ -779,7 +1214,7 @@
     rgba(255, 141, 92, 0.22) 0%,
     rgba(224, 107, 48, 0.18) 100%
   );
-  color: var(--color-primary);
+  color: var(--accent);
   border: 1px solid rgba(255, 141, 92, 0.45);
   border-radius: 999px;
   padding: 5px 13px;
@@ -803,7 +1238,7 @@
 .resetLink {
   background: none;
   border: none;
-  color: var(--color-primary);
+  color: var(--accent);
   font-size: 12px;
   cursor: pointer;
   padding: 0;
@@ -853,12 +1288,12 @@
 .dialogTitle {
   font-size: 15px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--t1);
   margin: 0 0 8px;
 }
 .dialogMessage {
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   line-height: 1.55;
   margin: 0 0 20px;
 }
@@ -922,7 +1357,7 @@
   font-size: 20px;
   font-weight: 600;
   letter-spacing: 0.01em;
-  color: var(--color-text-primary);
+  color: var(--t1);
   margin-bottom: 2px;
 }
 .aboutHeroVersion {
@@ -935,7 +1370,7 @@
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.06em;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   font-variant-numeric: tabular-nums;
   cursor: pointer;
   text-decoration: underline transparent;
@@ -945,17 +1380,17 @@
     text-decoration-color 150ms ease;
 }
 .aboutHeroVersion:hover {
-  color: var(--color-primary);
-  text-decoration-color: var(--color-primary);
+  color: var(--accent);
+  text-decoration-color: var(--accent);
 }
 .aboutHeroVersion:focus-visible {
   outline: none;
-  color: var(--color-primary);
-  text-decoration-color: var(--color-primary);
+  color: var(--accent);
+  text-decoration-color: var(--accent);
 }
 .aboutHeroTagline {
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   line-height: 1.5;
   margin-bottom: 14px;
   max-width: 340px;
@@ -977,7 +1412,7 @@
   padding: 4px;
   border: none;
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   cursor: pointer;
   font-family: inherit;
   transition:
@@ -985,22 +1420,22 @@
     transform 150ms ease;
 }
 .iconLinkBtn:hover {
-  color: var(--color-primary);
+  color: var(--accent);
   transform: translateY(-1px);
 }
 .iconLinkBtn:focus-visible {
   outline: none;
-  color: var(--color-primary);
+  color: var(--accent);
   box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.35);
   border-radius: 6px;
 }
 .aboutInfoLine {
   font-size: 13px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   line-height: 1.6;
 }
 .aboutInfoLine strong {
-  color: var(--color-text-primary);
+  color: var(--t1);
   font-weight: 600;
 }
 .aboutLinkRow {
@@ -1049,7 +1484,7 @@
     border-color 180ms ease;
 }
 .toggleOn {
-  background: var(--color-primary);
+  background: var(--accent);
   border-color: rgba(255, 141, 92, 0.5);
 }
 .toggle:focus-visible {
@@ -1091,7 +1526,7 @@
 .keepWarmLabel {
   font-size: 13px;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 /* Right-side group: "Release after" + number input + "min" */
 .keepWarmTimerGroup {
@@ -1118,13 +1553,13 @@
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   font-weight: 400;
   line-height: 1;
 }
 .keepWarmVramModelName {
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 .keepWarmNoModel {
   font-size: 11px;
@@ -1154,7 +1589,7 @@
 
 .keepWarmBarFieldLabel {
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   font-weight: 500;
   white-space: nowrap;
   flex-shrink: 0;
@@ -1164,7 +1599,7 @@
   background: transparent;
   border: none;
   border-bottom: 1px solid rgba(255, 255, 255, 0.22);
-  color: var(--color-text-primary);
+  color: var(--t1);
   font-family: inherit;
   font-size: 14px;
   font-weight: 600;
@@ -1186,7 +1621,7 @@
 }
 .keepWarmUnit {
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   margin-left: -3px;
 }
 /* Thin pipe separator between inline group and eject pill */
@@ -1206,7 +1641,7 @@
   border-radius: 8px;
   border: 1px solid rgba(255, 141, 92, 0.18);
   background: transparent;
-  color: var(--color-primary);
+  color: var(--accent);
   font-size: 12px;
   font-weight: 500;
   font-family: inherit;
@@ -1306,7 +1741,7 @@
 }
 
 .devTrigger:hover .devTriggerLabel {
-  color: var(--color-text-secondary);
+  color: var(--t2);
 }
 
 .devTrigger:focus-visible {
@@ -1355,8 +1790,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tab,
-  .tabIcon,
+  .sideItem,
   .input,
   .textarea,
   .button,
@@ -1397,7 +1831,7 @@
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: var(--color-tertiary);
+  background: var(--t3);
   box-shadow: 0 0 0 4px rgba(230, 156, 5, 0.18);
 }
 
@@ -1408,15 +1842,15 @@
 .updateBannerTitle {
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 .updateBannerMeta {
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   margin-top: 2px;
 }
 .updateBannerMeta a {
-  color: var(--color-primary);
+  color: var(--accent);
   text-decoration: underline;
   cursor: pointer;
 }
@@ -1433,7 +1867,7 @@
   font-weight: 500;
   background: rgba(255, 141, 92, 0.16);
   border: 1px solid rgba(255, 141, 92, 0.3);
-  color: var(--color-primary);
+  color: var(--accent);
   cursor: pointer;
 }
 .updateBannerLater {
@@ -1442,7 +1876,7 @@
   font-size: 11.5px;
   background: transparent;
   border: 1px solid transparent;
-  color: var(--color-text-secondary);
+  color: var(--t2);
   cursor: pointer;
 }
 
@@ -1470,10 +1904,10 @@
   gap: 8px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--t1);
 }
 .updateHeroStatus[data-state='available'] {
-  color: var(--color-tertiary);
+  color: var(--t3);
 }
 
 .updateHeroCheckMark {
@@ -1498,13 +1932,13 @@
   position: absolute;
   inset: 4px;
   border-radius: 50%;
-  background: var(--color-tertiary);
+  background: var(--t3);
   box-shadow: 0 0 8px rgba(230, 156, 5, 0.6);
 }
 
 .updateHeroMeta {
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: var(--t2);
 }
 
 .updateHeroBtn {
@@ -1516,7 +1950,7 @@
   border-radius: 8px;
   border: 1px solid rgba(255, 141, 92, 0.3);
   background: rgba(255, 141, 92, 0.12);
-  color: var(--color-primary);
+  color: var(--accent);
   font-size: 12px;
   font-weight: 500;
   font-family: inherit;
@@ -1546,14 +1980,7 @@
   background: rgba(94, 201, 138, 0.06);
 }
 
-/* ─── Providers section (AI tab) ─────────────────────────────────────────── */
-.providerRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 0;
-}
+/* ─── Providers section (legacy OpenAI card) ─────────────────────────────── */
 .providerName {
   font-size: 13px;
   font-weight: 600;

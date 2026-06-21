@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { ModelPickerState } from '../types/model';
+
+/**
+ * Backend broadcast fired after any in-app config write replaces the in-memory
+ * `AppConfig` (including a model change made from the other webview, e.g. the
+ * Settings panel). Mirrors the Rust-side `CONFIG_UPDATED_EVENT`. Kept as a
+ * string literal to avoid a Rust-codegen dependency in the frontend.
+ */
+const CONFIG_UPDATED_EVENT = 'thuki://config-updated';
 
 /**
  * Runtime guard for the IPC boundary. The Rust backend is trusted, but this
@@ -138,6 +147,32 @@ export function useModelSelection(): UseModelSelectionResult {
 
   useEffect(() => {
     void refreshModels();
+  }, [refreshModels]);
+
+  // Re-pull when any window writes config (a model change in the Settings
+  // panel broadcasts this). Without it the active-model chip and list would
+  // only resync on the next picker-open or summon, so a change made elsewhere
+  // would look stale until then. `mountedRef` gates a late subscription so an
+  // unmount before `listen` resolves still tears the handler down.
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    void listen(CONFIG_UPDATED_EVENT, () => {
+      void refreshModels();
+    })
+      .then((stop) => {
+        if (!mountedRef.current) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+      })
+      .catch(() => {
+        // Event bridge unavailable (test env / Tauri not ready). The mount
+        // fetch and explicit refreshes still work; only the live push is lost.
+      });
+    return () => {
+      unlisten?.();
+    };
   }, [refreshModels]);
 
   const setActiveModel = useCallback(

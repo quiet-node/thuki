@@ -6,7 +6,11 @@ import {
   act,
 } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { StarterPicker, useStarterOptions } from '../StarterPicker';
+import {
+  StarterPicker,
+  useStaffPicks,
+  useStarterOptions,
+} from '../StarterPicker';
 import { invoke } from '../../testUtils/mocks/tauri';
 import type { Starter, StarterOption, StarterTier } from '../../types/starter';
 
@@ -273,9 +277,56 @@ describe('useStarterOptions', () => {
     expect(result.current.options).toEqual([]);
   });
 
+  it('coerces a malformed non-array payload to an empty list', async () => {
+    invoke.mockResolvedValueOnce({ not: 'an array' });
+    const { result } = renderHook(() => useStarterOptions());
+    await act(async () => {});
+    expect(result.current.options).toEqual([]);
+  });
+
   it('re-fetches on refresh', async () => {
     invoke.mockResolvedValueOnce([]);
     const { result } = renderHook(() => useStarterOptions());
+    await act(async () => {});
+    expect(result.current.options).toEqual([]);
+
+    invoke.mockResolvedValueOnce(THREE_TIERS);
+    await act(() => result.current.refresh());
+    expect(result.current.options).toEqual(THREE_TIERS);
+  });
+});
+
+describe('useStaffPicks', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it('starts null and loads the catalog from get_staff_picks on mount', async () => {
+    invoke.mockResolvedValueOnce(THREE_TIERS);
+    const { result } = renderHook(() => useStaffPicks());
+    expect(result.current.options).toBeNull();
+    await act(async () => {});
+    expect(result.current.options).toEqual(THREE_TIERS);
+    expect(invoke).toHaveBeenCalledWith('get_staff_picks');
+  });
+
+  it('degrades to an empty list when the fetch rejects', async () => {
+    invoke.mockRejectedValueOnce('backend down');
+    const { result } = renderHook(() => useStaffPicks());
+    await act(async () => {});
+    expect(result.current.options).toEqual([]);
+  });
+
+  it('coerces a malformed non-array payload to an empty list', async () => {
+    invoke.mockResolvedValueOnce({ not: 'an array' });
+    const { result } = renderHook(() => useStaffPicks());
+    await act(async () => {});
+    expect(result.current.options).toEqual([]);
+  });
+
+  it('re-fetches on refresh', async () => {
+    invoke.mockResolvedValueOnce([]);
+    const { result } = renderHook(() => useStaffPicks());
     await act(async () => {});
     expect(result.current.options).toEqual([]);
 

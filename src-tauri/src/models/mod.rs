@@ -16,7 +16,9 @@
  */
 
 pub mod download;
+pub mod gguf;
 pub mod manifest;
+pub mod reasoning;
 pub mod registry;
 pub mod storage;
 
@@ -25,13 +27,15 @@ use std::sync::Mutex;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
-    HF_API_TIMEOUT_SECS, HF_BASE_URL, MAX_HF_API_BODY_BYTES, MAX_MODEL_SLUG_LEN,
+    HF_API_TIMEOUT_SECS, HF_BASE_URL, HF_SEARCH_LIMIT_MAX, MAX_HF_API_BODY_BYTES,
+    MAX_HF_SEARCH_QUERY_LEN, MAX_MODEL_CONTEXT_LENGTH, MAX_MODEL_SLUG_LEN,
     MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES, OPENAI_MODELS_TIMEOUT_SECS,
     PROVIDER_ID_BUILTIN, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+    RUNTIME_OVERHEAD_GB,
 };
 use crate::config::AppConfig;
 
@@ -394,6 +398,13 @@ fn persist_active_provider_model(
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         *guard = mirror;
     }
+    // Broadcast the same config-change event every settings_commands writer
+    // emits, so the other webview (the overlay's picker, or the Settings panel)
+    // resyncs live. set_active_model is otherwise the only model-write path
+    // that left other windows stale; this also covers finalize_install's
+    // auto-select and the delete-clear path. The listeners refresh via the
+    // read-only get_config, never reload_config_from_disk, so this cannot loop.
+    let _ = app.emit(crate::settings_commands::CONFIG_UPDATED_EVENT, ());
     Ok(())
 }
 
@@ -733,6 +744,12 @@ pub struct Capabilities {
     /// ThinkingBlock UI.
     #[serde(default)]
     pub thinking: bool,
+    /// Reasoning is structural and cannot be turned off (gpt-oss/Harmony,
+    /// DeepSeek-R1, QwQ, ...). Thuki still shows such a model's reasoning
+    /// cleanly and marks it in the picker so the user is not surprised by the
+    /// latency. `false` when reasoning is optional (off by default) or absent.
+    #[serde(default)]
+    pub reasoning_always: bool,
     /// Maximum number of images the model accepts in a single request, when
     /// known. `None` means "unknown / unbounded by Thuki" and the gate lets
     /// the request through. Today this is keyed off the model architecture
@@ -987,20 +1004,33 @@ pub async fn get_model_capabilities(
     }
 }
 
-/// Capability map for the built-in provider, derived from the installed-model
-/// manifest. Each row carries the curated vision/thinking flags recorded at
-/// download time; `max_images` stays `None` because llama-server imposes no
-/// fixed per-request image cap.
+/// Capability map for the built-in provider. For a curated starter the flags
+/// come from the current registry, not the manifest row: the row freezes the
+/// flags recorded at download time, so a later flag correction (e.g. a
+/// reasoning model previously recorded as non-thinking) would otherwise stay
+/// wrong for already-installed models. Reading the registry heals those rows on
+/// every read with no manifest migration. A pasted (non-curated) repo has no
+/// registry entry and keeps the flags its row recorded. `max_images` stays
+/// `None` because llama-server imposes no fixed per-request image cap.
 pub(crate) fn builtin_capabilities_from_manifest(
     rows: &[manifest::InstalledModel],
 ) -> HashMap<String, Capabilities> {
     rows.iter()
         .map(|row| {
+            // Curated starters heal `vision`/`thinking`/`reasoning_always` from
+            // the registry (highest confidence). A pasted repo has no registry
+            // entry and keeps its row's classified flags: the install-time GGUF
+            // classifier populates them, and the runtime backstop corrects them.
+            let (vision, thinking, reasoning_always) =
+                registry::by_repo_file(&row.repo, &row.file_name)
+                    .map(|s| (s.vision, s.thinking, s.reasoning_always))
+                    .unwrap_or((row.vision, row.thinking, row.reasoning_always));
             (
                 row.id.clone(),
                 Capabilities {
-                    vision: row.vision,
-                    thinking: row.thinking,
+                    vision,
+                    thinking,
+                    reasoning_always,
                     max_images: None,
                 },
             )
@@ -1022,6 +1052,7 @@ pub(crate) fn openai_capabilities(model: &str, vision: bool) -> HashMap<String, 
         Capabilities {
             vision,
             thinking: false,
+            reasoning_always: false,
             max_images: None,
         },
     )])
@@ -1107,49 +1138,79 @@ async fn reconcile_capabilities(
 /// Stable error returned when a repo id fails [`is_valid_repo_id`].
 const INVALID_REPO_ID_ERR: &str = "invalid Hugging Face repo id";
 
-/// Cancellation handle for the (at most one) in-flight model download.
-/// `Some` while a download is running; `None` otherwise. Claimed atomically
-/// via [`claim_download`] so a second download cannot start until the first
-/// completes, fails, or is cancelled.
-#[derive(Default)]
-pub struct DownloadState(pub std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>);
+/// Cancellation handles for the in-flight model downloads, keyed by the
+/// caller-supplied download key (the frontend's stable per-row identity, e.g. a
+/// Staff Picks id or `repo\0file`). Empty when nothing is downloading. Distinct
+/// keys download concurrently; a duplicate key is rejected via [`claim_download`]
+/// so the same row cannot start twice.
+///
+/// Parallelism never corrupts the content-addressed blob store, and this map is
+/// not what protects it: [`download::run_download`] verifies each blob's sha256
+/// before renaming its partial into the store, and [`download::download_one`]
+/// skips a blob whose final file already exists. With per-key dedupe here and
+/// the distinct blob shas the registry guarantees (asserted in
+/// `registry::tests`), no two concurrent downloads target the same blob, so no
+/// per-blob lock is needed.
+/// One in-flight download: its cancellation handle plus the blob shas it is
+/// writing. The shas let a discard scope its in-flight check to the exact
+/// partial(s) at risk instead of refusing while any download runs.
+pub struct DownloadSlot {
+    token: tokio_util::sync::CancellationToken,
+    shas: Vec<String>,
+}
 
-/// Atomically claims the single download slot. Returns a fresh cancellation
-/// token on success; an error when another download already holds the slot
-/// (or the lock is poisoned).
+#[derive(Default)]
+pub struct DownloadState(pub std::sync::Mutex<std::collections::HashMap<String, DownloadSlot>>);
+
+/// Atomically claims a download slot for `key`, recording the blob `shas` it
+/// will write. Returns a fresh cancellation token on success; an error when
+/// `key` already has an in-flight download (or the lock is poisoned).
 pub fn claim_download(
     state: &DownloadState,
+    key: &str,
+    shas: Vec<String>,
 ) -> Result<tokio_util::sync::CancellationToken, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
+    if guard.contains_key(key) {
         return Err("a download is already in progress".to_string());
     }
     let token = tokio_util::sync::CancellationToken::new();
-    *guard = Some(token.clone());
+    guard.insert(
+        key.to_string(),
+        DownloadSlot {
+            token: token.clone(),
+            shas,
+        },
+    );
     Ok(token)
 }
 
-/// Clears the download slot. Best-effort: a poisoned lock is ignored because
-/// release runs on the task teardown path where there is nothing left to do.
-pub fn release_download(state: &DownloadState) {
+/// Releases the slot held by `key`. Best-effort: a poisoned lock is ignored
+/// because release runs on the task teardown path where there is nothing left
+/// to do.
+pub fn release_download(state: &DownloadState, key: &str) {
     if let Ok(mut guard) = state.0.lock() {
-        *guard = None;
+        guard.remove(key);
     }
 }
 
-/// True while a model download holds the slot. Read before quitting so the app
-/// can warn that quitting discards the in-flight download.
+/// True while any model download holds a slot. Read before quitting so the app
+/// can warn that quitting discards the in-flight download(s).
 pub fn download_in_flight(state: &DownloadState) -> bool {
-    state.0.lock().map(|guard| guard.is_some()).unwrap_or(false)
+    state
+        .0
+        .lock()
+        .map(|guard| !guard.is_empty())
+        .unwrap_or(false)
 }
 
-/// Cancels the in-flight download's token, if one is claimed. Does NOT clear
-/// the slot: the download task notices the cancellation, emits `Cancelled`,
-/// and releases the slot itself.
-pub fn cancel_active_download(state: &DownloadState) {
+/// Cancels the download held by `key`, if one is in flight. Does NOT remove the
+/// slot: the download task notices the cancellation, emits `Cancelled`, and
+/// releases its own slot. A missing key is a harmless no-op.
+pub fn cancel_download(state: &DownloadState, key: &str) {
     if let Ok(guard) = state.0.lock() {
-        if let Some(token) = guard.as_ref() {
-            token.cancel();
+        if let Some(slot) = guard.get(key) {
+            slot.token.cancel();
         }
     }
 }
@@ -1168,42 +1229,73 @@ pub struct StarterOption {
     pub partial_bytes: Option<u64>,
 }
 
-/// Builds the starter picker rows from the manifest, the blob store's partial
-/// slots, and the machine's RAM. A manifest read error degrades to "not
-/// installed" rather than failing the whole picker.
+/// Annotates one registry entry with the machine-specific facts the picker
+/// renders next to it: RAM fit, installed state, and resumable-partial size. A
+/// manifest read error degrades to "not installed" rather than failing the row.
+fn annotate_starter(
+    s: &registry::Starter,
+    conn: &rusqlite::Connection,
+    store: &storage::ModelStore,
+    ram_bytes: u64,
+) -> StarterOption {
+    StarterOption {
+        starter: s.clone(),
+        fit: registry::ram_fit(s.est_runtime_gb, ram_bytes),
+        installed: matches!(
+            manifest::get(conn, &registry::installed_model_id(s)),
+            Ok(Some(_))
+        ),
+        partial_bytes: store.existing_partial_len(s.sha256),
+    }
+}
+
+/// The onboarding starter picker rows: exactly the three tier heroes, annotated
+/// for this machine. Onboarding's 3-up comparison is fixed at one model per
+/// tier, so it draws only the heroes even as the Staff Picks catalog grows.
 pub fn build_starter_options(
+    conn: &rusqlite::Connection,
+    store: &storage::ModelStore,
+    ram_bytes: u64,
+) -> Vec<StarterOption> {
+    registry::onboarding_heroes()
+        .into_iter()
+        .map(|s| annotate_starter(s, conn, store, ram_bytes))
+        .collect()
+}
+
+/// The full Staff Picks catalog: every curated registry entry annotated for
+/// this machine. The frontend groups the rows by `starter.category`; unlike
+/// [`build_starter_options`] this is not capped at one model per tier.
+pub fn build_staff_picks(
     conn: &rusqlite::Connection,
     store: &storage::ModelStore,
     ram_bytes: u64,
 ) -> Vec<StarterOption> {
     registry::STARTERS
         .iter()
-        .map(|s| StarterOption {
-            starter: s.clone(),
-            fit: registry::ram_fit(s.est_runtime_gb, ram_bytes),
-            installed: matches!(
-                manifest::get(conn, &registry::to_installed_model(s).id),
-                Ok(Some(_))
-            ),
-            partial_bytes: store.existing_partial_len(s.sha256),
-        })
+        .map(|s| annotate_starter(s, conn, store, ram_bytes))
         .collect()
 }
 
-/// Maps a frontend tier string (`"fast" | "balanced" | "smartest"`) onto its
-/// curated starter. Every [`registry::Tier`] has exactly one `STARTERS`
-/// entry (asserted by registry tests), so the lookup is total.
+/// Maps a Staff Picks `id` onto its curated registry entry. An unknown id
+/// yields an error rather than a panic, so a stale frontend id can never crash
+/// the download path.
+pub fn starter_for_id(id: &str) -> Result<&'static registry::Starter, String> {
+    registry::by_id(id).ok_or_else(|| format!("unknown staff pick id: {id}"))
+}
+
+/// Maps a frontend tier string (`"fast" | "balanced" | "smartest"`) onto the
+/// onboarding hero for that tier. The hero is resolved by id from
+/// [`registry::ONBOARDING_HERO_IDS`], so adding more models of the same tier to
+/// the Staff Picks catalog never changes which model onboarding downloads.
 pub fn starter_for_tier(tier: &str) -> Result<&'static registry::Starter, String> {
-    let tier = match tier {
-        "fast" => registry::Tier::Fast,
-        "balanced" => registry::Tier::Balanced,
-        "smartest" => registry::Tier::Smartest,
+    let idx = match tier {
+        "fast" => 0,
+        "balanced" => 1,
+        "smartest" => 2,
         other => return Err(format!("unknown starter tier: {other}")),
     };
-    Ok(registry::STARTERS
-        .iter()
-        .find(|s| s.tier == tier)
-        .expect("every tier has a starter"))
+    starter_for_id(registry::ONBOARDING_HERO_IDS[idx])
 }
 
 /// The builtin provider's currently configured model id (empty when none).
@@ -1252,6 +1344,35 @@ pub fn quant_from_filename(file: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Marker substrings that flag a GGUF model as emitting explicit reasoning
+/// tokens (rendered in the ThinkingBlock UI). There is no machine-readable
+/// thinking signal in GGUF metadata or the Hugging Face API, so detection reads
+/// the publisher's own naming: an explicit reasoning self-label
+/// (`thinking`/`reasoning`/`reasoner`) or a known reasoning-first family. The
+/// list is kept narrow to avoid false positives; curated starters set the flag
+/// explicitly in the registry and never consult it, and a user override is the
+/// authority whenever the guess is wrong.
+const THINKING_MARKERS: &[&str] = &[
+    "thinking",
+    "reasoning",
+    "reasoner",
+    "deepseek-r1",
+    "qwq",
+    "gpt-oss",
+    "magistral",
+];
+
+/// Best-effort detection of whether an arbitrary GGUF model is a reasoning
+/// model, matching [`THINKING_MARKERS`] case-insensitively against both the
+/// repo id and the file name. Returns `false` when nothing matches.
+pub fn detect_thinking(repo: &str, file: &str) -> bool {
+    let repo = repo.to_ascii_lowercase();
+    let file = file.to_ascii_lowercase();
+    THINKING_MARKERS
+        .iter()
+        .any(|marker| repo.contains(marker) || file.contains(marker))
+}
+
 /// A `.gguf` entry in a Hugging Face repo listing, for the paste-a-repo UI.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HfGgufFile {
@@ -1259,6 +1380,12 @@ pub struct HfGgufFile {
     pub file: String,
     /// File size in bytes; 0 when the API reports no size.
     pub size_bytes: u64,
+    /// LFS content digest: the blob key used to resume or discard the partial.
+    /// Empty when the repo file is not LFS-backed (rare for GGUF weights).
+    pub sha256: String,
+    /// Length of an interrupted partial for this file on disk, or `None` when
+    /// there is none. Drives the Browse-all Paused / Resume / Discard row.
+    pub partial_bytes: Option<u64>,
 }
 
 /// Subset of the HF `/api/models/<repo>?blobs=true` response Thuki consumes.
@@ -1270,6 +1397,34 @@ struct HfRepoInfo {
     sha: Option<String>,
     #[serde(default)]
     siblings: Vec<HfSibling>,
+}
+
+/// The slice of HF's parsed `gguf` metadata block Thuki reads. Present on a
+/// search row when the query requests `expand[]=gguf`. Untrusted external input:
+/// the context window is sanitized before use, and the chat template is only fed
+/// to the never-panicking [`reasoning::classify_reasoning`] classifier.
+#[derive(Deserialize)]
+struct HfGgufMeta {
+    #[serde(default)]
+    context_length: Option<u64>,
+    /// The model's embedded chat template, the highest-signal reasoning class
+    /// source. Already carried by `expand[]=gguf` (the same block that holds the
+    /// context window), so reading it costs no extra request.
+    #[serde(default)]
+    chat_template: Option<String>,
+    /// `general.architecture`, a secondary reasoning signal (e.g. gpt-oss is
+    /// always-on even when its template omits the channel marker).
+    #[serde(default)]
+    architecture: Option<String>,
+}
+
+/// Trust check for an externally-reported context window. Accepts a positive
+/// value no larger than [`MAX_MODEL_CONTEXT_LENGTH`] and narrows it to `u32`;
+/// anything missing, zero, or implausibly large is dropped to `None` so a
+/// hand-edited or malicious GGUF cannot inject an absurd figure into the UI.
+pub fn sanitize_context_length(raw: Option<u64>) -> Option<u32> {
+    raw.filter(|&n| n >= 1 && n <= MAX_MODEL_CONTEXT_LENGTH as u64)
+        .map(|n| n as u32)
 }
 
 /// One repo file in the HF listing. Only LFS-backed `.gguf` files matter.
@@ -1321,9 +1476,20 @@ pub struct MmprojCompanion {
     pub size_bytes: u64,
 }
 
+/// True when `name` is an `mmproj*.gguf` vision projection companion. The
+/// presence of one is Thuki's ground-truth vision signal: llama.cpp cannot do
+/// image input without it, regardless of how the base model is tagged.
+fn is_mmproj(name: &str) -> bool {
+    name.starts_with("mmproj") && name.ends_with(".gguf")
+}
+
 /// Pure parse of an HF repo listing into the spec for one target `file`.
 /// Capability rule for pasted repos: vision = an `mmproj*.gguf` sibling with
-/// complete LFS metadata exists; thinking = false (full detection is not yet implemented).
+/// complete LFS metadata exists. The reasoning class is recorded in two stages:
+/// [`repo_installed_model`] seeds `thinking` from the model name via
+/// [`detect_thinking`], then `finalize_install` refines `thinking` and sets
+/// `reasoning_always` from the downloaded GGUF's chat template (falling back to
+/// the name guess when the template cannot be read).
 pub fn resolve_listing(body: &[u8], file: &str) -> Result<RepoResolved, String> {
     let info: HfRepoInfo = serde_json::from_slice(body)
         .map_err(|e| format!("failed to decode Hugging Face API response: {e}"))?;
@@ -1345,7 +1511,7 @@ pub fn resolve_listing(body: &[u8], file: &str) -> Result<RepoResolved, String> 
     let mmproj = info
         .siblings
         .iter()
-        .filter(|s| s.rfilename.starts_with("mmproj") && s.rfilename.ends_with(".gguf"))
+        .filter(|s| is_mmproj(&s.rfilename))
         .find_map(|s| {
             lfs_digest(s).map(|(sha256, size_bytes)| MmprojCompanion {
                 file: s.rfilename.clone(),
@@ -1370,12 +1536,19 @@ pub fn parse_gguf_listing(body: &[u8]) -> Result<Vec<HfGgufFile>, String> {
     Ok(info
         .siblings
         .into_iter()
-        .filter(|s| s.rfilename.ends_with(".gguf") && !s.rfilename.starts_with("mmproj"))
+        .filter(|s| s.rfilename.ends_with(".gguf") && !is_mmproj(&s.rfilename))
         .map(|s| {
             let size_bytes = s.lfs.as_ref().and_then(|l| l.size).or(s.size).unwrap_or(0);
+            let sha256 = s
+                .lfs
+                .as_ref()
+                .and_then(|l| l.sha256.clone())
+                .unwrap_or_default();
             HfGgufFile {
                 file: s.rfilename,
                 size_bytes,
+                sha256,
+                partial_bytes: None,
             }
         })
         .collect())
@@ -1479,6 +1652,408 @@ pub async fn fetch_repo_gguf_listing(
     }
     let body = fetch_hf_repo_listing(client, base_url, repo).await?;
     parse_gguf_listing(&body)
+}
+
+// ─── Hugging Face model search ───────────────────────────────────────────────
+
+/// One repo row from a Hugging Face model search, trimmed to the fields the
+/// in-app browser needs to identify, rank, gate, and label a model.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HfModelSummary {
+    /// Repo id, e.g. `unsloth/Qwen3.5-9B-GGUF`; the install target.
+    pub id: String,
+    /// Lifetime download count. The search is sorted by it and the UI shows it
+    /// as a trust signal; `0` when the API omits the field.
+    pub downloads: u64,
+    /// True when the repo is access-gated (license click-through or manual
+    /// approval). Gated repos cannot be fetched anonymously, so the UI can flag
+    /// them instead of offering a download that would fail.
+    pub gated: bool,
+    /// Model's trained context window in tokens, from the repo's parsed GGUF
+    /// `context_length` metadata (a per-repo property, identical across quants).
+    /// `None` when the API omits it or the value fails [`sanitize_context_length`].
+    pub context_length: Option<u32>,
+    /// True when the repo ships an `mmproj*.gguf` vision companion (see
+    /// [`is_mmproj`]). A capability of the model, shared by every quant, so the
+    /// pill belongs on the repo row, not the per-quant list.
+    pub vision: bool,
+    /// True when the model emits reasoning tokens, from its chat template via
+    /// [`reasoning::classify_reasoning`], or the repo name via [`detect_thinking`]
+    /// when the template is absent. Also a per-repo capability.
+    pub thinking: bool,
+}
+
+/// A page of search rows plus whether the Hub holds more. The flag is derived
+/// from the raw entry count, not the kept-row count, so the per-row pipeline
+/// allowlist (which drops non-chat repos) cannot prematurely end pagination.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HfSearchPage {
+    pub rows: Vec<HfModelSummary>,
+    pub has_more: bool,
+}
+
+/// HF `pipeline_tag`s Thuki surfaces in Browse-all: plain text chat and
+/// multimodal (image+text) chat. Every other tag (embeddings, translation,
+/// text-to-video, ...) is not a usable chat model and is dropped. This is an
+/// allowlist applied per row, replacing a single server-side `pipeline_tag`
+/// filter that could not express "text OR image-text" and so hid vision repos.
+const SEARCHABLE_PIPELINE_TAGS: &[&str] = &["text-generation", "image-text-to-text"];
+
+/// One entry in the Hugging Face `/api/models` search response. Only the fields
+/// surfaced by [`HfModelSummary`] (and the `pipeline_tag` allowlist gate) are
+/// decoded; everything else is ignored so upstream additions cannot break it.
+#[derive(Deserialize)]
+struct HfSearchEntry {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    downloads: u64,
+    /// HF reports `gated` as `false` or a strategy string (`"auto"`/`"manual"`);
+    /// [`deserialize_gated`] normalizes it to a bool. Absent on some rows, so it
+    /// defaults to `false`.
+    #[serde(default, deserialize_with = "deserialize_gated")]
+    gated: bool,
+    /// HF pipeline tag, present because the search requests `expand[]=pipeline_tag`.
+    /// Gated against [`SEARCHABLE_PIPELINE_TAGS`]; an absent tag drops the row.
+    #[serde(default)]
+    pipeline_tag: Option<String>,
+    /// HF-parsed GGUF metadata, present because the search requests
+    /// `expand[]=gguf`: the context window and the chat template / architecture.
+    #[serde(default)]
+    gguf: Option<HfGgufMeta>,
+    /// Repo file listing, present because the search requests `expand[]=siblings`.
+    /// Scanned for an `mmproj*.gguf` companion to derive the vision flag.
+    #[serde(default)]
+    siblings: Vec<HfSibling>,
+}
+
+/// Projects one raw search entry onto a summary row, or `None` when the row is
+/// not a usable chat model (empty id, or a `pipeline_tag` outside
+/// [`SEARCHABLE_PIPELINE_TAGS`]).
+fn search_entry_to_summary(entry: HfSearchEntry) -> Option<HfModelSummary> {
+    let HfSearchEntry {
+        id,
+        downloads,
+        gated,
+        pipeline_tag,
+        gguf,
+        siblings,
+    } = entry;
+    if id.is_empty() {
+        return None;
+    }
+    if !pipeline_tag
+        .as_deref()
+        .is_some_and(|tag| SEARCHABLE_PIPELINE_TAGS.contains(&tag))
+    {
+        return None;
+    }
+    let vision = siblings.iter().any(|s| is_mmproj(&s.rfilename));
+    // Reasoning runs through the one shared derivation so a search row and the
+    // install it leads to can never disagree. A search row has no chosen file,
+    // so the name fallback (used only when no template ships) sees the repo only.
+    let chat_template = gguf.as_ref().and_then(|g| g.chat_template.as_deref());
+    let architecture = gguf.as_ref().and_then(|g| g.architecture.as_deref());
+    let (thinking, _) = reasoning_flags_from_metadata(chat_template, architecture, &id, "");
+    let context_length = sanitize_context_length(gguf.and_then(|g| g.context_length));
+    Some(HfModelSummary {
+        id,
+        downloads,
+        gated,
+        context_length,
+        vision,
+        thinking,
+    })
+}
+
+/// Normalizes Hugging Face's polymorphic `gated` field (a bool `false` or a
+/// strategy string like `"manual"`) into a plain bool: any string means gated,
+/// `true` means gated, everything else (including `null`) means not gated.
+fn deserialize_gated<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Bool(b) => b,
+        serde_json::Value::String(_) => true,
+        _ => false,
+    })
+}
+
+/// Pure parse of an `/api/models` search body into a page of summary rows.
+/// Non-chat and empty-id rows are dropped per [`search_entry_to_summary`];
+/// `has_more` is set from the raw entry count against `limit` so dropped rows
+/// never cut pagination short, and is forced `false` once `limit` reaches the
+/// [`HF_SEARCH_LIMIT_MAX`] ceiling: requests are clamped to that ceiling, so a
+/// full page there would refetch the same capped rows forever. "Load more"
+/// stops at the ceiling instead.
+pub fn parse_search_results(body: &[u8], limit: usize) -> Result<HfSearchPage, String> {
+    let entries: Vec<HfSearchEntry> = serde_json::from_slice(body)
+        .map_err(|e| format!("failed to decode Hugging Face search response: {e}"))?;
+    let has_more = entries.len() >= limit && limit < HF_SEARCH_LIMIT_MAX;
+    let rows = entries
+        .into_iter()
+        .filter_map(search_entry_to_summary)
+        .collect();
+    Ok(HfSearchPage { rows, has_more })
+}
+
+// ─── RAM-fit estimation + annotated view rows ────────────────────────────────
+//
+// The model-settings UI surfaces a "will this fit in your Mac's RAM" hint in
+// both Discover and Library. The authoritative per-starter estimate lives in
+// the registry; for arbitrary downloaded/searched models there is no curated
+// number, so these helpers estimate the resident footprint (weights + a fixed
+// KV/runtime overhead) and reuse `registry::ram_fit` for the threshold. They
+// are deliberately approximate: the result is a hint, never a hard gate.
+
+/// A repo `.gguf` file annotated with the accurate per-quant RAM-fit computed
+/// from its real file size. `fit` is `None` when host RAM or the file size is
+/// unknown (both are required to judge fit).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HfGgufFileRow {
+    #[serde(flatten)]
+    pub file: HfGgufFile,
+    pub fit: Option<registry::RamFit>,
+    /// Whether this exact repo file is already recorded in the installed
+    /// manifest. Lets Browse-all show an "Installed" marker instead of a
+    /// download button once a quant finishes downloading.
+    pub installed: bool,
+}
+
+/// An installed model annotated with its RAM-fit on the host, computed from the
+/// recorded weights size. `fit` is `None` when host RAM or the size is unknown.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct InstalledModelView {
+    #[serde(flatten)]
+    pub model: manifest::InstalledModel,
+    pub fit: Option<registry::RamFit>,
+    /// Trained context window in tokens, healed from the curated registry by
+    /// repo + file. `None` for a pasted model with no registry entry (its
+    /// context is not recorded in the manifest).
+    pub context_length: Option<u32>,
+    /// Vision projector size in bytes, healed from the registry so the listed
+    /// total (weights + mmproj) matches Discover's. `0` for a text model or a
+    /// pasted repo with no registry entry (the manifest records only weights).
+    pub mmproj_bytes: u64,
+    /// Model maker (e.g. "Google"), healed from the registry. `None` for a
+    /// pasted repo with no entry, where the UI falls back to the repo id.
+    pub origin: Option<String>,
+}
+
+/// Estimated resident memory (GiB) for a GGUF weights blob of `size_bytes`:
+/// the on-disk size plus the fixed [`RUNTIME_OVERHEAD_GB`].
+pub fn estimate_runtime_gb_from_bytes(size_bytes: u64) -> f64 {
+    size_bytes as f64 / (1u64 << 30) as f64 + RUNTIME_OVERHEAD_GB
+}
+
+/// Clamps a requested search page size to `1..=`[`HF_SEARCH_LIMIT_MAX`] so a
+/// runaway page count cannot request an unbounded result set.
+pub fn clamp_search_limit(limit: usize) -> usize {
+    limit.clamp(1, HF_SEARCH_LIMIT_MAX)
+}
+
+/// Annotates repo `.gguf` rows with the accurate per-quant RAM-fit from each
+/// file's real size. A row gets `None` when host RAM or the file size is 0.
+pub fn annotate_gguf_rows(files: Vec<HfGgufFile>, ram_bytes: u64) -> Vec<HfGgufFileRow> {
+    files
+        .into_iter()
+        .map(|file| {
+            let fit = if ram_bytes > 0 && file.size_bytes > 0 {
+                Some(registry::ram_fit(
+                    estimate_runtime_gb_from_bytes(file.size_bytes),
+                    ram_bytes,
+                ))
+            } else {
+                None
+            };
+            HfGgufFileRow {
+                file,
+                fit,
+                installed: false,
+            }
+        })
+        .collect()
+}
+
+/// Fills each row's `partial_bytes` from the blob store so Browse-all can offer
+/// Resume / Discard for any file with an interrupted partial on disk. A row
+/// whose `sha256` is empty (a non-LFS file) has no content-addressed partial
+/// and stays `None`.
+pub fn attach_partials(
+    rows: Vec<HfGgufFileRow>,
+    store: &storage::ModelStore,
+) -> Vec<HfGgufFileRow> {
+    rows.into_iter()
+        .map(|mut row| {
+            if !row.file.sha256.is_empty() {
+                row.file.partial_bytes = store.existing_partial_len(&row.file.sha256);
+            }
+            row
+        })
+        .collect()
+}
+
+/// Marks each row whose `<repo>:<file>` is already recorded in the installed
+/// manifest, so Browse-all shows an "Installed" marker rather than a download
+/// button once a quant finishes. A manifest read error degrades to "not
+/// installed" rather than failing the listing, mirroring [`annotate_starter`].
+pub fn attach_installed(
+    rows: Vec<HfGgufFileRow>,
+    repo: &str,
+    conn: &rusqlite::Connection,
+) -> Vec<HfGgufFileRow> {
+    rows.into_iter()
+        .map(|mut row| {
+            let id = format!("{repo}:{}", row.file.file);
+            row.installed = matches!(manifest::get(conn, &id), Ok(Some(_)));
+            row
+        })
+        .collect()
+}
+
+/// Annotates installed models with their RAM-fit on the host, from the recorded
+/// weights size. A model gets `None` when host RAM or the size is 0.
+pub fn build_installed_views(
+    models: Vec<manifest::InstalledModel>,
+    ram_bytes: u64,
+) -> Vec<InstalledModelView> {
+    models
+        .into_iter()
+        .map(|model| {
+            let fit = if ram_bytes > 0 && model.size_bytes > 0 {
+                Some(registry::ram_fit(
+                    estimate_runtime_gb_from_bytes(model.size_bytes),
+                    ram_bytes,
+                ))
+            } else {
+                None
+            };
+            // Curated models heal their context window, vision-projector size,
+            // and maker from the registry so the Library row reads the same
+            // facts Discover does; a pasted repo has no entry, so those stay
+            // absent (the UI falls back to the repo id for the maker).
+            let starter = registry::by_repo_file(&model.repo, &model.file_name);
+            let context_length = starter.map(|s| s.context_length);
+            let mmproj_bytes = starter.map_or(0, |s| s.mmproj_bytes);
+            let origin = starter.map(|s| s.origin.to_string());
+            InstalledModelView {
+                model,
+                fit,
+                context_length,
+                mmproj_bytes,
+                origin,
+            }
+        })
+        .collect()
+}
+
+/// Validates the query length, runs the Hugging Face GGUF model search against
+/// `base_url`, and parses the result. `base_url` is parameterized so tests
+/// point at a mock server; production passes [`HF_BASE_URL`].
+pub async fn fetch_hf_search(
+    client: &reqwest::Client,
+    base_url: &str,
+    query: &str,
+    limit: usize,
+) -> Result<HfSearchPage, String> {
+    let query = query.trim();
+    if query.len() > MAX_HF_SEARCH_QUERY_LEN {
+        return Err(format!(
+            "search query exceeds maximum length of {MAX_HF_SEARCH_QUERY_LEN} bytes"
+        ));
+    }
+    let body = fetch_hf_search_inner(
+        client,
+        base_url,
+        query,
+        std::time::Duration::from_secs(HF_API_TIMEOUT_SECS),
+        MAX_HF_API_BODY_BYTES,
+        limit,
+    )
+    .await?;
+    parse_search_results(&body, limit)
+}
+
+/// Innermost search fetcher with timeout, body cap, and result limit
+/// configurable so the cap branches are testable. Every query parameter is
+/// percent-encoded by `Url::parse_with_params` (no manual string building) so a
+/// query cannot smuggle URL syntax, and the host stays fixed to `base_url` so
+/// there is no SSRF surface. The body cap is enforced incrementally during the
+/// streaming read, mirroring [`fetch_hf_repo_listing_inner`].
+async fn fetch_hf_search_inner(
+    client: &reqwest::Client,
+    base_url: &str,
+    query: &str,
+    timeout: std::time::Duration,
+    max_body_bytes: usize,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    let endpoint = format!("{}/api/models", base_url.trim_end_matches('/'));
+    let limit = limit.to_string();
+    // `filter=gguf` matches repos *tagged* gguf (the dedicated quant repos that
+    // actually ship `.gguf` files). `library=gguf` is deliberately NOT used: it
+    // also matches base repos that merely link to GGUF quants elsewhere, so the
+    // rows would have no downloadable `.gguf` files of their own. The chat-model
+    // gate is NOT a server `pipeline_tag` filter: that param takes a single value
+    // and so cannot express "text-generation OR image-text-to-text", which hid
+    // every multimodal repo. Instead each row's `pipeline_tag` is expanded and
+    // checked against `SEARCHABLE_PIPELINE_TAGS` in `search_entry_to_summary`.
+    let mut params: Vec<(&str, &str)> = vec![
+        ("filter", "gguf"),
+        ("sort", "downloads"),
+        ("direction", "-1"),
+        ("limit", &limit),
+        // One expand set carries everything a row needs in a single request, so
+        // there is no per-repo follow-up call: `gguf` (context window + chat
+        // template + architecture), `siblings` (the file list, scanned for an
+        // mmproj vision companion), and `pipeline_tag` (the chat-model allowlist).
+        ("expand[]", "gguf"),
+        ("expand[]", "siblings"),
+        ("expand[]", "pipeline_tag"),
+    ];
+    // An empty query browses the most-downloaded GGUF repos; only attach the
+    // search term when the user actually typed one.
+    if !query.is_empty() {
+        params.push(("search", query));
+    }
+    let url = reqwest::Url::parse_with_params(&endpoint, params)
+        .map_err(|e| format!("failed to build Hugging Face search URL: {e}"))?;
+    let response = client
+        .get(url)
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach Hugging Face: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Hugging Face API returned HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+
+    if let Some(declared_len) = response.content_length() {
+        if declared_len as usize > max_body_bytes {
+            return Err(format!(
+                "Hugging Face search response exceeded {max_body_bytes} bytes"
+            ));
+        }
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("failed to read Hugging Face search body: {e}"))?;
+        if buf.len() + chunk.len() > max_body_bytes {
+            return Err(format!(
+                "Hugging Face search response exceeded {max_body_bytes} bytes"
+            ));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    Ok(buf)
 }
 
 // ─── OpenAI-compatible model listing ─────────────────────────────────────────
@@ -1643,9 +2218,94 @@ pub fn repo_installed_model(
         size_bytes: resolved.weights_size_bytes,
         quant: quant_from_filename(file),
         vision: resolved.mmproj.is_some(),
-        thinking: false,
+        // Name-based first guess; finalize_install refines `thinking` and sets
+        // `reasoning_always` from the downloaded GGUF's chat template, falling
+        // back to this guess when the template cannot be read.
+        thinking: detect_thinking(repo, file),
+        reasoning_always: false,
         mmproj_file: resolved.mmproj.as_ref().map(|m| m.file.clone()),
         mmproj_sha256: resolved.mmproj.as_ref().map(|m| m.sha256.clone()),
+    }
+}
+
+/// The curated `(thinking, reasoning_always)` flags for a model, when it is a
+/// registry starter. `None` for a pasted/arbitrary repo. Curated flags are the
+/// highest-confidence source, so both the installer and the heal prefer them
+/// over a GGUF scan.
+pub(crate) fn curated_reasoning_flags(repo: &str, file_name: &str) -> Option<(bool, bool)> {
+    registry::STARTERS
+        .iter()
+        .find(|s| s.repo == repo && s.file_name == file_name)
+        .map(|s| (s.thinking, s.reasoning_always))
+}
+
+/// Derives `(thinking, reasoning_always)` for a non-curated model from its GGUF
+/// metadata: a readable chat template is classified by
+/// [`reasoning::classify_reasoning`]; an absent or empty template falls back to
+/// the repo/file name via [`detect_thinking`], leaving `reasoning_always` off
+/// for the runtime backstop to correct an always-reasoning model from real
+/// output. The single reasoning-derivation point: the Browse-all search rows and
+/// the install/heal path both route through it, so identical metadata always
+/// yields identical flags. The name is only the inputs here; for a repo-level
+/// search row with no chosen file, pass an empty `file`.
+pub(crate) fn reasoning_flags_from_metadata(
+    chat_template: Option<&str>,
+    architecture: Option<&str>,
+    repo: &str,
+    file: &str,
+) -> (bool, bool) {
+    match chat_template {
+        Some(t) if !t.is_empty() => reasoning::classify_reasoning(t, architecture).flags(),
+        _ => (detect_thinking(repo, file), false),
+    }
+}
+
+/// Resolves the final reasoning flags for a model: curated registry flags when
+/// it is a starter, otherwise the class derived from the on-disk GGUF blob's
+/// chat template (with the name fallback baked into
+/// [`reasoning_flags_from_metadata`]). Coverage-off: the registry lookup and the
+/// derivation are tested through [`curated_reasoning_flags`] /
+/// [`reasoning_flags_from_metadata`]; this wrapper only adds the blob read.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn resolve_reasoning_flags(
+    store: &storage::ModelStore,
+    repo: &str,
+    file_name: &str,
+    sha256: &str,
+) -> (bool, bool) {
+    if let Some(curated) = curated_reasoning_flags(repo, file_name) {
+        return curated;
+    }
+    let meta = gguf::read_gguf_metadata_from_file(&store.blob_path(sha256));
+    let template = meta.as_ref().and_then(|m| m.chat_template.as_deref());
+    let architecture = meta.as_ref().and_then(|m| m.architecture.as_deref());
+    reasoning_flags_from_metadata(template, architecture, repo, file_name)
+}
+
+/// Re-classifies installed built-in rows whose `reasoning_always` is `NULL`
+/// (rows written before the classifier existed) and persists the result so they
+/// stop appearing in [`manifest::list_unclassified`]. Best-effort: any list,
+/// blob-read, or write failure is logged and skipped, never fatal. Coverage-off:
+/// orchestration over tested helpers (`list_unclassified`, `resolve_reasoning_flags`,
+/// `update_classification`).
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn heal_unclassified_reasoning(conn: &rusqlite::Connection, store: &storage::ModelStore) {
+    let pending = match manifest::list_unclassified(conn) {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("thuki: [models] reasoning heal: failed to list rows: {e}");
+            return;
+        }
+    };
+    for row in pending {
+        let (thinking, reasoning_always) =
+            resolve_reasoning_flags(store, &row.repo, &row.file_name, &row.sha256);
+        if let Err(e) = manifest::update_classification(conn, &row.id, thinking, reasoning_always) {
+            eprintln!(
+                "thuki: [models] reasoning heal: failed to persist {}: {e}",
+                row.id
+            );
+        }
     }
 }
 
@@ -1671,7 +2331,7 @@ pub fn delete_installed_model_inner(
     builtin_model: &str,
 ) -> Result<DeleteOutcome, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
+    if !guard.is_empty() {
         return Err("a download is already in progress".to_string());
     }
     let orphans = manifest::delete(conn, id).map_err(|e| e.to_string())?;
@@ -1683,9 +2343,10 @@ pub fn delete_installed_model_inner(
 
 /// Removes the partial file for `sha256` so the next download starts fresh.
 /// Refuses malformed digests (the digest doubles as a file name) and refuses
-/// while a download is running (it may be writing that very partial). Holds
-/// the download-state lock across the removal so a concurrent claim cannot
-/// race the delete.
+/// only while a download is actively writing this very blob (deleting its
+/// partial would fail that download's verification with NotFound). Unrelated
+/// parallel downloads do not block the discard. Holds the download-state lock
+/// across the removal so a concurrent claim cannot race the delete.
 pub fn discard_partial_inner(
     state: &DownloadState,
     store: &storage::ModelStore,
@@ -1695,8 +2356,11 @@ pub fn discard_partial_inner(
         return Err("invalid sha256".to_string());
     }
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
-        return Err("a download is already in progress".to_string());
+    if guard
+        .values()
+        .any(|slot| slot.shas.iter().any(|s| s == sha256))
+    {
+        return Err("a download for this file is already in progress".to_string());
     }
     match std::fs::remove_file(store.partial_path(sha256)) {
         Ok(()) => Ok(()),
@@ -1748,6 +2412,19 @@ pub fn get_starter_options(
     Ok(build_starter_options(&conn, &store, system_ram_bytes()))
 }
 
+/// Returns the full Staff Picks catalog: every curated registry entry annotated
+/// with RAM fit, installed state, and resumable-partial size. The frontend
+/// groups the rows by `starter.category` into use-case sections.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn get_staff_picks(
+    db: tauri::State<'_, crate::history::Database>,
+    store: tauri::State<'_, storage::ModelStore>,
+) -> Result<Vec<StarterOption>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(build_staff_picks(&conn, &store, system_ram_bytes()))
+}
+
 /// Total physical RAM in bytes, for frontend sizing copy.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
@@ -1770,16 +2447,46 @@ pub fn get_models_dir_free_bytes(store: tauri::State<'_, storage::ModelStore>) -
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn download_starter(
     tier: String,
+    key: String,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
     app: tauri::AppHandle,
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     let starter = starter_for_tier(&tier)?;
-    let token = claim_download(&download_state)?;
+    let specs = registry::download_specs(starter);
+    let token = claim_download(&download_state, &key, spec_shas(&specs))?;
     spawn_model_download(
         app,
-        registry::download_specs(starter),
+        specs,
         registry::to_installed_model(starter),
+        key,
+        token,
+        on_event,
+    );
+    Ok(())
+}
+
+/// Starts downloading a Staff Picks catalog entry by its stable `id`. Same
+/// verified path as [`download_starter`] (pinned revision + sha256, manifest
+/// record on success), but keyed by id so a category can hold any number of
+/// models. Progress streams over `on_event`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn download_staff_pick(
+    id: String,
+    key: String,
+    on_event: tauri::ipc::Channel<download::DownloadEvent>,
+    app: tauri::AppHandle,
+    download_state: tauri::State<'_, DownloadState>,
+) -> Result<(), String> {
+    let starter = starter_for_id(&id)?;
+    let specs = registry::download_specs(starter);
+    let token = claim_download(&download_state, &key, spec_shas(&specs))?;
+    spawn_model_download(
+        app,
+        specs,
+        registry::to_installed_model(starter),
+        key,
         token,
         on_event,
     );
@@ -1793,17 +2500,20 @@ pub fn download_starter(
 pub async fn download_repo_model(
     repo: String,
     file: String,
+    key: String,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
     app: tauri::AppHandle,
     client: tauri::State<'_, reqwest::Client>,
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     let resolved = resolve_repo_spec(&client, HF_BASE_URL, &repo, &file).await?;
-    let token = claim_download(&download_state)?;
+    let specs = repo_download_specs(HF_BASE_URL, &repo, &file, &resolved);
+    let token = claim_download(&download_state, &key, spec_shas(&specs))?;
     spawn_model_download(
         app,
-        repo_download_specs(HF_BASE_URL, &repo, &file, &resolved),
+        specs,
         repo_installed_model(&repo, &file, &resolved),
+        key,
         token,
         on_event,
     );
@@ -1816,8 +2526,26 @@ pub async fn download_repo_model(
 pub async fn list_hf_repo_ggufs(
     repo: String,
     client: tauri::State<'_, reqwest::Client>,
-) -> Result<Vec<HfGgufFile>, String> {
-    fetch_repo_gguf_listing(&client, HF_BASE_URL, &repo).await
+    store: tauri::State<'_, storage::ModelStore>,
+    db: tauri::State<'_, crate::history::Database>,
+) -> Result<Vec<HfGgufFileRow>, String> {
+    let files = fetch_repo_gguf_listing(&client, HF_BASE_URL, &repo).await?;
+    let rows = attach_partials(annotate_gguf_rows(files, system_ram_bytes()), &store);
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(attach_installed(rows, &repo, &conn))
+}
+
+/// Searches Hugging Face for GGUF model repos matching `query`, most-downloaded
+/// first. Backs the in-app model browser; an empty query returns the most
+/// popular GGUF repos.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn search_hf_models(
+    query: String,
+    limit: usize,
+    client: tauri::State<'_, reqwest::Client>,
+) -> Result<HfSearchPage, String> {
+    fetch_hf_search(&client, HF_BASE_URL, &query, clamp_search_limit(limit)).await
 }
 
 /// Lists the models served by the configured OpenAI-compatible provider via
@@ -1836,12 +2564,13 @@ pub async fn list_openai_models(
     fetch_openai_models(&client, &base_url, api_key.as_deref()).await
 }
 
-/// Cancels the in-flight model download, if any. The download task emits
-/// `Cancelled` and keeps the partial for a later resume.
+/// Cancels the in-flight model download identified by `key`, if any. The
+/// download task emits `Cancelled` and keeps the partial for a later resume.
+/// Other concurrent downloads are unaffected.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub fn cancel_model_download(download_state: tauri::State<'_, DownloadState>) {
-    cancel_active_download(&download_state);
+pub fn cancel_model_download(key: String, download_state: tauri::State<'_, DownloadState>) {
+    cancel_download(&download_state, &key);
 }
 
 /// Removes the partial file for `sha256` (the user chose Discard over Resume).
@@ -1860,9 +2589,10 @@ pub fn discard_partial_download(
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn list_installed_models(
     db: tauri::State<'_, crate::history::Database>,
-) -> Result<Vec<manifest::InstalledModel>, String> {
+) -> Result<Vec<InstalledModelView>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    manifest::list(&conn).map_err(|e| e.to_string())
+    let models = manifest::list(&conn).map_err(|e| e.to_string())?;
+    Ok(build_installed_views(models, system_ram_bytes()))
 }
 
 /// Deletes an installed model: manifest row, orphaned blobs, and (when it was
@@ -1889,6 +2619,32 @@ pub fn delete_installed_model(
     Ok(())
 }
 
+/// Reveals an installed model's weights blob in Finder. Thin FFI wrapper
+/// (excluded from coverage) over `open -R`, mirroring
+/// [`crate::settings_commands::reveal_config_in_finder`]; the manifest lookup
+/// and content-addressed path are covered through `manifest::get` and
+/// `storage::ModelStore::blob_path`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn reveal_model_in_finder(
+    id: String,
+    db: tauri::State<'_, crate::history::Database>,
+    store: tauri::State<'_, storage::ModelStore>,
+) -> Result<(), String> {
+    let model = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        manifest::get(&conn, &id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("model not installed: {id}"))?
+    };
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(store.blob_path(&model.sha256))
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Maps the `finalize_install` outcome onto the terminal download event:
 /// `AllDone` once the install is recorded, `Failed` otherwise. AllDone is
 /// emitted here (after finalize) rather than from `run_download` so the
@@ -1904,6 +2660,12 @@ pub(crate) fn finalize_outcome_event(result: Result<(), String>) -> download::Do
     }
 }
 
+/// The blob shas a spec list writes, recorded on the download slot so a discard
+/// can scope its in-flight check to the exact partial(s) this download owns.
+fn spec_shas(specs: &[download::DownloadSpec]) -> Vec<String> {
+    specs.iter().map(|s| s.sha256.clone()).collect()
+}
+
 /// Runs the claimed download on the async runtime: streams events to the
 /// channel, records the manifest row + builtin provider model on success
 /// (then emits AllDone, or Failed when recording fails), and releases the
@@ -1915,6 +2677,7 @@ fn spawn_model_download(
     app: tauri::AppHandle,
     specs: Vec<download::DownloadSpec>,
     model: manifest::InstalledModel,
+    key: String,
     token: tokio_util::sync::CancellationToken,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
 ) {
@@ -1935,31 +2698,61 @@ fn spawn_model_download(
             }
             let _ = on_event_finalize.send(finalize_outcome_event(finalized));
         }
-        release_download(&app.state::<DownloadState>());
+        release_download(&app.state::<DownloadState>(), &key);
     });
 }
 
 /// Records a completed download: manifest insert, removal of blobs the
 /// replaced row no longer references (a re-download whose upstream content
-/// changed must not strand the old multi-GB blob), then the builtin
-/// provider's `model` field (the active provider is never changed here).
+/// changed must not strand the old multi-GB blob), then adopts the model as the
+/// builtin provider's selection ONLY when none is chosen yet (the active
+/// provider is never changed here). A later install must not steal the active
+/// model from a model the user already selected.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn finalize_install(
     app: &tauri::AppHandle,
     model: &manifest::InstalledModel,
 ) -> Result<(), String> {
+    let store = app.state::<storage::ModelStore>();
+    // Classify reasoning from the just-downloaded GGUF's chat template so the
+    // picker badge and `/think` gate are correct the instant the install lands.
+    // Curated starters keep their registry flags; a template that cannot be read
+    // keeps the placeholder flags for the runtime backstop to correct.
+    let (thinking, reasoning_always) =
+        resolve_reasoning_flags(store.inner(), &model.repo, &model.file_name, &model.sha256);
+    let model = manifest::InstalledModel {
+        thinking,
+        reasoning_always,
+        ..model.clone()
+    };
     let orphans = {
         let db = app.state::<crate::history::Database>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        manifest::insert(&conn, model).map_err(|e| e.to_string())?
+        manifest::insert(&conn, &model).map_err(|e| e.to_string())?
     };
     // Best-effort: the install itself succeeded, so a failure to reclaim the
     // superseded blobs must not fail the download; it only leaks disk space.
-    if let Err(e) = app.state::<storage::ModelStore>().remove_blobs(&orphans) {
+    if let Err(e) = store.remove_blobs(&orphans) {
         eprintln!("thuki: [models] failed to remove superseded blobs: {e}");
     }
     let config = app.state::<parking_lot::RwLock<AppConfig>>();
-    persist_active_provider_model(app, &config, PROVIDER_ID_BUILTIN, &model.id)
+    // Auto-select only the first model: adopt this download as the built-in
+    // model when the provider has none yet; otherwise a completed download just
+    // installs and leaves the user's active choice alone. Parallel downloads
+    // finish in arbitrary order, so a last-one-wins overwrite would be
+    // unpredictable.
+    if adopt_as_builtin_model(&builtin_provider_model(&config.read())) {
+        persist_active_provider_model(app, &config, PROVIDER_ID_BUILTIN, &model.id)
+    } else {
+        Ok(())
+    }
+}
+
+/// Whether a freshly installed model should become the built-in provider's
+/// active model: only when the provider has no model selected yet (empty id).
+/// Keeps "auto-select the first model" predictable under parallel downloads.
+fn adopt_as_builtin_model(current_builtin_model: &str) -> bool {
+    current_builtin_model.is_empty()
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -3060,6 +3853,7 @@ mod tests {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            reasoning_always: false,
             max_images: Some(1),
         };
         let v = serde_json::to_value(&caps).unwrap();
@@ -3068,6 +3862,7 @@ mod tests {
             serde_json::json!({
                 "vision": true,
                 "thinking": false,
+                "reasoningAlways": false,
                 "maxImages": 1,
             })
         );
@@ -3078,6 +3873,7 @@ mod tests {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            reasoning_always: false,
             max_images: None,
         };
         let v = serde_json::to_value(&caps).unwrap();
@@ -3620,6 +4416,7 @@ mod tests {
             quant: "Q4_K_M".to_string(),
             vision,
             thinking,
+            reasoning_always: false,
             mmproj_file: None,
             mmproj_sha256: None,
         }
@@ -3642,6 +4439,53 @@ mod tests {
         assert!(!caps["org/repo:think.gguf"].vision);
         assert!(caps["org/repo:think.gguf"].thinking);
         assert!(caps.values().all(|c| c.max_images.is_none()));
+    }
+
+    /// A curated starter installed before its `thinking` flag was corrected
+    /// still carries the stale flag in its manifest row. The capability view
+    /// heals it from the current registry, so the model is no longer wrongly
+    /// told it "does not emit thinking tokens" without a manifest migration.
+    #[test]
+    fn builtin_capabilities_heal_curated_flags_from_registry() {
+        let fast = registry::STARTERS
+            .iter()
+            .find(|s| s.tier == registry::Tier::Fast)
+            .unwrap();
+        // Simulate a row written before the flag fix: capabilities recorded
+        // as the old, wrong values.
+        let mut stale = registry::to_installed_model(fast);
+        stale.thinking = false;
+        stale.vision = false;
+
+        let caps = builtin_capabilities_from_manifest(&[stale]);
+
+        let healed = &caps[&registry::to_installed_model(fast).id];
+        assert!(
+            healed.thinking,
+            "registry heals the corrected reasoning flag"
+        );
+        assert!(
+            healed.vision,
+            "registry capabilities win for curated models"
+        );
+    }
+
+    /// gpt-oss (curated Smartest) reasons unstoppably; its `reasoning_always`
+    /// capability is healed from the registry so the picker can badge it. A
+    /// pasted (non-curated) row defaults to not-always (runtime detection is a
+    /// follow-up).
+    #[test]
+    fn builtin_capabilities_reasoning_always_from_registry() {
+        let smartest = registry::STARTERS
+            .iter()
+            .find(|s| s.tier == registry::Tier::Smartest)
+            .unwrap();
+        let caps = builtin_capabilities_from_manifest(&[registry::to_installed_model(smartest)]);
+        assert!(caps[&registry::to_installed_model(smartest).id].reasoning_always);
+
+        let pasted =
+            builtin_capabilities_from_manifest(&[manifest_row("org/repo:x.gguf", false, true)]);
+        assert!(!pasted["org/repo:x.gguf"].reasoning_always);
     }
 
     #[test]
@@ -3702,21 +4546,26 @@ mod tests {
     }
 
     #[test]
-    fn build_starter_options_marks_installed_and_partial() {
+    fn build_starter_options_returns_annotated_onboarding_heroes() {
         let conn = crate::database::open_in_memory().unwrap();
         let (_dir, store) = make_store();
 
-        // First starter is installed (manifest row present); second has an
-        // in-flight partial; third is untouched.
-        let starters = registry::STARTERS;
-        manifest::insert(&conn, &registry::to_installed_model(&starters[0])).unwrap();
-        std::fs::write(store.partial_path(starters[1].sha256), [0u8; 10]).unwrap();
+        // Onboarding draws exactly the three tier heroes, in tier order. First
+        // hero is installed (manifest row present); second has an in-flight
+        // partial; third is untouched.
+        let heroes = registry::onboarding_heroes();
+        manifest::insert(&conn, &registry::to_installed_model(heroes[0])).unwrap();
+        std::fs::write(store.partial_path(heroes[1].sha256), [0u8; 10]).unwrap();
 
         const GIB: u64 = 1 << 30;
         let opts = build_starter_options(&conn, &store, 16 * GIB);
 
-        assert_eq!(opts.len(), starters.len());
-        assert_eq!(opts[0].starter, starters[0]);
+        assert_eq!(opts.len(), heroes.len());
+        assert_eq!(
+            opts.iter().map(|o| o.starter.id).collect::<Vec<_>>(),
+            registry::ONBOARDING_HERO_IDS.to_vec()
+        );
+        assert_eq!(&opts[0].starter, heroes[0]);
         assert!(opts[0].installed);
         assert_eq!(opts[0].partial_bytes, None);
         assert!(!opts[1].installed);
@@ -3724,7 +4573,7 @@ mod tests {
         assert!(!opts[2].installed);
         assert_eq!(opts[2].partial_bytes, None);
         // Fit hints come straight from registry::ram_fit at the given RAM.
-        for (opt, s) in opts.iter().zip(starters) {
+        for (opt, s) in opts.iter().zip(heroes) {
             assert_eq!(opt.fit, registry::ram_fit(s.est_runtime_gb, 16 * GIB));
         }
     }
@@ -3771,38 +4620,91 @@ mod tests {
         assert!(starter_for_tier("turbo").is_err());
     }
 
+    #[test]
+    fn starter_for_id_resolves_and_rejects() {
+        // The id-keyed Staff Picks download path resolves a real slug and
+        // rejects an unknown one with an error rather than a panic.
+        assert_eq!(starter_for_id("qwen3.5-9b").unwrap().id, "qwen3.5-9b");
+        assert_eq!(starter_for_id("gpt-oss-20b").unwrap().id, "gpt-oss-20b");
+        assert!(starter_for_id("not-a-real-id").is_err());
+    }
+
+    #[test]
+    fn build_staff_picks_covers_every_registry_entry() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let (_dir, store) = make_store();
+        // Install the first catalog entry; only it must read back as installed.
+        manifest::insert(&conn, &registry::to_installed_model(&registry::STARTERS[0])).unwrap();
+
+        const GIB: u64 = 1 << 30;
+        let opts = build_staff_picks(&conn, &store, 16 * GIB);
+
+        // Every registry entry is present, in registry order.
+        assert_eq!(opts.len(), registry::STARTERS.len());
+        assert_eq!(
+            opts.iter().map(|o| o.starter.id).collect::<Vec<_>>(),
+            registry::STARTERS.iter().map(|s| s.id).collect::<Vec<_>>()
+        );
+        assert!(opts[0].installed);
+        assert!(opts[1..].iter().all(|o| !o.installed));
+        // Fit comes straight from registry::ram_fit at the given RAM.
+        for (opt, s) in opts.iter().zip(registry::STARTERS) {
+            assert_eq!(opt.fit, registry::ram_fit(s.est_runtime_gb, 16 * GIB));
+        }
+    }
+
     // ── Model library: download claim ────────────────────────────────────────
 
     #[test]
-    fn download_claim_rejects_second_concurrent() {
+    fn download_claim_allows_distinct_keys_and_rejects_a_duplicate() {
         let state = DownloadState::default();
-        let token = claim_download(&state).unwrap();
+        let token = claim_download(&state, "model-a", vec![]).unwrap();
         assert!(!token.is_cancelled());
-        let err = claim_download(&state).unwrap_err();
+        // A different model downloads concurrently: its own slot is granted.
+        assert!(claim_download(&state, "model-b", vec![]).is_ok());
+        // The same key cannot start twice while it is in flight.
+        let err = claim_download(&state, "model-a", vec![]).unwrap_err();
         assert_eq!(err, "a download is already in progress");
-        // Release clears the claim so a new download can start.
-        release_download(&state);
-        assert!(claim_download(&state).is_ok());
+        // Releasing one key frees only that slot.
+        release_download(&state, "model-a");
+        assert!(claim_download(&state, "model-a", vec![]).is_ok());
     }
 
     #[test]
-    fn download_in_flight_tracks_the_claim() {
+    fn spec_shas_collects_every_blob_digest() {
+        let specs = registry::download_specs(registry::onboarding_heroes()[1]);
+        let shas = spec_shas(&specs);
+        assert_eq!(shas.len(), specs.len());
+        for (sha, spec) in shas.iter().zip(&specs) {
+            assert_eq!(sha, &spec.sha256);
+        }
+    }
+
+    #[test]
+    fn download_in_flight_tracks_any_claim() {
         let state = DownloadState::default();
         assert!(!download_in_flight(&state));
-        let _token = claim_download(&state).unwrap();
+        let _a = claim_download(&state, "a", vec![]).unwrap();
+        let _b = claim_download(&state, "b", vec![]).unwrap();
         assert!(download_in_flight(&state));
-        release_download(&state);
+        // One release leaves the other download in flight.
+        release_download(&state, "a");
+        assert!(download_in_flight(&state));
+        release_download(&state, "b");
         assert!(!download_in_flight(&state));
     }
 
     #[test]
-    fn cancel_active_download_cancels_claimed_token_and_tolerates_idle() {
+    fn cancel_download_cancels_only_the_keyed_token_and_tolerates_idle() {
         let state = DownloadState::default();
-        // No claim yet: cancelling is a harmless no-op.
-        cancel_active_download(&state);
-        let token = claim_download(&state).unwrap();
-        cancel_active_download(&state);
-        assert!(token.is_cancelled());
+        // No such key: cancelling is a harmless no-op.
+        cancel_download(&state, "missing");
+        let a = claim_download(&state, "a", vec![]).unwrap();
+        let b = claim_download(&state, "b", vec![]).unwrap();
+        cancel_download(&state, "a");
+        assert!(a.is_cancelled());
+        // Cancelling one download leaves the others running.
+        assert!(!b.is_cancelled());
     }
 
     #[test]
@@ -3813,14 +4715,23 @@ mod tests {
             let _guard = state_ref.0.lock().unwrap();
             panic!("poison");
         });
-        assert!(claim_download(&state).is_err());
+        assert!(claim_download(&state, "k", vec![]).is_err());
         let (_dir, store) = make_store();
         assert!(discard_partial_inner(&state, &store, &"a".repeat(64)).is_err());
         let conn = crate::database::open_in_memory().unwrap();
         assert!(delete_installed_model_inner(&state, &conn, &store, "x:y.gguf", "").is_err());
         // Best-effort operations must not panic on the poisoned lock.
-        cancel_active_download(&state);
-        release_download(&state);
+        cancel_download(&state, "k");
+        release_download(&state, "k");
+    }
+
+    #[test]
+    fn adopt_as_builtin_model_only_for_the_first_model() {
+        // No model selected yet: the first completed download is adopted.
+        assert!(adopt_as_builtin_model(""));
+        // A model is already active: a later parallel completion does not steal
+        // the active slot.
+        assert!(!adopt_as_builtin_model("google/gemma:gemma-q4.gguf"));
     }
 
     #[test]
@@ -3904,18 +4815,100 @@ mod tests {
             vec![
                 HfGgufFile {
                     file: "model-Q4_K_M.gguf".to_string(),
-                    size_bytes: 1000
+                    size_bytes: 1000,
+                    sha256: "a".repeat(64),
+                    partial_bytes: None,
                 },
                 HfGgufFile {
                     file: "extra.gguf".to_string(),
-                    size_bytes: 7
+                    size_bytes: 7,
+                    sha256: String::new(),
+                    partial_bytes: None,
                 },
                 HfGgufFile {
                     file: "bare.gguf".to_string(),
-                    size_bytes: 0
+                    size_bytes: 0,
+                    sha256: String::new(),
+                    partial_bytes: None,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn sanitize_context_length_trusts_only_sane_values() {
+        assert_eq!(sanitize_context_length(None), None);
+        assert_eq!(sanitize_context_length(Some(0)), None);
+        assert_eq!(sanitize_context_length(Some(131_072)), Some(131_072));
+        assert_eq!(
+            sanitize_context_length(Some(MAX_MODEL_CONTEXT_LENGTH as u64)),
+            Some(MAX_MODEL_CONTEXT_LENGTH)
+        );
+        assert_eq!(
+            sanitize_context_length(Some(MAX_MODEL_CONTEXT_LENGTH as u64 + 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn attach_partials_reports_planted_and_skips_empty_sha() {
+        let (_dir, store) = make_store();
+        let sha = "a".repeat(64);
+        // Plant a 9-byte partial for the LFS-backed row.
+        let path = store.partial_path(&sha);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, [0u8; 9]).unwrap();
+
+        let rows = vec![
+            HfGgufFileRow {
+                file: HfGgufFile {
+                    file: "weights.gguf".to_string(),
+                    size_bytes: 100,
+                    sha256: sha.clone(),
+                    partial_bytes: None,
+                },
+                fit: None,
+                installed: false,
+            },
+            HfGgufFileRow {
+                file: HfGgufFile {
+                    file: "no-lfs.gguf".to_string(),
+                    size_bytes: 50,
+                    sha256: String::new(),
+                    partial_bytes: None,
+                },
+                fit: None,
+                installed: false,
+            },
+        ];
+        let out = attach_partials(rows, &store);
+        // The LFS-backed row reflects the planted partial; the empty-sha row is
+        // skipped entirely.
+        assert_eq!(out[0].file.partial_bytes, Some(9));
+        assert_eq!(out[1].file.partial_bytes, None);
+    }
+
+    #[test]
+    fn attach_installed_marks_only_manifest_rows() {
+        let conn = crate::database::open_in_memory().unwrap();
+        // Record one of the two files in the manifest under "<repo>:<file>".
+        manifest::insert(&conn, &manifest_row("org/repo:in.gguf", false, false)).unwrap();
+
+        let row = |name: &str| HfGgufFileRow {
+            file: HfGgufFile {
+                file: name.to_string(),
+                size_bytes: 100,
+                sha256: String::new(),
+                partial_bytes: None,
+            },
+            fit: None,
+            installed: false,
+        };
+        let out = attach_installed(vec![row("in.gguf"), row("out.gguf")], "org/repo", &conn);
+
+        // Only the file recorded in the manifest is marked installed.
+        assert!(out[0].installed);
+        assert!(!out[1].installed);
     }
 
     #[test]
@@ -3929,9 +4922,19 @@ mod tests {
         let v = serde_json::to_value(HfGgufFile {
             file: "x.gguf".to_string(),
             size_bytes: 5,
+            sha256: "a".repeat(64),
+            partial_bytes: Some(3),
         })
         .unwrap();
-        assert_eq!(v, serde_json::json!({"file": "x.gguf", "size_bytes": 5}));
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "file": "x.gguf",
+                "size_bytes": 5,
+                "sha256": "a".repeat(64),
+                "partial_bytes": 3,
+            })
+        );
     }
 
     // ── Model library: resolve_listing (pure) ───────────────────────────────
@@ -4197,6 +5200,511 @@ mod tests {
         assert_eq!(files[0].file, "model-Q4_K_M.gguf");
     }
 
+    // ── Model library: Hugging Face search ───────────────────────────────────
+
+    /// Search fixture exercising the capability derivation and the pipeline
+    /// allowlist: each `gated` shape (bool, strategy string, absent, null),
+    /// vision from an mmproj sibling, thinking from the chat template (template
+    /// class wins over a reasoning-y name) with a name fallback when no template
+    /// is present, a non-chat pipeline that is dropped, an untagged repo that is
+    /// dropped, and an empty-id row that is dropped.
+    fn search_fixture() -> serde_json::Value {
+        serde_json::json!([
+            // alpha: chat model that ships an mmproj companion and an optional
+            // (`enable_thinking`) template -> vision + thinking, with context.
+            {"id": "org/alpha-GGUF", "downloads": 1000, "gated": false,
+             "pipeline_tag": "text-generation",
+             "gguf": {"context_length": 131072,
+                      "chat_template": "{%- if enable_thinking %}<think>{% endif %}",
+                      "architecture": "qwen3"},
+             "siblings": [{"rfilename": "alpha-Q4_K_M.gguf"},
+                          {"rfilename": "mmproj-f16.gguf"}]},
+            // beta: a multimodal pipeline tag is allowlisted; no mmproj sibling
+            // means no vision, and an always-on `<think>` template means thinking.
+            {"id": "org/beta-GGUF", "downloads": 500, "gated": "manual",
+             "pipeline_tag": "image-text-to-text",
+             "gguf": {"chat_template": "<|im_start|>assistant\\n<think>\\n"},
+             "siblings": [{"rfilename": "beta.gguf"}]},
+            // gamma: no expanded gguf at all, so thinking falls back to the name
+            // (`QwQ` is a known reasoning family); no mmproj means no vision.
+            {"id": "org/QwQ-32B-GGUF", "downloads": 7,
+             "pipeline_tag": "text-generation"},
+            // delta: a non-chat pipeline (embeddings) is dropped by the allowlist
+            // even though it is the most downloaded.
+            {"id": "org/embed-GGUF", "downloads": 99999,
+             "pipeline_tag": "feature-extraction"},
+            // epsilon: a plain instruct template classifies as non-thinking and
+            // overrides the reasoning-y repo name; its context is implausibly
+            // large so it is dropped; no mmproj means no vision.
+            {"id": "org/Reasoner-GGUF", "downloads": 2, "gated": null,
+             "pipeline_tag": "text-generation",
+             "gguf": {"context_length": 9000000000u64,
+                      "chat_template": "<|user|>{{x}}<|assistant|>",
+                      "architecture": "llama"},
+             "siblings": [{"rfilename": "r.gguf"}]},
+            // zeta: no pipeline tag at all is dropped (the allowlist requires an
+            // explicit chat-capable tag).
+            {"id": "org/untagged-GGUF", "downloads": 3},
+            // empty id is dropped.
+            {"id": "", "downloads": 9, "pipeline_tag": "text-generation"}
+        ])
+    }
+
+    #[test]
+    fn parse_search_results_maps_capabilities_and_drops_non_chat_rows() {
+        let body = search_fixture().to_string();
+        // A generous limit keeps `has_more` false so this case stays about rows.
+        let page = parse_search_results(body.as_bytes(), 100).unwrap();
+        assert!(!page.has_more);
+        assert_eq!(
+            page.rows,
+            vec![
+                HfModelSummary {
+                    id: "org/alpha-GGUF".to_string(),
+                    downloads: 1000,
+                    gated: false,
+                    context_length: Some(131072),
+                    vision: true,
+                    thinking: true,
+                },
+                HfModelSummary {
+                    id: "org/beta-GGUF".to_string(),
+                    downloads: 500,
+                    gated: true,
+                    context_length: None,
+                    vision: false,
+                    thinking: true,
+                },
+                // gamma: thinking healed from the `QwQ` name when no template ships.
+                HfModelSummary {
+                    id: "org/QwQ-32B-GGUF".to_string(),
+                    downloads: 7,
+                    gated: false,
+                    context_length: None,
+                    vision: false,
+                    thinking: true,
+                },
+                // epsilon: the plain template wins over the reasoning-y name.
+                HfModelSummary {
+                    id: "org/Reasoner-GGUF".to_string(),
+                    downloads: 2,
+                    gated: false,
+                    context_length: None,
+                    vision: false,
+                    thinking: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_search_results_flags_has_more_when_the_page_is_full() {
+        let body = serde_json::json!([
+            {"id": "org/a-GGUF", "downloads": 2, "pipeline_tag": "text-generation"},
+            {"id": "org/b-GGUF", "downloads": 1, "pipeline_tag": "text-generation"}
+        ])
+        .to_string();
+        // Two raw entries: a page of two is full (more may exist on the Hub)...
+        assert!(parse_search_results(body.as_bytes(), 2).unwrap().has_more);
+        // ...but a page asking for three was not filled, so the Hub is exhausted.
+        assert!(!parse_search_results(body.as_bytes(), 3).unwrap().has_more);
+    }
+
+    #[test]
+    fn parse_search_results_stops_paginating_at_the_ceiling() {
+        let page_of = |n: usize| {
+            let entries: Vec<_> = (0..n)
+                .map(|i| {
+                    serde_json::json!({
+                        "id": format!("org/m{i}-GGUF"),
+                        "downloads": 1,
+                        "pipeline_tag": "text-generation"
+                    })
+                })
+                .collect();
+            serde_json::Value::Array(entries).to_string()
+        };
+        // A full page exactly at the clamp ceiling reports no more: requests are
+        // clamped to HF_SEARCH_LIMIT_MAX, so paging past it would refetch the
+        // same capped rows forever and never let "Load more" settle.
+        let full = page_of(HF_SEARCH_LIMIT_MAX);
+        assert!(
+            !parse_search_results(full.as_bytes(), HF_SEARCH_LIMIT_MAX)
+                .unwrap()
+                .has_more
+        );
+        // One step below the ceiling, a full page still invites another fetch.
+        let below = page_of(HF_SEARCH_LIMIT_MAX - 1);
+        assert!(
+            parse_search_results(below.as_bytes(), HF_SEARCH_LIMIT_MAX - 1)
+                .unwrap()
+                .has_more
+        );
+    }
+
+    #[test]
+    fn parse_search_results_rejects_invalid_json() {
+        let err = parse_search_results(b"not json", 30).unwrap_err();
+        assert!(err.contains("failed to decode"), "got: {err}");
+    }
+
+    #[test]
+    fn hf_model_summary_serializes_snake_case() {
+        let v = serde_json::to_value(HfModelSummary {
+            id: "o/r".to_string(),
+            downloads: 7,
+            gated: true,
+            context_length: Some(131072),
+            vision: true,
+            thinking: false,
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "id": "o/r", "downloads": 7, "gated": true, "context_length": 131072,
+                "vision": true, "thinking": false,
+            })
+        );
+    }
+
+    #[test]
+    fn hf_search_page_serializes_snake_case() {
+        let v = serde_json::to_value(HfSearchPage {
+            rows: vec![],
+            has_more: true,
+        })
+        .unwrap();
+        assert_eq!(v, serde_json::json!({ "rows": [], "has_more": true }));
+    }
+
+    // ── RAM-fit estimation + annotated views ─────────────────────────────────
+
+    #[test]
+    fn estimate_runtime_gb_from_bytes_adds_overhead() {
+        // 1 GiB weights + 2.0 overhead.
+        assert!((estimate_runtime_gb_from_bytes(1 << 30) - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clamp_search_limit_bounds_the_page_size() {
+        assert_eq!(clamp_search_limit(0), 1);
+        assert_eq!(clamp_search_limit(50), 50);
+        assert_eq!(clamp_search_limit(10_000), HF_SEARCH_LIMIT_MAX);
+    }
+
+    #[test]
+    fn annotate_gguf_rows_uses_real_sizes() {
+        let files = vec![
+            HfGgufFile {
+                file: "a.gguf".to_string(),
+                size_bytes: 1 << 30,
+                sha256: String::new(),
+                partial_bytes: None,
+            },
+            HfGgufFile {
+                file: "b.gguf".to_string(),
+                size_bytes: 0,
+                sha256: String::new(),
+                partial_bytes: None,
+            },
+        ];
+        let rows = annotate_gguf_rows(files.clone(), 64 << 30);
+        assert_eq!(rows[0].fit, Some(registry::RamFit::Fits));
+        // A zero size cannot be judged.
+        assert_eq!(rows[1].fit, None);
+        // Unknown host RAM drops every verdict.
+        let rows = annotate_gguf_rows(files, 0);
+        assert_eq!(rows[0].fit, None);
+    }
+
+    #[test]
+    fn build_installed_views_annotates_fit() {
+        let model = manifest::InstalledModel {
+            id: "org/Repo:weights.gguf".to_string(),
+            display_name: "Repo".to_string(),
+            repo: "org/Repo".to_string(),
+            revision: "0".repeat(40),
+            file_name: "weights.gguf".to_string(),
+            sha256: "a".repeat(64),
+            size_bytes: 1 << 30,
+            quant: "Q4_K_M".to_string(),
+            vision: false,
+            thinking: false,
+            reasoning_always: false,
+            mmproj_file: None,
+            mmproj_sha256: None,
+        };
+        let views = build_installed_views(vec![model.clone()], 64 << 30);
+        assert_eq!(views[0].fit, Some(registry::RamFit::Fits));
+        // A pasted repo has no registry entry, so its context window, vision
+        // projector size, and maker are all unknown.
+        assert_eq!(views[0].context_length, None);
+        assert_eq!(views[0].mmproj_bytes, 0);
+        assert_eq!(views[0].origin, None);
+        // Unknown host RAM drops the verdict.
+        let views = build_installed_views(vec![model], 0);
+        assert_eq!(views[0].fit, None);
+
+        // A curated model heals its context window, projector size, and maker
+        // from the registry.
+        let curated = registry::to_installed_model(&registry::STARTERS[0]);
+        let views = build_installed_views(vec![curated], 64 << 30);
+        assert_eq!(
+            views[0].context_length,
+            Some(registry::STARTERS[0].context_length)
+        );
+        assert_eq!(views[0].mmproj_bytes, registry::STARTERS[0].mmproj_bytes);
+        assert_eq!(
+            views[0].origin,
+            Some(registry::STARTERS[0].origin.to_string())
+        );
+    }
+
+    #[test]
+    fn gguf_file_row_serializes_with_flattened_base_and_fit() {
+        let file_row = HfGgufFileRow {
+            file: HfGgufFile {
+                file: "w.gguf".to_string(),
+                size_bytes: 42,
+                sha256: String::new(),
+                partial_bytes: None,
+            },
+            fit: None,
+            installed: false,
+        };
+        assert_eq!(
+            serde_json::to_value(file_row).unwrap(),
+            serde_json::json!({
+                "file": "w.gguf",
+                "size_bytes": 42,
+                "sha256": "",
+                "partial_bytes": serde_json::Value::Null,
+                "fit": serde_json::Value::Null,
+                "installed": false,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_returns_rows_and_sends_widened_query() {
+        let mut server = mockito::Server::new_async().await;
+        // The query no longer pins `pipeline_tag=text-generation` (that excluded
+        // multimodal `image-text-to-text` repos); chat-vs-non-chat is now an
+        // allowlist applied to each row's expanded `pipeline_tag`. The expand set
+        // carries the gguf block (context + chat template), the file list (mmproj
+        // -> vision), and the pipeline tag (the allowlist) in one request.
+        let mock = server
+            .mock("GET", "/api/models")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("filter".into(), "gguf".into()),
+                mockito::Matcher::UrlEncoded("search".into(), "qwen".into()),
+                mockito::Matcher::UrlEncoded("sort".into(), "downloads".into()),
+                mockito::Matcher::UrlEncoded("limit".into(), "60".into()),
+                // The widened query expands the gguf block, the file list, and
+                // the pipeline tag, and (critically) no longer pins
+                // `pipeline_tag=text-generation`, which had hidden vision repos.
+                mockito::Matcher::Regex("expand%5B%5D=gguf".into()),
+                mockito::Matcher::Regex("expand%5B%5D=siblings".into()),
+                mockito::Matcher::Regex("expand%5B%5D=pipeline_tag".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(search_fixture().to_string())
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let page = fetch_hf_search(&client, &server.url(), "qwen", 60)
+            .await
+            .unwrap();
+        mock.assert_async().await;
+        // Four chat rows survive the allowlist; the multimodal beta row proves
+        // the widened query surfaces a repo the old filter would have dropped.
+        assert_eq!(page.rows.len(), 4);
+        assert_eq!(page.rows[0].id, "org/alpha-GGUF");
+        assert!(page.rows.iter().any(|r| r.id == "org/beta-GGUF"));
+        assert!(!page.has_more);
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_omits_blank_query() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/models")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        // Whitespace-only query trims to empty and the search param is dropped.
+        let page = fetch_hf_search(
+            &client,
+            &server.url(),
+            "   ",
+            crate::config::defaults::HF_SEARCH_LIMIT,
+        )
+        .await
+        .unwrap();
+        assert!(page.rows.is_empty());
+        assert!(!page.has_more);
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_maps_http_error() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/models")
+            .match_query(mockito::Matcher::Any)
+            .with_status(503)
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let err = fetch_hf_search(
+            &client,
+            &server.url(),
+            "q",
+            crate::config::defaults::HF_SEARCH_LIMIT,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("503"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_maps_transport_error() {
+        let client = reqwest::Client::new();
+        let err = fetch_hf_search(
+            &client,
+            "http://127.0.0.1:1",
+            "q",
+            crate::config::defaults::HF_SEARCH_LIMIT,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("failed to reach Hugging Face"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_rejects_overlong_query() {
+        let client = reqwest::Client::new();
+        let long = "x".repeat(crate::config::defaults::MAX_HF_SEARCH_QUERY_LEN + 1);
+        let err = fetch_hf_search(
+            &client,
+            "http://127.0.0.1:9",
+            &long,
+            crate::config::defaults::HF_SEARCH_LIMIT,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("maximum length"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_inner_rejects_body_over_cap_via_content_length() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/models")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body("x".repeat(100))
+            .create_async()
+            .await;
+        let client = reqwest::Client::new();
+        let err = fetch_hf_search_inner(
+            &client,
+            &server.url(),
+            "q",
+            std::time::Duration::from_secs(5),
+            32,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeded"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_inner_rejects_body_over_cap_when_chunked() {
+        // Chunked response (no Content-Length): the incremental cap must reject.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut request_buf = [0u8; 1024];
+            let _ = conn.read(&mut request_buf);
+            let _ = conn.write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0a\r\n0123456789\r\n\
+                  0\r\n\r\n",
+            );
+        });
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let err = fetch_hf_search_inner(
+            &client,
+            &base,
+            "q",
+            std::time::Duration::from_secs(5),
+            20,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeded"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_inner_maps_body_read_error() {
+        // Headers promise 100 body bytes, then the server hangs up.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
+            );
+        });
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let err = fetch_hf_search_inner(
+            &client,
+            &base,
+            "q",
+            std::time::Duration::from_secs(5),
+            4 * 1024 * 1024,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains("failed to read Hugging Face search body"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_hf_search_inner_rejects_unparseable_base_url() {
+        let client = reqwest::Client::new();
+        let err = fetch_hf_search_inner(
+            &client,
+            "not a url",
+            "q",
+            std::time::Duration::from_secs(5),
+            4 * 1024 * 1024,
+            30,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("failed to build"), "got: {err}");
+    }
+
     // ── Model library: repo spec/model mapping ───────────────────────────────
 
     fn sample_resolved(with_mmproj: bool) -> RepoResolved {
@@ -4256,6 +5764,9 @@ mod tests {
         assert_eq!(m.quant, "Q4_K_M");
         assert!(m.vision);
         assert!(!m.thinking);
+        // Pasted rows record placeholder reasoning flags; the real class is
+        // resolved from the GGUF in finalize_install.
+        assert!(!m.reasoning_always);
         assert_eq!(m.mmproj_file.as_deref(), Some("mmproj-model-f16.gguf"));
         assert_eq!(m.mmproj_sha256.as_deref(), Some(&*"b".repeat(64)));
 
@@ -4264,6 +5775,120 @@ mod tests {
         assert!(!m.vision);
         assert_eq!(m.mmproj_file, None);
         assert_eq!(m.mmproj_sha256, None);
+    }
+
+    // ── Capability detection: thinking heuristic ─────────────────────────────
+
+    #[test]
+    fn detect_thinking_matches_reasoning_self_labels() {
+        // A repo or file whose own name advertises reasoning.
+        assert!(detect_thinking("acme/Model-Thinking", "model.gguf"));
+        assert!(detect_thinking("acme/model", "model-reasoning-Q4_K_M.gguf"));
+        assert!(detect_thinking("acme/reasoner-7b", "w.gguf"));
+    }
+
+    #[test]
+    fn detect_thinking_matches_known_reasoning_families() {
+        assert!(detect_thinking("deepseek-ai/DeepSeek-R1-GGUF", "x.gguf"));
+        assert!(detect_thinking("org/QwQ-32B-GGUF", "x.gguf"));
+        assert!(detect_thinking("ggml-org/gpt-oss-20b-GGUF", "x.gguf"));
+        assert!(detect_thinking("mistralai/Magistral-Small-GGUF", "x.gguf"));
+    }
+
+    #[test]
+    fn detect_thinking_is_case_insensitive() {
+        assert!(detect_thinking("ORG/GPT-OSS-20B", "MODEL.GGUF"));
+    }
+
+    #[test]
+    fn detect_thinking_defaults_false_without_markers() {
+        assert!(!detect_thinking(
+            "google/gemma-4-12b-it",
+            "gemma-4-12b-it-Q4_K_M.gguf"
+        ));
+        assert!(!detect_thinking("o/r", "w-Q4_K_M.gguf"));
+    }
+
+    #[test]
+    fn repo_installed_model_flags_thinking_from_name() {
+        let m = repo_installed_model(
+            "ggml-org/gpt-oss-20b-GGUF",
+            "gpt-oss-20b-Q4_K_M.gguf",
+            &sample_resolved(false),
+        );
+        assert!(m.thinking);
+    }
+
+    // ── Reasoning-flag resolution helpers ────────────────────────────────────
+
+    #[test]
+    fn curated_reasoning_flags_match_every_starter() {
+        for s in registry::STARTERS {
+            assert_eq!(
+                curated_reasoning_flags(s.repo, s.file_name),
+                Some((s.thinking, s.reasoning_always)),
+                "curated flags must mirror the registry for {}",
+                s.repo
+            );
+        }
+    }
+
+    #[test]
+    fn curated_reasoning_flags_none_for_pasted_repo() {
+        assert_eq!(curated_reasoning_flags("nope/repo", "x.gguf"), None);
+    }
+
+    #[test]
+    fn reasoning_flags_from_metadata_classify_from_template() {
+        // Optional family: thinking on, no badge.
+        assert_eq!(
+            reasoning_flags_from_metadata(
+                Some("{% if enable_thinking %}"),
+                Some("qwen3"),
+                "any/repo",
+                "x.gguf"
+            ),
+            (true, false)
+        );
+        // Always family: thinking on, badge.
+        assert_eq!(
+            reasoning_flags_from_metadata(Some("<think>"), None, "any/repo", "x.gguf"),
+            (true, true)
+        );
+        // Non-reasoning: both off.
+        assert_eq!(
+            reasoning_flags_from_metadata(Some("plain instruct"), None, "any/repo", "x.gguf"),
+            (false, false)
+        );
+        // A readable template wins over a reasoning-y name.
+        assert_eq!(
+            reasoning_flags_from_metadata(Some("plain instruct"), None, "org/QwQ-32B", "x.gguf"),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn reasoning_flags_from_metadata_falls_back_to_name_without_template() {
+        // No template: the name decides thinking; `reasoning_always` stays off
+        // for the runtime backstop. Marker in the repo, then in the file name.
+        assert_eq!(
+            reasoning_flags_from_metadata(None, None, "org/QwQ-32B", "x.gguf"),
+            (true, false)
+        );
+        assert_eq!(
+            reasoning_flags_from_metadata(None, None, "org/plain", "model-reasoning.gguf"),
+            (true, false)
+        );
+        // No template and no marker: both off.
+        assert_eq!(
+            reasoning_flags_from_metadata(None, None, "org/plain", "model.gguf"),
+            (false, false)
+        );
+        // An empty template is treated as no template and falls back to the name.
+        assert_eq!(
+            reasoning_flags_from_metadata(Some(""), None, "org/QwQ-32B", "x.gguf"),
+            (true, false)
+        );
     }
 
     // ── Model library: delete ────────────────────────────────────────────────
@@ -4308,15 +5933,16 @@ mod tests {
         std::fs::write(store.blob_path(&m.sha256), b"w").unwrap();
 
         // A claimed download slot must refuse the delete and leave the row
-        // and blob untouched.
-        let _token = claim_download(&state).unwrap();
+        // and blob untouched, even though the in-flight download is a different
+        // model: a finishing download could insert or share refcounted blobs.
+        let _token = claim_download(&state, "other-model", vec![]).unwrap();
         let err = delete_installed_model_inner(&state, &conn, &store, &m.id, "").unwrap_err();
         assert_eq!(err, "a download is already in progress");
         assert!(manifest::get(&conn, &m.id).unwrap().is_some());
         assert!(store.blob_path(&m.sha256).exists());
 
         // Releasing the slot lets the delete proceed.
-        release_download(&state);
+        release_download(&state, "other-model");
         assert!(delete_installed_model_inner(&state, &conn, &store, &m.id, "").is_ok());
     }
 
@@ -4340,7 +5966,7 @@ mod tests {
     // ── Model library: discard partial ───────────────────────────────────────
 
     #[test]
-    fn discard_partial_validates_hex_and_running_state() {
+    fn discard_partial_validates_hex_and_scopes_to_the_target_sha() {
         let (_dir, store) = make_store();
         let state = DownloadState::default();
         let sha = "a".repeat(64);
@@ -4349,14 +5975,25 @@ mod tests {
         assert!(discard_partial_inner(&state, &store, "short").is_err());
         assert!(discard_partial_inner(&state, &store, &"Z".repeat(64)).is_err());
 
-        // Rejected while a download is claimed.
-        let _token = claim_download(&state).unwrap();
+        // A download in flight for a DIFFERENT blob does not block discarding
+        // this paused partial: parallel downloads each own only their own shas,
+        // so an unrelated active download never touches this file.
+        std::fs::write(store.partial_path(&sha), b"bytes").unwrap();
+        let _other = claim_download(&state, "other-model", vec!["c".repeat(64)]).unwrap();
+        discard_partial_inner(&state, &store, &sha).unwrap();
+        assert!(!store.partial_path(&sha).exists());
+        release_download(&state, "other-model");
+
+        // A download in flight that IS writing this blob blocks the discard (it
+        // would unlink the partial out from under the active writer, failing its
+        // verification with NotFound).
+        std::fs::write(store.partial_path(&sha), b"bytes").unwrap();
+        let _this = claim_download(&state, "this-model", vec![sha.clone()]).unwrap();
         let err = discard_partial_inner(&state, &store, &sha).unwrap_err();
         assert!(err.contains("in progress"), "got: {err}");
-        release_download(&state);
+        release_download(&state, "this-model");
 
         // Removes an existing partial; a missing partial is fine (idempotent).
-        std::fs::write(store.partial_path(&sha), b"bytes").unwrap();
         discard_partial_inner(&state, &store, &sha).unwrap();
         assert!(!store.partial_path(&sha).exists());
         discard_partial_inner(&state, &store, &sha).unwrap();

@@ -386,7 +386,7 @@ async fn request_json_v1(
     // Build the trace body via the same helper request_openai_json uses so
     // the recorded body always mirrors the actual wire shape.
     let request_body_value =
-        crate::openai::json_request_body(model, &messages, format.clone(), num_predict);
+        crate::openai::json_request_body(model, &messages, format.clone(), num_predict, flavor);
     let started = std::time::Instant::now();
     let result = crate::openai::request_openai_json(
         base_url,
@@ -397,6 +397,7 @@ async fn request_json_v1(
         api_key,
         timeout_secs,
         num_predict,
+        flavor,
         cancel_token,
     )
     .await;

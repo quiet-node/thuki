@@ -131,6 +131,7 @@ describe('DownloadContext', () => {
     expect(result.current.state).toEqual({ phase: 'downloading' });
     expect(invoke).toHaveBeenCalledWith('download_starter', {
       tier: 'balanced',
+      key: 'tier:balanced',
       onEvent: expect.anything(),
     });
   });
@@ -154,6 +155,7 @@ describe('DownloadContext', () => {
     expect(result.current.state).toEqual({ phase: 'downloading' });
     expect(invoke).toHaveBeenCalledWith('download_starter', {
       tier: 'fast',
+      key: 'tier:fast',
       onEvent: expect.anything(),
     });
   });
@@ -186,7 +188,9 @@ describe('DownloadContext', () => {
     // until the backend Cancelled lands (slot released) so a resume cannot
     // race; meanwhile `isPausing` is true for instant "Pausing…" feedback.
     expect(result.current.pausedBytes).toBe(60);
-    expect(invoke).toHaveBeenCalledWith('cancel_model_download');
+    expect(invoke).toHaveBeenCalledWith('cancel_model_download', {
+      key: 'tier:balanced',
+    });
     expect(result.current.isPaused).toBe(false);
     expect(result.current.isPausing).toBe(true);
 
@@ -275,6 +279,7 @@ describe('DownloadContext', () => {
       expect(result.current.state).toEqual({ phase: 'downloading' });
       expect(invoke).toHaveBeenCalledWith('download_starter', {
         tier: 'fast',
+        key: 'tier:fast',
         onEvent: expect.anything(),
       });
     });

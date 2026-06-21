@@ -27,7 +27,7 @@ const HELPERS = {
     openai_vision:
       'Whether the selected model accepts image inputs. OpenAI-compatible servers expose no capability probe, so you declare it yourself. Turn it on only if the model truly supports images; otherwise requests with attachments will fail.',
     num_ctx:
-      "The size of the context window in tokens, applied to whichever provider is active. For the built-in engine the value becomes --ctx-size when llama-server starts, so changing it restarts the engine (a few seconds). For Ollama it is sent with every request, shared between warmup and chat so the same runner and its cached system-prompt prefix are reused, and silently capped at the model's trained maximum. For OpenAI-compatible servers it is informational only; the server controls the actual context. Raise to fit longer conversations without the model forgetting early messages; lower to reduce memory use. Valid range: 2048–1048576. The default (16384) comfortably fits the system prompt plus several long turns.",
+      'How much conversation the model keeps in working memory, in tokens. Larger fits longer chats, but the KV cache uses more memory as it grows, so benchmark before pushing it high. For the built-in engine, changing this restarts the engine. Range: 2048–1048576.',
   },
   prompt: {
     system:

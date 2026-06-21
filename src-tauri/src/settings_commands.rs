@@ -161,6 +161,17 @@ pub(crate) fn builtin_deactivated(prior_kind: &str, resolved: &AppConfig) -> boo
             != crate::config::defaults::PROVIDER_KIND_BUILTIN
 }
 
+/// True when a config write moved the ACTIVE provider away from Ollama
+/// (ollama -> builtin/openai). The mirror of [`builtin_deactivated`]: switching
+/// between non-ollama kinds or onto ollama never matches. Pulled out so the
+/// predicate is covered by tests instead of riding inside the coverage-off
+/// command bodies that fire the Ollama eviction.
+pub(crate) fn ollama_deactivated(prior_kind: &str, resolved: &AppConfig) -> bool {
+    prior_kind == crate::config::defaults::PROVIDER_KIND_OLLAMA
+        && resolved.inference.active_provider_kind()
+            != crate::config::defaults::PROVIDER_KIND_OLLAMA
+}
+
 /// Fires a best-effort engine unload when a config write switched the active
 /// provider away from the built-in engine. Without it, a multi-GB
 /// llama-server stays resident until quit: the eviction UI branches by the
@@ -177,6 +188,45 @@ fn unload_engine_if_builtin_deactivated(app: &AppHandle, prior_kind: &str, resol
             .clone();
         tauri::async_runtime::spawn(async move { engine.unload().await });
     }
+}
+
+/// Fires a best-effort Ollama eviction when a config write switched the active
+/// provider away from Ollama (ollama -> builtin/openai). The mirror of
+/// [`unload_engine_if_builtin_deactivated`]: without it the model Thuki loaded
+/// into Ollama's VRAM lingers for its `keep_alive` TTL after the user has moved
+/// on, holding memory for a provider that is no longer active. Only the model
+/// Thuki was chatting with (the Ollama provider's configured `model`) is
+/// evicted; models other apps loaded are left alone. Spawned so the switch
+/// never blocks on, nor can fail because of, Ollama being unreachable.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn evict_ollama_if_deactivated(app: &AppHandle, prior_kind: &str, resolved: &AppConfig) {
+    if !ollama_deactivated(prior_kind, resolved) {
+        return;
+    }
+    // The provider switch moves only the active_provider pointer; the Ollama
+    // provider entry still carries the model + endpoint Thuki was using.
+    let Some(ollama) = resolved
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.kind == crate::config::defaults::PROVIDER_KIND_OLLAMA)
+    else {
+        return;
+    };
+    let model = ollama.model.clone();
+    if model.is_empty() {
+        return;
+    }
+    let endpoint = format!("{}/api/generate", ollama.base_url.trim_end_matches('/'));
+    let client = app.state::<reqwest::Client>().inner().clone();
+    // Suppress any in-flight warmup that would re-announce the model as loaded
+    // after we evict it, matching the explicit Unload-now path.
+    app.state::<crate::warmup::WarmupState>().mark_evicted();
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::warmup::evict_model_request(&endpoint, &model, &client).await;
+        let _ = app_handle.emit("warmup:model-evicted", ());
+    });
 }
 
 // ─── Tauri command surface ──────────────────────────────────────────────────
@@ -350,9 +400,13 @@ pub fn set_active_provider(
             *guard = mirror;
         }
     }
-    // Switching away from the built-in engine releases its memory; the
-    // sidecar would otherwise stay resident with no unload affordance.
+    // Switching away from a local provider releases its memory immediately so
+    // the now-inactive provider holds no RAM/VRAM: the built-in engine's
+    // sidecar is killed, and the Ollama model is evicted from VRAM. Exactly one
+    // fires (the prior kind is builtin, ollama, or openai); openai is remote and
+    // needs neither.
     unload_engine_if_builtin_deactivated(&app, &prior_kind, &resolved);
+    evict_ollama_if_deactivated(&app, &prior_kind, &resolved);
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -885,9 +939,11 @@ pub fn reload_config_from_disk(
     // Manual edits to `[inference] keep_warm_inactivity_minutes` reach the
     // engine runner through the same refresh path.
     forward_keep_warm_idle_minutes(&app, prior_keep_warm_minutes, &resolved);
-    // A hand-edited `active_provider` that moved away from the built-in
-    // engine releases the sidecar, mirroring the Settings radio path.
+    // A hand-edited `active_provider` that moved away from a local provider
+    // releases its memory (builtin sidecar killed, Ollama model evicted),
+    // mirroring the Settings radio path.
     unload_engine_if_builtin_deactivated(&app, &prior_kind, &resolved);
+    evict_ollama_if_deactivated(&app, &prior_kind, &resolved);
     emit_config_updated(&app);
     Ok(resolved)
 }

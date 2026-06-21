@@ -18,8 +18,9 @@ interface TooltipProps {
   children: React.ReactNode;
   /**
    * When true, the tooltip box preserves newlines in `label` and wraps long
-   * lines at a ~320px max width. Single-line icon tooltips should leave this
-   * off for the tight one-line presentation.
+   * lines, sizing to its content up to a 225px max width (so short hints hug
+   * their text instead of filling a fixed box). Single-line icon tooltips
+   * should leave this off for the tight one-line presentation.
    */
   multiline?: boolean;
   /**
@@ -173,7 +174,7 @@ export function Tooltip({
                     }`}
                   />
                   <div
-                    style={multiline ? { width: 225 } : undefined}
+                    style={multiline ? { maxWidth: 225 } : undefined}
                     className={`relative rounded-lg border border-surface-border bg-surface-base px-2.5 py-1.5 text-[11px] text-text-primary shadow-chat ${
                       multiline
                         ? 'whitespace-pre-line leading-snug'

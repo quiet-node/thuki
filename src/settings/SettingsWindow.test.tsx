@@ -85,6 +85,14 @@ function defaultInvoke(cmd: string): unknown {
       return true;
     case 'check_screen_recording_permission':
       return true;
+    case 'get_model_picker_state':
+      return { active: null, all: [], displayNames: {}, ollamaReachable: true };
+    case 'list_installed_models':
+      return [];
+    case 'get_engine_status':
+      return { state: 'stopped', model_path: '', port: null, error: null };
+    case 'get_loaded_model':
+      return null;
     case 'get_updater_state':
       return {
         last_check_at_unix: null,
@@ -116,7 +124,7 @@ describe('SettingsWindow', () => {
   it('renders the five tab labels after config loads', async () => {
     render(<SettingsWindow />);
     await waitFor(() =>
-      expect(screen.getByRole('tab', { name: /AI/ })).toBeInTheDocument(),
+      expect(screen.getByRole('tab', { name: /Models/ })).toBeInTheDocument(),
     );
     expect(screen.getByRole('tab', { name: /Behavior/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Web/ })).toBeInTheDocument();
@@ -141,14 +149,40 @@ describe('SettingsWindow', () => {
     ).toBeInTheDocument();
   });
 
-  it('starts on the AI tab', async () => {
+  it('starts on the Models tab', async () => {
     render(<SettingsWindow />);
     await waitFor(() =>
-      expect(screen.getByRole('tab', { name: /AI/ })).toHaveAttribute(
+      expect(screen.getByRole('tab', { name: /Models/ })).toHaveAttribute(
         'aria-selected',
         'true',
       ),
     );
+  });
+
+  // Regression: the Settings window is its own webview root. The Discover panes
+  // read the app-root download context, so the Settings tree must provide a
+  // DownloadProvider or opening Discover throws and blanks the window.
+  it('opens Discover without crashing the Settings window', async () => {
+    // Built-in active so Discover renders ungated; this test guards the
+    // DownloadProvider wiring, not the non-built-in gate (covered in ModelTab).
+    const builtinActive: RawAppConfig = {
+      ...SAMPLE,
+      inference: { ...SAMPLE.inference, active_provider: 'builtin' },
+    };
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_config') return builtinActive;
+      if (cmd === 'get_staff_picks') return [];
+      return defaultInvoke(cmd);
+    });
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Discover' }));
+      await Promise.resolve();
+    });
+    expect(
+      await screen.findByRole('tab', { name: 'Staff picks' }),
+    ).toBeInTheDocument();
   });
 
   it('switching tabs swaps the active tab body', async () => {
@@ -171,7 +205,7 @@ describe('SettingsWindow', () => {
       .spyOn(globalThis, 'requestAnimationFrame')
       .mockImplementation(() => 0);
     const { container } = render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
     const body = container.querySelector('[role="tabpanel"]')!;
     expect(body.className).not.toMatch(/bodyScrollable/);
 
@@ -191,9 +225,9 @@ describe('SettingsWindow', () => {
 
   it('ArrowRight rotates focus to the next tab', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
 
-    const modelTab = screen.getByRole('tab', { name: /AI/ });
+    const modelTab = screen.getByRole('tab', { name: /Models/ });
     fireEvent.keyDown(modelTab, { key: 'ArrowRight' });
     expect(screen.getByRole('tab', { name: /Behavior/ })).toHaveAttribute(
       'aria-selected',
@@ -203,9 +237,9 @@ describe('SettingsWindow', () => {
 
   it('ArrowLeft wraps to the last tab when starting on the first', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
 
-    const modelTab = screen.getByRole('tab', { name: /AI/ });
+    const modelTab = screen.getByRole('tab', { name: /Models/ });
     await act(async () => {
       fireEvent.keyDown(modelTab, { key: 'ArrowLeft' });
       await Promise.resolve();
@@ -219,9 +253,9 @@ describe('SettingsWindow', () => {
 
   it('non-arrow keys are ignored by the tab key handler', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
 
-    const modelTab = screen.getByRole('tab', { name: /AI/ });
+    const modelTab = screen.getByRole('tab', { name: /Models/ });
     fireEvent.keyDown(modelTab, { key: 'Enter' });
     expect(modelTab).toHaveAttribute('aria-selected', 'true');
   });
@@ -276,7 +310,7 @@ describe('SettingsWindow', () => {
 
   it('Cmd+, on the document re-focuses the settings window', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
 
     __mockWindow.setFocus.mockClear();
     fireEvent.keyDown(document, { key: ',', metaKey: true });
@@ -285,7 +319,7 @@ describe('SettingsWindow', () => {
 
   it('Other keystrokes do not trigger setFocus', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
 
     __mockWindow.setFocus.mockClear();
     fireEvent.keyDown(document, { key: ',' }); // no Meta
@@ -295,7 +329,7 @@ describe('SettingsWindow', () => {
 
   it('Cmd+W on the document hides the settings window', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
 
     __mockWindow.hide.mockClear();
     fireEvent.keyDown(document, { key: 'w', metaKey: true });
@@ -304,7 +338,7 @@ describe('SettingsWindow', () => {
 
   it('the close button hides the window instead of quitting', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
     __mockWindow.hide.mockClear();
     fireEvent.click(screen.getByRole('button', { name: /Close/ }));
     expect(__mockWindow.hide).toHaveBeenCalled();
@@ -312,11 +346,11 @@ describe('SettingsWindow', () => {
 
   it('mousedown on the chrome triggers startDragging when not on an interactive element', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
     __mockWindow.startDragging.mockClear();
     // Click on the body container itself (not on a button/input).
     const root = screen
-      .getByRole('tab', { name: /AI/ })
+      .getByRole('tab', { name: /Models/ })
       .closest('[role="tablist"]')!.parentElement!;
     fireEvent.mouseDown(root, { target: root });
     // The root is a div; not in INTERACTIVE_TAGS, so dragging fires.
@@ -325,9 +359,9 @@ describe('SettingsWindow', () => {
 
   it('mousedown that originates from an interactive element does NOT trigger drag', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
     __mockWindow.startDragging.mockClear();
-    fireEvent.mouseDown(screen.getByRole('tab', { name: /AI/ }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /Models/ }));
     expect(__mockWindow.startDragging).not.toHaveBeenCalled();
   });
 
@@ -349,10 +383,10 @@ describe('SettingsWindow', () => {
 
   it('mousedown with a non-primary button is ignored (no drag, lets context menus through)', async () => {
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
     __mockWindow.startDragging.mockClear();
     const root = screen
-      .getByRole('tab', { name: /AI/ })
+      .getByRole('tab', { name: /Models/ })
       .closest('[role="tablist"]')!.parentElement!;
     fireEvent.mouseDown(root, { target: root, button: 2 });
     expect(__mockWindow.startDragging).not.toHaveBeenCalled();
@@ -396,7 +430,7 @@ describe('SettingsWindow', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(screen.getByRole('status')).toHaveTextContent('Saved');
+    expect(screen.getByText('✓ Saved')).toHaveTextContent('Saved');
 
     // Second save before pill auto-hides — clearTimeout(savedTimerRef.current) fires.
     fireEvent.click(incBtns()[0]);
@@ -406,7 +440,7 @@ describe('SettingsWindow', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(screen.getByRole('status')).toHaveTextContent('Saved');
+    expect(screen.getByText('✓ Saved')).toHaveTextContent('Saved');
   });
 
   it('unmount with the savedPill timer still pending clears it cleanly', async () => {
@@ -460,7 +494,7 @@ describe('SettingsWindow', () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByRole('status')).toHaveTextContent('Saved');
+    expect(screen.getByText('✓ Saved')).toHaveTextContent('Saved');
 
     // After SAVED_PILL_DURATION_MS the pill toggles back to invisible. We
     // don't assert on that visibility here because the underlying class
@@ -484,7 +518,7 @@ describe('SettingsWindow', () => {
       return defaultInvoke(cmd);
     });
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
     await waitFor(() =>
       expect(screen.getByText(/0\.8\.0 is ready/)).toBeInTheDocument(),
     );
@@ -545,12 +579,59 @@ describe('SettingsWindow', () => {
       return defaultInvoke(cmd);
     });
     render(<SettingsWindow />);
-    await waitFor(() => screen.getByRole('tab', { name: /AI/ }));
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
     // Allow time for updater state to load
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
     });
     expect(screen.queryByText(/0\.8\.0 is ready/)).not.toBeInTheDocument();
+  });
+});
+
+describe('SettingsWindow left sidebar (Phase 3)', () => {
+  it('renders the section nav as a vertical sidebar', async () => {
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
+    // Scope to the sidebar: the Models pane also renders a (horizontal)
+    // segmented tablist for Library/Discover/Providers.
+    expect(
+      screen.getByRole('tablist', { name: 'Settings sections' }),
+    ).toHaveAttribute('aria-orientation', 'vertical');
+  });
+
+  it('renders Models as the first section label', async () => {
+    render(<SettingsWindow />);
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Models/ })).toBeInTheDocument(),
+    );
+  });
+
+  it('ArrowDown rotates focus to the next sidebar section', async () => {
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
+    fireEvent.keyDown(screen.getByRole('tab', { name: /Models/ }), {
+      key: 'ArrowDown',
+    });
+    expect(screen.getByRole('tab', { name: /Behavior/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('ArrowUp wraps to the last sidebar section from the first', async () => {
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole('tab', { name: /Models/ }), {
+        key: 'ArrowUp',
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('tab', { name: /About/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
   });
 });

@@ -99,15 +99,12 @@ pub(crate) fn vram_poll_active(kind: &str) -> bool {
     kind == PROVIDER_KIND_OLLAMA
 }
 
-/// The engine port to prime, when the built-in engine already serves a model.
-/// `None` for every other lifecycle state: summoning the overlay must never
-/// load a model implicitly (loads happen on explicit chat or download).
-pub(crate) fn builtin_prime_port(status: &crate::engine::runner::EngineStatus) -> Option<u16> {
-    if status.state == "loaded" {
-        status.port
-    } else {
-        None
-    }
+/// Whether the built-in engine should warm-load on the chat-intent signal:
+/// only when a model is actually selected. Mirrors the Ollama arm, which also
+/// no-ops without a model. An empty id means no built-in model has been picked
+/// yet, so there is nothing to load.
+pub(crate) fn builtin_should_warm(model_id: &str) -> bool {
+    !model_id.is_empty()
 }
 
 /// Builds the prime request body for the built-in engine: a plain
@@ -132,18 +129,128 @@ pub(crate) fn builtin_prime_body(model: &str, system_prompt: &str) -> serde_json
 /// priming is app-summon activity, not user chat; if it touched, idle-unload
 /// would never fire for a user who keeps summoning the overlay without
 /// chatting.
+/// Returns `true` when the prime got an HTTP 200 (the model is now warm and
+/// the system-prompt prefix is cached); any transport or non-200 outcome
+/// returns `false` so the caller leaves the load un-primed and a later warm
+/// can retry.
 pub(crate) async fn prime_builtin(
     port: u16,
     model: String,
     system_prompt: String,
     client: reqwest::Client,
-) {
+) -> bool {
     let body = builtin_prime_body(&model, &system_prompt);
-    let _ = client
+    client
         .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
         .json(&body)
         .send()
-        .await;
+        .await
+        .map(|r| r.status().as_u16())
+        .unwrap_or(0)
+        == 200
+}
+
+/// Port-keyed dedup + cue state for the built-in engine, owned by the app
+/// layer so the engine runner stays a pure process actor. `warm_builtin`
+/// consults it after `ensure_loaded` resolves the serving port, so at most one
+/// prime runs per engine load and the overlay shows the "warming" cue for
+/// exactly that window. Keyed on port, not target: a model or context switch
+/// forces a new process and a new port, so a port mismatch correctly allows a
+/// fresh prime after any restart.
+#[derive(Default)]
+pub struct BuiltinWarmState {
+    inner: std::sync::Mutex<BuiltinWarm>,
+}
+
+#[derive(Default)]
+struct BuiltinWarm {
+    /// Port of a prime currently in flight, if any. Armed by `try_begin`,
+    /// cleared by `finish` regardless of outcome so a failed prime can retry.
+    in_flight: Option<u16>,
+    /// Port whose prime completed successfully. A new process gets a new port,
+    /// so a port mismatch allows a fresh prime after a restart.
+    primed_port: Option<u16>,
+}
+
+impl BuiltinWarmState {
+    /// Atomically decides whether to prime the engine on `port`. Returns true
+    /// (and arms the in-flight slot) only when no prime is already running for
+    /// this port and this port has not already been primed. The two warm
+    /// callers (summon + first keystroke) both reach this after `ensure_loaded`
+    /// resolves the same reused port, so the loser dedups to a no-op.
+    pub fn try_begin(&self, port: u16) -> bool {
+        let mut g = self.inner.lock().unwrap();
+        if g.in_flight == Some(port) || g.primed_port == Some(port) {
+            return false;
+        }
+        g.in_flight = Some(port);
+        true
+    }
+
+    /// Clears the in-flight slot for `port` and, on success, records the port
+    /// as primed so later warm requests for the same load dedup. A `finish`
+    /// for a port that no longer owns the slot (engine restarted mid-prime)
+    /// leaves the slot untouched.
+    pub fn finish(&self, port: u16, success: bool) {
+        let mut g = self.inner.lock().unwrap();
+        if g.in_flight == Some(port) {
+            g.in_flight = None;
+        }
+        if success {
+            g.primed_port = Some(port);
+        }
+    }
+
+    /// Whether a prime is currently in flight. Seeds the Settings keep-warm
+    /// status when the panel mounts during a cold prime (it otherwise learns
+    /// the state only from the `warmup:builtin-warming`/`-warmed` events).
+    pub fn is_warming(&self) -> bool {
+        self.inner.lock().unwrap().in_flight.is_some()
+    }
+
+    /// Drops all dedup state so the next warm primes fresh. Called when the
+    /// engine leaves the `loaded` state (idle-unload, model switch, crash): the
+    /// primed port belongs to a process that no longer exists, and the OS can
+    /// hand the next load that exact port again. Without this clear, the cold
+    /// reload would match the dead port's primed record, dedup to a no-op, and
+    /// leave the user's first message to eat the full cold prefill.
+    pub fn reset(&self) {
+        let mut g = self.inner.lock().unwrap();
+        g.in_flight = None;
+        g.primed_port = None;
+    }
+}
+
+/// Built-in arm of `warm_up_model`: starts (or reuses) the engine so the
+/// selected model is resident by the time the user submits, then primes the
+/// KV cache for the system-prompt prefix. Dedup via [`BuiltinWarmState`]
+/// collapses the summon + keystroke warms (and any double-summon) to a single
+/// prime per load, so the user's first message never queues behind redundant
+/// cold primes. Emits `warmup:builtin-warming` while the prime runs and
+/// `warmup:builtin-warmed` when it ends, so the Settings keep-warm status can
+/// read "warming…" until the model is actually ready (not just `/health` OK).
+/// Best-effort throughout: a superseded load, a dedup skip, or a failed prime
+/// is swallowed. Coverage-off: the dedup logic lives in `BuiltinWarmState`
+/// and the prime in `prime_builtin`, both tested; this only sequences them.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) async fn warm_builtin(
+    app: tauri::AppHandle,
+    engine: crate::engine::runner::EngineHandle,
+    target: crate::engine::state::Target,
+    model_id: String,
+    system_prompt: String,
+    client: reqwest::Client,
+) {
+    let Ok(port) = engine.ensure_loaded(target).await else {
+        return;
+    };
+    if !app.state::<BuiltinWarmState>().try_begin(port) {
+        return;
+    }
+    let _ = app.emit("warmup:builtin-warming", ());
+    let ok = prime_builtin(port, model_id, system_prompt, client).await;
+    app.state::<BuiltinWarmState>().finish(port, ok);
+    let _ = app.emit("warmup:builtin-warmed", ());
 }
 
 /// Built-in arm of `evict_model`: stops the engine sidecar and resolves once
@@ -153,18 +260,27 @@ pub(crate) async fn evict_builtin(engine: &crate::engine::runner::EngineHandle) 
     engine.unload().await;
 }
 
-/// Built-in arm of `get_loaded_model`: the provider's configured model id
-/// when the engine status watch reports a loaded model, `None` otherwise
-/// (including when no model has been picked yet).
+/// Built-in arm of `get_loaded_model`: the display name of the model the engine
+/// is *actually* serving, resolved from the live status's `model_path` against
+/// `installed` (each entry a `(display_name, weights blob path)` pair), or
+/// `None` when the engine is not loaded or the resident blob matches no row.
+///
+/// This reads true VRAM residency, never the frontend-selected model: switching
+/// the active model rewrites config immediately, but the sidecar keeps serving
+/// the previous model until a reload, so the configured id would misreport what
+/// occupies memory.
 pub(crate) fn builtin_loaded_model(
     status: &crate::engine::runner::EngineStatus,
-    model_id: &str,
+    installed: &[(String, std::path::PathBuf)],
 ) -> Option<String> {
-    if status.state == "loaded" && !model_id.is_empty() {
-        Some(model_id.to_string())
-    } else {
-        None
+    if status.state != "loaded" || status.model_path.is_empty() {
+        return None;
     }
+    let resident = std::path::Path::new(&status.model_path);
+    installed
+        .iter()
+        .find(|(_, path)| path.as_path() == resident)
+        .map(|(name, _)| name.clone())
 }
 
 impl Default for WarmupState {
@@ -252,12 +368,16 @@ impl WarmupState {
 
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::too_many_arguments)]
 pub fn warm_up_model(
+    app: tauri::AppHandle,
     warmup: tauri::State<WarmupState>,
     models: tauri::State<crate::models::ActiveModelState>,
     config: tauri::State<parking_lot::RwLock<crate::config::AppConfig>>,
     client: tauri::State<reqwest::Client>,
     engine: tauri::State<crate::engine::runner::EngineHandle>,
+    db: tauri::State<crate::history::Database>,
+    store: tauri::State<crate::models::storage::ModelStore>,
 ) {
     let kind = config.read().inference.active_provider_kind().to_string();
     match kind.as_str() {
@@ -292,14 +412,38 @@ pub fn warm_up_model(
             }
         }
         PROVIDER_KIND_BUILTIN => {
-            let status = engine.status().borrow().clone();
-            if let Some(port) = builtin_prime_port(&status) {
+            let (model_id, num_ctx, system_prompt) = {
                 let cfg = config.read();
-                let model = cfg.inference.active_provider_model().to_string();
-                let system_prompt = cfg.prompt.resolved_system.clone();
-                drop(cfg);
-                let client = client.inner().clone();
-                tauri::async_runtime::spawn(prime_builtin(port, model, system_prompt, client));
+                (
+                    cfg.inference.active_provider_model().to_string(),
+                    cfg.inference.num_ctx,
+                    cfg.prompt.resolved_system.clone(),
+                )
+            };
+            if !builtin_should_warm(&model_id) {
+                return;
+            }
+            // Resolve the manifest row to an engine Target inside a scope so the
+            // connection guard drops before the spawned load. A poisoned lock is
+            // recovered: an unrelated panic does not invalidate the connection.
+            let target = {
+                let conn = match db.0.lock() {
+                    Ok(conn) => conn,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                crate::commands::builtin_target(&conn, &store, &model_id, num_ctx)
+            };
+            // A missing/uninstalled model yields an Err; warmup is best-effort,
+            // so just skip rather than surfacing anything.
+            if let Ok(target) = target {
+                tauri::async_runtime::spawn(warm_builtin(
+                    app,
+                    engine.inner().clone(),
+                    target,
+                    model_id,
+                    system_prompt,
+                    client.inner().clone(),
+                ));
             }
         }
         _ => {}
@@ -355,6 +499,17 @@ pub fn get_engine_status(
     engine.current_status()
 }
 
+/// True while the built-in engine is priming (loaded but the system-prompt
+/// prefill has not finished). The Settings keep-warm panel calls this on mount
+/// to seed its "warming…" status, since the `warmup:builtin-warming` event it
+/// otherwise relies on may have fired before the panel attached its listener.
+/// Thin wrapper over [`BuiltinWarmState::is_warming`], which its own tests cover.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn get_builtin_warm_state(warm: tauri::State<'_, BuiltinWarmState>) -> bool {
+    warm.is_warming()
+}
+
 /// Returns the active model's name if it is currently loaded, `None` if no
 /// model is selected or nothing is running. Branches by the active provider's
 /// kind: Ollama queries `/api/ps`, the built-in engine reads its own status
@@ -367,13 +522,28 @@ pub async fn get_loaded_model(
     config: tauri::State<'_, parking_lot::RwLock<crate::config::AppConfig>>,
     client: tauri::State<'_, reqwest::Client>,
     engine: tauri::State<'_, crate::engine::runner::EngineHandle>,
+    db: tauri::State<'_, crate::history::Database>,
+    store: tauri::State<'_, crate::models::storage::ModelStore>,
 ) -> Result<Option<String>, String> {
     let kind = config.read().inference.active_provider_kind().to_string();
     match kind.as_str() {
         PROVIDER_KIND_BUILTIN => {
-            let model_id = config.read().inference.active_provider_model().to_string();
             let status = engine.status().borrow().clone();
-            Ok(builtin_loaded_model(&status, &model_id))
+            // Resolve the engine's resident blob back to its installed name. A
+            // poisoned lock is recovered: an unrelated panic must not blind the
+            // residency line.
+            let installed = {
+                let conn = match db.0.lock() {
+                    Ok(conn) => conn,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                crate::models::manifest::list(&conn)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|m| (m.display_name, store.blob_path(&m.sha256)))
+                    .collect::<Vec<_>>()
+            };
+            Ok(builtin_loaded_model(&status, &installed))
         }
         PROVIDER_KIND_OLLAMA => {
             let model = models.0.lock().ok().and_then(|g| g.clone());
@@ -1485,13 +1655,14 @@ mod tests {
     }
 
     #[test]
-    fn prime_skipped_when_engine_not_loaded() {
-        assert_eq!(builtin_prime_port(&engine_status("stopped", None)), None);
-        assert_eq!(builtin_prime_port(&engine_status("starting", None)), None);
-        assert_eq!(builtin_prime_port(&engine_status("failed", None)), None);
-        assert_eq!(
-            builtin_prime_port(&engine_status("loaded", Some(40123))),
-            Some(40123)
+    fn builtin_should_warm_requires_a_selected_model() {
+        assert!(
+            !builtin_should_warm(""),
+            "no picked model means nothing to warm-load"
+        );
+        assert!(
+            builtin_should_warm("org/repo:m.gguf"),
+            "a selected model warms the engine on the chat-intent signal"
         );
     }
 
@@ -1515,7 +1686,7 @@ mod tests {
             .unwrap()
             .parse()
             .expect("mockito url ends in a port");
-        prime_builtin(
+        let ok = prime_builtin(
             port,
             "org/repo:m.gguf".to_string(),
             SYS.to_string(),
@@ -1523,23 +1694,154 @@ mod tests {
         )
         .await;
 
+        assert!(
+            ok,
+            "a 200 prime reports success so the load is marked primed"
+        );
         mock.assert_async().await;
     }
 
+    #[tokio::test]
+    async fn builtin_prime_swallows_connection_error() {
+        // Port 1 refuses; prime is best-effort and must not panic, exercising
+        // the transport-error path of the status capture.
+        let ok = prime_builtin(
+            1,
+            "org/repo:m.gguf".to_string(),
+            SYS.to_string(),
+            reqwest::Client::new(),
+        )
+        .await;
+
+        assert!(
+            !ok,
+            "a transport failure reports not-primed so a later warm retries"
+        );
+    }
+
+    // ── BuiltinWarmState (port-keyed dedup) ──────────────────────────────────
+
     #[test]
-    fn get_loaded_model_builtin_from_status() {
-        assert_eq!(
-            builtin_loaded_model(&engine_status("loaded", Some(40123)), "org/repo:m.gguf"),
-            Some("org/repo:m.gguf".to_string())
+    fn warm_state_first_call_begins_then_dedups_in_flight() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000), "first call for a port arms the prime");
+        assert!(
+            !s.try_begin(40000),
+            "a second call while the prime is in flight dedups to a no-op"
         );
+    }
+
+    #[test]
+    fn warm_state_failed_prime_allows_retry() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000));
+        s.finish(40000, false);
+        assert!(
+            s.try_begin(40000),
+            "a failed prime leaves the port un-primed so a later warm retries"
+        );
+    }
+
+    #[test]
+    fn warm_state_successful_prime_dedups_same_port() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000));
+        s.finish(40000, true);
+        assert!(
+            !s.try_begin(40000),
+            "a primed port dedups later warms for the same load"
+        );
+    }
+
+    #[test]
+    fn warm_state_new_port_primes_again_after_success() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000));
+        s.finish(40000, true);
+        assert!(
+            s.try_begin(40001),
+            "a new process/port (restart or model switch) primes fresh"
+        );
+    }
+
+    #[test]
+    fn warm_state_finish_for_unowned_port_leaves_slot_armed() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000));
+        // The engine restarted mid-prime: a finish for a different port must not
+        // clear the slot the live prime still owns, but still records its success.
+        s.finish(40001, true);
+        assert!(
+            !s.try_begin(40000),
+            "the in-flight slot for 40000 is untouched by finish(40001)"
+        );
+        assert!(
+            !s.try_begin(40001),
+            "finish(40001, true) still recorded 40001 as primed"
+        );
+    }
+
+    #[test]
+    fn warm_state_reset_clears_dedup_after_teardown() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000));
+        s.finish(40000, true);
+        assert!(s.try_begin(40001), "a second load primes on its own port");
+        assert!(s.is_warming(), "the 40001 prime is in flight");
+        // Engine torn down: the next load can reuse either port. reset() drops
+        // both the primed record and the in-flight slot so a reused port primes
+        // fresh instead of deduping against the dead process.
+        s.reset();
+        assert!(!s.is_warming(), "reset clears the in-flight slot");
+        assert!(
+            s.try_begin(40000),
+            "reset clears the primed record so a reused port primes fresh"
+        );
+    }
+
+    #[test]
+    fn warm_state_is_warming_tracks_in_flight() {
+        let s = BuiltinWarmState::default();
+        assert!(!s.is_warming(), "nothing is in flight at rest");
+        assert!(s.try_begin(40000));
+        assert!(s.is_warming(), "a begun prime reports warming");
+        s.finish(40000, true);
+        assert!(!s.is_warming(), "a finished prime is no longer warming");
+    }
+
+    #[test]
+    fn builtin_loaded_model_names_the_resident_blob_not_the_selection() {
+        use std::path::PathBuf;
+        let resident = PathBuf::from("/blobs/sha_mistral");
+        let installed = vec![
+            ("Gemma 4 12B".to_string(), PathBuf::from("/blobs/sha_gemma")),
+            ("Mistral Nemo 12B".to_string(), resident.clone()),
+        ];
+
+        // Loaded: the engine is serving the Mistral blob, so the resident model
+        // is named from the live `model_path`, independent of any selection.
+        let mut loaded = engine_status("loaded", Some(40123));
+        loaded.model_path = resident.display().to_string();
         assert_eq!(
-            builtin_loaded_model(&engine_status("stopped", None), "org/repo:m.gguf"),
+            builtin_loaded_model(&loaded, &installed),
+            Some("Mistral Nemo 12B".to_string())
+        );
+
+        // Not loaded: nothing is resident even if a path lingers in the status.
+        let mut stopped = engine_status("stopped", None);
+        stopped.model_path = resident.display().to_string();
+        assert_eq!(builtin_loaded_model(&stopped, &installed), None);
+
+        // Loaded but the resident blob matches no installed row: report nothing
+        // rather than guessing a name.
+        let mut orphan = engine_status("loaded", Some(40123));
+        orphan.model_path = "/blobs/sha_unknown".to_string();
+        assert_eq!(builtin_loaded_model(&orphan, &installed), None);
+
+        // Loaded with an empty path (defensive): nothing to name.
+        assert_eq!(
+            builtin_loaded_model(&engine_status("loaded", Some(40123)), &installed),
             None
-        );
-        assert_eq!(
-            builtin_loaded_model(&engine_status("loaded", Some(40123)), ""),
-            None,
-            "no picked model means nothing to report even while loaded"
         );
     }
 
@@ -1563,6 +1865,16 @@ mod tests {
         async fn kill(&mut self) {
             let _ = self.exit_tx.send(true);
         }
+        fn stderr_tail(&self) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn instant_child_has_no_stderr_tail() {
+        let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
+        let child = InstantChild { exit_tx, exit_rx };
+        assert_eq!(crate::engine::process::EngineChild::stderr_tail(&child), "");
     }
 
     #[async_trait::async_trait]

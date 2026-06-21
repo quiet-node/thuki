@@ -1,0 +1,61 @@
+/*
+ * Styles for the Discover host: the pathway tab control over the Staff-picks
+ * and Browse-all panes. Premium tokens cascade from the Settings window root.
+ *
+ * The tabs are a centered, icon-free underline control: text only, the active
+ * pathway carrying a short accent underline. Quieter and more editorial than a
+ * filled pill, and it does not compete with the Models section nav above it.
+ */
+
+.host {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tabs {
+  display: flex;
+  justify-content: center;
+  gap: 26px;
+  margin-bottom: 16px;
+}
+
+.tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 2px 11px;
+  border: none;
+  background: transparent;
+  color: var(--t2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 560;
+  cursor: pointer;
+  transition: color 140ms ease;
+}
+.tab:hover:not(.tabActive) {
+  color: var(--t1);
+}
+.tab:focus-visible {
+  outline: none;
+  color: var(--t1);
+}
+
+.tabActive {
+  color: var(--t1);
+}
+.tabActive::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.tabLabel {
+  color: inherit;
+}

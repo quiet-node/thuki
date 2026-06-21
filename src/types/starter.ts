@@ -18,7 +18,18 @@ export type RamFit = 'fits' | 'tight' | 'too_big';
 
 /** One curated starter model from the compile-time registry. */
 export interface Starter {
+  /** Stable slug, unique across the registry; the Staff Picks row key and the
+   * id-keyed download key. Backend always sends it; optional here for
+   * test-fixture ergonomics (onboarding keys on `tier` and never reads it). */
+  id?: string;
   tier: StarterTier;
+  /** Model family this entry belongs to (e.g. "Gemma", "Qwen", "gpt-oss").
+   * Backend always sends it; optional here for test-fixture ergonomics. */
+  family?: string;
+  /** Use-case section the Discover staff-picks list groups this entry under
+   * (e.g. "Everyday chat", "Compact & fast", "Deep reasoning"). Backend always
+   * sends it; optional here for test-fixture ergonomics. */
+  category?: string;
   display_name: string;
   repo: string;
   revision: string;
@@ -28,10 +39,17 @@ export interface Starter {
   quant: string;
   vision: boolean;
   thinking: boolean;
+  /** Whether reasoning cannot be turned off (always reasons); true for gpt-oss.
+   * Backend always sends it; optional here for test-fixture ergonomics. */
+  reasoning_always?: boolean;
   mmproj_file: string | null;
   mmproj_sha256: string | null;
   mmproj_bytes: number;
   est_runtime_gb: number;
+  /** Maximum context window in tokens the model was trained for (its GGUF
+   * `context_length`). Backend always sends it for catalog rows; optional here
+   * for test-fixture ergonomics and for sources that cannot determine it. */
+  context_length?: number;
   license_note: string;
   /** Model maker shown in the Origin row (e.g. "OpenAI"). */
   origin: string;
@@ -45,6 +63,13 @@ export interface StarterOption {
   fit: RamFit;
   installed: boolean;
   partial_bytes: number | null;
+}
+
+/** One Staff Picks catalog row. Same shape as {@link StarterOption}, but the
+ * catalog is id-keyed: `starter.id` is always present, so the pane keys rows
+ * and starts downloads by it. */
+export interface StaffPickOption extends StarterOption {
+  starter: Starter & { id: string };
 }
 
 /** Failure category carried by a `Failed` download event. */
@@ -83,12 +108,34 @@ export interface InstalledModel {
   size_bytes: number;
   /** Quantisation label (e.g. "Q4_K_M"); empty when unknown. */
   quant: string;
+  /** RAM-fit on this Mac, computed by the backend from the recorded size.
+   * `null`/absent when host RAM or the size is unknown. */
+  fit?: RamFit | null;
+  /** Trained context window in tokens, healed from the curated registry by the
+   * backend; `null`/absent for a pasted model with no registry entry. */
+  context_length?: number | null;
+  /** Vision projector size in bytes, healed from the registry; added to
+   * `size_bytes` for the displayed total so it matches Discover. `0`/absent for
+   * a text model or a pasted repo with no registry entry. */
+  mmproj_bytes?: number;
+  /** Model maker (e.g. "Google"), healed from the registry; `null`/absent for a
+   * pasted repo, where the row falls back to the repo id. */
+  origin?: string | null;
 }
 
-/** One `.gguf` row from `list_hf_repo_ggufs`, for the paste-a-repo browser. */
+/** One `.gguf` row from `list_hf_repo_ggufs`, for the paste-a-repo browser.
+ * `fit` is the accurate per-quant RAM-fit computed from the real file size. */
 export interface HfGgufFile {
   file: string;
   size_bytes: number;
+  fit?: RamFit | null;
+  /** LFS content digest; the key used to discard this file's partial. */
+  sha256: string;
+  /** Bytes of an interrupted partial for this file on disk, or null when none. */
+  partial_bytes: number | null;
+  /** Whether this exact repo file is already recorded in the installed
+   * manifest, so Browse-all shows an "Installed" marker, not a download button. */
+  installed: boolean;
 }
 
 /** Engine lifecycle snapshot published on the `engine:status` event. */

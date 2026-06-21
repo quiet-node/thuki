@@ -67,6 +67,16 @@ pub const DEFAULT_NUM_CTX: u32 = 16384;
 /// current consumer model including the largest 1 M-context variants.
 pub const BOUNDS_NUM_CTX: (u32, u32) = (2048, 1_048_576);
 
+/// Upper bound on a model's context window that Thuki will trust and display
+/// from external GGUF metadata (the `context_length` field of an arbitrary
+/// Hugging Face repo, shown in the Browse-all listing). Defense-in-depth: the
+/// field is attacker-controllable and editable (`gguf_set_metadata.py`), so a
+/// value above this sane ceiling is treated as untrustworthy and dropped rather
+/// than rendered. Mirrors the [`BOUNDS_NUM_CTX`] upper bound: 1 M tokens covers
+/// every current model. Why not tunable: it bounds attacker-controlled data, a
+/// security guard rather than a user preference.
+pub const MAX_MODEL_CONTEXT_LENGTH: u32 = 1_048_576;
+
 /// Accepted range for `keep_warm_inactivity_minutes`.
 /// -1 = keep resident forever, 0 = provider's natural short default (~5 min),
 /// 1..=1440 = explicit timeout. Values below -1 or above 1440 are clamped to
@@ -118,6 +128,25 @@ pub const ENGINE_IDLE_CHECK_INTERVAL_SECS: u64 = 30;
 /// (Ensure, Touch, SetIdleMinutes, Shutdown) with no back-pressure under
 /// normal use.
 pub const ENGINE_COMMAND_QUEUE_CAPACITY: usize = 64;
+
+/// Number of trailing `llama-server` stderr lines the runner retains so a
+/// crash can report the engine's own reason (e.g. "unknown model
+/// architecture") instead of a generic message. Not user-tunable:
+/// defense-in-depth bound on subprocess output; 20 lines covers the final
+/// load-error block llama.cpp prints without retaining its whole log.
+pub const ENGINE_STDERR_TAIL_LINES: usize = 20;
+
+/// Maximum bytes buffered (and retained) per captured engine stderr line. Not
+/// user-tunable: defense-in-depth bound so one pathological newline-less line
+/// (e.g. an enormous architecture string echoed from crafted GGUF metadata)
+/// cannot force an unbounded read allocation; bytes past the cap are dropped.
+pub const ENGINE_STDERR_TAIL_LINE_MAX_BYTES: usize = 500;
+
+/// Reason reported when the built-in engine process exits without leaving any
+/// stderr we could capture (e.g. an external SIGKILL). Not user-tunable:
+/// internal diagnostic fallback surfaced only when the real reason is
+/// unavailable.
+pub const ENGINE_CRASH_FALLBACK_MESSAGE: &str = "engine process exited unexpectedly";
 
 /// Minimum interval between Progress events emitted during a model download.
 /// Bounds IPC channel traffic: a fast local connection can deliver thousands
@@ -404,10 +433,51 @@ pub const OPENAI_MODELS_TIMEOUT_SECS: u64 = 5;
 /// the integrity guarantees that make the curated starter registry safe.
 pub const HF_BASE_URL: &str = "https://huggingface.co";
 
+/// Page size for the in-app Hugging Face GGUF model search. The Discover
+/// "Load more" control raises the requested limit in multiples of this value.
+/// Baked-in: the per-page step for the browser, not a user preference.
+pub const HF_SEARCH_LIMIT: usize = 30;
+
+/// Hard cap on a single Hugging Face search request's page size. "Load more"
+/// grows the requested limit in [`HF_SEARCH_LIMIT`] steps; this bounds the
+/// largest single request so a runaway page count cannot ask the Hub for an
+/// unbounded result set. Baked-in: defense-in-depth bound on request size.
+pub const HF_SEARCH_LIMIT_MAX: usize = 120;
+
+/// Approximate resident-memory overhead in GiB added on top of a model's
+/// weights size when estimating whether it fits in this Mac's RAM (the KV
+/// cache at the default context plus runtime buffers). Baked-in: feeds the
+/// RAM-fit *hint* in Library/Discover only; the authoritative per-starter
+/// estimates live in the model registry.
+pub const RUNTIME_OVERHEAD_GB: f64 = 2.0;
+
+/// Maximum accepted byte length for a Hugging Face search query before it is
+/// sent upstream. Defense-in-depth bound on attacker-influenced input: the
+/// query reaches the fixed Hub host (no SSRF) and is percent-encoded by the
+/// client, but an unbounded string is still rejected to cap request size.
+pub const MAX_HF_SEARCH_QUERY_LEN: usize = 200;
+
 /// Maximum accepted byte length for a model slug passed to `set_active_model`.
 /// Real Ollama slugs are a handful of characters; 256 is generous while still
 /// capping adversarial inputs long before any network or database work.
 pub const MAX_MODEL_SLUG_LEN: usize = 256;
+
+/// Maximum metadata key-value pairs the GGUF reader will scan before giving
+/// up. Real GGUF models carry a few dozen KV entries; 4096 never truncates a
+/// legitimate header while bounding a malformed `metadata_kv_count` so the
+/// reasoning-classifier scan cannot loop on a corrupt or hostile file.
+pub const MAX_GGUF_KV_COUNT: u64 = 4096;
+
+/// Maximum accepted byte length for a single GGUF metadata key. Keys are short
+/// dotted identifiers (`tokenizer.chat_template`); 1 KiB is far above any real
+/// key and stops a corrupt length field from forcing a huge allocation.
+pub const MAX_GGUF_KEY_BYTES: u64 = 1024;
+
+/// Maximum accepted byte length for a GGUF string value the reader actually
+/// materializes (the chat template and architecture). Real chat templates run
+/// a few KB to ~100 KB; 4 MiB never truncates one while bounding the memory a
+/// corrupt or hostile length field can demand.
+pub const MAX_GGUF_STRING_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Authoritative allowlist of `(section, key)` pairs the Settings GUI is
 /// permitted to write via the `set_config_field` Tauri command.

@@ -28,6 +28,12 @@ export interface DownloadProgressProps {
   state: DownloadUiState;
   progress: DownloadProgressInfo | null;
   etaSeconds: number | null;
+  /** Cumulative bytes across weights + companion: the unified numerator. */
+  combinedBytes?: number | null;
+  /** Full on-disk total (weights + companion): the unified denominator. */
+  grandTotalBytes?: number | null;
+  /** Rolling download rate in bytes per second; drives the unified ETA. */
+  speedBytesPerSec?: number | null;
   confirmInfo?: ConfirmInfo;
   onConfirm: () => void;
   onCancelConfirm: () => void;
@@ -56,6 +62,67 @@ function gb(bytes: number): string {
   return (bytes / 1e9).toFixed(1);
 }
 
+/** Inputs for the single download figures line. */
+export interface DownloadLineInput {
+  /** Per-file byte counts; the fallback when no grand total is known. */
+  progress: DownloadProgressInfo | null;
+  /** Rolling ETA seconds for the per-file fallback path. */
+  etaSeconds: number | null;
+  /** Cumulative bytes across weights + companion: the unified numerator. */
+  combinedBytes: number | null;
+  /** Full on-disk total (weights + companion): the unified denominator. */
+  grandTotalBytes: number | null;
+  /** Rolling rate; drives the unified ETA when present. */
+  speedBytesPerSec: number | null;
+}
+
+/** Percent plus a "x / y GB · ~eta" string, or null figures before any bytes. */
+export interface DownloadLine {
+  percent: number;
+  figures: string | null;
+}
+
+/**
+ * One continuous progress reading. Prefers the unified weights + companion
+ * figure, so a vision download is a single bar to 100% that never resets
+ * between the two files; falls back to the current file's own byte counts for
+ * single-file repo downloads where no grand total is known up front.
+ */
+export function downloadLine({
+  progress,
+  etaSeconds,
+  combinedBytes,
+  grandTotalBytes,
+  speedBytesPerSec,
+}: DownloadLineInput): DownloadLine {
+  let bytes: number;
+  let total: number;
+  let eta: number | null;
+  if (
+    grandTotalBytes !== null &&
+    grandTotalBytes > 0 &&
+    combinedBytes !== null
+  ) {
+    bytes = combinedBytes;
+    total = grandTotalBytes;
+    eta =
+      speedBytesPerSec !== null
+        ? Math.max(0, Math.round((total - bytes) / speedBytesPerSec))
+        : etaSeconds;
+  } else if (progress !== null && progress.totalBytes > 0) {
+    bytes = progress.bytes;
+    total = progress.totalBytes;
+    eta = etaSeconds;
+  } else {
+    return { percent: 0, figures: null };
+  }
+  const percent = Math.min(100, Math.floor((bytes / total) * 100));
+  const figures =
+    `${gb(bytes)} / ${gb(total)} GB` +
+    (eta !== null ? ` · ~${formatEta(eta)}` : '');
+  return { percent, figures };
+}
+
 /** Failure headline per kind. Exact copy; consumed verbatim by tests. */
 function failureHeadline(kind: string, message: string): string {
   switch (kind) {
@@ -82,6 +149,9 @@ export function DownloadProgress({
   state,
   progress,
   etaSeconds,
+  combinedBytes = null,
+  grandTotalBytes = null,
+  speedBytesPerSec = null,
   confirmInfo,
   onConfirm,
   onCancelConfirm,
@@ -120,96 +190,84 @@ export function DownloadProgress({
         </Card>
       );
     case 'downloading':
-    case 'downloading_mmproj':
+    case 'downloading_mmproj': {
+      const { percent, figures } = downloadLine({
+        progress,
+        etaSeconds,
+        combinedBytes,
+        grandTotalBytes,
+        speedBytesPerSec,
+      });
       return (
-        <Card>
-          <Headline>
-            {state.phase === 'downloading_mmproj'
-              ? 'Downloading vision companion'
-              : 'Downloading model'}
-          </Headline>
-          <ProgressBar
-            percent={
-              progress && progress.totalBytes > 0
-                ? Math.floor((progress.bytes / progress.totalBytes) * 100)
-                : 0
-            }
-          />
-          {progress ? (
-            <Detail>
-              {gb(progress.bytes)} GB of {gb(progress.totalBytes)} GB
-            </Detail>
-          ) : null}
-          {etaSeconds !== null ? (
-            <Detail>About {formatEta(etaSeconds)} left</Detail>
-          ) : null}
-          <ButtonRow>
-            <FlowButton label="Cancel" onClick={onCancel} />
-          </ButtonRow>
-        </Card>
+        <Hairline edge={<Edge percent={percent} tone="accent" />}>
+          <span data-testid="download-figures" style={FIGURES_STYLE}>
+            <strong style={{ color: '#f0f0f2', fontWeight: 700 }}>
+              {percent}%
+            </strong>
+            {figures !== null ? ` · ${figures}` : ''}
+            {state.phase === 'downloading_mmproj' ? ' · finishing vision' : ''}
+          </span>
+          <span style={{ flex: 1 }} />
+          <CancelX onClick={onCancel} />
+        </Hairline>
       );
+    }
     case 'verifying':
       return (
-        <Card>
-          <Headline>Verifying download</Headline>
-          <ProgressBar indeterminate />
-        </Card>
+        <Hairline edge={<Edge indeterminate tone="accent" />}>
+          <StatusText>Verifying download</StatusText>
+        </Hairline>
       );
     case 'installing':
       return (
-        <Card>
-          <Headline>Installing</Headline>
-          <ProgressBar indeterminate />
-        </Card>
+        <Hairline edge={<Edge indeterminate tone="accent" />}>
+          <StatusText>Installing</StatusText>
+        </Hairline>
       );
     case 'warming_up':
       return (
-        <Card>
-          <Headline>Starting the engine</Headline>
-          <ProgressBar indeterminate />
-        </Card>
+        <Hairline edge={<Edge indeterminate tone="accent" />}>
+          <StatusText>Starting the engine</StatusText>
+        </Hairline>
       );
     case 'ready':
       return (
-        <Card>
-          <Headline>
-            <span
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                color: '#22c55e',
-              }}
-            >
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                <path
-                  d="M3 8.5l3.2 3.2L13 5"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              Ready
-            </span>
-          </Headline>
-        </Card>
+        <Hairline edge={<Edge percent={100} tone="green" />}>
+          <StatusText ready>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <path
+                d="M3 8.5l3.2 3.2L13 5"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            Ready
+          </StatusText>
+        </Hairline>
       );
     case 'failed':
       return (
-        <Card>
-          <Headline>{failureHeadline(state.kind, state.message)}</Headline>
-          {state.kind === 'http' ? <Detail>{state.message}</Detail> : null}
-          <ButtonRow>
-            <FlowButton label="Retry" primary onClick={onRetry} />
-            {onChooseAnother ? (
-              <FlowButton
-                label="Choose a different model"
-                onClick={onChooseAnother}
-              />
+        <Hairline edge={<Edge percent={100} tone="red" />}>
+          <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: '#ff7a6e' }}>
+              {failureHeadline(state.kind, state.message)}
+            </span>
+            {state.kind === 'http' ? (
+              <span style={FIGURES_STYLE}>{state.message}</span>
             ) : null}
-          </ButtonRow>
-        </Card>
+          </span>
+          <span style={{ flex: 1 }} />
+          <GhostButton label="Retry" tone="accent" onClick={onRetry} />
+          {onChooseAnother ? (
+            <GhostButton
+              label="Choose a different model"
+              tone="muted"
+              onClick={onChooseAnother}
+            />
+          ) : null}
+        </Hairline>
       );
     default:
       // idle and resume_pending have no progress UI; the picker owns them.
@@ -217,7 +275,7 @@ export function DownloadProgress({
   }
 }
 
-function Card({ children }: { children: React.ReactNode }) {
+export function Card({ children }: { children: React.ReactNode }) {
   return (
     <div
       data-download-progress
@@ -236,7 +294,7 @@ function Card({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Headline({ children }: { children: React.ReactNode }) {
+export function Headline({ children }: { children: React.ReactNode }) {
   return (
     <p
       style={{
@@ -253,7 +311,7 @@ function Headline({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Detail({
+export function Detail({
   children,
   warn = false,
 }: {
@@ -274,51 +332,168 @@ function Detail({
   );
 }
 
-interface ProgressBarProps {
-  percent?: number;
-  indeterminate?: boolean;
+/** Subtitle figures line: muted, tabular so the digits do not jitter. */
+const FIGURES_STYLE: React.CSSProperties = {
+  fontSize: 11.5,
+  color: 'rgba(236,234,231,0.54)',
+  fontVariantNumeric: 'tabular-nums',
+  lineHeight: 1.4,
+};
+
+/**
+ * Inline shell for every active state: one quiet line with a 2px accent edge
+ * pinned to the bottom of the row (the hairline). No box of its own, so the
+ * download reads as part of the model row rather than a nested card.
+ */
+function Hairline({
+  children,
+  edge,
+}: {
+  children: React.ReactNode;
+  edge: React.ReactNode;
+}) {
+  return (
+    <div
+      data-download-progress
+      style={{
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '8px 2px 12px',
+        minHeight: 30,
+      }}
+    >
+      {children}
+      {edge}
+    </div>
+  );
 }
 
-function ProgressBar({ percent = 0, indeterminate = false }: ProgressBarProps) {
+/**
+ * The 2px progress edge. Determinate fills to `percent`; indeterminate shows a
+ * fixed segment. `tone` is the warm accent while working and green at ready.
+ */
+function Edge({
+  percent = 0,
+  indeterminate = false,
+  tone,
+}: {
+  percent?: number;
+  indeterminate?: boolean;
+  tone: 'accent' | 'green' | 'red';
+}) {
+  const fill =
+    tone === 'green'
+      ? '#5fcf86'
+      : tone === 'red'
+        ? '#ef6b6b'
+        : 'linear-gradient(90deg, #ffa06f, #d45a1e)';
   return (
-    <div>
-      {!indeterminate ? (
-        <div
-          style={{
-            textAlign: 'right',
-            fontSize: 10.5,
-            color: 'rgba(255,255,255,0.45)',
-            marginBottom: 3,
-          }}
-        >
-          {percent}%
-        </div>
-      ) : null}
-      <div
-        data-progress-bar
-        data-indeterminate={indeterminate}
+    <span
+      data-progress-bar
+      data-indeterminate={indeterminate}
+      style={{
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        height: 2,
+        borderRadius: 999,
+        background: 'rgba(255,255,255,0.08)',
+        overflow: 'hidden',
+      }}
+    >
+      <span
         style={{
-          position: 'relative',
-          height: 5,
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: indeterminate ? '40%' : `${percent}%`,
           borderRadius: 999,
-          background: 'rgba(255,255,255,0.06)',
-          overflow: 'hidden',
+          background: fill,
         }}
-      >
-        <div
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            bottom: 0,
-            width: indeterminate ? '40%' : `${percent}%`,
-            borderRadius: 999,
-            background: 'linear-gradient(135deg, #ff8d5c 0%, #d45a1e 100%)',
-            opacity: indeterminate ? 0.6 : 1,
-          }}
-        />
-      </div>
-    </div>
+      />
+    </span>
+  );
+}
+
+/** A borderless text button for the inline hairline actions (Retry, etc.). */
+function GhostButton({
+  label,
+  tone,
+  onClick,
+}: {
+  label: string;
+  tone: 'accent' | 'muted';
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: 'transparent',
+        border: 'none',
+        fontFamily: 'inherit',
+        fontSize: 11.5,
+        fontWeight: 700,
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+        padding: '2px 4px',
+        color: tone === 'accent' ? '#ff8d5c' : 'rgba(236,234,231,0.54)',
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+/** The single status line for the post-download steps (and the ready check). */
+function StatusText({
+  children,
+  ready = false,
+}: {
+  children: React.ReactNode;
+  ready?: boolean;
+}) {
+  return (
+    <p
+      style={{
+        margin: 0,
+        fontSize: 12.5,
+        fontWeight: 600,
+        color: ready ? '#5fcf86' : '#f0f0f2',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        lineHeight: 1.4,
+      }}
+    >
+      {children}
+    </p>
+  );
+}
+
+/** The inline cancel control: a quiet × that warms on hover via the theme. */
+function CancelX({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      aria-label="Cancel"
+      onClick={onClick}
+      style={{
+        background: 'transparent',
+        border: 'none',
+        color: 'rgba(236,234,231,0.34)',
+        fontSize: 15,
+        lineHeight: 1,
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+        padding: '2px 6px',
+      }}
+    >
+      ✕
+    </button>
   );
 }
 
@@ -328,7 +503,11 @@ interface FlowButtonProps {
   primary?: boolean;
 }
 
-function FlowButton({ label, onClick, primary = false }: FlowButtonProps) {
+export function FlowButton({
+  label,
+  onClick,
+  primary = false,
+}: FlowButtonProps) {
   return (
     <button
       onClick={onClick}
@@ -351,7 +530,7 @@ function FlowButton({ label, onClick, primary = false }: FlowButtonProps) {
   );
 }
 
-function ButtonRow({ children }: { children: React.ReactNode }) {
+export function ButtonRow({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>{children}</div>
   );

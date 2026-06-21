@@ -96,6 +96,11 @@ pub enum EngineErrorKind {
     /// The bundled engine's sidecar process failed to launch or crashed before
     /// passing its health check.
     EngineStartFailed,
+    /// The selected model's architecture is not supported by the bundled
+    /// engine build, so `llama-server` refused to load it. A setup nudge (try
+    /// another model), not a crash: the frontend renders it with the amber
+    /// warning accent rather than the red failure accent.
+    ModelUnsupported,
     /// The requested model has not been pulled yet (HTTP 404).
     ModelNotFound,
     /// No active model has been selected. The user must pick a model from
@@ -259,6 +264,76 @@ async fn fetch_builtin_vision(client: &reqwest::Client, base_url: &str) -> bool 
     }
 }
 
+/// Condenses a multi-line engine failure detail into the single most
+/// informative line for the error subtitle (which renders as one paragraph).
+/// The captured stderr tail can be many timestamped lines, so this prefers the
+/// FIRST line that reads like an actual error message ("error:", "error
+/// loading", "failed to", "failed:") over one that merely contains the word
+/// (a startup banner such as "log level: error"). llama.cpp prints the specific
+/// root cause first ("error loading model: <reason>") then generic trailers
+/// ("failed to load", "exiting due to model loading error"), so the first
+/// actionable match is the one to show. It falls back to any error/failure
+/// mention, then to the last non-empty line; a single-line detail (e.g. a
+/// health-check message) is returned unchanged. Classification upstream still
+/// sees the full detail.
+fn concise_detail(detail: &str) -> String {
+    let lines: Vec<&str> = detail
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    match lines.as_slice() {
+        [] => detail.trim().to_string(),
+        [single] => (*single).to_string(),
+        many => many
+            .iter()
+            .find(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower.contains("error:")
+                    || lower.contains("error loading")
+                    || lower.contains("failed to")
+                    || lower.contains("failed:")
+            })
+            .or_else(|| {
+                many.iter().find(|line| {
+                    let lower = line.to_ascii_lowercase();
+                    lower.contains("error") || lower.contains("failed")
+                })
+            })
+            .copied()
+            .unwrap_or(many[many.len() - 1])
+            .to_string(),
+    }
+}
+
+/// Maps a built-in engine start failure (the engine's own captured stderr, or
+/// a health-check message) onto a user-facing [`EngineError`]. A llama.cpp
+/// "unknown model architecture" failure means the bundled engine cannot run
+/// this model, so it becomes a `ModelUnsupported` nudge to pick another model;
+/// every other failure surfaces the concise reason under the generic
+/// engine-start title so OOM, context-size, and projector mismatches stay
+/// actionable.
+///
+/// Pure so the classification and exact copy are unit-tested without a Tauri
+/// runtime. Shared by `stream_builtin_chat` and `resolve_llm_transport`.
+pub fn engine_start_error(detail: &str) -> EngineError {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("unknown model architecture") || lower.contains("unknown architecture") {
+        EngineError {
+            kind: EngineErrorKind::ModelUnsupported,
+            message: "Unsupported model\nThuki's engine doesn't support this arch yet. Try another model. Engine improves over time and may support it down the road.".to_string(),
+        }
+    } else {
+        EngineError {
+            kind: EngineErrorKind::EngineStartFailed,
+            message: format!(
+                "Thuki's engine could not start.\n{}",
+                concise_detail(detail)
+            ),
+        }
+    }
+}
+
 /// Runs the built-in-engine stage of a chat turn: mark activity, ensure the
 /// engine serves `target`, then stream via the `/v1` client at the engine's
 /// port. An engine activity guard is held for the whole turn (ensure,
@@ -280,10 +355,12 @@ async fn fetch_builtin_vision(client: &reqwest::Client, base_url: &str) -> bool 
 ///
 /// Returns the accumulated assistant content (empty on the error paths) so
 /// the caller's persistence tail treats every route identically.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn stream_builtin_chat(
     engine: &crate::engine::runner::EngineHandle,
     target: crate::engine::state::Target,
     model_id: String,
+    think: bool,
     mut messages: Vec<ChatMessage>,
     client: &reqwest::Client,
     cancel_token: CancellationToken,
@@ -326,6 +403,7 @@ pub(crate) async fn stream_builtin_chat(
                     messages,
                     api_key: None,
                     flavor: crate::openai::V1Flavor::Builtin,
+                    enable_thinking: think,
                 },
                 client,
                 cancel_token,
@@ -338,11 +416,67 @@ pub(crate) async fn stream_builtin_chat(
             String::new()
         }
         Some(Err(crate::engine::runner::EnsureError::StartFailed(detail))) => {
-            on_chunk(StreamChunk::Error(EngineError {
-                kind: EngineErrorKind::EngineStartFailed,
-                message: format!("Thuki's engine could not start.\n{detail}"),
-            }));
+            on_chunk(StreamChunk::Error(engine_start_error(&detail)));
             String::new()
+        }
+    }
+}
+
+/// Sets `flag` when `chunk` carries reasoning output. The built-in runtime
+/// backstop wires this into the chunk pump so it learns whether a model emitted
+/// reasoning tokens even though reasoning was requested OFF.
+pub(crate) fn observe_reasoning_chunk(chunk: &StreamChunk, flag: &std::sync::atomic::AtomicBool) {
+    if matches!(chunk, StreamChunk::ThinkingToken(_)) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Decides whether the runtime backstop should mark a built-in model as
+/// always-reasoning. True only when reasoning was requested OFF (`!think`) yet
+/// the model still streamed reasoning (`reasoning_seen`), the manifest does not
+/// already record it as always (`!current_reasoning_always`), and the model is
+/// not a curated starter (`!is_curated`, whose class is registry truth and must
+/// never be overridden from behavior).
+pub(crate) fn should_backstop_mark(
+    think: bool,
+    reasoning_seen: bool,
+    current_reasoning_always: bool,
+    is_curated: bool,
+) -> bool {
+    !think && reasoning_seen && !current_reasoning_always && !is_curated
+}
+
+/// Best-effort runtime backstop for the built-in engine: when a chat streamed
+/// reasoning while reasoning was OFF, persist `reasoning_always` so the picker
+/// badge and `/think` gate self-correct on the next read. Coverage-off: the
+/// decision lives in [`should_backstop_mark`]; this wrapper only reads the row
+/// and writes the flag. Never fails the turn (every error is logged and
+/// swallowed).
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn backstop_mark_reasoning_always(
+    db: &crate::history::Database,
+    model_id: &str,
+    think: bool,
+    reasoning_seen: bool,
+) {
+    // Cheap exit before locking: only an OFF request that still saw reasoning
+    // can change anything.
+    if think || !reasoning_seen {
+        return;
+    }
+    let Ok(conn) = db.0.lock() else { return };
+    let Ok(Some(row)) = crate::models::manifest::get(&conn, model_id) else {
+        return;
+    };
+    let is_curated = crate::models::curated_reasoning_flags(&row.repo, &row.file_name).is_some();
+    if should_backstop_mark(think, reasoning_seen, row.reasoning_always, is_curated) {
+        match crate::models::manifest::mark_reasoning_always(&conn, model_id) {
+            Ok(()) => {
+                eprintln!("thuki: [models] reasoning backstop: marked {model_id} always-reasoning")
+            }
+            Err(e) => {
+                eprintln!("thuki: [models] reasoning backstop: failed to mark {model_id}: {e}")
+            }
         }
     }
 }
@@ -526,10 +660,7 @@ pub(crate) async fn resolve_llm_transport(
                     Err(TransportError::Superseded)
                 }
                 Some(Err(crate::engine::runner::EnsureError::StartFailed(detail))) => {
-                    Err(TransportError::Engine(EngineError {
-                        kind: EngineErrorKind::EngineStartFailed,
-                        message: format!("Thuki's engine could not start.\n{detail}"),
-                    }))
+                    Err(TransportError::Engine(engine_start_error(&detail)))
                 }
             }
         }
@@ -1177,16 +1308,35 @@ pub async fn ask_model(
             };
             match target {
                 Ok(target) => {
-                    stream_builtin_chat(
+                    // Observe whether reasoning streamed this turn so the
+                    // runtime backstop can mark a model that reasons even with
+                    // reasoning requested OFF (see `backstop_mark_reasoning_always`).
+                    let reasoning_seen =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let seen_for_pump = std::sync::Arc::clone(&reasoning_seen);
+                    let backstop_model_id = model_id.clone();
+                    let builtin_pump = move |chunk: StreamChunk| {
+                        observe_reasoning_chunk(&chunk, &seen_for_pump);
+                        pump(chunk);
+                    };
+                    let content = stream_builtin_chat(
                         &engine,
                         target,
                         model_id,
+                        think,
                         messages,
                         &client,
                         cancel_token.clone(),
-                        pump,
+                        builtin_pump,
                     )
-                    .await
+                    .await;
+                    backstop_mark_reasoning_always(
+                        &db,
+                        &backstop_model_id,
+                        think,
+                        reasoning_seen.load(std::sync::atomic::Ordering::Relaxed),
+                    );
+                    content
                 }
                 Err(err) => {
                     pump(StreamChunk::Error(err));
@@ -1206,6 +1356,9 @@ pub async fn ask_model(
                     messages,
                     api_key,
                     flavor: crate::openai::V1Flavor::Remote,
+                    // `/think` reasoning control is built-in only; a remote
+                    // OpenAI-compatible server uses its own server-side defaults.
+                    enable_thinking: false,
                 },
                 &client,
                 cancel_token.clone(),
@@ -1334,6 +1487,89 @@ mod tests {
             "{{\"message\":{{\"role\":\"assistant\",\"content\":\"{}\"}},\"done\":{}}}\n",
             content, done
         )
+    }
+
+    #[test]
+    fn engine_start_error_unknown_architecture_is_model_unsupported() {
+        let err = engine_start_error(
+            "error loading model: unknown model architecture: 'deepseek4_mtp_support'",
+        );
+        assert_eq!(err.kind, EngineErrorKind::ModelUnsupported);
+        assert_eq!(
+            err.message,
+            "Unsupported model\nThuki's engine doesn't support this arch yet. Try another model. Engine improves over time and may support it down the road."
+        );
+    }
+
+    #[test]
+    fn engine_start_error_matches_short_unknown_architecture_phrasing() {
+        assert_eq!(
+            engine_start_error("llama_model_load: unknown architecture").kind,
+            EngineErrorKind::ModelUnsupported
+        );
+    }
+
+    #[test]
+    fn engine_start_error_other_failures_surface_raw_reason() {
+        let err = engine_start_error("engine health check returned HTTP 500");
+        assert_eq!(err.kind, EngineErrorKind::EngineStartFailed);
+        assert_eq!(
+            err.message,
+            "Thuki's engine could not start.\nengine health check returned HTTP 500"
+        );
+    }
+
+    #[test]
+    fn engine_start_error_condenses_a_multiline_non_arch_tail() {
+        let detail = "0.06 I log_info: loading\n0.06 E common_init: error loading model: out of memory\n0.06 I srv exiting";
+        let err = engine_start_error(detail);
+        assert_eq!(err.kind, EngineErrorKind::EngineStartFailed);
+        assert_eq!(
+            err.message,
+            "Thuki's engine could not start.\n0.06 E common_init: error loading model: out of memory"
+        );
+    }
+
+    #[test]
+    fn concise_detail_returns_a_single_line_unchanged() {
+        assert_eq!(
+            concise_detail("engine did not become healthy before the deadline"),
+            "engine did not become healthy before the deadline"
+        );
+    }
+
+    #[test]
+    fn concise_detail_falls_back_to_the_last_line_without_an_error_marker() {
+        assert_eq!(concise_detail("first\nsecond\nthird"), "third");
+    }
+
+    #[test]
+    fn concise_detail_prefers_the_first_error_line_over_a_generic_trailer() {
+        // llama.cpp prints the root cause first, then generic "exiting due to
+        // ... error" trailers: the first match must win.
+        let tail = "I loading model\nE error loading model: out of memory\nE failed to load model\nE exiting due to model loading error";
+        assert_eq!(concise_detail(tail), "E error loading model: out of memory");
+    }
+
+    #[test]
+    fn concise_detail_skips_a_benign_error_word_for_the_real_cause() {
+        // A startup banner mentions "error" as a log level; the actionable line
+        // is the real loading failure further down. The banner must not win.
+        let tail = "I log level set to error\nI loading model\nE error loading model: bad magic";
+        assert_eq!(concise_detail(tail), "E error loading model: bad magic");
+    }
+
+    #[test]
+    fn concise_detail_falls_back_to_any_failure_mention() {
+        // No "error:"/"error loading"/"failed to" line, but a bare mention is
+        // still more informative than the last line, so it is preferred.
+        let tail = "I starting up\nW cuda error detected\nI shutting down";
+        assert_eq!(concise_detail(tail), "W cuda error detected");
+    }
+
+    #[test]
+    fn concise_detail_empty_detail_is_empty() {
+        assert_eq!(concise_detail("  \n  "), "");
     }
 
     #[tokio::test]
@@ -2756,6 +2992,7 @@ mod tests {
         let caps = Capabilities {
             vision: false,
             thinking: false,
+            reasoning_always: false,
             max_images: None,
         };
         let stats = apply_capability_filter(&mut messages, &caps);
@@ -2773,6 +3010,7 @@ mod tests {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            reasoning_always: false,
             max_images: None,
         };
         let stats = apply_capability_filter(&mut messages, &caps);
@@ -2794,6 +3032,7 @@ mod tests {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            reasoning_always: false,
             max_images: Some(1),
         };
         let stats = apply_capability_filter(&mut messages, &caps);
@@ -2809,6 +3048,7 @@ mod tests {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            reasoning_always: false,
             max_images: Some(2),
         };
         let stats = apply_capability_filter(&mut messages, &caps);
@@ -2822,6 +3062,7 @@ mod tests {
         let caps = Capabilities {
             vision: false,
             thinking: false,
+            reasoning_always: false,
             max_images: None,
         };
         let stats = apply_capability_filter(&mut messages, &caps);
@@ -2841,6 +3082,7 @@ mod tests {
         let caps = Capabilities {
             vision: true,
             thinking: false,
+            reasoning_always: false,
             max_images: Some(1),
         };
         let stats = apply_capability_filter(&mut messages, &caps);
@@ -3094,6 +3336,7 @@ mod tests {
             quant: "Q4_K_M".to_string(),
             vision: mmproj_sha256.is_some(),
             thinking: false,
+            reasoning_always: false,
             mmproj_file: mmproj_sha256.map(|_| format!("{id}-mmproj.gguf")),
             mmproj_sha256: mmproj_sha256.map(str::to_string),
         }
@@ -3288,6 +3531,16 @@ mod tests {
         async fn kill(&mut self) {
             let _ = self.exit_tx.send(true);
         }
+        fn stderr_tail(&self) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn scripted_child_has_no_stderr_tail() {
+        let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
+        let child = ScriptedChild { exit_tx, exit_rx };
+        assert_eq!(crate::engine::process::EngineChild::stderr_tail(&child), "");
     }
 
     #[async_trait::async_trait]
@@ -3362,6 +3615,7 @@ mod tests {
             &engine,
             engine_target(),
             "org/repo:m.gguf".to_string(),
+            false,
             vec![],
             &client,
             CancellationToken::new(),
@@ -3399,6 +3653,7 @@ mod tests {
                     &engine,
                     engine_target(),
                     "org/repo:m.gguf".to_string(),
+                    false,
                     vec![],
                     &client,
                     CancellationToken::new(),
@@ -3452,6 +3707,7 @@ mod tests {
                     &engine,
                     engine_target(),
                     "org/repo:m.gguf".to_string(),
+                    false,
                     vec![],
                     &client,
                     cancel_token,
@@ -3496,6 +3752,7 @@ mod tests {
             &engine,
             engine_target(),
             "org/repo:m.gguf".to_string(),
+            false,
             vec![],
             &client,
             CancellationToken::new(),
@@ -3529,6 +3786,32 @@ mod tests {
             "non-boolean flag fails closed"
         );
         assert!(!parse_props_vision(b"not json"), "malformed body");
+    }
+
+    #[test]
+    fn observe_reasoning_chunk_sets_flag_only_on_thinking_token() {
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        observe_reasoning_chunk(&StreamChunk::Token("hi".into()), &flag);
+        assert!(!flag.load(std::sync::atomic::Ordering::Relaxed));
+        observe_reasoning_chunk(&StreamChunk::Done, &flag);
+        assert!(!flag.load(std::sync::atomic::Ordering::Relaxed));
+        observe_reasoning_chunk(&StreamChunk::ThinkingToken("step".into()), &flag);
+        assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn should_backstop_mark_only_fires_for_surprising_pasted_reasoning() {
+        // Reasoning requested OFF, model still reasoned, not yet recorded, not
+        // curated: the one case that should mark.
+        assert!(should_backstop_mark(false, true, false, false));
+        // /think was on: expected reasoning, never a surprise.
+        assert!(!should_backstop_mark(true, true, false, false));
+        // No reasoning streamed: nothing to learn.
+        assert!(!should_backstop_mark(false, false, false, false));
+        // Already recorded as always: no redundant write.
+        assert!(!should_backstop_mark(false, true, true, false));
+        // Curated starter: registry is truth, never override from behavior.
+        assert!(!should_backstop_mark(false, true, false, true));
     }
 
     #[tokio::test]
@@ -3612,6 +3895,7 @@ mod tests {
             &engine,
             engine_target(),
             "org/repo:m.gguf".to_string(),
+            false,
             image_message(),
             &client,
             CancellationToken::new(),

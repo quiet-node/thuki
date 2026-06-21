@@ -949,7 +949,9 @@ describe('ModelCheckStep (builtin flow)', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Pause download' }));
     });
-    expect(invoke).toHaveBeenCalledWith('cancel_model_download');
+    expect(invoke).toHaveBeenCalledWith('cancel_model_download', {
+      key: 'tier:balanced',
+    });
 
     await act(async () => {
       channel.simulateMessage({ type: 'Cancelled' });
@@ -1052,7 +1054,9 @@ describe('ModelCheckStep (builtin flow)', () => {
       fireEvent.click(screen.getByText('Use it instead'));
     });
 
-    expect(invoke).toHaveBeenCalledWith('cancel_model_download');
+    expect(invoke).toHaveBeenCalledWith('cancel_model_download', {
+      key: 'tier:balanced',
+    });
     expect(invoke).toHaveBeenCalledWith('set_active_provider', {
       providerId: 'ollama',
     });

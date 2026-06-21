@@ -63,6 +63,7 @@ describe('useDownloadModel', () => {
     expect(result.current.state).toEqual({ phase: 'downloading' });
     expect(invoke).toHaveBeenCalledWith('download_starter', {
       tier: 'balanced',
+      key: 'tier:balanced',
       onEvent: expect.anything(),
     });
 
@@ -290,7 +291,9 @@ describe('useDownloadModel', () => {
     expect(result.current.progress?.bytes).toBe(40);
 
     await act(() => result.current.cancel());
-    expect(invoke).toHaveBeenCalledWith('cancel_model_download');
+    expect(invoke).toHaveBeenCalledWith('cancel_model_download', {
+      key: 'tier:fast',
+    });
     // State waits for the backend's Cancelled event.
     expect(result.current.state).toEqual({ phase: 'downloading' });
 
@@ -325,6 +328,7 @@ describe('useDownloadModel', () => {
     expect(result.current.state).toEqual({ phase: 'downloading' });
     expect(invoke).toHaveBeenLastCalledWith('download_starter', {
       tier: 'smartest',
+      key: 'tier:smartest',
       onEvent: expect.anything(),
     });
   });
@@ -343,6 +347,7 @@ describe('useDownloadModel', () => {
     expect(invoke).toHaveBeenCalledWith('download_repo_model', {
       repo: 'owner/repo',
       file: 'w.gguf',
+      key: 'repo:owner/repo\nw.gguf',
       onEvent: expect.anything(),
     });
     act(() => channel().simulateMessage({ type: 'AllDone' }));
@@ -364,6 +369,7 @@ describe('useDownloadModel', () => {
     expect(invoke).toHaveBeenLastCalledWith('download_repo_model', {
       repo: 'owner/repo',
       file: 'w.gguf',
+      key: 'repo:owner/repo\nw.gguf',
       onEvent: expect.anything(),
     });
   });
@@ -376,6 +382,38 @@ describe('useDownloadModel', () => {
       phase: 'failed',
       kind: 'other',
       message: 'invalid Hugging Face repo id',
+    });
+  });
+
+  it('starts a Staff Picks download through download_staff_pick', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.startById('gemma-4-12b'));
+    expect(result.current.state).toEqual({ phase: 'downloading' });
+    expect(invoke).toHaveBeenCalledWith('download_staff_pick', {
+      id: 'gemma-4-12b',
+      key: 'staff:gemma-4-12b',
+      onEvent: expect.anything(),
+    });
+    act(() => channel().simulateMessage({ type: 'AllDone' }));
+    expect(result.current.state).toEqual({ phase: 'ready' });
+  });
+
+  it('retries the last Staff Picks download after a failure', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.startById('gpt-oss-20b'));
+    act(() =>
+      channel().simulateMessage({
+        type: 'Failed',
+        data: { kind: 'http', message: 'HTTP 500' },
+      }),
+    );
+
+    await act(() => result.current.retry());
+    expect(result.current.state).toEqual({ phase: 'downloading' });
+    expect(invoke).toHaveBeenLastCalledWith('download_staff_pick', {
+      id: 'gpt-oss-20b',
+      key: 'staff:gpt-oss-20b',
+      onEvent: expect.anything(),
     });
   });
 
@@ -430,6 +468,7 @@ describe('useDownloadModel', () => {
     expect(result.current.state).toEqual({ phase: 'downloading' });
     expect(invoke).toHaveBeenCalledWith('download_starter', {
       tier: 'balanced',
+      key: 'tier:balanced',
       onEvent: expect.anything(),
     });
   });

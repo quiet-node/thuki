@@ -135,13 +135,55 @@ use _thuki_panel::ThukiPanel;
 #[cfg(target_os = "macos")]
 mod _settings_panel {
     use tauri::Manager;
+    use tauri_nspanel::TrackingAreaOptions;
     tauri_nspanel::tauri_panel! {
         panel!(ThukiSettingsPanel {
             config: {
                 can_become_key_window: true,
                 is_floating_panel: true
             }
+            with: {
+                // Same hover-activate rationale as ThukiPanel. Settings is a
+                // nonactivating panel with hides_on_deactivate(false), so once
+                // it is defocused (the user clicks another app) a plain click
+                // can never regain key on modern macOS and the webview drops
+                // clicks, drag, and hover - the form inputs go dead. An
+                // `active_always` tracking area keeps mouse events flowing while
+                // the app is inactive, and the mouse-entered callback (wired in
+                // `init_settings_panel`) makes the panel key on cursor-enter so
+                // the inputs come back without activating the app.
+                tracking_area: {
+                    options: TrackingAreaOptions::new()
+                        .active_always()
+                        .mouse_entered_and_exited()
+                        .mouse_moved()
+                        .cursor_update(),
+                    auto_resize: true
+                }
+            }
         })
+        panel_event!(ThukiSettingsEventsInner {})
+    }
+
+    /// Constructs the mouse-event handler and attaches it to the Settings panel.
+    ///
+    /// Mirrors `attach_overlay_event_handler` for ThukiPanel: the mouse-entered
+    /// callback makes the Settings overlay the key window the instant the cursor
+    /// enters it, restoring clicks/drag/typing after the panel has been
+    /// defocused (see the tracking-area comment on the panel).
+    pub fn attach_settings_event_handler(app_handle: tauri::AppHandle) {
+        use tauri_nspanel::ManagerExt;
+        let Ok(panel) = app_handle.get_webview_panel("settings") else {
+            return;
+        };
+        let cb_handle = app_handle.clone();
+        let events = ThukiSettingsEventsInner::new();
+        events.on_mouse_entered(move |_event| {
+            if let Ok(p) = cb_handle.get_webview_panel("settings") {
+                p.make_key_window();
+            }
+        });
+        panel.set_event_handler(Some(events.as_ref()));
     }
 }
 #[cfg(target_os = "macos")]
@@ -157,13 +199,55 @@ use _settings_panel::ThukiSettingsPanel;
 #[cfg(target_os = "macos")]
 mod _update_panel {
     use tauri::Manager;
+    use tauri_nspanel::TrackingAreaOptions;
     tauri_nspanel::tauri_panel! {
         panel!(ThukiUpdatePanel {
             config: {
                 can_become_key_window: true,
                 is_floating_panel: true
             }
+            with: {
+                // Same hover-activate rationale as ThukiPanel. The update panel
+                // is nonactivating with hides_on_deactivate(false), so after it
+                // is defocused a plain click can never regain key on modern
+                // macOS and the webview drops clicks, drag, and hover - the four
+                // action buttons go dead. An `active_always` tracking area keeps
+                // mouse events flowing while the app is inactive, and the
+                // mouse-entered callback (wired in `init_update_panel`) makes the
+                // panel key on cursor-enter so the buttons come back without
+                // activating the app.
+                tracking_area: {
+                    options: TrackingAreaOptions::new()
+                        .active_always()
+                        .mouse_entered_and_exited()
+                        .mouse_moved()
+                        .cursor_update(),
+                    auto_resize: true
+                }
+            }
         })
+        panel_event!(ThukiUpdateEventsInner {})
+    }
+
+    /// Constructs the mouse-event handler and attaches it to the update panel.
+    ///
+    /// Mirrors `attach_overlay_event_handler` for ThukiPanel: the mouse-entered
+    /// callback makes the update overlay the key window the instant the cursor
+    /// enters it, restoring clicks after the panel has been defocused (see the
+    /// tracking-area comment on the panel).
+    pub fn attach_update_event_handler(app_handle: tauri::AppHandle) {
+        use tauri_nspanel::ManagerExt;
+        let Ok(panel) = app_handle.get_webview_panel("update") else {
+            return;
+        };
+        let cb_handle = app_handle.clone();
+        let events = ThukiUpdateEventsInner::new();
+        events.on_mouse_entered(move |_event| {
+            if let Ok(p) = cb_handle.get_webview_panel("update") {
+                p.make_key_window();
+            }
+        });
+        panel.set_event_handler(Some(events.as_ref()));
     }
 }
 #[cfg(target_os = "macos")]
@@ -433,10 +517,9 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
     // Pre-load the active model so the user's first message does not pay
     // the cold-start penalty. Fires on all show paths: double-tap, tray,
     // and first-launch auto-show. Branches by the active provider's kind:
-    // Ollama keeps its native /api/chat warmup, the built-in engine gets a
-    // /v1 prime ONLY when it is already serving (summoning the overlay must
-    // never load a model implicitly), and openai providers get no warmup
-    // (nothing local to warm).
+    // Ollama warms via its native /api/chat, the built-in engine starts
+    // (or reuses) its sidecar and primes the KV cache, and openai providers
+    // get no warmup (nothing local to warm).
     let warmup_kind = app_handle
         .state::<parking_lot::RwLock<crate::config::AppConfig>>()
         .read()
@@ -484,29 +567,45 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
             }
         }
         crate::config::defaults::PROVIDER_KIND_BUILTIN => {
-            let status = app_handle
-                .state::<engine::runner::EngineHandle>()
-                .status()
-                .borrow()
-                .clone();
-            if let Some(port) = warmup::builtin_prime_port(&status) {
-                let (model, system_prompt) = {
-                    let cfg = app_handle
-                        .state::<parking_lot::RwLock<crate::config::AppConfig>>()
-                        .read()
-                        .clone();
-                    (
-                        cfg.inference.active_provider_model().to_string(),
-                        cfg.prompt.resolved_system.clone(),
-                    )
+            let (model_id, num_ctx, system_prompt) = {
+                let cfg_state = app_handle.state::<parking_lot::RwLock<crate::config::AppConfig>>();
+                let cfg = cfg_state.read();
+                (
+                    cfg.inference.active_provider_model().to_string(),
+                    cfg.inference.num_ctx,
+                    cfg.prompt.resolved_system.clone(),
+                )
+            };
+            if warmup::builtin_should_warm(&model_id) {
+                let store = app_handle.state::<models::storage::ModelStore>();
+                let db = app_handle.state::<history::Database>();
+                // Resolve the manifest row to an engine Target inside a scope so
+                // the connection guard drops before the spawned load. A poisoned
+                // lock is recovered: an unrelated panic does not invalidate it.
+                let target = {
+                    let conn = match db.0.lock() {
+                        Ok(conn) => conn,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    crate::commands::builtin_target(&conn, &store, &model_id, num_ctx)
                 };
-                let client = app_handle.state::<reqwest::Client>().inner().clone();
-                tauri::async_runtime::spawn(warmup::prime_builtin(
-                    port,
-                    model,
-                    system_prompt,
-                    client,
-                ));
+                // A missing/uninstalled model yields an Err; warmup is
+                // best-effort, so just skip rather than surfacing anything.
+                if let Ok(target) = target {
+                    let engine = app_handle
+                        .state::<engine::runner::EngineHandle>()
+                        .inner()
+                        .clone();
+                    let client = app_handle.state::<reqwest::Client>().inner().clone();
+                    tauri::async_runtime::spawn(warmup::warm_builtin(
+                        app_handle.clone(),
+                        engine,
+                        target,
+                        model_id,
+                        system_prompt,
+                        client,
+                    ));
+                }
             }
         }
         _ => {}
@@ -595,7 +694,7 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 /// the OS-default spawn position or previous moves.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn position_settings_window(window: &tauri::WebviewWindow) {
-    const SETTINGS_WIDTH: f64 = 580.0;
+    const SETTINGS_WIDTH: f64 = 760.0;
     // macOS menu bar is ~24 px logical on standard displays; notched MacBooks
     // push it to ~37 px. 72 px gives a comfortable ~35-48 px visual gap below
     // the menu bar on all hardware.
@@ -1470,6 +1569,11 @@ fn init_settings_panel(app_handle: &tauri::AppHandle) {
                     .can_join_all_spaces()
                     .into(),
             );
+            // Hover-activate: take key focus the moment the cursor enters the
+            // Settings overlay, mirroring init_panel. Pairs with the
+            // `active_always` tracking area on ThukiSettingsPanel so a defocused
+            // nonactivating panel regains key without activating the app.
+            _settings_panel::attach_settings_event_handler(app_handle.clone());
         }
         Err(e) => {
             eprintln!("thuki: [settings] NSPanel conversion failed: {e:?}");
@@ -1515,6 +1619,11 @@ fn init_update_panel(app_handle: &tauri::AppHandle) {
                     .can_join_all_spaces()
                     .into(),
             );
+            // Hover-activate: take key focus the moment the cursor enters the
+            // update overlay, mirroring init_panel. Pairs with the
+            // `active_always` tracking area on ThukiUpdatePanel so a defocused
+            // nonactivating panel regains key without activating the app.
+            _update_panel::attach_update_event_handler(app_handle.clone());
         }
         Err(e) => {
             eprintln!("thuki: [update] NSPanel conversion failed: {e:?}");
@@ -1942,6 +2051,8 @@ pub fn run() {
                     let _ = warmup_handle.emit("warmup:model-loaded", model);
                 },
             )));
+            // Port-keyed dedup + cue state for the built-in engine warm-up.
+            app.manage(warmup::BuiltinWarmState::default());
 
             // ── Configuration (TOML file at app_config_dir) ─────────
             // Loaded once at startup. Missing file -> seed defaults.
@@ -2144,11 +2255,18 @@ pub fn run() {
                 initial_active_model,
             )));
             app.manage(models::ModelCapabilitiesCache::default());
-            app.manage(history::Database(std::sync::Mutex::new(db_conn)));
 
             // ── Model blob store + download slot for the built-in engine ──
             let model_store = models::storage::ModelStore::new(app_data_dir.join("models"))
                 .expect("failed to initialise model blob store");
+
+            // One-time heal: classify any installed models recorded before the
+            // dynamic reasoning classifier existed (reasoning_always IS NULL),
+            // reading each model's local GGUF, so the picker badge and /think
+            // gate are correct without waiting for the first chat.
+            models::heal_unclassified_reasoning(&db_conn, &model_store);
+
+            app.manage(history::Database(std::sync::Mutex::new(db_conn)));
             app.manage(model_store);
             app.manage(models::DownloadState::default());
 
@@ -2192,6 +2310,14 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     while status_rx.changed().await.is_ok() {
                         let status = status_rx.borrow_and_update().clone();
+                        // A load left memory (idle-unload, model switch, crash):
+                        // drop the built-in warm-up dedup so the next load primes
+                        // fresh even when the OS reuses the same port. The dedup
+                        // is keyed on port, so a stale primed record would
+                        // otherwise skip the cold reload's prime.
+                        if status.state != "loaded" {
+                            status_handle.state::<warmup::BuiltinWarmState>().reset();
+                        }
                         let _ = status_handle.emit("engine:status", status);
                     }
                 });
@@ -2249,15 +2375,21 @@ pub fn run() {
             #[cfg(not(coverage))]
             models::get_starter_options,
             #[cfg(not(coverage))]
+            models::get_staff_picks,
+            #[cfg(not(coverage))]
             models::get_system_ram_bytes,
             #[cfg(not(coverage))]
             models::get_models_dir_free_bytes,
             #[cfg(not(coverage))]
             models::download_starter,
             #[cfg(not(coverage))]
+            models::download_staff_pick,
+            #[cfg(not(coverage))]
             models::download_repo_model,
             #[cfg(not(coverage))]
             models::list_hf_repo_ggufs,
+            #[cfg(not(coverage))]
+            models::search_hf_models,
             #[cfg(not(coverage))]
             models::list_openai_models,
             #[cfg(not(coverage))]
@@ -2270,6 +2402,8 @@ pub fn run() {
             models::list_installed_models,
             #[cfg(not(coverage))]
             models::delete_installed_model,
+            #[cfg(not(coverage))]
+            models::reveal_model_in_finder,
             #[cfg(not(coverage))]
             history::save_conversation,
             #[cfg(not(coverage))]
@@ -2329,6 +2463,8 @@ pub fn run() {
             warmup::get_loaded_model,
             #[cfg(not(coverage))]
             warmup::get_engine_status,
+            #[cfg(not(coverage))]
+            warmup::get_builtin_warm_state,
             updater::commands::get_updater_state,
             #[cfg(not(coverage))]
             updater::commands::check_for_update,

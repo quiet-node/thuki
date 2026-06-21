@@ -296,6 +296,10 @@ pub(crate) async fn generate_title_text(
                     messages: title_messages,
                     api_key: api_key.clone(),
                     flavor: *flavor,
+                    // Title generation answers directly; the built-in engine
+                    // must not run a thinking pass (it would burn the token
+                    // budget before producing the title).
+                    enable_thinking: false,
                 },
                 client,
                 cancel_token,

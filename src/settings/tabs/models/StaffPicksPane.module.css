@@ -1,0 +1,186 @@
+/*
+ * Styles for the Staff-picks pane: Discover's compact use-case sections. The
+ * premium tokens (--accent, --t1..--t3, --hair, --ok, --tight, --heavy, etc.)
+ * cascade from the Settings window root, so they are referenced via var() here.
+ */
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.empty {
+  padding: 36px 14px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--t2);
+}
+
+/* ── Use-case section ─────────────────────────────────────────────────────── */
+
+.section {
+  margin-bottom: 16px;
+}
+.section:last-child {
+  margin-bottom: 0;
+}
+
+/* Quiet uppercase label, no icon. */
+.secLabel {
+  font-size: 10.5px;
+  font-weight: 640;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--t3);
+  margin: 0 2px 8px;
+}
+
+/* ── Compact model row ────────────────────────────────────────────────────── */
+
+.row {
+  border: 1px solid var(--hair-soft);
+  border-radius: 9px;
+  background: var(--elev-1);
+  margin-bottom: 6px;
+}
+.row:last-child {
+  margin-bottom: 0;
+}
+
+.rowMain {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+}
+
+.mid {
+  flex: 1;
+  min-width: 0;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Model name doubles as the link to the repo on Hugging Face: a plain button
+ * that reads as text until hover, matching Browse-all's row link. */
+.nameLink {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  font-weight: 560;
+  font-size: 12.5px;
+  color: var(--t1);
+  text-align: left;
+  cursor: pointer;
+  transition: color 140ms ease;
+}
+.nameLink:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.nameLink:focus-visible {
+  outline: none;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.sub {
+  font-size: 10.5px;
+  color: var(--t3);
+  margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+}
+
+/* RAM-fit hint: a coloured label (no dot) reusing the shared fit palette. */
+.fit {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 560;
+  white-space: nowrap;
+}
+.fitOk {
+  color: var(--ok);
+}
+.fitTight {
+  color: var(--tight);
+}
+.fitHeavy {
+  color: var(--heavy);
+}
+
+/* ── Row actions ──────────────────────────────────────────────────────────── */
+
+/* Icon-only download button: the accent download-arrow, matching the Browse-all
+ * quant rows so "download" reads the same everywhere. */
+.getBtn {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  border: 1px solid rgba(255, 141, 92, 0.4);
+  border-radius: var(--radius-control);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease;
+}
+.getBtn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.getBtn:hover {
+  border-color: rgba(255, 141, 92, 0.6);
+  background: var(--accent-soft);
+}
+
+.resumeBtn {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--accent);
+  border: none;
+  padding: 4px 4px;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+.discardBtn {
+  font-size: 10.5px;
+  font-weight: 540;
+  color: var(--t3);
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+.discardBtn:hover {
+  color: var(--t2);
+}
+
+.progress {
+  padding: 0 12px 12px;
+}

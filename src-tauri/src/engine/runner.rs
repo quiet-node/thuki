@@ -22,7 +22,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use super::process::{poll_until_healthy, EngineChild, EngineProcess, SpawnArgs};
 use super::state::{step, Effect, EngineState, Event, Target};
 use crate::config::defaults::{
-    ENGINE_COMMAND_QUEUE_CAPACITY, ENGINE_HEALTH_DEADLINE_SECS, ENGINE_HEALTH_POLL_INTERVAL_MS,
+    ENGINE_COMMAND_QUEUE_CAPACITY, ENGINE_CRASH_FALLBACK_MESSAGE, ENGINE_HEALTH_DEADLINE_SECS,
+    ENGINE_HEALTH_POLL_INTERVAL_MS,
 };
 
 /// Snapshot of the engine lifecycle published through the status watch.
@@ -340,6 +341,18 @@ impl Core {
     }
 }
 
+/// Pure: the crash reason for a `ChildCrashed` event. Uses the engine's
+/// captured stderr tail when it carries anything, otherwise the generic
+/// fallback (an external SIGKILL leaves no stderr to report).
+fn crash_reason(stderr_tail: &str) -> String {
+    let trimmed = stderr_tail.trim();
+    if trimmed.is_empty() {
+        ENGINE_CRASH_FALLBACK_MESSAGE.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// What woke the actor loop.
 enum Wake {
     Cmd(Option<Command>),
@@ -436,12 +449,19 @@ async fn run_actor(
                 core.dispatch(Event::SpawnFailed(error)).await;
             }
             Wake::ChildExit => {
+                // Read the captured stderr tail before dropping the child so
+                // the crash reports the engine's own message (e.g. "unknown
+                // model architecture") instead of a generic string.
+                let reason = crash_reason(
+                    &core
+                        .child
+                        .as_ref()
+                        .map(|child| child.stderr_tail())
+                        .unwrap_or_default(),
+                );
                 core.child = None;
                 core.health = None;
-                core.dispatch(Event::ChildCrashed(
-                    "engine process exited unexpectedly".to_string(),
-                ))
-                .await;
+                core.dispatch(Event::ChildCrashed(reason)).await;
             }
             Wake::Tick => {
                 if in_flight.load(Ordering::SeqCst) > 0 {
@@ -485,6 +505,9 @@ mod tests {
         probes_served: usize,
         log: Vec<String>,
         current_exit: Option<Arc<watch::Sender<bool>>>,
+        /// Stderr tail handed to the next spawned child, mirroring the real
+        /// process's captured stderr.
+        next_stderr_tail: String,
     }
 
     /// Scriptable [`EngineProcess`]: records every spawn, hands out
@@ -524,6 +547,11 @@ mod tests {
                 .push_back(message.to_string());
         }
 
+        /// Sets the stderr tail the next spawned child reports on exit.
+        fn push_stderr_tail(&self, tail: &str) {
+            self.inner.lock().unwrap().next_stderr_tail = tail.to_string();
+        }
+
         /// Makes the live child exit without a kill being issued.
         fn crash_current(&self) {
             let exit = {
@@ -544,12 +572,17 @@ mod tests {
         inner: Arc<Mutex<FakeInner>>,
         exit_tx: Arc<watch::Sender<bool>>,
         exit_rx: watch::Receiver<bool>,
+        stderr_tail: String,
     }
 
     #[async_trait::async_trait]
     impl EngineChild for FakeChild {
         async fn wait_exit(&mut self) {
             let _ = self.exit_rx.wait_for(|exited| *exited).await;
+        }
+
+        fn stderr_tail(&self) -> String {
+            self.stderr_tail.clone()
         }
 
         async fn kill(&mut self) {
@@ -580,10 +613,12 @@ mod tests {
             let (exit_tx, exit_rx) = watch::channel(false);
             let exit_tx = Arc::new(exit_tx);
             inner.current_exit = Some(Arc::clone(&exit_tx));
+            let stderr_tail = std::mem::take(&mut inner.next_stderr_tail);
             Ok(Box::new(FakeChild {
                 inner: Arc::clone(&self.inner),
                 exit_tx,
                 exit_rx,
+                stderr_tail,
             }))
         }
 
@@ -1014,6 +1049,38 @@ mod tests {
         );
         assert_eq!(process.snapshot(|i| i.live), 0);
         assert_eq!(process.snapshot(|i| i.kills), 0);
+    }
+
+    #[test]
+    fn crash_reason_prefers_stderr_tail_over_fallback() {
+        assert_eq!(crash_reason(""), ENGINE_CRASH_FALLBACK_MESSAGE);
+        assert_eq!(crash_reason("   \n  "), ENGINE_CRASH_FALLBACK_MESSAGE);
+        assert_eq!(
+            crash_reason("error loading model: unknown model architecture: 'x'\n"),
+            "error loading model: unknown model architecture: 'x'"
+        );
+    }
+
+    /// A crash surfaces the engine's captured stderr as the failure reason, so
+    /// an unsupported-architecture load failure reaches the user verbatim
+    /// instead of collapsing to the generic exit message.
+    #[tokio::test(start_paused = true)]
+    async fn crash_surfaces_captured_stderr_reason() {
+        let process = FakeProcess::new();
+        let handle = spawn_handle(&process, 0);
+
+        process.push_stderr_tail(
+            "error loading model: unknown model architecture: 'deepseek4_mtp_support'",
+        );
+        load(&handle, &process, "a").await;
+        process.crash_current();
+
+        let mut rx = handle.status();
+        wait_for_state(&mut rx, "failed").await;
+        assert_eq!(
+            rx.borrow().error.as_deref(),
+            Some("error loading model: unknown model architecture: 'deepseek4_mtp_support'")
+        );
     }
 
     // ── Runner: idle unload ────────────────────────────────────────────

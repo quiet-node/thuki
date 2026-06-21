@@ -1,0 +1,26 @@
+/* Shared capability-pill styling for the Discover panes (Staff picks +
+ * Browse all). Colours come from the global `--cap-*` tokens in
+ * settings.module.css so every surface labels capability identically. */
+
+.pills {
+  display: inline-flex;
+  gap: 5px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9.5px;
+  font-weight: 540;
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.05);
+}
+.pillText {
+  color: var(--cap-text);
+}
+.pillVision {
+  color: var(--cap-vision);
+}
+.pillThinking {
+  color: var(--cap-think);
+}

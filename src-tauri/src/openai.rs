@@ -39,6 +39,11 @@ pub struct OpenAiChatParams {
     pub api_key: Option<String>,
     /// Picks the user-facing error copy for this request.
     pub flavor: V1Flavor,
+    /// Whether the model should run a reasoning pass before answering.
+    /// Reasoning is opt-in (the `/think` command); a plain message answers
+    /// directly. Honored only on the built-in engine via
+    /// [`reasoning_template_kwargs`]; remote `/v1` servers ignore it.
+    pub enable_thinking: bool,
 }
 
 /// Error returned by [`request_openai_json`]. Mirrors the classification the
@@ -211,6 +216,62 @@ fn oversize_sse_line_error() -> EngineError {
     }
 }
 
+// ─── Reasoning control ───────────────────────────────────────────────────────
+
+/// The per-request reasoning switch to merge into a `/v1` body as
+/// `chat_template_kwargs`, or `None` when the request must carry no such field.
+///
+/// llama.cpp injects these into the model's chat template and a template
+/// silently ignores any kwarg it does not read (verified against the pinned
+/// `b9590` sidecar with Qwen3.5: the full set below suppresses reasoning with
+/// no error). So one harmless "blast" covers every reasoning family that
+/// exposes a template-level switch, with no per-family detection:
+/// `enable_thinking` (Qwen3/3.5, GLM, Hunyuan, Gemma), `thinking` (IBM Granite,
+/// DeepSeek-V3.x), and `thinking_budget` (`0` = off / `-1` = unrestricted, for
+/// ByteDance Seed-OSS). `false`/`0` answers directly; `true`/`-1` reasons.
+///
+/// Families with no template switch (DeepSeek-R1 + distills, QwQ, gpt-oss
+/// Harmony, MiniMax, EXAONE, Phi-4-reasoning, ...) reason regardless of this
+/// switch: the compute cannot be stopped on this engine. Their reasoning is
+/// not suppressed; [`stream_openai_chat`] surfaces any `reasoning_content` in
+/// the thinking block (always shown, never hidden), so the chain of thought is
+/// presented cleanly rather than running invisibly.
+///
+/// Only the bundled engine ([`V1Flavor::Builtin`]) receives the kwargs; the
+/// fields are llama.cpp-specific and an arbitrary OpenAI-compatible server may
+/// reject an unknown body key, so remote providers get nothing.
+fn reasoning_template_kwargs(flavor: V1Flavor, enable_thinking: bool) -> Option<serde_json::Value> {
+    match flavor {
+        V1Flavor::Builtin => Some(serde_json::json!({
+            "enable_thinking": enable_thinking,
+            "thinking": enable_thinking,
+            "thinking_budget": if enable_thinking { -1 } else { 0 },
+        })),
+        V1Flavor::Remote => None,
+    }
+}
+
+/// Builds the streaming `/v1/chat/completions` request body. Pulled out of
+/// [`stream_openai_chat`] so the reasoning-control wiring is unit-tested
+/// without a live server. No sampling parameters are sent: the server and
+/// model defaults apply.
+pub(crate) fn chat_request_body(
+    model: &str,
+    messages: &[ChatMessage],
+    flavor: V1Flavor,
+    enable_thinking: bool,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": model,
+        "messages": messages.iter().map(to_openai_message).collect::<Vec<_>>(),
+        "stream": true,
+    });
+    if let Some(kwargs) = reasoning_template_kwargs(flavor, enable_thinking) {
+        body["chat_template_kwargs"] = kwargs;
+    }
+    body
+}
+
 // ─── Streaming chat ──────────────────────────────────────────────────────────
 
 /// Streams a `/v1/chat/completions` request (`stream: true`) and emits the
@@ -235,12 +296,9 @@ pub async fn stream_openai_chat(
         messages,
         api_key,
         flavor,
+        enable_thinking,
     } = params;
-    let body = serde_json::json!({
-        "model": model,
-        "messages": messages.iter().map(to_openai_message).collect::<Vec<_>>(),
-        "stream": true,
-    });
+    let body = chat_request_body(&model, &messages, flavor, enable_thinking);
     let mut request = client
         .post(format!("{base_url}/v1/chat/completions"))
         .json(&body);
@@ -309,6 +367,12 @@ pub async fn stream_openai_chat(
                                 continue;
                             };
                             if let Some(choice) = event.choices.first() {
+                                // Whatever reasoning the model emits is always
+                                // shown (never hidden): an `Optional` model that
+                                // honored the OFF blast emits none, while a
+                                // model that always reasons gets its thinking
+                                // surfaced cleanly in the thinking block rather
+                                // than running invisibly.
                                 if let Some(thinking) = choice
                                     .delta
                                     .reasoning_content
@@ -362,8 +426,9 @@ pub(crate) fn json_request_body(
     messages: &[ChatMessage],
     schema: serde_json::Value,
     max_tokens: i32,
+    flavor: V1Flavor,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "messages": messages.iter().map(to_openai_message).collect::<Vec<_>>(),
         "stream": false,
@@ -373,7 +438,14 @@ pub(crate) fn json_request_body(
             "type": "json_schema",
             "json_schema": {"name": "out", "strict": true, "schema": schema},
         },
-    })
+    });
+    // Structured output must never reason on the built-in engine: a thinking
+    // pass would consume the `max_tokens` budget before any JSON is emitted,
+    // yielding empty content. Force the switch off (remote servers get nothing).
+    if let Some(kwargs) = reasoning_template_kwargs(flavor, false) {
+        body["chat_template_kwargs"] = kwargs;
+    }
+    body
 }
 
 /// Sends a single non-streaming `/v1/chat/completions` request with a strict
@@ -391,9 +463,10 @@ pub async fn request_openai_json(
     api_key: Option<&str>,
     timeout_secs: u64,
     max_tokens: i32,
+    flavor: V1Flavor,
     cancel_token: &CancellationToken,
 ) -> Result<String, OpenAiError> {
-    let body = json_request_body(model, &messages, schema, max_tokens);
+    let body = json_request_body(model, &messages, schema, max_tokens, flavor);
     let mut request = client
         .post(format!("{base_url}/v1/chat/completions"))
         .json(&body)
@@ -460,6 +533,7 @@ mod tests {
             messages: vec![user_message("hi")],
             api_key: None,
             flavor: V1Flavor::Remote,
+            enable_thinking: false,
         }
     }
 
@@ -1089,6 +1163,7 @@ mod tests {
             Some("sk-json"),
             5,
             256,
+            V1Flavor::Remote,
             &CancellationToken::new(),
         )
         .await;
@@ -1116,6 +1191,7 @@ mod tests {
             None,
             5,
             64,
+            V1Flavor::Remote,
             &CancellationToken::new(),
         )
         .await;
@@ -1141,6 +1217,7 @@ mod tests {
             None,
             5,
             64,
+            V1Flavor::Remote,
             &token,
         )
         .await;
@@ -1174,6 +1251,7 @@ mod tests {
             None,
             1,
             64,
+            V1Flavor::Remote,
             &CancellationToken::new(),
         )
         .await;
@@ -1213,6 +1291,7 @@ mod tests {
             None,
             5,
             64,
+            V1Flavor::Remote,
             &CancellationToken::new(),
         )
         .await;
@@ -1240,6 +1319,7 @@ mod tests {
             None,
             5,
             64,
+            V1Flavor::Remote,
             &CancellationToken::new(),
         )
         .await;
@@ -1269,6 +1349,7 @@ mod tests {
             None,
             5,
             64,
+            V1Flavor::Remote,
             &CancellationToken::new(),
         )
         .await;
@@ -1303,6 +1384,7 @@ mod tests {
             None,
             5,
             64,
+            V1Flavor::Remote,
             &CancellationToken::new(),
         )
         .await;
@@ -1311,5 +1393,107 @@ mod tests {
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1);
         assert!(!requests[0].headers.contains_key("authorization"));
+    }
+
+    // ── reasoning control (chat_template_kwargs.enable_thinking) ─────────────
+
+    /// Built-in chat carries the llama.cpp per-request reasoning switch. With
+    /// reasoning opted out (the default), the body sets
+    /// `chat_template_kwargs.enable_thinking = false` so the model answers
+    /// directly instead of running a thinking pass.
+    #[test]
+    fn builtin_chat_body_disables_thinking_by_default() {
+        let body = chat_request_body("m", &[user_message("hi")], V1Flavor::Builtin, false);
+        // The OFF blast covers every reasoning family that honors a template
+        // kwarg, in one harmless payload: `enable_thinking` (Qwen/GLM/Hunyuan/
+        // Gemma), `thinking` (Granite/DeepSeek-V3.x), `thinking_budget` 0
+        // (Seed-OSS). Templates ignore the kwargs they do not read.
+        let kwargs = &body["chat_template_kwargs"];
+        assert_eq!(kwargs["enable_thinking"], serde_json::json!(false));
+        assert_eq!(kwargs["thinking"], serde_json::json!(false));
+        assert_eq!(kwargs["thinking_budget"], serde_json::json!(0));
+        assert_eq!(body["stream"], serde_json::json!(true));
+    }
+
+    /// Built-in chat with `/think` opts in: the ON blast sets every kwarg to
+    /// the reasoning-enabled value (`thinking_budget` -1 = unrestricted).
+    #[test]
+    fn builtin_chat_body_enables_thinking_when_opted_in() {
+        let body = chat_request_body("m", &[user_message("hi")], V1Flavor::Builtin, true);
+        let kwargs = &body["chat_template_kwargs"];
+        assert_eq!(kwargs["enable_thinking"], serde_json::json!(true));
+        assert_eq!(kwargs["thinking"], serde_json::json!(true));
+        assert_eq!(kwargs["thinking_budget"], serde_json::json!(-1));
+    }
+
+    /// Remote `/v1` servers never receive the llama.cpp-specific
+    /// `chat_template_kwargs` field: an arbitrary OpenAI-compatible server may
+    /// reject an unknown body key, and the `/think` opt-in is built-in only.
+    #[test]
+    fn remote_chat_body_omits_thinking_kwargs() {
+        let body = chat_request_body("m", &[user_message("hi")], V1Flavor::Remote, true);
+        assert!(body.get("chat_template_kwargs").is_none());
+    }
+
+    /// Structured-output calls (search judges, title generation) must never
+    /// reason on the built-in engine: a thinking pass would consume the
+    /// `max_tokens` budget before any JSON is emitted. The builtin structured
+    /// body forces `enable_thinking = false`.
+    #[test]
+    fn builtin_structured_body_disables_thinking() {
+        let body = json_request_body(
+            "m",
+            &[user_message("q")],
+            serde_json::json!({}),
+            64,
+            V1Flavor::Builtin,
+        );
+        let kwargs = &body["chat_template_kwargs"];
+        assert_eq!(kwargs["enable_thinking"], serde_json::json!(false));
+        assert_eq!(kwargs["thinking"], serde_json::json!(false));
+        assert_eq!(kwargs["thinking_budget"], serde_json::json!(0));
+        assert_eq!(body["stream"], serde_json::json!(false));
+    }
+
+    /// Remote structured-output bodies stay clean of the llama.cpp kwarg.
+    #[test]
+    fn remote_structured_body_omits_thinking_kwargs() {
+        let body = json_request_body(
+            "m",
+            &[user_message("q")],
+            serde_json::json!({}),
+            64,
+            V1Flavor::Remote,
+        );
+        assert!(body.get("chat_template_kwargs").is_none());
+    }
+
+    /// End to end: a built-in streaming chat actually sends the reasoning
+    /// switch on the wire, locking `stream_openai_chat` to `chat_request_body`.
+    #[tokio::test]
+    async fn builtin_stream_sends_enable_thinking_on_the_wire() {
+        let server = MockServer::start().await;
+        mount_sse(&server, b"data: [DONE]\n".to_vec()).await;
+
+        let client = reqwest::Client::new();
+        let (_, callback) = collect_chunks();
+        stream_openai_chat(
+            OpenAiChatParams {
+                flavor: V1Flavor::Builtin,
+                enable_thinking: false,
+                ..chat_params(server.uri())
+            },
+            &client,
+            CancellationToken::new(),
+            callback,
+        )
+        .await;
+
+        let requests = server.received_requests().await.unwrap();
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(
+            sent["chat_template_kwargs"]["enable_thinking"],
+            serde_json::json!(false)
+        );
     }
 }

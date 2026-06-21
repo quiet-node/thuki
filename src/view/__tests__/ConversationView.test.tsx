@@ -558,6 +558,30 @@ describe('ConversationView', () => {
       );
     });
 
+    it('shows the live "Thinking..." indicator while reasoning streams even without /think', () => {
+      // A reasoning model may emit thinking tokens without an explicit
+      // /think (e.g. it ignored the off switch). The indicator must reflect
+      // the real stream state: still thinking, not a premature "Done".
+      render(
+        <ConversationView
+          messages={[
+            {
+              id: '1',
+              role: 'assistant' as const,
+              content: '',
+              // No fromThink flag: this turn was not an explicit /think.
+              thinkingContent: 'Reasoning in progress...',
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Thinking...',
+      );
+    });
+
     it('does not show TypingIndicator when assistant has thinkingContent but no content', () => {
       const { container } = render(
         <ConversationView
