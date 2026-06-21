@@ -114,6 +114,13 @@ export interface InstalledModel {
   /** Trained context window in tokens, healed from the curated registry by the
    * backend; `null`/absent for a pasted model with no registry entry. */
   context_length?: number | null;
+  /** Vision projector size in bytes, healed from the registry; added to
+   * `size_bytes` for the displayed total so it matches Discover. `0`/absent for
+   * a text model or a pasted repo with no registry entry. */
+  mmproj_bytes?: number;
+  /** Model maker (e.g. "Google"), healed from the registry; `null`/absent for a
+   * pasted repo, where the row falls back to the repo id. */
+  origin?: string | null;
 }
 
 /** One `.gguf` row from `list_hf_repo_ggufs`, for the paste-a-repo browser.

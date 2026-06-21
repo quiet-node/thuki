@@ -2,10 +2,11 @@
  * Unit tests for the Models surface's Library pane.
  *
  * Covers the installed-model list (active + non-active rows, capability text
- * tags, RAM-fit hint), the popover menu (Set as active / View on Hugging Face
- * / Delete), the delete confirm/cancel/success/error flow, menu dismissal
- * (outside click + Escape), the empty state, the footer, and the defensive
- * guards around the manifest and disk probes.
+ * tags, RAM-fit hint), the model name's Hugging Face link, the popover menu
+ * (Set as active / Reveal in Finder / Delete), the delete confirm/cancel/
+ * success/error flow, menu dismissal (outside click + Escape), the empty
+ * state, the footer, and the defensive guards around the manifest and disk
+ * probes.
  *
  * `invoke` comes from the global Tauri mock; capabilities are fetched
  * through the same `get_model_capabilities` command the hook reads.
@@ -107,14 +108,18 @@ function makeConfig(builtinModel: string): RawAppConfig {
 
 const GEMMA: InstalledModel = {
   id: 'org/gemma:gemma.gguf',
-  display_name: 'gemma',
   size_bytes: 2_489_757_856,
+  // A vision projector healed from the registry: folded into the shown total.
+  mmproj_bytes: 500_000_000,
+  display_name: 'gemma',
   quant: 'Q4_K_M',
   fit: 'fits',
   context_length: 262_144,
+  origin: 'Google',
 };
 
-// No `fit` here: exercises the "RAM unknown" branch (no fit pill).
+// No `fit`, `mmproj_bytes`, `origin`, or `context_length` here: a pasted repo
+// that exercises the "RAM unknown" / weights-only / maker-fallback branches.
 const QWEN: InstalledModel = {
   id: 'org/qwen:qwen.gguf',
   display_name: 'qwen',
@@ -195,16 +200,18 @@ function openMenu(name: string) {
 }
 
 describe('LibraryPane', () => {
-  it('lists each installed model with its org line, size, and quant', async () => {
+  it('lists each installed model with the size · context · maker · quant line', async () => {
     mockCommands(libraryResponses());
     await renderPane();
     expect(screen.getByText('gemma')).toBeInTheDocument();
-    // Curated model: context window healed from the registry, after the size.
+    // Curated model: size is the weights + mmproj total (2.5 + 0.5 = 3.0 GB),
+    // then the registry-healed context and maker, then the quant.
     expect(
-      screen.getByText('org/gemma · Q4_K_M · 2.5 GB · 256K'),
+      screen.getByText('3.0 GB · 256K · Google · Q4_K_M'),
     ).toBeInTheDocument();
-    // Empty quant and (here) no context drop out of the org line.
-    expect(screen.getByText('org/qwen · 9.0 GB')).toBeInTheDocument();
+    // Pasted model: no mmproj/context/quant, and the maker falls back to the
+    // repo id, so only the size and repo remain.
+    expect(screen.getByText('9.0 GB · org/qwen')).toBeInTheDocument();
   });
 
   it('shows the RAM-fit hint only when the backend provides one', async () => {
@@ -317,13 +324,10 @@ describe('LibraryPane', () => {
     expect(screen.getByText('qwen')).toBeInTheDocument();
   });
 
-  it('View on Hugging Face opens the repo page in the system browser', async () => {
+  it('opens the repo on Hugging Face from the model name link', async () => {
     mockCommands(libraryResponses());
     await renderPane();
-    openMenu('gemma');
-    fireEvent.click(
-      screen.getByRole('menuitem', { name: 'View on Hugging Face' }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'gemma' }));
     expect(invokeMock).toHaveBeenCalledWith('open_url', {
       url: 'https://huggingface.co/org/gemma',
     });
@@ -485,16 +489,33 @@ describe('LibraryPane', () => {
     expect(screen.getByRole('menu')).toHaveAttribute('data-side', 'bottom');
   });
 
-  it('flips the popover above the trigger when the space below is tight', async () => {
+  it('flips the popover above the trigger when there is more room above', async () => {
     mockCommands(libraryResponses());
     await renderPane();
     const manage = screen.getByRole('button', { name: 'Manage qwen' });
-    // Simulate the trigger sitting near the window's bottom edge, where a
-    // downward menu would be clipped by the Settings window's hidden overflow.
+    // Simulate the trigger sitting near the window's bottom edge: the space
+    // above it (top) exceeds the space below, so the menu flips up rather than
+    // spilling past the window's hidden overflow.
     manage.getBoundingClientRect = () =>
-      ({ bottom: window.innerHeight - 8 }) as unknown as DOMRect;
+      ({
+        top: window.innerHeight - 40,
+        bottom: window.innerHeight - 8,
+      }) as unknown as DOMRect;
     fireEvent.click(manage);
     expect(screen.getByRole('menu')).toHaveAttribute('data-side', 'top');
+  });
+
+  it('keeps a top row dropping down when the space above is tighter than below', async () => {
+    mockCommands(libraryResponses());
+    await renderPane();
+    const manage = screen.getByRole('button', { name: 'Manage gemma' });
+    // A row high in the window: the space below it still beats the space above,
+    // so the menu must drop down (the old fixed-height estimate wrongly flipped
+    // such rows up into the window chrome).
+    manage.getBoundingClientRect = () =>
+      ({ top: 150, bottom: window.innerHeight - 200 }) as unknown as DOMRect;
+    fireEvent.click(manage);
+    expect(screen.getByRole('menu')).toHaveAttribute('data-side', 'bottom');
   });
 
   it('toggles the popover closed when its own button is clicked again', async () => {
@@ -543,10 +564,10 @@ describe('LibraryPane', () => {
     await renderPane();
     openMenu('gemma');
     fireEvent.mouseDown(
-      screen.getByRole('menuitem', { name: 'View on Hugging Face' }),
+      screen.getByRole('menuitem', { name: 'Reveal in Finder' }),
     );
     expect(
-      screen.getByRole('menuitem', { name: 'View on Hugging Face' }),
+      screen.getByRole('menuitem', { name: 'Reveal in Finder' }),
     ).toBeInTheDocument();
   });
 

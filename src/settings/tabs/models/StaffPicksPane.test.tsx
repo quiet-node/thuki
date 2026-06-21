@@ -4,11 +4,11 @@
  * Models are grouped into use-case sections (Everyday chat / Compact & fast /
  * Deep reasoning), known sections first in a fixed order, then any extra
  * category alphabetically; within a section models are alphabetical. Each
- * compact row shows the model name, capability pills (Text always, plus Vision
- * / Thinking), a `size · maker` sub-line, a RAM-fit hint, and a single icon
- * download that runs the VERIFIED starter path (`download_staff_pick`, pinned
- * revision + sha256). The download channel is captured the same way
- * BrowseAllPane.test.tsx does it.
+ * compact row shows the model name (a Hugging Face link), capability pills
+ * (Text always, plus Vision / Thinking), a `size · context · maker · quant`
+ * sub-line, a RAM-fit hint, and a single icon download that runs the VERIFIED
+ * starter path (`download_staff_pick`, pinned revision + sha256). The download
+ * channel is captured the same way BrowseAllPane.test.tsx does it.
  */
 
 import {
@@ -203,32 +203,48 @@ describe('StaffPicksPane', () => {
     expect(screen.queryByText(/Recommended/)).not.toBeInTheDocument();
   });
 
-  it('shows the name, pills, the size · context · maker sub-line, and fit', async () => {
+  it('shows the name, pills, the size · context · maker · quant sub-line, and fit', async () => {
     await renderPane();
     const row = rowFor('Gemma 4 12B');
     expect(within(row).getByText('Text')).toBeInTheDocument();
     expect(within(row).getByText('Vision')).toBeInTheDocument();
     expect(within(row).queryByText('Thinking')).not.toBeInTheDocument();
-    // Context window sits in the metadata sub-line, between size and maker.
-    expect(within(row).getByText('7.2 GB · 128K · Google')).toBeInTheDocument();
+    // Sub-line grammar matches Library: size, context, maker, then quant.
+    expect(
+      within(row).getByText('7.2 GB · 128K · Google · Q4_0'),
+    ).toBeInTheDocument();
     expect(within(row).getByText('Comfortable')).toBeInTheDocument();
   });
 
   it('places the context window between size and maker for each model', async () => {
     await renderPane();
     expect(
-      within(rowFor('Qwen3.5 9B')).getByText('7.2 GB · 256K · Alibaba'),
+      within(rowFor('Qwen3.5 9B')).getByText(
+        '7.2 GB · 256K · Alibaba · Q4_K_M',
+      ),
     ).toBeInTheDocument();
   });
 
-  it('falls back to size · maker when a model has no context window', async () => {
+  it('falls back to size · maker · quant when a model has no context window', async () => {
     await renderPane(() => {}, {
       get_staff_picks: [
         option({ context_length: undefined, display_name: 'Mystery 7B' }),
       ],
     });
     const row = rowFor('Mystery 7B');
-    expect(within(row).getByText('7.2 GB · Google')).toBeInTheDocument();
+    expect(within(row).getByText('7.2 GB · Google · Q4_0')).toBeInTheDocument();
+  });
+
+  it('opens the repo on Hugging Face from the model name link', async () => {
+    await renderPane();
+    fireEvent.click(
+      within(rowFor('Gemma 4 12B')).getByRole('button', {
+        name: 'Gemma 4 12B',
+      }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith('open_url', {
+      url: 'https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf',
+    });
   });
 
   it('shows a Thinking pill on a thinking model and omits Vision on a text-only one', async () => {

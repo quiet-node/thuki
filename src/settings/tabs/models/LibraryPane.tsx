@@ -1,17 +1,25 @@
 /**
  * Library pane of the Models surface: the user's installed local models.
  *
- * Each downloaded model shows as a quiet row: its name with capability pills
- * (Text always, plus Vision / Thinking when applicable), the Hugging Face repo
- * / quantisation / size, and a RAM-fit hint (hover for a one-line explanation).
- * The active model is marked by the accent edge alone, not a textual pill.
- * A ⋮ button opens a floating popover (Set as active / View on Hugging Face /
- * Reveal in Finder / Delete) instead of expanding the card; Delete routes
- * through a confirm dialog. When nothing is installed the pane invites the
- * user over to Discover.
+ * Each downloaded model shows as a quiet row: its name (a link that opens the
+ * repo on Hugging Face) with capability pills (Text always, plus Vision /
+ * Thinking when applicable), a `size · context · maker · quant` sub-line (the
+ * same grammar Discover uses, with size as the full weights + mmproj total and
+ * maker falling back to the repo id for a pasted model), and a RAM-fit hint
+ * (hover for a one-line explanation). The active model is marked by the accent
+ * edge alone, not a textual pill. A ⋮ button opens a floating popover (Set as
+ * active / Reveal in Finder / Delete) instead of expanding the card; Delete
+ * routes through a confirm dialog. When nothing is installed the pane invites
+ * the user over to Discover.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import { useModelCapabilities } from '../../../hooks/useModelCapabilities';
@@ -25,14 +33,6 @@ import type { InstalledModel, RamFit } from '../../../types/starter';
 
 const HF_BASE_URL = 'https://huggingface.co';
 
-/**
- * Approximate height (px) the popover needs below the ⋮ trigger. When the space
- * beneath it is tighter than this, the menu flips above the button so it is
- * never clipped: the Settings window auto-hugs its content and `.body` hides
- * overflow, so a downward menu on the last row would spill past the window.
- */
-const MENU_DROP_ESTIMATE_PX = 210;
-
 /** RAM-fit hint colour class on this pane's stylesheet (labels are shared). */
 const FIT_CLASS: Record<RamFit, string> = {
   fits: styles.fitOk,
@@ -44,11 +44,6 @@ const FIT_CLASS: Record<RamFit, string> = {
 const SET_ACTIVE_ICON = (
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <path d="M5 13l4 4L19 7" />
-  </svg>
-);
-const HF_ICON = (
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M14 3h7v7M21 3l-9 9M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
   </svg>
 );
 const FINDER_ICON = (
@@ -81,7 +76,18 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
 
   const [installed, setInstalled] = useState<InstalledModel[]>([]);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
-  const [menuDropUp, setMenuDropUp] = useState(false);
+  // Fixed-viewport placement of the open popover, measured from its trigger so
+  // it escapes the Settings window's hidden overflow (an absolutely-positioned
+  // menu was clipped by `.body`/`.window`). `null` until the layout effect has
+  // measured the menu, so the first paint stays hidden rather than flashing at
+  // the wrong spot.
+  const [menuPos, setMenuPos] = useState<{
+    top: number;
+    right: number;
+    dropUp: boolean;
+  } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRectRef = useRef<DOMRect | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -120,19 +126,44 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
     };
   }, [openMenu]);
 
-  // Open the popover for `id` (or close it if already open). On open, flip the
-  // menu above the trigger when there is not enough room below: rows near the
-  // window's bottom edge would otherwise be clipped by the hidden body overflow.
+  // Open the popover for `id` (or close it if already open). Snapshot the
+  // trigger's viewport rect; the layout effect below positions the menu from it.
   function toggleMenu(id: string, trigger: HTMLElement) {
     if (openMenu === id) {
       setOpenMenu(null);
       return;
     }
-    const spaceBelow =
-      window.innerHeight - trigger.getBoundingClientRect().bottom;
-    setMenuDropUp(spaceBelow < MENU_DROP_ESTIMATE_PX);
+    triggerRectRef.current = trigger.getBoundingClientRect();
+    setMenuPos(null);
     setOpenMenu(id);
   }
+
+  // Position the popover once it has mounted. It is `position: fixed`, so it
+  // escapes the Settings window's hidden overflow and is bounded only by the
+  // viewport. Drop below the trigger by default; flip above when the menu would
+  // overflow the bottom edge, then clamp to the top so it can never be clipped.
+  useLayoutEffect(() => {
+    if (openMenu === null) return;
+    /* v8 ignore start -- the trigger rect and menu node always exist once open */
+    const rect = triggerRectRef.current;
+    const menu = menuRef.current;
+    if (!rect || !menu) return;
+    /* v8 ignore stop */
+    const gap = 6;
+    const height = menu.offsetHeight;
+    let top = rect.bottom + gap;
+    let dropUp = false;
+    if (top + height > window.innerHeight - 8) {
+      top = rect.top - gap - height;
+      dropUp = true;
+    }
+    // eslint-disable-next-line @eslint-react/set-state-in-effect -- intended: the popover must be positioned from its measured size before the browser paints
+    setMenuPos({
+      top: Math.max(8, top),
+      right: window.innerWidth - rect.right,
+      dropUp,
+    });
+  }, [openMenu]);
 
   // The backend writes the builtin provider's model field; lift the fresh
   // snapshot so the active row moves without a tab remount.
@@ -218,6 +249,11 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
             const active = m.id === activeModel;
             const caps = capabilities[m.id];
             const repo = m.id.split(':')[0];
+            // Maker from the registry, or the repo id for a pasted model.
+            const maker = m.origin || repo;
+            // Full on-disk total (weights + vision projector) so the same model
+            // never shows a different size here than in Discover.
+            const totalBytes = m.size_bytes + (m.mmproj_bytes ?? 0);
             // Empty when the model carries no context window, which skips it.
             const contextLabel = formatContextWindow(m.context_length ?? 0);
             return (
@@ -229,7 +265,13 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                 <div className={styles.row}>
                   <div className={styles.mid}>
                     <div className={styles.name}>
-                      {m.display_name}
+                      <button
+                        type="button"
+                        className={styles.nameLink}
+                        onClick={() => openHuggingFace(m.id)}
+                      >
+                        {m.display_name}
+                      </button>
                       <span className={`${styles.pill} ${styles.pillText}`}>
                         Text
                       </span>
@@ -247,10 +289,9 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                       ) : null}
                     </div>
                     <div className={styles.org}>
-                      {repo}
-                      {m.quant !== '' ? ` · ${m.quant}` : ''} ·{' '}
-                      {gb(m.size_bytes)} GB
-                      {contextLabel ? ` · ${contextLabel}` : ''}
+                      {gb(totalBytes)} GB
+                      {contextLabel ? ` · ${contextLabel}` : ''} · {maker}
+                      {m.quant !== '' ? ` · ${m.quant}` : ''}
                     </div>
                   </div>
                   <div className={styles.right}>
@@ -274,9 +315,15 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                       </button>
                       {openMenu === m.id ? (
                         <div
+                          ref={menuRef}
                           className={styles.menu}
                           role="menu"
-                          data-side={menuDropUp ? 'top' : 'bottom'}
+                          data-side={menuPos?.dropUp ? 'top' : 'bottom'}
+                          style={{
+                            top: menuPos?.top ?? 0,
+                            right: menuPos?.right ?? 0,
+                            visibility: menuPos ? 'visible' : 'hidden',
+                          }}
                         >
                           {active ? null : (
                             <button
@@ -289,18 +336,6 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                               <span>Set as active</span>
                             </button>
                           )}
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className={styles.menuItem}
-                            onClick={() => openHuggingFace(m.id)}
-                          >
-                            {HF_ICON}
-                            <span>View on Hugging Face</span>
-                            <span className={styles.menuExt} aria-hidden="true">
-                              ↗
-                            </span>
-                          </button>
                           <button
                             type="button"
                             role="menuitem"

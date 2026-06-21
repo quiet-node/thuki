@@ -5,8 +5,9 @@
  * ("Everyday chat", "Compact & fast", "Deep reasoning", ...) so a non-expert
  * can pick by intent. Known sections show first in a fixed order, then any
  * extra category alphabetically; within a section models are alphabetical. Each
- * compact row shows the model name, capability pills (Text always, plus Vision
- * / Thinking), a `size · maker` sub-line, a RAM-fit hint, and a single icon
+ * compact row shows the model name (a link that opens the repo on Hugging
+ * Face), capability pills (Text always, plus Vision / Thinking), a `size ·
+ * context · maker · quant` sub-line, a RAM-fit hint, and a single icon
  * download that runs the VERIFIED catalog path (`download_staff_pick`, keyed by
  * the entry's stable id, pinned revision + sha256), unlike the Browse-all
  * pane's arbitrary repo downloads. A finished install lifts a fresh config
@@ -35,6 +36,8 @@ import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
 import styles from './StaffPicksPane.module.css';
 import type { RawAppConfig } from '../../types';
 import type { RamFit, StaffPickOption } from '../../../types/starter';
+
+const HF_BASE_URL = 'https://huggingface.co';
 
 /** RAM-fit hint colour class on this pane's stylesheet (labels are shared). */
 const FIT_CLASS: Record<RamFit, string> = {
@@ -197,14 +200,23 @@ function ModelRow({ option, downloads, onSaved, refresh }: ModelRowProps) {
       ? Math.min(100, Math.floor((partial_bytes / totalBytes(option)) * 100))
       : 0;
 
+  function openHuggingFace() {
+    void invoke('open_url', { url: `${HF_BASE_URL}/${starter.repo}` });
+  }
+
   return (
     <div className={styles.row} data-model-row data-id={starter.id}>
       <div className={styles.rowMain}>
         <div className={styles.mid}>
           <div className={styles.top}>
-            <span className={styles.name} data-testid="staff-model-name">
+            <button
+              type="button"
+              className={styles.nameLink}
+              data-testid="staff-model-name"
+              onClick={openHuggingFace}
+            >
               {starter.display_name}
-            </span>
+            </button>
             <span className={styles.pills}>
               <span className={`${styles.pill} ${styles.pillText}`}>Text</span>
               {starter.vision ? (
@@ -224,7 +236,7 @@ function ModelRow({ option, downloads, onSaved, refresh }: ModelRowProps) {
               ? `Paused · ${pausedPct}%`
               : `${gb(totalBytes(option))} GB${
                   contextLabel ? ` · ${contextLabel}` : ''
-                } · ${starter.origin}`}
+                } · ${starter.origin} · ${starter.quant}`}
           </div>
         </div>
         {!showProgress ? (

@@ -105,6 +105,32 @@
   gap: 9px;
 }
 
+/* Model name doubles as the link to the repo on Hugging Face: a plain button
+ * that reads as text until hover, matching Browse-all's row link. */
+.nameLink {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  font-weight: 580;
+  font-size: 13.5px;
+  color: var(--t1);
+  text-align: left;
+  cursor: pointer;
+  transition: color 140ms ease;
+}
+.nameLink:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.nameLink:focus-visible {
+  outline: none;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .org {
   font-size: 11px;
   color: var(--t3);
@@ -196,10 +222,11 @@
   position: relative;
 }
 
+/* Fixed to the viewport (top/right set inline from the trigger's rect) so the
+ * popover escapes the Settings window's hidden overflow instead of being
+ * clipped by `.body` / `.window`. */
 .menu {
-  position: absolute;
-  right: 0;
-  top: 36px;
+  position: fixed;
   z-index: 20;
   min-width: 208px;
   padding: 6px;
@@ -215,11 +242,9 @@
   animation: menuIn 130ms cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 
-/* Flip above the trigger when a downward menu would be clipped by the
- * auto-sized window's hidden overflow (set by the pane for tight bottom rows). */
+/* When the menu flips above a bottom-edge trigger, grow the open animation from
+ * the bottom edge so it reads as rising out of the button. */
 .menu[data-side='top'] {
-  top: auto;
-  bottom: 36px;
   transform-origin: bottom right;
 }
 
@@ -250,11 +275,6 @@
   stroke-linejoin: round;
   opacity: 0.8;
   flex: none;
-}
-.menuExt {
-  margin-left: auto;
-  font-size: 12px;
-  opacity: 0.4;
 }
 .menuItem:hover {
   background: var(--elev-2);

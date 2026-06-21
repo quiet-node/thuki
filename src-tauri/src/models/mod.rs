@@ -1723,6 +1723,13 @@ pub struct InstalledModelView {
     /// repo + file. `None` for a pasted model with no registry entry (its
     /// context is not recorded in the manifest).
     pub context_length: Option<u32>,
+    /// Vision projector size in bytes, healed from the registry so the listed
+    /// total (weights + mmproj) matches Discover's. `0` for a text model or a
+    /// pasted repo with no registry entry (the manifest records only weights).
+    pub mmproj_bytes: u64,
+    /// Model maker (e.g. "Google"), healed from the registry. `None` for a
+    /// pasted repo with no entry, where the UI falls back to the repo id.
+    pub origin: Option<String>,
 }
 
 /// Estimated resident memory (GiB) for a GGUF weights blob of `size_bytes`:
@@ -1813,14 +1820,20 @@ pub fn build_installed_views(
             } else {
                 None
             };
-            // Curated models heal their context window from the registry; a
-            // pasted repo has no entry, so it shows none.
-            let context_length =
-                registry::by_repo_file(&model.repo, &model.file_name).map(|s| s.context_length);
+            // Curated models heal their context window, vision-projector size,
+            // and maker from the registry so the Library row reads the same
+            // facts Discover does; a pasted repo has no entry, so those stay
+            // absent (the UI falls back to the repo id for the maker).
+            let starter = registry::by_repo_file(&model.repo, &model.file_name);
+            let context_length = starter.map(|s| s.context_length);
+            let mmproj_bytes = starter.map_or(0, |s| s.mmproj_bytes);
+            let origin = starter.map(|s| s.origin.to_string());
             InstalledModelView {
                 model,
                 fit,
                 context_length,
+                mmproj_bytes,
+                origin,
             }
         })
         .collect()
@@ -5195,18 +5208,27 @@ mod tests {
         };
         let views = build_installed_views(vec![model.clone()], 64 << 30);
         assert_eq!(views[0].fit, Some(registry::RamFit::Fits));
-        // A pasted repo has no registry entry, so its context window is unknown.
+        // A pasted repo has no registry entry, so its context window, vision
+        // projector size, and maker are all unknown.
         assert_eq!(views[0].context_length, None);
+        assert_eq!(views[0].mmproj_bytes, 0);
+        assert_eq!(views[0].origin, None);
         // Unknown host RAM drops the verdict.
         let views = build_installed_views(vec![model], 0);
         assert_eq!(views[0].fit, None);
 
-        // A curated model heals its context window from the registry.
+        // A curated model heals its context window, projector size, and maker
+        // from the registry.
         let curated = registry::to_installed_model(&registry::STARTERS[0]);
         let views = build_installed_views(vec![curated], 64 << 30);
         assert_eq!(
             views[0].context_length,
             Some(registry::STARTERS[0].context_length)
+        );
+        assert_eq!(views[0].mmproj_bytes, registry::STARTERS[0].mmproj_bytes);
+        assert_eq!(
+            views[0].origin,
+            Some(registry::STARTERS[0].origin.to_string())
         );
     }
 
