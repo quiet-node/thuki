@@ -129,37 +129,116 @@ pub(crate) fn builtin_prime_body(model: &str, system_prompt: &str) -> serde_json
 /// priming is app-summon activity, not user chat; if it touched, idle-unload
 /// would never fire for a user who keeps summoning the overlay without
 /// chatting.
+/// Returns `true` when the prime got an HTTP 200 (the model is now warm and
+/// the system-prompt prefix is cached); any transport or non-200 outcome
+/// returns `false` so the caller leaves the load un-primed and a later warm
+/// can retry.
 pub(crate) async fn prime_builtin(
     port: u16,
     model: String,
     system_prompt: String,
     client: reqwest::Client,
-) {
+) -> bool {
     let body = builtin_prime_body(&model, &system_prompt);
-    let _ = client
+    client
         .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
         .json(&body)
         .send()
-        .await;
+        .await
+        .map(|r| r.status().as_u16())
+        .unwrap_or(0)
+        == 200
+}
+
+/// Port-keyed dedup + cue state for the built-in engine, owned by the app
+/// layer so the engine runner stays a pure process actor. `warm_builtin`
+/// consults it after `ensure_loaded` resolves the serving port, so at most one
+/// prime runs per engine load and the overlay shows the "warming" cue for
+/// exactly that window. Keyed on port, not target: a model or context switch
+/// forces a new process and a new port, so a port mismatch correctly allows a
+/// fresh prime after any restart.
+#[derive(Default)]
+pub struct BuiltinWarmState {
+    inner: std::sync::Mutex<BuiltinWarm>,
+}
+
+#[derive(Default)]
+struct BuiltinWarm {
+    /// Port of a prime currently in flight, if any. Armed by `try_begin`,
+    /// cleared by `finish` regardless of outcome so a failed prime can retry.
+    in_flight: Option<u16>,
+    /// Port whose prime completed successfully. A new process gets a new port,
+    /// so a port mismatch allows a fresh prime after a restart.
+    primed_port: Option<u16>,
+}
+
+impl BuiltinWarmState {
+    /// Atomically decides whether to prime the engine on `port`. Returns true
+    /// (and arms the in-flight slot) only when no prime is already running for
+    /// this port and this port has not already been primed. The two warm
+    /// callers (summon + first keystroke) both reach this after `ensure_loaded`
+    /// resolves the same reused port, so the loser dedups to a no-op.
+    pub fn try_begin(&self, port: u16) -> bool {
+        let mut g = self.inner.lock().unwrap();
+        if g.in_flight == Some(port) || g.primed_port == Some(port) {
+            return false;
+        }
+        g.in_flight = Some(port);
+        true
+    }
+
+    /// Clears the in-flight slot for `port` and, on success, records the port
+    /// as primed so later warm requests for the same load dedup. A `finish`
+    /// for a port that no longer owns the slot (engine restarted mid-prime)
+    /// leaves the slot untouched.
+    pub fn finish(&self, port: u16, success: bool) {
+        let mut g = self.inner.lock().unwrap();
+        if g.in_flight == Some(port) {
+            g.in_flight = None;
+        }
+        if success {
+            g.primed_port = Some(port);
+        }
+    }
+
+    /// Whether a prime is currently in flight. Seeds the Settings keep-warm
+    /// status when the panel mounts during a cold prime (it otherwise learns
+    /// the state only from the `warmup:builtin-warming`/`-warmed` events).
+    pub fn is_warming(&self) -> bool {
+        self.inner.lock().unwrap().in_flight.is_some()
+    }
 }
 
 /// Built-in arm of `warm_up_model`: starts (or reuses) the engine so the
 /// selected model is resident by the time the user submits, then primes the
-/// KV cache for the system-prompt prefix. Best-effort: a superseded or failed
-/// load, or a failed prime, is swallowed exactly like the Ollama warmup.
-/// Coverage-off: `ensure_loaded` is covered by the runner tests, `prime_builtin`
-/// by its own; this only sequences them.
+/// KV cache for the system-prompt prefix. Dedup via [`BuiltinWarmState`]
+/// collapses the summon + keystroke warms (and any double-summon) to a single
+/// prime per load, so the user's first message never queues behind redundant
+/// cold primes. Emits `warmup:builtin-warming` while the prime runs and
+/// `warmup:builtin-warmed` when it ends, so the Settings keep-warm status can
+/// read "warming…" until the model is actually ready (not just `/health` OK).
+/// Best-effort throughout: a superseded load, a dedup skip, or a failed prime
+/// is swallowed. Coverage-off: the dedup logic lives in `BuiltinWarmState`
+/// and the prime in `prime_builtin`, both tested; this only sequences them.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) async fn warm_builtin(
+    app: tauri::AppHandle,
     engine: crate::engine::runner::EngineHandle,
     target: crate::engine::state::Target,
-    model: String,
+    model_id: String,
     system_prompt: String,
     client: reqwest::Client,
 ) {
-    if let Ok(port) = engine.ensure_loaded(target).await {
-        prime_builtin(port, model, system_prompt, client).await;
+    let Ok(port) = engine.ensure_loaded(target).await else {
+        return;
+    };
+    if !app.state::<BuiltinWarmState>().try_begin(port) {
+        return;
     }
+    let _ = app.emit("warmup:builtin-warming", ());
+    let ok = prime_builtin(port, model_id, system_prompt, client).await;
+    app.state::<BuiltinWarmState>().finish(port, ok);
+    let _ = app.emit("warmup:builtin-warmed", ());
 }
 
 /// Built-in arm of `evict_model`: stops the engine sidecar and resolves once
@@ -277,7 +356,9 @@ impl WarmupState {
 
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::too_many_arguments)]
 pub fn warm_up_model(
+    app: tauri::AppHandle,
     warmup: tauri::State<WarmupState>,
     models: tauri::State<crate::models::ActiveModelState>,
     config: tauri::State<parking_lot::RwLock<crate::config::AppConfig>>,
@@ -344,6 +425,7 @@ pub fn warm_up_model(
             // so just skip rather than surfacing anything.
             if let Ok(target) = target {
                 tauri::async_runtime::spawn(warm_builtin(
+                    app,
                     engine.inner().clone(),
                     target,
                     model_id,
@@ -403,6 +485,17 @@ pub fn get_engine_status(
     engine: tauri::State<'_, crate::engine::runner::EngineHandle>,
 ) -> crate::engine::runner::EngineStatus {
     engine.current_status()
+}
+
+/// True while the built-in engine is priming (loaded but the system-prompt
+/// prefill has not finished). The Settings keep-warm panel calls this on mount
+/// to seed its "warming…" status, since the `warmup:builtin-warming` event it
+/// otherwise relies on may have fired before the panel attached its listener.
+/// Thin wrapper over [`BuiltinWarmState::is_warming`], which its own tests cover.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn get_builtin_warm_state(warm: tauri::State<'_, BuiltinWarmState>) -> bool {
+    warm.is_warming()
 }
 
 /// Returns the active model's name if it is currently loaded, `None` if no
@@ -1581,7 +1674,7 @@ mod tests {
             .unwrap()
             .parse()
             .expect("mockito url ends in a port");
-        prime_builtin(
+        let ok = prime_builtin(
             port,
             "org/repo:m.gguf".to_string(),
             SYS.to_string(),
@@ -1589,7 +1682,101 @@ mod tests {
         )
         .await;
 
+        assert!(
+            ok,
+            "a 200 prime reports success so the load is marked primed"
+        );
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn builtin_prime_swallows_connection_error() {
+        // Port 1 refuses; prime is best-effort and must not panic, exercising
+        // the transport-error path of the status capture.
+        let ok = prime_builtin(
+            1,
+            "org/repo:m.gguf".to_string(),
+            SYS.to_string(),
+            reqwest::Client::new(),
+        )
+        .await;
+
+        assert!(
+            !ok,
+            "a transport failure reports not-primed so a later warm retries"
+        );
+    }
+
+    // ── BuiltinWarmState (port-keyed dedup) ──────────────────────────────────
+
+    #[test]
+    fn warm_state_first_call_begins_then_dedups_in_flight() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000), "first call for a port arms the prime");
+        assert!(
+            !s.try_begin(40000),
+            "a second call while the prime is in flight dedups to a no-op"
+        );
+    }
+
+    #[test]
+    fn warm_state_failed_prime_allows_retry() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000));
+        s.finish(40000, false);
+        assert!(
+            s.try_begin(40000),
+            "a failed prime leaves the port un-primed so a later warm retries"
+        );
+    }
+
+    #[test]
+    fn warm_state_successful_prime_dedups_same_port() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000));
+        s.finish(40000, true);
+        assert!(
+            !s.try_begin(40000),
+            "a primed port dedups later warms for the same load"
+        );
+    }
+
+    #[test]
+    fn warm_state_new_port_primes_again_after_success() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000));
+        s.finish(40000, true);
+        assert!(
+            s.try_begin(40001),
+            "a new process/port (restart or model switch) primes fresh"
+        );
+    }
+
+    #[test]
+    fn warm_state_finish_for_unowned_port_leaves_slot_armed() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000));
+        // The engine restarted mid-prime: a finish for a different port must not
+        // clear the slot the live prime still owns, but still records its success.
+        s.finish(40001, true);
+        assert!(
+            !s.try_begin(40000),
+            "the in-flight slot for 40000 is untouched by finish(40001)"
+        );
+        assert!(
+            !s.try_begin(40001),
+            "finish(40001, true) still recorded 40001 as primed"
+        );
+    }
+
+    #[test]
+    fn warm_state_is_warming_tracks_in_flight() {
+        let s = BuiltinWarmState::default();
+        assert!(!s.is_warming(), "nothing is in flight at rest");
+        assert!(s.try_begin(40000));
+        assert!(s.is_warming(), "a begun prime reports warming");
+        s.finish(40000, true);
+        assert!(!s.is_warming(), "a finished prime is no longer warming");
     }
 
     #[test]

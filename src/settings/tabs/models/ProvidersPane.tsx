@@ -123,6 +123,11 @@ export function ProvidersPane({
   const [engineState, setEngineState] =
     useState<EngineStatus['state']>('stopped');
   const [loadedModel, setLoadedModel] = useState<string | null>(null);
+  // True while the built-in engine is priming: the model is resident
+  // (`/health` OK) but the system-prompt prefill has not finished, so it still
+  // answers as slowly as a cold start. The status reads "warming…" until the
+  // prime completes, then flips to "in VRAM".
+  const [warming, setWarming] = useState(false);
   useEffect(() => {
     // Re-reads which model the active provider actually has resident. The
     // built-in engine names it from its loaded blob, so this must be re-run on
@@ -135,6 +140,11 @@ export function ProvidersPane({
       .then((s) => setEngineState(s.state))
       .catch(() => {});
     refreshLoaded();
+    // Seed the warming flag in case the panel mounts mid-prime, before the
+    // warming event below has a chance to fire.
+    void invoke<boolean>('get_builtin_warm_state')
+      .then(setWarming)
+      .catch(() => {});
     const unlistenStatus = listen<EngineStatus>('engine:status', (e) => {
       setEngineState(e.payload.state);
       refreshLoaded();
@@ -142,13 +152,22 @@ export function ProvidersPane({
     const unlistenLoaded = listen<string>('warmup:model-loaded', (e) =>
       setLoadedModel(e.payload),
     );
-    const unlistenEvicted = listen<null>('warmup:model-evicted', () =>
-      setLoadedModel(null),
+    const unlistenEvicted = listen<null>('warmup:model-evicted', () => {
+      setLoadedModel(null);
+      setWarming(false);
+    });
+    const unlistenWarming = listen('warmup:builtin-warming', () =>
+      setWarming(true),
+    );
+    const unlistenWarmed = listen('warmup:builtin-warmed', () =>
+      setWarming(false),
     );
     return () => {
       void unlistenStatus.then((fn) => fn());
       void unlistenLoaded.then((fn) => fn());
       void unlistenEvicted.then((fn) => fn());
+      void unlistenWarming.then((fn) => fn());
+      void unlistenWarmed.then((fn) => fn());
     };
   }, []);
 
@@ -302,10 +321,18 @@ export function ProvidersPane({
   // active provider actually has resident (the built-in engine's loaded blob,
   // or Ollama's /api/ps), never the frontend selection; when set it renders as
   // a truncating name + "in VRAM" suffix in the JSX below so a long name can
-  // never break the row. This fallback text covers the two non-resident states
-  // (mid-load for the built-in engine, otherwise nothing loaded).
+  // never break the row. This fallback text covers the non-resident states
+  // (priming or mid-load for the built-in engine, otherwise nothing loaded).
+  //
+  // The built-in engine reports `loaded` (`/health` OK) before the system
+  // prompt is prefilled, so `builtinWarming` distinguishes "resident but still
+  // priming" (slow first message) from "ready". Scoped to the built-in engine
+  // because only it emits the warming events.
+  const builtinWarming = activeKind === 'builtin' && warming;
   let warmStatusText: string;
-  if (activeKind === 'builtin' && engineState === 'starting') {
+  if (builtinWarming) {
+    warmStatusText = 'Warming up…';
+  } else if (activeKind === 'builtin' && engineState === 'starting') {
     warmStatusText = 'Loading…';
   } else {
     warmStatusText = 'No model loaded';
@@ -616,7 +643,9 @@ export function ProvidersPane({
                   <span className={styles.genWarmModel} title={loadedModel}>
                     {loadedModel}
                   </span>
-                  <span className={styles.genWarmSuffix}>in VRAM</span>
+                  <span className={styles.genWarmSuffix}>
+                    {builtinWarming ? 'warming…' : 'in VRAM'}
+                  </span>
                 </>
               ) : (
                 warmStatusText

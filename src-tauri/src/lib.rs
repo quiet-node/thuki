@@ -598,6 +598,7 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
                         .clone();
                     let client = app_handle.state::<reqwest::Client>().inner().clone();
                     tauri::async_runtime::spawn(warmup::warm_builtin(
+                        app_handle.clone(),
                         engine,
                         target,
                         model_id,
@@ -2050,6 +2051,8 @@ pub fn run() {
                     let _ = warmup_handle.emit("warmup:model-loaded", model);
                 },
             )));
+            // Port-keyed dedup + cue state for the built-in engine warm-up.
+            app.manage(warmup::BuiltinWarmState::default());
 
             // ── Configuration (TOML file at app_config_dir) ─────────
             // Loaded once at startup. Missing file -> seed defaults.
@@ -2452,6 +2455,8 @@ pub fn run() {
             warmup::get_loaded_model,
             #[cfg(not(coverage))]
             warmup::get_engine_status,
+            #[cfg(not(coverage))]
+            warmup::get_builtin_warm_state,
             updater::commands::get_updater_state,
             #[cfg(not(coverage))]
             updater::commands::check_for_update,

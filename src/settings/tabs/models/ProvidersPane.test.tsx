@@ -120,6 +120,8 @@ function mockInvoke(over: Record<string, unknown> = {}) {
         return engineStatus('stopped');
       case 'get_loaded_model':
         return null;
+      case 'get_builtin_warm_state':
+        return false;
       case 'get_model_picker_state':
         return { active: null, all: [], ollamaReachable: true };
       default:
@@ -673,6 +675,67 @@ describe('ProvidersPane generation', () => {
     });
   });
 
+  it('shows warming… while the built-in engine primes a resident model', () => {
+    mockInvoke({
+      get_engine_status: engineStatus('loaded'),
+      get_loaded_model: 'Mistral Nemo 12B',
+      get_builtin_warm_state: true,
+      list_installed_models: INSTALLED,
+    });
+    renderPane(makeConfig('builtin', [BUILTIN_LOADED, OLLAMA]));
+    return waitFor(() => {
+      const status = screen.getByTestId('keep-warm-status');
+      expect(status).toHaveTextContent('Mistral Nemo 12B');
+      expect(within(status).getByText('warming…')).toBeInTheDocument();
+      expect(within(status).queryByText('in VRAM')).not.toBeInTheDocument();
+    });
+  });
+
+  it('shows Warming up… while priming before the resident name resolves', () => {
+    mockInvoke({
+      get_engine_status: engineStatus('loaded'),
+      get_loaded_model: null,
+      get_builtin_warm_state: true,
+    });
+    renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
+    return waitFor(() =>
+      expect(screen.getByText('Warming up…')).toBeInTheDocument(),
+    );
+  });
+
+  it('flips warming… to in VRAM across the warming and warmed events', async () => {
+    mockInvoke({
+      get_engine_status: engineStatus('loaded'),
+      get_loaded_model: 'Qwen3.5 9B',
+      list_installed_models: INSTALLED,
+    });
+    renderPane(makeConfig('builtin', [BUILTIN_LOADED, OLLAMA]));
+    const status = await screen.findByTestId('keep-warm-status');
+    await waitFor(() =>
+      expect(within(status).getByText('in VRAM')).toBeInTheDocument(),
+    );
+    act(() => emitTauriEvent('warmup:builtin-warming', null));
+    expect(within(status).getByText('warming…')).toBeInTheDocument();
+    act(() => emitTauriEvent('warmup:builtin-warmed', null));
+    expect(within(status).getByText('in VRAM')).toBeInTheDocument();
+  });
+
+  it('clears the warming status when the model is evicted', async () => {
+    mockInvoke({
+      get_engine_status: engineStatus('loaded'),
+      get_loaded_model: 'Qwen3.5 9B',
+      get_builtin_warm_state: true,
+      list_installed_models: INSTALLED,
+    });
+    renderPane(makeConfig('builtin', [BUILTIN_LOADED, OLLAMA]));
+    const status = await screen.findByTestId('keep-warm-status');
+    await waitFor(() =>
+      expect(within(status).getByText('warming…')).toBeInTheDocument(),
+    );
+    act(() => emitTauriEvent('warmup:model-evicted', null));
+    expect(screen.getByText('No model loaded')).toBeInTheDocument();
+  });
+
   it('falls back to no-model-loaded when the engine is loaded but the model is unknown', () => {
     mockInvoke({ get_engine_status: engineStatus('loaded') });
     renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
@@ -776,6 +839,7 @@ describe('ProvidersPane robustness', () => {
       list_installed_models: new Error('a'),
       get_engine_status: new Error('b'),
       get_loaded_model: new Error('c'),
+      get_builtin_warm_state: new Error('d'),
     });
     renderPane(makeConfig('builtin', [BUILTIN, OLLAMA]));
     await waitFor(() =>
