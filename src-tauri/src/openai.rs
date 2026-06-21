@@ -231,10 +231,11 @@ fn oversize_sse_line_error() -> EngineError {
 /// ByteDance Seed-OSS). `false`/`0` answers directly; `true`/`-1` reasons.
 ///
 /// Families with no template switch (DeepSeek-R1 + distills, QwQ, gpt-oss
-/// Harmony, MiniMax, EXAONE, Phi-4-reasoning, ...) reason regardless; their
-/// output is dropped at the stream layer when thinking is off (see
-/// [`stream_openai_chat`]), so nothing is ever shown even though the compute
-/// cannot be stopped on this engine.
+/// Harmony, MiniMax, EXAONE, Phi-4-reasoning, ...) reason regardless of this
+/// switch: the compute cannot be stopped on this engine. Their reasoning is
+/// not suppressed; [`stream_openai_chat`] surfaces any `reasoning_content` in
+/// the thinking block (always shown, never hidden), so the chain of thought is
+/// presented cleanly rather than running invisibly.
 ///
 /// Only the bundled engine ([`V1Flavor::Builtin`]) receives the kwargs; the
 /// fields are llama.cpp-specific and an arbitrary OpenAI-compatible server may
