@@ -1783,11 +1783,14 @@ where
 /// Pure parse of an `/api/models` search body into a page of summary rows.
 /// Non-chat and empty-id rows are dropped per [`search_entry_to_summary`];
 /// `has_more` is set from the raw entry count against `limit` so dropped rows
-/// never cut pagination short.
+/// never cut pagination short, and is forced `false` once `limit` reaches the
+/// [`HF_SEARCH_LIMIT_MAX`] ceiling: requests are clamped to that ceiling, so a
+/// full page there would refetch the same capped rows forever. "Load more"
+/// stops at the ceiling instead.
 pub fn parse_search_results(body: &[u8], limit: usize) -> Result<HfSearchPage, String> {
     let entries: Vec<HfSearchEntry> = serde_json::from_slice(body)
         .map_err(|e| format!("failed to decode Hugging Face search response: {e}"))?;
-    let has_more = entries.len() >= limit;
+    let has_more = entries.len() >= limit && limit < HF_SEARCH_LIMIT_MAX;
     let rows = entries
         .into_iter()
         .filter_map(search_entry_to_summary)
@@ -5305,6 +5308,38 @@ mod tests {
         assert!(parse_search_results(body.as_bytes(), 2).unwrap().has_more);
         // ...but a page asking for three was not filled, so the Hub is exhausted.
         assert!(!parse_search_results(body.as_bytes(), 3).unwrap().has_more);
+    }
+
+    #[test]
+    fn parse_search_results_stops_paginating_at_the_ceiling() {
+        let page_of = |n: usize| {
+            let entries: Vec<_> = (0..n)
+                .map(|i| {
+                    serde_json::json!({
+                        "id": format!("org/m{i}-GGUF"),
+                        "downloads": 1,
+                        "pipeline_tag": "text-generation"
+                    })
+                })
+                .collect();
+            serde_json::Value::Array(entries).to_string()
+        };
+        // A full page exactly at the clamp ceiling reports no more: requests are
+        // clamped to HF_SEARCH_LIMIT_MAX, so paging past it would refetch the
+        // same capped rows forever and never let "Load more" settle.
+        let full = page_of(HF_SEARCH_LIMIT_MAX);
+        assert!(
+            !parse_search_results(full.as_bytes(), HF_SEARCH_LIMIT_MAX)
+                .unwrap()
+                .has_more
+        );
+        // One step below the ceiling, a full page still invites another fetch.
+        let below = page_of(HF_SEARCH_LIMIT_MAX - 1);
+        assert!(
+            parse_search_results(below.as_bytes(), HF_SEARCH_LIMIT_MAX - 1)
+                .unwrap()
+                .has_more
+        );
     }
 
     #[test]
