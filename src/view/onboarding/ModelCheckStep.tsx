@@ -410,8 +410,8 @@ const BuiltinShell = forwardRef<HTMLDivElement, { children: React.ReactNode }>(
               maxWidth: 560,
             }}
           >
-            Pick a starter brain for Thuki. Downloads once, then runs fully
-            offline.
+            Pick a starter brain for Thuki. More models are available later in
+            Settings.
           </p>
 
           {children}
