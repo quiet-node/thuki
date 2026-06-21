@@ -456,6 +456,26 @@ mod tests {
     }
 
     #[test]
+    fn blob_shas_are_unique_across_entries() {
+        // Parallel downloads rely on no two catalog entries sharing a blob: the
+        // content-addressed store would otherwise see two concurrent writers to
+        // the same `tmp/<sha>.partial`. If a future entry legitimately shares a
+        // blob (e.g. a common mmproj companion), add per-sha download
+        // serialization before relaxing this guard. See `DownloadState` docs.
+        let mut seen = std::collections::HashSet::new();
+        for s in STARTERS {
+            assert!(
+                seen.insert(s.sha256),
+                "duplicate weights sha256: {}",
+                s.sha256
+            );
+            if let Some(mmproj) = s.mmproj_sha256 {
+                assert!(seen.insert(mmproj), "duplicate blob sha256: {mmproj}");
+            }
+        }
+    }
+
+    #[test]
     fn ids_are_present_and_unique() {
         // The Staff Picks catalog and the id-keyed download path key on `id`,
         // so every entry needs a non-empty slug and no two may collide.

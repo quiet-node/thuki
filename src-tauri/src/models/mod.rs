@@ -1131,48 +1131,65 @@ async fn reconcile_capabilities(
 /// Stable error returned when a repo id fails [`is_valid_repo_id`].
 const INVALID_REPO_ID_ERR: &str = "invalid Hugging Face repo id";
 
-/// Cancellation handle for the (at most one) in-flight model download.
-/// `Some` while a download is running; `None` otherwise. Claimed atomically
-/// via [`claim_download`] so a second download cannot start until the first
-/// completes, fails, or is cancelled.
+/// Cancellation handles for the in-flight model downloads, keyed by the
+/// caller-supplied download key (the frontend's stable per-row identity, e.g. a
+/// Staff Picks id or `repo\0file`). Empty when nothing is downloading. Distinct
+/// keys download concurrently; a duplicate key is rejected via [`claim_download`]
+/// so the same row cannot start twice.
+///
+/// Parallelism never corrupts the content-addressed blob store, and this map is
+/// not what protects it: [`download::run_download`] verifies each blob's sha256
+/// before renaming its partial into the store, and [`download::download_one`]
+/// skips a blob whose final file already exists. With per-key dedupe here and
+/// the distinct blob shas the registry guarantees (asserted in
+/// `registry::tests`), no two concurrent downloads target the same blob, so no
+/// per-blob lock is needed.
 #[derive(Default)]
-pub struct DownloadState(pub std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>);
+pub struct DownloadState(
+    pub std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>,
+);
 
-/// Atomically claims the single download slot. Returns a fresh cancellation
-/// token on success; an error when another download already holds the slot
-/// (or the lock is poisoned).
+/// Atomically claims a download slot for `key`. Returns a fresh cancellation
+/// token on success; an error when `key` already has an in-flight download (or
+/// the lock is poisoned).
 pub fn claim_download(
     state: &DownloadState,
+    key: &str,
 ) -> Result<tokio_util::sync::CancellationToken, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
+    if guard.contains_key(key) {
         return Err("a download is already in progress".to_string());
     }
     let token = tokio_util::sync::CancellationToken::new();
-    *guard = Some(token.clone());
+    guard.insert(key.to_string(), token.clone());
     Ok(token)
 }
 
-/// Clears the download slot. Best-effort: a poisoned lock is ignored because
-/// release runs on the task teardown path where there is nothing left to do.
-pub fn release_download(state: &DownloadState) {
+/// Releases the slot held by `key`. Best-effort: a poisoned lock is ignored
+/// because release runs on the task teardown path where there is nothing left
+/// to do.
+pub fn release_download(state: &DownloadState, key: &str) {
     if let Ok(mut guard) = state.0.lock() {
-        *guard = None;
+        guard.remove(key);
     }
 }
 
-/// True while a model download holds the slot. Read before quitting so the app
-/// can warn that quitting discards the in-flight download.
+/// True while any model download holds a slot. Read before quitting so the app
+/// can warn that quitting discards the in-flight download(s).
 pub fn download_in_flight(state: &DownloadState) -> bool {
-    state.0.lock().map(|guard| guard.is_some()).unwrap_or(false)
+    state
+        .0
+        .lock()
+        .map(|guard| !guard.is_empty())
+        .unwrap_or(false)
 }
 
-/// Cancels the in-flight download's token, if one is claimed. Does NOT clear
-/// the slot: the download task notices the cancellation, emits `Cancelled`,
-/// and releases the slot itself.
-pub fn cancel_active_download(state: &DownloadState) {
+/// Cancels the download held by `key`, if one is in flight. Does NOT remove the
+/// slot: the download task notices the cancellation, emits `Cancelled`, and
+/// releases its own slot. A missing key is a harmless no-op.
+pub fn cancel_download(state: &DownloadState, key: &str) {
     if let Ok(guard) = state.0.lock() {
-        if let Some(token) = guard.as_ref() {
+        if let Some(token) = guard.get(key) {
             token.cancel();
         }
     }
@@ -2161,7 +2178,7 @@ pub fn delete_installed_model_inner(
     builtin_model: &str,
 ) -> Result<DeleteOutcome, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
+    if !guard.is_empty() {
         return Err("a download is already in progress".to_string());
     }
     let orphans = manifest::delete(conn, id).map_err(|e| e.to_string())?;
@@ -2185,7 +2202,7 @@ pub fn discard_partial_inner(
         return Err("invalid sha256".to_string());
     }
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
+    if !guard.is_empty() {
         return Err("a download is already in progress".to_string());
     }
     match std::fs::remove_file(store.partial_path(sha256)) {
@@ -2273,16 +2290,18 @@ pub fn get_models_dir_free_bytes(store: tauri::State<'_, storage::ModelStore>) -
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn download_starter(
     tier: String,
+    key: String,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
     app: tauri::AppHandle,
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     let starter = starter_for_tier(&tier)?;
-    let token = claim_download(&download_state)?;
+    let token = claim_download(&download_state, &key)?;
     spawn_model_download(
         app,
         registry::download_specs(starter),
         registry::to_installed_model(starter),
+        key,
         token,
         on_event,
     );
@@ -2297,16 +2316,18 @@ pub fn download_starter(
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn download_staff_pick(
     id: String,
+    key: String,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
     app: tauri::AppHandle,
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     let starter = starter_for_id(&id)?;
-    let token = claim_download(&download_state)?;
+    let token = claim_download(&download_state, &key)?;
     spawn_model_download(
         app,
         registry::download_specs(starter),
         registry::to_installed_model(starter),
+        key,
         token,
         on_event,
     );
@@ -2320,17 +2341,19 @@ pub fn download_staff_pick(
 pub async fn download_repo_model(
     repo: String,
     file: String,
+    key: String,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
     app: tauri::AppHandle,
     client: tauri::State<'_, reqwest::Client>,
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     let resolved = resolve_repo_spec(&client, HF_BASE_URL, &repo, &file).await?;
-    let token = claim_download(&download_state)?;
+    let token = claim_download(&download_state, &key)?;
     spawn_model_download(
         app,
         repo_download_specs(HF_BASE_URL, &repo, &file, &resolved),
         repo_installed_model(&repo, &file, &resolved),
+        key,
         token,
         on_event,
     );
@@ -2381,12 +2404,13 @@ pub async fn list_openai_models(
     fetch_openai_models(&client, &base_url, api_key.as_deref()).await
 }
 
-/// Cancels the in-flight model download, if any. The download task emits
-/// `Cancelled` and keeps the partial for a later resume.
+/// Cancels the in-flight model download identified by `key`, if any. The
+/// download task emits `Cancelled` and keeps the partial for a later resume.
+/// Other concurrent downloads are unaffected.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub fn cancel_model_download(download_state: tauri::State<'_, DownloadState>) {
-    cancel_active_download(&download_state);
+pub fn cancel_model_download(key: String, download_state: tauri::State<'_, DownloadState>) {
+    cancel_download(&download_state, &key);
 }
 
 /// Removes the partial file for `sha256` (the user chose Discard over Resume).
@@ -2487,6 +2511,7 @@ fn spawn_model_download(
     app: tauri::AppHandle,
     specs: Vec<download::DownloadSpec>,
     model: manifest::InstalledModel,
+    key: String,
     token: tokio_util::sync::CancellationToken,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
 ) {
@@ -2507,7 +2532,7 @@ fn spawn_model_download(
             }
             let _ = on_event_finalize.send(finalize_outcome_event(finalized));
         }
-        release_download(&app.state::<DownloadState>());
+        release_download(&app.state::<DownloadState>(), &key);
     });
 }
 
@@ -2548,7 +2573,23 @@ fn finalize_install(
         eprintln!("thuki: [models] failed to remove superseded blobs: {e}");
     }
     let config = app.state::<parking_lot::RwLock<AppConfig>>();
-    persist_active_provider_model(app, &config, PROVIDER_ID_BUILTIN, &model.id)
+    // Auto-select only the first model: adopt this download as the built-in
+    // model when the provider has none yet; otherwise a completed download just
+    // installs and leaves the user's active choice alone. Parallel downloads
+    // finish in arbitrary order, so a last-one-wins overwrite would be
+    // unpredictable.
+    if adopt_as_builtin_model(&builtin_provider_model(&config.read())) {
+        persist_active_provider_model(app, &config, PROVIDER_ID_BUILTIN, &model.id)
+    } else {
+        Ok(())
+    }
+}
+
+/// Whether a freshly installed model should become the built-in provider's
+/// active model: only when the provider has no model selected yet (empty id).
+/// Keeps "auto-select the first model" predictable under parallel downloads.
+fn adopt_as_builtin_model(current_builtin_model: &str) -> bool {
+    current_builtin_model.is_empty()
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -4452,35 +4493,45 @@ mod tests {
     // ── Model library: download claim ────────────────────────────────────────
 
     #[test]
-    fn download_claim_rejects_second_concurrent() {
+    fn download_claim_allows_distinct_keys_and_rejects_a_duplicate() {
         let state = DownloadState::default();
-        let token = claim_download(&state).unwrap();
+        let token = claim_download(&state, "model-a").unwrap();
         assert!(!token.is_cancelled());
-        let err = claim_download(&state).unwrap_err();
+        // A different model downloads concurrently: its own slot is granted.
+        assert!(claim_download(&state, "model-b").is_ok());
+        // The same key cannot start twice while it is in flight.
+        let err = claim_download(&state, "model-a").unwrap_err();
         assert_eq!(err, "a download is already in progress");
-        // Release clears the claim so a new download can start.
-        release_download(&state);
-        assert!(claim_download(&state).is_ok());
+        // Releasing one key frees only that slot.
+        release_download(&state, "model-a");
+        assert!(claim_download(&state, "model-a").is_ok());
     }
 
     #[test]
-    fn download_in_flight_tracks_the_claim() {
+    fn download_in_flight_tracks_any_claim() {
         let state = DownloadState::default();
         assert!(!download_in_flight(&state));
-        let _token = claim_download(&state).unwrap();
+        let _a = claim_download(&state, "a").unwrap();
+        let _b = claim_download(&state, "b").unwrap();
         assert!(download_in_flight(&state));
-        release_download(&state);
+        // One release leaves the other download in flight.
+        release_download(&state, "a");
+        assert!(download_in_flight(&state));
+        release_download(&state, "b");
         assert!(!download_in_flight(&state));
     }
 
     #[test]
-    fn cancel_active_download_cancels_claimed_token_and_tolerates_idle() {
+    fn cancel_download_cancels_only_the_keyed_token_and_tolerates_idle() {
         let state = DownloadState::default();
-        // No claim yet: cancelling is a harmless no-op.
-        cancel_active_download(&state);
-        let token = claim_download(&state).unwrap();
-        cancel_active_download(&state);
-        assert!(token.is_cancelled());
+        // No such key: cancelling is a harmless no-op.
+        cancel_download(&state, "missing");
+        let a = claim_download(&state, "a").unwrap();
+        let b = claim_download(&state, "b").unwrap();
+        cancel_download(&state, "a");
+        assert!(a.is_cancelled());
+        // Cancelling one download leaves the others running.
+        assert!(!b.is_cancelled());
     }
 
     #[test]
@@ -4491,14 +4542,23 @@ mod tests {
             let _guard = state_ref.0.lock().unwrap();
             panic!("poison");
         });
-        assert!(claim_download(&state).is_err());
+        assert!(claim_download(&state, "k").is_err());
         let (_dir, store) = make_store();
         assert!(discard_partial_inner(&state, &store, &"a".repeat(64)).is_err());
         let conn = crate::database::open_in_memory().unwrap();
         assert!(delete_installed_model_inner(&state, &conn, &store, "x:y.gguf", "").is_err());
         // Best-effort operations must not panic on the poisoned lock.
-        cancel_active_download(&state);
-        release_download(&state);
+        cancel_download(&state, "k");
+        release_download(&state, "k");
+    }
+
+    #[test]
+    fn adopt_as_builtin_model_only_for_the_first_model() {
+        // No model selected yet: the first completed download is adopted.
+        assert!(adopt_as_builtin_model(""));
+        // A model is already active: a later parallel completion does not steal
+        // the active slot.
+        assert!(!adopt_as_builtin_model("google/gemma:gemma-q4.gguf"));
     }
 
     #[test]
@@ -5537,15 +5597,16 @@ mod tests {
         std::fs::write(store.blob_path(&m.sha256), b"w").unwrap();
 
         // A claimed download slot must refuse the delete and leave the row
-        // and blob untouched.
-        let _token = claim_download(&state).unwrap();
+        // and blob untouched, even though the in-flight download is a different
+        // model: a finishing download could insert or share refcounted blobs.
+        let _token = claim_download(&state, "other-model").unwrap();
         let err = delete_installed_model_inner(&state, &conn, &store, &m.id, "").unwrap_err();
         assert_eq!(err, "a download is already in progress");
         assert!(manifest::get(&conn, &m.id).unwrap().is_some());
         assert!(store.blob_path(&m.sha256).exists());
 
         // Releasing the slot lets the delete proceed.
-        release_download(&state);
+        release_download(&state, "other-model");
         assert!(delete_installed_model_inner(&state, &conn, &store, &m.id, "").is_ok());
     }
 
@@ -5578,11 +5639,12 @@ mod tests {
         assert!(discard_partial_inner(&state, &store, "short").is_err());
         assert!(discard_partial_inner(&state, &store, &"Z".repeat(64)).is_err());
 
-        // Rejected while a download is claimed.
-        let _token = claim_download(&state).unwrap();
+        // Rejected while any download is claimed (a finishing download may be
+        // writing this very partial or about to share its blob).
+        let _token = claim_download(&state, "some-model").unwrap();
         let err = discard_partial_inner(&state, &store, &sha).unwrap_err();
         assert!(err.contains("in progress"), "got: {err}");
-        release_download(&state);
+        release_download(&state, "some-model");
 
         // Removes an existing partial; a missing partial is fine (idempotent).
         std::fs::write(store.partial_path(&sha), b"bytes").unwrap();

@@ -24,7 +24,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 
 import { StaffPicksPane } from './StaffPicksPane';
-import { DownloadProvider } from '../../../contexts/DownloadContext';
+import { DownloadsProvider } from '../../../contexts/DownloadsContext';
 import type { RawAppConfig } from '../../types';
 import type { Starter, StarterOption } from '../../../types/starter';
 
@@ -162,7 +162,7 @@ async function renderPane(
 ) {
   mockCommands(picksResponses(overrides));
   const view = render(<StaffPicksPane onSaved={onSaved} />, {
-    wrapper: DownloadProvider,
+    wrapper: DownloadsProvider,
   });
   await waitFor(() =>
     expect(invokeMock).toHaveBeenCalledWith('get_staff_picks'),
@@ -280,18 +280,24 @@ describe('StaffPicksPane', () => {
     );
   });
 
-  it('disables other rows while one model is downloading', async () => {
+  it('downloads a second model in parallel with the first', async () => {
     await renderPane();
     fireEvent.click(
       within(rowFor('Gemma 4 12B')).getByRole('button', { name: 'Download' }),
     );
     await flush();
-    // The active row shows progress; the other rows' Download buttons disable so
-    // a second click cannot collide with the single backend download slot and
-    // surface "a download is already in progress".
-    expect(
-      within(rowFor('Qwen3.5 9B')).getByRole('button', { name: 'Download' }),
-    ).toBeDisabled();
+    // The first row shows progress; another row stays downloadable, and clicking
+    // it starts a second concurrent download (the backend keys each separately).
+    const qwenDownload = within(rowFor('Qwen3.5 9B')).getByRole('button', {
+      name: 'Download',
+    });
+    expect(qwenDownload).toBeEnabled();
+    fireEvent.click(qwenDownload);
+    await flush();
+    const starts = invokeMock.mock.calls.filter(
+      (c: unknown[]) => c[0] === 'download_staff_pick',
+    );
+    expect(starts).toHaveLength(2);
   });
 
   it('lifts a fresh config and refreshes when a download completes', async () => {
@@ -330,7 +336,9 @@ describe('StaffPicksPane', () => {
     await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await flush();
-    expect(invokeMock).toHaveBeenCalledWith('cancel_model_download');
+    expect(invokeMock).toHaveBeenCalledWith('cancel_model_download', {
+      key: 'staff:gemma-4-12b',
+    });
   });
 
   it('shows the paused row immediately after cancel, without a tab switch', async () => {

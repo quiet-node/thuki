@@ -113,59 +113,6 @@ describe('DownloadContext', () => {
     expect(result.current.resumeSeedBytes).toBeNull();
     expect(result.current.activeOption).toBeNull();
     expect(result.current.grandTotalBytes).toBeNull();
-    expect(result.current.activeDownload).toBeNull();
-  });
-
-  it('startStaffPick records the row id and runs the verified catalog path', async () => {
-    const { result } = renderHook(() => useDownloadCtx(), { wrapper });
-
-    await act(async () => {
-      result.current.startStaffPick('gemma-4-12b');
-    });
-
-    expect(result.current.activeDownload).toEqual({
-      kind: 'staff',
-      id: 'gemma-4-12b',
-    });
-    expect(result.current.state).toEqual({ phase: 'downloading' });
-    expect(invoke).toHaveBeenCalledWith('download_staff_pick', {
-      id: 'gemma-4-12b',
-      onEvent: expect.anything(),
-    });
-  });
-
-  it('startRepoDownload records the repo + file and runs the repo path', async () => {
-    const { result } = renderHook(() => useDownloadCtx(), { wrapper });
-
-    await act(async () => {
-      result.current.startRepoDownload('org/repo', 'weights-q4.gguf');
-    });
-
-    expect(result.current.activeDownload).toEqual({
-      kind: 'repo',
-      repo: 'org/repo',
-      file: 'weights-q4.gguf',
-    });
-    expect(result.current.state).toEqual({ phase: 'downloading' });
-    expect(invoke).toHaveBeenCalledWith('download_repo_model', {
-      repo: 'org/repo',
-      file: 'weights-q4.gguf',
-      onEvent: expect.anything(),
-    });
-  });
-
-  it('clearActiveDownload forgets the active Discover download row', async () => {
-    const { result } = renderHook(() => useDownloadCtx(), { wrapper });
-
-    await act(async () => {
-      result.current.startStaffPick('gemma-4-12b');
-    });
-    expect(result.current.activeDownload).not.toBeNull();
-
-    act(() => {
-      result.current.clearActiveDownload();
-    });
-    expect(result.current.activeDownload).toBeNull();
   });
 
   it('beginDownload records the tier, option, grand total and starts the machine', async () => {
@@ -184,6 +131,7 @@ describe('DownloadContext', () => {
     expect(result.current.state).toEqual({ phase: 'downloading' });
     expect(invoke).toHaveBeenCalledWith('download_starter', {
       tier: 'balanced',
+      key: 'tier:balanced',
       onEvent: expect.anything(),
     });
   });
@@ -207,6 +155,7 @@ describe('DownloadContext', () => {
     expect(result.current.state).toEqual({ phase: 'downloading' });
     expect(invoke).toHaveBeenCalledWith('download_starter', {
       tier: 'fast',
+      key: 'tier:fast',
       onEvent: expect.anything(),
     });
   });
@@ -239,7 +188,9 @@ describe('DownloadContext', () => {
     // until the backend Cancelled lands (slot released) so a resume cannot
     // race; meanwhile `isPausing` is true for instant "Pausing…" feedback.
     expect(result.current.pausedBytes).toBe(60);
-    expect(invoke).toHaveBeenCalledWith('cancel_model_download');
+    expect(invoke).toHaveBeenCalledWith('cancel_model_download', {
+      key: 'tier:balanced',
+    });
     expect(result.current.isPaused).toBe(false);
     expect(result.current.isPausing).toBe(true);
 
@@ -328,6 +279,7 @@ describe('DownloadContext', () => {
       expect(result.current.state).toEqual({ phase: 'downloading' });
       expect(invoke).toHaveBeenCalledWith('download_starter', {
         tier: 'fast',
+        key: 'tier:fast',
         onEvent: expect.anything(),
       });
     });

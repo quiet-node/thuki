@@ -24,7 +24,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 
 import { BrowseAllPane } from './BrowseAllPane';
-import { DownloadProvider } from '../../../contexts/DownloadContext';
+import { DownloadsProvider } from '../../../contexts/DownloadsContext';
 import {
   HF_SEARCH_DEBOUNCE_MS,
   HF_PAGE_SIZE,
@@ -141,7 +141,7 @@ async function renderPane(
 ) {
   mockCommands(discoverResponses(overrides));
   const view = render(<BrowseAllPane onSaved={onSaved} />, {
-    wrapper: DownloadProvider,
+    wrapper: DownloadsProvider,
   });
   await waitFor(() =>
     expect(invokeMock).toHaveBeenCalledWith('search_hf_models', {
@@ -193,7 +193,9 @@ describe('BrowseAllPane', () => {
   it('typing in the search drives a debounced fetch and re-renders results', async () => {
     vi.useFakeTimers();
     mockCommands(discoverResponses());
-    render(<BrowseAllPane onSaved={() => {}} />, { wrapper: DownloadProvider });
+    render(<BrowseAllPane onSaved={() => {}} />, {
+      wrapper: DownloadsProvider,
+    });
     await act(async () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
       await Promise.resolve();
@@ -222,7 +224,9 @@ describe('BrowseAllPane', () => {
   it('clicking a family chip sets the query to that family', async () => {
     vi.useFakeTimers();
     mockCommands(discoverResponses());
-    render(<BrowseAllPane onSaved={() => {}} />, { wrapper: DownloadProvider });
+    render(<BrowseAllPane onSaved={() => {}} />, {
+      wrapper: DownloadsProvider,
+    });
     await act(async () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
       await Promise.resolve();
@@ -246,7 +250,9 @@ describe('BrowseAllPane', () => {
   it('the All chip clears the query and is active by default', async () => {
     vi.useFakeTimers();
     mockCommands(discoverResponses());
-    render(<BrowseAllPane onSaved={() => {}} />, { wrapper: DownloadProvider });
+    render(<BrowseAllPane onSaved={() => {}} />, {
+      wrapper: DownloadsProvider,
+    });
     await act(async () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
       await Promise.resolve();
@@ -390,7 +396,7 @@ describe('BrowseAllPane', () => {
     expect(screen.getByText(/repo unavailable/)).toBeInTheDocument();
   });
 
-  it('downloads a chosen quant, progresses, and on ready lifts config and collapses', async () => {
+  it('downloads a chosen quant, progresses, and on ready lifts config', async () => {
     const onSaved = vi.fn();
     await renderPane(onSaved);
     const row = screen
@@ -426,9 +432,14 @@ describe('BrowseAllPane', () => {
     });
     await flush();
     expect(onSaved).toHaveBeenCalledWith(CONFIG_AFTER_INSTALL);
+    // The progress card clears once the entry is dropped; the row stays expanded
+    // (parallel: a sibling quant could still be downloading) with its quants
+    // listed, not collapsed.
     await waitFor(() =>
-      expect(screen.queryByText('gemma-q4.gguf')).not.toBeInTheDocument(),
+      expect(screen.queryByTestId('download-figures')).not.toBeInTheDocument(),
     );
+    expect(screen.getByText('gemma-q4.gguf')).toBeInTheDocument();
+    expect(screen.getByText('gemma-q8.gguf')).toBeInTheDocument();
   });
 
   it('leaves the lift to a later resync when get_config fails post-download', async () => {
@@ -462,7 +473,9 @@ describe('BrowseAllPane', () => {
     expect(screen.getByTestId('download-figures')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await flush();
-    expect(invokeMock).toHaveBeenCalledWith('cancel_model_download');
+    expect(invokeMock).toHaveBeenCalledWith('cancel_model_download', {
+      key: 'repo:google/gemma-4-12b-it-GGUF\ngemma-q4.gguf',
+    });
   });
 
   async function expandRepo(): Promise<HTMLElement> {
@@ -561,7 +574,7 @@ describe('BrowseAllPane', () => {
     expect(screen.getByText(/^Paused · \d+%$/)).toBeInTheDocument();
   });
 
-  it('keeps the other quant rows visible and downloadable while one downloads', async () => {
+  it('downloads a second quant in parallel with the first', async () => {
     await renderPane();
     const row = screen
       .getByText('google/gemma-4-12b-it-GGUF')
@@ -571,14 +584,20 @@ describe('BrowseAllPane', () => {
     // Start the first quant's download.
     fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
     await flush();
-    // The active row shows progress...
+    // The active quant shows progress...
     expect(screen.getByTestId('download-figures')).toBeInTheDocument();
-    // ...and the OTHER quant file is still listed, not hidden.
+    // ...and the OTHER quant stays listed and downloadable: clicking it starts a
+    // second concurrent download (each quant is keyed separately on the backend).
     expect(screen.getByText('gemma-q8.gguf')).toBeInTheDocument();
-    // Its Download button stays (disabled, since one download runs at a time).
     const others = screen.getAllByRole('button', { name: 'Download' });
     expect(others).toHaveLength(1);
-    expect(others[0]).toBeDisabled();
+    expect(others[0]).toBeEnabled();
+    fireEvent.click(others[0]);
+    await flush();
+    const repoStarts = invokeMock.mock.calls.filter(
+      (c: unknown[]) => c[0] === 'download_repo_model',
+    );
+    expect(repoStarts).toHaveLength(2);
   });
 
   it('retries after a failure and offers a path back to the quant list', async () => {
@@ -621,7 +640,9 @@ describe('BrowseAllPane', () => {
       resolveSearch = res;
     });
     mockCommands(discoverResponses({ search_hf_models: pending }));
-    render(<BrowseAllPane onSaved={() => {}} />, { wrapper: DownloadProvider });
+    render(<BrowseAllPane onSaved={() => {}} />, {
+      wrapper: DownloadsProvider,
+    });
     await flush();
     expect(screen.getByText('Searching…')).toBeInTheDocument();
     await act(async () => {
@@ -648,7 +669,9 @@ describe('BrowseAllPane', () => {
         gated: false,
       }));
     mockCommands(discoverResponses({ search_hf_models: full(HF_PAGE_SIZE) }));
-    render(<BrowseAllPane onSaved={() => {}} />, { wrapper: DownloadProvider });
+    render(<BrowseAllPane onSaved={() => {}} />, {
+      wrapper: DownloadsProvider,
+    });
     await act(async () => {
       vi.advanceTimersByTime(HF_SEARCH_DEBOUNCE_MS);
       await Promise.resolve();

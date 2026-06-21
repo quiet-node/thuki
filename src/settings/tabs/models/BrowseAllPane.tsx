@@ -6,19 +6,23 @@
  * A search field (driven by {@link useHfSearch}) plus a row of family filter
  * chips feed one debounced backend query that returns chat/text-generation
  * GGUF repos. Each lean row shows the repo id, an org + downloads sub-line, a
- * link out to the repo on Hugging Face, and an icon-only download button. That
- * button expands a quant accordion listing the repo's `.gguf` files
- * (`list_hf_repo_ggufs`, each with an accurate per-quant RAM-fit, the only
- * place fit is shown) and downloads the chosen one through the shared
- * {@link useDownloadModel} kit. A "Load more" control pages past the first
- * batch. A finished install lifts a fresh config snapshot and collapses the row.
+ * link out to the repo on Hugging Face, and a disclosure chevron. Expanding a
+ * row lists the repo's `.gguf` files (`list_hf_repo_ggufs`, each with an
+ * accurate per-quant RAM-fit, the only place fit is shown); each quant downloads
+ * through the Settings {@link useDownloads} registry, so multiple quants (and
+ * multiple repos) can download in parallel. A "Load more" control pages past
+ * the first batch; a finished install lifts a fresh config snapshot.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import { DownloadProgress } from '../../../components/DownloadProgress';
-import { useDownloadCtx } from '../../../contexts/DownloadContext';
+import {
+  useDownloads,
+  type DownloadsContextValue,
+} from '../../../contexts/DownloadsContext';
+import { downloadKey } from '../../../hooks/downloadKey';
 import { useHfSearch } from './useHfSearch';
 import { Tooltip } from '../../../components/Tooltip';
 import { formatContextWindow } from '../../../utils/contextWindow';
@@ -155,39 +159,20 @@ interface BrowseAllRowProps {
 }
 
 /**
- * One repo row plus its lazy quant accordion. The GGUF file list is fetched
- * the first time the row expands; the download state machine is local to the
- * row so two rows cannot share an in-flight download.
+ * One repo row plus its lazy quant accordion. The GGUF file list is fetched the
+ * first time the row expands; each quant downloads independently through the
+ * registry, so several quants of one repo can run at once.
  */
 function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
-  // The download machine lives at the app root (DownloadProvider), shared with
-  // every other row and pane, so a tab switch that unmounts Browse all never
-  // drops an in-flight download: the single-slot backend download outlives the
-  // pane. `activeDownload` names the repo + file that owns it.
-  const {
-    state,
-    progress,
-    etaSeconds,
-    startRepoDownload,
-    cancel,
-    retry,
-    reset,
-    activeDownload,
-    clearActiveDownload,
-  } = useDownloadCtx();
-
-  // The file this repo's row is currently downloading, or null when another row
-  // (or no download) owns the single in-flight slot. Drives which quant swaps to
-  // the live progress card and, on a remount after a tab switch, the re-expand.
-  const activeRepoFile =
-    activeDownload?.kind === 'repo' && activeDownload.repo === model.id
-      ? activeDownload.file
-      : null;
-  const ownsActiveDownload = activeRepoFile !== null;
-
-  const [expanded, setExpanded] = useState(ownsActiveDownload);
+  const downloads = useDownloads();
   const [files, setFiles] = useState<HfGgufFile[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
+
+  // Re-expand a repo that still has a live download after a tab switch remounts
+  // this row collapsed. The registry survives the unmount; this row's
+  // expand/files state does not, so it rebuilds from the registry on mount.
+  const hasLiveDownload = downloads.hasRepoDownload(model.id);
+  const [expanded, setExpanded] = useState(hasLiveDownload);
 
   const org = orgOf(model.id);
 
@@ -204,12 +189,11 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
     }
   }, [model.id]);
 
-  // A remount that lands on the row owning the in-flight download (re-expanded
-  // above) loads its quant list once so the live progress shows again instead
-  // of staying behind a collapsed row. Fires only on mount.
-  const restoreActiveRow = useRef(ownsActiveDownload);
+  // On a remount that auto-expanded the row (a download is still live), fetch
+  // the quant list once so the live progress shows again. Fires only on mount.
+  const restoreOnMountRef = useRef(hasLiveDownload);
   useEffect(() => {
-    if (restoreActiveRow.current) void loadFiles();
+    if (restoreOnMountRef.current) void loadFiles();
   }, [loadFiles]);
 
   function toggle() {
@@ -225,23 +209,6 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
     void invoke('open_url', { url: `${HF_BASE_URL}/${model.id}` });
   }
 
-  // A finished install: the backend already wrote the builtin provider's model
-  // field, so lift the fresh config snapshot and collapse the row. The machine
-  // is shared across rows, so only the row that owns the download reacts.
-  useEffect(() => {
-    if (state.phase !== 'ready' || !ownsActiveDownload) return;
-    void (async () => {
-      try {
-        onSaved(await invoke<RawAppConfig>('get_config'));
-      } catch {
-        // The focus-driven resync picks the change up on next activation.
-      }
-      reset();
-      clearActiveDownload();
-      setExpanded(false);
-    })();
-  }, [state.phase, ownsActiveDownload, onSaved, reset, clearActiveDownload]);
-
   // Silent re-read of the listing (no loading flash): the rows carry fresh
   // `partial_bytes`, so a file flips to/from its Paused state in place.
   const refetchFiles = useCallback(async () => {
@@ -255,29 +222,6 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
     }
   }, [model.id]);
 
-  // Cancelling leaves the partial on disk; forget the active row and re-read the
-  // listing so the file flips straight to its Paused / Resume / Discard controls.
-  async function cancelDownload() {
-    await cancel();
-    clearActiveDownload();
-    await refetchFiles();
-  }
-
-  // A terminal card's exit (Choose a different model, and the unused confirm
-  // fallbacks): return to the quant list and forget the active row.
-  function returnToList() {
-    reset();
-    clearActiveDownload();
-  }
-
-  async function discardFile(sha256: string) {
-    await invoke('discard_partial_download', { sha256 });
-    await refetchFiles();
-  }
-
-  // True while ANY download runs (the engine handles one at a time): every other
-  // row's controls disable; the owning file swaps to the live progress card.
-  const anyInFlight = state.phase !== 'idle';
   // The context window is a per-repo property (the search carries it via
   // expand[]=gguf), so it shows on the collapsed row without expanding. Empty
   // when unknown, which skips it.
@@ -327,106 +271,145 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
             <p className={styles.note}>No GGUF files in this repo.</p>
           ) : null}
           {files !== null && files.length > 0
-            ? files.map((f) => {
-                // Only the file that owns the in-flight download swaps its
-                // controls for the inline progress. A file with an interrupted
-                // partial reads as Paused with Resume / Discard; everything else
-                // is a normal, browsable quant. Resume and Discard are disabled
-                // while any download runs, since the engine handles one at a time.
-                const downloading = anyInFlight && activeRepoFile === f.file;
-                const paused = !downloading && f.partial_bytes !== null;
-                const pausedPct =
-                  f.partial_bytes !== null
-                    ? Math.min(
-                        100,
-                        Math.floor((f.partial_bytes / f.size_bytes) * 100),
-                      )
-                    : 0;
-                return (
-                  <div className={styles.quantRow} key={f.file}>
-                    <span className={styles.quantName}>{f.file}</span>
-                    {downloading ? (
-                      <DownloadProgress
-                        state={state}
-                        progress={progress}
-                        etaSeconds={etaSeconds}
-                        // The repo download flow has no pre-flight confirm step
-                        // (only the starter picker does), so the confirm card
-                        // never renders; these required props point at the same
-                        // covered handlers rather than dead no-op literals.
-                        onConfirm={returnToList}
-                        onCancelConfirm={returnToList}
-                        onCancel={() => void cancelDownload()}
-                        onRetry={() => void retry()}
-                        // A terminal failure must leave a path back to the quant
-                        // list, not just Retry; this returns to the file rows.
-                        onChooseAnother={returnToList}
-                      />
-                    ) : (
-                      <>
-                        {f.fit ? (
-                          <Tooltip
-                            label={RAM_FIT_TOOLTIP[f.fit]}
-                            placement="top"
-                          >
-                            <span
-                              className={`${styles.fit} ${FIT_CLASS[f.fit]}`}
-                            >
-                              {RAM_FIT_LABEL[f.fit]}
-                            </span>
-                          </Tooltip>
-                        ) : null}
-                        {paused ? (
-                          <>
-                            <span className={styles.quantPaused}>
-                              Paused · {pausedPct}%
-                            </span>
-                            <button
-                              type="button"
-                              className={styles.quantResume}
-                              disabled={anyInFlight}
-                              onClick={() =>
-                                startRepoDownload(model.id, f.file)
-                              }
-                            >
-                              Resume
-                            </button>
-                            <button
-                              type="button"
-                              className={styles.quantDiscard}
-                              aria-label="Discard"
-                              disabled={anyInFlight}
-                              onClick={() => void discardFile(f.sha256)}
-                            >
-                              Discard
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <span className={styles.quantSize}>
-                              {gb(f.size_bytes)} GB
-                            </span>
-                            <button
-                              type="button"
-                              className={styles.quantGet}
-                              aria-label="Download"
-                              disabled={anyInFlight}
-                              onClick={() =>
-                                startRepoDownload(model.id, f.file)
-                              }
-                            >
-                              {DOWNLOAD_ICON}
-                            </button>
-                          </>
-                        )}
-                      </>
-                    )}
-                  </div>
-                );
-              })
+            ? files.map((f) => (
+                <QuantRow
+                  key={f.file}
+                  file={f}
+                  repo={model.id}
+                  downloads={downloads}
+                  onSaved={onSaved}
+                  refetch={refetchFiles}
+                />
+              ))
             : null}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+interface QuantRowProps {
+  file: HfGgufFile;
+  repo: string;
+  downloads: DownloadsContextValue;
+  onSaved: (next: RawAppConfig) => void;
+  refetch: () => Promise<void>;
+}
+
+/**
+ * One quant file row. Owns its own download by key, so each quant in a repo can
+ * download in parallel with the others: a downloading quant shows the inline
+ * progress card while its siblings stay browsable and downloadable.
+ */
+function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
+  const key = downloadKey({ kind: 'repo', repo, file: file.file });
+  const entry = downloads.get(key);
+  const { clear } = downloads;
+  const downloading = entry !== undefined;
+  const phase = entry?.state.phase;
+
+  // A finished install: the backend recorded the model, so lift the fresh config
+  // and re-read the listing (the quant flips to its installed state) and drop
+  // the entry. Per quant, so parallel installs settle independently.
+  useEffect(() => {
+    if (phase !== 'ready') return;
+    void (async () => {
+      try {
+        onSaved(await invoke<RawAppConfig>('get_config'));
+      } catch {
+        // The focus-driven resync picks the change up on next activation.
+      }
+      clear(key);
+      await refetch();
+    })();
+  }, [phase, key, clear, onSaved, refetch]);
+
+  // Cancelling keeps the partial on disk; re-read the listing so the file flips
+  // to its Paused / Resume / Discard controls once the Cancelled event prunes.
+  async function cancelDownload() {
+    downloads.cancel(key);
+    await refetch();
+  }
+
+  async function discardFile() {
+    await downloads.discard(file.sha256);
+    await refetch();
+  }
+
+  // Dismiss this quant's terminal card back to the file rows. Also wired to the
+  // confirm-card callbacks, which never fire here (the repo path has no
+  // pre-flight confirm step), so all three share one covered handler.
+  const dismiss = () => clear(key);
+
+  const paused = !downloading && file.partial_bytes !== null;
+  const pausedPct =
+    file.partial_bytes !== null
+      ? Math.min(100, Math.floor((file.partial_bytes / file.size_bytes) * 100))
+      : 0;
+
+  return (
+    <div className={styles.quantRow}>
+      <span className={styles.quantName}>{file.file}</span>
+      {downloading && entry ? (
+        <DownloadProgress
+          state={entry.state}
+          progress={entry.progress}
+          etaSeconds={entry.etaSeconds}
+          // The repo download flow has no pre-flight confirm step (only the
+          // starter picker does), so the confirm card never renders; these
+          // share the same covered dismiss handler rather than dead no-op
+          // literals.
+          onConfirm={dismiss}
+          onCancelConfirm={dismiss}
+          onCancel={() => void cancelDownload()}
+          onRetry={() => downloads.retry(key)}
+          // A terminal failure must leave a path back to the quant list, not
+          // just Retry; this returns to the file rows.
+          onChooseAnother={dismiss}
+        />
+      ) : (
+        <>
+          {file.fit ? (
+            <Tooltip label={RAM_FIT_TOOLTIP[file.fit]} placement="top">
+              <span className={`${styles.fit} ${FIT_CLASS[file.fit]}`}>
+                {RAM_FIT_LABEL[file.fit]}
+              </span>
+            </Tooltip>
+          ) : null}
+          {paused ? (
+            <>
+              <span className={styles.quantPaused}>Paused · {pausedPct}%</span>
+              <button
+                type="button"
+                className={styles.quantResume}
+                onClick={() => downloads.startRepoDownload(repo, file.file)}
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                className={styles.quantDiscard}
+                aria-label="Discard"
+                onClick={() => void discardFile()}
+              >
+                Discard
+              </button>
+            </>
+          ) : (
+            <>
+              <span className={styles.quantSize}>{gb(file.size_bytes)} GB</span>
+              <button
+                type="button"
+                className={styles.quantGet}
+                aria-label="Download"
+                onClick={() => downloads.startRepoDownload(repo, file.file)}
+              >
+                {DOWNLOAD_ICON}
+              </button>
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }

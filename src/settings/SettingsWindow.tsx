@@ -23,7 +23,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
-import { DownloadProvider } from '../contexts/DownloadContext';
+import { DownloadsProvider } from '../contexts/DownloadsContext';
 import { useConfigSync } from './hooks/useConfigSync';
 import { useSettingsAutoResize } from './hooks/useSettingsAutoResize';
 import { ModelTab } from './tabs/ModelTab';
@@ -305,14 +305,14 @@ export function SettingsWindow() {
 
   if (!config) return null;
 
-  // The Settings window is its own webview root (see `main.tsx`), so it needs
-  // its own DownloadProvider: the Discover panes read the download machine from
-  // it, and hosting it here (above the section nav and the Models segmented
-  // control) keeps a Discover download alive across every in-window tab switch.
-  // It is independent of the main overlay's provider; the backend single-slot
-  // download is the real cross-window coordinator.
+  // The Settings window is its own webview root (see `main.tsx`), so it hosts
+  // its own download registry: the Discover panes read their downloads from it,
+  // and hosting it here (above the section nav and the Models segmented control)
+  // keeps every in-flight download alive across each in-window tab switch. It is
+  // independent of the main overlay's onboarding provider; the backend's keyed
+  // slots are the real cross-window coordinator.
   return (
-    <DownloadProvider>
+    <DownloadsProvider>
       <div className={styles.window} onMouseDown={handleDragStart}>
         <WindowControls onClose={handleHide} />
 
@@ -450,7 +450,7 @@ export function SettingsWindow() {
 
         <SavedPill visible={savedVisible} />
       </div>
-    </DownloadProvider>
+    </DownloadsProvider>
   );
 }
 

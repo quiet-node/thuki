@@ -18,7 +18,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 import { DiscoverPane } from './DiscoverPane';
 import { clearHfSearchCache } from './useHfSearch';
-import { DownloadProvider } from '../../../contexts/DownloadContext';
+import { DownloadsProvider } from '../../../contexts/DownloadsContext';
 import type { Starter, StarterOption } from '../../../types/starter';
 
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
@@ -63,7 +63,7 @@ beforeEach(() => {
 
 function renderHost() {
   return render(<DiscoverPane onSaved={() => {}} />, {
-    wrapper: DownloadProvider,
+    wrapper: DownloadsProvider,
   });
 }
 
@@ -183,7 +183,7 @@ describe('DiscoverPane download persistence', () => {
   // machine that died on unmount while the single-slot backend download kept
   // running). The shared app-root machine must keep the progress alive.
   it('keeps a live Staff-picks download visible across a Browse-all round trip', async () => {
-    render(<DiscoverPane onSaved={() => {}} />, { wrapper: DownloadProvider });
+    render(<DiscoverPane onSaved={() => {}} />, { wrapper: DownloadsProvider });
     await waitFor(() => expect(staffPicksVisible()).toBe(true));
 
     fireEvent.click(screen.getByRole('button', { name: 'Download' }));
@@ -227,7 +227,7 @@ describe('DiscoverPane download persistence', () => {
   // also survive a Staff-picks round trip, re-binding to the owning row (which
   // re-expands) instead of resetting to a collapsed, idle row.
   it('keeps a live Browse-all download visible across a Staff-picks round trip', async () => {
-    render(<DiscoverPane onSaved={() => {}} />, { wrapper: DownloadProvider });
+    render(<DiscoverPane onSaved={() => {}} />, { wrapper: DownloadsProvider });
     await waitFor(() => expect(staffPicksVisible()).toBe(true));
 
     fireEvent.click(screen.getByRole('tab', { name: 'Browse all' }));

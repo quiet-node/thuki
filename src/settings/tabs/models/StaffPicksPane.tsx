@@ -13,18 +13,21 @@
  * snapshot.
  *
  * Data comes from {@link useStaffPicks}, the id-keyed catalog (decoupled from
- * onboarding's three tier heroes so a category can hold any number of models);
- * the download state machine is the shared {@link useDownloadModel}, so the
- * in-flight / failed UI is the same {@link DownloadProgress} card the rest of
- * the app shows. At most one model downloads at a time (the backend enforces it
- * too); `activeId` tracks which row owns the progress card.
+ * onboarding's three tier heroes so a category can hold any number of models).
+ * Downloads run through the Settings {@link useDownloads} registry, so several
+ * models can download in parallel: each row binds to its own download by
+ * {@link downloadKey} and shows the shared {@link DownloadProgress} card.
  */
 
 import { useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import { DownloadProgress } from '../../../components/DownloadProgress';
-import { useDownloadCtx } from '../../../contexts/DownloadContext';
+import {
+  useDownloads,
+  type DownloadsContextValue,
+} from '../../../contexts/DownloadsContext';
+import { downloadKey } from '../../../hooks/downloadKey';
 import { useStaffPicks } from '../../../components/StarterPicker';
 import { Tooltip } from '../../../components/Tooltip';
 import { formatContextWindow } from '../../../utils/contextWindow';
@@ -99,69 +102,7 @@ interface StaffPicksPaneProps {
 export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
   const { options, refresh } = useStaffPicks();
   const sections = useMemo(() => groupByCategory(options ?? []), [options]);
-
-  // The download machine lives at the app root (DownloadProvider) so a Staff
-  // picks / Browse all tab switch, which unmounts this pane, never drops an
-  // in-flight download: the single-slot backend download outlives the pane, so
-  // the frontend view of it must too. `activeDownload` names the row that owns
-  // the shared progress card; it survives the remount and re-binds the row to
-  // the live progress instead of re-reading the partial as a stale "Paused".
-  const {
-    state,
-    progress,
-    etaSeconds,
-    combinedBytes,
-    speedBytesPerSec,
-    startStaffPick,
-    cancel,
-    retry,
-    reset,
-    discard,
-    activeDownload,
-    clearActiveDownload,
-  } = useDownloadCtx();
-
-  // A finished install (phase 'ready') lifts the fresh config, clears the
-  // active row, and refreshes the rows so the new model flips to Installed.
-  // An effect (not a render-time call) so it fires exactly once per transition.
-  useEffect(() => {
-    if (state.phase !== 'ready') return;
-    void (async () => {
-      try {
-        onSaved(await invoke<RawAppConfig>('get_config'));
-      } catch {
-        // The focus-driven resync picks the change up on next activation.
-      }
-      reset();
-      clearActiveDownload();
-      await refresh();
-    })();
-  }, [state.phase, onSaved, reset, clearActiveDownload, refresh]);
-
-  async function discardPartial(sha256: string) {
-    await discard(sha256);
-    await refresh();
-  }
-
-  // Cancelling leaves the partial on disk; forget the active row and re-read the
-  // options so the row flips straight to its Paused/Resume state instead of
-  // snapping back to a fresh download until the next remount.
-  async function cancelDownload() {
-    await cancel();
-    clearActiveDownload();
-    await refresh();
-  }
-
-  function returnToPicker() {
-    reset();
-    clearActiveDownload();
-  }
-
-  // The engine downloads one model at a time, so while any download is in flight
-  // every other row's Download / Resume / Discard is disabled: the owning row
-  // shows the progress card, the rest wait rather than colliding with the
-  // single backend slot and surfacing "a download is already in progress".
-  const anyInFlight = state.phase !== 'idle';
+  const downloads = useDownloads();
 
   if (options !== null && sections.length === 0) {
     return (
@@ -182,22 +123,9 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
             <ModelRow
               key={o.starter.id}
               option={o}
-              active={
-                activeDownload?.kind === 'staff' &&
-                activeDownload.id === o.starter.id
-              }
-              anyInFlight={anyInFlight}
-              state={state}
-              progress={progress}
-              etaSeconds={etaSeconds}
-              combinedBytes={combinedBytes}
-              speedBytesPerSec={speedBytesPerSec}
-              onDownload={startStaffPick}
-              onResume={startStaffPick}
-              onDiscard={discardPartial}
-              onCancel={() => void cancelDownload()}
-              onRetry={() => void retry()}
-              onChooseAnother={returnToPicker}
+              downloads={downloads}
+              onSaved={onSaved}
+              refresh={refresh}
             />
           ))}
         </div>
@@ -208,40 +136,57 @@ export function StaffPicksPane({ onSaved }: StaffPicksPaneProps) {
 
 interface ModelRowProps {
   option: StaffPickOption;
-  active: boolean;
-  /** True while any model is downloading, so this row's actions are disabled. */
-  anyInFlight: boolean;
-  state: ReturnType<typeof useDownloadCtx>['state'];
-  progress: ReturnType<typeof useDownloadCtx>['progress'];
-  etaSeconds: number | null;
-  combinedBytes: number | null;
-  speedBytesPerSec: number | null;
-  onDownload: (id: string) => void;
-  onResume: (id: string) => void;
-  onDiscard: (sha256: string) => void;
-  onCancel: () => void;
-  onRetry: () => void;
-  onChooseAnother: () => void;
+  /** The Settings download registry; each row owns its own download by key. */
+  downloads: DownloadsContextValue;
+  /** Lift a fresh config snapshot after this row's install completes. */
+  onSaved: (next: RawAppConfig) => void;
+  /** Re-read the curated rows so installed / paused state reflects on disk. */
+  refresh: () => Promise<void>;
 }
 
-function ModelRow({
-  option,
-  active,
-  anyInFlight,
-  state,
-  progress,
-  etaSeconds,
-  combinedBytes,
-  speedBytesPerSec,
-  onDownload,
-  onResume,
-  onDiscard,
-  onCancel,
-  onRetry,
-  onChooseAnother,
-}: ModelRowProps) {
+function ModelRow({ option, downloads, onSaved, refresh }: ModelRowProps) {
   const { starter, fit, installed, partial_bytes } = option;
-  const showProgress = active && state.phase !== 'idle';
+  const key = downloadKey({ kind: 'staff', id: starter.id });
+  const entry = downloads.get(key);
+  const { clear } = downloads;
+  // An entry exists only while this row's download is live (downloading,
+  // verifying, ready-pending, or failed); a Cancelled download is pruned.
+  const showProgress = entry !== undefined;
+  const phase = entry?.state.phase;
+
+  // A finished install (phase 'ready') lifts the fresh config, drops the entry,
+  // and refreshes the rows so the new model flips to Installed. Per row, so
+  // parallel installs each settle independently.
+  useEffect(() => {
+    if (phase !== 'ready') return;
+    void (async () => {
+      try {
+        onSaved(await invoke<RawAppConfig>('get_config'));
+      } catch {
+        // The focus-driven resync picks the change up on next activation.
+      }
+      clear(key);
+      await refresh();
+    })();
+  }, [phase, key, clear, onSaved, refresh]);
+
+  async function discardPartial() {
+    await downloads.discard(starter.sha256);
+    await refresh();
+  }
+
+  // Dismiss this row's terminal card back to its normal controls. Also wired to
+  // the confirm-card callbacks, which never fire here (the curated path has no
+  // pre-flight confirm step), so all three share one covered handler.
+  const dismiss = () => clear(key);
+
+  // Cancelling keeps the partial on disk; re-read the options so the row flips
+  // to its Paused/Resume state once the Cancelled event prunes the entry.
+  async function cancelDownload() {
+    downloads.cancel(key);
+    await refresh();
+  }
+
   // Empty when the model carries no context window, so the pill is skipped.
   const contextLabel = formatContextWindow(starter.context_length ?? 0);
   // An interrupted partial (not installed, not actively downloading) reads as a
@@ -294,8 +239,7 @@ function ModelRow({
                 <button
                   type="button"
                   className={styles.resumeBtn}
-                  disabled={anyInFlight}
-                  onClick={() => onResume(starter.id)}
+                  onClick={() => downloads.startStaffPick(starter.id)}
                 >
                   Resume
                 </button>
@@ -303,40 +247,37 @@ function ModelRow({
                   type="button"
                   className={styles.discardBtn}
                   aria-label="Discard"
-                  disabled={anyInFlight}
-                  onClick={() => onDiscard(starter.sha256)}
+                  onClick={() => void discardPartial()}
                 >
                   Discard
                 </button>
               </>
             ) : (
               <RowAction
-                option={option}
                 installed={installed}
-                anyInFlight={anyInFlight}
-                onDownload={onDownload}
+                onDownload={() => downloads.startStaffPick(starter.id)}
               />
             )}
           </div>
         ) : null}
       </div>
-      {showProgress ? (
+      {showProgress && entry ? (
         <div className={styles.progress}>
           <DownloadProgress
-            state={state}
-            progress={progress}
-            etaSeconds={etaSeconds}
-            combinedBytes={combinedBytes}
+            state={entry.state}
+            progress={entry.progress}
+            etaSeconds={entry.etaSeconds}
+            combinedBytes={entry.combinedBytes}
             grandTotalBytes={totalBytes(option)}
-            speedBytesPerSec={speedBytesPerSec}
+            speedBytesPerSec={entry.speedBytesPerSec}
             // The curated path has no pre-flight confirm card, so onConfirm /
-            // onCancelConfirm never fire; they point at the same covered
-            // handlers rather than dead no-op literals.
-            onConfirm={onChooseAnother}
-            onCancelConfirm={onChooseAnother}
-            onCancel={onCancel}
-            onRetry={onRetry}
-            onChooseAnother={onChooseAnother}
+            // onCancelConfirm never fire; they share the same covered dismiss
+            // handler rather than dead no-op literals.
+            onConfirm={dismiss}
+            onCancelConfirm={dismiss}
+            onCancel={() => void cancelDownload()}
+            onRetry={() => downloads.retry(key)}
+            onChooseAnother={dismiss}
           />
         </div>
       ) : null}
@@ -345,11 +286,8 @@ function ModelRow({
 }
 
 interface RowActionProps {
-  option: StaffPickOption;
   installed: boolean;
-  /** True while any model is downloading, so the download button is disabled. */
-  anyInFlight: boolean;
-  onDownload: (id: string) => void;
+  onDownload: () => void;
 }
 
 const DOWNLOAD_ICON = (
@@ -363,14 +301,7 @@ const DOWNLOAD_ICON = (
  * surface the absence of a download is the signal. The interrupted-partial
  * resume/discard pair is owned by the row itself; this renders the plain icon
  * download button otherwise. */
-function RowAction({
-  option,
-  installed,
-  anyInFlight,
-  onDownload,
-}: RowActionProps) {
-  const { starter } = option;
-
+function RowAction({ installed, onDownload }: RowActionProps) {
   if (installed) {
     return null;
   }
@@ -380,8 +311,7 @@ function RowAction({
       type="button"
       className={styles.getBtn}
       aria-label="Download"
-      disabled={anyInFlight}
-      onClick={() => onDownload(starter.id)}
+      onClick={onDownload}
     >
       {DOWNLOAD_ICON}
     </button>

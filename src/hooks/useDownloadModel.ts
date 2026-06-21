@@ -1,134 +1,57 @@
 /**
- * Download-state machine for starter model downloads.
+ * Download-state machine for a single starter model download (onboarding).
  *
- * Drives the shared download UI (StarterPicker + DownloadProgress) through
- * one discriminated-union state, fed by the `download_starter` Tauri channel
- * and, optionally, the `engine:status` Tauri event.
+ * Drives the onboarding download UI (StarterPicker + DownloadProgress) through
+ * one discriminated-union state, fed by the `download_*` Tauri channel and,
+ * optionally, the `engine:status` Tauri event. Per-event state transitions live
+ * in the shared {@link reduceDownloadEvent} reducer so this single-download hook
+ * and the multi-download Settings registry ({@link useDownloads}) never diverge.
  *
- * Engine handoff: by default `AllDone` transitions straight to `ready`,
- * because after a Settings-context download nobody starts the engine until
- * the first chat, so waiting on `engine:status` would hang forever. A
- * consumer that does prime the engine right after the download (onboarding)
- * passes `awaitEngine: true`; then `AllDone` parks in `installing` and the
- * `engine:status` listener advances `installing -> warming_up -> ready`
- * (or `failed` with kind `engine`).
+ * Engine handoff: by default `AllDone` transitions straight to `ready`, because
+ * after a Settings-context download nobody starts the engine until the first
+ * chat, so waiting on `engine:status` would hang forever. A consumer that does
+ * prime the engine right after the download (onboarding) passes
+ * `awaitEngine: true`; then `AllDone` parks in `installing` and the
+ * `engine:status` listener advances `installing -> warming_up -> ready` (or
+ * `failed` with kind `engine`).
  *
  * The backend emits `AllDone` only after the install is recorded; a finalize
- * failure (the manifest write failed) emits `Failed` instead of `AllDone`.
- * `Failed` is terminal from any state. Terminal means no *event* moves the
- * machine out of it; the user can still leave through `reset`, an explicit
- * action that returns the terminal `failed`/`ready` cards to the picker.
+ * failure (the manifest write failed) emits `Failed` instead. `Failed` is
+ * terminal from any state. Terminal means no *event* moves the machine out of
+ * it; the user can still leave through `reset`.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import {
+  type DownloadAccumulator,
+  type DownloadProgressInfo,
+  type DownloadUiState,
+  initialAccumulator,
+  reduceDownloadEvent,
+  startingAccumulator,
+} from './downloadReducer';
+import { downloadKey } from './downloadKey';
 import type {
   DownloadEvent,
-  DownloadFailKind,
   EngineStatus,
   StarterTier,
 } from '../types/starter';
 
-/** Failure kinds the UI can show: the backend's plus the engine handoff's. */
-export type DownloadUiFailKind = DownloadFailKind | 'engine';
-
-/** The download UI state machine's discriminated union. */
-export type DownloadUiState =
-  | { phase: 'idle' }
-  | { phase: 'confirming'; tier: StarterTier }
-  | { phase: 'downloading' }
-  | { phase: 'downloading_mmproj' }
-  | { phase: 'verifying' }
-  | { phase: 'installing' }
-  | { phase: 'warming_up' }
-  | { phase: 'ready' }
-  | { phase: 'resume_pending' }
-  | { phase: 'failed'; kind: DownloadUiFailKind; message: string };
-
-/**
- * True while a download is active but not yet terminal: bytes still moving
- * (`downloading`/`downloading_mmproj`) or the post-download verify/install/warm
- * steps running. False for idle, the pre-flight confirm/resume states, and the
- * terminal `ready`/`failed`. Shared by the picker's "Continue setup" line, the
- * ambient strip, and the submit soft-block so all three agree on "in flight".
- */
-export function isDownloadInFlight(phase: DownloadUiState['phase']): boolean {
-  return (
-    phase === 'downloading' ||
-    phase === 'downloading_mmproj' ||
-    phase === 'verifying' ||
-    phase === 'installing' ||
-    phase === 'warming_up'
-  );
-}
-
-/**
- * A short, jargon-free reason for a failed download, by kind, so the ambient
- * strip tells the user what actually went wrong instead of a generic message.
- */
-export function downloadFailureMessage(kind: DownloadUiFailKind): string {
-  switch (kind) {
-    case 'offline':
-      return 'You appear to be offline.';
-    case 'http':
-      return 'Hugging Face had an error. Try again.';
-    case 'checksum':
-      return 'The download did not verify. Retrying starts it fresh.';
-    case 'disk_full':
-      return 'Not enough disk space.';
-    case 'engine':
-      return "Thuki's engine could not start.";
-    case 'other':
-      return 'Model download failed.';
-  }
-}
-
-/** Last reported byte counts for the file currently downloading. */
-export interface DownloadProgressInfo {
-  file: string;
-  bytes: number;
-  totalBytes: number;
-}
-
-/** One ETA sample: a Progress event's byte count and arrival time. */
-interface EtaSample {
-  t: number;
-  bytes: number;
-}
-
-/** Rolling-rate window: only Progress samples this recent feed the ETA. */
-const ETA_WINDOW_MS = 10_000;
-
-/**
- * Bytes per second from the rolling sample window, or `null` while the rate
- * is not yet measurable (fewer than two samples, zero elapsed time, or no
- * forward progress between the window's edges).
- */
-export function computeSpeedBytesPerSec(samples: EtaSample[]): number | null {
-  if (samples.length < 2) return null;
-  const first = samples[0];
-  const last = samples[samples.length - 1];
-  const elapsedSeconds = (last.t - first.t) / 1000;
-  const deltaBytes = last.bytes - first.bytes;
-  if (elapsedSeconds <= 0 || deltaBytes <= 0) return null;
-  return deltaBytes / elapsedSeconds;
-}
-
-/**
- * Remaining seconds from the rolling sample window, or `null` while the
- * rate is not yet measurable (fewer than two samples, zero elapsed time,
- * or no forward progress between the window's edges).
- */
-export function computeEtaSeconds(
-  samples: EtaSample[],
-  bytes: number,
-  totalBytes: number,
-): number | null {
-  const bytesPerSecond = computeSpeedBytesPerSec(samples);
-  if (bytesPerSecond === null) return null;
-  return Math.max(0, Math.round((totalBytes - bytes) / bytesPerSecond));
-}
+// Re-export the shared download vocabulary so existing consumers keep importing
+// it from this hook; the definitions now live in `downloadReducer`.
+export {
+  computeEtaSeconds,
+  computeSpeedBytesPerSec,
+  downloadFailureMessage,
+  isDownloadInFlight,
+} from './downloadReducer';
+export type {
+  DownloadProgressInfo,
+  DownloadUiFailKind,
+  DownloadUiState,
+} from './downloadReducer';
 
 export interface UseDownloadModel {
   state: DownloadUiState;
@@ -161,15 +84,15 @@ export interface UseDownloadModel {
    */
   startById: (id: string) => Promise<void>;
   /**
-   * Invokes `cancel_model_download`. The state flips back to idle when the
-   * backend's Cancelled event lands; the partial is KEPT, so the caller
-   * refreshes options to surface resume_pending.
+   * Invokes `cancel_model_download` for the run this hook last started. The
+   * state flips back to idle when the backend's Cancelled event lands; the
+   * partial is KEPT, so the caller refreshes options to surface resume_pending.
    */
   cancel: () => Promise<void>;
   /**
    * failed -> downloading. A checksum failure already deleted the partial
    * on the backend, so retrying is just starting the same download (starter
-   * tier or pasted repo, whichever ran last) again.
+   * tier, staff pick, or pasted repo, whichever ran last) again.
    */
   retry: () => Promise<void>;
   /** resume_pending -> downloading; the backend resumes via Range. */
@@ -201,131 +124,37 @@ export function useDownloadModel(
 ): UseDownloadModel {
   const awaitEngine = options?.awaitEngine === true;
 
-  const [state, setState] = useState<DownloadUiState>({ phase: 'idle' });
-  const [progress, setProgress] = useState<DownloadProgressInfo | null>(null);
-  const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
-  const [combinedBytes, setCombinedBytes] = useState<number | null>(null);
-  const [speedBytesPerSec, setSpeedBytesPerSec] = useState<number | null>(null);
-
-  const samplesRef = useRef<EtaSample[]>([]);
-  const startedCountRef = useRef(0);
-  /** Bytes from files that have already fully completed this run. */
-  const completedBytesRef = useRef(0);
-  /** Declared total of the file currently downloading. */
-  const currentFileTotalRef = useRef(0);
-  /** Replays the most recent start (tier or repo) for `retry`. */
+  const [acc, setAcc] = useState<DownloadAccumulator>(initialAccumulator);
+  /** Download key of the run in flight, so `cancel` targets the right slot. */
+  const currentKeyRef = useRef('');
+  /** Replays the most recent start (tier / repo / id) for `retry`. */
   const lastStartRef = useRef<(() => Promise<void>) | null>(null);
-
-  const handleEvent = useCallback(
-    (event: DownloadEvent) => {
-      switch (event.type) {
-        case 'Started': {
-          startedCountRef.current += 1;
-          samplesRef.current = [];
-          setEtaSeconds(null);
-          setSpeedBytesPerSec(null);
-          currentFileTotalRef.current = event.data.total_bytes;
-          setProgress({
-            file: event.data.file,
-            bytes: event.data.resumed_from,
-            totalBytes: event.data.total_bytes,
-          });
-          setCombinedBytes(completedBytesRef.current + event.data.resumed_from);
-          // The second Started is always the mmproj companion: specs are
-          // ordered weights first, mmproj second.
-          setState(
-            startedCountRef.current >= 2
-              ? { phase: 'downloading_mmproj' }
-              : { phase: 'downloading' },
-          );
-          break;
-        }
-        case 'Progress': {
-          const now = Date.now();
-          const samples = samplesRef.current;
-          samples.push({ t: now, bytes: event.data.bytes });
-          while (samples.length > 0 && now - samples[0].t > ETA_WINDOW_MS) {
-            samples.shift();
-          }
-          setProgress({
-            file: event.data.file,
-            bytes: event.data.bytes,
-            totalBytes: event.data.total_bytes,
-          });
-          setEtaSeconds(
-            computeEtaSeconds(
-              samples,
-              event.data.bytes,
-              event.data.total_bytes,
-            ),
-          );
-          setSpeedBytesPerSec(computeSpeedBytesPerSec(samples));
-          setCombinedBytes(completedBytesRef.current + event.data.bytes);
-          // A resume re-hash labels itself `verifying` before the remaining
-          // bytes stream; the first streamed Progress returns the label to the
-          // active downloading phase so the transfer is not mislabeled. Any
-          // other phase is left untouched (same reference → no re-render).
-          setState((prev) =>
-            prev.phase === 'verifying'
-              ? startedCountRef.current >= 2
-                ? { phase: 'downloading_mmproj' }
-                : { phase: 'downloading' }
-              : prev,
-          );
-          break;
-        }
-        case 'Verifying':
-          setState({ phase: 'verifying' });
-          break;
-        case 'FileDone':
-          // Fold this file's bytes into the completed total and snap the
-          // cumulative figure to the boundary so the bar never dips. The next
-          // Started (mmproj) or AllDone moves the state.
-          completedBytesRef.current += currentFileTotalRef.current;
-          currentFileTotalRef.current = 0;
-          setCombinedBytes(completedBytesRef.current);
-          break;
-        case 'AllDone':
-          setState(awaitEngine ? { phase: 'installing' } : { phase: 'ready' });
-          break;
-        case 'Cancelled':
-          setProgress(null);
-          setEtaSeconds(null);
-          setSpeedBytesPerSec(null);
-          setCombinedBytes(null);
-          completedBytesRef.current = 0;
-          currentFileTotalRef.current = 0;
-          setState({ phase: 'idle' });
-          break;
-        case 'Failed':
-          // Terminal from ANY state, including verifying (finalize failure:
-          // the manifest write failed, so AllDone never arrives).
-          setState({
-            phase: 'failed',
-            kind: event.data.kind,
-            message: event.data.message,
-          });
-          break;
-      }
-    },
-    [awaitEngine],
-  );
 
   useEffect(() => {
     if (!awaitEngine) return;
     const unlistenPromise = listen<EngineStatus>('engine:status', (event) => {
       const status = event.payload;
-      setState((prev) => {
-        if (prev.phase !== 'installing' && prev.phase !== 'warming_up') {
+      setAcc((prev) => {
+        if (
+          prev.state.phase !== 'installing' &&
+          prev.state.phase !== 'warming_up'
+        ) {
           return prev;
         }
-        if (status.state === 'starting') return { phase: 'warming_up' };
-        if (status.state === 'loaded') return { phase: 'ready' };
+        if (status.state === 'starting') {
+          return { ...prev, state: { phase: 'warming_up' } };
+        }
+        if (status.state === 'loaded') {
+          return { ...prev, state: { phase: 'ready' } };
+        }
         if (status.state === 'failed') {
           return {
-            phase: 'failed',
-            kind: 'engine',
-            message: status.error ?? 'the engine could not start',
+            ...prev,
+            state: {
+              phase: 'failed',
+              kind: 'engine',
+              message: status.error ?? 'the engine could not start',
+            },
           };
         }
         return prev;
@@ -337,40 +166,38 @@ export function useDownloadModel(
   }, [awaitEngine]);
 
   const beginConfirm = useCallback((tier: StarterTier) => {
-    setState({ phase: 'confirming', tier });
+    setAcc((prev) => ({ ...prev, state: { phase: 'confirming', tier } }));
   }, []);
 
   const cancelConfirm = useCallback(() => {
-    setState({ phase: 'idle' });
+    setAcc(initialAccumulator());
   }, []);
 
-  /** Shared start path: resets per-run trackers, wires the event channel,
-   * and invokes the given download command. */
+  /** Shared start path: resets the accumulator, wires the event channel, and
+   * invokes the given download command with its download key. */
   const run = useCallback(
-    async (command: string, args: Record<string, unknown>) => {
-      startedCountRef.current = 0;
-      samplesRef.current = [];
-      completedBytesRef.current = 0;
-      currentFileTotalRef.current = 0;
-      setProgress(null);
-      setEtaSeconds(null);
-      setSpeedBytesPerSec(null);
-      setCombinedBytes(null);
-      setState({ phase: 'downloading' });
+    async (command: string, args: Record<string, unknown>, key: string) => {
+      currentKeyRef.current = key;
+      setAcc(startingAccumulator());
       const channel = new Channel<DownloadEvent>();
-      channel.onmessage = handleEvent;
+      channel.onmessage = (event) =>
+        setAcc((prev) => reduceDownloadEvent(prev, event, awaitEngine));
       try {
-        await invoke(command, { ...args, onEvent: channel });
+        await invoke(command, { ...args, key, onEvent: channel });
       } catch (err) {
-        setState({ phase: 'failed', kind: 'other', message: String(err) });
+        setAcc((prev) => ({
+          ...prev,
+          state: { phase: 'failed', kind: 'other', message: String(err) },
+        }));
       }
     },
-    [handleEvent],
+    [awaitEngine],
   );
 
   const start = useCallback(
     async (tier: StarterTier) => {
-      const replay = () => run('download_starter', { tier });
+      const replay = () =>
+        run('download_starter', { tier }, downloadKey({ kind: 'tier', tier }));
       lastStartRef.current = replay;
       await replay();
     },
@@ -379,7 +206,12 @@ export function useDownloadModel(
 
   const startRepo = useCallback(
     async (repo: string, file: string) => {
-      const replay = () => run('download_repo_model', { repo, file });
+      const replay = () =>
+        run(
+          'download_repo_model',
+          { repo, file },
+          downloadKey({ kind: 'repo', repo, file }),
+        );
       lastStartRef.current = replay;
       await replay();
     },
@@ -388,7 +220,8 @@ export function useDownloadModel(
 
   const startById = useCallback(
     async (id: string) => {
-      const replay = () => run('download_staff_pick', { id });
+      const replay = () =>
+        run('download_staff_pick', { id }, downloadKey({ kind: 'staff', id }));
       lastStartRef.current = replay;
       await replay();
     },
@@ -396,7 +229,7 @@ export function useDownloadModel(
   );
 
   const cancel = useCallback(async () => {
-    await invoke('cancel_model_download');
+    await invoke('cancel_model_download', { key: currentKeyRef.current });
   }, []);
 
   const retry = useCallback(async () => {
@@ -409,38 +242,43 @@ export function useDownloadModel(
     try {
       await invoke('discard_partial_download', { sha256 });
     } catch (err) {
-      setState({ phase: 'failed', kind: 'other', message: String(err) });
+      setAcc((prev) => ({
+        ...prev,
+        state: { phase: 'failed', kind: 'other', message: String(err) },
+      }));
       return;
     }
-    setState({ phase: 'idle' });
+    setAcc((prev) => ({ ...prev, state: { phase: 'idle' } }));
   }, []);
 
   const enterResumePending = useCallback(() => {
-    setState({ phase: 'resume_pending' });
+    setAcc((prev) => ({ ...prev, state: { phase: 'resume_pending' } }));
   }, []);
 
   const reset = useCallback(() => {
-    setState((prev) =>
-      prev.phase === 'failed' || prev.phase === 'ready'
-        ? { phase: 'idle' }
-        : prev,
+    setAcc((prev) =>
+      prev.state.phase === 'failed' || prev.state.phase === 'ready'
+        ? initialAccumulator()
+        : {
+            // Stale byte counts from the run that just ended; the next start
+            // reseeds them. Callers only invoke reset from the terminal cards.
+            ...prev,
+            progress: null,
+            etaSeconds: null,
+            speedBytesPerSec: null,
+            combinedBytes: null,
+            completedBytes: 0,
+            currentFileTotal: 0,
+          },
     );
-    // Stale byte counts from the run that just ended; the next start
-    // reseeds them. Callers only invoke reset from the terminal cards.
-    setProgress(null);
-    setEtaSeconds(null);
-    setSpeedBytesPerSec(null);
-    setCombinedBytes(null);
-    completedBytesRef.current = 0;
-    currentFileTotalRef.current = 0;
   }, []);
 
   return {
-    state,
-    progress,
-    etaSeconds,
-    combinedBytes,
-    speedBytesPerSec,
+    state: acc.state,
+    progress: acc.progress,
+    etaSeconds: acc.etaSeconds,
+    combinedBytes: acc.combinedBytes,
+    speedBytesPerSec: acc.speedBytesPerSec,
     beginConfirm,
     cancelConfirm,
     start,
