@@ -1151,24 +1151,37 @@ const INVALID_REPO_ID_ERR: &str = "invalid Hugging Face repo id";
 /// the distinct blob shas the registry guarantees (asserted in
 /// `registry::tests`), no two concurrent downloads target the same blob, so no
 /// per-blob lock is needed.
-#[derive(Default)]
-pub struct DownloadState(
-    pub std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>,
-);
+/// One in-flight download: its cancellation handle plus the blob shas it is
+/// writing. The shas let a discard scope its in-flight check to the exact
+/// partial(s) at risk instead of refusing while any download runs.
+pub struct DownloadSlot {
+    token: tokio_util::sync::CancellationToken,
+    shas: Vec<String>,
+}
 
-/// Atomically claims a download slot for `key`. Returns a fresh cancellation
-/// token on success; an error when `key` already has an in-flight download (or
-/// the lock is poisoned).
+#[derive(Default)]
+pub struct DownloadState(pub std::sync::Mutex<std::collections::HashMap<String, DownloadSlot>>);
+
+/// Atomically claims a download slot for `key`, recording the blob `shas` it
+/// will write. Returns a fresh cancellation token on success; an error when
+/// `key` already has an in-flight download (or the lock is poisoned).
 pub fn claim_download(
     state: &DownloadState,
     key: &str,
+    shas: Vec<String>,
 ) -> Result<tokio_util::sync::CancellationToken, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     if guard.contains_key(key) {
         return Err("a download is already in progress".to_string());
     }
     let token = tokio_util::sync::CancellationToken::new();
-    guard.insert(key.to_string(), token.clone());
+    guard.insert(
+        key.to_string(),
+        DownloadSlot {
+            token: token.clone(),
+            shas,
+        },
+    );
     Ok(token)
 }
 
@@ -1196,8 +1209,8 @@ pub fn download_in_flight(state: &DownloadState) -> bool {
 /// releases its own slot. A missing key is a harmless no-op.
 pub fn cancel_download(state: &DownloadState, key: &str) {
     if let Ok(guard) = state.0.lock() {
-        if let Some(token) = guard.get(key) {
-            token.cancel();
+        if let Some(slot) = guard.get(key) {
+            slot.token.cancel();
         }
     }
 }
@@ -2327,9 +2340,10 @@ pub fn delete_installed_model_inner(
 
 /// Removes the partial file for `sha256` so the next download starts fresh.
 /// Refuses malformed digests (the digest doubles as a file name) and refuses
-/// while a download is running (it may be writing that very partial). Holds
-/// the download-state lock across the removal so a concurrent claim cannot
-/// race the delete.
+/// only while a download is actively writing this very blob (deleting its
+/// partial would fail that download's verification with NotFound). Unrelated
+/// parallel downloads do not block the discard. Holds the download-state lock
+/// across the removal so a concurrent claim cannot race the delete.
 pub fn discard_partial_inner(
     state: &DownloadState,
     store: &storage::ModelStore,
@@ -2339,8 +2353,11 @@ pub fn discard_partial_inner(
         return Err("invalid sha256".to_string());
     }
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    if !guard.is_empty() {
-        return Err("a download is already in progress".to_string());
+    if guard
+        .values()
+        .any(|slot| slot.shas.iter().any(|s| s == sha256))
+    {
+        return Err("a download for this file is already in progress".to_string());
     }
     match std::fs::remove_file(store.partial_path(sha256)) {
         Ok(()) => Ok(()),
@@ -2433,10 +2450,11 @@ pub fn download_starter(
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     let starter = starter_for_tier(&tier)?;
-    let token = claim_download(&download_state, &key)?;
+    let specs = registry::download_specs(starter);
+    let token = claim_download(&download_state, &key, spec_shas(&specs))?;
     spawn_model_download(
         app,
-        registry::download_specs(starter),
+        specs,
         registry::to_installed_model(starter),
         key,
         token,
@@ -2459,10 +2477,11 @@ pub fn download_staff_pick(
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     let starter = starter_for_id(&id)?;
-    let token = claim_download(&download_state, &key)?;
+    let specs = registry::download_specs(starter);
+    let token = claim_download(&download_state, &key, spec_shas(&specs))?;
     spawn_model_download(
         app,
-        registry::download_specs(starter),
+        specs,
         registry::to_installed_model(starter),
         key,
         token,
@@ -2485,10 +2504,11 @@ pub async fn download_repo_model(
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     let resolved = resolve_repo_spec(&client, HF_BASE_URL, &repo, &file).await?;
-    let token = claim_download(&download_state, &key)?;
+    let specs = repo_download_specs(HF_BASE_URL, &repo, &file, &resolved);
+    let token = claim_download(&download_state, &key, spec_shas(&specs))?;
     spawn_model_download(
         app,
-        repo_download_specs(HF_BASE_URL, &repo, &file, &resolved),
+        specs,
         repo_installed_model(&repo, &file, &resolved),
         key,
         token,
@@ -2635,6 +2655,12 @@ pub(crate) fn finalize_outcome_event(result: Result<(), String>) -> download::Do
             message,
         },
     }
+}
+
+/// The blob shas a spec list writes, recorded on the download slot so a discard
+/// can scope its in-flight check to the exact partial(s) this download owns.
+fn spec_shas(specs: &[download::DownloadSpec]) -> Vec<String> {
+    specs.iter().map(|s| s.sha256.clone()).collect()
 }
 
 /// Runs the claimed download on the async runtime: streams events to the
@@ -4629,24 +4655,34 @@ mod tests {
     #[test]
     fn download_claim_allows_distinct_keys_and_rejects_a_duplicate() {
         let state = DownloadState::default();
-        let token = claim_download(&state, "model-a").unwrap();
+        let token = claim_download(&state, "model-a", vec![]).unwrap();
         assert!(!token.is_cancelled());
         // A different model downloads concurrently: its own slot is granted.
-        assert!(claim_download(&state, "model-b").is_ok());
+        assert!(claim_download(&state, "model-b", vec![]).is_ok());
         // The same key cannot start twice while it is in flight.
-        let err = claim_download(&state, "model-a").unwrap_err();
+        let err = claim_download(&state, "model-a", vec![]).unwrap_err();
         assert_eq!(err, "a download is already in progress");
         // Releasing one key frees only that slot.
         release_download(&state, "model-a");
-        assert!(claim_download(&state, "model-a").is_ok());
+        assert!(claim_download(&state, "model-a", vec![]).is_ok());
+    }
+
+    #[test]
+    fn spec_shas_collects_every_blob_digest() {
+        let specs = registry::download_specs(registry::onboarding_heroes()[1]);
+        let shas = spec_shas(&specs);
+        assert_eq!(shas.len(), specs.len());
+        for (sha, spec) in shas.iter().zip(&specs) {
+            assert_eq!(sha, &spec.sha256);
+        }
     }
 
     #[test]
     fn download_in_flight_tracks_any_claim() {
         let state = DownloadState::default();
         assert!(!download_in_flight(&state));
-        let _a = claim_download(&state, "a").unwrap();
-        let _b = claim_download(&state, "b").unwrap();
+        let _a = claim_download(&state, "a", vec![]).unwrap();
+        let _b = claim_download(&state, "b", vec![]).unwrap();
         assert!(download_in_flight(&state));
         // One release leaves the other download in flight.
         release_download(&state, "a");
@@ -4660,8 +4696,8 @@ mod tests {
         let state = DownloadState::default();
         // No such key: cancelling is a harmless no-op.
         cancel_download(&state, "missing");
-        let a = claim_download(&state, "a").unwrap();
-        let b = claim_download(&state, "b").unwrap();
+        let a = claim_download(&state, "a", vec![]).unwrap();
+        let b = claim_download(&state, "b", vec![]).unwrap();
         cancel_download(&state, "a");
         assert!(a.is_cancelled());
         // Cancelling one download leaves the others running.
@@ -4676,7 +4712,7 @@ mod tests {
             let _guard = state_ref.0.lock().unwrap();
             panic!("poison");
         });
-        assert!(claim_download(&state, "k").is_err());
+        assert!(claim_download(&state, "k", vec![]).is_err());
         let (_dir, store) = make_store();
         assert!(discard_partial_inner(&state, &store, &"a".repeat(64)).is_err());
         let conn = crate::database::open_in_memory().unwrap();
@@ -5864,7 +5900,7 @@ mod tests {
         // A claimed download slot must refuse the delete and leave the row
         // and blob untouched, even though the in-flight download is a different
         // model: a finishing download could insert or share refcounted blobs.
-        let _token = claim_download(&state, "other-model").unwrap();
+        let _token = claim_download(&state, "other-model", vec![]).unwrap();
         let err = delete_installed_model_inner(&state, &conn, &store, &m.id, "").unwrap_err();
         assert_eq!(err, "a download is already in progress");
         assert!(manifest::get(&conn, &m.id).unwrap().is_some());
@@ -5895,7 +5931,7 @@ mod tests {
     // ── Model library: discard partial ───────────────────────────────────────
 
     #[test]
-    fn discard_partial_validates_hex_and_running_state() {
+    fn discard_partial_validates_hex_and_scopes_to_the_target_sha() {
         let (_dir, store) = make_store();
         let state = DownloadState::default();
         let sha = "a".repeat(64);
@@ -5904,15 +5940,25 @@ mod tests {
         assert!(discard_partial_inner(&state, &store, "short").is_err());
         assert!(discard_partial_inner(&state, &store, &"Z".repeat(64)).is_err());
 
-        // Rejected while any download is claimed (a finishing download may be
-        // writing this very partial or about to share its blob).
-        let _token = claim_download(&state, "some-model").unwrap();
+        // A download in flight for a DIFFERENT blob does not block discarding
+        // this paused partial: parallel downloads each own only their own shas,
+        // so an unrelated active download never touches this file.
+        std::fs::write(store.partial_path(&sha), b"bytes").unwrap();
+        let _other = claim_download(&state, "other-model", vec!["c".repeat(64)]).unwrap();
+        discard_partial_inner(&state, &store, &sha).unwrap();
+        assert!(!store.partial_path(&sha).exists());
+        release_download(&state, "other-model");
+
+        // A download in flight that IS writing this blob blocks the discard (it
+        // would unlink the partial out from under the active writer, failing its
+        // verification with NotFound).
+        std::fs::write(store.partial_path(&sha), b"bytes").unwrap();
+        let _this = claim_download(&state, "this-model", vec![sha.clone()]).unwrap();
         let err = discard_partial_inner(&state, &store, &sha).unwrap_err();
         assert!(err.contains("in progress"), "got: {err}");
-        release_download(&state, "some-model");
+        release_download(&state, "this-model");
 
         // Removes an existing partial; a missing partial is fine (idempotent).
-        std::fs::write(store.partial_path(&sha), b"bytes").unwrap();
         discard_partial_inner(&state, &store, &sha).unwrap();
         assert!(!store.partial_path(&sha).exists());
         discard_partial_inner(&state, &store, &sha).unwrap();
