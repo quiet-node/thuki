@@ -126,6 +126,9 @@ export interface HfGgufFile {
   sha256: string;
   /** Bytes of an interrupted partial for this file on disk, or null when none. */
   partial_bytes: number | null;
+  /** Whether this exact repo file is already recorded in the installed
+   * manifest, so Browse-all shows an "Installed" marker, not a download button. */
+  installed: boolean;
 }
 
 /** Engine lifecycle snapshot published on the `engine:status` event. */

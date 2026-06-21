@@ -1706,6 +1706,10 @@ pub struct HfGgufFileRow {
     #[serde(flatten)]
     pub file: HfGgufFile,
     pub fit: Option<registry::RamFit>,
+    /// Whether this exact repo file is already recorded in the installed
+    /// manifest. Lets Browse-all show an "Installed" marker instead of a
+    /// download button once a quant finishes downloading.
+    pub installed: bool,
 }
 
 /// An installed model annotated with its RAM-fit on the host, computed from the
@@ -1747,7 +1751,11 @@ pub fn annotate_gguf_rows(files: Vec<HfGgufFile>, ram_bytes: u64) -> Vec<HfGgufF
             } else {
                 None
             };
-            HfGgufFileRow { file, fit }
+            HfGgufFileRow {
+                file,
+                fit,
+                installed: false,
+            }
         })
         .collect()
 }
@@ -1765,6 +1773,24 @@ pub fn attach_partials(
             if !row.file.sha256.is_empty() {
                 row.file.partial_bytes = store.existing_partial_len(&row.file.sha256);
             }
+            row
+        })
+        .collect()
+}
+
+/// Marks each row whose `<repo>:<file>` is already recorded in the installed
+/// manifest, so Browse-all shows an "Installed" marker rather than a download
+/// button once a quant finishes. A manifest read error degrades to "not
+/// installed" rather than failing the listing, mirroring [`annotate_starter`].
+pub fn attach_installed(
+    rows: Vec<HfGgufFileRow>,
+    repo: &str,
+    conn: &rusqlite::Connection,
+) -> Vec<HfGgufFileRow> {
+    rows.into_iter()
+        .map(|mut row| {
+            let id = format!("{repo}:{}", row.file.file);
+            row.installed = matches!(manifest::get(conn, &id), Ok(Some(_)));
             row
         })
         .collect()
@@ -2367,12 +2393,12 @@ pub async fn list_hf_repo_ggufs(
     repo: String,
     client: tauri::State<'_, reqwest::Client>,
     store: tauri::State<'_, storage::ModelStore>,
+    db: tauri::State<'_, crate::history::Database>,
 ) -> Result<Vec<HfGgufFileRow>, String> {
     let files = fetch_repo_gguf_listing(&client, HF_BASE_URL, &repo).await?;
-    Ok(attach_partials(
-        annotate_gguf_rows(files, system_ram_bytes()),
-        &store,
-    ))
+    let rows = attach_partials(annotate_gguf_rows(files, system_ram_bytes()), &store);
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(attach_installed(rows, &repo, &conn))
 }
 
 /// Searches Hugging Face for GGUF model repos matching `query`, most-downloaded
@@ -4695,6 +4721,7 @@ mod tests {
                     partial_bytes: None,
                 },
                 fit: None,
+                installed: false,
             },
             HfGgufFileRow {
                 file: HfGgufFile {
@@ -4704,6 +4731,7 @@ mod tests {
                     partial_bytes: None,
                 },
                 fit: None,
+                installed: false,
             },
         ];
         let out = attach_partials(rows, &store);
@@ -4711,6 +4739,29 @@ mod tests {
         // skipped entirely.
         assert_eq!(out[0].file.partial_bytes, Some(9));
         assert_eq!(out[1].file.partial_bytes, None);
+    }
+
+    #[test]
+    fn attach_installed_marks_only_manifest_rows() {
+        let conn = crate::database::open_in_memory().unwrap();
+        // Record one of the two files in the manifest under "<repo>:<file>".
+        manifest::insert(&conn, &manifest_row("org/repo:in.gguf", false, false)).unwrap();
+
+        let row = |name: &str| HfGgufFileRow {
+            file: HfGgufFile {
+                file: name.to_string(),
+                size_bytes: 100,
+                sha256: String::new(),
+                partial_bytes: None,
+            },
+            fit: None,
+            installed: false,
+        };
+        let out = attach_installed(vec![row("in.gguf"), row("out.gguf")], "org/repo", &conn);
+
+        // Only the file recorded in the manifest is marked installed.
+        assert!(out[0].installed);
+        assert!(!out[1].installed);
     }
 
     #[test]
@@ -5169,6 +5220,7 @@ mod tests {
                 partial_bytes: None,
             },
             fit: None,
+            installed: false,
         };
         assert_eq!(
             serde_json::to_value(file_row).unwrap(),
@@ -5178,6 +5230,7 @@ mod tests {
                 "sha256": "",
                 "partial_bytes": serde_json::Value::Null,
                 "fit": serde_json::Value::Null,
+                "installed": false,
             })
         );
     }

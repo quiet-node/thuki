@@ -87,18 +87,26 @@ const GGUFS: HfGgufFile[] = [
     fit: 'tight',
     sha256: 'a'.repeat(64),
     partial_bytes: null,
+    installed: false,
   },
   {
     file: 'gemma-q8.gguf',
     size_bytes: 9_000_000_000,
     sha256: 'b'.repeat(64),
     partial_bytes: null,
+    installed: false,
   },
 ];
 
 /** GGUFS with an interrupted partial on the first quant. */
 const GGUFS_PARTIAL: HfGgufFile[] = [
   { ...GGUFS[0], partial_bytes: 1_000_000_000 },
+  GGUFS[1],
+];
+
+/** GGUFS with the first quant already recorded in the installed manifest. */
+const GGUFS_Q4_INSTALLED: HfGgufFile[] = [
+  { ...GGUFS[0], installed: true },
   GGUFS[1],
 ];
 
@@ -486,6 +494,44 @@ describe('BrowseAllPane', () => {
     await flush();
     return row;
   }
+
+  it('shows no download control for an already-installed quant', async () => {
+    await renderPane(() => {}, { list_hf_repo_ggufs: GGUFS_Q4_INSTALLED });
+    await expandRepo();
+    // Both quants are listed, but only the still-uninstalled sibling offers a
+    // Download button: the installed quant shows nothing (no button, no badge),
+    // matching the Staff picks treatment.
+    expect(screen.getByText('gemma-q4.gguf')).toBeInTheDocument();
+    expect(screen.getByText('gemma-q8.gguf')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(1);
+  });
+
+  it('drops the download control for a quant once its download finishes', async () => {
+    let calls = 0;
+    const onSaved = vi.fn();
+    await renderPane(onSaved, {
+      // The refetch after a finished install reports the quant installed.
+      list_hf_repo_ggufs: () => {
+        calls += 1;
+        return calls <= 1 ? GGUFS : GGUFS_Q4_INSTALLED;
+      },
+    });
+    await expandRepo();
+    // Two quants, two download buttons before any install.
+    expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Download' })[0]);
+    await flush();
+    expect(screen.getByTestId('download-figures')).toBeInTheDocument();
+    act(() => lastChannel?.simulateMessage({ type: 'AllDone' }));
+    await flush();
+    // The progress card clears and the finished quant settles with no download
+    // control (not back to a download button, the reported bug); only the
+    // uninstalled sibling keeps its button.
+    await waitFor(() =>
+      expect(screen.queryByTestId('download-figures')).not.toBeInTheDocument(),
+    );
+    expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(1);
+  });
 
   it('shows Paused with Resume and Discard for an interrupted partial', async () => {
     await renderPane(() => {}, { list_hf_repo_ggufs: GGUFS_PARTIAL });

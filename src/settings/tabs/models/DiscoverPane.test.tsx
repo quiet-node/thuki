@@ -170,6 +170,7 @@ describe('DiscoverPane download persistence', () => {
               fit: 'tight',
               sha256: 'a'.repeat(64),
               partial_bytes: null,
+              installed: false,
             },
           ];
         }

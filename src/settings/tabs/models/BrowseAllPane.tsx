@@ -376,7 +376,10 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
               </span>
             </Tooltip>
           ) : null}
-          {paused ? (
+          {/* An already-installed quant shows nothing here: no download button,
+              no badge. It lives in Library, so on this Discover surface the
+              absence of a download is the signal, matching Staff picks. */}
+          {file.installed ? null : paused ? (
             <>
               <span className={styles.quantPaused}>Paused · {pausedPct}%</span>
               <button
