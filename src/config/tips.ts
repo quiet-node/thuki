@@ -72,4 +72,15 @@ export const TIPS: readonly Tip[] = [
   'After /rewrite or /refine, hit Replace to send the result back into your app, replacing your selection',
   'Turn on Auto-replace in Settings → Behavior so /rewrite and /refine results return to your app automatically',
   'Turn on Auto-close in Settings → Behavior to dismiss Thuki automatically once /rewrite or /refine is replaced',
+  'Thuki ships its own AI engine, so it works out of the box: no account, no API key, nothing to install',
+  'Download more models in Settings → Models → Discover; Staff picks are vetted and sized for your Mac',
+  'Settings → Models → Library lists everything you have downloaded; set any one active or delete it',
+  'Prefer your own Ollama install? Switch to it anytime in Settings → Models → Providers',
+  'Pick a model with the Vision badge to ask about images directly, no OCR step needed',
+  'A model marked Always thinks reasons before every reply; others reason on demand with /think',
+  'Each model shows its trained context window in Settings, so you can see how much it reads at once',
+  {
+    text: 'New to local models? The Models and providers guide covers downloading and switching ↗',
+    url: 'https://github.com/quiet-node/thuki/blob/main/docs/models-and-providers.md',
+  },
 ];
