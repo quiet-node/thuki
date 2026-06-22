@@ -554,11 +554,11 @@ describe('ConversationView', () => {
       // The bubble should render with ThinkingBlock visible
       expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
-        'Thinking...',
+        'Reasoning...',
       );
     });
 
-    it('shows the live "Thinking..." indicator while reasoning streams even without /think', () => {
+    it('shows the live "Reasoning..." indicator while reasoning streams even without /think', () => {
       // A reasoning model may emit thinking tokens without an explicit
       // /think (e.g. it ignored the off switch). The indicator must reflect
       // the real stream state: still thinking, not a premature "Done".
@@ -578,7 +578,7 @@ describe('ConversationView', () => {
         />,
       );
       expect(screen.getByTestId('loading-label').textContent).toBe(
-        'Thinking...',
+        'Reasoning...',
       );
     });
 

@@ -414,7 +414,7 @@ describe('ChatBubble', () => {
       expect(screen.queryByTestId('thinking-block')).toBeNull();
     });
 
-    it('shows "Thinking..." state when isThinking is true', () => {
+    it('shows "Reasoning..." state when isThinking is true', () => {
       render(
         <ChatBubble
           role="assistant"
@@ -426,7 +426,7 @@ describe('ChatBubble', () => {
       );
       expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
-        'Thinking...',
+        'Reasoning...',
       );
       expect(screen.getByTestId('loading-label-prefix')).toBeInTheDocument();
     });

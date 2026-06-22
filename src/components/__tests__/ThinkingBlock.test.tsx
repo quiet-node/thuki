@@ -20,15 +20,15 @@ describe('ThinkingBlock', () => {
   it('does not render a toggle button while pending', () => {
     render(<ThinkingBlock isThinking={false} isPending />);
     expect(
-      screen.queryByRole('button', { name: 'Toggle thinking details' }),
+      screen.queryByRole('button', { name: 'Toggle reasoning details' }),
     ).toBeNull();
   });
 
-  it('shows a clickable "Thinking..." summary while isThinking', () => {
+  it('shows a clickable "Reasoning..." summary while isThinking', () => {
     render(<ThinkingBlock thinkingContent="Working on it" isThinking={true} />);
     const label = screen.getByTestId('loading-label');
     expect(label).toBeInTheDocument();
-    expect(label.textContent).toBe('Thinking...');
+    expect(label.textContent).toBe('Reasoning...');
     expect(screen.getByTestId('loading-label-prefix')).toBeInTheDocument();
   });
 
@@ -38,12 +38,12 @@ describe('ThinkingBlock', () => {
     expect(screen.queryByTestId('timeline-rail')).not.toBeInTheDocument();
   });
 
-  it('shows "Thought process" in collapsed state when done', () => {
+  it('shows "Reasoning" in collapsed state when done', () => {
     render(
       <ThinkingBlock thinkingContent="Some reasoning." isThinking={false} />,
     );
     expect(screen.getByTestId('thinking-summary-label').textContent).toBe(
-      'Thought process',
+      'Reasoning',
     );
   });
 
@@ -57,7 +57,7 @@ describe('ThinkingBlock', () => {
 
     // Click to expand
     fireEvent.click(
-      screen.getByRole('button', { name: 'Toggle thinking details' }),
+      screen.getByRole('button', { name: 'Toggle reasoning details' }),
     );
 
     // Timeline rail and content visible
@@ -73,7 +73,7 @@ describe('ThinkingBlock', () => {
     );
 
     const toggleBtn = screen.getByRole('button', {
-      name: 'Toggle thinking details',
+      name: 'Toggle reasoning details',
     });
 
     fireEvent.click(toggleBtn);
@@ -92,7 +92,7 @@ describe('ThinkingBlock', () => {
     );
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Toggle thinking details' }),
+      screen.getByRole('button', { name: 'Toggle reasoning details' }),
     );
 
     // "Thinking Process:" stripped, actual content shown
@@ -108,7 +108,7 @@ describe('ThinkingBlock', () => {
     );
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Toggle thinking details' }),
+      screen.getByRole('button', { name: 'Toggle reasoning details' }),
     );
 
     // MarkdownRenderer is used (content appears in DOM)
@@ -121,7 +121,7 @@ describe('ThinkingBlock', () => {
     );
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Toggle thinking details' }),
+      screen.getByRole('button', { name: 'Toggle reasoning details' }),
     );
 
     expect(screen.getByTestId('checkmark-icon')).toBeInTheDocument();
@@ -133,7 +133,7 @@ describe('ThinkingBlock', () => {
 
     // Expand manually
     fireEvent.click(
-      screen.getByRole('button', { name: 'Toggle thinking details' }),
+      screen.getByRole('button', { name: 'Toggle reasoning details' }),
     );
 
     expect(screen.queryByTestId('checkmark-icon')).not.toBeInTheDocument();
@@ -145,7 +145,7 @@ describe('ThinkingBlock', () => {
 
     // Expand manually to see clock
     fireEvent.click(
-      screen.getByRole('button', { name: 'Toggle thinking details' }),
+      screen.getByRole('button', { name: 'Toggle reasoning details' }),
     );
 
     expect(
@@ -157,7 +157,7 @@ describe('ThinkingBlock', () => {
     render(<ThinkingBlock thinkingContent="Done." isThinking={false} />);
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Toggle thinking details' }),
+      screen.getByRole('button', { name: 'Toggle reasoning details' }),
     );
 
     expect(
@@ -170,7 +170,7 @@ describe('ThinkingBlock', () => {
       <ThinkingBlock thinkingContent="Test content." isThinking={false} />,
     );
     const button = screen.getByRole('button', {
-      name: 'Toggle thinking details',
+      name: 'Toggle reasoning details',
     });
     expect(button.getAttribute('aria-expanded')).toBe('false');
 
@@ -186,7 +186,7 @@ describe('ThinkingBlock', () => {
     expect(chevron.style.transform).toBe('rotate(90deg)');
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Toggle thinking details' }),
+      screen.getByRole('button', { name: 'Toggle reasoning details' }),
     );
     expect(chevron.style.transform).toBe('rotate(180deg)');
   });
@@ -195,7 +195,7 @@ describe('ThinkingBlock', () => {
     render(<ThinkingBlock thinkingContent="Normal text." isThinking={false} />);
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Toggle thinking details' }),
+      screen.getByRole('button', { name: 'Toggle reasoning details' }),
     );
 
     // The thinking text container should NOT have text-secondary/70 class

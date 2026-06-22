@@ -6,7 +6,7 @@ Website: [thuki.app](https://www.thuki.app/)
 
 Commands are written as whole-word `/` triggers anywhere in your message. Press `/` to open the command suggestion menu, then Tab to complete or Enter to select.
 
-Commands can be combined when their behavior allows it. For example, `/screen /think` captures the screen and enables extended reasoning, while `/think /tldr` summarizes with thinking enabled.
+Commands can be combined when their behavior allows it. For example, `/screen /think` captures the screen and enables extended reasoning, while `/think /tldr` summarizes with reasoning enabled.
 
 Commands that operate on text follow a consistent input priority:
 
@@ -84,7 +84,7 @@ Enables extended reasoning before the model responds.
 - `/think` with highlighted text: reasons through the selected content
 - `/think what are the tradeoffs of a monorepo vs polyrepo?`: asks a question with deep reasoning enabled
 
-**Behavior:** A collapsible Thinking block appears above the response showing the model's reasoning chain. The final answer appears below it as normal.
+**Behavior:** A collapsible Reasoning block appears above the response showing the model's reasoning chain. The final answer appears below it as normal.
 
 **Composable:** `/think` works with `/screen` and all utility commands. For example, `/think /tldr` summarizes with extended reasoning enabled.
 

@@ -148,7 +148,7 @@ export const COMMANDS: readonly Command[] = [
         '`/think what are the tradeoffs of a monorepo vs polyrepo?`: asks a question with deep reasoning enabled',
       ],
       behavior:
-        "A collapsible Thinking block appears above the response showing the model's reasoning chain. The final answer appears below it as normal.",
+        "A collapsible Reasoning block appears above the response showing the model's reasoning chain. The final answer appears below it as normal.",
       composability:
         '`/think` works with `/screen` and all utility commands. For example, `/think /tldr` summarizes with extended reasoning enabled.',
     },

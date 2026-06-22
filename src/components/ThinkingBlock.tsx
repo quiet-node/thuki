@@ -10,14 +10,14 @@ export interface ThinkingBlockProps {
   pendingLabel?: string;
 }
 
-const THINKING_LABEL = 'Thinking...';
+const REASONING_LABEL = 'Reasoning...';
 const PENDING_LABEL = 'Warming up...';
 
 /**
- * Collapsible thinking/reasoning section rendered above an AI response.
+ * Collapsible reasoning section rendered above an AI response.
  *
- * While `isThinking` is true the block shows an animated "Thinking..." label.
- * When thinking completes the label changes to "Thinking process". The user
+ * While `isThinking` is true the block shows an animated "Reasoning..." label.
+ * When reasoning completes the label changes to "Reasoning". The user
  * can click to toggle expansion at any time to see the reasoning content.
  */
 export function ThinkingBlock({
@@ -45,7 +45,7 @@ export function ThinkingBlock({
   const displayContent = thinkingContent!
     .replace(/^\s*Thinking Process[:\s]*\n*/i, '')
     .trimStart();
-  const summaryLabel = isThinking ? THINKING_LABEL : 'Thought process';
+  const summaryLabel = isThinking ? REASONING_LABEL : 'Reasoning';
   const chevron = (
     <span
       data-testid="thinking-chevron"
@@ -66,7 +66,7 @@ export function ThinkingBlock({
         onClick={() => setIsExpanded((prev) => !prev)}
         className="flex items-center gap-2 cursor-pointer bg-transparent border-none p-0 text-left w-full"
         aria-expanded={isExpanded}
-        aria-label="Toggle thinking details"
+        aria-label="Toggle reasoning details"
       >
         {isThinking ? (
           <span className="inline-flex min-w-0">

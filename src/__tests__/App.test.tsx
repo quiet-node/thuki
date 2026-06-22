@@ -5928,7 +5928,7 @@ describe('App', () => {
         'Warming up...',
       );
       expect(
-        screen.queryByRole('button', { name: 'Toggle thinking details' }),
+        screen.queryByRole('button', { name: 'Toggle reasoning details' }),
       ).toBeNull();
 
       act(() => {
@@ -5940,10 +5940,10 @@ describe('App', () => {
 
       expect(screen.queryByText('Warming up...')).toBeNull();
       expect(
-        screen.getByRole('button', { name: 'Toggle thinking details' }),
+        screen.getByRole('button', { name: 'Toggle reasoning details' }),
       ).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
-        'Thinking...',
+        'Reasoning...',
       );
     });
 
