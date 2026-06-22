@@ -84,7 +84,7 @@ const EMPTY_HISTORY_STATE: HistoryCapabilityState = {
  * App.tsx can route through one symbol per state.
  */
 export const NO_MODELS_INSTALLED_MESSAGE =
-  "Thuki couldn't find any local LLM models. Pull one from Ollama with `ollama pull <model>`, then come back.";
+  "Thuki couldn't find any models. Pull one from Ollama with `ollama pull <model>`, then come back.";
 
 /**
  * Copy used when the local Ollama daemon cannot be reached (connection
@@ -260,7 +260,7 @@ export function getCapabilityConflict(
   // command is silently ignored and the user gets a normal answer with
   // no ThinkingBlock, which feels broken. Surface the mismatch instead.
   if (needsThinking && !capabilities.thinking) {
-    return `${name} doesn't show reasoning. Try a thinking model for /think.`;
+    return `${name} doesn't show reasoning. Try a reasoning model for /think.`;
   }
 
   // History-state checks. The backend already strips images
@@ -292,7 +292,7 @@ export function getCapabilityConflict(
     return `${name} accepts ${noun} per message. Extra images from earlier turns are hidden. Switch to a multi-image vision model to keep them.`;
   }
   if (history.historyHasThinking && !capabilities.thinking) {
-    return `Reasoning from earlier turns is hidden from ${name} because it does not emit thinking tokens. Switch to a thinking model to keep it.`;
+    return `Reasoning from earlier turns is hidden from ${name} because it is not a reasoning model. Switch to one to keep it.`;
   }
 
   return null;

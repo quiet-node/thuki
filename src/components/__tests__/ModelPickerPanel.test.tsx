@@ -363,11 +363,11 @@ describe('ModelPickerPanel', () => {
     };
     renderPanel({ capabilities });
     // Every row leads with "text" (every chat model handles text), then
-    // appends vision/thinking when supported. Plain models render just "text".
+    // appends vision/reasoning when supported. Plain models render just "text".
     const labels = screen.getAllByTestId('model-capability-label');
     expect(labels.length).toBe(3);
     expect(labels[0]).toHaveTextContent('text · vision');
-    expect(labels[1]).toHaveTextContent('text · thinking');
+    expect(labels[1]).toHaveTextContent('text · reasoning');
     expect(labels[2]).toHaveTextContent('text');
   });
 
@@ -418,7 +418,7 @@ describe('formatCapabilityLabel', () => {
     const map: ModelCapabilitiesMap = {
       x: { vision: true, thinking: true },
     };
-    expect(formatCapabilityLabel(map, 'x')).toBe('text · vision · thinking');
+    expect(formatCapabilityLabel(map, 'x')).toBe('text · vision · reasoning');
   });
 
   it('appends "vision" after the leading "text" when only vision is present', () => {
@@ -428,11 +428,11 @@ describe('formatCapabilityLabel', () => {
     expect(formatCapabilityLabel(map, 'x')).toBe('text · vision');
   });
 
-  it('appends "thinking" after the leading "text" when only thinking is present', () => {
+  it('appends "reasoning" after the leading "text" when only thinking is present', () => {
     const map: ModelCapabilitiesMap = {
       x: { vision: false, thinking: true },
     };
-    expect(formatCapabilityLabel(map, 'x')).toBe('text · thinking');
+    expect(formatCapabilityLabel(map, 'x')).toBe('text · reasoning');
   });
 });
 

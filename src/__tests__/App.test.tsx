@@ -322,9 +322,7 @@ describe('App', () => {
     await showOverlay();
 
     const strip = screen.getByTestId('capability-mismatch-strip');
-    expect(strip.textContent).toContain(
-      "Thuki couldn't find any local LLM models",
-    );
+    expect(strip.textContent).toContain("Thuki couldn't find any models");
     expect(strip.textContent).toContain('ollama pull <model>');
   });
 

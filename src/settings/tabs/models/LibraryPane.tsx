@@ -284,7 +284,7 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                         <span
                           className={`${styles.pill} ${styles.pillThinking}`}
                         >
-                          Thinking
+                          Reasoning
                         </span>
                       ) : null}
                     </div>

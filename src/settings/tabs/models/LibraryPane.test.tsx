@@ -251,11 +251,11 @@ describe('LibraryPane', () => {
     expect(screen.getAllByText('Vision')).toHaveLength(1);
   });
 
-  it('shows a Thinking tag only for thinking-capable models', async () => {
+  it('shows a Reasoning tag only for thinking-capable models', async () => {
     mockCommands(libraryResponses());
     await renderPane();
-    expect(screen.getByText('Thinking')).toBeInTheDocument();
-    expect(screen.getAllByText('Thinking')).toHaveLength(1);
+    expect(screen.getByText('Reasoning')).toBeInTheDocument();
+    expect(screen.getAllByText('Reasoning')).toHaveLength(1);
   });
 
   it('marks the active model with an edge, not an Active pill', async () => {
@@ -265,11 +265,11 @@ describe('LibraryPane', () => {
     expect(screen.queryByText('Active')).not.toBeInTheDocument();
   });
 
-  it('omits Vision and Thinking tags when no map entry exists, keeping Text', async () => {
+  it('omits Vision and Reasoning tags when no map entry exists, keeping Text', async () => {
     mockCommands(libraryResponses({ get_model_capabilities: {} }));
     await renderPane();
     expect(screen.queryByText('Vision')).not.toBeInTheDocument();
-    expect(screen.queryByText('Thinking')).not.toBeInTheDocument();
+    expect(screen.queryByText('Reasoning')).not.toBeInTheDocument();
     // Text is unconditional, so it survives a missing capability map.
     expect(screen.getAllByText('Text')).toHaveLength(2);
   });

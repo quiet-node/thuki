@@ -371,7 +371,7 @@ export function ModelSelect({
                               <span
                                 className={`${styles.pill} ${styles.pillThinking}`}
                               >
-                                Thinking
+                                Reasoning
                               </span>
                             ) : null}
                           </>
