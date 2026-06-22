@@ -28,9 +28,9 @@ export const OLLAMA_PILL_TOOLTIP =
  * (Anthropic/OpenAI/Gemini never present reasoning as a caveat): the goal is
  * to set expectations, not warn. `/think` is a no-op for these models.
  */
-export const ALWAYS_THINKS_LABEL = 'Always thinks';
+export const ALWAYS_THINKS_LABEL = 'Always reasons';
 export const ALWAYS_THINKS_TOOLTIP =
-  'This model reasons before every answer, so expect a brief pause. Its thinking shows in a collapsible block above each reply.';
+  'This model reasons before every answer, so expect a brief pause. Its reasoning shows in a collapsible block above each reply.';
 
 const CHECK_ICON_PATH = (
   <path

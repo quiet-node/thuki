@@ -77,7 +77,7 @@ export const TIPS: readonly Tip[] = [
   'Settings → Models → Library lists everything you have downloaded; set any one active or delete it',
   'Prefer your own Ollama install? Switch to it anytime in Settings → Models → Providers',
   'Pick a model with the Vision badge to ask about images directly, no OCR step needed',
-  'A model marked Always thinks reasons before every reply; others reason on demand with /think',
+  'The Always reasons badge means a model reasons before every reply; others wait for /think',
   'Each model shows its trained context window in Settings, so you can see how much it reads at once',
   {
     text: 'New to local models? The Models and providers guide covers downloading and switching ↗',
