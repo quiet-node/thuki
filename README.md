@@ -171,6 +171,8 @@ See [docs/configurations.md](docs/configurations.md) for the full schema coverin
 
 See [docs/commands.md](docs/commands.md) for the full slash command reference, and [docs/tuning-context-window.md](docs/tuning-context-window.md) for guidance on picking a `num_ctx` value.
 
+See [docs/models-and-providers.md](docs/models-and-providers.md) for the model library and providers, [docs/privacy.md](docs/privacy.md) for what runs locally, and [docs/troubleshooting.md](docs/troubleshooting.md) when something goes wrong.
+
 ## Contributing
 
 Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
