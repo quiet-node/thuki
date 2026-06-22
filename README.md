@@ -34,7 +34,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri&logoColor=white" alt="Tauri v2" />
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React 19" />
-  <img src="https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/TypeScript-6-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/Rust-stable-CE422B?logo=rust&logoColor=white" alt="Rust" />
   <img src="https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?logo=tailwindcss&logoColor=white" alt="Tailwind CSS 4" />
   <img src="https://img.shields.io/badge/SQLite-bundled-003B57?logo=sqlite&logoColor=white" alt="SQLite" />
@@ -78,7 +78,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **Throwaway conversations:** fast, lightweight interactions without the overhead of a full chat app
 - **Conversation history:** persist and revisit past conversations across sessions
 - **Ships its own local AI engine:** Thuki bundles a llama.cpp-based inference engine and downloads a starter model for you during onboarding; no API keys, no accounts, no cost per query
-- **Optional providers:** prefer your own server? Switch to a local Ollama install or any OpenAI-compatible server (LM Studio, Jan, llama-server) at any time
+- **Optional provider:** prefer your own server? Switch to a local Ollama install at any time
 - **Image input:** paste or drag images and screenshots directly into the chat
 - **Screen capture:** type `/screen` to instantly capture your entire screen and attach it to your question as context
 - **OCR on text-only models:** `/extract`, `/explain`, `/tldr`, `/translate`, `/rewrite`, `/refine`, `/bullets`, and `/todos` read attached images via macOS Vision OCR, so they work even when the active model has no vision capability
@@ -86,9 +86,9 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **Slash commands:** built-in commands for live search and prompt shortcuts: `/search`, `/extract`, `/explain`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`. Highlight text anywhere, summon Thuki, type a command, and hit Enter
 - **Extended reasoning:** type `/think` to have the model reason through a problem step by step before answering
 - **Math rendering:** LaTeX expressions in responses render as formatted equations via KaTeX
-- **In-app model library:** download curated starter models (or any GGUF straight from Hugging Face), browse what's installed, and switch the active model from the ask bar without ever opening a config file
-- **Cross-model continuity:** swap models mid-conversation and Thuki sanitizes history and filters capabilities (vision, thinking) to whatever the new model supports
-- **Settings panel:** a native window (⌘,) covering providers and models, prompt, window, behavior, and search settings, including a log-scale context-window slider and a tunable image-attachment cap (up to 20)
+- **In-app model library:** download curated Staff Picks (or any GGUF straight from Hugging Face via Discover), browse what's installed in your Library, and switch the active model from the ask bar without ever opening a config file
+- **Cross-model continuity:** swap models mid-conversation and Thuki sanitizes history and filters capabilities (vision, reasoning) to whatever the new model supports
+- **Settings panel:** a native window (⌘,) covering Models (Library, Discover, Providers), prompt, window, behavior, and search settings, including a log-scale context-window slider, the Keep Warm residency control, and a tunable image-attachment cap (up to 20)
 - **Contextual tip bar:** lightweight in-overlay hints surface the right shortcut or command at the right moment
 - **Privacy-first:** zero-trust architecture, all data stays on your device
 
@@ -116,7 +116,7 @@ Thuki ships its own local AI engine, so there is nothing to set up first: downlo
 
 > **First launch:** macOS will ask for two permissions. **Accessibility** is required for the global keyboard shortcut that lets you summon Thuki from any app. **Screen Recording** is required for the `/screen` command and the screenshot button. Grant both once; they persist across restarts.
 
-> **Pick a model:** onboarding offers a curated set of starter models sized for different Macs and downloads your pick right inside the app. Model files are large (roughly 2-9 GB), so the first download can take several minutes; you only do it once. Add more models anytime, including any GGUF from Hugging Face, from the Providers section of Settings.
+> **Pick a model:** onboarding offers a curated set of starter models sized for different Macs and downloads your pick right inside the app. Model files are large (roughly 2-9 GB), so the first download can take several minutes; you only do it once. Add more models anytime, including any GGUF from Hugging Face, from Settings → Models → Discover.
 
 #### Build from Source
 
@@ -134,17 +134,9 @@ bun run dev
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development setup guide.
 
-### Optional providers
+### Optional: Ollama
 
-The built-in engine covers the default experience. If you would rather run models through your own server, Thuki also speaks to two alternatives; switch between providers anytime from Settings.
-
-#### Ollama
-
-[Ollama](https://ollama.com) runs AI models directly on your Mac. Install it from [ollama.com](https://ollama.com) or via Homebrew (`brew install ollama`), pull a model (`ollama pull gemma4:e2b`; any model in the [Ollama library](https://ollama.com/library) works), and select the Ollama provider in Thuki's Settings. Thuki connects to it at `http://127.0.0.1:11434` by default, and you can point it at another machine instead.
-
-#### Any OpenAI-compatible server
-
-LM Studio, Jan, a self-managed `llama-server`, or anything else that serves the OpenAI `/v1` API can be added from the Providers section of Settings: give it a label and a base URL, optionally save an API key (stored write-only in the macOS Keychain, never written to `config.toml`), and flag whether its model accepts images. Prefer editing by hand? Add a provider with `kind = "openai"` in `config.toml` instead; see [docs/configurations.md](docs/configurations.md) for the provider schema.
+The built-in engine covers the default experience. If you would rather run models through your own [Ollama](https://ollama.com) install, switch providers anytime from Settings. Install Ollama from [ollama.com](https://ollama.com) or via Homebrew (`brew install ollama`), pull a model (`ollama pull gemma4:e2b`; any model in the [Ollama library](https://ollama.com/library) works), and select the Ollama provider in Thuki's Settings. Thuki connects to it at `http://127.0.0.1:11434` by default, and you can point it at another machine instead.
 
 ### Optional: Enable `/search`
 
@@ -157,7 +149,7 @@ See [docs/agentic-search.md#setup](docs/agentic-search.md#setup) for the setup s
 <details>
 <summary>Click to expand</summary>
 
-Thuki is a **Tauri v2** app (Rust backend + React/TypeScript frontend). Its default inference engine is a bundled llama.cpp `llama-server` that Thuki spawns, supervises, and kills on quit; it can instead talk to a locally running Ollama instance or any OpenAI-compatible server.
+Thuki is a **Tauri v2** app (Rust backend + React/TypeScript frontend). Its default inference engine is a bundled llama.cpp `llama-server` that Thuki spawns, supervises, and kills on quit; it can instead talk to a locally running Ollama instance.
 
 ### Isolation Layers
 
@@ -212,7 +204,6 @@ The big leap: from answering questions to taking action.
 
 More flexibility over the model powering Thuki.
 
-- **Multiple provider support:** shipped; alongside the built-in engine, Thuki speaks to your own Ollama install or any OpenAI-compatible local server
 - **Custom activation shortcut:** change the double-tap trigger to any key or combo you prefer
 
 ### Richer Context
