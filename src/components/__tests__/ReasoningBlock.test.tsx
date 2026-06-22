@@ -25,7 +25,9 @@ describe('ReasoningBlock', () => {
   });
 
   it('shows a clickable "Reasoning..." summary while isThinking', () => {
-    render(<ReasoningBlock thinkingContent="Working on it" isThinking={true} />);
+    render(
+      <ReasoningBlock thinkingContent="Working on it" isThinking={true} />,
+    );
     const label = screen.getByTestId('loading-label');
     expect(label).toBeInTheDocument();
     expect(label.textContent).toBe('Reasoning...');
@@ -33,7 +35,9 @@ describe('ReasoningBlock', () => {
   });
 
   it('is collapsed by default, even while thinking', () => {
-    render(<ReasoningBlock thinkingContent="Working on it" isThinking={true} />);
+    render(
+      <ReasoningBlock thinkingContent="Working on it" isThinking={true} />,
+    );
     // Collapsed: no timeline rail visible
     expect(screen.queryByTestId('timeline-rail')).not.toBeInTheDocument();
   });
@@ -192,7 +196,9 @@ describe('ReasoningBlock', () => {
   });
 
   it('renders thinking text in normal color (not grayed out)', () => {
-    render(<ReasoningBlock thinkingContent="Normal text." isThinking={false} />);
+    render(
+      <ReasoningBlock thinkingContent="Normal text." isThinking={false} />,
+    );
 
     fireEvent.click(
       screen.getByRole('button', { name: 'Toggle reasoning details' }),
