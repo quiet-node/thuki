@@ -2213,7 +2213,7 @@ function App() {
                 : e instanceof Error
                   ? `: ${e.message}`
                   : ''
-            }. Switch to a vision-capable model to try via Ollama.`,
+            }. Switch to a vision-capable model and try again.`,
           );
         }
         return;
