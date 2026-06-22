@@ -315,8 +315,8 @@ pub(crate) fn resolve(config: &mut AppConfig) {
 /// panics on user input.
 fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
     use crate::config::defaults::{
-        DEFAULT_ACTIVE_PROVIDER, PROVIDER_ID_BUILTIN, PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN,
-        PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+        DEFAULT_ACTIVE_PROVIDER, DEFAULT_BUILTIN_LABEL, PROVIDER_ID_BUILTIN, PROVIDER_ID_OLLAMA,
+        PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
     };
     use crate::config::schema::{builtin_provider, ollama_provider};
 
@@ -412,6 +412,16 @@ fn resolve_inference(inf: &mut crate::config::schema::InferenceSection) {
     // Ensure the Ollama provider exists: re-seed it if a user file omitted it.
     if !inf.providers.iter().any(|p| p.kind == PROVIDER_KIND_OLLAMA) {
         inf.providers.push(ollama_provider(DEFAULT_OLLAMA_URL));
+    }
+
+    // The built-in label is a fixed system label, not user-editable, so heal it
+    // to the current default on every load. This propagates a renamed
+    // DEFAULT_BUILTIN_LABEL to configs seeded before the rename, so an existing
+    // install does not keep a stale label.
+    for p in inf.providers.iter_mut() {
+        if p.kind == PROVIDER_KIND_BUILTIN {
+            p.label = DEFAULT_BUILTIN_LABEL.to_string();
+        }
     }
 
     // Empty/dangling active pointer -> default.
