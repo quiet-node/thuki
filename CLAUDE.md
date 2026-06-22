@@ -88,7 +88,7 @@ Sidecar constraints: the binary ships through tauri.conf `externalBin` (`binarie
 ### Model library (`src-tauri/src/models/`)
 
 - **`mod.rs`**: active-model state (`ActiveModelState`, picker plumbing, persistence onto the active provider's `model` field) plus the public download/cancel API with a single-download-at-a-time slot.
-- **`registry.rs`**: curated starters in three tiers (Fast / Balanced / Smartest). Every entry pins a Hugging Face repo at an exact git revision and carries each blob's sha256, size, capability flags (vision/thinking, mmproj companion), and license note.
+- **`registry.rs`**: an id-keyed Staff Picks catalog grouped by use-case category (3 per category), a fixed subset of which double as onboarding heroes. Every entry pins a Hugging Face repo at an exact git revision and carries each blob's sha256, size, capability flags (vision/thinking, mmproj companion), and license note.
 - **`download.rs`**: resumable downloader: streams from Hugging Face into blob-store partials, resumes via HTTP `Range`, emits `DownloadEvent`s throttled by `DOWNLOAD_PROGRESS_MIN_INTERVAL_MS`, and verifies sha256 on completion. The hash check is an integrity check only (truncation, bit rot, resume corruption), never a supply-chain/provenance control; provenance comes from the pinned repo revisions.
 - **`storage.rs`**: content-addressed blob store: `root/tmp/<sha256>.partial` during download, streaming SHA-256 verify, then atomic rename into `root/blobs/<sha256>`.
 - **`manifest.rs`**: CRUD over the `installed_models` SQLite table; row id is `"<repo>:<file_name>"`, content addresses shared across rows (two models can reference the same mmproj blob).
