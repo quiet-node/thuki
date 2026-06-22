@@ -142,6 +142,8 @@ export function useOllama(
                     ...m,
                     content: chunk.data.message,
                     errorKind: chunk.data.kind,
+                    thinkingContent:
+                      currentThinkingContent || m.thinkingContent,
                   }
                 : m,
             ),
@@ -171,8 +173,6 @@ export function useOllama(
           },
         ]);
         setIsGenerating(false);
-      } finally {
-        channel.close();
       }
     },
     [isGenerating, onTurnComplete],

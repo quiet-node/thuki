@@ -491,6 +491,32 @@ describe('useOllama', () => {
       expect(errorMsg?.errorKind).toBe('Other');
       expect(errorMsg?.content).toBeTruthy();
     });
+
+    it('preserves thinking content when Error chunk arrives after ThinkingTokens', async () => {
+      const { result } = renderHook(() => useOllama());
+
+      await act(async () => {
+        await result.current.ask('test', undefined, undefined, true);
+      });
+
+      const channel = getChannel();
+      expect(channel).not.toBeNull();
+
+      act(() => {
+        channel!.simulateMessage({ type: 'ThinkingToken', data: 'reasoning ' });
+        channel!.simulateMessage({ type: 'ThinkingToken', data: 'about it...' });
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'Other', message: 'Context length exceeded' },
+        });
+      });
+
+      const errorMsg = result.current.messages.find((m) => m.errorKind);
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg?.errorKind).toBe('Other');
+      expect(errorMsg?.content).toBe('Context length exceeded');
+      expect(errorMsg?.thinkingContent).toBe('reasoning about it...');
+    });
   });
 
   // ─── Streaming edge cases ────────────────────────────────────────────────────
