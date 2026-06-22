@@ -22,7 +22,7 @@ const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 const BUILTIN: RawProvider = {
   id: 'builtin',
   kind: 'builtin',
-  label: 'Built-in (Thuki)',
+  label: 'Built-in',
   base_url: '',
   model: '',
   vision: false,

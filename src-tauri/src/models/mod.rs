@@ -6083,7 +6083,7 @@ active_provider = "ollama"
 [[inference.providers]]
 id = "builtin"
 kind = "builtin"
-label = "Built-in (Thuki)"
+label = "Built-in"
 model = ""
 
 [[inference.providers]]

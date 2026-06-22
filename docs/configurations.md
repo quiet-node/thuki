@@ -28,7 +28,7 @@ open ~/Library/Application\ Support/com.quietnode.thuki/config.toml
 ```toml
 [inference]
 # The provider Thuki sends inference to. Fresh installs default to the
-# Built-in (Thuki) engine, the bundled llama.cpp server. Configs that predate
+# Built-in engine, the bundled llama.cpp server. Configs that predate
 # the built-in engine stay pinned to Ollama.
 active_provider = "builtin"
 # Context window size in tokens sent to the active provider with every request.
@@ -51,7 +51,7 @@ keep_warm_inactivity_minutes = 0
 [[inference.providers]]
 id = "builtin"
 kind = "builtin"
-label = "Built-in (Thuki)"
+label = "Built-in"
 model = ""
 
 [[inference.providers]]
@@ -141,7 +141,7 @@ Every domain below is shown as a single table that lists **all** constants Thuki
 
 ### `[inference]`
 
-Thuki reaches a model through a **provider**. `active_provider` names which one is used; each provider is described by a `[[inference.providers]]` block. Two kinds exist: **Built-in (Thuki)**, the bundled llama.cpp `llama-server` that Thuki spawns and manages itself (no setup, the default on a fresh install); and **Ollama**, reached over HTTP at a configurable URL, local or remote.
+Thuki reaches a model through a **provider**. `active_provider` names which one is used; each provider is described by a `[[inference.providers]]` block. Two kinds exist: **Built-in**, the bundled llama.cpp `llama-server` that Thuki spawns and manages itself (no setup, the default on a fresh install); and **Ollama**, reached over HTTP at a configurable URL, local or remote.
 
 Each provider keeps its own selected `model`. For the built-in engine, models are GGUF files Thuki downloads itself: pick a curated starter (or paste a Hugging Face repo id) in onboarding or Settings → Models → Discover, and manage installed models from the same place. For Ollama, Thuki discovers installed models live from the `/api/tags` endpoint; pull a model with `ollama pull <slug>` and select it. In every case the choice is written to that provider's `model` field, and when no model is installed and none has been chosen, Thuki refuses to dispatch a chat request and surfaces a "Pick a model" prompt.
 

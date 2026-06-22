@@ -1585,7 +1585,7 @@ fn legacy_ollama_url_ignored_when_explicit_providers_present() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -1627,7 +1627,7 @@ fn dangling_active_provider_falls_back_to_default() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -1900,7 +1900,7 @@ fn new_shape_config_active_untouched() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -2058,7 +2058,7 @@ fn openai_kind_with_url_is_kept() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -2095,7 +2095,7 @@ fn openai_kind_without_url_is_dropped() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -2129,7 +2129,7 @@ fn openai_kind_bad_scheme_is_dropped() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -2172,7 +2172,7 @@ fn provider_vision_flag_roundtrips() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -2210,7 +2210,7 @@ fn unknown_kind_still_dropped() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
