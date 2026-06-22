@@ -30,7 +30,7 @@ export type CapabilityConflictMessage =
  * `/screen` slash command (which produces an image after capture and so
  * has the same vision-required constraint as a non-zero imageCount).
  * `hasThinkCommand` covers the `/think` slash command, which requires a
- * model that emits reasoning tokens for the ThinkingBlock UI to render
+ * model that emits reasoning tokens for the ReasoningBlock UI to render
  * anything meaningful.
  */
 export interface ComposeCapabilityState {
@@ -258,7 +258,7 @@ export function getCapabilityConflict(
 
   // /think requires a model that emits reasoning tokens; otherwise the
   // command is silently ignored and the user gets a normal answer with
-  // no ThinkingBlock, which feels broken. Surface the mismatch instead.
+  // no ReasoningBlock, which feels broken. Surface the mismatch instead.
   if (needsThinking && !capabilities.thinking) {
     return `${name} doesn't show reasoning. Try a reasoning model for /think.`;
   }

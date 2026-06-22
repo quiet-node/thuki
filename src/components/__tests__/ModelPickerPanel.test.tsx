@@ -392,7 +392,7 @@ describe('ModelPickerPanel', () => {
       'llama3.2:3b': { vision: false, thinking: false },
     };
     renderPanel({ capabilities });
-    const badges = screen.getAllByTestId('always-thinks-badge');
+    const badges = screen.getAllByTestId('always-reasons-badge');
     expect(badges).toHaveLength(1);
     expect(badges[0]).toHaveTextContent('Always reasons');
   });

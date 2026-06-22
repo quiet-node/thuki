@@ -5923,7 +5923,7 @@ describe('App', () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
 
-      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Warming up...',
       );

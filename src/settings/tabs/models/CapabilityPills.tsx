@@ -23,7 +23,7 @@ export function CapabilityPills({ vision, thinking }: CapabilityPillsProps) {
         <span className={`${styles.pill} ${styles.pillVision}`}>Vision</span>
       ) : null}
       {thinking ? (
-        <span className={`${styles.pill} ${styles.pillThinking}`}>
+        <span className={`${styles.pill} ${styles.pillReasoning}`}>
           Reasoning
         </span>
       ) : null}

@@ -30,7 +30,7 @@ interface LoadingStageProps {
  * long-running backend processes.
  *
  * The outer wrapper is a `span` with `inline-flex` so the component can sit
- * inside a `<button>` (e.g. the thinking-block disclosure row) without
+ * inside a `<button>` (e.g. the reasoning-block disclosure row) without
  * producing invalid block-inside-button HTML.
  */
 export function LoadingStage({

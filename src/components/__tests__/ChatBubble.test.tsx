@@ -369,8 +369,8 @@ describe('ChatBubble', () => {
     });
   });
 
-  describe('ThinkingBlock rendering', () => {
-    it('renders ThinkingBlock for AI message with thinkingContent', () => {
+  describe('ReasoningBlock rendering', () => {
+    it('renders ReasoningBlock for AI message with thinkingContent', () => {
       render(
         <ChatBubble
           role="assistant"
@@ -379,12 +379,12 @@ describe('ChatBubble', () => {
           thinkingContent="Let me reason about this..."
         />,
       );
-      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
     });
 
-    it('does not render ThinkingBlock for AI message without thinkingContent', () => {
+    it('does not render ReasoningBlock for AI message without thinkingContent', () => {
       render(<ChatBubble role="assistant" content="Hello" index={0} />);
-      expect(screen.queryByTestId('thinking-block')).toBeNull();
+      expect(screen.queryByTestId('reasoning-block')).toBeNull();
     });
 
     it('renders the pending /think placeholder before thinking tokens arrive', () => {
@@ -396,13 +396,13 @@ describe('ChatBubble', () => {
           isThinkingPending={true}
         />,
       );
-      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Warming up...',
       );
     });
 
-    it('does not render ThinkingBlock for user message even with thinkingContent', () => {
+    it('does not render ReasoningBlock for user message even with thinkingContent', () => {
       render(
         <ChatBubble
           role="user"
@@ -411,7 +411,7 @@ describe('ChatBubble', () => {
           thinkingContent="Should not appear"
         />,
       );
-      expect(screen.queryByTestId('thinking-block')).toBeNull();
+      expect(screen.queryByTestId('reasoning-block')).toBeNull();
     });
 
     it('shows "Reasoning..." state when isThinking is true', () => {
@@ -424,7 +424,7 @@ describe('ChatBubble', () => {
           isThinking={true}
         />,
       );
-      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Reasoning...',
       );
@@ -1129,9 +1129,9 @@ describe('ChatBubble', () => {
         />,
       );
       const traceBlock = screen.getByTestId('search-trace-block');
-      const thinkingBlock = screen.getByTestId('thinking-block');
+      const reasoningBlock = screen.getByTestId('reasoning-block');
       expect(
-        traceBlock.compareDocumentPosition(thinkingBlock) &
+        traceBlock.compareDocumentPosition(reasoningBlock) &
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
     });

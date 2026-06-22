@@ -282,7 +282,7 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                       ) : null}
                       {caps?.thinking ? (
                         <span
-                          className={`${styles.pill} ${styles.pillThinking}`}
+                          className={`${styles.pill} ${styles.pillReasoning}`}
                         >
                           Reasoning
                         </span>

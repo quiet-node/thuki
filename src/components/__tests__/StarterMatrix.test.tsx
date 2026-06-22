@@ -1,7 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StarterMatrix } from '../StarterMatrix';
-import { ALWAYS_THINKS_LABEL } from '../ModelPickerPanel';
+import { ALWAYS_REASONS_LABEL } from '../ModelPickerPanel';
 import { invoke } from '../../testUtils/mocks/tauri';
 import type { DownloadUiState } from '../../hooks/useDownloadModel';
 import type { Starter, StarterOption, StarterTier } from '../../types/starter';
@@ -151,9 +151,9 @@ describe('StarterMatrix (picker)', () => {
     ]);
     expect(screen.getByText('Reasoning')).toBeInTheDocument();
     // smartest: always-reasoning pill.
-    expect(screen.getByTestId('starter-always-thinks-badge')).toHaveTextContent(
-      ALWAYS_THINKS_LABEL,
-    );
+    expect(
+      screen.getByTestId('starter-always-reasons-badge'),
+    ).toHaveTextContent(ALWAYS_REASONS_LABEL);
     // fast: optional reasoning reads "On demand".
     expect(screen.getByText('On demand')).toBeInTheDocument();
     // balanced: no reasoning -> a dash (the none branch).

@@ -511,13 +511,13 @@ describe('ConversationView', () => {
           onClose={vi.fn()}
         />,
       );
-      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Warming up...',
       );
     });
 
-    it('renders ThinkingBlock when assistant message has thinkingContent', () => {
+    it('renders ReasoningBlock when assistant message has thinkingContent', () => {
       render(
         <ConversationView
           messages={[
@@ -532,7 +532,7 @@ describe('ConversationView', () => {
           onClose={vi.fn()}
         />,
       );
-      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
     });
 
     it('renders ChatBubble (not null) when thinking but no content yet during generation', () => {
@@ -551,8 +551,8 @@ describe('ConversationView', () => {
           onClose={vi.fn()}
         />,
       );
-      // The bubble should render with ThinkingBlock visible
-      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      // The bubble should render with ReasoningBlock visible
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Reasoning...',
       );
