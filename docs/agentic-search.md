@@ -127,7 +127,7 @@ To illustrate how hard this problem is: a naive approach might try to strip `<na
 
 ### The model provider: the local AI model runner
 
-The third piece is whatever runs the AI model: Thuki's **active provider**. By default that is the built-in inference engine (a bundled llama.cpp `llama-server` Thuki manages itself); it can also be a local [Ollama](https://ollama.com) install or any OpenAI-compatible local server. Whichever one is active, it is a local server that loads a language model (such as Gemma, Phi, Llama, Mistral, or Qwen) into the computer's memory and responds to chat requests over a local API. Every time Thuki needs to "think," it sends a request to the active provider.
+The third piece is whatever runs the AI model: Thuki's **active provider**. By default that is the built-in inference engine (a bundled llama.cpp `llama-server` Thuki manages itself); it can also be a local [Ollama](https://ollama.com) install. Whichever one is active, it is a local server that loads a language model (such as Gemma, Phi, Llama, Mistral, or Qwen) into the computer's memory and responds to chat requests over a local API. Every time Thuki needs to "think," it sends a request to the active provider.
 
 In the `/search` pipeline, the model is called three times in the typical case:
 
