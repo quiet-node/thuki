@@ -26,7 +26,7 @@ A few terms you'll see in this doc and in tools like `ollama ps`:
 - **GPU**: the chip that runs the math. On Apple Silicon Macs, the GPU is built into the same chip as the CPU.
 - **VRAM / "GPU memory"**: the memory the GPU can read directly. On Apple Silicon this is _unified memory_, shared with the CPU; there is no separate VRAM chip. So when we say "Ollama is using 7 GiB of VRAM", we mean it is holding 7 GiB of your unified memory and the GPU has direct access to it.
 - **Cold load**: the few seconds it takes to read the model from disk into memory the first time you use it.
-- **Keep Warm**: tells Ollama to leave the model in memory after a reply, so the next message skips the cold load.
+- **Keep Warm**: tells the active local provider to leave the model in memory after a reply, so the next message skips the cold load.
 
 ## What Ollama does behind the scenes
 
@@ -82,9 +82,11 @@ Open Thuki and send your usual kind of question, or paste a long block of text a
 - The **GPU History** bars should spike high.
 - **Memory Pressure** should stay green.
 
-### Step 6 — Check what Ollama actually did
+### Step 6 — Check what the provider actually did
 
-While the reply is on screen (or right after), run in Terminal:
+> **Built-in engine users:** skip the `ollama ps` command below (it is Ollama-only). Your residency check is the **Keep Warm** status in **Settings → Models → Providers**, which names the model held "in memory" with its active context length, plus the GPU History and Memory Pressure signals from Steps 2-5.
+
+While the reply is on screen (or right after), run in Terminal (Ollama provider only):
 
 ```bash
 ollama ps
@@ -122,9 +124,9 @@ Set Thuki to one tier _below_ your last working value for safety margin. Example
 
 ## Picking Keep Warm
 
-Keep Warm is the second knob in the same Settings section. It tells Ollama how long to leave the model in memory between messages.
+Keep Warm is the second knob in the same Settings section. It tells the active local provider how long to leave the model in memory between messages.
 
-- **`0`** — let Ollama use its 5-minute default. Good baseline.
+- **`0`** — use the provider's built-in ~5-minute default. Good baseline.
 - **5 to 30 minutes** — good if you use Thuki in bursts every few minutes.
 - **`-1`** — always loaded. Only choose this if you have memory headroom and want zero cold-start ever.
 - **Unload now** — manual eject when you're done for the day.
