@@ -187,6 +187,22 @@ jobs:
 
           rm -rf /tmp/thuki-dmg-src
 
+      - name: Sign DMG for install script
+        env:
+          INSTALLER_SIGNING_KEY: ${{ secrets.THUKI_INSTALLER_RSA_PRIVATE_KEY }}
+        run: |
+          # Detached RSA (PKCS#1 v1.5, SHA-256) signature over the DMG. The
+          # curl | sh installer verifies it with stock macOS `openssl` against a
+          # public key pinned in the script. The private key exists only in this
+          # CI secret, never on the release, so a DMG swapped on a compromised
+          # release fails verification: the attacker cannot forge the signature.
+          KEYFILE="$(mktemp)"
+          trap 'rm -f "$KEYFILE"' EXIT
+          printf '%s\n' "$INSTALLER_SIGNING_KEY" > "$KEYFILE"
+          openssl dgst -sha256 -sign "$KEYFILE" \
+            -out src-tauri/target/release/bundle/dmg/Thuki.dmg.sig \
+            src-tauri/target/release/bundle/dmg/Thuki.dmg
+
       - name: Upload release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -197,6 +213,7 @@ jobs:
           PAYLOAD="Thuki_${VERSION}_aarch64.app.tar.gz"
           gh release upload "$TAG" \
             "dmg/Thuki.dmg" \
+            "dmg/Thuki.dmg.sig" \
             "macos/${PAYLOAD}" \
             "macos/${PAYLOAD}.sig" \
             "macos/latest.json"
