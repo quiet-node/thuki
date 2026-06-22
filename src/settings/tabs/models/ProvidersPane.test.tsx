@@ -54,7 +54,7 @@ const INSTALLED = [
 ];
 
 // A built-in provider whose selected model resolves to INSTALLED[0], so the
-// keep-warm status line can name it (e.g. "Qwen3.5 9B in VRAM").
+// keep-warm status line can name it (e.g. "Qwen3.5 9B in memory").
 const BUILTIN_LOADED: RawProvider = { ...BUILTIN, model: INSTALLED[0].id };
 
 function makeConfig(
@@ -663,7 +663,7 @@ describe('ProvidersPane generation', () => {
     return waitFor(() => {
       const status = screen.getByTestId('keep-warm-status');
       expect(status).toHaveTextContent('Mistral Nemo 12B');
-      expect(within(status).getByText('in VRAM')).toBeInTheDocument();
+      expect(within(status).getByText('in memory')).toBeInTheDocument();
       // The selected (but not-yet-resident) model is never shown as resident.
       expect(within(status).queryByText('Qwen3.5 9B')).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Unload now' })).toBeEnabled();
@@ -694,7 +694,7 @@ describe('ProvidersPane generation', () => {
       const status = screen.getByTestId('keep-warm-status');
       expect(status).toHaveTextContent('Mistral Nemo 12B');
       expect(within(status).getByText('warming…')).toBeInTheDocument();
-      expect(within(status).queryByText('in VRAM')).not.toBeInTheDocument();
+      expect(within(status).queryByText('in memory')).not.toBeInTheDocument();
     });
   });
 
@@ -710,7 +710,7 @@ describe('ProvidersPane generation', () => {
     );
   });
 
-  it('flips warming… to in VRAM across the warming and warmed events', async () => {
+  it('flips warming… to in memory across the warming and warmed events', async () => {
     mockInvoke({
       get_engine_status: engineStatus('loaded'),
       get_loaded_model: 'Qwen3.5 9B',
@@ -719,12 +719,12 @@ describe('ProvidersPane generation', () => {
     renderPane(makeConfig('builtin', [BUILTIN_LOADED, OLLAMA]));
     const status = await screen.findByTestId('keep-warm-status');
     await waitFor(() =>
-      expect(within(status).getByText('in VRAM')).toBeInTheDocument(),
+      expect(within(status).getByText('in memory')).toBeInTheDocument(),
     );
     act(() => emitTauriEvent('warmup:builtin-warming', null));
     expect(within(status).getByText('warming…')).toBeInTheDocument();
     act(() => emitTauriEvent('warmup:builtin-warmed', null));
-    expect(within(status).getByText('in VRAM')).toBeInTheDocument();
+    expect(within(status).getByText('in memory')).toBeInTheDocument();
   });
 
   it('clears the warming status when the model is evicted', async () => {
