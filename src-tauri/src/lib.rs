@@ -1185,6 +1185,31 @@ fn set_overlay_alpha(app_handle: tauri::AppHandle, alpha: f64, duration_ms: f64)
     }
 }
 
+/// Sets the main overlay NSPanel's alpha instantly. Unlike `set_overlay_alpha`
+/// (a command that dispatches its own main-thread hop), this is a synchronous
+/// helper meant to be called from code already running on the macOS main
+/// thread. It is the onboarding -> overlay handoff's cover: dropping alpha to 0
+/// before the window is resized to the ask bar lets the resize and the
+/// not-yet-swapped intro card happen invisibly, so the card is never seen
+/// squished into the 600x80 bar for a frame.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn set_main_window_alpha_now(window: &WebviewWindow, alpha: f64) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+    if ns_window.is_null() {
+        return;
+    }
+    let win = ns_window as *mut AnyObject;
+    unsafe {
+        let _: () = msg_send![win, setAlphaValue: alpha];
+    }
+}
+
 /// Sets the default appearance of `NSSavePanel` (and its `NSOpenPanel`
 /// sibling) to the **compact** layout — no sidebar, no file browser,
 /// just the Save As field, a Where popup, and the action buttons.
@@ -1446,9 +1471,19 @@ fn finish_onboarding(
     // Must run on the macOS main thread because NSPanel APIs are not thread-safe.
     let handle = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
-        // Resize the window back to the collapsed overlay dimensions before
-        // positioning, so the overlay appears at the correct size.
-        if let Some(window) = handle.get_webview_window("main") {
+        let window = handle.get_webview_window("main");
+        if let Some(window) = &window {
+            // Cover the swap: drop the panel to alpha 0 before resizing it to
+            // the ask bar. The resize and the still-mounted intro card then
+            // happen invisibly; the frontend swaps to the ask bar and fades the
+            // panel back in once it has painted (see IntroStep), so the intro
+            // card is never seen squished into the 600x80 bar for a frame. This
+            // reuses the same alpha bracket the export flow uses to hide the
+            // panel without disturbing its state machine or the React tree.
+            #[cfg(target_os = "macos")]
+            set_main_window_alpha_now(window, 0.0);
+            // Resize the window back to the collapsed overlay dimensions before
+            // positioning, so the overlay appears at the correct size.
             let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
                 OVERLAY_LOGICAL_WIDTH,
                 OVERLAY_LOGICAL_HEIGHT_COLLAPSED,
@@ -1458,6 +1493,15 @@ fn finish_onboarding(
         // changed for the onboarding appearance.
         #[cfg(target_os = "macos")]
         init_panel(&handle);
+        // `init_panel` re-converts the panel and rewrites its style mask, which
+        // can reset window visual properties (it re-asserts clearColor for the
+        // same reason). Re-assert the alpha cover so the swap stays hidden
+        // through `init_panel` right up to the show below, regardless of whether
+        // the resize and `init_panel` land in one compositor frame or several.
+        #[cfg(target_os = "macos")]
+        if let Some(window) = &window {
+            set_main_window_alpha_now(window, 0.0);
+        }
         show_overlay(&handle, crate::context::ActivationContext::empty());
     });
 

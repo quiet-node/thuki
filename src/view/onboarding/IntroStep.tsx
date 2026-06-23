@@ -29,6 +29,16 @@ export function IntroStep({ onComplete, downloadStatus }: Props) {
   const handleGetStarted = async () => {
     await invoke('finish_onboarding');
     onComplete();
+    // `finish_onboarding` drops the overlay panel to alpha 0 and resizes it to
+    // the ask bar under cover, so this intro card is never seen squished into
+    // the bar during the swap. Fade the panel back in only after the ask bar has
+    // painted (two animation frames past the `onComplete` swap above), so the
+    // first visible frame is the ask bar rather than this card.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        void invoke('set_overlay_alpha', { alpha: 1, durationMs: 150 });
+      });
+    });
   };
 
   return (
