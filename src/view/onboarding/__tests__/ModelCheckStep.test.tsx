@@ -796,22 +796,16 @@ describe('ModelCheckStep (builtin flow)', () => {
     resetChannelCapture();
   });
 
-  it('renders the matrix with Balanced recommended, the more-options stub, and the escape hatch', async () => {
+  it('renders the matrix with equal tiers (no recommended column), the more-options stub, and the escape hatch', async () => {
     builtinResponses();
 
     const { container } = renderBuiltin();
     await act(async () => {});
 
-    expect(
-      container
-        .querySelector('[data-tier="balanced"]')
-        ?.getAttribute('data-recommended'),
-    ).toBe('true');
-    expect(
-      container
-        .querySelector('[data-tier="fast"]')
-        ?.getAttribute('data-recommended'),
-    ).toBe('false');
+    // Every tier reads as an equal peer: the recommended highlight
+    // (data-recommended attr + the ★ marker) is gone.
+    expect(container.querySelector('[data-recommended]')).toBeNull();
+    expect(screen.queryByText(/★/)).toBeNull();
     expect(screen.getByText('Use it instead')).toBeInTheDocument();
     expect(
       screen.getByText(

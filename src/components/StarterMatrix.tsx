@@ -2,9 +2,8 @@
  * Comparison-matrix starter picker for the built-in engine.
  *
  * Columns are the three tiers; rows are the dimensions a user actually
- * weighs (speed, quality, vision, memory fit, license). Only the Balanced
- * tier is highlighted (as the recommended pick); columns are not otherwise
- * selectable.
+ * weighs (speed, quality, vision, memory fit, license). All three tiers are
+ * presented as equal peers - no column is singled out as recommended.
  *
  * The matrix also owns the download display: tapping a column's Download
  * starts the download for that tier in place (no confirm step), and that
@@ -25,9 +24,6 @@ import type { RamFit, StarterOption, StarterTier } from '../types/starter';
 import { ALWAYS_REASONS_LABEL } from './ModelPickerPanel';
 
 const HF_BASE_URL = 'https://huggingface.co';
-
-/** The tier highlighted as the recommended starter. */
-const RECOMMENDED_TIER: StarterTier = 'balanced';
 
 /** Column order, left to right. */
 const TIER_ORDER: StarterTier[] = ['fast', 'balanced', 'smartest'];
@@ -196,7 +192,6 @@ export function StarterMatrix({
             <TierColumn
               key={option.starter.tier}
               option={option}
-              recommended={option.starter.tier === RECOMMENDED_TIER}
               active={active}
               dimmed={lockOthers && !active}
               disabled={lockOthers}
@@ -305,7 +300,6 @@ function LabelColumn() {
 
 interface TierColumnProps {
   option: StarterOption;
-  recommended: boolean;
   active: boolean;
   dimmed: boolean;
   disabled: boolean;
@@ -325,7 +319,6 @@ interface TierColumnProps {
 
 function TierColumn({
   option,
-  recommended,
   active,
   dimmed,
   disabled,
@@ -346,18 +339,13 @@ function TierColumn({
     <div
       data-tier-column
       data-tier={starter.tier}
-      data-recommended={recommended}
       style={{
         flex: 1,
         minWidth: 0,
         opacity: dimmed ? 0.32 : 1,
         transition: 'opacity 0.2s ease',
-        boxShadow: recommended
-          ? 'inset 0 0 0 1px rgba(255,141,92,0.35)'
-          : 'none',
-        background: recommended
-          ? 'linear-gradient(180deg, rgba(255,141,92,0.10), rgba(255,141,92,0.02))'
-          : 'transparent',
+        boxShadow: 'none',
+        background: 'transparent',
       }}
     >
       {/* Header: tier eyebrow, then the model name (size moved to its own row
@@ -369,11 +357,10 @@ function TierColumn({
             fontWeight: 700,
             letterSpacing: '1px',
             textTransform: 'uppercase',
-            color: recommended ? '#ff8d5c' : 'rgba(255,255,255,0.4)',
+            color: 'rgba(255,255,255,0.4)',
           }}
         >
           {TIER_LABELS[starter.tier]}
-          {recommended ? ' ★' : ''}
         </div>
         <div
           style={{
@@ -461,7 +448,6 @@ function TierColumn({
         ) : (
           <ColumnAction
             option={option}
-            recommended={recommended}
             disabled={disabled}
             onDownload={onDownload}
             onResume={onResume}
@@ -778,7 +764,6 @@ function DownloadCell({
 
 interface ColumnActionProps {
   option: StarterOption;
-  recommended: boolean;
   disabled: boolean;
   onDownload: (tier: StarterTier) => void;
   onResume: (
@@ -791,13 +776,12 @@ interface ColumnActionProps {
 
 /**
  * Per-column affordance: an installed line, a resume/discard pair when an
- * interrupted partial exists, or the plain download button (primary gradient
- * on the recommended column, quiet outline otherwise). `disabled` dims the
- * buttons while another column's download is in flight.
+ * interrupted partial exists, or the plain download button (quiet outline, the
+ * same for every tier). `disabled` dims the buttons while another column's
+ * download is in flight.
  */
 function ColumnAction({
   option,
-  recommended,
   disabled,
   onDownload,
   onResume,
@@ -841,7 +825,7 @@ function ColumnAction({
   return (
     <ActionButton
       label="Download"
-      recommended={recommended}
+      recommended={false}
       disabled={disabled}
       onClick={() => onDownload(starter.tier)}
     />
