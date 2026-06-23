@@ -337,8 +337,19 @@ interface QuantRowProps {
  */
 function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
   const key = downloadKey({ kind: 'repo', repo, file: file.file });
-  const entry = downloads.get(key);
   const { clear } = downloads;
+  // This quant's live download: its own (by key) or one started in another
+  // window, matched by the file's blob sha. The cross-window match carries the
+  // real backend key, so cancel and the post-install clear target the right slot.
+  const local = downloads.get(key);
+  const active = local
+    ? { key, view: local }
+    : downloads.getActiveDownload(file.sha256);
+  const entry = active?.view;
+  // The live download's real backend key: this quant's own when it started here,
+  // or the cross-window download's when matched by sha. Falls back to the quant
+  // key when nothing is live, so cancel/clear always have a concrete target.
+  const activeKey = active?.key ?? key;
   const downloading = entry !== undefined;
   const phase = entry?.state.phase;
   // Browse-all is a live Hugging Face fetch, so a fresh download click first
@@ -348,7 +359,8 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
 
   // A finished install: the backend recorded the model, so lift the fresh config
   // and re-read the listing (the quant flips to its installed state) and drop
-  // the entry. Per quant, so parallel installs settle independently.
+  // the entry (its own or a cross-window one). Per quant, so parallel installs
+  // settle independently.
   useEffect(() => {
     if (phase !== 'ready') return;
     void (async () => {
@@ -357,15 +369,17 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
       } catch {
         // The focus-driven resync picks the change up on next activation.
       }
-      clear(key);
+      clear(activeKey);
       await refetch();
     })();
-  }, [phase, key, clear, onSaved, refetch]);
+  }, [phase, activeKey, clear, onSaved, refetch]);
 
   // Cancelling keeps the partial on disk; re-read the listing so the file flips
   // to its Paused / Resume / Discard controls once the Cancelled event prunes.
+  // Uses the live download's real key, so cancelling a cross-window download
+  // targets its actual backend slot.
   async function cancelDownload() {
-    downloads.cancel(key);
+    downloads.cancel(activeKey);
     await refetch();
   }
 
@@ -377,7 +391,7 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
   // Dismiss this quant's terminal card back to the file rows. Also wired to the
   // confirm-card callbacks, which never fire here (the repo path has no
   // pre-flight confirm step), so all three share one covered handler.
-  const dismiss = () => clear(key);
+  const dismiss = () => clear(activeKey);
 
   const paused = !downloading && file.partial_bytes !== null;
   const pausedPct =
@@ -416,7 +430,7 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
           onConfirm={dismiss}
           onCancelConfirm={dismiss}
           onCancel={() => void cancelDownload()}
-          onRetry={() => downloads.retry(key)}
+          onRetry={() => downloads.retry(activeKey)}
           // A terminal failure must leave a path back to the quant list, not
           // just Retry; this returns to the file rows.
           onChooseAnother={dismiss}
