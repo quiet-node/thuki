@@ -38,11 +38,11 @@ describe('DownloadStatusStrip', () => {
       />,
     );
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
-    act(() => vi.advanceTimersByTime(12000));
-    expect(
-      screen.getByText("Safe to close, just don't quit"),
-    ).toBeInTheDocument();
-    act(() => vi.advanceTimersByTime(12000));
+    act(() => vi.advanceTimersByTime(5000));
+    expect(screen.getByText(/Safe to close/)).toBeInTheDocument();
+    // The Control glyph renders as a keycap, not a bare caret.
+    expect(screen.getByText('⌃')).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(5000));
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
   });
 
@@ -60,11 +60,9 @@ describe('DownloadStatusStrip', () => {
       />,
     );
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
-    act(() => vi.advanceTimersByTime(12000));
+    act(() => vi.advanceTimersByTime(5000));
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
-    expect(
-      screen.queryByText("Safe to close, just don't quit"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Safe to close/)).not.toBeInTheDocument();
   });
 
   it('omits the ETA when it is not yet measurable', () => {

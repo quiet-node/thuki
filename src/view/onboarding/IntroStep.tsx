@@ -58,19 +58,26 @@ export function IntroStep({ onComplete, downloadStatus }: Props) {
           position: 'relative',
         }}
       >
-        {/* Logo */}
-        <img
-          src={thukiLogo}
-          width={44}
-          height={44}
-          alt="Thuki"
-          style={{
-            objectFit: 'contain',
-            display: 'block',
-            margin: '0 auto 16px',
-            pointerEvents: 'none',
-          }}
-        />
+        {/* Logo doubles as the window drag handle, matching the other
+            onboarding steps. The image ignores pointer events so the drag
+            region receives the gesture. */}
+        <div
+          data-tauri-drag-region
+          style={{ textAlign: 'center', cursor: 'grab' }}
+        >
+          <img
+            src={thukiLogo}
+            width={44}
+            height={44}
+            alt="Thuki"
+            style={{
+              objectFit: 'contain',
+              display: 'block',
+              margin: '0 auto 16px',
+              pointerEvents: 'none',
+            }}
+          />
+        </div>
 
         {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: 20 }}>
