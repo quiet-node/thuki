@@ -28,9 +28,9 @@ export const OLLAMA_PILL_TOOLTIP =
  * (Anthropic/OpenAI/Gemini never present reasoning as a caveat): the goal is
  * to set expectations, not warn. `/think` is a no-op for these models.
  */
-export const ALWAYS_THINKS_LABEL = 'Always thinks';
-export const ALWAYS_THINKS_TOOLTIP =
-  'This model reasons before every answer, so expect a brief pause. Its thinking shows in a collapsible block above each reply.';
+export const ALWAYS_REASONS_LABEL = 'Always reasons';
+export const ALWAYS_REASONS_TOOLTIP =
+  'This model reasons before every answer, so expect a brief pause. Its reasoning shows in a collapsible block above each reply.';
 
 const CHECK_ICON_PATH = (
   <path
@@ -342,11 +342,11 @@ export function ModelPickerPanel({
                   // so the Tooltip component (which wraps children in a <div>)
                   // cannot be nested here without invalid phrasing content.
                   <span
-                    data-testid="always-thinks-badge"
-                    title={ALWAYS_THINKS_TOOLTIP}
+                    data-testid="always-reasons-badge"
+                    title={ALWAYS_REASONS_TOOLTIP}
                     className="shrink-0 self-center inline-flex items-center text-[10px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-md px-1.5 py-0.5 whitespace-nowrap"
                   >
-                    {ALWAYS_THINKS_LABEL}
+                    {ALWAYS_REASONS_LABEL}
                   </span>
                 )}
                 <svg

@@ -22,7 +22,7 @@ import {
   type DownloadUiState,
 } from '../hooks/useDownloadModel';
 import type { RamFit, StarterOption, StarterTier } from '../types/starter';
-import { ALWAYS_THINKS_LABEL, ALWAYS_THINKS_TOOLTIP } from './ModelPickerPanel';
+import { ALWAYS_REASONS_LABEL } from './ModelPickerPanel';
 
 const HF_BASE_URL = 'https://huggingface.co';
 
@@ -409,30 +409,12 @@ function TierColumn({
       </ValueCell>
 
       <ValueCell>
-        {starter.reasoning_always ? (
-          // Mirror the model picker's pill so a download-time user is not
-          // surprised by the latency: this tier reasons before every answer.
-          <span
-            data-testid="starter-always-thinks-badge"
-            title={ALWAYS_THINKS_TOOLTIP}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              fontSize: 10,
-              fontWeight: 600,
-              color: 'rgba(255,255,255,0.82)',
-              background: 'rgba(255,141,92,0.12)',
-              border: '1px solid rgba(255,141,92,0.25)',
-              borderRadius: 6,
-              padding: '1px 6px',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {ALWAYS_THINKS_LABEL}
-          </span>
-        ) : starter.thinking ? (
+        {starter.reasoning_always || starter.thinking ? (
+          // Reasoning reads as plain text in the same register as the rest of
+          // the row: "Always reasons" when it cannot be turned off, "On demand"
+          // when optional.
           <span style={{ color: 'rgba(255,255,255,0.6)', fontWeight: 600 }}>
-            On demand
+            {starter.reasoning_always ? ALWAYS_REASONS_LABEL : 'On demand'}
           </span>
         ) : (
           <span style={{ color: 'rgba(255,255,255,0.28)' }}>&mdash;</span>
