@@ -2397,6 +2397,8 @@ pub fn run() {
             #[cfg(not(coverage))]
             models::discard_partial_download,
             #[cfg(not(coverage))]
+            models::get_active_downloads,
+            #[cfg(not(coverage))]
             set_download_paused,
             #[cfg(not(coverage))]
             models::list_installed_models,
