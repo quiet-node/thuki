@@ -25,4 +25,11 @@ describe('OnboardingView (orchestrator)', () => {
     await act(async () => {});
     expect(screen.getByText('Set up your local AI')).toBeInTheDocument();
   });
+
+  it('renders BuiltinAnnouncementStep when stage is builtin_announcement', () => {
+    render(
+      <OnboardingView stage="builtin_announcement" onComplete={vi.fn()} />,
+    );
+    expect(screen.getByText('Local AI, now built in')).toBeInTheDocument();
+  });
 });

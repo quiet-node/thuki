@@ -1,3 +1,4 @@
+import { BuiltinAnnouncementStep } from './BuiltinAnnouncementStep';
 import { IntroStep } from './IntroStep';
 import { ModelCheckStep } from './ModelCheckStep';
 import { PermissionsStep } from './PermissionsStep';
@@ -8,7 +9,11 @@ import type { DownloadStripStatus } from '../../components/DownloadStatusStrip';
  * backend emits these strings as the `stage` field on the
  * `thuki://onboarding` event; any drift here breaks the dispatch.
  */
-export type OnboardingStage = 'permissions' | 'model_check' | 'intro';
+export type OnboardingStage =
+  | 'permissions'
+  | 'builtin_announcement'
+  | 'model_check'
+  | 'intro';
 
 interface Props {
   stage: OnboardingStage;
@@ -25,6 +30,9 @@ interface Props {
  *
  *   permissions -> (quit+reopen) -> model_check -> (advance) -> intro -> complete
  *
+ * Upgraders take one extra step after permissions:
+ *   permissions -> builtin_announcement -> model_check -> intro -> complete
+ *
  * When stage is "complete" the backend never emits the onboarding event,
  * so this component is never rendered.
  */
@@ -40,6 +48,12 @@ export function OnboardingView({ stage, onComplete, downloadStatus }: Props) {
     // event. No callback wiring needed here.
     void onComplete; // referenced for parity; unused by ModelCheckStep
     return <ModelCheckStep />;
+  }
+  if (stage === 'builtin_announcement') {
+    // Both branches advance to `model_check` via the backend
+    // `advance_past_builtin_announcement` command, which re-emits the
+    // onboarding event. No callback wiring needed here.
+    return <BuiltinAnnouncementStep />;
   }
   return <PermissionsStep />;
 }
