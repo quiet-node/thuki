@@ -9,6 +9,7 @@ A deep dive into how Thuki runs AI on your Mac: the built-in engine, what powers
 - [The big picture](#the-big-picture)
 - [The built-in engine](#the-built-in-engine)
 - [What a model is (and the words around it)](#what-a-model-is-and-the-words-around-it)
+- [Will it fit? The RAM-fit hint](#will-it-fit-the-ram-fit-hint)
 - [Getting a model: download, verify, install](#getting-a-model-download-verify-install)
 - [Where models live on disk](#where-models-live-on-disk)
 - [Running inference: the sidecar](#running-inference-the-sidecar)
@@ -137,6 +138,28 @@ Each model advertises passive badges, derived from its GGUF metadata:
 - **Reasoning**: thinks before answering. Triggered per message with `/think`; some models always reason ("Always reasons").
 
 Each model also reports its trained **context window** (how many tokens it can see at once).
+
+## Will it fit? The RAM-fit hint
+
+Every model in Library and Discover shows a one-word verdict, **Comfortable**, **Tight**, or **Heavy**, so you never have to do the memory math yourself. Here is exactly how Thuki computes it.
+
+First it estimates the model's **resident size** at runtime:
+
+```
+estimate = model file size (weights, plus the mmproj for vision) + ~2 GB overhead
+```
+
+The ~2 GB is a baseline for the engine's runtime buffers and KV cache. (The KV cache also grows with your context window, covered separately in the context-window guide.)
+
+Then it compares that estimate against your Mac's **total physical memory**, read straight from the system (`hw.memsize`). Apple Silicon uses unified memory shared between the CPU and GPU, so a model competes for RAM with everything else you are running:
+
+| Verdict | Estimate vs total RAM | What it means |
+| --- | --- | --- |
+| **Comfortable** | up to **60%** | Fits with room left for macOS and your other apps |
+| **Tight** | **60% to 85%** | Runs, but close to the machine's limit |
+| **Heavy** | **above 85%** | macOS will swap to disk, so expect it to feel slow |
+
+The 60% line is deliberately conservative: leaving roughly 40% of unified memory free keeps the whole system responsive. "Heavy" does not mean a model cannot load, only that it will likely page to disk and run sluggishly. The context window is a second, independent memory lever; tune it in [Tuning the Context Window](./tuning-context-window.md).
 
 ## Getting a model: download, verify, install
 
