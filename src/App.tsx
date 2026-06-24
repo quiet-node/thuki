@@ -3571,7 +3571,6 @@ function App() {
                                     opacity: { duration: 0.2, delay: 0.08 },
                                   }}
                                   style={{ overflow: 'hidden' }}
-                                  className="border-t border-surface-border"
                                 >
                                   <ModelPickerPanel
                                     models={availableModels}
