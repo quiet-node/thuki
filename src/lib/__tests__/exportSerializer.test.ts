@@ -160,7 +160,7 @@ describe('serializeForFile', () => {
     ];
     const result = await serializeForFile(messages, CTX, NOW, stubImageLoader);
     expect(result).toContain(
-      '<details>\n<summary>Thinking</summary>\n\nstep 1\nstep 2\n\n</details>',
+      '<details>\n<summary>Reasoning</summary>\n\nstep 1\nstep 2\n\n</details>',
     );
   });
 

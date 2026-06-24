@@ -363,11 +363,11 @@ describe('ModelPickerPanel', () => {
     };
     renderPanel({ capabilities });
     // Every row leads with "text" (every chat model handles text), then
-    // appends vision/thinking when supported. Plain models render just "text".
+    // appends vision/reasoning when supported. Plain models render just "text".
     const labels = screen.getAllByTestId('model-capability-label');
     expect(labels.length).toBe(3);
     expect(labels[0]).toHaveTextContent('text · vision');
-    expect(labels[1]).toHaveTextContent('text · thinking');
+    expect(labels[1]).toHaveTextContent('text · reasoning');
     expect(labels[2]).toHaveTextContent('text');
   });
 
@@ -385,16 +385,16 @@ describe('ModelPickerPanel', () => {
     expect(row).toBeInTheDocument();
   });
 
-  it('renders the "Always thinks" badge only for reasoningAlways models', () => {
+  it('renders the "Always reasons" badge only for reasoningAlways models', () => {
     const capabilities: ModelCapabilitiesMap = {
       'gemma4:e2b': { vision: true, thinking: false },
       'qwen2.5:7b': { vision: false, thinking: true, reasoningAlways: true },
       'llama3.2:3b': { vision: false, thinking: false },
     };
     renderPanel({ capabilities });
-    const badges = screen.getAllByTestId('always-thinks-badge');
+    const badges = screen.getAllByTestId('always-reasons-badge');
     expect(badges).toHaveLength(1);
-    expect(badges[0]).toHaveTextContent('Always thinks');
+    expect(badges[0]).toHaveTextContent('Always reasons');
   });
 });
 
@@ -418,7 +418,7 @@ describe('formatCapabilityLabel', () => {
     const map: ModelCapabilitiesMap = {
       x: { vision: true, thinking: true },
     };
-    expect(formatCapabilityLabel(map, 'x')).toBe('text · vision · thinking');
+    expect(formatCapabilityLabel(map, 'x')).toBe('text · vision · reasoning');
   });
 
   it('appends "vision" after the leading "text" when only vision is present', () => {
@@ -428,11 +428,11 @@ describe('formatCapabilityLabel', () => {
     expect(formatCapabilityLabel(map, 'x')).toBe('text · vision');
   });
 
-  it('appends "thinking" after the leading "text" when only thinking is present', () => {
+  it('appends "reasoning" after the leading "text" when only thinking is present', () => {
     const map: ModelCapabilitiesMap = {
       x: { vision: false, thinking: true },
     };
-    expect(formatCapabilityLabel(map, 'x')).toBe('text · thinking');
+    expect(formatCapabilityLabel(map, 'x')).toBe('text · reasoning');
   });
 });
 

@@ -204,7 +204,7 @@ function renderQuote(message: Message): string | null {
 }
 
 function renderThinking(thinking: string): string {
-  return `<details>\n<summary>Thinking</summary>\n\n${thinking}\n\n</details>`;
+  return `<details>\n<summary>Reasoning</summary>\n\n${thinking}\n\n</details>`;
 }
 
 async function renderImages(

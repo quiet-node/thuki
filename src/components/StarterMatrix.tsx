@@ -22,7 +22,10 @@ import {
   type DownloadUiState,
 } from '../hooks/useDownloadModel';
 import type { RamFit, StarterOption, StarterTier } from '../types/starter';
-import { ALWAYS_THINKS_LABEL, ALWAYS_THINKS_TOOLTIP } from './ModelPickerPanel';
+import {
+  ALWAYS_REASONS_LABEL,
+  ALWAYS_REASONS_TOOLTIP,
+} from './ModelPickerPanel';
 
 const HF_BASE_URL = 'https://huggingface.co';
 
@@ -413,8 +416,8 @@ function TierColumn({
           // Mirror the model picker's pill so a download-time user is not
           // surprised by the latency: this tier reasons before every answer.
           <span
-            data-testid="starter-always-thinks-badge"
-            title={ALWAYS_THINKS_TOOLTIP}
+            data-testid="starter-always-reasons-badge"
+            title={ALWAYS_REASONS_TOOLTIP}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -428,7 +431,7 @@ function TierColumn({
               whiteSpace: 'nowrap',
             }}
           >
-            {ALWAYS_THINKS_LABEL}
+            {ALWAYS_REASONS_LABEL}
           </span>
         ) : starter.thinking ? (
           <span style={{ color: 'rgba(255,255,255,0.6)', fontWeight: 600 }}>

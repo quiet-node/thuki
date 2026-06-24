@@ -321,7 +321,7 @@ pub fn engine_start_error(detail: &str) -> EngineError {
     if lower.contains("unknown model architecture") || lower.contains("unknown architecture") {
         EngineError {
             kind: EngineErrorKind::ModelUnsupported,
-            message: "Unsupported model\nThuki's engine doesn't support this arch yet. Try another model. Engine improves over time and may support it down the road.".to_string(),
+            message: "Unsupported model\nThuki's engine doesn't support this model's architecture yet. Try another model; support expands as the engine updates.".to_string(),
         }
     } else {
         EngineError {
@@ -1497,7 +1497,7 @@ mod tests {
         assert_eq!(err.kind, EngineErrorKind::ModelUnsupported);
         assert_eq!(
             err.message,
-            "Unsupported model\nThuki's engine doesn't support this arch yet. Try another model. Engine improves over time and may support it down the road."
+            "Unsupported model\nThuki's engine doesn't support this model's architecture yet. Try another model; support expands as the engine updates."
         );
     }
 

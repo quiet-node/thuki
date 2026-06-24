@@ -208,7 +208,7 @@ describe('StaffPicksPane', () => {
     const row = rowFor('Gemma 4 12B');
     expect(within(row).getByText('Text')).toBeInTheDocument();
     expect(within(row).getByText('Vision')).toBeInTheDocument();
-    expect(within(row).queryByText('Thinking')).not.toBeInTheDocument();
+    expect(within(row).queryByText('Reasoning')).not.toBeInTheDocument();
     // Sub-line grammar matches Library: size, context, maker, then quant.
     expect(
       within(row).getByText('7.2 GB · 128K · Google · Q4_0'),
@@ -247,13 +247,13 @@ describe('StaffPicksPane', () => {
     });
   });
 
-  it('shows a Thinking pill on a thinking model and omits Vision on a text-only one', async () => {
+  it('shows a Reasoning pill on a thinking model and omits Vision on a text-only one', async () => {
     await renderPane();
     const qwen = rowFor('Qwen3.5 9B');
-    expect(within(qwen).getByText('Thinking')).toBeInTheDocument();
+    expect(within(qwen).getByText('Reasoning')).toBeInTheDocument();
     expect(within(qwen).getByText('Vision')).toBeInTheDocument();
     const oss = rowFor('gpt-oss 20B');
-    expect(within(oss).getByText('Thinking')).toBeInTheDocument();
+    expect(within(oss).getByText('Reasoning')).toBeInTheDocument();
     expect(within(oss).queryByText('Vision')).not.toBeInTheDocument();
   });
 

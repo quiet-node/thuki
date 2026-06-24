@@ -127,7 +127,7 @@ To illustrate how hard this problem is: a naive approach might try to strip `<na
 
 ### The model provider: the local AI model runner
 
-The third piece is whatever runs the AI model: Thuki's **active provider**. By default that is the built-in inference engine (a bundled llama.cpp `llama-server` Thuki manages itself); it can also be a local [Ollama](https://ollama.com) install or any OpenAI-compatible local server. Whichever one is active, it is a local server that loads a language model (such as Gemma, Phi, Llama, Mistral, or Qwen) into the computer's memory and responds to chat requests over a local API. Every time Thuki needs to "think," it sends a request to the active provider.
+The third piece is whatever runs the AI model: Thuki's **active provider**. By default that is the built-in inference engine (a bundled llama.cpp `llama-server` Thuki manages itself); it can also be a local [Ollama](https://ollama.com) install. Whichever one is active, it is a local server that loads a language model (such as Gemma, Phi, Llama, Mistral, or Qwen) into the computer's memory and responds to chat requests over a local API. Every time Thuki needs to "think," it sends a request to the active provider.
 
 In the `/search` pipeline, the model is called three times in the typical case:
 
@@ -226,7 +226,7 @@ After reranking, the top 10 URLs advance to the next stage.
 
 ### Step 4: The Snippet Judge
 
-Before fetching any full pages (which requires network requests and takes time), the pipeline pauses and asks a question: "Do the short snippets we already have contain enough information to answer this question?"
+Before fetching any full pages (which requires network requests and takes time), the pipeline pauses and asks a question: "Do the snippets gathered so far contain enough information to answer this question?"
 
 This is the first judge call. A second call goes out to the active provider, this time using the `search_judge` system prompt. The model receives the user's original question and all the snippets from the top 10 results. It returns a structured verdict:
 

@@ -26,11 +26,11 @@ interface LoadingStageProps {
  * Shared loading row: 9-dot `TypingIndicator` on the left, an optional
  * shimmer-animated label on the right. Used as the stable loading state for
  * both `/search` stages ("Analyzing query", "Searching the web") and the
- * `/think` flow ("Thinking..."). Keeps the visual pattern consistent across
+ * `/think` flow ("Reasoning..."). Keeps the visual pattern consistent across
  * long-running backend processes.
  *
  * The outer wrapper is a `span` with `inline-flex` so the component can sit
- * inside a `<button>` (e.g. the thinking-block disclosure row) without
+ * inside a `<button>` (e.g. the reasoning-block disclosure row) without
  * producing invalid block-inside-button HTML.
  */
 export function LoadingStage({

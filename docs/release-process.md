@@ -11,7 +11,7 @@ Releases happen automatically. Land conventional-commit PRs into `main`. release
 - `Thuki_<version>_aarch64.app.tar.gz.sig` (ed25519 signature for the payload)
 - `latest.json` (the manifest the in-app updater polls)
 
-All four are uploaded to the GitHub release. Existing v0.7.x installs detect the new version on their next 24-hour check and offer to install in place.
+All four are uploaded to the GitHub release. Existing installs detect the new version on their next 24-hour check and offer to install in place.
 
 ## Where the signing key lives
 

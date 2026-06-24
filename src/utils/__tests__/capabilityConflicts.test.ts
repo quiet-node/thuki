@@ -216,7 +216,7 @@ describe('getCapabilityConflict', () => {
       hasThinkCommand: true,
     });
     expect(result).toBe(
-      "llama3 doesn't show reasoning. Try a thinking model for /think.",
+      "llama3 doesn't show reasoning. Try a reasoning model for /think.",
     );
   });
 
@@ -262,7 +262,7 @@ describe('getCapabilityConflict', () => {
       hasThinkCommand: true,
     });
     expect(result).toBe(
-      "llava doesn't show reasoning. Try a thinking model for /think.",
+      "llava doesn't show reasoning. Try a reasoning model for /think.",
     );
   });
 
@@ -320,7 +320,7 @@ describe('getCapabilityConflict', () => {
       HISTORY_HAS_THINKING,
     );
     expect(result).toBe(
-      'Reasoning from earlier turns is hidden from llama3 because it does not emit thinking tokens. Switch to a thinking model to keep it.',
+      'Reasoning from earlier turns is hidden from llama3 because it is not a reasoning model. Switch to one to keep it.',
     );
   });
 

@@ -134,7 +134,7 @@ export function ProvidersPane({
   // True while the built-in engine is priming: the model is resident
   // (`/health` OK) but the system-prompt prefill has not finished, so it still
   // answers as slowly as a cold start. The status reads "warming…" until the
-  // prime completes, then flips to "in VRAM".
+  // prime completes, then flips to "in memory".
   const [warming, setWarming] = useState(false);
   useEffect(() => {
     // Re-reads which model the active provider actually has resident. The
@@ -331,7 +331,7 @@ export function ProvidersPane({
   // Keep-warm live status. `loadedModel` is the display name of the model the
   // active provider actually has resident (the built-in engine's loaded blob,
   // or Ollama's /api/ps), never the frontend selection; when set it renders as
-  // a truncating name + "in VRAM" suffix in the JSX below so a long name can
+  // a truncating name + "in memory" suffix in the JSX below so a long name can
   // never break the row. This fallback text covers the non-resident states
   // (priming or mid-load for the built-in engine, otherwise nothing loaded).
   //
@@ -646,17 +646,17 @@ export function ProvidersPane({
           </div>
         </div>
 
-        {/* Keep model warm: status rides the header line next to the name; the
+        {/* Keep Warm: status rides the header line next to the name; the
             release timer and Unload sit on their own row beneath it. */}
         <div className={`${styles.genRow} ${styles.genRowWarm}`}>
           <div className={styles.genWarmHead}>
             <div className={styles.genName}>
-              Keep model warm
+              Keep Warm
               <Tooltip label={KEEP_WARM_TOOLTIP} multiline>
                 <button
                   type="button"
                   className={styles.infoBtn}
-                  aria-label="About Keep model warm"
+                  aria-label="About Keep Warm"
                 >
                   ?
                 </button>
@@ -672,7 +672,7 @@ export function ProvidersPane({
                     {loadedModel}
                   </span>
                   <span className={styles.genWarmSuffix}>
-                    {builtinWarming ? 'warming…' : 'in VRAM'}
+                    {builtinWarming ? 'warming…' : 'in memory'}
                   </span>
                 </>
               ) : (
