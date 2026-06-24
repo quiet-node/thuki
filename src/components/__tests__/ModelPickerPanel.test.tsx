@@ -209,6 +209,14 @@ describe('ModelPickerPanel', () => {
     expect(empty.textContent).toContain('ollama pull <model>');
   });
 
+  it('hides the filter row when there are no models to filter', () => {
+    renderPanel({ models: [] });
+    expect(
+      screen.queryByPlaceholderText(/filter models/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('model-picker-ollama-link')).toBeNull();
+  });
+
   it('hides the Browse Ollama pill for non-ollama providers', () => {
     renderPanel({ providerKind: 'builtin' });
     expect(screen.queryByTestId('model-picker-ollama-link')).toBeNull();

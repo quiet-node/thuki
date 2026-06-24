@@ -189,91 +189,96 @@ export function ModelPickerPanel({
 
   return (
     <div className="flex flex-col w-full">
-      <div className="flex items-center gap-2 px-3 pt-3 pb-2 border-b border-surface-border">
-        <input
-          type="text"
-          role="combobox"
-          aria-controls={LISTBOX_ID}
-          aria-expanded="true"
-          aria-activedescendant={activeId}
-          aria-autocomplete="list"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'ArrowDown') {
-              e.preventDefault();
-              if (filtered.length === 0) return;
-              setHighlightedIndex((i) => (i + 1) % filtered.length);
-              return;
-            }
-            if (e.key === 'ArrowUp') {
-              e.preventDefault();
-              if (filtered.length === 0) return;
-              setHighlightedIndex(
-                (i) => (i - 1 + filtered.length) % filtered.length,
-              );
-              return;
-            }
-            if (e.key === 'Home') {
-              e.preventDefault();
-              if (filtered.length > 0) setHighlightedIndex(0);
-              return;
-            }
-            if (e.key === 'End') {
-              e.preventDefault();
-              if (filtered.length > 0) setHighlightedIndex(filtered.length - 1);
-              return;
-            }
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              commit(safeHighlightedIndex);
-              return;
-            }
-            if (e.key === 'Escape') {
-              e.preventDefault();
-              onClose?.();
-              return;
-            }
-          }}
-          placeholder="Filter models..."
-          autoFocus
-          className="flex-1 min-w-0 bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
-        />
-        {!compact && (
-          <span className="shrink-0 text-[10px] text-text-secondary/60 italic">
-            Larger models answer better.
-          </span>
-        )}
-        {providerKind === 'ollama' && (
-          <Tooltip label={OLLAMA_PILL_TOOLTIP} multiline>
-            <button
-              type="button"
-              data-testid="model-picker-ollama-link"
-              aria-label="Browse Ollama models"
-              onClick={() => {
-                void invoke('open_url', { url: OLLAMA_LIBRARY_URL });
-              }}
-              className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-lg px-2 py-0.5 hover:text-primary hover:bg-primary/12 transition-colors duration-120 cursor-pointer outline-none whitespace-nowrap"
-            >
-              {compact ? 'Browse' : 'Browse Ollama'}
-              <svg
-                className="w-2.5 h-2.5"
-                viewBox="0 0 16 16"
-                fill="none"
-                aria-hidden="true"
+      {/* The filter row only earns its space when there is a list to filter;
+          an empty picker shows just its guidance message below. */}
+      {models.length > 0 ? (
+        <div className="flex items-center gap-2 px-3 pt-3 pb-2 border-b border-surface-border">
+          <input
+            type="text"
+            role="combobox"
+            aria-controls={LISTBOX_ID}
+            aria-expanded="true"
+            aria-activedescendant={activeId}
+            aria-autocomplete="list"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (filtered.length === 0) return;
+                setHighlightedIndex((i) => (i + 1) % filtered.length);
+                return;
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (filtered.length === 0) return;
+                setHighlightedIndex(
+                  (i) => (i - 1 + filtered.length) % filtered.length,
+                );
+                return;
+              }
+              if (e.key === 'Home') {
+                e.preventDefault();
+                if (filtered.length > 0) setHighlightedIndex(0);
+                return;
+              }
+              if (e.key === 'End') {
+                e.preventDefault();
+                if (filtered.length > 0)
+                  setHighlightedIndex(filtered.length - 1);
+                return;
+              }
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commit(safeHighlightedIndex);
+                return;
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                onClose?.();
+                return;
+              }
+            }}
+            placeholder="Filter models..."
+            autoFocus
+            className="flex-1 min-w-0 bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
+          />
+          {!compact && (
+            <span className="shrink-0 text-[10px] text-text-secondary/60 italic">
+              Larger models answer better.
+            </span>
+          )}
+          {providerKind === 'ollama' && (
+            <Tooltip label={OLLAMA_PILL_TOOLTIP} multiline>
+              <button
+                type="button"
+                data-testid="model-picker-ollama-link"
+                aria-label="Browse Ollama models"
+                onClick={() => {
+                  void invoke('open_url', { url: OLLAMA_LIBRARY_URL });
+                }}
+                className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-lg px-2 py-0.5 hover:text-primary hover:bg-primary/12 transition-colors duration-120 cursor-pointer outline-none whitespace-nowrap"
               >
-                <path
-                  d="M5 11l6-6m-5 0h5v5"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </button>
-          </Tooltip>
-        )}
-      </div>
+                {compact ? 'Browse' : 'Browse Ollama'}
+                <svg
+                  className="w-2.5 h-2.5"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M5 11l6-6m-5 0h5v5"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </Tooltip>
+          )}
+        </div>
+      ) : null}
 
       <div
         ref={listboxRef}
