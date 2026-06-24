@@ -624,4 +624,34 @@ describe('LibraryPane', () => {
       screen.queryByPlaceholderText(/filter models/i),
     ).not.toBeInTheDocument();
   });
+
+  it('keeps the lone survivor visible when a stale filter would hide it after a delete', async () => {
+    let deleted = false;
+    mockCommands(
+      libraryResponses({
+        list_installed_models: () => (deleted ? [QWEN] : INSTALLED),
+        delete_installed_model: () => {
+          deleted = true;
+          return undefined;
+        },
+      }),
+    );
+    await renderPane();
+    // Narrow the filter to just gemma, then delete it: the count drops to one,
+    // the filter input unmounts, and the now-stale "gemma" query must not hide
+    // the surviving qwen behind a "No models match" dead-end.
+    fireEvent.change(screen.getByPlaceholderText(/filter models/i), {
+      target: { value: 'gemma' },
+    });
+    expect(screen.queryByText('qwen')).not.toBeInTheDocument();
+    openMenu('gemma');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await flush();
+    expect(screen.getByText('qwen')).toBeInTheDocument();
+    expect(screen.queryByText(/No models match/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText(/filter models/i),
+    ).not.toBeInTheDocument();
+  });
 });

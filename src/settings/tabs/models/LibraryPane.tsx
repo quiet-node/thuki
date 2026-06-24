@@ -218,8 +218,11 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
 
   // Filter installed models by name, repo id, or maker. A single combined
   // haystack keeps the match branch-free; the filter row only appears when
-  // there is more than one model to sift through.
-  const query = filter.trim().toLowerCase();
+  // there is more than one model to sift through. The query is gated on that
+  // same condition so a stale filter (e.g. deleting the one model it matched,
+  // dropping the count to 1) can never hide the surviving model with the input
+  // already unmounted and no way left to clear it.
+  const query = installed.length > 1 ? filter.trim().toLowerCase() : '';
   const visible =
     query === ''
       ? installed
