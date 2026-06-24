@@ -202,6 +202,11 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
     resumeDownload,
   } = useDownloadCtx();
   const [ollamaDetected, setOllamaDetected] = useState(false);
+  // Upgraders reach this picker through the announcement (which latches
+  // `builtin_engine_announced`) after already choosing "Try Built-in" over
+  // their existing Ollama. Re-offering Ollama here would be redundant, so the
+  // escape hatch below is shown to brand-new users only (not yet announced).
+  const [announced, setAnnounced] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -223,6 +228,13 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
       })
       .catch(() => {
         // Detection failure just hides the escape hatch.
+      });
+    void invoke<boolean>('is_builtin_announced')
+      .then((value) => {
+        if (!cancelled) setAnnounced(value);
+      })
+      .catch(() => {
+        // Query failure leaves `announced` false, matching a brand-new user.
       });
     return () => {
       cancelled = true;
@@ -313,7 +325,7 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
             onCancel={() => void cancel()}
             onRetry={() => void retry()}
             onContinue={() => void invoke('advance_past_model_check')}
-            ollamaDetected={ollamaDetected}
+            ollamaDetected={ollamaDetected && !announced}
             onUseOllama={() => void handleUseOllama()}
           />
         </div>

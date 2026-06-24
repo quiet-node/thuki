@@ -1428,6 +1428,19 @@ fn onboarding_stage(
     onboarding::get_stage(&conn).map_err(|e| e.to_string())
 }
 
+/// Whether the built-in engine announcement has been latched. The starter
+/// picker reads this to tell an upgrader (who reached the picker through the
+/// announcement, which sets the flag) from a brand-new user (not yet announced):
+/// the "use my existing Ollama instead" escape hatch is only offered to
+/// brand-new users, since an upgrader already made that choice on the
+/// announcement. Thin wrapper over the tested `is_builtin_announced`.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn is_builtin_announced(db: tauri::State<history::Database>) -> Result<bool, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    onboarding::is_builtin_announced(&conn).map_err(|e| e.to_string())
+}
+
 /// Advances the onboarding stage from `model_check` to `intro` and emits
 /// the onboarding event so the frontend swaps to `IntroStep` without a
 /// window flicker.
@@ -2663,6 +2676,7 @@ pub fn run() {
             advance_past_builtin_announcement,
             fit_onboarding_window,
             onboarding_stage,
+            is_builtin_announced,
             #[cfg(not(coverage))]
             warmup::warm_up_model,
             #[cfg(not(coverage))]

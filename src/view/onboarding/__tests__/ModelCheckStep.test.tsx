@@ -789,6 +789,9 @@ function builtinResponses(overrides: Record<string, unknown> = {}) {
     check_model_setup: { state: 'needs_download' },
     get_starter_options: BUILTIN_OPTIONS,
     detect_ollama: true,
+    // Brand-new user by default: the announcement has not been latched, so the
+    // "use my existing Ollama instead" escape hatch is offered.
+    is_builtin_announced: false,
     get_models_dir_free_bytes: 50_000_000_000,
     ...overrides,
   });
@@ -840,6 +843,17 @@ describe('ModelCheckStep (builtin flow)', () => {
 
   it('hides the escape hatch when Ollama is not detected', async () => {
     builtinResponses({ detect_ollama: false });
+
+    renderBuiltin();
+    await act(async () => {});
+
+    expect(screen.queryByText('Use it instead')).not.toBeInTheDocument();
+  });
+
+  it('hides the escape hatch for an upgrader even when Ollama is detected', async () => {
+    // Upgrader: the announcement has been latched, so the picker does not
+    // re-offer Ollama despite it running on the machine.
+    builtinResponses({ detect_ollama: true, is_builtin_announced: true });
 
     renderBuiltin();
     await act(async () => {});
@@ -947,6 +961,20 @@ describe('ModelCheckStep (builtin flow)', () => {
 
     expect(screen.queryByText('Use it instead')).not.toBeInTheDocument();
     expect(screen.getByText('Model balanced')).toBeInTheDocument();
+  });
+
+  it('shows the escape hatch when the announced query rejects (treated as a new user)', async () => {
+    builtinResponses();
+    const base = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (cmd, args) => {
+      if (cmd === 'is_builtin_announced') throw new Error('db down');
+      return base(cmd, args);
+    });
+
+    renderBuiltin();
+    await act(async () => {});
+
+    expect(screen.getByText('Use it instead')).toBeInTheDocument();
   });
 
   it('pausing a download cancels it and returns the matrix to its download buttons', async () => {
@@ -1179,6 +1207,7 @@ describe('ModelCheckStep (builtin flow)', () => {
   it('drops probe results that resolve after unmount', async () => {
     let resolveSetup: (v: unknown) => void = () => {};
     let resolveDetect: (v: unknown) => void = () => {};
+    let resolveAnnounced: (v: unknown) => void = () => {};
     let resolveFree: (v: unknown) => void = () => {};
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'check_model_setup') {
@@ -1189,6 +1218,11 @@ describe('ModelCheckStep (builtin flow)', () => {
       if (cmd === 'detect_ollama') {
         return new Promise((r) => {
           resolveDetect = r;
+        });
+      }
+      if (cmd === 'is_builtin_announced') {
+        return new Promise((r) => {
+          resolveAnnounced = r;
         });
       }
       if (cmd === 'get_models_dir_free_bytes') {
@@ -1207,6 +1241,7 @@ describe('ModelCheckStep (builtin flow)', () => {
     await act(async () => {
       resolveSetup(READY_RESPONSE);
       resolveDetect(true);
+      resolveAnnounced(false);
       resolveFree(1);
     });
 
