@@ -198,7 +198,7 @@ export function BuiltinAnnouncementStep() {
           >
             v0.15
           </TextLink>
-          , Thuki ships its own inference engine. Here&apos;s what changes.
+          , Thuki ships its own inference engine.
         </p>
 
         <div style={{ display: 'flex', flexDirection: 'column' }}>
