@@ -16,11 +16,11 @@ describe('IntroStep', () => {
   it('renders the subtitle', () => {
     render(<IntroStep onComplete={vi.fn()} />);
     expect(
-      screen.getByText("Five quick tips and you're chatting in seconds."),
+      screen.getByText("A few quick tips and you're chatting in seconds."),
     ).toBeInTheDocument();
   });
 
-  it('renders all 5 facts', () => {
+  it('renders all 6 facts', () => {
     render(<IntroStep onComplete={vi.fn()} />);
     expect(screen.getByText('Double-tap')).toBeInTheDocument();
     expect(screen.getByText('to summon')).toBeInTheDocument();
@@ -29,7 +29,19 @@ describe('IntroStep', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('Drop in any image')).toBeInTheDocument();
     expect(screen.getByText('for commands')).toBeInTheDocument();
+    expect(
+      screen.getByText('Run any open-source AI model'),
+    ).toBeInTheDocument();
     expect(screen.getByText('Floats above everything')).toBeInTheDocument();
+  });
+
+  it('describes the in-app model library on the Run any open-source AI model fact', () => {
+    render(<IntroStep onComplete={vi.fn()} />);
+    expect(
+      screen.getByText(
+        'Pick from thousands, download in a click, swap whenever in Settings, with a fit check for your Mac.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('renders generic slash command guidance', () => {
@@ -69,6 +81,18 @@ describe('IntroStep', () => {
     );
     expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
+  });
+
+  it('points the ready strip at Get Started, not the (absent) ask bar', () => {
+    render(
+      <IntroStep
+        onComplete={vi.fn()}
+        downloadStatus={{ kind: 'ready', modelName: 'gpt-oss 20B' }}
+      />,
+    );
+    expect(
+      screen.getByText('gpt-oss 20B ready. Hit Get Started to start chatting!'),
+    ).toBeInTheDocument();
   });
 
   it('renders no download strip when no status is supplied', () => {

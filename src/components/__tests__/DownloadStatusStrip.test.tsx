@@ -14,6 +14,7 @@ describe('DownloadStatusStrip', () => {
   it('shows the model name, percent and ETA while downloading', () => {
     render(
       <DownloadStatusStrip
+        surface="askbar"
         status={{
           kind: 'downloading',
           modelName: 'Qwen3.5 9B',
@@ -27,11 +28,11 @@ describe('DownloadStatusStrip', () => {
     expect(screen.getByText('62% · 1m left')).toBeInTheDocument();
   });
 
-  it('alternates the label with the background hint when alternate is set', () => {
+  it('alternates the label with the background hint on the ask bar', () => {
     vi.useFakeTimers();
     render(
       <DownloadStatusStrip
-        alternate
+        surface="askbar"
         status={{
           kind: 'downloading',
           modelName: 'Qwen3.5 9B',
@@ -50,10 +51,11 @@ describe('DownloadStatusStrip', () => {
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
   });
 
-  it('does not alternate the label by default (intro)', () => {
+  it('does not alternate the label during onboarding', () => {
     vi.useFakeTimers();
     render(
       <DownloadStatusStrip
+        surface="onboarding"
         status={{
           kind: 'downloading',
           modelName: 'Qwen3.5 9B',
@@ -72,6 +74,7 @@ describe('DownloadStatusStrip', () => {
   it('omits the ETA when it is not yet measurable', () => {
     render(
       <DownloadStatusStrip
+        surface="askbar"
         status={{
           kind: 'downloading',
           modelName: 'Qwen3.5 9B',
@@ -87,6 +90,7 @@ describe('DownloadStatusStrip', () => {
   it('formats hour-scale and second-scale ETAs', () => {
     const { rerender } = render(
       <DownloadStatusStrip
+        surface="askbar"
         status={{
           kind: 'downloading',
           modelName: 'Qwen3.5 9B',
@@ -99,6 +103,7 @@ describe('DownloadStatusStrip', () => {
     expect(screen.getByText('1% · 1h 1m left')).toBeInTheDocument();
     rerender(
       <DownloadStatusStrip
+        surface="askbar"
         status={{
           kind: 'downloading',
           modelName: 'Qwen3.5 9B',
@@ -115,6 +120,7 @@ describe('DownloadStatusStrip', () => {
     const onPause = vi.fn();
     render(
       <DownloadStatusStrip
+        surface="askbar"
         status={{
           kind: 'downloading',
           modelName: 'Qwen3.5 9B',
@@ -129,7 +135,12 @@ describe('DownloadStatusStrip', () => {
   });
 
   it('shows a pausing state (no controls) while the cancel lands', () => {
-    render(<DownloadStatusStrip status={{ kind: 'pausing', percent: 40 }} />);
+    render(
+      <DownloadStatusStrip
+        surface="askbar"
+        status={{ kind: 'pausing', percent: 40 }}
+      />,
+    );
     expect(screen.getByText('Pausing…')).toBeInTheDocument();
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
@@ -138,6 +149,7 @@ describe('DownloadStatusStrip', () => {
     const onResume = vi.fn();
     render(
       <DownloadStatusStrip
+        surface="askbar"
         status={{ kind: 'paused', percent: 58, onResume }}
       />,
     );
@@ -150,7 +162,12 @@ describe('DownloadStatusStrip', () => {
   });
 
   it('reassures that verifying can take a while during the re-hash', () => {
-    render(<DownloadStatusStrip status={{ kind: 'verifying', percent: 40 }} />);
+    render(
+      <DownloadStatusStrip
+        surface="askbar"
+        status={{ kind: 'verifying', percent: 40 }}
+      />,
+    );
     expect(screen.getByText('Verifying…')).toBeInTheDocument();
     expect(
       screen.getByText('This can take a minute for large models'),
@@ -158,9 +175,10 @@ describe('DownloadStatusStrip', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('names the model and invites the first message when ready', () => {
+  it('invites the first message when ready on the ask bar', () => {
     render(
       <DownloadStatusStrip
+        surface="askbar"
         status={{ kind: 'ready', modelName: 'Qwen3.5 9B' }}
       />,
     );
@@ -169,10 +187,23 @@ describe('DownloadStatusStrip', () => {
     ).toBeInTheDocument();
   });
 
+  it('points to Get Started when ready during onboarding', () => {
+    render(
+      <DownloadStatusStrip
+        surface="onboarding"
+        status={{ kind: 'ready', modelName: 'Qwen3.5 9B' }}
+      />,
+    );
+    expect(
+      screen.getByText('Qwen3.5 9B ready. Hit Get Started to start chatting!'),
+    ).toBeInTheDocument();
+  });
+
   it('shows a failure message with a Retry button', () => {
     const onRetry = vi.fn();
     render(
       <DownloadStatusStrip
+        surface="askbar"
         status={{ kind: 'failed', message: 'Download failed', onRetry }}
       />,
     );

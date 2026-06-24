@@ -547,7 +547,7 @@ export function AskBarView({
         <CapabilityMismatchStrip message={capabilityConflictMessage} />
       )}
       {downloadStatus ? (
-        <DownloadStatusStrip status={downloadStatus} alternate />
+        <DownloadStatusStrip status={downloadStatus} surface="askbar" />
       ) : null}
       {/* Command suggestion renders above the input row in the normal DOM
           flow. Being inside the morphing container means the ResizeObserver
