@@ -156,6 +156,16 @@ When extending the system, preserve this contract: **never panic on user input**
 3. **Clean up on completion.** After work is approved and merged to main (or if abandoned), remove the worktree to keep the workspace tidy.
 4. **Test in worktree first.** Verify all tests pass (100% coverage), build succeeds, and linting/formatting is clean before requesting approval.
 
+### Pull Request Descriptions
+
+Keep PR descriptions compact and to the point, never an essay. Cover only what a reviewer needs to understand the change. Use simple language, action verbs, and plain phrasing so anyone can grasp it on a first read.
+
+Structure:
+
+1. **Description** — a short paragraph (1 to 3 sentences) stating what the PR does and why.
+2. **Key changes** — a compact bullet list of the concrete changes.
+3. Add further sections only when they add value (for example testing notes), and keep them short.
+
 ## Post-Change Validation
 
 After making any code changes and before ending your response, you must:
