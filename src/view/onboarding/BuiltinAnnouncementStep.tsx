@@ -32,6 +32,14 @@ const PROVIDER_ID_BUILTIN = 'builtin';
  */
 const LEARN_MORE_URL = 'https://www.thuki.app';
 
+/**
+ * GitHub release page for the version that introduced the built-in engine.
+ * Linked from the subtitle; the tag is not cut yet, so the page 404s until the
+ * v0.15.0 release is published.
+ */
+const RELEASE_TAG_URL =
+  'https://github.com/quiet-node/thuki/releases/tag/v0.15.0';
+
 export function BuiltinAnnouncementStep() {
   const cardRef = useRef<HTMLDivElement>(null);
   // The onboarding window is transparent; fit it to the card so the empty area
@@ -55,6 +63,10 @@ export function BuiltinAnnouncementStep() {
 
   const handleLearnMore = useCallback(() => {
     void invoke('open_url', { url: LEARN_MORE_URL });
+  }, []);
+
+  const handleViewRelease = useCallback(() => {
+    void invoke('open_url', { url: RELEASE_TAG_URL });
   }, []);
 
   return (
@@ -161,14 +173,29 @@ export function BuiltinAnnouncementStep() {
             whiteSpace: 'nowrap',
           }}
         >
-          Since v0.15, Thuki ships its own engine. Here&apos;s what changes.
+          Since{' '}
+          <TextLink
+            onClick={handleViewRelease}
+            ariaLabel="View the v0.15 release on GitHub"
+            color="rgba(255,141,92,0.85)"
+            hoverColor="#ff8d5c"
+            style={{
+              display: 'inline',
+              padding: 0,
+              fontSize: 'inherit',
+              fontWeight: 600,
+            }}
+          >
+            v0.15
+          </TextLink>
+          , Thuki ships its own inference engine. Here&apos;s what changes.
         </p>
 
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           <Point
             icon={<BoltIcon />}
             title="One app, nothing else to manage"
-            desc="No need to install Ollama, no daemon to keep running. It's all Thuki."
+            desc="No more background Ollama, Thuki runs models itself."
           />
           <Point
             icon={<LayersIcon />}
@@ -177,7 +204,8 @@ export function BuiltinAnnouncementStep() {
               <>
                 Any model, any quantization on{' '}
                 <b style={{ color: '#ff8d5c' }}>Hugging Face</b> your Mac can
-                handle.
+                handle. Find and download them right in the app, no terminal
+                needed.
               </>
             }
           />
@@ -196,22 +224,6 @@ export function BuiltinAnnouncementStep() {
             margin: '6px 0 14px',
           }}
         />
-
-        <p
-          style={{
-            textAlign: 'center',
-            fontSize: 11,
-            color: 'rgba(255,255,255,0.42)',
-            lineHeight: 1.5,
-            margin: '0 0 15px',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          <b style={{ color: 'rgba(240,240,242,0.72)', fontWeight: 600 }}>
-            Your Ollama setup still works.
-          </b>{' '}
-          You just don&apos;t need it running anymore.
-        </p>
 
         <button
           onClick={() => void handleTryBuiltin()}
@@ -256,9 +268,21 @@ export function BuiltinAnnouncementStep() {
         <p
           style={{
             textAlign: 'center',
+            fontSize: 11,
+            color: 'rgba(255,255,255,0.3)',
+            lineHeight: 1.5,
+            margin: '22px 0 0',
+          }}
+        >
+          Either way, you can switch engines anytime in Settings.
+        </p>
+
+        <p
+          style={{
+            textAlign: 'center',
             fontSize: 10.5,
             color: 'rgba(255,255,255,0.22)',
-            marginTop: 15,
+            marginTop: 4,
             lineHeight: 1.6,
           }}
         >

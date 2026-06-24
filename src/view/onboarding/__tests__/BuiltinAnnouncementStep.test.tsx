@@ -9,15 +9,27 @@ describe('BuiltinAnnouncementStep', () => {
     invoke.mockResolvedValue(undefined);
   });
 
-  it('renders the version pill, title and one-line subtitle', () => {
+  it('renders the version pill, title and subtitle with the release link', () => {
     render(<BuiltinAnnouncementStep />);
     expect(screen.getByText('NEW')).toBeInTheDocument();
     expect(screen.getByText('Local AI, now built in')).toBeInTheDocument();
+    // The subtitle text is split by the embedded "v0.15" release link.
     expect(
-      screen.getByText(
-        "Since v0.15, Thuki ships its own engine. Here's what changes.",
-      ),
+      screen.getByText(/ships its own inference engine/),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'View the v0.15 release on GitHub' }),
+    ).toBeInTheDocument();
+  });
+
+  it('opens the v0.15 release on GitHub from the subtitle link', () => {
+    render(<BuiltinAnnouncementStep />);
+    fireEvent.click(
+      screen.getByRole('button', { name: 'View the v0.15 release on GitHub' }),
+    );
+    expect(invoke).toHaveBeenCalledWith('open_url', {
+      url: 'https://github.com/quiet-node/thuki/releases/tag/v0.15.0',
+    });
   });
 
   it('renders the three benefit points', () => {
@@ -26,12 +38,11 @@ describe('BuiltinAnnouncementStep', () => {
       screen.getByText('One app, nothing else to manage'),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(
-        "No need to install Ollama, no daemon to keep running. It's all Thuki.",
-      ),
+      screen.getByText('No more background Ollama, Thuki runs models itself.'),
     ).toBeInTheDocument();
     expect(screen.getByText('Total AI model freedom')).toBeInTheDocument();
     expect(screen.getByText('Hugging Face')).toBeInTheDocument();
+    expect(screen.getByText(/no terminal needed/)).toBeInTheDocument();
     expect(
       screen.getByText('Private, exactly like before'),
     ).toBeInTheDocument();
@@ -40,10 +51,12 @@ describe('BuiltinAnnouncementStep', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders the reassurance line and footer', () => {
+  it('renders the switch-engines line and footer', () => {
     render(<BuiltinAnnouncementStep />);
     expect(
-      screen.getByText('Your Ollama setup still works.'),
+      screen.getByText(
+        'Either way, you can switch engines anytime in Settings.',
+      ),
     ).toBeInTheDocument();
     expect(screen.getByText(/Added in v0.15/)).toBeInTheDocument();
     expect(
