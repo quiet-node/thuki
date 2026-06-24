@@ -46,6 +46,16 @@ Tests use **Vitest** for the frontend (React/TypeScript with React Testing Libra
 
 **Always run `bun run test:all:coverage` (never the bare `bun run test` / `bun run test:all`).** This single command runs both Vitest with coverage and the cargo llvm-cov gate that CI enforces. If it does not exit cleanly, the task is not done. Functions excluded from coverage with `#[cfg_attr(coverage_nightly, coverage(off))]` must be thin wrappers (Tauri commands, filesystem I/O) whose logic is tested through the functions they delegate to.
 
+## Since v0.15
+
+Since v0.15, Thuki ships its own inference engine and is local-first out of the box. This is the headline shift: where earlier versions talked only to a separately installed Ollama, Thuki now runs models itself with nothing to set up. This is the at-a-glance map of what changed; the engine and model-library internals are detailed in `docs/models-and-providers.md`.
+
+- **Built-in engine is the default provider**: a bundled llama.cpp `llama-server` sidecar, fully managed by Thuki (spawned, health-checked, kept warm, and killed on quit). See `src-tauri/src/engine/` and `docs/models-and-providers.md`.
+- **In-app model library**: download GGUF models from Hugging Face (curated Staff picks + raw Browse all) without a terminal, into a content-addressed blob store, resumable and SHA-256 verified. See `src-tauri/src/models/`.
+- **Providers**: built-in (default) and Ollama for end users; an OpenAI-compatible `openai` kind exists in code but stays gated and is not exposed to end users. Switching providers frees the deactivated one's memory, so only one is resident at a time. See `src-tauri/src/config/` and `src-tauri/src/commands.rs`.
+- **Keep Warm, RAM-fit hint, and reasoning via `/think`**: a residency knob that holds the model in memory between messages, a Comfortable/Tight/Heavy memory-fit verdict per model, and opt-in per-message reasoning.
+- **curl \| sh install**: a Gatekeeper-friendly install path (the downloaded archive carries no quarantine attribute), with the release artifact RSA-4096 signed and verified by stock `openssl`.
+
 ## Architecture
 
 Thuki is a macOS-only desktop app, a floating AI secretary activated by double-tapping the Control key. Project homepage: [thuki.app](https://www.thuki.app/). It is a **Tauri v2** app (Rust backend + React/TypeScript frontend) that ships its own inference engine: a bundled **llama.cpp** `llama-server` sidecar spawned and supervised by the backend (the default provider on fresh installs). It can instead talk to a locally running **Ollama** instance (default `http://127.0.0.1:11434`) or any OpenAI-compatible `/v1` server.
@@ -75,27 +85,10 @@ User-facing reference for all commands lives in `docs/commands.md`. **Any new sl
 - **`screenshot.rs`** — `capture_full_screen_command` Tauri command: uses CoreGraphics FFI (`CGWindowListCreateImage`) to capture all displays excluding Thuki's own windows, writes a JPEG to a temp dir, and returns the path
 - **`activator.rs`** — Core Graphics event tap watching for double-tap Control key (400 ms window, 600 ms cooldown; timing is a compiled constant, not yet exposed through `AppConfig` because the event-tap callback runs in a thread that cannot trivially read Tauri managed state). The tap MUST use `CGEventTapLocation::HID` and `CGEventTapOptions::Default` — see the critical constraint note in "Key Design Constraints" below.
 
-### Built-in engine (`src-tauri/src/engine/`)
-
-Thuki bundles llama.cpp's `llama-server` and manages its lifecycle: at most one engine process exists, never two models are resident, and a model or context-size switch always kills the old process and waits for a confirmed exit before spawning the new one.
-
-- **`state.rs`**: pure, side-effect-free residency state machine: `Stopped`, `Starting(Target)`, `Loaded { target, port }`, `Stopping { next }`, `Failed(String)`. A `Target` is `{model_path, mmproj_path, num_ctx}`; two targets are interchangeable only when **every** field is equal, so a `num_ctx` change is a different target and forces a restart exactly like a model switch (the context size is fixed at `llama-server` startup).
-- **`runner.rs`**: async actor that owns the live child process. Commands (`Ensure`, `Touch`, `SetIdleMinutes`, `Unload`, `Shutdown`) arrive on a bounded mpsc channel (`ENGINE_COMMAND_QUEUE_CAPACITY`); every transition is published on a `watch` channel for the frontend status. Startup readiness is a `/health` poll loop governed by the `ENGINE_HEALTH_*` constants; `idle_unload_minutes` of inactivity (checked every `ENGINE_IDLE_CHECK_INTERVAL_SECS`) stops the engine to free RAM.
-- **`process.rs`**: the real `EngineProcess` backed by `tokio::process` + reqwest. Spawn line: `-m <model> [--mmproj <p>] --ctx-size <n> --host 127.0.0.1 --port <p> --no-webui`. The bind is localhost-only and the web UI is disabled; do not change either.
-
-Sidecar constraints: the binary ships through tauri.conf `externalBin` (`binaries/llama-server`) and its dylib closure is bundled via the macOS `frameworks` list, resolved at runtime through the `@loader_path/../Frameworks` rpath that `scripts/ensure-llama-server.ts` adds (the script fetches the pinned llama.cpp release, verifies its sha256, prunes the dylib closure, and ad-hoc re-signs everything; it auto-runs in front of `dev` and the build scripts). The process is spawned with `tokio::process`, not Tauri's shell plugin, so the runner owns kill/wait directly; `lib.rs` shuts the sidecar down on app quit (kill-on-quit, see above).
-
-### Model library (`src-tauri/src/models/`)
-
-- **`mod.rs`**: active-model state (`ActiveModelState`, picker plumbing, persistence onto the active provider's `model` field) plus the public download/cancel API with a single-download-at-a-time slot.
-- **`registry.rs`**: an id-keyed Staff Picks catalog grouped by use-case category (3 per category), a fixed subset of which double as onboarding heroes. Every entry pins a Hugging Face repo at an exact git revision and carries each blob's sha256, size, capability flags (vision/thinking, mmproj companion), and license note.
-- **`download.rs`**: resumable downloader: streams from Hugging Face into blob-store partials, resumes via HTTP `Range`, emits `DownloadEvent`s throttled by `DOWNLOAD_PROGRESS_MIN_INTERVAL_MS`, and verifies sha256 on completion. The hash check is an integrity check only (truncation, bit rot, resume corruption), never a supply-chain/provenance control; provenance comes from the pinned repo revisions.
-- **`storage.rs`**: content-addressed blob store: `root/tmp/<sha256>.partial` during download, streaming SHA-256 verify, then atomic rename into `root/blobs/<sha256>`.
-- **`manifest.rs`**: CRUD over the `installed_models` SQLite table; row id is `"<repo>:<file_name>"`, content addresses shared across rows (two models can reference the same mmproj blob).
-
 ### Sandbox (`sandbox/`)
 
 `sandbox/search-box/` runs the SearXNG + reader services behind `/search` as a Docker Compose stack.
+
 ### IPC Pattern
 
 Frontend calls Tauri commands via `@tauri-apps/api/core`. Streaming uses Tauri's **Channel API** — the Rust side sends typed `StreamChunk` enum variants, the hook accumulates tokens into React state.

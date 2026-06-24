@@ -189,23 +189,31 @@ function Shell({
   );
 }
 
+/**
+ * Where the strip is rendered. The surface drives the two pieces of copy that
+ * must differ by context: on the ask bar the downloading label alternates with
+ * the "safe to close" hint and the ready line invites the first message, since
+ * the compose surface is right there; during onboarding the hint would read
+ * oddly on a full setup screen and the user cannot send yet, so the ready line
+ * points at the "Get Started" button that actually opens the ask bar.
+ */
+type DownloadStripSurface = 'askbar' | 'onboarding';
+
 export function DownloadStatusStrip({
   status,
-  alternate = false,
+  surface,
 }: {
   status: DownloadStripStatus;
-  /**
-   * When true, the downloading label alternates with the "safe to close" hint.
-   * Used on the ask bar; the intro shows just the model name (the hint would
-   * read oddly on a full setup screen the user is looking at).
-   */
-  alternate?: boolean;
+  surface: DownloadStripSurface;
 }) {
   if (status.kind === 'ready') {
     return (
       <Shell color={GREEN} fill={GREEN_FILL} percent={100}>
         <span className="flex-1 leading-snug">
-          {status.modelName} ready. Send your first message!
+          {status.modelName} ready.{' '}
+          {surface === 'onboarding'
+            ? 'Hit Get Started to start chatting!'
+            : 'Send your first message!'}
         </span>
       </Shell>
     );
@@ -267,7 +275,7 @@ export function DownloadStatusStrip({
     );
   }
 
-  return <DownloadingRow status={status} alternate={alternate} />;
+  return <DownloadingRow status={status} alternate={surface === 'askbar'} />;
 }
 
 /**

@@ -114,7 +114,7 @@ export function IntroStep({ onComplete, downloadStatus }: Props) {
               margin: 0,
             }}
           >
-            {"Five quick tips and you're chatting in seconds."}
+            {"A few quick tips and you're chatting in seconds."}
           </p>
         </div>
 
@@ -138,6 +138,11 @@ export function IntroStep({ onComplete, downloadStatus }: Props) {
               </>
             }
             desc="It opens with your selection already quoted as context"
+          />
+          <Fact
+            icon={<LayersIcon />}
+            title="Run any open-source AI model"
+            desc="Pick from thousands, download in a click, swap whenever in Settings, with a fit check for your Mac."
           />
           <Fact
             icon={<ImageIcon />}
@@ -213,7 +218,7 @@ export function IntroStep({ onComplete, downloadStatus }: Props) {
             divider + CTA) so it spans cleanly rather than sitting inset. */}
         {downloadStatus ? (
           <div style={{ marginTop: 4, marginLeft: -16, marginRight: -16 }}>
-            <DownloadStatusStrip status={downloadStatus} />
+            <DownloadStatusStrip status={downloadStatus} surface="onboarding" />
           </div>
         ) : null}
       </motion.div>
@@ -434,6 +439,26 @@ function CommandIcon() {
         stroke="currentColor"
         strokeWidth="1.3"
         strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function LayersIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <path
+        d="M9 2l6 3-6 3-6-3 6-3z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M3 9l6 3 6-3M3 12l6 3 6-3"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+        opacity="0.55"
       />
     </svg>
   );
