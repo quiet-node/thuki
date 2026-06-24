@@ -20,6 +20,13 @@ export const OLLAMA_PILL_TOOLTIP =
   'Browse and pull any model on Ollama. Thuki auto-detects it.';
 
 /**
+ * Tooltip for the built-in "Browse models" pill, which opens the Settings
+ * Discover browser (the in-app Hugging Face download surface).
+ */
+export const BUILTIN_BROWSE_TOOLTIP =
+  'Find and download more models in Settings.';
+
+/**
  * Pill shown on models whose reasoning cannot be turned off (capability
  * `reasoningAlways`). Positive, non-alarming framing per industry practice
  * (Anthropic/OpenAI/Gemini never present reasoning as a caveat): the goal is
@@ -260,6 +267,33 @@ export function ModelPickerPanel({
                 className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-lg px-2 py-0.5 hover:text-primary hover:bg-primary/12 transition-colors duration-120 cursor-pointer outline-none whitespace-nowrap"
               >
                 {compact ? 'Browse' : 'Browse Ollama'}
+                <svg
+                  className="w-2.5 h-2.5"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M5 11l6-6m-5 0h5v5"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </Tooltip>
+          )}
+          {providerKind === 'builtin' && (
+            <Tooltip label={BUILTIN_BROWSE_TOOLTIP} multiline>
+              <button
+                type="button"
+                data-testid="model-picker-browse-link"
+                aria-label="Browse models in Settings"
+                onClick={openSettings}
+                className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-lg px-2 py-0.5 hover:text-primary hover:bg-primary/12 transition-colors duration-120 cursor-pointer outline-none whitespace-nowrap"
+              >
+                {compact ? 'Browse' : 'Browse models'}
                 <svg
                   className="w-2.5 h-2.5"
                   viewBox="0 0 16 16"

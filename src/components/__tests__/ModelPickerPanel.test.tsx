@@ -222,6 +222,27 @@ describe('ModelPickerPanel', () => {
     expect(screen.queryByTestId('model-picker-ollama-link')).toBeNull();
   });
 
+  it('opens Settings from the builtin Browse-models pill', () => {
+    vi.mocked(invoke).mockClear();
+    renderPanel({ providerKind: 'builtin' });
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Browse models in Settings' }),
+    );
+    expect(invoke).toHaveBeenCalledWith('open_settings_window');
+  });
+
+  it('hides the Browse-models pill for non-builtin providers', () => {
+    renderPanel({ providerKind: 'ollama' });
+    expect(screen.queryByTestId('model-picker-browse-link')).toBeNull();
+  });
+
+  it('shortens the Browse-models pill label in compact mode', () => {
+    renderPanel({ providerKind: 'builtin', compact: true });
+    const pill = screen.getByTestId('model-picker-browse-link');
+    expect(pill).toHaveTextContent('Browse');
+    expect(pill).not.toHaveTextContent('Browse models');
+  });
+
   it('renders no row as active when activeModel is null', () => {
     // S2/S3: the chip stays clickable with a null active model. The panel
     // must accept null without inventing a default and simply mark no row
