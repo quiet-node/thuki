@@ -32,6 +32,14 @@ describe('BuiltinAnnouncementStep', () => {
     });
   });
 
+  it('opens Hugging Face from the model-freedom link', () => {
+    render(<BuiltinAnnouncementStep />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open Hugging Face' }));
+    expect(invoke).toHaveBeenCalledWith('open_url', {
+      url: 'https://huggingface.co',
+    });
+  });
+
   it('renders the three benefit points', () => {
     render(<BuiltinAnnouncementStep />);
     expect(

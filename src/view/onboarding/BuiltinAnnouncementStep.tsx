@@ -40,6 +40,9 @@ const LEARN_MORE_URL = 'https://www.thuki.app';
 const RELEASE_TAG_URL =
   'https://github.com/quiet-node/thuki/releases/tag/v0.15.0';
 
+/** Hugging Face home, opened from the "Total AI model freedom" point. */
+const HUGGING_FACE_URL = 'https://huggingface.co';
+
 export function BuiltinAnnouncementStep() {
   const cardRef = useRef<HTMLDivElement>(null);
   // The onboarding window is transparent; fit it to the card so the empty area
@@ -67,6 +70,10 @@ export function BuiltinAnnouncementStep() {
 
   const handleViewRelease = useCallback(() => {
     void invoke('open_url', { url: RELEASE_TAG_URL });
+  }, []);
+
+  const handleHuggingFace = useCallback(() => {
+    void invoke('open_url', { url: HUGGING_FACE_URL });
   }, []);
 
   return (
@@ -203,9 +210,22 @@ export function BuiltinAnnouncementStep() {
             desc={
               <>
                 Any model, any quantization on{' '}
-                <b style={{ color: '#ff8d5c' }}>Hugging Face</b> your Mac can
-                handle. Find and download them right in the app, no terminal
-                needed.
+                <TextLink
+                  onClick={handleHuggingFace}
+                  ariaLabel="Open Hugging Face"
+                  color="rgba(255,141,92,0.85)"
+                  hoverColor="#ff8d5c"
+                  style={{
+                    display: 'inline',
+                    padding: 0,
+                    fontSize: 'inherit',
+                    fontWeight: 600,
+                  }}
+                >
+                  Hugging Face
+                </TextLink>{' '}
+                your Mac can handle. Find and download them right in the app, no
+                terminal needed.
               </>
             }
           />
