@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelCapabilitiesMap } from '../types/model';
-import {
-  BUILTIN_NO_MODELS_MESSAGE,
-  OPENAI_NO_MODEL_MESSAGE,
-} from '../utils/capabilityConflicts';
+import { OPENAI_NO_MODEL_MESSAGE } from '../utils/capabilityConflicts';
 import { Tooltip } from './Tooltip';
 
 /**
@@ -21,6 +18,13 @@ export const OLLAMA_LIBRARY_URL = 'https://ollama.com/library';
  */
 export const OLLAMA_PILL_TOOLTIP =
   'Browse and pull any model on Ollama. Thuki auto-detects it.';
+
+/**
+ * Tooltip for the built-in "Browse models" pill, which opens the Settings
+ * Discover browser (the in-app Hugging Face download surface).
+ */
+export const BUILTIN_BROWSE_TOOLTIP =
+  'Find and download more models in Settings.';
 
 /**
  * Pill shown on models whose reasoning cannot be turned off (capability
@@ -111,6 +115,13 @@ export interface ModelPickerPanelProps {
    * OpenAI). Selection and keys still use the id.
    */
   displayNames?: Record<string, string>;
+  /**
+   * True while a built-in model download is in flight (the ambient strip is
+   * showing progress right below the list). When the list is empty, the
+   * builtin empty state then acknowledges the download in progress instead of
+   * sending the user to Settings to start one. Defaults to false.
+   */
+  downloadInProgress?: boolean;
 }
 
 /**
@@ -130,6 +141,7 @@ export function ModelPickerPanel({
   compact = false,
   providerKind = 'ollama',
   displayNames,
+  downloadInProgress = false,
 }: ModelPickerPanelProps) {
   const [filter, setFilter] = useState('');
   const [highlightedIndex, setHighlightedIndex] = useState(0);
@@ -140,6 +152,11 @@ export function ModelPickerPanel({
     (model: string): string => displayNames?.[model] ?? model,
     [displayNames],
   );
+
+  /** Opens the Settings window (the builtin empty-state download picker). */
+  const openSettings = useCallback(() => {
+    void invoke('open_settings_window');
+  }, []);
 
   const filtered = useMemo(() => {
     const trimmed = filter.trim();
@@ -179,91 +196,123 @@ export function ModelPickerPanel({
 
   return (
     <div className="flex flex-col w-full">
-      <div className="flex items-center gap-2 px-3 pt-3 pb-2 border-b border-surface-border">
-        <input
-          type="text"
-          role="combobox"
-          aria-controls={LISTBOX_ID}
-          aria-expanded="true"
-          aria-activedescendant={activeId}
-          aria-autocomplete="list"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'ArrowDown') {
-              e.preventDefault();
-              if (filtered.length === 0) return;
-              setHighlightedIndex((i) => (i + 1) % filtered.length);
-              return;
-            }
-            if (e.key === 'ArrowUp') {
-              e.preventDefault();
-              if (filtered.length === 0) return;
-              setHighlightedIndex(
-                (i) => (i - 1 + filtered.length) % filtered.length,
-              );
-              return;
-            }
-            if (e.key === 'Home') {
-              e.preventDefault();
-              if (filtered.length > 0) setHighlightedIndex(0);
-              return;
-            }
-            if (e.key === 'End') {
-              e.preventDefault();
-              if (filtered.length > 0) setHighlightedIndex(filtered.length - 1);
-              return;
-            }
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              commit(safeHighlightedIndex);
-              return;
-            }
-            if (e.key === 'Escape') {
-              e.preventDefault();
-              onClose?.();
-              return;
-            }
-          }}
-          placeholder="Filter models..."
-          autoFocus
-          className="flex-1 min-w-0 bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
-        />
-        {!compact && (
-          <span className="shrink-0 text-[10px] text-text-secondary/60 italic">
-            Larger models answer better.
-          </span>
-        )}
-        {providerKind === 'ollama' && (
-          <Tooltip label={OLLAMA_PILL_TOOLTIP} multiline>
-            <button
-              type="button"
-              data-testid="model-picker-ollama-link"
-              aria-label="Browse Ollama models"
-              onClick={() => {
-                void invoke('open_url', { url: OLLAMA_LIBRARY_URL });
-              }}
-              className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-lg px-2 py-0.5 hover:text-primary hover:bg-primary/12 transition-colors duration-120 cursor-pointer outline-none whitespace-nowrap"
-            >
-              {compact ? 'Browse' : 'Browse Ollama'}
-              <svg
-                className="w-2.5 h-2.5"
-                viewBox="0 0 16 16"
-                fill="none"
-                aria-hidden="true"
+      {/* The filter row only earns its space when there is a list to filter;
+          an empty picker shows just its guidance message below. */}
+      {models.length > 0 ? (
+        <div className="flex items-center gap-2 px-3 pt-3 pb-2 border-b border-surface-border">
+          <input
+            type="text"
+            role="combobox"
+            aria-controls={LISTBOX_ID}
+            aria-expanded="true"
+            aria-activedescendant={activeId}
+            aria-autocomplete="list"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (filtered.length === 0) return;
+                setHighlightedIndex((i) => (i + 1) % filtered.length);
+                return;
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (filtered.length === 0) return;
+                setHighlightedIndex(
+                  (i) => (i - 1 + filtered.length) % filtered.length,
+                );
+                return;
+              }
+              if (e.key === 'Home') {
+                e.preventDefault();
+                if (filtered.length > 0) setHighlightedIndex(0);
+                return;
+              }
+              if (e.key === 'End') {
+                e.preventDefault();
+                if (filtered.length > 0)
+                  setHighlightedIndex(filtered.length - 1);
+                return;
+              }
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commit(safeHighlightedIndex);
+                return;
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                onClose?.();
+                return;
+              }
+            }}
+            placeholder="Filter models..."
+            autoFocus
+            className="flex-1 min-w-0 bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
+          />
+          {!compact && (
+            <span className="shrink-0 text-[10px] text-text-secondary/60 italic">
+              Larger models answer better.
+            </span>
+          )}
+          {providerKind === 'ollama' && (
+            <Tooltip label={OLLAMA_PILL_TOOLTIP} multiline>
+              <button
+                type="button"
+                data-testid="model-picker-ollama-link"
+                aria-label="Browse Ollama models"
+                onClick={() => {
+                  void invoke('open_url', { url: OLLAMA_LIBRARY_URL });
+                }}
+                className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-lg px-2 py-0.5 hover:text-primary hover:bg-primary/12 transition-colors duration-120 cursor-pointer outline-none whitespace-nowrap"
               >
-                <path
-                  d="M5 11l6-6m-5 0h5v5"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </button>
-          </Tooltip>
-        )}
-      </div>
+                {compact ? 'Browse' : 'Browse Ollama'}
+                <svg
+                  className="w-2.5 h-2.5"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M5 11l6-6m-5 0h5v5"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </Tooltip>
+          )}
+          {providerKind === 'builtin' && (
+            <Tooltip label={BUILTIN_BROWSE_TOOLTIP} multiline>
+              <button
+                type="button"
+                data-testid="model-picker-browse-link"
+                aria-label="Browse models in Settings"
+                onClick={openSettings}
+                className="shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-lg px-2 py-0.5 hover:text-primary hover:bg-primary/12 transition-colors duration-120 cursor-pointer outline-none whitespace-nowrap"
+              >
+                {compact ? 'Browse' : 'Browse models'}
+                <svg
+                  className="w-2.5 h-2.5"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M5 11l6-6m-5 0h5v5"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </Tooltip>
+          )}
+        </div>
+      ) : null}
 
       <div
         ref={listboxRef}
@@ -278,7 +327,21 @@ export function ModelPickerPanel({
             data-testid="model-picker-empty"
           >
             {providerKind === 'builtin' ? (
-              BUILTIN_NO_MODELS_MESSAGE
+              downloadInProgress ? (
+                "Your first model is downloading. It'll appear here when it's ready."
+              ) : (
+                <>
+                  No model downloaded yet. Download one in{' '}
+                  <button
+                    type="button"
+                    onClick={openSettings}
+                    className="cursor-pointer text-primary underline underline-offset-2 hover:opacity-80"
+                  >
+                    Settings
+                  </button>
+                  , then come back.
+                </>
+              )
             ) : providerKind === 'openai' ? (
               OPENAI_NO_MODEL_MESSAGE
             ) : (

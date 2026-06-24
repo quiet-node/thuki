@@ -175,6 +175,27 @@ describe('ModelPickerPanel', () => {
     expect(empty.textContent).not.toContain('ollama pull');
   });
 
+  it('acknowledges an in-flight download instead of routing to Settings', () => {
+    renderPanel({
+      models: [],
+      providerKind: 'builtin',
+      downloadInProgress: true,
+    });
+    const empty = screen.getByTestId('model-picker-empty');
+    expect(empty.textContent).toContain('downloading');
+    expect(empty.textContent).not.toContain('Download one in Settings');
+    expect(
+      screen.queryByRole('button', { name: 'Settings' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('opens Settings from the builtin empty-state link', () => {
+    vi.mocked(invoke).mockClear();
+    renderPanel({ models: [], providerKind: 'builtin' });
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(invoke).toHaveBeenCalledWith('open_settings_window');
+  });
+
   it('routes an openai user to the Settings provider model in the empty state', () => {
     renderPanel({ models: [], providerKind: 'openai' });
     const empty = screen.getByTestId('model-picker-empty');
@@ -188,9 +209,38 @@ describe('ModelPickerPanel', () => {
     expect(empty.textContent).toContain('ollama pull <model>');
   });
 
+  it('hides the filter row when there are no models to filter', () => {
+    renderPanel({ models: [] });
+    expect(
+      screen.queryByPlaceholderText(/filter models/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('model-picker-ollama-link')).toBeNull();
+  });
+
   it('hides the Browse Ollama pill for non-ollama providers', () => {
     renderPanel({ providerKind: 'builtin' });
     expect(screen.queryByTestId('model-picker-ollama-link')).toBeNull();
+  });
+
+  it('opens Settings from the builtin Browse-models pill', () => {
+    vi.mocked(invoke).mockClear();
+    renderPanel({ providerKind: 'builtin' });
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Browse models in Settings' }),
+    );
+    expect(invoke).toHaveBeenCalledWith('open_settings_window');
+  });
+
+  it('hides the Browse-models pill for non-builtin providers', () => {
+    renderPanel({ providerKind: 'ollama' });
+    expect(screen.queryByTestId('model-picker-browse-link')).toBeNull();
+  });
+
+  it('shortens the Browse-models pill label in compact mode', () => {
+    renderPanel({ providerKind: 'builtin', compact: true });
+    const pill = screen.getByTestId('model-picker-browse-link');
+    expect(pill).toHaveTextContent('Browse');
+    expect(pill).not.toHaveTextContent('Browse models');
   });
 
   it('renders no row as active when activeModel is null', () => {

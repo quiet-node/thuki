@@ -90,4 +90,30 @@ describe('IntroStep', () => {
     expect(invoke).toHaveBeenCalledWith('finish_onboarding');
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
+
+  it('fades the overlay panel back in after the ask bar paints', async () => {
+    // finish_onboarding hides the panel (alpha 0) and resizes it under cover;
+    // the fade back to alpha 1 is deferred two animation frames past the swap so
+    // the first visible frame is the ask bar, not this card. Run both frames
+    // synchronously to assert the fade-in fires with the expected arguments.
+    const raf = vi
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      });
+    const onComplete = vi.fn();
+    invoke.mockResolvedValue(undefined);
+    render(<IntroStep onComplete={onComplete} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /get started/i }));
+    });
+
+    expect(invoke).toHaveBeenCalledWith('set_overlay_alpha', {
+      alpha: 1,
+      durationMs: 150,
+    });
+    raf.mockRestore();
+  });
 });

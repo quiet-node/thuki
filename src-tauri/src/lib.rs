@@ -43,7 +43,7 @@ pub mod permissions;
 pub mod replace;
 
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 
@@ -273,6 +273,12 @@ const OVERLAY_VISIBILITY_RESTORE: &str = "restore";
 /// Frontend event that triggers the onboarding screen when one or more
 /// required permissions have not yet been granted.
 const ONBOARDING_EVENT: &str = "thuki://onboarding";
+
+/// Frontend event that asks the Settings window to jump to the Models tab's
+/// Discover pane (the download picker). Emitted by `open_settings_window`, which
+/// the in-overlay model picker calls from its "no model yet" empty state, so the
+/// user lands on the model browser rather than the default Providers view.
+const SETTINGS_SHOW_DISCOVER_EVENT: &str = "thuki://settings-show-discover";
 
 /// Logical dimensions of the onboarding window (centered). The permission
 /// and intro steps use the compact base size; the model-picker step widens
@@ -688,17 +694,14 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
     }
 }
 
-/// Centers the settings window horizontally on its monitor and places it
-/// below the macOS menu bar with a comfortable gap. Called every time the
-/// settings window is shown so the position is always correct regardless of
-/// the OS-default spawn position or previous moves.
+/// Centers the settings window dead-center on its monitor (horizontally and
+/// vertically). Called every time the settings window is shown so it spawns at
+/// the center regardless of the OS-default spawn position or where a previous
+/// session left it; it is not called again while open, so the user can drag it
+/// freely without it snapping back.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn position_settings_window(window: &tauri::WebviewWindow) {
     const SETTINGS_WIDTH: f64 = 760.0;
-    // macOS menu bar is ~24 px logical on standard displays; notched MacBooks
-    // push it to ~37 px. 72 px gives a comfortable ~35-48 px visual gap below
-    // the menu bar on all hardware.
-    const TOP_MARGIN: f64 = 72.0;
 
     let monitor = window
         .current_monitor()
@@ -711,14 +714,21 @@ fn position_settings_window(window: &tauri::WebviewWindow) {
         let pos = mon.position();
         let size = mon.size();
         let logical_w = size.width as f64 / scale;
+        let logical_h = size.height as f64 / scale;
         let mon_x = pos.x as f64 / scale;
         let mon_y = pos.y as f64 / scale;
+        // Use the window's actual height so the vertical center is exact; fall
+        // back to top-aligned if the size query fails.
+        let win_h = window
+            .outer_size()
+            .map(|s| s.height as f64 / scale)
+            .unwrap_or(0.0);
         (
             mon_x + (logical_w - SETTINGS_WIDTH) / 2.0,
-            mon_y + TOP_MARGIN,
+            mon_y + (logical_h - win_h) / 2.0,
         )
     } else {
-        (100.0, TOP_MARGIN)
+        (100.0, 100.0)
     };
 
     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
@@ -773,6 +783,19 @@ fn show_settings_window(app_handle: &tauri::AppHandle) {
     position_settings_window(&window);
     let _ = window.show();
     let _ = window.set_focus();
+}
+
+/// Frontend entry point for opening the Settings window. The tray menu reaches
+/// `show_settings_window` directly; this exposes the same path to the UI (the
+/// in-overlay model picker links "Settings" here when no model is installed yet).
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn open_settings_window(app_handle: tauri::AppHandle) {
+    show_settings_window(&app_handle);
+    // The only caller is the picker's "no model yet" link, so always route to
+    // the Discover download picker. The Settings window listens for this and
+    // jumps to Models -> Discover (Staff picks is Discover's default).
+    let _ = app_handle.emit(SETTINGS_SHOW_DISCOVER_EVENT, ());
 }
 
 /// Centers the "What's New" update window horizontally on its monitor and
@@ -1181,6 +1204,74 @@ fn set_overlay_alpha(app_handle: tauri::AppHandle, alpha: f64, duration_ms: f64)
     }
 }
 
+/// Sets the main overlay NSPanel's alpha instantly. Unlike `set_overlay_alpha`
+/// (a command that dispatches its own main-thread hop), this is a synchronous
+/// helper meant to be called from code already running on the macOS main
+/// thread. It is the onboarding -> overlay handoff's cover: dropping alpha to 0
+/// before the window is resized to the ask bar lets the resize and the
+/// not-yet-swapped intro card happen invisibly, so the card is never seen
+/// squished into the 600x80 bar for a frame.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn set_main_window_alpha_now(window: &WebviewWindow, alpha: f64) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+    if ns_window.is_null() {
+        return;
+    }
+    let win = ns_window as *mut AnyObject;
+    unsafe {
+        let _: () = msg_send![win, setAlphaValue: alpha];
+    }
+}
+
+/// Generation counter for the onboarding-window reveal backstop. Every cover
+/// bumps it; a backstop only reveals if its generation is still current, so a
+/// stale backstop armed for an earlier transition can never reveal a later
+/// cover (which would flash that later screen's intermediate frames).
+#[cfg(target_os = "macos")]
+static ONBOARDING_REVEAL_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// How long after a cover the onboarding panel is unconditionally faded back
+/// in, even if the frontend's settle-based reveal never fires. Generous enough
+/// that the frontend nice-path reveal normally wins; short enough that a missed
+/// reveal can never leave the panel invisible for long.
+#[cfg(target_os = "macos")]
+const ONBOARDING_REVEAL_BACKSTOP: std::time::Duration = std::time::Duration::from_millis(800);
+
+/// Covers the onboarding panel (alpha 0) for a transition and arms an
+/// unconditional reveal backstop.
+///
+/// Each onboarding transition resizes and recenters the window while the React
+/// tree is still mid-swap, which would flash the old card at the new size. The
+/// fix is to drop the panel invisible across the swap; the frontend fades it
+/// back in (`set_overlay_alpha`) once the new screen has settled (see
+/// `useFitOnboardingWindow`). This backstop guarantees the panel is revealed
+/// even if that frontend reveal is missed, so onboarding can never get stuck on
+/// an invisible window. Gen-guarded so only the latest cover's backstop fires.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn arm_onboarding_reveal_backstop(app_handle: &tauri::AppHandle) {
+    let generation = ONBOARDING_REVEAL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(ONBOARDING_REVEAL_BACKSTOP).await;
+        if ONBOARDING_REVEAL_GEN.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        let inner = handle.clone();
+        let _ = handle.run_on_main_thread(move || {
+            if let Some(window) = inner.get_webview_window("main") {
+                set_main_window_alpha_now(&window, 1.0);
+            }
+        });
+    });
+}
+
 /// Sets the default appearance of `NSSavePanel` (and its `NSOpenPanel`
 /// sibling) to the **compact** layout — no sidebar, no file browser,
 /// just the Save As field, a Where popup, and the action buttons.
@@ -1266,49 +1357,72 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
                 let stage = onboarding::get_stage(&conn)
                     .unwrap_or(onboarding::OnboardingStage::Permissions);
 
-                // The "intro" stage means the user already cleared both the
-                // permissions and the model-check gates on a previous launch.
-                // Skip the live permission re-check here: on macOS 15+
-                // CGPreflightScreenCaptureAccess can return a stale false
-                // negative immediately after a restart, which would wrongly
-                // loop the user back to the permissions screen.
-                if matches!(stage, onboarding::OnboardingStage::Intro) {
-                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
-                    return;
+                let active_kind = app_handle
+                    .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+                    .read()
+                    .inference
+                    .active_provider_kind()
+                    .to_string();
+                let announced = onboarding::is_builtin_announced(&conn).unwrap_or(false);
+
+                // Latch the built-in announcement at the one reliable moment: a
+                // pre-built-in install that already finished onboarding is at
+                // `Complete` on Ollama on its first launch of the new version,
+                // before the permission flow can clobber the stage. The latch
+                // then survives that flow, so the notice is shown wherever it
+                // lands the user (Intro, Complete, or the model gate). A fresh
+                // install is never `Complete` before finishing, so it never
+                // latches.
+                let mut pending = onboarding::is_announcement_pending(&conn).unwrap_or(false);
+                if !pending && onboarding::is_pre_builtin_upgrader(&stage, &active_kind, announced)
+                {
+                    let _ = onboarding::set_announcement_pending(&conn);
+                    pending = true;
                 }
 
-                // For "permissions", "model_check", and "complete" stages,
-                // re-validate live macOS permissions. "complete" detects
-                // revocation after onboarding finished. "model_check" detects
-                // mid-onboarding revocation. "permissions" is the first-launch
-                // path. All three must restart the flow at Permissions if
-                // either grant has been withdrawn.
+                // Live permission grants feed the pure router; reading them here
+                // keeps the routing decision side-effect free and unit-tested.
                 let ax = permissions::is_accessibility_granted();
                 let sr = permissions::is_screen_recording_granted();
-                if !ax || !sr {
-                    let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::Permissions);
-                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
-                    return;
-                }
 
-                // Permissions granted. If the user has not yet cleared the
-                // model-check gate, route them there. The frontend probes
-                // Ollama via `check_model_setup` and either renders the gate
-                // (Ollama unreachable / no models) or fires
-                // `advance_past_model_check` to skip straight to Intro on
-                // Ready. We do not probe here because /api/tags requires the
-                // async runtime and notify_frontend_ready is invoked
-                // synchronously from a Tauri command worker.
-                if matches!(
-                    stage,
-                    onboarding::OnboardingStage::Permissions
-                        | onboarding::OnboardingStage::ModelCheck
-                ) {
-                    let _ = onboarding::set_stage(&conn, &onboarding::OnboardingStage::ModelCheck);
-                    show_onboarding_window(&app_handle, onboarding::OnboardingStage::ModelCheck);
-                    return;
+                match onboarding::decide_startup_route(&stage, ax, sr, announced, pending) {
+                    onboarding::StartupRoute::ShowPermissions => {
+                        let _ =
+                            onboarding::set_stage(&conn, &onboarding::OnboardingStage::Permissions);
+                        show_onboarding_window(
+                            &app_handle,
+                            onboarding::OnboardingStage::Permissions,
+                        );
+                        return;
+                    }
+                    onboarding::StartupRoute::ShowAnnouncement => {
+                        let _ = onboarding::set_stage(
+                            &conn,
+                            &onboarding::OnboardingStage::BuiltinAnnouncement,
+                        );
+                        show_onboarding_window(
+                            &app_handle,
+                            onboarding::OnboardingStage::BuiltinAnnouncement,
+                        );
+                        return;
+                    }
+                    onboarding::StartupRoute::ShowModelCheck => {
+                        let _ =
+                            onboarding::set_stage(&conn, &onboarding::OnboardingStage::ModelCheck);
+                        show_onboarding_window(
+                            &app_handle,
+                            onboarding::OnboardingStage::ModelCheck,
+                        );
+                        return;
+                    }
+                    onboarding::StartupRoute::ShowIntro => {
+                        show_onboarding_window(&app_handle, onboarding::OnboardingStage::Intro);
+                        return;
+                    }
+                    // Complete and permissions intact: fall through to the
+                    // overlay show below.
+                    onboarding::StartupRoute::ShowOverlay => {}
                 }
-                // Complete: fall through to show the overlay.
             } else {
                 // Mutex poisoned; safe fallback.
                 show_onboarding_window(&app_handle, onboarding::OnboardingStage::Permissions);
@@ -1333,6 +1447,19 @@ fn onboarding_stage(
     onboarding::get_stage(&conn).map_err(|e| e.to_string())
 }
 
+/// Whether the built-in engine announcement has been latched. The starter
+/// picker reads this to tell an upgrader (who reached the picker through the
+/// announcement, which sets the flag) from a brand-new user (not yet announced):
+/// the "use my existing Ollama instead" escape hatch is only offered to
+/// brand-new users, since an upgrader already made that choice on the
+/// announcement. Thin wrapper over the tested `is_builtin_announced`.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn is_builtin_announced(db: tauri::State<history::Database>) -> Result<bool, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    onboarding::is_builtin_announced(&conn).map_err(|e| e.to_string())
+}
+
 /// Advances the onboarding stage from `model_check` to `intro` and emits
 /// the onboarding event so the frontend swaps to `IntroStep` without a
 /// window flicker.
@@ -1355,12 +1482,63 @@ fn advance_past_model_check(
         .map_err(|e| format!("db write failed: {e}"))?;
     drop(conn);
 
-    let _ = app_handle.emit(
-        ONBOARDING_EVENT,
-        OnboardingPayload {
-            stage: onboarding::OnboardingStage::Intro,
-        },
-    );
+    // Cover the model_check -> intro swap (the picker shrinks to the intro card)
+    // by dropping the panel invisible before the frontend switches, then letting
+    // the intro step fade it back in once it has fitted. The emit fires inside
+    // the same main-thread closure, after the cover, so the frontend never gets
+    // the event before the panel is hidden.
+    #[cfg(target_os = "macos")]
+    {
+        arm_onboarding_reveal_backstop(&app_handle);
+        let handle = app_handle.clone();
+        let _ = app_handle.run_on_main_thread(move || {
+            if let Some(window) = handle.get_webview_window("main") {
+                set_main_window_alpha_now(&window, 0.0);
+            }
+            let _ = handle.emit(
+                ONBOARDING_EVENT,
+                OnboardingPayload {
+                    stage: onboarding::OnboardingStage::Intro,
+                },
+            );
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app_handle.emit(
+            ONBOARDING_EVENT,
+            OnboardingPayload {
+                stage: onboarding::OnboardingStage::Intro,
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Advances onboarding from the built-in engine announcement to the model
+/// check, latching the announcement so it never returns.
+///
+/// Called by both branches of `BuiltinAnnouncementStep`: "Try Built-in Engine"
+/// (after the frontend switches the active provider to the built-in engine via
+/// `set_active_provider`) and "Keep using Ollama" (provider unchanged). The
+/// resized `model_check` window then renders the built-in starter picker or the
+/// Ollama setup gate based on the now-active provider, so no provider logic is
+/// duplicated here.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn advance_past_builtin_announcement(
+    db: tauri::State<history::Database>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| format!("db lock poisoned: {e}"))?;
+    onboarding::mark_builtin_announced(&conn).map_err(|e| format!("db write failed: {e}"))?;
+    onboarding::set_stage(&conn, &onboarding::OnboardingStage::ModelCheck)
+        .map_err(|e| format!("db write failed: {e}"))?;
+    drop(conn);
+
+    // Resize/recenter to the model-check window and emit the stage event so the
+    // frontend swaps to the picker / Ollama gate.
+    show_onboarding_window(&app_handle, onboarding::OnboardingStage::ModelCheck);
     Ok(())
 }
 
@@ -1377,19 +1555,41 @@ fn finish_onboarding(
 ) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| format!("db lock poisoned: {e}"))?;
     onboarding::mark_complete(&conn).map_err(|e| format!("db write failed: {e}"))?;
+    // Latch the built-in engine announcement for fresh installs too: a new user
+    // has already met the picker, so a later switch to Ollama in Settings must
+    // not resurface an "upgrade" notice they never needed. Best-effort: a flag
+    // write hiccup must not block onboarding completion.
+    let _ = onboarding::mark_builtin_announced(&conn);
     drop(conn);
 
     // Onboarding no longer owns the window; release the gate before the
     // overlay show below (otherwise show_overlay would gate itself out).
     set_onboarding_active_impl(false);
 
+    // The handoff below covers the panel (alpha 0) and resizes it to the ask bar
+    // under cover; IntroStep fades it back in once the ask bar has painted. Arm
+    // the same backstop the step transitions use so the panel can never stay
+    // invisible if that frontend reveal is missed.
+    #[cfg(target_os = "macos")]
+    arm_onboarding_reveal_backstop(&app_handle);
+
     // Restore panel to overlay configuration and show the Ask Bar.
     // Must run on the macOS main thread because NSPanel APIs are not thread-safe.
     let handle = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
-        // Resize the window back to the collapsed overlay dimensions before
-        // positioning, so the overlay appears at the correct size.
-        if let Some(window) = handle.get_webview_window("main") {
+        let window = handle.get_webview_window("main");
+        if let Some(window) = &window {
+            // Cover the swap: drop the panel to alpha 0 before resizing it to
+            // the ask bar. The resize and the still-mounted intro card then
+            // happen invisibly; the frontend swaps to the ask bar and fades the
+            // panel back in once it has painted (see IntroStep), so the intro
+            // card is never seen squished into the 600x80 bar for a frame. This
+            // reuses the same alpha bracket the export flow uses to hide the
+            // panel without disturbing its state machine or the React tree.
+            #[cfg(target_os = "macos")]
+            set_main_window_alpha_now(window, 0.0);
+            // Resize the window back to the collapsed overlay dimensions before
+            // positioning, so the overlay appears at the correct size.
             let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
                 OVERLAY_LOGICAL_WIDTH,
                 OVERLAY_LOGICAL_HEIGHT_COLLAPSED,
@@ -1399,6 +1599,15 @@ fn finish_onboarding(
         // changed for the onboarding appearance.
         #[cfg(target_os = "macos")]
         init_panel(&handle);
+        // `init_panel` re-converts the panel and rewrites its style mask, which
+        // can reset window visual properties (it re-asserts clearColor for the
+        // same reason). Re-assert the alpha cover so the swap stays hidden
+        // through `init_panel` right up to the show below, regardless of whether
+        // the resize and `init_panel` land in one compositor frame or several.
+        #[cfg(target_os = "macos")]
+        if let Some(window) = &window {
+            set_main_window_alpha_now(window, 0.0);
+        }
         show_overlay(&handle, crate::context::ActivationContext::empty());
     });
 
@@ -1633,6 +1842,29 @@ fn init_update_panel(app_handle: &tauri::AppHandle) {
 
 // ─── Onboarding window ───────────────────────────────────────────────────────
 
+/// Resizes the onboarding window to the measured content size, and centers it
+/// when `center` is set. The resize and the optional center run atomically on
+/// the macOS main thread via Tauri's `center()` (the same call used at show
+/// time), so the frontend never positions the window itself.
+///
+/// `useFitOnboardingWindow` passes `center: true` only on the first fit after a
+/// step spawns; later fits (content growing, the ambient strip appearing) pass
+/// `center: false`, so a window the user has dragged is resized in place rather
+/// than snapped back to the middle.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn fit_onboarding_window(app_handle: tauri::AppHandle, width: f64, height: f64, center: bool) {
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
+            if center {
+                let _ = window.center();
+            }
+        }
+    });
+}
+
 /// Sizes the main window for the onboarding screen, centers it, makes it
 /// visible, and emits `thuki://onboarding` so the frontend switches to
 /// `OnboardingView`.
@@ -1646,10 +1878,16 @@ fn show_onboarding_window(app_handle: &tauri::AppHandle, stage: onboarding::Onbo
     // Mark onboarding as owning the main window so any activation that races in
     // (tray / double-tap Control) is gated out of the ask-bar show path.
     set_onboarding_active_impl(true);
+    // Cover the transition: the resize + recenter below happen while the React
+    // tree is still showing the previous step, so do them on an invisible panel
+    // and let the frontend fade it back in once the new screen has settled. The
+    // backstop guarantees a reveal even if the frontend one is missed.
+    arm_onboarding_reveal_backstop(app_handle);
     let handle = app_handle.clone();
     let (win_w, win_h) = onboarding_window_size(&stage);
     let _ = app_handle.run_on_main_thread(move || {
         if let Some(window) = handle.get_webview_window("main") {
+            set_main_window_alpha_now(&window, 0.0);
             let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(win_w, win_h)));
             let _ = window.center();
         }
@@ -2456,7 +2694,11 @@ pub fn run() {
             permissions::quit_and_relaunch,
             finish_onboarding,
             advance_past_model_check,
+            advance_past_builtin_announcement,
+            fit_onboarding_window,
             onboarding_stage,
+            is_builtin_announced,
+            open_settings_window,
             #[cfg(not(coverage))]
             warmup::warm_up_model,
             #[cfg(not(coverage))]

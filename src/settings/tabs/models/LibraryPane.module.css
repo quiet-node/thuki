@@ -16,6 +16,25 @@
   padding: 0 2px 14px;
 }
 
+.filter {
+  flex: 1;
+  min-width: 0;
+  max-width: 260px;
+  margin-right: 12px;
+  background: var(--elev-1);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  padding: 7px 11px;
+  color: var(--t1);
+  font-family: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.filter::placeholder {
+  color: var(--t2);
+}
+
 /* Quiet ghost button: the Library is a place you manage what you have, so the
  * add affordance is present but not the loud accent block it used to be. */
 .addButton {
@@ -303,6 +322,13 @@
 .emptyText {
   font-size: 13px;
   color: var(--t2);
+}
+
+.noMatch {
+  font-size: 13px;
+  color: var(--t2);
+  text-align: center;
+  padding: 28px 14px;
 }
 
 .browseButton {

@@ -202,6 +202,11 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
     resumeDownload,
   } = useDownloadCtx();
   const [ollamaDetected, setOllamaDetected] = useState(false);
+  // Upgraders reach this picker through the announcement (which latches
+  // `builtin_engine_announced`) after already choosing "Try Built-in" over
+  // their existing Ollama. Re-offering Ollama here would be redundant, so the
+  // escape hatch below is shown to brand-new users only (not yet announced).
+  const [announced, setAnnounced] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -223,6 +228,13 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
       })
       .catch(() => {
         // Detection failure just hides the escape hatch.
+      });
+    void invoke<boolean>('is_builtin_announced')
+      .then((value) => {
+        if (!cancelled) setAnnounced(value);
+      })
+      .catch(() => {
+        // Query failure leaves `announced` false, matching a brand-new user.
       });
     return () => {
       cancelled = true;
@@ -313,7 +325,7 @@ function BuiltinModelCheck({ onUseOllama }: { onUseOllama: () => void }) {
             onCancel={() => void cancel()}
             onRetry={() => void retry()}
             onContinue={() => void invoke('advance_past_model_check')}
-            ollamaDetected={ollamaDetected}
+            ollamaDetected={ollamaDetected && !announced}
             onUseOllama={() => void handleUseOllama()}
           />
         </div>
@@ -347,6 +359,12 @@ const BuiltinShell = forwardRef<HTMLDivElement, { children: React.ReactNode }>(
           transition={{ type: 'spring', stiffness: 300, damping: 28 }}
           style={{
             width: 720,
+            // The card is a flex child of a centering wrapper; without this it
+            // shrinks toward the window width when `useFitOnboardingWindow`
+            // measures it mid-resize (window still at the narrow base), which
+            // then locks the fit narrow. Pinning the width keeps the measured
+            // size invariant so the picker always lands at its full width.
+            flexShrink: 0,
             background:
               'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
             border: '1px solid rgba(255, 141, 92, 0.2)',
@@ -463,6 +481,20 @@ function OllamaModelCheck() {
     };
   }, [probe]);
 
+  useEffect(() => {
+    // The announcement -> model_check transition covers the panel (alpha 0) so
+    // the resize and swap happen invisibly. Unlike the built-in picker, this
+    // legacy Ollama gate has no fit hook to fade the panel back in, so reveal it
+    // on mount once it has painted. A no-op when the panel is already visible
+    // (e.g. reached via the in-picker "use Ollama instead" escape hatch).
+    const frame = requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        void invoke('set_overlay_alpha', { alpha: 1, durationMs: 150 });
+      }),
+    );
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
   const handleRecheck = useCallback(async () => {
     setIsRechecking(true);
     try {
@@ -501,6 +533,9 @@ function OllamaModelCheck() {
         transition={{ type: 'spring', stiffness: 300, damping: 28 }}
         style={{
           width: 420,
+          // Flex child of a centering wrapper: never let it shrink to the
+          // window width during a mid-resize measure (see the picker card).
+          flexShrink: 0,
           background:
             'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
           border: '1px solid rgba(255, 141, 92, 0.2)',

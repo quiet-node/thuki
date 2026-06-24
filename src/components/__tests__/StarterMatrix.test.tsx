@@ -91,8 +91,8 @@ describe('StarterMatrix (picker)', () => {
     expect(cols[1].getAttribute('data-tier')).toBe('balanced');
     expect(cols[2].getAttribute('data-tier')).toBe('smartest');
     expect(screen.getByText('Model fast')).toBeInTheDocument();
-    expect(screen.getByText('Balanced ★')).toBeInTheDocument();
     expect(screen.getByText('Fast')).toBeInTheDocument();
+    expect(screen.getByText('Balanced')).toBeInTheDocument();
     expect(screen.getByText('Smartest')).toBeInTheDocument();
     // (2_500_000_000 + 850_000_000) / 1e9 = 3.35 -> "3.3 GB", one per column.
     expect(screen.getAllByText('3.3 GB')).toHaveLength(3);
@@ -112,15 +112,13 @@ describe('StarterMatrix (picker)', () => {
     ]);
   });
 
-  it('marks only the Balanced column as recommended', () => {
+  it('presents all tiers as peers with no recommended column', () => {
     const { container } = renderMatrix(THREE_TIERS);
-    const rec = (tier: string) =>
-      container
-        .querySelector(`[data-tier="${tier}"]`)
-        ?.getAttribute('data-recommended');
-    expect(rec('balanced')).toBe('true');
-    expect(rec('fast')).toBe('false');
-    expect(rec('smartest')).toBe('false');
+    // The recommended treatment (data-recommended attr + the ★ eyebrow marker)
+    // is gone: every column reads the same.
+    expect(container.querySelector('[data-recommended]')).toBeNull();
+    expect(screen.queryByText(/★/)).toBeNull();
+    expect(screen.getByText('Balanced')).toBeInTheDocument();
   });
 
   it('renders Vision yes/no and the On-your-Mac fit copy', () => {
@@ -150,10 +148,8 @@ describe('StarterMatrix (picker)', () => {
       }),
     ]);
     expect(screen.getByText('Reasoning')).toBeInTheDocument();
-    // smartest: always-reasoning pill.
-    expect(
-      screen.getByTestId('starter-always-reasons-badge'),
-    ).toHaveTextContent(ALWAYS_REASONS_LABEL);
+    // smartest: always-reasoning label (plain text, no badge testid).
+    expect(screen.getByText(ALWAYS_REASONS_LABEL)).toBeInTheDocument();
     // fast: optional reasoning reads "On demand".
     expect(screen.getByText('On demand')).toBeInTheDocument();
     // balanced: no reasoning -> a dash (the none branch).
@@ -203,9 +199,18 @@ describe('StarterMatrix (picker)', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('shows the recommended download button with a hover state', () => {
-    renderMatrix([makeOption('balanced')]);
-    const btn = screen.getByRole('button', { name: 'Download' });
+  it('shows the recommended Retry button with a hover state', () => {
+    // The column Download buttons are all the quiet outline style now; the
+    // emphasised gradient button only remains for Retry in the failed state.
+    renderMatrix([makeOption('fast')], {
+      state: {
+        phase: 'failed',
+        kind: 'engine',
+        message: 'x',
+      } as DownloadUiState,
+      downloadingTier: 'fast',
+    });
+    const btn = screen.getByRole('button', { name: 'Retry' });
     fireEvent.mouseEnter(btn);
     fireEvent.mouseLeave(btn);
     expect(btn).toBeInTheDocument();

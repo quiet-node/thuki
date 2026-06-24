@@ -141,7 +141,10 @@ pub const STARTERS: &[Starter] = &[
         size_bytes: 6_975_877_728,
         quant: "Q4_0",
         vision: true,
-        thinking: false,
+        // Gemma 4 supports an optional thinking mode toggled via the chat
+        // template's `enable_thinking` kwarg (default off), so reasoning is
+        // on-demand, like Qwen3.5.
+        thinking: true,
         reasoning_always: false,
         mmproj_file: Some("mmproj-gemma-4-12b-it-qat-q4_0.gguf"),
         mmproj_sha256: Some("e70b0e5cd80323d5d588b4ed06780356b7b1ba03995a4b8164c6ae9db0ff5989"),
@@ -729,11 +732,15 @@ mod tests {
     /// the picker tag, the `/think` capability gate, and the earlier-turn
     /// reasoning strip. It must match each curated model's real behavior, or a
     /// reasoning model is wrongly told it "does not emit thinking tokens".
-    /// Qwen3.5 and gpt-oss are reasoning models; Gemma 4 is not.
+    /// Qwen3.5, Gemma 4, and gpt-oss all reason (Gemma 4 via its optional
+    /// `enable_thinking` chat-template toggle).
     #[test]
     fn thinking_flag_per_tier() {
         assert!(starter(Tier::Fast).thinking, "Qwen3.5 reasons");
-        assert!(!starter(Tier::Balanced).thinking, "Gemma 4 does not reason");
+        assert!(
+            starter(Tier::Balanced).thinking,
+            "Gemma 4 reasons on demand"
+        );
         assert!(starter(Tier::Smartest).thinking, "gpt-oss reasons");
     }
 

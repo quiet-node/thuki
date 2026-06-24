@@ -75,6 +75,7 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
     config.inference.providers.find((p) => p.kind === 'builtin')?.model ?? '';
 
   const [installed, setInstalled] = useState<InstalledModel[]>([]);
+  const [filter, setFilter] = useState('');
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   // Fixed-viewport placement of the open popover, measured from its trigger so
   // it escapes the Settings window's hidden overflow (an absolutely-positioned
@@ -215,11 +216,37 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
     }
   }
 
+  // Filter installed models by name, repo id, or maker. A single combined
+  // haystack keeps the match branch-free; the filter row only appears when
+  // there is more than one model to sift through. The query is gated on that
+  // same condition so a stale filter (e.g. deleting the one model it matched,
+  // dropping the count to 1) can never hide the surviving model with the input
+  // already unmounted and no way left to clear it.
+  const query = installed.length > 1 ? filter.trim().toLowerCase() : '';
+  const visible =
+    query === ''
+      ? installed
+      : installed.filter((m) =>
+          `${m.display_name} ${m.id} ${m.origin ?? ''}`
+            .toLowerCase()
+            .includes(query),
+        );
+
   const confirmModel = installed.find((m) => m.id === confirmDelete);
 
   return (
     <div className={styles.pane}>
       <div className={styles.bar}>
+        {installed.length > 1 ? (
+          <input
+            type="search"
+            className={styles.filter}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter models…"
+            aria-label="Filter installed models"
+          />
+        ) : null}
         <button type="button" className={styles.addButton} onClick={onAddModel}>
           <svg
             viewBox="0 0 24 24"
@@ -243,9 +270,13 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
             Browse Discover
           </button>
         </div>
+      ) : visible.length === 0 ? (
+        <p
+          className={styles.noMatch}
+        >{`No models match "${filter.trim()}".`}</p>
       ) : (
         <div className={styles.list}>
-          {installed.map((m) => {
+          {visible.map((m) => {
             const active = m.id === activeModel;
             const caps = capabilities[m.id];
             const repo = m.id.split(':')[0];

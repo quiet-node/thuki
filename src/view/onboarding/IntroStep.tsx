@@ -29,6 +29,16 @@ export function IntroStep({ onComplete, downloadStatus }: Props) {
   const handleGetStarted = async () => {
     await invoke('finish_onboarding');
     onComplete();
+    // `finish_onboarding` drops the overlay panel to alpha 0 and resizes it to
+    // the ask bar under cover, so this intro card is never seen squished into
+    // the bar during the swap. Fade the panel back in only after the ask bar has
+    // painted (two animation frames past the `onComplete` swap above), so the
+    // first visible frame is the ask bar rather than this card.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        void invoke('set_overlay_alpha', { alpha: 1, durationMs: 150 });
+      });
+    });
   };
 
   return (
@@ -49,6 +59,9 @@ export function IntroStep({ onComplete, downloadStatus }: Props) {
         transition={{ type: 'spring', stiffness: 300, damping: 28 }}
         style={{
           width: 420,
+          // Flex child of a centering wrapper: never shrink to the window width
+          // during a mid-resize measure (see the picker card in ModelCheckStep).
+          flexShrink: 0,
           background:
             'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
           border: '1px solid rgba(255, 141, 92, 0.2)',
@@ -58,19 +71,26 @@ export function IntroStep({ onComplete, downloadStatus }: Props) {
           position: 'relative',
         }}
       >
-        {/* Logo */}
-        <img
-          src={thukiLogo}
-          width={44}
-          height={44}
-          alt="Thuki"
-          style={{
-            objectFit: 'contain',
-            display: 'block',
-            margin: '0 auto 16px',
-            pointerEvents: 'none',
-          }}
-        />
+        {/* Logo doubles as the window drag handle, matching the other
+            onboarding steps. The image ignores pointer events so the drag
+            region receives the gesture. */}
+        <div
+          data-tauri-drag-region
+          style={{ textAlign: 'center', cursor: 'grab' }}
+        >
+          <img
+            src={thukiLogo}
+            width={44}
+            height={44}
+            alt="Thuki"
+            style={{
+              objectFit: 'contain',
+              display: 'block',
+              margin: '0 auto 16px',
+              pointerEvents: 'none',
+            }}
+          />
+        </div>
 
         {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: 20 }}>

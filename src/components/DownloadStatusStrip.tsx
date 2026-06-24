@@ -32,16 +32,67 @@ export type DownloadStripStatus =
   | { kind: 'failed'; message: string; onRetry: () => void };
 
 /**
- * How long each half of the downloading label shows before crossfading to the
- * other. Slow on purpose: the strip is ambient, so the swap should be a calm
- * background rhythm, not something that pulls the eye.
+ * Whether the strip represents an in-flight first-model download: bytes still
+ * moving, paused, or being verified. The model picker uses this to swap its
+ * empty-state copy, since "download one in Settings" reads wrong while a
+ * download is visibly underway right below the list. `ready` / `failed` /
+ * absent are not in-flight.
  */
-const LABEL_ROTATE_MS = 12000;
+export function isDownloadActive(status: DownloadStripStatus | null): boolean {
+  if (status === null) return false;
+  return (
+    status.kind === 'downloading' ||
+    status.kind === 'paused' ||
+    status.kind === 'pausing' ||
+    status.kind === 'verifying'
+  );
+}
+
+/**
+ * How long each half of the downloading label shows before crossfading to the
+ * other. Kept ambient (a calm background rhythm, not something that pulls the
+ * eye), but short enough that the reassurance half appears promptly rather than
+ * making the user wait to learn the download survives a close.
+ */
+const LABEL_ROTATE_MS = 5000;
+/**
+ * Control-key glyph rendered as a small keycap so it reads as a key rather than
+ * a bare caret. Mirrors the intro tips' key chips.
+ */
+function ControlKeyCap() {
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        padding: '0 4px',
+        margin: '0 1px',
+        background: 'rgba(255,255,255,0.08)',
+        border: '1px solid rgba(255,255,255,0.16)',
+        borderBottom: '2px solid rgba(255,255,255,0.1)',
+        borderRadius: 4,
+        fontSize: '0.85em',
+        lineHeight: 1.3,
+        verticalAlign: 'baseline',
+      }}
+    >
+      ⌃
+    </span>
+  );
+}
+
 /**
  * The reassurance half of the alternating label (ask bar only): closing Thuki
- * keeps the download going, but quitting stops it. Short and succinct.
+ * keeps the download going, but quitting stops it. Double-tapping Control (the
+ * toggle hotkey, shown as a keycap) closes the visible overlay, since there is
+ * no window chrome to click.
  */
-const BACKGROUND_HINT = "Safe to close, just don't quit";
+function BackgroundHint() {
+  return (
+    <>
+      Safe to close (<ControlKeyCap /> ×2), just don&apos;t quit
+    </>
+  );
+}
 
 const ORANGE = 'rgb(255,141,92)';
 const ORANGE_FILL = 'linear-gradient(90deg,#ffa06f,#d45a1e)';
@@ -239,8 +290,9 @@ function DownloadingRow({
     return () => clearInterval(id);
   }, [alternate]);
 
-  const label =
-    alternate && showHint ? BACKGROUND_HINT : `Downloading ${status.modelName}`;
+  const isHint = alternate && showHint;
+  // Stable string key for the crossfade (the hint is JSX, not a string).
+  const labelKey = isHint ? 'safe-to-close' : `downloading:${status.modelName}`;
   const trailing =
     status.etaSeconds !== null
       ? `${status.percent}% · ${formatEta(status.etaSeconds)} left`
@@ -251,14 +303,14 @@ function DownloadingRow({
           a hard cut. mode="wait" fades the old out before the new fades in. */}
       <AnimatePresence mode="wait">
         <motion.span
-          key={label}
+          key={labelKey}
           className="leading-snug"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.45 }}
         >
-          {label}
+          {isHint ? <BackgroundHint /> : `Downloading ${status.modelName}`}
         </motion.span>
       </AnimatePresence>
       <span className="flex-1" />

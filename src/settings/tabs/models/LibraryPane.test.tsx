@@ -595,4 +595,63 @@ describe('LibraryPane', () => {
       expect(screen.queryByRole('alert')).not.toBeInTheDocument(),
     );
   });
+
+  it('filters the installed list by the search query', async () => {
+    mockCommands(libraryResponses());
+    await renderPane();
+    fireEvent.change(screen.getByPlaceholderText(/filter models/i), {
+      target: { value: 'gemma' },
+    });
+    expect(screen.getByText('gemma')).toBeInTheDocument();
+    expect(screen.queryByText('qwen')).not.toBeInTheDocument();
+  });
+
+  it('shows a no-match message when the filter excludes everything', async () => {
+    mockCommands(libraryResponses());
+    await renderPane();
+    fireEvent.change(screen.getByPlaceholderText(/filter models/i), {
+      target: { value: 'zzz' },
+    });
+    expect(screen.getByText(/No models match/)).toBeInTheDocument();
+    expect(screen.queryByText('gemma')).not.toBeInTheDocument();
+  });
+
+  it('hides the filter row when only one model is installed', async () => {
+    mockCommands(libraryResponses({ list_installed_models: [GEMMA] }));
+    await renderPane();
+    expect(screen.getByText('gemma')).toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText(/filter models/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps the lone survivor visible when a stale filter would hide it after a delete', async () => {
+    let deleted = false;
+    mockCommands(
+      libraryResponses({
+        list_installed_models: () => (deleted ? [QWEN] : INSTALLED),
+        delete_installed_model: () => {
+          deleted = true;
+          return undefined;
+        },
+      }),
+    );
+    await renderPane();
+    // Narrow the filter to just gemma, then delete it: the count drops to one,
+    // the filter input unmounts, and the now-stale "gemma" query must not hide
+    // the surviving qwen behind a "No models match" dead-end.
+    fireEvent.change(screen.getByPlaceholderText(/filter models/i), {
+      target: { value: 'gemma' },
+    });
+    expect(screen.queryByText('qwen')).not.toBeInTheDocument();
+    openMenu('gemma');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await flush();
+    expect(screen.getByText('qwen')).toBeInTheDocument();
+    expect(screen.queryByText(/No models match/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText(/filter models/i),
+    ).not.toBeInTheDocument();
+  });
 });
