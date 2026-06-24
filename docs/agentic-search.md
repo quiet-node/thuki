@@ -226,7 +226,7 @@ After reranking, the top 10 URLs advance to the next stage.
 
 ### Step 4: The Snippet Judge
 
-Before fetching any full pages (which requires network requests and takes time), the pipeline pauses and asks a question: "Do the short snippets we already have contain enough information to answer this question?"
+Before fetching any full pages (which requires network requests and takes time), the pipeline pauses and asks a question: "Do the snippets gathered so far contain enough information to answer this question?"
 
 This is the first judge call. A second call goes out to the active provider, this time using the `search_judge` system prompt. The model receives the user's original question and all the snippets from the top 10 results. It returns a structured verdict:
 

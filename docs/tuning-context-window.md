@@ -24,7 +24,7 @@ A few terms you'll see in this doc and in tools like `ollama ps`:
 - **Context window (`num_ctx`)**: how many tokens the model can see in a single conversation. Bigger window means more conversation history visible to the model.
 - **KV cache**: scratch space the model uses to remember the conversation while generating. Grows with the context window. **Doubling `num_ctx` roughly doubles the KV cache.** Model weights stay the same size.
 - **GPU**: the chip that runs the math. On Apple Silicon Macs, the GPU is built into the same chip as the CPU.
-- **VRAM / "GPU memory"**: the memory the GPU can read directly. On Apple Silicon this is _unified memory_, shared with the CPU; there is no separate VRAM chip. So when we say "Ollama is using 7 GiB of VRAM", we mean it is holding 7 GiB of your unified memory and the GPU has direct access to it.
+- **VRAM / "GPU memory"**: the memory the GPU can read directly. On Apple Silicon this is _unified memory_, shared with the CPU; there is no separate VRAM chip. So "Ollama is using 7 GiB of VRAM" means it is holding 7 GiB of your unified memory, with the GPU reading it directly.
 - **Cold load**: the few seconds it takes to read the model from disk into memory the first time you use it.
 - **Keep Warm**: tells the active local provider to leave the model in memory after a reply, so the next message skips the cold load.
 
@@ -34,7 +34,7 @@ A few terms you'll see in this doc and in tools like `ollama ps`:
 - It also allocates the KV cache based on `num_ctx`. A bigger context means a bigger allocation.
 - After the reply, Ollama keeps the model in memory for **5 minutes by default** (the `keep_alive` setting), then unloads it. The next request after that pays the cold load again.
 - If you set a `num_ctx` larger than the model can actually handle, Ollama silently caps it. Example: you set 1 M, the model maxes out at 128 K, so Ollama uses 128 K. No error, just clamped down.
-- If the requested memory exceeds what's available on the GPU, Ollama puts part of the model on the CPU instead. **This is the slow path** and is what we want to avoid.
+- If the requested memory exceeds what's available on the GPU, Ollama puts part of the model on the CPU instead. **This is the slow path**, the one you want to avoid.
 
 ## The three signals to watch
 
