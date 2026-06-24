@@ -70,7 +70,7 @@ keep_warm_inactivity_minutes = 0
 [[inference.providers]]
 id = "builtin"
 kind = "builtin"
-label = "Built-in (Thuki)"
+label = "Built-in"
 model = ""
 
 [[inference.providers]]
@@ -92,7 +92,7 @@ keep_warm_inactivity_minutes = 0
 [[inference.providers]]
 id = "builtin"
 kind = "builtin"
-label = "Built-in (Thuki)"
+label = "Built-in"
 model = ""
 
 [[inference.providers]]

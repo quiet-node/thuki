@@ -23,7 +23,7 @@ release-please reads commit prefixes to decide how to bump the version:
 | :--- | :--- | :--- |
 | `feat:` | `feat: add voice input` | Minor (`0.1.0` → `0.2.0`) |
 | `fix:` | `fix: hotkey not firing` | Patch (`0.1.0` → `0.1.1`) |
-| `feat!:` or `BREAKING CHANGE:` | `feat!: new IPC protocol` | Major (`0.1.0` → `1.0.0`) |
+| `feat!:` or `BREAKING CHANGE:` | `feat!: new IPC protocol` | Major, but while below `1.0.0` it bumps Minor (`0.1.0` → `0.2.0`) under `bump-minor-pre-major` |
 | `docs:`, `chore:`, `refactor:`, etc. | `docs: update README` | No bump |
 
 ## Step-by-Step

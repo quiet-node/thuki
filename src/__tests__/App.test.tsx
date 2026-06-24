@@ -322,9 +322,7 @@ describe('App', () => {
     await showOverlay();
 
     const strip = screen.getByTestId('capability-mismatch-strip');
-    expect(strip.textContent).toContain(
-      "Thuki couldn't find any local LLM models",
-    );
+    expect(strip.textContent).toContain("Thuki couldn't find any models");
     expect(strip.textContent).toContain('ollama pull <model>');
   });
 
@@ -5925,12 +5923,12 @@ describe('App', () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
 
-      expect(screen.getByTestId('thinking-block')).toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Warming up...',
       );
       expect(
-        screen.queryByRole('button', { name: 'Toggle thinking details' }),
+        screen.queryByRole('button', { name: 'Toggle reasoning details' }),
       ).toBeNull();
 
       act(() => {
@@ -5942,10 +5940,10 @@ describe('App', () => {
 
       expect(screen.queryByText('Warming up...')).toBeNull();
       expect(
-        screen.getByRole('button', { name: 'Toggle thinking details' }),
+        screen.getByRole('button', { name: 'Toggle reasoning details' }),
       ).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
-        'Thinking...',
+        'Reasoning...',
       );
     });
 

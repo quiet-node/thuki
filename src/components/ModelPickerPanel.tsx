@@ -51,7 +51,7 @@ const LISTBOX_ID = 'thuki-model-picker-listbox';
 /**
  * Builds the capability caption rendered beneath each picker row's model
  * name. Always leads with "text" (every chat-completion model handles
- * text), then appends "vision" and/or "thinking" when the model supports
+ * text), then appends "vision" and/or "reasoning" when the model supports
  * them. Returns `null` only when capabilities for the model are unknown
  * (not yet loaded), which lets the caller suppress the caption line
  * entirely during cold start.
@@ -66,7 +66,7 @@ export function formatCapabilityLabel(
   if (!caps) return null;
   const flags: string[] = ['text'];
   if (caps.vision) flags.push('vision');
-  if (caps.thinking) flags.push('thinking');
+  if (caps.thinking) flags.push('reasoning');
   return flags.join(' · ');
 }
 

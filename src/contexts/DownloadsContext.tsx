@@ -18,12 +18,14 @@ import {
   createContext,
   use,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
 } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
   type DownloadAccumulator,
   type DownloadProgressInfo,
@@ -33,7 +35,15 @@ import {
   startingAccumulator,
 } from '../hooks/downloadReducer';
 import { downloadKey, type DownloadIdentity } from '../hooks/downloadKey';
-import type { DownloadEvent } from '../types/starter';
+import type { ActiveDownload, DownloadEvent } from '../types/starter';
+
+/**
+ * Tauri event the backend broadcasts on every download progress update, to
+ * every webview. Lets a window that did not start a download (this Settings
+ * registry while onboarding downloads in the main window) render its live
+ * progress, matched by blob sha. Mirrors `models::DOWNLOAD_PROGRESS_EVENT`.
+ */
+const DOWNLOAD_PROGRESS_EVENT = 'thuki://download-progress';
 
 /** What the Settings panes start: a Staff Picks id or a Browse-all repo file. */
 type RegistryIdentity = Extract<
@@ -70,9 +80,77 @@ interface RegistryEntry {
   acc: DownloadAccumulator;
 }
 
+/**
+ * Internal record for a download started in ANOTHER window: the blob shas it
+ * writes (the cross-window match) plus its accumulator, folded from the global
+ * progress broadcast. No identity: this window cannot retry someone else's
+ * download, only watch and cancel it (by its real backend key).
+ */
+interface RemoteEntry {
+  shas: string[];
+  acc: DownloadAccumulator;
+}
+
+/** A live download resolved by blob sha: its real backend key and render view. */
+export interface ActiveDownloadView {
+  key: string;
+  view: DownloadView;
+}
+
+/**
+ * Folds a cross-window progress snapshot into the remote registry.
+ *
+ * Skips keys this window already owns locally: the local channel drives those,
+ * and {@link reduceDownloadEvent} is NOT idempotent (a second fold of one event
+ * phantom-counts bytes and mislabels the vision phase), so the channel and the
+ * global-broadcast streams must never cross. A non-install terminal
+ * (`Cancelled` -> idle, `Failed`) drops the entry so the row reverts to its
+ * normal controls; a successful `AllDone` is kept as `ready` so the row's
+ * install effect can flip it to Installed.
+ */
+export function applyRemoteEvent(
+  prev: Map<string, RemoteEntry>,
+  localKeys: ReadonlySet<string>,
+  active: ActiveDownload,
+): Map<string, RemoteEntry> {
+  if (localKeys.has(active.key)) return prev;
+  const base = prev.get(active.key)?.acc ?? startingAccumulator();
+  const acc = active.event
+    ? reduceDownloadEvent(base, active.event, false)
+    : base;
+  const next = new Map(prev);
+  if (acc.state.phase === 'idle' || acc.state.phase === 'failed') {
+    next.delete(active.key);
+  } else {
+    next.set(active.key, { shas: active.shas, acc });
+  }
+  return next;
+}
+
+/**
+ * Seeds the remote registry from the mount snapshot, non-clobbering: a live
+ * event that already arrived (during the `get_active_downloads` await) is
+ * fresher than the snapshot, so an existing entry is left untouched.
+ */
+export function seedRemoteSnapshot(
+  prev: Map<string, RemoteEntry>,
+  localKeys: ReadonlySet<string>,
+  active: ActiveDownload,
+): Map<string, RemoteEntry> {
+  if (prev.has(active.key)) return prev;
+  return applyRemoteEvent(prev, localKeys, active);
+}
+
 export interface DownloadsContextValue {
   /** The live download for `key` ({@link downloadKey}), or undefined when none. */
   get: (key: string) => DownloadView | undefined;
+  /**
+   * A live download started in ANOTHER window that is writing the blob `sha`,
+   * with its real backend key (for cancel) and render view, or undefined when
+   * none. Lets a Settings row reflect a download started from onboarding (whose
+   * slot key differs) by matching on the underlying weights blob.
+   */
+  getActiveDownload: (sha: string) => ActiveDownloadView | undefined;
   /**
    * Whether any live download belongs to `repo`. Lets a Browse-all repo row
    * re-expand itself after a tab switch remounts it collapsed, before its quant
@@ -125,6 +203,58 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
 
+  // Downloads started in OTHER windows, folded from the global progress
+  // broadcast and the mount snapshot, keyed by their real backend key. Disjoint
+  // from `entries` by construction (the broadcast handler skips locally-owned
+  // keys), so the non-idempotent reducer is never fed an event twice.
+  const [remote, setRemote] = useState<Map<string, RemoteEntry>>(
+    () => new Map(),
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: UnlistenFn | null = null;
+    const localKeys = () => new Set(entriesRef.current.keys());
+
+    // Subscribe BEFORE fetching the snapshot so a live event arriving during the
+    // await is not lost (and, being fresher, wins over the older snapshot). On
+    // teardown the subscription is removed (here when it resolves after unmount,
+    // or by the cleanup's unlisten), so the handler never runs post-unmount.
+    void listen<ActiveDownload>(DOWNLOAD_PROGRESS_EVENT, ({ payload }) => {
+      setRemote((prev) => applyRemoteEvent(prev, localKeys(), payload));
+    })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch(() => {
+        // Event bridge unavailable (test env / Tauri not ready): local channel
+        // downloads still work; cross-window live progress is simply absent.
+      });
+
+    void invoke<ActiveDownload[]>('get_active_downloads')
+      .then((list) => {
+        // A missing/non-array result (no Tauri, or a malformed response) leaves
+        // the registry empty; the live event stream still hydrates rows.
+        if (cancelled || !Array.isArray(list)) return;
+        setRemote((prev) => {
+          const keys = localKeys();
+          return list.reduce((m, a) => seedRemoteSnapshot(m, keys, a), prev);
+        });
+      })
+      .catch(() => {
+        // Not under Tauri (tests) or nothing downloading: no rows to hydrate.
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   const begin = useCallback((identity: RegistryIdentity) => {
     const key = downloadKey(identity);
     // A fast double-click, or a click landing before the row re-renders to hide
@@ -161,17 +291,25 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
       });
     void invoke(command, { ...args, key, onEvent: channel }).catch((err) =>
       // A rejected invoke means the command failed before streaming (e.g. the
-      // repo spec could not be resolved), so no channel event will arrive: mark
-      // the entry failed from the identity in scope.
+      // repo spec could not be resolved), so no channel event will arrive.
       setEntries((prev) => {
         const next = new Map(prev);
-        next.set(key, {
-          identity,
-          acc: {
-            ...startingAccumulator(),
-            state: { phase: 'failed', kind: 'other', message: String(err) },
-          },
-        });
+        // The backend's by-sha guard rejects a start whose blob is already
+        // downloading under another key (e.g. the same model running in the
+        // onboarding window). That is not a failure: drop the optimistic entry
+        // so the row falls back to the live cross-window view instead of
+        // painting a spurious, non-self-healing failure card over it.
+        if (String(err).includes('already in progress')) {
+          next.delete(key);
+        } else {
+          next.set(key, {
+            identity,
+            acc: {
+              ...startingAccumulator(),
+              state: { phase: 'failed', kind: 'other', message: String(err) },
+            },
+          });
+        }
         return next;
       }),
     );
@@ -204,7 +342,16 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clear = useCallback((key: string) => {
+    // `key` may name a local download (this window's) or a remote one (another
+    // window's, after its install effect settles); drop it from whichever map
+    // holds it.
     setEntries((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+    setRemote((prev) => {
       if (!prev.has(key)) return prev;
       const next = new Map(prev);
       next.delete(key);
@@ -221,6 +368,34 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
       return { state, progress, etaSeconds, combinedBytes, speedBytesPerSec };
     },
     [entries],
+  );
+
+  const getActiveDownload = useCallback(
+    (sha: string): ActiveDownloadView | undefined => {
+      for (const [key, entry] of remote) {
+        if (entry.shas.includes(sha)) {
+          const {
+            state,
+            progress,
+            etaSeconds,
+            combinedBytes,
+            speedBytesPerSec,
+          } = entry.acc;
+          return {
+            key,
+            view: {
+              state,
+              progress,
+              etaSeconds,
+              combinedBytes,
+              speedBytesPerSec,
+            },
+          };
+        }
+      }
+      return undefined;
+    },
+    [remote],
   );
 
   const hasRepoDownload = useCallback(
@@ -267,6 +442,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
   const value = useMemo<DownloadsContextValue>(
     () => ({
       get,
+      getActiveDownload,
       hasRepoDownload,
       repoDownloadSummary,
       startStaffPick,
@@ -278,6 +454,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
     }),
     [
       get,
+      getActiveDownload,
       hasRepoDownload,
       repoDownloadSummary,
       startStaffPick,

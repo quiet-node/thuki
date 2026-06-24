@@ -28,7 +28,7 @@ pub const PROVIDER_KIND_OLLAMA: &str = "ollama";
 pub const PROVIDER_KIND_OPENAI: &str = "openai";
 
 /// Human-readable provider labels shown in Settings.
-pub const DEFAULT_BUILTIN_LABEL: &str = "Built-in (Thuki)";
+pub const DEFAULT_BUILTIN_LABEL: &str = "Built-in";
 pub const DEFAULT_OLLAMA_LABEL: &str = "Ollama";
 /// Fallback label for an OpenAI-compatible provider added with no label.
 pub const DEFAULT_OPENAI_LABEL: &str = "OpenAI-compatible";

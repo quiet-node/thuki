@@ -151,16 +151,28 @@ interface ModelRowProps {
 function ModelRow({ option, downloads, onSaved, refresh }: ModelRowProps) {
   const { starter, fit, installed, partial_bytes } = option;
   const key = downloadKey({ kind: 'staff', id: starter.id });
-  const entry = downloads.get(key);
   const { clear } = downloads;
+  // This row's live download: its own (started here, found by key) or one
+  // started in another window (e.g. onboarding), matched by the weights blob
+  // sha. The cross-window match carries the real backend key, so cancel and the
+  // post-install clear target the right slot.
+  const local = downloads.get(key);
+  const active = local
+    ? { key, view: local }
+    : downloads.getActiveDownload(starter.sha256);
+  const entry = active?.view;
+  // The live download's real backend key: this row's own when it started here,
+  // or the cross-window download's when matched by sha. Falls back to the row
+  // key when nothing is live, so cancel/clear always have a concrete target.
+  const activeKey = active?.key ?? key;
   // An entry exists only while this row's download is live (downloading,
   // verifying, ready-pending, or failed); a Cancelled download is pruned.
   const showProgress = entry !== undefined;
   const phase = entry?.state.phase;
 
-  // A finished install (phase 'ready') lifts the fresh config, drops the entry,
-  // and refreshes the rows so the new model flips to Installed. Per row, so
-  // parallel installs each settle independently.
+  // A finished install (phase 'ready') lifts the fresh config, drops the entry
+  // (its own or a cross-window one), and refreshes the rows so the new model
+  // flips to Installed. Per row, so parallel installs each settle independently.
   useEffect(() => {
     if (phase !== 'ready') return;
     void (async () => {
@@ -169,10 +181,10 @@ function ModelRow({ option, downloads, onSaved, refresh }: ModelRowProps) {
       } catch {
         // The focus-driven resync picks the change up on next activation.
       }
-      clear(key);
+      clear(activeKey);
       await refresh();
     })();
-  }, [phase, key, clear, onSaved, refresh]);
+  }, [phase, activeKey, clear, onSaved, refresh]);
 
   async function discardPartial() {
     await downloads.discard(starter.sha256);
@@ -182,12 +194,14 @@ function ModelRow({ option, downloads, onSaved, refresh }: ModelRowProps) {
   // Dismiss this row's terminal card back to its normal controls. Also wired to
   // the confirm-card callbacks, which never fire here (the curated path has no
   // pre-flight confirm step), so all three share one covered handler.
-  const dismiss = () => clear(key);
+  const dismiss = () => clear(activeKey);
 
   // Cancelling keeps the partial on disk; re-read the options so the row flips
-  // to its Paused/Resume state once the Cancelled event prunes the entry.
+  // to its Paused/Resume state once the Cancelled event prunes the entry. Uses
+  // the live download's real key, so cancelling a cross-window download targets
+  // its actual backend slot.
   async function cancelDownload() {
-    downloads.cancel(key);
+    downloads.cancel(activeKey);
     await refresh();
   }
 
@@ -280,7 +294,7 @@ function ModelRow({ option, downloads, onSaved, refresh }: ModelRowProps) {
             onConfirm={dismiss}
             onCancelConfirm={dismiss}
             onCancel={() => void cancelDownload()}
-            onRetry={() => downloads.retry(key)}
+            onRetry={() => downloads.retry(activeKey)}
             onChooseAnother={dismiss}
           />
         </div>

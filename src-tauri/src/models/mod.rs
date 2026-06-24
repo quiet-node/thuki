@@ -1151,20 +1151,56 @@ const INVALID_REPO_ID_ERR: &str = "invalid Hugging Face repo id";
 /// the distinct blob shas the registry guarantees (asserted in
 /// `registry::tests`), no two concurrent downloads target the same blob, so no
 /// per-blob lock is needed.
-/// One in-flight download: its cancellation handle plus the blob shas it is
-/// writing. The shas let a discard scope its in-flight check to the exact
-/// partial(s) at risk instead of refusing while any download runs.
+/// One in-flight download: its cancellation handle, the blob shas it is
+/// writing, and its latest progress event. The shas let a discard scope its
+/// in-flight check to the exact partial(s) at risk instead of refusing while
+/// any download runs, and let a freshly-opened window match a live download by
+/// the underlying blob (its slot key may differ across surfaces). `last_event`
+/// lets that window hydrate the current progress before the live event stream
+/// takes over.
 pub struct DownloadSlot {
     token: tokio_util::sync::CancellationToken,
     shas: Vec<String>,
+    last_event: Option<download::DownloadEvent>,
 }
 
 #[derive(Default)]
 pub struct DownloadState(pub std::sync::Mutex<std::collections::HashMap<String, DownloadSlot>>);
 
+/// Tauri event broadcast to every webview on each download progress update, so a
+/// window that did not start the download (e.g. the Settings panel while
+/// onboarding downloads) renders its live progress. Mirrors the cross-window
+/// [`crate::settings_commands::CONFIG_UPDATED_EVENT`] pattern; the payload is an
+/// [`ActiveDownload`] with a present `event`.
+pub const DOWNLOAD_PROGRESS_EVENT: &str = "thuki://download-progress";
+
+/// A snapshot of one in-flight download for a window that did not start it: the
+/// slot `key`, the blob `shas` it writes (the cross-window match discriminator),
+/// and its latest progress `event` (`None` until the first event arrives).
+/// Serialized to the frontend by `get_active_downloads` and the
+/// [`DOWNLOAD_PROGRESS_EVENT`] broadcast.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ActiveDownload {
+    pub key: String,
+    pub shas: Vec<String>,
+    pub event: Option<download::DownloadEvent>,
+}
+
+/// True while any in-flight slot is writing `sha256`. The discriminator for the
+/// by-sha guards: distinct slot keys (the onboarding `tier:` slot vs a Settings
+/// `staff:` slot) can target the SAME blob, so both the start dedupe and the
+/// discard must check the blob, not the key.
+fn sha_in_flight(guard: &std::collections::HashMap<String, DownloadSlot>, sha256: &str) -> bool {
+    guard
+        .values()
+        .any(|slot| slot.shas.iter().any(|s| s == sha256))
+}
+
 /// Atomically claims a download slot for `key`, recording the blob `shas` it
 /// will write. Returns a fresh cancellation token on success; an error when
-/// `key` already has an in-flight download (or the lock is poisoned).
+/// `key` already has an in-flight download, when any of its `shas` is already
+/// being written under a DIFFERENT key (a second writer of the same partial
+/// would corrupt it), or when the lock is poisoned.
 pub fn claim_download(
     state: &DownloadState,
     key: &str,
@@ -1174,15 +1210,55 @@ pub fn claim_download(
     if guard.contains_key(key) {
         return Err("a download is already in progress".to_string());
     }
+    // By-sha guard: a different key (e.g. the onboarding `tier:` slot vs a
+    // Settings `staff:` slot) can target the same blob. Refuse to start a second
+    // writer of a partial already in flight; deleting/racing it would corrupt
+    // the shared file. No slot for `key` exists yet, so this checks only others.
+    if shas.iter().any(|sha| sha_in_flight(&guard, sha)) {
+        return Err("a download for this file is already in progress".to_string());
+    }
     let token = tokio_util::sync::CancellationToken::new();
     guard.insert(
         key.to_string(),
         DownloadSlot {
             token: token.clone(),
             shas,
+            last_event: None,
         },
     );
     Ok(token)
+}
+
+/// Records `event` as the latest progress for the slot held by `key`, so a
+/// window opened mid-download can hydrate via [`active_downloads_inner`].
+/// Best-effort: a poisoned lock or a released slot (the event raced teardown)
+/// is a harmless no-op.
+pub fn record_event(state: &DownloadState, key: &str, event: &download::DownloadEvent) {
+    if let Ok(mut guard) = state.0.lock() {
+        if let Some(slot) = guard.get_mut(key) {
+            slot.last_event = Some(event.clone());
+        }
+    }
+}
+
+/// Snapshot of every in-flight download, for a window opening mid-download to
+/// hydrate its live-progress rows before the [`DOWNLOAD_PROGRESS_EVENT`] stream
+/// takes over. A poisoned lock degrades to an empty snapshot.
+pub fn active_downloads_inner(state: &DownloadState) -> Vec<ActiveDownload> {
+    state
+        .0
+        .lock()
+        .map(|guard| {
+            guard
+                .iter()
+                .map(|(key, slot)| ActiveDownload {
+                    key: key.clone(),
+                    shas: slot.shas.clone(),
+                    event: slot.last_event.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Releases the slot held by `key`. Best-effort: a poisoned lock is ignored
@@ -2356,10 +2432,7 @@ pub fn discard_partial_inner(
         return Err("invalid sha256".to_string());
     }
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    if guard
-        .values()
-        .any(|slot| slot.shas.iter().any(|s| s == sha256))
-    {
+    if sha_in_flight(&guard, sha256) {
         return Err("a download for this file is already in progress".to_string());
     }
     match std::fs::remove_file(store.partial_path(sha256)) {
@@ -2584,6 +2657,16 @@ pub fn discard_partial_download(
     discard_partial_inner(&download_state, &store, &sha256)
 }
 
+/// Snapshot of the in-flight downloads, so a freshly-opened window hydrates its
+/// live-progress rows before the [`DOWNLOAD_PROGRESS_EVENT`] stream takes over.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn get_active_downloads(
+    download_state: tauri::State<'_, DownloadState>,
+) -> Vec<ActiveDownload> {
+    active_downloads_inner(&download_state)
+}
+
 /// Returns every installed model from the manifest.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
@@ -2681,13 +2764,20 @@ fn spawn_model_download(
     token: tokio_util::sync::CancellationToken,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
 ) {
+    let shas = spec_shas(&specs);
     tauri::async_runtime::spawn(async move {
         let client = app.state::<reqwest::Client>().inner().clone();
         let on_event_finalize = on_event.clone();
         let result = {
             let store = app.state::<storage::ModelStore>();
+            let emit_app = app.clone();
+            let emit_key = key.clone();
+            let emit_shas = shas.clone();
+            // Each event goes to the originating window's channel AND, via the
+            // global broadcast, to every other window (matched there by sha).
             let emit = move |event: download::DownloadEvent| {
-                let _ = on_event.send(event);
+                let _ = on_event.send(event.clone());
+                broadcast_download_event(&emit_app, &emit_key, &emit_shas, event);
             };
             download::run_download(&specs, store.inner(), &client, token, emit).await
         };
@@ -2696,10 +2786,36 @@ fn spawn_model_download(
             if let Err(e) = &finalized {
                 eprintln!("thuki: [models] failed to record installed model: {e}");
             }
-            let _ = on_event_finalize.send(finalize_outcome_event(finalized));
+            // Broadcast the terminal event too (AllDone / Failed) so observing
+            // windows settle their cross-window rows; do it before releasing the
+            // slot so `record_event` still finds it.
+            let event = finalize_outcome_event(finalized);
+            let _ = on_event_finalize.send(event.clone());
+            broadcast_download_event(&app, &key, &shas, event);
         }
         release_download(&app.state::<DownloadState>(), &key);
     });
+}
+
+/// Records `event` on the in-flight slot and broadcasts it to every webview, so
+/// a window that did not start the download renders its live progress. Thin
+/// Tauri IPC glue over the tested [`record_event`]; excluded from coverage.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn broadcast_download_event(
+    app: &tauri::AppHandle,
+    key: &str,
+    shas: &[String],
+    event: download::DownloadEvent,
+) {
+    record_event(&app.state::<DownloadState>(), key, &event);
+    let _ = app.emit(
+        DOWNLOAD_PROGRESS_EVENT,
+        ActiveDownload {
+            key: key.to_string(),
+            shas: shas.to_vec(),
+            event: Some(event),
+        },
+    );
 }
 
 /// Records a completed download: manifest insert, removal of blobs the
@@ -4695,6 +4811,85 @@ mod tests {
     }
 
     #[test]
+    fn claim_download_refuses_a_sha_already_in_flight_under_another_key() {
+        let state = DownloadState::default();
+        let weights = "a".repeat(64);
+        let mmproj = "b".repeat(64);
+
+        // The onboarding `tier:` slot claims a vision model's two blobs.
+        let _tier = claim_download(
+            &state,
+            "tier:balanced",
+            vec![weights.clone(), mmproj.clone()],
+        )
+        .unwrap();
+
+        // The Settings `staff:` slot for the SAME model uses a different key but
+        // the same blobs: refused, so it cannot spawn a second writer.
+        let err = claim_download(&state, "staff:gemma", vec![weights.clone()]).unwrap_err();
+        assert!(err.contains("in progress"), "got: {err}");
+
+        // A share of only the mmproj blob is enough to refuse: two writers of one
+        // partial corrupt it regardless of which file they collide on.
+        let err = claim_download(&state, "staff:other", vec![mmproj.clone()]).unwrap_err();
+        assert!(err.contains("in progress"), "got: {err}");
+
+        // An unrelated blob claims freely, in parallel.
+        let _unrelated = claim_download(&state, "staff:unrelated", vec!["c".repeat(64)]).unwrap();
+
+        // Once the original releases, the same blob can be claimed again.
+        release_download(&state, "tier:balanced");
+        let _resumed = claim_download(&state, "staff:gemma", vec![weights]).unwrap();
+    }
+
+    #[test]
+    fn record_event_updates_latest_event_and_tolerates_a_missing_slot() {
+        let state = DownloadState::default();
+        let sha = "a".repeat(64);
+        let progress = download::DownloadEvent::Progress {
+            file: "model.gguf".to_string(),
+            bytes: 512,
+            total_bytes: 1024,
+        };
+
+        // No slot for this key yet: recording is a harmless no-op.
+        record_event(&state, "tier:balanced", &progress);
+        assert!(active_downloads_inner(&state).is_empty());
+
+        let _slot = claim_download(&state, "tier:balanced", vec![sha.clone()]).unwrap();
+        // A freshly claimed slot has no event yet.
+        assert_eq!(active_downloads_inner(&state)[0].event, None);
+
+        record_event(&state, "tier:balanced", &progress);
+        let snapshot = active_downloads_inner(&state);
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].key, "tier:balanced");
+        assert_eq!(snapshot[0].shas, vec![sha]);
+        assert_eq!(snapshot[0].event, Some(progress));
+    }
+
+    #[test]
+    fn active_downloads_inner_snapshots_every_in_flight_slot() {
+        let state = DownloadState::default();
+        assert!(active_downloads_inner(&state).is_empty());
+
+        let _a = claim_download(&state, "staff:a", vec!["a".repeat(64)]).unwrap();
+        let _b = claim_download(&state, "staff:b", vec!["b".repeat(64)]).unwrap();
+        let mut keys: Vec<String> = active_downloads_inner(&state)
+            .into_iter()
+            .map(|d| d.key)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, vec!["staff:a".to_string(), "staff:b".to_string()]);
+
+        // A released slot drops out of the snapshot.
+        release_download(&state, "staff:a");
+        let remaining = active_downloads_inner(&state);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].key, "staff:b");
+    }
+
+    #[test]
     fn cancel_download_cancels_only_the_keyed_token_and_tolerates_idle() {
         let state = DownloadState::default();
         // No such key: cancelling is a harmless no-op.
@@ -4723,6 +4918,9 @@ mod tests {
         // Best-effort operations must not panic on the poisoned lock.
         cancel_download(&state, "k");
         release_download(&state, "k");
+        record_event(&state, "k", &download::DownloadEvent::AllDone);
+        // A poisoned lock degrades the snapshot to empty rather than panicking.
+        assert!(active_downloads_inner(&state).is_empty());
     }
 
     #[test]
@@ -6083,7 +6281,7 @@ active_provider = "ollama"
 [[inference.providers]]
 id = "builtin"
 kind = "builtin"
-label = "Built-in (Thuki)"
+label = "Built-in"
 model = ""
 
 [[inference.providers]]

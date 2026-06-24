@@ -8,7 +8,7 @@ See [thuki.app](https://www.thuki.app/) for project info, downloads, and documen
 
 | Command | What it does with OCR'd text |
 |---|---|
-| `/extract` | Returns the raw text verbatim. No LLM call. |
+| `/extract` | Returns the raw text verbatim. No language-model call. |
 | `/tldr` | Summarizes the extracted text in 1-3 sentences. |
 | `/translate` | Translates the extracted text to a target language. |
 | `/rewrite` | Rewrites the extracted text for clarity. |
@@ -37,12 +37,12 @@ OCR (Optical Character Recognition) detects and reads text in images. Given a pi
 
 Modern OCR engines (including the one powering these commands) are not guessing based on context. They apply trained convolutional neural networks to detect text regions, segment individual characters, and classify each glyph. The output is deterministic for a given image.
 
-## Why no LLM for the OCR step?
+## Why no language model for the OCR step?
 
 Most AI assistants that "read" images send the image to a vision-capable language model. The model describes what it sees, including the text. This works but introduces several costs:
 
 - **Latency:** The model must load (if not already warm), tokenize the image, run a forward pass, and stream tokens back. For a text-only extraction task, this adds 1-10 seconds of overhead.
-- **Accuracy:** LLMs can hallucinate or paraphrase text. A vision model asked to "extract text" may still rephrase, correct apparent typos, or drop content it considers noise. OCR engines report what the pixels say, faithfully.
+- **Accuracy:** Language models can hallucinate or paraphrase text. A vision model asked to "extract text" may still rephrase, correct apparent typos, or drop content it considers noise. OCR engines report what the pixels say, faithfully.
 - **Token cost:** Image tokens are expensive. A 1080p screenshot may consume 500-1000 tokens just to encode, before the model writes a single character of output.
 - **VRAM:** Running a multimodal model requires a vision-capable model loaded in GPU memory. Not every setup has one, and loading one takes time.
 
@@ -78,7 +78,7 @@ Typical wall-clock times on Apple Silicon (OCR step only):
 
 These numbers reflect the Vision framework running on the Neural Engine / CPU. There is no warm-up delay, no tokenization, and no streaming. The OCR result is ready as soon as the framework finishes its recognition pass.
 
-By contrast, sending the same screenshot to a vision LLM typically takes 2-10 seconds, depending on model size and whether it is already loaded. For a repeated text-extraction workflow (e.g., capturing terminal errors, reading pricing tables, copying text from PDFs), the OCR-supported commands are consistently 10-50x faster for the OCR step.
+By contrast, sending the same screenshot to a vision model typically takes 2-10 seconds, depending on model size and whether it is already loaded. For a repeated text-extraction workflow (e.g., capturing terminal errors, reading pricing tables, copying text from PDFs), the OCR-supported commands are consistently 10-50x faster for the OCR step.
 
 ## Usage patterns
 

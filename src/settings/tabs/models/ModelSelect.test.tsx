@@ -171,7 +171,7 @@ describe('ModelSelect', () => {
     const alpha = screen.getByRole('option', { name: /Alpha/ });
     expect(within(alpha).getByText('Text')).toBeInTheDocument();
     expect(within(alpha).getByText('Vision')).toBeInTheDocument();
-    expect(within(alpha).queryByText('Thinking')).not.toBeInTheDocument();
+    expect(within(alpha).queryByText('Reasoning')).not.toBeInTheDocument();
     // The truncated name and sub-line carry the full text as a native tooltip.
     expect(within(alpha).getByText('Alpha')).toHaveAttribute('title', 'Alpha');
     const sub = within(alpha).getByText('6.6 GB · 128K · Org · Q4_K_M');
@@ -183,13 +183,13 @@ describe('ModelSelect', () => {
     );
 
     const beta = screen.getByRole('option', { name: /Beta/ });
-    expect(within(beta).getByText('Thinking')).toBeInTheDocument();
+    expect(within(beta).getByText('Reasoning')).toBeInTheDocument();
     expect(within(beta).getByText('Tight')).toBeInTheDocument();
 
     const gamma = screen.getByRole('option', { name: /Gamma/ });
     expect(within(gamma).getByText('Text')).toBeInTheDocument();
     expect(within(gamma).queryByText('Vision')).not.toBeInTheDocument();
-    expect(within(gamma).queryByText('Thinking')).not.toBeInTheDocument();
+    expect(within(gamma).queryByText('Reasoning')).not.toBeInTheDocument();
     expect(within(gamma).getByText('Heavy')).toBeInTheDocument();
   });
 

@@ -5,7 +5,7 @@ import { ErrorCard } from './ErrorCard';
 import { CopyButton } from './CopyButton';
 import { ReplaceButton } from './ReplaceButton';
 import { ImageThumbnails } from './ImageThumbnails';
-import { ThinkingBlock } from './ThinkingBlock';
+import { ReasoningBlock } from './ReasoningBlock';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
@@ -477,7 +477,7 @@ export function ChatBubble({
               />
             )}
             {(thinkingContent || isThinkingPending) && (
-              <ThinkingBlock
+              <ReasoningBlock
                 thinkingContent={thinkingContent}
                 isPending={isThinkingPending ?? false}
                 isThinking={isThinking ?? false}

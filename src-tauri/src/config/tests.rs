@@ -1585,7 +1585,7 @@ fn legacy_ollama_url_ignored_when_explicit_providers_present() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -1627,7 +1627,7 @@ fn dangling_active_provider_falls_back_to_default() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -1638,6 +1638,43 @@ fn dangling_active_provider_falls_back_to_default() {
     .unwrap();
     let c = load_from_path(&path).unwrap();
     assert_eq!(c.inference.active_provider, DEFAULT_ACTIVE_PROVIDER);
+}
+
+#[test]
+fn builtin_label_is_healed_to_the_current_default() {
+    // A config seeded before the label was renamed keeps a stale built-in label
+    // on disk. The loader must overwrite it with the current default so existing
+    // installs do not keep showing an outdated provider name.
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        r#"
+            [inference]
+            active_provider = "builtin"
+            [[inference.providers]]
+            id = "builtin"
+            kind = "builtin"
+            label = "Built-in (Thuki)"
+            [[inference.providers]]
+            id = "ollama"
+            kind = "ollama"
+            label = "Ollama"
+            base_url = "http://127.0.0.1:11434"
+        "#,
+    )
+    .unwrap();
+    let c = load_from_path(&path).unwrap();
+    let builtin = c
+        .inference
+        .providers
+        .iter()
+        .find(|p| p.id == crate::config::defaults::PROVIDER_ID_BUILTIN)
+        .unwrap();
+    assert_eq!(
+        builtin.label,
+        crate::config::defaults::DEFAULT_BUILTIN_LABEL
+    );
 }
 
 #[test]
@@ -1900,7 +1937,7 @@ fn new_shape_config_active_untouched() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -2058,7 +2095,7 @@ fn openai_kind_with_url_is_kept() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -2095,7 +2132,7 @@ fn openai_kind_without_url_is_dropped() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -2129,7 +2166,7 @@ fn openai_kind_bad_scheme_is_dropped() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -2172,7 +2209,7 @@ fn provider_vision_flag_roundtrips() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"
@@ -2210,7 +2247,7 @@ fn unknown_kind_still_dropped() {
             [[inference.providers]]
             id = "builtin"
             kind = "builtin"
-            label = "Built-in (Thuki)"
+            label = "Built-in"
             [[inference.providers]]
             id = "ollama"
             kind = "ollama"

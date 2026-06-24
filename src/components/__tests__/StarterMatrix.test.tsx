@@ -148,8 +148,10 @@ describe('StarterMatrix (picker)', () => {
       }),
     ]);
     expect(screen.getByText('Reasoning')).toBeInTheDocument();
-    // smartest: always-on reasoning reads as plain text.
-    expect(screen.getByText(ALWAYS_REASONS_LABEL)).toBeInTheDocument();
+    // smartest: always-reasoning pill.
+    expect(
+      screen.getByTestId('starter-always-reasons-badge'),
+    ).toHaveTextContent(ALWAYS_REASONS_LABEL);
     // fast: optional reasoning reads "On demand".
     expect(screen.getByText('On demand')).toBeInTheDocument();
     // balanced: no reasoning -> a dash (the none branch).

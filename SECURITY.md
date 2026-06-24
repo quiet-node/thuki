@@ -10,11 +10,14 @@ We will acknowledge your report within **48 hours** and aim to release a fix wit
 
 ## Scope
 
-Thuki runs entirely on your local machine. There is no server, no cloud backend, and no telemetry. The attack surface is limited to:
+Thuki runs entirely on your local machine: no server, no cloud backend, no telemetry. Inference happens on-device through the bundled engine (or your own Ollama install). The only outbound network requests are ones you initiate: downloading a model from the Hugging Face Hub, and the optional `/search` pipeline. The attack surface is limited to:
 
 - The Tauri IPC boundary between the frontend and Rust backend
 - The macOS Accessibility API integration that captures selected text and screen bounds at activation (`context.rs`)
-- Screenshot capture via `screencapture` invoked through the Tauri command layer (`screenshot.rs`)
+- Screen capture via CoreGraphics (`screenshot.rs`), covering both interactive `screencapture` selection and full-screen `CGWindowListCreateImage`
+- The bundled llama.cpp `llama-server` sidecar, which binds to `127.0.0.1` only with its web UI disabled, so nothing off your machine can reach it
+- Parsing of downloaded GGUF model metadata, which is bounded and panic-safe against malformed or hostile files
+- Model downloads from the Hugging Face Hub: provenance comes from pinned repo revisions, while the sha256 check is an integrity guard (truncation, bit rot, resume corruption), not a provenance control
 - The local SQLite database storing conversation history
 - Image processing via the `image` crate
 

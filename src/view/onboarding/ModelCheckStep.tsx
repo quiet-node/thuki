@@ -428,7 +428,7 @@ const BuiltinShell = forwardRef<HTMLDivElement, { children: React.ReactNode }>(
               maxWidth: 560,
             }}
           >
-            Pick a starter brain for Thuki. More models are available later in
+            Pick a starter model for Thuki. More models are available later in
             Settings.
           </p>
 
@@ -513,7 +513,7 @@ function OllamaModelCheck() {
   const titleSub = isProbing
     ? 'Checking your local Ollama setup…'
     : ollamaConnected
-      ? "Almost there. Let's pick a brain for Thuki."
+      ? "Almost there. Let's pick a model for Thuki."
       : 'Runs Ollama locally. Your chats stay on this machine.';
 
   return (

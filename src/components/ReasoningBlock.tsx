@@ -3,29 +3,29 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { LoadingStage } from './LoadingStage';
 
-export interface ThinkingBlockProps {
+export interface ReasoningBlockProps {
   thinkingContent?: string;
   isThinking: boolean;
   isPending?: boolean;
   pendingLabel?: string;
 }
 
-const THINKING_LABEL = 'Thinking...';
+const REASONING_LABEL = 'Reasoning...';
 const PENDING_LABEL = 'Warming up...';
 
 /**
- * Collapsible thinking/reasoning section rendered above an AI response.
+ * Collapsible reasoning section rendered above an AI response.
  *
- * While `isThinking` is true the block shows an animated "Thinking..." label.
- * When thinking completes the label changes to "Thinking process". The user
+ * While `isThinking` is true the block shows an animated "Reasoning..." label.
+ * When reasoning completes the label changes to "Reasoning". The user
  * can click to toggle expansion at any time to see the reasoning content.
  */
-export function ThinkingBlock({
+export function ReasoningBlock({
   thinkingContent,
   isThinking,
   isPending = false,
   pendingLabel = PENDING_LABEL,
-}: ThinkingBlockProps) {
+}: ReasoningBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const hasThinkingContent = Boolean(thinkingContent?.trim());
 
@@ -33,8 +33,8 @@ export function ThinkingBlock({
 
   if (isPending) {
     return (
-      <div data-testid="thinking-block" className="mb-2">
-        <div data-testid="thinking-pending" className="inline-flex min-w-0">
+      <div data-testid="reasoning-block" className="mb-2">
+        <div data-testid="reasoning-pending" className="inline-flex min-w-0">
           <LoadingStage label={pendingLabel} />
         </div>
       </div>
@@ -45,10 +45,10 @@ export function ThinkingBlock({
   const displayContent = thinkingContent!
     .replace(/^\s*Thinking Process[:\s]*\n*/i, '')
     .trimStart();
-  const summaryLabel = isThinking ? THINKING_LABEL : 'Thought process';
+  const summaryLabel = isThinking ? REASONING_LABEL : 'Reasoning';
   const chevron = (
     <span
-      data-testid="thinking-chevron"
+      data-testid="reasoning-chevron"
       className="loading-label inline-block shrink-0 text-[9px] transition-transform duration-150"
       style={{
         transform: isExpanded ? 'rotate(180deg)' : 'rotate(90deg)',
@@ -59,14 +59,14 @@ export function ThinkingBlock({
   );
 
   return (
-    <div data-testid="thinking-block" className="mb-2">
+    <div data-testid="reasoning-block" className="mb-2">
       {/* Clickable summary row: chevron + label */}
       <button
         type="button"
         onClick={() => setIsExpanded((prev) => !prev)}
         className="flex items-center gap-2 cursor-pointer bg-transparent border-none p-0 text-left w-full"
         aria-expanded={isExpanded}
-        aria-label="Toggle thinking details"
+        aria-label="Toggle reasoning details"
       >
         {isThinking ? (
           <span className="inline-flex min-w-0">
@@ -75,7 +75,7 @@ export function ThinkingBlock({
         ) : (
           <>
             <span
-              data-testid="thinking-chevron"
+              data-testid="reasoning-chevron"
               className="inline-block text-[9px] text-text-secondary/55 transition-transform duration-150"
               style={{
                 transform: isExpanded ? 'rotate(180deg)' : 'rotate(90deg)',
@@ -84,7 +84,7 @@ export function ThinkingBlock({
               &#9650;
             </span>
             <span
-              data-testid="thinking-summary-label"
+              data-testid="reasoning-summary-label"
               className="text-[11px] font-medium tracking-[0.01em] text-text-secondary/58"
             >
               {summaryLabel}

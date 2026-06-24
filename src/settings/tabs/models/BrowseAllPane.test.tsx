@@ -88,7 +88,7 @@ const RESULTS: HfModelSummary[] = [
     vision: false,
     thinking: false,
   },
-  // A thinking model, used for the Thinking pill assertion.
+  // A thinking model, used for the Reasoning pill assertion.
   {
     id: 'meta-llama/Llama-3-8B-GGUF',
     downloads: 9_000,
@@ -220,12 +220,12 @@ describe('BrowseAllPane', () => {
       .closest('[data-row]') as HTMLElement;
     expect(within(visionRow).getByText('Text')).toBeInTheDocument();
     expect(within(visionRow).getByText('Vision')).toBeInTheDocument();
-    expect(within(visionRow).queryByText('Thinking')).not.toBeInTheDocument();
+    expect(within(visionRow).queryByText('Reasoning')).not.toBeInTheDocument();
 
     const thinkingRow = screen
       .getByText('meta-llama/Llama-3-8B-GGUF')
       .closest('[data-row]') as HTMLElement;
-    expect(within(thinkingRow).getByText('Thinking')).toBeInTheDocument();
+    expect(within(thinkingRow).getByText('Reasoning')).toBeInTheDocument();
     expect(within(thinkingRow).queryByText('Vision')).not.toBeInTheDocument();
 
     const plainRow = screen
@@ -233,7 +233,7 @@ describe('BrowseAllPane', () => {
       .closest('[data-row]') as HTMLElement;
     expect(within(plainRow).getByText('Text')).toBeInTheDocument();
     expect(within(plainRow).queryByText('Vision')).not.toBeInTheDocument();
-    expect(within(plainRow).queryByText('Thinking')).not.toBeInTheDocument();
+    expect(within(plainRow).queryByText('Reasoning')).not.toBeInTheDocument();
   });
 
   it('does not show a RAM-fit hint on the collapsed model row', async () => {

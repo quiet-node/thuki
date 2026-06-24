@@ -138,6 +138,20 @@ export interface HfGgufFile {
   installed: boolean;
 }
 
+/**
+ * A snapshot of one in-flight download for a window that did not start it.
+ * Mirrors `models::ActiveDownload`: the backend slot `key`, the blob `shas` it
+ * writes (the cross-window match discriminator), and its latest progress
+ * `event` (`null` until the first event arrives). Returned in bulk by
+ * `get_active_downloads` and broadcast singly on the `thuki://download-progress`
+ * event.
+ */
+export interface ActiveDownload {
+  key: string;
+  shas: string[];
+  event: DownloadEvent | null;
+}
+
 /** Engine lifecycle snapshot published on the `engine:status` event. */
 export interface EngineStatus {
   state: 'stopped' | 'starting' | 'loaded' | 'stopping' | 'failed';

@@ -369,9 +369,9 @@ export function ModelSelect({
                             ) : null}
                             {item.thinking ? (
                               <span
-                                className={`${styles.pill} ${styles.pillThinking}`}
+                                className={`${styles.pill} ${styles.pillReasoning}`}
                               >
-                                Thinking
+                                Reasoning
                               </span>
                             ) : null}
                           </>

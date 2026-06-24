@@ -69,7 +69,7 @@ function buildConfig(
 const BUILTIN = {
   id: 'builtin',
   kind: 'builtin',
-  label: 'Built-in (Thuki)',
+  label: 'Built-in',
   base_url: '',
   model: '',
   vision: false,
