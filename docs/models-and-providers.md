@@ -166,13 +166,13 @@ The engine moves through a small state machine:
 ```mermaid
 stateDiagram-v2
   [*] --> Stopped
-  Stopped --> Starting: first request / Ensure
-  Starting --> Loaded: /health OK
+  Stopped --> Starting: first request
+  Starting --> Loaded: health check passes
   Starting --> Failed: spawn or health failure
-  Loaded --> Stopping: idle timeout / Unload / switch model
-  Loaded --> Loaded: Touch (keeps it warm)
+  Loaded --> Stopping: idle, Unload, or switch
+  Loaded --> Loaded: Touch keeps it warm
   Stopping --> Stopped: confirmed exit
-  Stopping --> Starting: switch model (start the next one)
+  Stopping --> Starting: switch to the next model
   Failed --> Starting: retry
 ```
 
@@ -226,7 +226,7 @@ sequenceDiagram
   Cmd->>Srv: POST /v1/chat/completions (stream)
   Srv-->>Cmd: SSE tokens
   Cmd-->>UI: StreamChunk tokens (Tauri Channel)
-  Note over Run: idle timer runs; stops the engine after Keep Warm
+  Note over Run: idle timer runs, then stops the engine after Keep Warm
 ```
 
 The frontend never talks to the engine directly. It calls the `ask_model` Tauri command, which resolves the model, ensures the engine is up, opens the streaming `/v1` request, and relays each token to the UI as a typed `StreamChunk` over a Tauri Channel.
