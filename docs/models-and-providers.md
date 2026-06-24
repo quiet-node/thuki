@@ -146,10 +146,10 @@ Every model in Library and Discover shows a one-word verdict, **Comfortable**, *
 First it estimates the model's **resident size** at runtime:
 
 ```
-estimate = model file size (weights, plus the mmproj for vision) + ~2 GB overhead
+estimate = model file size + ~2 GB overhead
 ```
 
-The ~2 GB is a baseline for the engine's runtime buffers and KV cache. (The KV cache also grows with your context window, covered separately in the context-window guide.)
+The ~2 GB is a baseline for the engine's runtime buffers and KV cache. (The KV cache also grows with your context window, covered separately in the context-window guide.) For a vision model, a curated Staff pick folds its projector (`mmproj`) into the size; a Browse-all or installed-Library row counts only the single GGUF file you see on the row.
 
 Then it compares that estimate against your Mac's **total physical memory**, read straight from the system (`hw.memsize`). Apple Silicon uses unified memory shared between the CPU and GPU, so a model competes for RAM with everything else you are running:
 
