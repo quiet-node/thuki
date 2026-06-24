@@ -70,19 +70,60 @@ Thuki reads that metadata directly from the file (with a bounded, panic-safe par
 
 ### Quantization
 
-Full-precision weights are big. **Quantization** compresses them to fewer bits per number, which shrinks the file and the memory it needs, at a small cost to quality. This is why one model has many GGUF files: each is a different size/quality trade-off.
+A model is trained in 16-bit floating point, so each of its billions of weights takes two bytes. That makes the raw model huge. **Quantization** stores those weights with fewer bits each: the weights are split into small blocks, and each block records a low-bit integer per weight plus a scale (and sometimes an offset) to map it back to a real value. Dropping from 16 bits to about 4 bits per weight shrinks the file roughly 4x, so the model loads faster, uses far less memory, and runs faster, at a measurable but usually small cost to quality.
 
-You will see names like `Q4_K_M`:
+This is why one model on Hugging Face ships as many GGUF files: each is the same weights at a different bit budget, a different point on the size-versus-quality curve.
 
-| Name     | Roughly means | Trade-off                                      |
-| -------- | ------------- | ---------------------------------------------- |
-| `Q8_0`   | 8-bit         | Largest, closest to full quality               |
-| `Q6_K`   | 6-bit         | Large, very high quality                       |
-| `Q5_K_M` | 5-bit, medium | Balanced, high quality                         |
-| `Q4_K_M` | 4-bit, medium | The common sweet spot: small, fast, still good |
-| `Q3_K_*` | 3-bit         | Smaller and faster, noticeably lower quality   |
+**Why it barely hurts.** Large models are redundant and tolerant of noise, so rounding each weight a little rarely changes the predicted next token. Modern formats push this further by spending more bits on the tensors that matter most (attention and key projections) and fewer on the rest.
 
-For most Macs, a `Q4_K_M` build of a model that fits in memory is the right starting point. Discover's **Staff picks** are already chosen with this in mind.
+**Decoding the name.** A name like `Q4_K_M` packs three facts:
+
+- **`Q4`** is roughly **4 bits per weight**, the headline size. A higher number means a bigger, better file.
+- **`K`** means a **k-quant**, llama.cpp's modern block format that allocates precision intelligently. The older `Q4_0` and `Q4_1` are "legacy" quants (one scale per block, plus an offset for `_1`): simpler and slightly worse per bit. Prefer the `_K` form when it exists.
+- **`M`** is the size variant: **S**mall, **M**edium, or **L**arge. It sets how many important tensors are kept at higher precision. `M` is the balanced default, `S` is leaner, `L` keeps more high precision.
+
+You may also see **i-quants** like `IQ4_XS` or `IQ2_M`: an "importance-matrix" format that fits more quality into very small sizes using calibration data. They are great for squeezing a big model into tight memory, but can run slower on some hardware.
+
+| Quant | ~bits/weight | Quality | When to reach for it |
+| --- | --- | --- | --- |
+| `Q8_0` | 8 | Essentially identical to full precision | Memory to spare, want maximum fidelity |
+| `Q6_K` | 6.6 | Near-lossless | High quality with real savings |
+| `Q5_K_M` | 5.7 | Near-lossless | A small step down from Q6 |
+| `Q4_K_M` | 4.8 | Small, rarely-noticed loss | **The default sweet spot for most Macs** |
+| `Q3_K_M` | 3.9 | Noticeably weaker | When Q4 will not fit |
+| `Q2_K` / `IQ2` | 2.6 to 3.4 | Significant loss | Only to run a model you otherwise could not |
+
+**How much memory it needs.** A quick estimate for the weights alone:
+
+```
+weights size ≈ parameters × bits-per-weight ÷ 8
+```
+
+An 8B-parameter model is about 16 GB at full precision, and roughly:
+
+| Quant | 8B weights |
+| --- | --- |
+| `Q8_0` | ~8.5 GB |
+| `Q5_K_M` | ~5.7 GB |
+| `Q4_K_M` | ~4.9 GB |
+| `Q3_K_M` | ~4.0 GB |
+
+On top of the weights you also pay for the **KV cache** (which grows with the context window) and a couple of GB of runtime overhead. Thuki folds all of this into the **RAM-fit hint** on each model in Library and Discover, so you do not have to compute it. For the context side of memory, see [Tuning the Context Window](./tuning-context-window.md).
+
+**Quality, concretely.** Quality is usually measured by **perplexity** (lower is better at predicting text), and it rises gently as bits fall. `Q8`, `Q6`, and `Q5` are effectively indistinguishable from full precision; `Q4_K_M` adds a small, rarely-noticed increase; `Q3` is visibly weaker; `Q2` degrades enough to be worth it only for very large models. A useful rule of thumb: **a bigger model at a lower quant usually beats a smaller model at a higher quant, down to about Q4.** Below roughly 3 bits, a model can start to feel unreliable.
+
+**How to pick.**
+
+```mermaid
+flowchart TD
+  pick["Choose the largest model<br/>your Mac can hold"] --> q4{"Does its Q4_K_M build<br/>fit in memory?"}
+  q4 -->|yes| use["Use Q4_K_M<br/>(the sweet spot)"]
+  q4 -->|no| smaller{"OK with a smaller model?"}
+  smaller -->|yes| down["Step down a model size,<br/>still at Q4_K_M"]
+  smaller -->|no| lowq["Try Q3_K_M of the same model<br/>(quality dips)"]
+```
+
+In practice you rarely need to weigh any of this yourself: Discover's **Staff picks** already ship sensible quants (typically `Q4_K_M` or close), and the RAM-fit hint shows what fits. The detail above is for when you paste a specific repo in **Browse all** and want to choose the right file by hand.
 
 ### mmproj (vision)
 
