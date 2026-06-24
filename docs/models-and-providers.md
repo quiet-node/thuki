@@ -188,7 +188,8 @@ Key properties:
 - **Resumable.** Bytes land in a `tmp/<sha256>.partial` file. If the download is interrupted, it resumes with an HTTP `Range` request instead of starting over.
 - **Verified.** On completion, the file is streamed through SHA-256 and checked against the hash Thuki expects. A mismatch deletes the partial; you can re-download cleanly. This hash is an **integrity** check (it catches truncation, bit rot, a corrupt resume), not a provenance control. Trust in _what_ the file is comes from the **pinned repo revision**, not the hash.
 - **Atomic install.** Only after verification does the partial get atomically renamed into the blob store, so a half-downloaded file can never be mistaken for an installed model.
-- **One at a time** for the built-in engine's own slot, so downloads do not contend for bandwidth or disk in surprising ways.
+- **Parallel-safe.** You can download several models at once (a few Staff picks, say), and each runs on its own. A per-file claim guard means the same blob is never fetched twice at the same time, so the content-addressed store stays consistent no matter how many downloads are in flight.
+- **Disk-aware.** Thuki reports the free space on the models volume, so you can see whether a multi-gigabyte download will fit before you start it.
 
 ## Where models live on disk
 
@@ -204,7 +205,7 @@ Thuki stores models in a **content-addressed blob store** under its application-
     └── <sha256>.partial           ← only while a download is in flight
 ```
 
-A separate SQLite table, `installed_models`, is the index that maps a human model id (`"<repo>:<file_name>"`) to the blob(s) it uses. Because blobs are addressed by content, two models that reference the **same** file (for example two vision models sharing one `mmproj`) point at one blob on disk instead of duplicating it.
+A separate SQLite table, `installed_models`, is the index that maps a human model id (`"<repo>:<file_name>"`) to the blob(s) it uses. Because blobs are addressed by content, two models that reference the **same** file (for example two vision models sharing one `mmproj`) point at one blob on disk instead of duplicating it. When you **delete** a model, Thuki drops its manifest row and removes only the blobs no other row still references, so a shared `mmproj` survives until the last vision model using it is gone.
 
 To open this folder yourself, use **Reveal** from a model's row in the Library.
 
