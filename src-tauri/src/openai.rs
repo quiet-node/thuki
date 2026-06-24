@@ -222,8 +222,8 @@ fn oversize_sse_line_error() -> EngineError {
 /// `chat_template_kwargs`, or `None` when the request must carry no such field.
 ///
 /// llama.cpp injects these into the model's chat template and a template
-/// silently ignores any kwarg it does not read (verified against the pinned
-/// `b9590` sidecar with Qwen3.5: the full set below suppresses reasoning with
+/// silently ignores any kwarg it does not read (verified on the `b9590`
+/// sidecar with Qwen3.5: the full set below suppresses reasoning with
 /// no error). So one harmless "blast" covers every reasoning family that
 /// exposes a template-level switch, with no per-family detection:
 /// `enable_thinking` (Qwen3/3.5, GLM, Hunyuan, Gemma), `thinking` (IBM Granite,

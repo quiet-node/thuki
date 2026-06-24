@@ -27,10 +27,10 @@ import { fileURLToPath } from 'node:url';
 // produces, and the pin is bumped only when we deliberately adopt a newer
 // engine. For when and how to bump, see "Bumping the pinned llama.cpp version"
 // in docs/release-process.md.
-const LLAMA_CPP_TAG = 'b9590';
+const LLAMA_CPP_TAG = 'b9781';
 const ASSET = `llama-${LLAMA_CPP_TAG}-bin-macos-arm64.tar.gz`;
 const ASSET_SHA256 =
-  'b12cb8851ea60433e62522e43aa1dc9e820b4096b39d8c51e3cf7b1fba82102d';
+  '50e822733750dbc368dad691c36ced5e1b7fee90d8e915924235c3e9362c9b88';
 const DEST = 'src-tauri/binaries';
 const BIN = `${DEST}/llama-server-aarch64-apple-darwin`;
 const STAMP = `${DEST}/.llama-cpp-version`;

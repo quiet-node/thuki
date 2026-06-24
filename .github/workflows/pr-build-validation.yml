@@ -31,7 +31,7 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: src-tauri/binaries
-          key: llama-cpp-${{ runner.os }}-b9590-b12cb8851ea60433
+          key: llama-cpp-${{ runner.os }}-b9781-50e822733750dbc3
 
       - name: Fetch llama-server sidecar
         run: bun run engine:ensure
