@@ -1,6 +1,10 @@
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { DownloadStatusStrip } from '../DownloadStatusStrip';
+import {
+  DownloadStatusStrip,
+  isDownloadActive,
+  type DownloadStripStatus,
+} from '../DownloadStatusStrip';
 
 describe('DownloadStatusStrip', () => {
   afterEach(() => {
@@ -175,5 +179,30 @@ describe('DownloadStatusStrip', () => {
     expect(screen.getByText('Download failed')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry download' }));
     expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('isDownloadActive', () => {
+  const cases: Array<[DownloadStripStatus | null, boolean]> = [
+    [null, false],
+    [
+      {
+        kind: 'downloading',
+        modelName: 'X',
+        percent: 1,
+        etaSeconds: null,
+        onPause: () => {},
+      },
+      true,
+    ],
+    [{ kind: 'paused', percent: 1, onResume: () => {} }, true],
+    [{ kind: 'pausing', percent: 1 }, true],
+    [{ kind: 'verifying', percent: 1 }, true],
+    [{ kind: 'ready', modelName: 'X' }, false],
+    [{ kind: 'failed', message: 'x', onRetry: () => {} }, false],
+  ];
+
+  it.each(cases)('returns %o -> %s', (status, expected) => {
+    expect(isDownloadActive(status)).toBe(expected);
   });
 });

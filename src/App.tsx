@@ -27,7 +27,10 @@ import {
   downloadFailureMessage,
   isDownloadInFlight,
 } from './hooks/useDownloadModel';
-import type { DownloadStripStatus } from './components/DownloadStatusStrip';
+import {
+  isDownloadActive,
+  type DownloadStripStatus,
+} from './components/DownloadStatusStrip';
 import {
   getCapabilityConflict,
   getEnvironmentMessage,
@@ -3580,6 +3583,9 @@ function App() {
                                       config.inference.activeProviderKind
                                     }
                                     displayNames={modelDisplayNames}
+                                    downloadInProgress={isDownloadActive(
+                                      downloadStripStatus,
+                                    )}
                                   />
                                 </motion.div>
                               ) : null}
@@ -3799,6 +3805,7 @@ function App() {
                       capabilities={modelCapabilities}
                       providerKind={config.inference.activeProviderKind}
                       displayNames={modelDisplayNames}
+                      downloadInProgress={isDownloadActive(downloadStripStatus)}
                       compact
                     />
                   </motion.div>

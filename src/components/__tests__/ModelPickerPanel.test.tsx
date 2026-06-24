@@ -175,6 +175,27 @@ describe('ModelPickerPanel', () => {
     expect(empty.textContent).not.toContain('ollama pull');
   });
 
+  it('acknowledges an in-flight download instead of routing to Settings', () => {
+    renderPanel({
+      models: [],
+      providerKind: 'builtin',
+      downloadInProgress: true,
+    });
+    const empty = screen.getByTestId('model-picker-empty');
+    expect(empty.textContent).toContain('downloading');
+    expect(empty.textContent).not.toContain('Download one in Settings');
+    expect(
+      screen.queryByRole('button', { name: 'Settings' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('opens Settings from the builtin empty-state link', () => {
+    vi.mocked(invoke).mockClear();
+    renderPanel({ models: [], providerKind: 'builtin' });
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(invoke).toHaveBeenCalledWith('open_settings_window');
+  });
+
   it('routes an openai user to the Settings provider model in the empty state', () => {
     renderPanel({ models: [], providerKind: 'openai' });
     const empty = screen.getByTestId('model-picker-empty');

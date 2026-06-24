@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelCapabilitiesMap } from '../types/model';
-import {
-  BUILTIN_NO_MODELS_MESSAGE,
-  OPENAI_NO_MODEL_MESSAGE,
-} from '../utils/capabilityConflicts';
+import { OPENAI_NO_MODEL_MESSAGE } from '../utils/capabilityConflicts';
 import { Tooltip } from './Tooltip';
 
 /**
@@ -111,6 +108,13 @@ export interface ModelPickerPanelProps {
    * OpenAI). Selection and keys still use the id.
    */
   displayNames?: Record<string, string>;
+  /**
+   * True while a built-in model download is in flight (the ambient strip is
+   * showing progress right below the list). When the list is empty, the
+   * builtin empty state then acknowledges the download in progress instead of
+   * sending the user to Settings to start one. Defaults to false.
+   */
+  downloadInProgress?: boolean;
 }
 
 /**
@@ -130,6 +134,7 @@ export function ModelPickerPanel({
   compact = false,
   providerKind = 'ollama',
   displayNames,
+  downloadInProgress = false,
 }: ModelPickerPanelProps) {
   const [filter, setFilter] = useState('');
   const [highlightedIndex, setHighlightedIndex] = useState(0);
@@ -140,6 +145,11 @@ export function ModelPickerPanel({
     (model: string): string => displayNames?.[model] ?? model,
     [displayNames],
   );
+
+  /** Opens the Settings window (the builtin empty-state download picker). */
+  const openSettings = useCallback(() => {
+    void invoke('open_settings_window');
+  }, []);
 
   const filtered = useMemo(() => {
     const trimmed = filter.trim();
@@ -278,7 +288,21 @@ export function ModelPickerPanel({
             data-testid="model-picker-empty"
           >
             {providerKind === 'builtin' ? (
-              BUILTIN_NO_MODELS_MESSAGE
+              downloadInProgress ? (
+                "Your first model is downloading. It'll appear here when it's ready."
+              ) : (
+                <>
+                  No model downloaded yet. Download one in{' '}
+                  <button
+                    type="button"
+                    onClick={openSettings}
+                    className="text-primary underline underline-offset-2 hover:opacity-80"
+                  >
+                    Settings
+                  </button>
+                  , then come back.
+                </>
+              )
             ) : providerKind === 'openai' ? (
               OPENAI_NO_MODEL_MESSAGE
             ) : (

@@ -779,6 +779,15 @@ fn show_settings_window(app_handle: &tauri::AppHandle) {
     let _ = window.set_focus();
 }
 
+/// Frontend entry point for opening the Settings window. The tray menu reaches
+/// `show_settings_window` directly; this exposes the same path to the UI (the
+/// in-overlay model picker links "Settings" here when no model is installed yet).
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn open_settings_window(app_handle: tauri::AppHandle) {
+    show_settings_window(&app_handle);
+}
+
 /// Centers the "What's New" update window horizontally on its monitor and
 /// places it below the macOS menu bar, mirroring `position_settings_window`
 /// but for the update window's 600 px width.
@@ -2677,6 +2686,7 @@ pub fn run() {
             fit_onboarding_window,
             onboarding_stage,
             is_builtin_announced,
+            open_settings_window,
             #[cfg(not(coverage))]
             warmup::warm_up_model,
             #[cfg(not(coverage))]

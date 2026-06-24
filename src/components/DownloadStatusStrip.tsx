@@ -32,6 +32,23 @@ export type DownloadStripStatus =
   | { kind: 'failed'; message: string; onRetry: () => void };
 
 /**
+ * Whether the strip represents an in-flight first-model download: bytes still
+ * moving, paused, or being verified. The model picker uses this to swap its
+ * empty-state copy, since "download one in Settings" reads wrong while a
+ * download is visibly underway right below the list. `ready` / `failed` /
+ * absent are not in-flight.
+ */
+export function isDownloadActive(status: DownloadStripStatus | null): boolean {
+  if (status === null) return false;
+  return (
+    status.kind === 'downloading' ||
+    status.kind === 'paused' ||
+    status.kind === 'pausing' ||
+    status.kind === 'verifying'
+  );
+}
+
+/**
  * How long each half of the downloading label shows before crossfading to the
  * other. Kept ambient (a calm background rhythm, not something that pulls the
  * eye), but short enough that the reassurance half appears promptly rather than
