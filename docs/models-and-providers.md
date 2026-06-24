@@ -85,14 +85,14 @@ This is why one model on Hugging Face ships as many GGUF files: each is the same
 
 You may also see **i-quants** like `IQ4_XS` or `IQ2_M`: an "importance-matrix" format that fits more quality into very small sizes using calibration data. They are great for squeezing a big model into tight memory, but can run slower on some hardware.
 
-| Quant | ~bits/weight | Quality | When to reach for it |
-| --- | --- | --- | --- |
-| `Q8_0` | 8 | Essentially identical to full precision | Memory to spare, want maximum fidelity |
-| `Q6_K` | 6.6 | Near-lossless | High quality with real savings |
-| `Q5_K_M` | 5.7 | Near-lossless | A small step down from Q6 |
-| `Q4_K_M` | 4.8 | Small, rarely-noticed loss | **The default sweet spot for most Macs** |
-| `Q3_K_M` | 3.9 | Noticeably weaker | When Q4 will not fit |
-| `Q2_K` / `IQ2` | 2.6 to 3.4 | Significant loss | Only to run a model you otherwise could not |
+| Quant          | ~bits/weight | Quality                                 | When to reach for it                        |
+| -------------- | ------------ | --------------------------------------- | ------------------------------------------- |
+| `Q8_0`         | 8            | Essentially identical to full precision | Memory to spare, want maximum fidelity      |
+| `Q6_K`         | 6.6          | Near-lossless                           | High quality with real savings              |
+| `Q5_K_M`       | 5.7          | Near-lossless                           | A small step down from Q6                   |
+| `Q4_K_M`       | 4.8          | Small, rarely-noticed loss              | **The default sweet spot for most Macs**    |
+| `Q3_K_M`       | 3.9          | Noticeably weaker                       | When Q4 will not fit                        |
+| `Q2_K` / `IQ2` | 2.6 to 3.4   | Significant loss                        | Only to run a model you otherwise could not |
 
 **How much memory it needs.** A quick estimate for the weights alone:
 
@@ -102,12 +102,12 @@ weights size ≈ parameters × bits-per-weight ÷ 8
 
 An 8B-parameter model is about 16 GB at full precision, and roughly:
 
-| Quant | 8B weights |
-| --- | --- |
-| `Q8_0` | ~8.5 GB |
-| `Q5_K_M` | ~5.7 GB |
-| `Q4_K_M` | ~4.9 GB |
-| `Q3_K_M` | ~4.0 GB |
+| Quant    | 8B weights |
+| -------- | ---------- |
+| `Q8_0`   | ~8.5 GB    |
+| `Q5_K_M` | ~5.7 GB    |
+| `Q4_K_M` | ~4.9 GB    |
+| `Q3_K_M` | ~4.0 GB    |
 
 On top of the weights you also pay for the **KV cache** (which grows with the context window) and a couple of GB of runtime overhead. Thuki folds all of this into the **RAM-fit hint** on each model in Library and Discover, so you do not have to compute it. For the context side of memory, see [Tuning the Context Window](./tuning-context-window.md).
 
@@ -153,11 +153,11 @@ The ~2 GB is a baseline for the engine's runtime buffers and KV cache. (The KV c
 
 Then it compares that estimate against your Mac's **total physical memory**, read straight from the system (`hw.memsize`). Apple Silicon uses unified memory shared between the CPU and GPU, so a model competes for RAM with everything else you are running:
 
-| Verdict | Estimate vs total RAM | What it means |
-| --- | --- | --- |
-| **Comfortable** | up to **60%** | Fits with room left for macOS and your other apps |
-| **Tight** | **60% to 85%** | Runs, but close to the machine's limit |
-| **Heavy** | **above 85%** | macOS will swap to disk, so expect it to feel slow |
+| Verdict         | Estimate vs total RAM | What it means                                      |
+| --------------- | --------------------- | -------------------------------------------------- |
+| **Comfortable** | up to **60%**         | Fits with room left for macOS and your other apps  |
+| **Tight**       | **60% to 85%**        | Runs, but close to the machine's limit             |
+| **Heavy**       | **above 85%**         | macOS will swap to disk, so expect it to feel slow |
 
 The 60% line is deliberately conservative: leaving roughly 40% of unified memory free keeps the whole system responsive. "Heavy" does not mean a model cannot load, only that it will likely page to disk and run sluggishly. The context window is a second, independent memory lever; tune it in [Tuning the Context Window](./tuning-context-window.md).
 
@@ -300,11 +300,81 @@ The frontend never talks to the engine directly. It calls the `ask_model` Tauri 
 
 ## How the engine binary is packaged
 
-The `llama-server` binary and its dynamic libraries are bundled into the app:
+The engine is **not** committed to the repo. A build script (`scripts/ensure-llama-server.ts`) fetches it, verifies it, and wires it into the app, running automatically before `dev` and every production build. This section is the source of truth for the pin, what the script does, when it runs, and where the files end up. (For how the engine is _run_ once it is in place, see [Running inference: the sidecar](#running-inference-the-sidecar).)
 
-- It ships as a Tauri `externalBin` (`binaries/llama-server`), and its dylib closure is bundled in the macOS `frameworks` list, resolved at runtime through a `@loader_path/../Frameworks` rpath.
-- A build script (`scripts/ensure-llama-server.ts`) fetches a **pinned** llama.cpp release, verifies the download's SHA-256, prunes the dylib closure to what is actually needed, and ad-hoc re-signs everything. It runs automatically before `dev` and the production build.
-- The pin is two constants (a release tag and the asset's SHA-256). llama.cpp moving forward does not change a pinned build; the pin is bumped deliberately only after manual checks on real hardware (see [release-process.md](./release-process.md)).
+### The pin: which engine, exactly
+
+Thuki uses one **exact** llama.cpp release, named by two constants in the script:
+
+- a **release tag** (the published llama.cpp version), and
+- the **SHA-256** of that release's macOS arm64 asset.
+
+This is a _release pin_, not "whatever is newest." Pinning makes every build reproducible: llama.cpp's `main` branch moving forward, or a newer release appearing, never changes what your build produces. The pin moves only when a maintainer deliberately bumps it, and only after manual checks on real hardware (see [release-process.md](./release-process.md)).
+
+The engine version is **independent of Thuki's version.** Several Thuki releases can ship on one engine pin, and the engine can be bumped without bumping Thuki: the two are decoupled.
+
+### What the build script does
+
+On a fetch the script runs five steps, and refuses to install anything that fails a check:
+
+1. **Download** the pinned release asset from llama.cpp's GitHub releases.
+2. **Verify** its SHA-256 against the pin. A mismatch aborts, so a tampered or truncated asset never gets installed.
+3. **Prune to the real dependencies.** `llama-server` links a set of dynamic libraries (`.dylib`s: the ggml math kernels, Metal GPU support, the multimodal helper). The script walks the link closure starting from the binary and copies _only_ the dylibs it actually needs, ignoring the rest of the archive.
+4. **Check the bundle list.** Those same dylibs must be listed in `bundle.macOS.frameworks` in `tauri.conf.json` so Tauri packages them into the shipped `.app`. If a new engine version adds, renames, or drops a dylib, the script aborts and names exactly which entries differ, so the bundle can never silently omit a library.
+5. **Re-sign.** The script adds an `@loader_path/../Frameworks` rpath to the binary (explained below), which invalidates its code signature, so it ad-hoc re-signs the binary and every dylib. Without this, macOS refuses to run them.
+
+### When it runs (and when it does nothing)
+
+The script runs before **every** `dev` and production build, but it only _downloads_ when it has to. A stamp file (`src-tauri/binaries/.llama-cpp-version`) records the installed tag and hash:
+
+```
+script runs
+  → is the pinned engine already installed? (stamp matches)
+     → yes: exit instantly, do nothing      ← almost every run
+     → no:  download + verify + wire in      ← first checkout, or after a pin bump
+```
+
+So the trigger is "engine missing or pin changed," not "Thuki shipped a new version." Cutting a new Thuki release on the same pin re-runs the script, sees the stamp match, and does nothing.
+
+### Where the files live: dev vs the shipped app
+
+The fetched files are **gitignored** (never committed), which is why an engine bump is a tiny source diff rather than megabytes of blobs.
+
+**During `dev`**, everything sits flat in `src-tauri/binaries/`:
+
+```
+src-tauri/binaries/
+├── llama-server-aarch64-apple-darwin   ← the engine binary (a thin ~50 KB launcher)
+├── libllama-server-impl.dylib          ← the actual heavy engine code
+├── libllama.0.dylib  libllama-common.0.dylib
+├── libggml*.0.dylib                    ← math kernels + Metal GPU
+├── libmtmd.0.dylib                     ← vision / multimodal support
+└── .llama-cpp-version                  ← the stamp (the no-op check)
+```
+
+The binary itself is tiny; the real weight is in the dylibs. That is why the script fetches a _set_ of files, not one: the binary is a launcher and the dylibs are the engine. Sitting side by side, the binary finds its dylibs automatically.
+
+**In the shipped `.app`**, Tauri splits them into the standard macOS layout: the binary ships as a Tauri `externalBin`, and the pruned dylib closure ships via the `frameworks` list.
+
+```
+Thuki.app/Contents/
+├── MacOS/
+│   ├── thuki              ← the main app
+│   └── llama-server       ← the engine binary
+└── Frameworks/
+    └── lib*.dylib         ← the dylibs
+```
+
+Now the binary and its dylibs are in different folders, so it can no longer find them by sitting next to them. That is what the **`@loader_path/../Frameworks` rpath** is for: it tells `llama-server` "my libraries live in the sibling `Frameworks/` directory." The script adds that rpath at fetch time (in dev the archive's existing `@loader_path` already covers the flat layout), then re-signs so the edited binary still runs.
+
+The full journey of one engine version:
+
+```
+GitHub release (.tar.gz)
+   → download + SHA-256 verify
+   → src-tauri/binaries/   (dev runs from here; gitignored)
+   → Thuki.app: binary → Contents/MacOS/, dylibs → Contents/Frameworks/   (ship)
+```
 
 Security posture: the engine binds loopback only, the web UI is off, there is no `0.0.0.0` bind, and downloaded GGUF metadata is parsed with bounded, panic-safe code. See [SECURITY.md](../SECURITY.md).
 
