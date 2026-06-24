@@ -243,6 +243,8 @@ stateDiagram-v2
 
 A "target" is the tuple `{model_path, mmproj_path, num_ctx}`. The running engine is reused only when **every** field matches. That is why changing the context window restarts the engine: the context size is fixed at `llama-server` startup, so a different `num_ctx` is a different target.
 
+If startup fails (a spawn error, or a model whose architecture the bundled engine does not support yet), the engine lands in **Failed** and surfaces the reason rather than hanging. See [Troubleshooting](./troubleshooting.md) for the common cases and how to recover.
+
 ### How Thuki controls it (the runner)
 
 A single async actor, the **runner**, owns the live child process. The rest of the app sends it commands over a bounded queue:
