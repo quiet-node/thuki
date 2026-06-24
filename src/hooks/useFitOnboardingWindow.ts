@@ -13,6 +13,18 @@ import { invoke } from '@tauri-apps/api/core';
 const SETTLE_MS = 1200;
 
 /**
+ * Quiet period (ms) the card size must hold before the panel is revealed. The
+ * backend covers the panel (alpha 0) at every onboarding transition and resizes
+ * it under cover; this hook fades it back in once the new screen has stopped
+ * resizing, so a step that grows as it loads (the picker matrix landing, an
+ * async line appearing) is shown only at its final size, never mid-resize.
+ * Debounced rather than fired on the first fit because a step can re-fit a few
+ * times in quick succession as its content settles. A backend backstop reveals
+ * the panel anyway if this reveal is ever missed, so it can never stay hidden.
+ */
+const REVEAL_QUIET_MS = 150;
+
+/**
  * Sizes the native onboarding window to exactly fit the measured content card
  * and centers it at spawn, then resizes it in place afterwards.
  *
@@ -53,6 +65,7 @@ export function useFitOnboardingWindow(
     }
 
     let frame = 0;
+    let revealTimer = 0;
 
     const runFit = () => {
       const width = node.offsetWidth;
@@ -60,6 +73,13 @@ export function useFitOnboardingWindow(
       if (width === 0 || height === 0) return;
       const center = Date.now() < settleUntilRef.current;
       void invoke('fit_onboarding_window', { width, height, center });
+      // Reveal the (backend-covered) panel once its size has held steady for a
+      // beat, so the new screen fades in at its final size instead of jumping
+      // through intermediate resizes. Each fit pushes the reveal back.
+      clearTimeout(revealTimer);
+      revealTimer = window.setTimeout(() => {
+        void invoke('set_overlay_alpha', { alpha: 1, durationMs: 150 });
+      }, REVEAL_QUIET_MS);
     };
 
     // Coalesce a burst of callbacks (the mount fit and the observer's initial
@@ -75,6 +95,7 @@ export function useFitOnboardingWindow(
     observer.observe(node);
     return () => {
       cancelAnimationFrame(frame);
+      clearTimeout(revealTimer);
       observer.disconnect();
     };
   }, [ref, changeKey]);

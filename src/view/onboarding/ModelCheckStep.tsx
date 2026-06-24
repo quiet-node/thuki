@@ -463,6 +463,20 @@ function OllamaModelCheck() {
     };
   }, [probe]);
 
+  useEffect(() => {
+    // The announcement -> model_check transition covers the panel (alpha 0) so
+    // the resize and swap happen invisibly. Unlike the built-in picker, this
+    // legacy Ollama gate has no fit hook to fade the panel back in, so reveal it
+    // on mount once it has painted. A no-op when the panel is already visible
+    // (e.g. reached via the in-picker "use Ollama instead" escape hatch).
+    const frame = requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        void invoke('set_overlay_alpha', { alpha: 1, durationMs: 150 });
+      }),
+    );
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
   const handleRecheck = useCallback(async () => {
     setIsRechecking(true);
     try {

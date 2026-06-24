@@ -77,6 +77,30 @@ describe('ModelCheckStep', () => {
     ).toBeInTheDocument();
   });
 
+  it('reveals the panel on mount (the Ollama gate has no fit hook)', async () => {
+    // The announcement -> model_check transition covers the panel (alpha 0);
+    // this gate fades it back in on mount. Run the two animation frames
+    // synchronously to assert the reveal fires with the expected arguments.
+    const raf = vi
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      });
+    enableChannelCaptureWithResponses({
+      check_model_setup: { state: 'ollama_unreachable' },
+    });
+
+    render(<ModelCheckStep />);
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith('set_overlay_alpha', {
+      alpha: 1,
+      durationMs: 150,
+    });
+    raf.mockRestore();
+  });
+
   it('shows Step 1 done and Step 2 active on no_models_installed', async () => {
     enableChannelCaptureWithResponses({
       check_model_setup: { state: 'no_models_installed' },

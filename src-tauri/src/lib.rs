@@ -43,7 +43,7 @@ pub mod permissions;
 pub mod replace;
 
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 
@@ -1210,6 +1210,49 @@ fn set_main_window_alpha_now(window: &WebviewWindow, alpha: f64) {
     }
 }
 
+/// Generation counter for the onboarding-window reveal backstop. Every cover
+/// bumps it; a backstop only reveals if its generation is still current, so a
+/// stale backstop armed for an earlier transition can never reveal a later
+/// cover (which would flash that later screen's intermediate frames).
+#[cfg(target_os = "macos")]
+static ONBOARDING_REVEAL_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// How long after a cover the onboarding panel is unconditionally faded back
+/// in, even if the frontend's settle-based reveal never fires. Generous enough
+/// that the frontend nice-path reveal normally wins; short enough that a missed
+/// reveal can never leave the panel invisible for long.
+#[cfg(target_os = "macos")]
+const ONBOARDING_REVEAL_BACKSTOP: std::time::Duration = std::time::Duration::from_millis(800);
+
+/// Covers the onboarding panel (alpha 0) for a transition and arms an
+/// unconditional reveal backstop.
+///
+/// Each onboarding transition resizes and recenters the window while the React
+/// tree is still mid-swap, which would flash the old card at the new size. The
+/// fix is to drop the panel invisible across the swap; the frontend fades it
+/// back in (`set_overlay_alpha`) once the new screen has settled (see
+/// `useFitOnboardingWindow`). This backstop guarantees the panel is revealed
+/// even if that frontend reveal is missed, so onboarding can never get stuck on
+/// an invisible window. Gen-guarded so only the latest cover's backstop fires.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn arm_onboarding_reveal_backstop(app_handle: &tauri::AppHandle) {
+    let generation = ONBOARDING_REVEAL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(ONBOARDING_REVEAL_BACKSTOP).await;
+        if ONBOARDING_REVEAL_GEN.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        let inner = handle.clone();
+        let _ = handle.run_on_main_thread(move || {
+            if let Some(window) = inner.get_webview_window("main") {
+                set_main_window_alpha_now(&window, 1.0);
+            }
+        });
+    });
+}
+
 /// Sets the default appearance of `NSSavePanel` (and its `NSOpenPanel`
 /// sibling) to the **compact** layout — no sidebar, no file browser,
 /// just the Save As field, a Where popup, and the action buttons.
@@ -1407,12 +1450,36 @@ fn advance_past_model_check(
         .map_err(|e| format!("db write failed: {e}"))?;
     drop(conn);
 
-    let _ = app_handle.emit(
-        ONBOARDING_EVENT,
-        OnboardingPayload {
-            stage: onboarding::OnboardingStage::Intro,
-        },
-    );
+    // Cover the model_check -> intro swap (the picker shrinks to the intro card)
+    // by dropping the panel invisible before the frontend switches, then letting
+    // the intro step fade it back in once it has fitted. The emit fires inside
+    // the same main-thread closure, after the cover, so the frontend never gets
+    // the event before the panel is hidden.
+    #[cfg(target_os = "macos")]
+    {
+        arm_onboarding_reveal_backstop(&app_handle);
+        let handle = app_handle.clone();
+        let _ = app_handle.run_on_main_thread(move || {
+            if let Some(window) = handle.get_webview_window("main") {
+                set_main_window_alpha_now(&window, 0.0);
+            }
+            let _ = handle.emit(
+                ONBOARDING_EVENT,
+                OnboardingPayload {
+                    stage: onboarding::OnboardingStage::Intro,
+                },
+            );
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app_handle.emit(
+            ONBOARDING_EVENT,
+            OnboardingPayload {
+                stage: onboarding::OnboardingStage::Intro,
+            },
+        );
+    }
     Ok(())
 }
 
@@ -1466,6 +1533,13 @@ fn finish_onboarding(
     // Onboarding no longer owns the window; release the gate before the
     // overlay show below (otherwise show_overlay would gate itself out).
     set_onboarding_active_impl(false);
+
+    // The handoff below covers the panel (alpha 0) and resizes it to the ask bar
+    // under cover; IntroStep fades it back in once the ask bar has painted. Arm
+    // the same backstop the step transitions use so the panel can never stay
+    // invisible if that frontend reveal is missed.
+    #[cfg(target_os = "macos")]
+    arm_onboarding_reveal_backstop(&app_handle);
 
     // Restore panel to overlay configuration and show the Ask Bar.
     // Must run on the macOS main thread because NSPanel APIs are not thread-safe.
@@ -1772,10 +1846,16 @@ fn show_onboarding_window(app_handle: &tauri::AppHandle, stage: onboarding::Onbo
     // Mark onboarding as owning the main window so any activation that races in
     // (tray / double-tap Control) is gated out of the ask-bar show path.
     set_onboarding_active_impl(true);
+    // Cover the transition: the resize + recenter below happen while the React
+    // tree is still showing the previous step, so do them on an invisible panel
+    // and let the frontend fade it back in once the new screen has settled. The
+    // backstop guarantees a reveal even if the frontend one is missed.
+    arm_onboarding_reveal_backstop(app_handle);
     let handle = app_handle.clone();
     let (win_w, win_h) = onboarding_window_size(&stage);
     let _ = app_handle.run_on_main_thread(move || {
         if let Some(window) = handle.get_webview_window("main") {
+            set_main_window_alpha_now(&window, 0.0);
             let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(win_w, win_h)));
             let _ = window.center();
         }

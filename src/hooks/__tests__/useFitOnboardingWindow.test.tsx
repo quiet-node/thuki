@@ -47,6 +47,13 @@ function Harness({
 const nextFrame = () =>
   new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
 
+/** Backend resize requests, filtered out from the alpha-reveal requests. */
+const fitCalls = () =>
+  invoke.mock.calls.filter((c) => c[0] === 'fit_onboarding_window');
+/** Alpha-reveal requests the hook fires once the card size settles. */
+const revealCalls = () =>
+  invoke.mock.calls.filter((c) => c[0] === 'set_overlay_alpha');
+
 describe('useFitOnboardingWindow', () => {
   beforeEach(() => {
     invoke.mockClear();
@@ -55,14 +62,13 @@ describe('useFitOnboardingWindow', () => {
 
   it('asks the backend to fit and center the window to the measured box on spawn', async () => {
     render(<Harness width={474} height={612} />);
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalled());
+    await vi.waitFor(() => expect(fitCalls()).toHaveLength(1));
 
-    expect(invoke).toHaveBeenCalledWith('fit_onboarding_window', {
+    expect(fitCalls()[0][1]).toEqual({
       width: 474,
       height: 612,
       center: true,
     });
-    expect(invoke).toHaveBeenCalledTimes(1);
   });
 
   it('does nothing when the card has no measured box', async () => {
@@ -82,14 +88,22 @@ describe('useFitOnboardingWindow', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it('reveals the panel once the card size settles', async () => {
+    render(<Harness width={474} height={612} />);
+    // The fit lands first; the alpha reveal follows after the quiet window.
+    await vi.waitFor(() => expect(fitCalls()).toHaveLength(1));
+    await vi.waitFor(() => expect(revealCalls()).toHaveLength(1));
+    expect(revealCalls()[0][1]).toEqual({ alpha: 1, durationMs: 150 });
+  });
+
   it('keeps centering during the spawn settle window, then resizes in place', async () => {
     const now = vi.spyOn(Date, 'now');
     try {
       now.mockReturnValue(10_000);
       const { rerender } = render(<Harness width={474} height={612} dep={1} />);
-      await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(fitCalls()).toHaveLength(1));
       // A reflow inside the settle window still centers.
-      expect(invoke).toHaveBeenNthCalledWith(1, 'fit_onboarding_window', {
+      expect(fitCalls()[0][1]).toEqual({
         width: 474,
         height: 612,
         center: true,
@@ -99,8 +113,8 @@ describe('useFitOnboardingWindow', () => {
       // later interaction or drag does not snap the window back to center.
       now.mockReturnValue(10_000 + 5_000);
       rerender(<Harness width={474} height={660} dep={2} />);
-      await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
-      expect(invoke).toHaveBeenLastCalledWith('fit_onboarding_window', {
+      await vi.waitFor(() => expect(fitCalls()).toHaveLength(2));
+      expect(fitCalls()[1][1]).toEqual({
         width: 474,
         height: 660,
         center: false,
