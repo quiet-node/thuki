@@ -333,6 +333,9 @@ export function PermissionsStep() {
         transition={{ type: 'spring', stiffness: 300, damping: 28 }}
         style={{
           width: 420,
+          // Flex child of a centering wrapper: never shrink to the window width
+          // during a mid-resize measure (see the picker card in ModelCheckStep).
+          flexShrink: 0,
           background:
             'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
           border: '1px solid rgba(255, 141, 92, 0.2)',

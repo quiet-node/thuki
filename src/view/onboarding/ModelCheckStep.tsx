@@ -359,6 +359,12 @@ const BuiltinShell = forwardRef<HTMLDivElement, { children: React.ReactNode }>(
           transition={{ type: 'spring', stiffness: 300, damping: 28 }}
           style={{
             width: 720,
+            // The card is a flex child of a centering wrapper; without this it
+            // shrinks toward the window width when `useFitOnboardingWindow`
+            // measures it mid-resize (window still at the narrow base), which
+            // then locks the fit narrow. Pinning the width keeps the measured
+            // size invariant so the picker always lands at its full width.
+            flexShrink: 0,
             background:
               'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
             border: '1px solid rgba(255, 141, 92, 0.2)',
@@ -527,6 +533,9 @@ function OllamaModelCheck() {
         transition={{ type: 'spring', stiffness: 300, damping: 28 }}
         style={{
           width: 420,
+          // Flex child of a centering wrapper: never let it shrink to the
+          // window width during a mid-resize measure (see the picker card).
+          flexShrink: 0,
           background:
             'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
           border: '1px solid rgba(255, 141, 92, 0.2)',
