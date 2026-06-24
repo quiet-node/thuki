@@ -74,13 +74,13 @@ Full-precision weights are big. **Quantization** compresses them to fewer bits p
 
 You will see names like `Q4_K_M`:
 
-| Name | Roughly means | Trade-off |
-| --- | --- | --- |
-| `Q8_0` | 8-bit | Largest, closest to full quality |
-| `Q6_K` | 6-bit | Large, very high quality |
-| `Q5_K_M` | 5-bit, medium | Balanced, high quality |
+| Name     | Roughly means | Trade-off                                      |
+| -------- | ------------- | ---------------------------------------------- |
+| `Q8_0`   | 8-bit         | Largest, closest to full quality               |
+| `Q6_K`   | 6-bit         | Large, very high quality                       |
+| `Q5_K_M` | 5-bit, medium | Balanced, high quality                         |
 | `Q4_K_M` | 4-bit, medium | The common sweet spot: small, fast, still good |
-| `Q3_K_*` | 3-bit | Smaller and faster, noticeably lower quality |
+| `Q3_K_*` | 3-bit         | Smaller and faster, noticeably lower quality   |
 
 For most Macs, a `Q4_K_M` build of a model that fits in memory is the right starting point. Discover's **Staff picks** are already chosen with this in mind.
 
@@ -109,12 +109,12 @@ When you start a download, Thuki streams the file from Hugging Face and verifies
 ```mermaid
 flowchart TD
   dl([You click Download]) --> stream["Stream bytes from Hugging Face"]
-  stream --> partial[("tmp/&lt;sha256&gt;.partial")]
+  stream --> partial[("partial file in tmp/")]
   partial -->|"interrupted?"| resume["Resume via HTTP Range<br/>(picks up where it stopped)"]
   resume --> partial
   partial -->|"complete"| verify{"SHA-256 matches<br/>the pinned hash?"}
   verify -->|no| discard["Delete the partial<br/>(corrupt / truncated)"]
-  verify -->|yes| rename["Atomic rename into<br/>blobs/&lt;sha256&gt;"]
+  verify -->|yes| rename["Atomic rename into<br/>the blob store"]
   rename --> manifest["Record a row in the<br/>installed_models table"]
   manifest --> done([Installed])
 ```
@@ -122,13 +122,13 @@ flowchart TD
 Key properties:
 
 - **Resumable.** Bytes land in a `tmp/<sha256>.partial` file. If the download is interrupted, it resumes with an HTTP `Range` request instead of starting over.
-- **Verified.** On completion, the file is streamed through SHA-256 and checked against the hash Thuki expects. A mismatch deletes the partial; you can re-download cleanly. This hash is an **integrity** check (it catches truncation, bit rot, a corrupt resume), not a provenance control. Trust in *what* the file is comes from the **pinned repo revision**, not the hash.
+- **Verified.** On completion, the file is streamed through SHA-256 and checked against the hash Thuki expects. A mismatch deletes the partial; you can re-download cleanly. This hash is an **integrity** check (it catches truncation, bit rot, a corrupt resume), not a provenance control. Trust in _what_ the file is comes from the **pinned repo revision**, not the hash.
 - **Atomic install.** Only after verification does the partial get atomically renamed into the blob store, so a half-downloaded file can never be mistaken for an installed model.
 - **One at a time** for the built-in engine's own slot, so downloads do not contend for bandwidth or disk in surprising ways.
 
 ## Where models live on disk
 
-Thuki stores models in a **content-addressed blob store** under its application-support directory (alongside `config.toml`, at `~/Library/Application Support/com.quietnode.thuki/`). "Content-addressed" means a file's name *is* its SHA-256 hash:
+Thuki stores models in a **content-addressed blob store** under its application-support directory (alongside `config.toml`, at `~/Library/Application Support/com.quietnode.thuki/`). "Content-addressed" means a file's name _is_ its SHA-256 hash:
 
 ```
 <app support>/…/
@@ -251,12 +251,12 @@ Day to day, you manage all of this from **Settings → Models** (open Settings f
 
 ## Providers: built-in vs Ollama
 
-| | **Built-in** (default) | **Ollama** (optional) |
-| --- | --- | --- |
-| Who runs it | Thuki | You (install Ollama yourself) |
-| Setup | None, it is bundled | Install Ollama, `ollama pull <model>` |
-| Engine underneath | llama.cpp `llama-server` | llama.cpp (Ollama's own build) |
-| Models | GGUF files Thuki downloads and stores | Whatever you pull in Ollama |
-| Lifecycle | Thuki starts/stops/kills the sidecar | Ollama manages its own server |
+|                   | **Built-in** (default)                | **Ollama** (optional)                 |
+| ----------------- | ------------------------------------- | ------------------------------------- |
+| Who runs it       | Thuki                                 | You (install Ollama yourself)         |
+| Setup             | None, it is bundled                   | Install Ollama, `ollama pull <model>` |
+| Engine underneath | llama.cpp `llama-server`              | llama.cpp (Ollama's own build)        |
+| Models            | GGUF files Thuki downloads and stores | Whatever you pull in Ollama           |
+| Lifecycle         | Thuki starts/stops/kills the sidecar  | Ollama manages its own server         |
 
 Both are local and private; both are llama.cpp underneath. The built-in engine exists so Thuki works the moment you install it, with nothing to set up. If you already run Ollama and prefer it, switch to it in **Settings → Models → Providers**; switching frees the model the other provider was holding, so only one is resident at a time.
