@@ -595,4 +595,33 @@ describe('LibraryPane', () => {
       expect(screen.queryByRole('alert')).not.toBeInTheDocument(),
     );
   });
+
+  it('filters the installed list by the search query', async () => {
+    mockCommands(libraryResponses());
+    await renderPane();
+    fireEvent.change(screen.getByPlaceholderText(/filter models/i), {
+      target: { value: 'gemma' },
+    });
+    expect(screen.getByText('gemma')).toBeInTheDocument();
+    expect(screen.queryByText('qwen')).not.toBeInTheDocument();
+  });
+
+  it('shows a no-match message when the filter excludes everything', async () => {
+    mockCommands(libraryResponses());
+    await renderPane();
+    fireEvent.change(screen.getByPlaceholderText(/filter models/i), {
+      target: { value: 'zzz' },
+    });
+    expect(screen.getByText(/No models match/)).toBeInTheDocument();
+    expect(screen.queryByText('gemma')).not.toBeInTheDocument();
+  });
+
+  it('hides the filter row when only one model is installed', async () => {
+    mockCommands(libraryResponses({ list_installed_models: [GEMMA] }));
+    await renderPane();
+    expect(screen.getByText('gemma')).toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText(/filter models/i),
+    ).not.toBeInTheDocument();
+  });
 });
