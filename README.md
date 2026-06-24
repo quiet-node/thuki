@@ -7,7 +7,7 @@
 </p>
 
 <!-- <p align="center">
-  <a href="https://www.producthunt.com/products/thuki?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-thuki" target="_blank" rel="noopener noreferrer"><img alt="Thuki  - Floating AI for macOS. Free &amp; Local. No cloud, no API keys. | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1122707&amp;theme=light&amp;t=1776150241085">  </a>  
+  <a href="https://www.producthunt.com/products/thuki?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-thuki" target="_blank" rel="noopener noreferrer"><img alt="Thuki  - Floating AI for macOS. Free &amp; Local. No cloud, no API keys. | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1122707&amp;theme=light&amp;t=1776150241085">  </a>
 </p> -->
  <p align="center">
 <a href="https://www.star-history.com/?repos=quiet-node%2Fthuki">
@@ -181,10 +181,10 @@ Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get starte
 
 Thuki is macOS-only, but the community has been busy bringing it to other platforms. Huge shoutout to these contributors 🎊🚀!
 
-| Platform      | Repo                                               | Author                                       |
-| ------------- | -------------------------------------------------- | -------------------------------------------- |
-| Windows 10/11 | [ThukiWin](https://github.com/ayzekhdawy/thukiwin) | [@ayzekhdawy](https://github.com/ayzekhdawy) |
-| Windows 10/11 | [Mate](https://github.com/M31i55a/windowsMate-Thuki) | [@M31i55a](https://github.com/M31i55a) |
+| Platform      | Repo                                                 | Author                                       |
+| ------------- | ---------------------------------------------------- | -------------------------------------------- |
+| Windows 10/11 | [ThukiWin](https://github.com/ayzekhdawy/thukiwin)   | [@ayzekhdawy](https://github.com/ayzekhdawy) |
+| Windows 10/11 | [Mate](https://github.com/M31i55a/windowsMate-Thuki) | [@M31i55a](https://github.com/M31i55a)       |
 
 > Each port is independently maintained by its author. For issues or questions about a specific port, head to that repo directly.
 
