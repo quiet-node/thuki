@@ -14,7 +14,7 @@ Models for the built-in engine are GGUF files Thuki downloads and stores itself.
 
 ## Settings → Models
 
-Open Settings with `⌘,` and select **Models**. It has three tabs.
+Open Settings from the Thuki icon in your menu bar: right-click it and choose **Settings…**. Then select **Models**, which has three tabs.
 
 ### Library
 

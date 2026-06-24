@@ -88,7 +88,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **Math rendering:** LaTeX expressions in responses render as formatted equations via KaTeX
 - **In-app model library:** download curated Staff Picks (or any GGUF straight from Hugging Face via Discover), browse what's installed in your Library, and switch the active model from the ask bar without ever opening a config file
 - **Cross-model continuity:** swap models mid-conversation and Thuki sanitizes history and filters capabilities (vision, reasoning) to whatever the new model supports
-- **Settings panel:** a native window (⌘,) covering Models (Library, Discover, Providers), prompt, window, behavior, and search settings, including a log-scale context-window slider, the Keep Warm residency control, and a tunable image-attachment cap (up to 20)
+- **Settings panel:** a native window (open it from the Thuki menu-bar icon) covering Models (Library, Discover, Providers), prompt, window, behavior, and search settings, including a log-scale context-window slider, the Keep Warm residency control, and a tunable image-attachment cap (up to 20)
 - **Contextual tip bar:** lightweight in-overlay hints surface the right shortcut or command at the right moment
 - **Privacy-first:** zero-trust architecture, all data stays on your device
 
@@ -165,7 +165,7 @@ The app starts hidden. The hotkey or tray menu shows it. The window close button
 
 ## Configuration
 
-Thuki reads a single typed TOML file at `~/Library/Application Support/com.quietnode.thuki/config.toml`, seeded with sensible defaults on first launch. The in-app Settings panel (⌘,) writes to the same file, so you can edit by hand or click through tabs, whichever you prefer.
+Thuki reads a single typed TOML file at `~/Library/Application Support/com.quietnode.thuki/config.toml`, seeded with sensible defaults on first launch. The in-app Settings panel (open it from the Thuki menu-bar icon) writes to the same file, so you can edit by hand or click through tabs, whichever you prefer.
 
 See [docs/configurations.md](docs/configurations.md) for the full schema covering the `[inference]`, `[prompt]`, `[window]`, `[quote]`, and `[search]` sections (active provider, system prompt, context window, image cap, agentic-search timeouts, and more).
 
