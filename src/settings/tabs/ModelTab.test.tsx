@@ -238,3 +238,47 @@ describe('ModelTab provider gating', () => {
     ).toBeInTheDocument();
   });
 });
+
+describe('ModelTab pending deep-link', () => {
+  it('opens straight on Discover for a pending view and clears it', async () => {
+    const onConsumed = vi.fn();
+    render(
+      <ModelTab
+        config={buildConfig('ollama', [BUILTIN, OLLAMA])}
+        resyncToken={0}
+        onSaved={() => {}}
+        pendingView="discover"
+        onPendingViewConsumed={onConsumed}
+      />,
+      { wrapper: DownloadsProvider },
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // Discover is the active sub-view (the ollama gate, not the default
+    // Providers "Active provider" surface).
+    expect(
+      screen.getByRole('button', { name: 'Switch to built-in' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Active provider')).toBeNull();
+    expect(onConsumed).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies a pending view without a consume callback', async () => {
+    render(
+      <ModelTab
+        config={buildConfig('ollama', [BUILTIN, OLLAMA])}
+        resyncToken={0}
+        onSaved={() => {}}
+        pendingView="discover"
+      />,
+      { wrapper: DownloadsProvider },
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByRole('button', { name: 'Switch to built-in' }),
+    ).toBeInTheDocument();
+  });
+});

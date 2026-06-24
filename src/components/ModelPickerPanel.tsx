@@ -296,7 +296,7 @@ export function ModelPickerPanel({
                   <button
                     type="button"
                     onClick={openSettings}
-                    className="text-primary underline underline-offset-2 hover:opacity-80"
+                    className="cursor-pointer text-primary underline underline-offset-2 hover:opacity-80"
                   >
                     Settings
                   </button>

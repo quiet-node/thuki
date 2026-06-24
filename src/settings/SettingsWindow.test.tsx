@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 
 import { __mockWindow } from '../testUtils/mocks/tauri-window';
+import { emitTauriEvent } from '../testUtils/mocks/tauri';
 import { SettingsWindow } from './SettingsWindow';
 import type { CorruptMarker, RawAppConfig } from './types';
 
@@ -130,6 +131,33 @@ describe('SettingsWindow', () => {
     expect(screen.getByRole('tab', { name: /Web/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Display/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /About/ })).toBeInTheDocument();
+  });
+
+  it('jumps to the Models Discover view on the show-discover event', async () => {
+    const { unmount } = render(<SettingsWindow />);
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Models/ })).toBeInTheDocument(),
+    );
+    // Models opens on Providers by default: no built-in gate yet.
+    expect(
+      screen.queryByRole('button', { name: 'Switch to built-in' }),
+    ).toBeNull();
+
+    await act(async () => {
+      emitTauriEvent('thuki://settings-show-discover', undefined);
+      await Promise.resolve();
+    });
+
+    // Discover is gated for the ollama SAMPLE config, so the switch prompt is
+    // the proof the deep-link landed on Discover rather than Providers.
+    expect(
+      screen.getByRole('button', { name: 'Switch to built-in' }),
+    ).toBeInTheDocument();
+
+    unmount();
+    await act(async () => {
+      await Promise.resolve();
+    });
   });
 
   it('switching to the Behavior tab shows the Text Replacement section', async () => {

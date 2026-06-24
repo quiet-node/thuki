@@ -274,6 +274,12 @@ const OVERLAY_VISIBILITY_RESTORE: &str = "restore";
 /// required permissions have not yet been granted.
 const ONBOARDING_EVENT: &str = "thuki://onboarding";
 
+/// Frontend event that asks the Settings window to jump to the Models tab's
+/// Discover pane (the download picker). Emitted by `open_settings_window`, which
+/// the in-overlay model picker calls from its "no model yet" empty state, so the
+/// user lands on the model browser rather than the default Providers view.
+const SETTINGS_SHOW_DISCOVER_EVENT: &str = "thuki://settings-show-discover";
+
 /// Logical dimensions of the onboarding window (centered). The permission
 /// and intro steps use the compact base size; the model-picker step widens
 /// to fit the three-column comparison matrix. Steps smaller than the frame
@@ -786,6 +792,10 @@ fn show_settings_window(app_handle: &tauri::AppHandle) {
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn open_settings_window(app_handle: tauri::AppHandle) {
     show_settings_window(&app_handle);
+    // The only caller is the picker's "no model yet" link, so always route to
+    // the Discover download picker. The Settings window listens for this and
+    // jumps to Models -> Discover (Staff picks is Discover's default).
+    let _ = app_handle.emit(SETTINGS_SHOW_DISCOVER_EVENT, ());
 }
 
 /// Centers the "What's New" update window horizontally on its monitor and

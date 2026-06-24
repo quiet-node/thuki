@@ -22,11 +22,13 @@ import {
 
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { listen } from '@tauri-apps/api/event';
 
 import { DownloadsProvider } from '../contexts/DownloadsContext';
 import { useConfigSync } from './hooks/useConfigSync';
 import { useSettingsAutoResize } from './hooks/useSettingsAutoResize';
 import { ModelTab } from './tabs/ModelTab';
+import type { ModelsSubview } from './tabs/models/ModelsSegmented';
 import { BehaviorTab } from './tabs/BehaviorTab';
 import { SearchTab } from './tabs/SearchTab';
 import { DisplayTab } from './tabs/DisplayTab';
@@ -176,6 +178,15 @@ export function SettingsWindow() {
     [updater.state.settings_snoozed_until],
   );
   const [activeTab, setActiveTab] = useState<SettingsTabId>('general');
+  // One-shot deep-link target for the Models tab's sub-view, set when the
+  // overlay picker asks Settings to open straight on the Discover download
+  // browser. Cleared by `ModelTab` once applied.
+  const [pendingModelsView, setPendingModelsView] =
+    useState<ModelsSubview | null>(null);
+  const clearPendingModelsView = useCallback(
+    () => setPendingModelsView(null),
+    [],
+  );
   const [savedVisible, setSavedVisible] = useState(false);
   const [marker, setMarker] = useState<CorruptMarker | null>(null);
   const [markerDismissed, setMarkerDismissed] = useState(false);
@@ -224,6 +235,18 @@ export function SettingsWindow() {
     void invoke<CorruptMarker | null>('get_corrupt_marker').then((m) => {
       if (m) setMarker(m);
     });
+  }, []);
+
+  // The overlay model picker's "Settings" link opens this window straight on
+  // the Models tab's Discover download browser, not the default Providers view.
+  useEffect(() => {
+    const unlistenPromise = listen('thuki://settings-show-discover', () => {
+      setActiveTab('general');
+      setPendingModelsView('discover');
+    });
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
   }, []);
 
   // Keyboard shortcuts scoped to the Settings window.
@@ -417,6 +440,8 @@ export function SettingsWindow() {
                     config={config}
                     resyncToken={resyncToken}
                     onSaved={handleSaved}
+                    pendingView={pendingModelsView}
+                    onPendingViewConsumed={clearPendingModelsView}
                   />
                 ) : null}
                 {activeTab === 'behavior' ? (

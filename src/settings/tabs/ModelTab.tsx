@@ -7,7 +7,7 @@
  * sub-view is its own pane component; this file only routes between them.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import { ModelsSegmented, type ModelsSubview } from './models/ModelsSegmented';
@@ -22,13 +22,37 @@ interface ModelTabProps {
   config: RawAppConfig;
   resyncToken: number;
   onSaved: (next: RawAppConfig) => void;
+  /**
+   * One-shot request to jump to a specific sub-view (the overlay picker's
+   * "download a model" link deep-links to Discover). Applied once, then cleared
+   * via `onPendingViewConsumed` so a later manual switch or remount sticks.
+   */
+  pendingView?: ModelsSubview | null;
+  /** Called after `pendingView` has been applied, so the host can clear it. */
+  onPendingViewConsumed?: () => void;
 }
 
-export function ModelTab({ config, resyncToken, onSaved }: ModelTabProps) {
+export function ModelTab({
+  config,
+  resyncToken,
+  onSaved,
+  pendingView,
+  onPendingViewConsumed,
+}: ModelTabProps) {
   // Providers is the default sub-view: the active provider and the shared
   // generation controls are the most-used surface.
   const [view, setView] = useState<ModelsSubview>('providers');
   const goToDiscover = () => setView('discover');
+
+  useEffect(() => {
+    if (!pendingView) return;
+    // Intentional one-shot: the picker's deep-link can fire while this tab is
+    // already mounted, so the view is updated here rather than at init. It runs
+    // once per deep-link, so the re-render the rule guards against is a non-issue.
+    // eslint-disable-next-line @eslint-react/set-state-in-effect
+    setView(pendingView);
+    onPendingViewConsumed?.();
+  }, [pendingView, onPendingViewConsumed]);
 
   // Library and Discover manage the built-in engine's models, so they are
   // gated behind a switch prompt while a non-built-in provider is active.
