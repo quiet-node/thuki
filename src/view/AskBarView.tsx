@@ -596,14 +596,16 @@ export function AskBarView({
           {/* Compact history entry point: ask-bar mode only. In chat mode the
             history button lives in the ConversationView header. */}
           {!isChatMode && onHistoryOpen && (
-            <button
-              type="button"
-              onClick={onHistoryOpen}
-              aria-label="Open history"
-              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-primary hover:bg-primary/10 transition-colors duration-150 cursor-pointer outline-none"
-            >
-              {HISTORY_ICON}
-            </button>
+            <Tooltip label="Conversation history">
+              <button
+                type="button"
+                onClick={onHistoryOpen}
+                aria-label="Open history"
+                className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-primary hover:bg-primary/10 transition-colors duration-150 cursor-pointer outline-none"
+              >
+                {HISTORY_ICON}
+              </button>
+            </Tooltip>
           )}
 
           {/* Lexical-backed input. A single contentEditable means the caret is

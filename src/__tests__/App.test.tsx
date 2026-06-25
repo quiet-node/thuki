@@ -514,9 +514,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open history' }));
     await act(async () => {});
     expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
-    expect(
-      screen.getByPlaceholderText(/search past chats/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText('No conversations yet.')).toBeInTheDocument();
   });
 
   it('closes history and opens model picker when model picker trigger clicked', async () => {
@@ -534,13 +532,11 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open history' }));
     await act(async () => {});
-    expect(
-      screen.getByPlaceholderText(/search past chats/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText('No conversations yet.')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
     await act(async () => {});
-    expect(screen.queryByPlaceholderText(/search past chats/i)).toBeNull();
+    expect(screen.queryByText('No conversations yet.')).toBeNull();
     expect(
       screen.getByRole('option', { name: 'gemma4:e2b' }),
     ).toBeInTheDocument();
@@ -1911,9 +1907,7 @@ describe('App', () => {
         fireEvent.click(screen.getByRole('button', { name: /open history/i }));
       });
 
-      expect(
-        screen.getByPlaceholderText(/search past chats/i),
-      ).toBeInTheDocument();
+      expect(screen.getByText('No conversations yet.')).toBeInTheDocument();
     });
 
     it('closes history panel when a conversation is loaded', async () => {
@@ -2756,15 +2750,13 @@ describe('App', () => {
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /open history/i }));
       });
-      expect(
-        screen.getByPlaceholderText('Search past chats…'),
-      ).toBeInTheDocument();
+      expect(screen.getByText('No conversations yet.')).toBeInTheDocument();
 
       // Click outside - should close the dropdown
       await act(async () => {
         fireEvent.mouseDown(document.body);
       });
-      expect(screen.queryByPlaceholderText('Search past chats…')).toBeNull();
+      expect(screen.queryByText('No conversations yet.')).toBeNull();
     });
 
     it('clicking inside the chat history dropdown does not close it', async () => {
@@ -2793,16 +2785,14 @@ describe('App', () => {
         fireEvent.click(screen.getByRole('button', { name: /open history/i }));
       });
 
-      const searchInput = screen.getByPlaceholderText('Search past chats…');
-      expect(searchInput).toBeInTheDocument();
+      const emptyState = screen.getByText('No conversations yet.');
+      expect(emptyState).toBeInTheDocument();
 
       // Click inside the dropdown - should NOT close it
       await act(async () => {
-        fireEvent.mouseDown(searchInput);
+        fireEvent.mouseDown(emptyState);
       });
-      expect(
-        screen.getByPlaceholderText('Search past chats…'),
-      ).toBeInTheDocument();
+      expect(screen.getByText('No conversations yet.')).toBeInTheDocument();
     });
 
     it('handleDeleteConversation allows saving the conversation again after deletion', async () => {
