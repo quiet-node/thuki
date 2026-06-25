@@ -1,8 +1,8 @@
 import { useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
 import { useFitOnboardingWindow } from '../../hooks/useFitOnboardingWindow';
+import { InlineLink } from '../../components/InlineLink';
 import {
   DownloadStatusStrip,
   type DownloadStripStatus,
@@ -245,25 +245,13 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
         >
           <Quote />
           Hey there, I'm{' '}
-          <button
-            type="button"
-            onClick={() => void invoke('open_url', { url: X_PROFILE_URL })}
-            aria-label="Open Logan's profile on X"
-            style={{
-              padding: 0,
-              border: 'none',
-              background: 'transparent',
-              fontStyle: 'normal',
-              fontWeight: 600,
-              fontFamily: 'inherit',
-              fontSize: 'inherit',
-              color: '#ffb892',
-              borderBottom: '1px solid rgba(255,141,92,0.35)',
-              cursor: 'pointer',
-            }}
+          <InlineLink
+            url={X_PROFILE_URL}
+            ariaLabel="Open Logan's profile on X"
+            style={{ fontStyle: 'normal', fontWeight: 600 }}
           >
             Logan
-          </button>
+          </InlineLink>
           , founder of Thuki. I'd love to learn how you actually use it and hear
           your ideas, so I can shape these upcoming features to genuinely help
           you. Leave your email and I'll personally reach out, I'd love to talk!

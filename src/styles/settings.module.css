@@ -1360,34 +1360,6 @@
   color: var(--t1);
   margin-bottom: 2px;
 }
-.aboutHeroVersion {
-  display: inline-block;
-  border: none;
-  background: transparent;
-  padding: 0;
-  margin-bottom: 8px;
-  font-family: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  color: var(--t2);
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-  text-decoration: underline transparent;
-  text-underline-offset: 3px;
-  transition:
-    color 150ms ease,
-    text-decoration-color 150ms ease;
-}
-.aboutHeroVersion:hover {
-  color: var(--accent);
-  text-decoration-color: var(--accent);
-}
-.aboutHeroVersion:focus-visible {
-  outline: none;
-  color: var(--accent);
-  text-decoration-color: var(--accent);
-}
 .aboutHeroTagline {
   font-size: 13px;
   color: var(--t2);

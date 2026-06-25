@@ -124,32 +124,6 @@
   gap: 9px;
 }
 
-/* Model name doubles as the link to the repo on Hugging Face: a plain button
- * that reads as text until hover, matching Browse-all's row link. */
-.nameLink {
-  border: none;
-  background: transparent;
-  padding: 0;
-  font-family: inherit;
-  font-weight: 580;
-  font-size: 13.5px;
-  color: var(--t1);
-  text-align: left;
-  cursor: pointer;
-  transition: color 140ms ease;
-}
-.nameLink:hover {
-  color: var(--accent);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.nameLink:focus-visible {
-  outline: none;
-  color: var(--accent);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
 .org {
   font-size: 11px;
   color: var(--t3);

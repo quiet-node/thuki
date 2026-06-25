@@ -16,6 +16,7 @@ import thukiLogo from '../../../src-tauri/icons/128x128.png';
 import pkg from '../../../package.json';
 import { Section, ConfirmDialog } from '../components';
 import { DrawCheckIcon } from '../../components/DrawCheckIcon';
+import { InlineLink } from '../../components/InlineLink';
 import { Tooltip } from '../../components/Tooltip';
 import { useUpdater } from '../../hooks/useUpdater';
 import { formatRelative } from '../../utils/relativeTime';
@@ -122,14 +123,20 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
         />
         <div className={styles.aboutHeroTitle}>Thuki</div>
         <Tooltip label={`View v${APP_VERSION} release notes on GitHub`}>
-          <button
-            type="button"
-            className={styles.aboutHeroVersion}
-            aria-label={`View v${APP_VERSION} release notes on GitHub`}
-            onClick={() => void invoke('open_url', { url: releaseUrl })}
+          <InlineLink
+            url={releaseUrl}
+            ariaLabel={`View v${APP_VERSION} release notes on GitHub`}
+            style={{
+              display: 'inline-block',
+              marginBottom: 8,
+              fontSize: 11,
+              fontWeight: 500,
+              letterSpacing: '0.06em',
+              fontVariantNumeric: 'tabular-nums',
+            }}
           >
             v{APP_VERSION}
-          </button>
+          </InlineLink>
         </Tooltip>
         <div className={styles.aboutHeroTagline}>
           A floating, local-first AI secretary for macOS.

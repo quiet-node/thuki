@@ -191,9 +191,11 @@ describe('StaffPicksPane', () => {
       .getAllByTestId('staff-section-label')
       .map((el) => el.textContent);
     expect(sections).toEqual(['Everyday chat', 'Deep reasoning']);
-    const names = screen
-      .getAllByTestId('staff-model-name')
-      .map((el) => el.textContent);
+    // The model name renders as the row's Hugging Face InlineLink; read each
+    // row's name link in document order.
+    const names = Array.from(document.querySelectorAll('[data-model-row]')).map(
+      (row) => row.querySelector('button')?.textContent,
+    );
     // Everyday: Gemma before Qwen (alpha); then the reasoning section.
     expect(names).toEqual(['Gemma 4 12B', 'Qwen3.5 9B', 'gpt-oss 20B']);
   });

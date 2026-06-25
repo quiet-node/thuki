@@ -15,6 +15,7 @@ import type {
   StarterOption,
   StarterTier,
 } from '../types/starter';
+import { InlineLink } from './InlineLink';
 
 const HF_BASE_URL = 'https://huggingface.co';
 
@@ -292,27 +293,20 @@ function StarterCard({
       >
         <span>{starter.license_note}</span>
         <span aria-hidden="true">·</span>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            void invoke('open_url', {
-              url: `${HF_BASE_URL}/${starter.repo}`,
-            });
-          }}
-          aria-label={`Open ${starter.display_name} on Hugging Face`}
-          style={{
-            background: 'transparent',
-            border: 'none',
-            padding: 0,
-            fontFamily: 'inherit',
-            fontSize: 10.5,
-            fontWeight: 500,
-            color: 'rgba(255,141,92,0.7)',
-            cursor: 'pointer',
-          }}
+        {/* The card itself is clickable (it selects the tier), so this wrapper
+            stops the link click from bubbling up and also selecting the card. */}
+        <span
+          onClick={(e) => e.stopPropagation()}
+          style={{ display: 'inline-flex' }}
         >
-          View on Hugging Face ↗
-        </button>
+          <InlineLink
+            url={`${HF_BASE_URL}/${starter.repo}`}
+            ariaLabel={`Open ${starter.display_name} on Hugging Face`}
+            style={{ fontSize: 10.5 }}
+          >
+            View on Hugging Face ↗
+          </InlineLink>
+        </span>
       </div>
 
       <div style={{ marginTop: 9 }}>

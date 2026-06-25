@@ -31,6 +31,7 @@ import {
 import { downloadKey } from '../../../hooks/downloadKey';
 import { CapabilityPills } from './CapabilityPills';
 import { useStaffPicks } from '../../../components/StarterPicker';
+import { InlineLink } from '../../../components/InlineLink';
 import { Tooltip } from '../../../components/Tooltip';
 import { formatContextWindow } from '../../../utils/contextWindow';
 import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
@@ -215,23 +216,17 @@ function ModelRow({ option, downloads, onSaved, refresh }: ModelRowProps) {
       ? Math.min(100, Math.floor((partial_bytes / totalBytes(option)) * 100))
       : 0;
 
-  function openHuggingFace() {
-    void invoke('open_url', { url: `${HF_BASE_URL}/${starter.repo}` });
-  }
-
   return (
     <div className={styles.row} data-model-row data-id={starter.id}>
       <div className={styles.rowMain}>
         <div className={styles.mid}>
           <div className={styles.top}>
-            <button
-              type="button"
-              className={styles.nameLink}
-              data-testid="staff-model-name"
-              onClick={openHuggingFace}
+            <InlineLink
+              url={`${HF_BASE_URL}/${starter.repo}`}
+              style={{ fontSize: 12.5, fontWeight: 560, textAlign: 'left' }}
             >
               {starter.display_name}
-            </button>
+            </InlineLink>
             <CapabilityPills
               vision={starter.vision}
               thinking={starter.thinking}
