@@ -196,8 +196,12 @@ function Shell({
  * the compose surface is right there; during onboarding the hint would read
  * oddly on a full setup screen and the user cannot send yet, so the ready line
  * points at the "Get Started" button that actually opens the ask bar.
+ *
+ * `onboarding-roadmap` is the optional roadmap/email step shown before the tips
+ * card: it has no "Get Started" button, so its ready line confirms readiness
+ * without pointing at one.
  */
-type DownloadStripSurface = 'askbar' | 'onboarding';
+type DownloadStripSurface = 'askbar' | 'onboarding' | 'onboarding-roadmap';
 
 export function DownloadStatusStrip({
   status,
@@ -211,9 +215,11 @@ export function DownloadStatusStrip({
       <Shell color={GREEN} fill={GREEN_FILL} percent={100}>
         <span className="flex-1 leading-snug">
           {status.modelName} ready.{' '}
-          {surface === 'onboarding'
-            ? 'Hit Get Started to start chatting!'
-            : 'Send your first message!'}
+          {surface === 'askbar'
+            ? 'Send your first message!'
+            : surface === 'onboarding'
+              ? 'Hit Get Started to start chatting!'
+              : "You're good to go!"}
         </span>
       </Shell>
     );

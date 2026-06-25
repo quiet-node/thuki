@@ -199,6 +199,18 @@ describe('DownloadStatusStrip', () => {
     ).toBeInTheDocument();
   });
 
+  it('confirms readiness without "Get Started" on the onboarding roadmap', () => {
+    render(
+      <DownloadStatusStrip
+        surface="onboarding-roadmap"
+        status={{ kind: 'ready', modelName: 'Qwen3.5 9B' }}
+      />,
+    );
+    expect(
+      screen.getByText("Qwen3.5 9B ready. You're good to go!"),
+    ).toBeInTheDocument();
+  });
+
   it('shows a failure message with a Retry button', () => {
     const onRetry = vi.fn();
     render(

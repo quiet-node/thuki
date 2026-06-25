@@ -1,4 +1,4 @@
-import { render, screen, act } from '@testing-library/react';
+import { render, screen, act, fireEvent } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { OnboardingView } from '../index';
 import { invoke } from '../../../testUtils/mocks/tauri';
@@ -15,8 +15,23 @@ describe('OnboardingView (orchestrator)', () => {
     expect(screen.getByText("Let's get Thuki set up")).toBeInTheDocument();
   });
 
-  it('renders IntroStep when stage is intro', () => {
+  it('renders the roadmap SubscribeStep first when stage is intro', () => {
     render(<OnboardingView stage="intro" onComplete={vi.fn()} />);
+    expect(screen.getByText('Where Thuki is headed')).toBeInTheDocument();
+    expect(screen.queryByText("You're all set")).toBeNull();
+  });
+
+  it('covers the panel, then advances to the tips card on continue', async () => {
+    render(<OnboardingView stage="intro" onComplete={vi.fn()} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /maybe later/i }));
+    });
+    // The panel is hidden before the resize so the swap matches the cross-fade
+    // of the backend-driven transitions instead of a visible window jump.
+    expect(invoke).toHaveBeenCalledWith('set_overlay_alpha', {
+      alpha: 0,
+      durationMs: 0,
+    });
     expect(screen.getByText("You're all set")).toBeInTheDocument();
   });
 

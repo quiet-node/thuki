@@ -7710,6 +7710,12 @@ describe('App', () => {
         emitTauriEvent('thuki://onboarding', { stage: 'intro' });
       });
 
+      // The optional roadmap/email screen shows first; skip past it to the
+      // tips card.
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /maybe later/i }));
+      });
+
       expect(screen.getByText("You're all set")).toBeInTheDocument();
 
       await act(async () => {
@@ -8169,9 +8175,14 @@ describe('App', () => {
         screen.queryByTestId('download-status-strip'),
       ).not.toBeInTheDocument();
 
-      // intro: the strip floats over the tour.
+      // intro: the optional roadmap screen shows first with the ambient strip
+      // floating over it, and it stays on through to the tips card.
       await act(async () => {
         emitTauriEvent('thuki://onboarding', { stage: 'intro' });
+      });
+      expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /maybe later/i }));
       });
       expect(screen.getByText("You're all set")).toBeInTheDocument();
       expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
