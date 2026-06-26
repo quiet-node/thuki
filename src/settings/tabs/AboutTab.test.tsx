@@ -313,6 +313,7 @@ describe('AboutTab', () => {
         email: 'founder@thuki.app',
       });
       expect(await screen.findByText(/i'll be in touch/i)).toBeInTheDocument();
+      expect(screen.getByText('– Logan')).toBeInTheDocument();
     });
 
     it('shows a sending state while the request is in flight', async () => {
