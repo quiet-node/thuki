@@ -427,7 +427,7 @@ function ShapeThukiCard() {
     return (
       <Section heading="Help shape Thuki">
         <div className={styles.rowHelper} role="status">
-          Thanks! I'll be in touch. Check your inbox to confirm your email.
+          Thanks! I'll be in touch.
         </div>
       </Section>
     );

@@ -23,8 +23,7 @@ export const OLLAMA_PILL_TOOLTIP =
  * Tooltip for the built-in "Browse models" pill, which opens the Settings
  * Discover browser (the in-app Hugging Face download surface).
  */
-export const BUILTIN_BROWSE_TOOLTIP =
-  'Find and download more models in Settings.';
+export const BUILTIN_BROWSE_TOOLTIP = 'More models in Settings.';
 
 /**
  * Pill shown on models whose reasoning cannot be turned off (capability
