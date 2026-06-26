@@ -427,7 +427,7 @@ function ShapeThukiCard() {
     return (
       <Section heading="Help shape Thuki">
         <div className={styles.rowHelper} role="status">
-          Thanks! I'll be in touch.
+          Thanks! I'll be in touch!
           <span
             style={{
               display: 'block',
@@ -436,7 +436,7 @@ function ShapeThukiCard() {
               color: 'var(--accent)',
             }}
           >
-            – Logan
+            &ndash; Logan
           </span>
         </div>
       </Section>
