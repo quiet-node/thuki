@@ -427,8 +427,7 @@ function ShapeThukiCard() {
     return (
       <Section heading="Help shape Thuki">
         <div className={styles.rowHelper} role="status">
-          Thanks. Logan will be in touch. Check your inbox to confirm your
-          email.
+          Thanks! I'll be in touch. Check your inbox to confirm your email.
         </div>
       </Section>
     );
@@ -436,9 +435,25 @@ function ShapeThukiCard() {
 
   return (
     <Section heading="Help shape Thuki">
-      <div className={styles.rowHelper} style={{ marginBottom: 10 }}>
-        Leave your email and Logan will personally reach out to learn how you
-        use Thuki and shape what's coming next. No spam, unsubscribe anytime.
+      {/* First-person note in the founder's voice, mirroring the onboarding
+          roadmap screen. Italic so it reads as Logan speaking directly. It
+          drops that screen's "shape these upcoming features" phrasing since no
+          roadmap list is shown here. */}
+      <div
+        className={styles.rowHelper}
+        style={{ marginBottom: 10, fontStyle: 'italic' }}
+      >
+        Hey there, I'm{' '}
+        <InlineLink
+          url="https://x.com/quiet_node"
+          ariaLabel="Open Logan's profile on X"
+          style={{ fontStyle: 'normal', fontWeight: 600 }}
+        >
+          Logan
+        </InlineLink>
+        , founder of Thuki. I'd love to learn how you use it and hear your
+        ideas, so I can shape what's next to genuinely help you. Leave your
+        email and I'll personally reach out, I'd love to talk!
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <div style={{ flex: 1 }}>
@@ -467,6 +482,14 @@ function ShapeThukiCard() {
           {error}
         </div>
       ) : null}
+      {/* Trust reassurance kept out of the personal note above so Logan's
+          voice reads clean, mirroring the onboarding screen's separate line. */}
+      <div
+        className={styles.rowHelper}
+        style={{ marginTop: 8, fontSize: 11, opacity: 0.7 }}
+      >
+        No spam, no tracking, never shared or sold. Unsubscribe anytime.
+      </div>
     </Section>
   );
 }

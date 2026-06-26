@@ -253,6 +253,18 @@ describe('AboutTab', () => {
       ).toBeInTheDocument();
     });
 
+    it("opens Logan's X profile when the inline link is clicked", async () => {
+      render(<AboutTab {...SAMPLE_PROPS} />);
+      await waitFor(() => screen.getByText('Help shape Thuki'));
+
+      fireEvent.click(
+        screen.getByRole('button', { name: /open logan's profile on x/i }),
+      );
+      expect(invokeMock).toHaveBeenCalledWith('open_url', {
+        url: 'https://x.com/quiet_node',
+      });
+    });
+
     it('rejects an invalid email without calling subscribe_email', async () => {
       render(<AboutTab {...SAMPLE_PROPS} />);
       await waitFor(() => screen.getByText('Help shape Thuki'));
@@ -300,9 +312,7 @@ describe('AboutTab', () => {
       expect(invokeMock).toHaveBeenCalledWith('subscribe_email', {
         email: 'founder@thuki.app',
       });
-      expect(
-        await screen.findByText(/logan will be in touch/i),
-      ).toBeInTheDocument();
+      expect(await screen.findByText(/i'll be in touch/i)).toBeInTheDocument();
     });
 
     it('shows a sending state while the request is in flight', async () => {

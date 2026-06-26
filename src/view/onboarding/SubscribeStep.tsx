@@ -353,7 +353,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
               margin: '8px 0 0',
             }}
           >
-            Couldn't send right now. Try again, or skip with "Maybe later".
+            Couldn't send right now. Please try again.
           </p>
         ) : null}
 
