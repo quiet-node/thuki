@@ -132,12 +132,27 @@ A vision model needs a second file, the **multimodal projector** (`mmproj`), tha
 
 ### Capabilities
 
-Each model advertises passive badges, derived from its GGUF metadata:
+Every model in Library and Discover carries up to three small badges. **Text** is always shown (everything Thuki lists is a chat model); **Vision** and **Reasoning** appear only when the model has them:
 
-- **Vision**: accepts images (has an `mmproj` companion).
-- **Reasoning**: thinks before answering. Triggered per message with `/think`; some models always reason ("Always reasons").
+- **Text**: chats in plain text. Always present.
+- **Reasoning**: thinks before answering, in a separate reasoning pass. Turn it on per message with `/think`; a few models always reason and cannot turn it off.
+- **Vision**: accepts images (it ships an `mmproj` companion, see [mmproj (vision)](#mmproj-vision)).
 
 Each model also reports its trained **context window** (how many tokens it can see at once).
+
+#### How the badges are decided
+
+For a **Staff pick** the answer is baked in: the curated catalog records each model's capabilities by hand, so the badges are exactly what was verified.
+
+For **Browse all** there is no curated answer, so Thuki derives the badges live from what Hugging Face returns for each search result, the GGUF metadata block and the repo's file list, with no extra downloads:
+
+- **Text**: every row you see is already a chat model. Browse all only lists repos whose Hugging Face task tag is a chat-style one (`text-generation` or `image-text-to-text`); image generators, embedders, and the like are filtered out before they reach you. That filter is what makes the Text badge a safe constant.
+- **Vision**: Thuki scans the repo's file list for a multimodal projector (a `mmproj*.gguf` file). If one is present the model can read images, so it earns the Vision badge.
+- **Reasoning**: this is read from the model's **chat template** (the embedded recipe that formats your messages), the only reliable signal for _how_ a model reasons. Thuki runs the template through a small classifier that recognizes the reasoning families: a structural reasoning channel (gpt-oss / Harmony), an `enable_thinking` / `thinking` switch (Qwen3, GLM, Granite), or always-on `<think>` / `<thought>` tags with no off switch (DeepSeek-R1, QwQ, Phi-4-reasoning). Match any of those and the model gets the Reasoning badge.
+
+  A repo's **name** is deliberately not trusted on its own. Plenty of models put "Thinking" or "Reasoning" in their title as marketing while shipping an ordinary chat template with no reasoning machinery at all, and badging those off the name would be a false promise. The name is consulted only as a last-resort fallback for the rare repo that ships no chat template for Thuki to read.
+
+Once a model is **installed**, there is one more correction: if a model actually emits reasoning at run time but its template never advertised it, Thuki notices from the real output and heals the badge, so the Library row can end up more accurate than the pre-download Browse-all guess.
 
 ## Will it fit? The RAM-fit hint
 

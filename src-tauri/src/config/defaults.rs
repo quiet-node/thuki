@@ -559,6 +559,20 @@ pub const BOUNDS_UPDATER_CHECK_INTERVAL_HOURS: (u64, u64) = (1, 168);
 /// URL of the Tauri updater JSON manifest. Points to the latest GitHub release asset.
 pub const DEFAULT_UPDATER_MANIFEST_URL: &str =
     "https://github.com/quiet-node/thuki/releases/latest/download/latest.json";
+
+// Email capture
+/// Public proxy endpoint that the optional "Help shape Thuki" email ask POSTs to.
+/// The proxy holds the email-service key; Thuki sends only `{ email, source }`
+/// and never sees a secret. Not user-tunable: it is a fixed external-service
+/// endpoint, not a knob, and pointing it elsewhere would silently break the
+/// subscribe flow.
+pub const DEFAULT_SUBSCRIBE_ENDPOINT: &str = "https://thuki.app/api/subscribe";
+/// Per-request timeout for the optional email-subscribe POST, in seconds. Caps
+/// how long the "Help shape Thuki" button can sit in its sending state if the
+/// proxy stalls without responding, so the request fails into the generic
+/// retryable error instead of hanging indefinitely. Not user-tunable: it is an
+/// internal robustness bound on a one-shot network call, not a preference.
+pub const DEFAULT_SUBSCRIBE_TIMEOUT_SECS: u64 = 15;
 /// Filename of the JSON sidecar that persists snooze deadlines across restarts.
 /// Lives next to `config.toml` in `app_config_dir`. Single source of truth so
 /// the writer (commands.rs) and the loader (lib.rs) cannot drift.

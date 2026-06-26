@@ -23,8 +23,7 @@ export const OLLAMA_PILL_TOOLTIP =
  * Tooltip for the built-in "Browse models" pill, which opens the Settings
  * Discover browser (the in-app Hugging Face download surface).
  */
-export const BUILTIN_BROWSE_TOOLTIP =
-  'Find and download more models in Settings.';
+export const BUILTIN_BROWSE_TOOLTIP = 'More models in Settings.';
 
 /**
  * Pill shown on models whose reasoning cannot be turned off (capability
@@ -328,7 +327,18 @@ export function ModelPickerPanel({
           >
             {providerKind === 'builtin' ? (
               downloadInProgress ? (
-                "Your first model is downloading. It'll appear here when it's ready."
+                <>
+                  Your first model is downloading. It'll appear here when it's
+                  ready. Meanwhile,{' '}
+                  <button
+                    type="button"
+                    onClick={openSettings}
+                    className="cursor-pointer text-primary underline underline-offset-2 hover:opacity-80"
+                  >
+                    discover more models
+                  </button>{' '}
+                  in Settings.
+                </>
               ) : (
                 <>
                   No model downloaded yet. Download one in{' '}

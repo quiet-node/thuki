@@ -26,6 +26,7 @@ import { useConfig } from '../../contexts/ConfigContext';
 import { useDownloadCtx } from '../../contexts/DownloadContext';
 import { FIT_COPY, useStarterOptions } from '../../components/StarterPicker';
 import { StarterMatrix } from '../../components/StarterMatrix';
+import { InlineLink } from '../../components/InlineLink';
 import type { ConfirmInfo } from '../../components/DownloadProgress';
 import type { DownloadUiState } from '../../hooks/useDownloadModel';
 import type { StarterOption } from '../../types/starter';
@@ -902,12 +903,13 @@ function RowOne({ active, done }: RowOneProps) {
             <span style={{ color: 'rgba(255,255,255,0.42)' }}>
               Paste this in Terminal or visit
             </span>
-            <DocsLink
-              ariaLabel="Open Ollama documentation"
+            <InlineLink
               url={OLLAMA_DOCS_URL}
+              ariaLabel="Open Ollama documentation"
+              style={{ fontSize: 11 }}
             >
               Ollama docs ↗
-            </DocsLink>
+            </InlineLink>
           </div>
         </>
       ) : null}
@@ -980,12 +982,13 @@ function RowTwo({ active }: { active: boolean }) {
               Paste the command in Terminal
             </span>
             <span style={{ color: 'rgba(255,255,255,0.28)' }}>or</span>
-            <DocsLink
-              ariaLabel="Browse all models on Ollama"
+            <InlineLink
               url={OLLAMA_SEARCH_URL}
+              ariaLabel="Browse all models on Ollama"
+              style={{ fontSize: 11 }}
             >
               Browse all models on ollama.com ↗
-            </DocsLink>
+            </InlineLink>
           </div>
         </>
       ) : null}
@@ -1013,7 +1016,19 @@ function ModelRow({ slug, description, size, isLast }: ModelRowProps) {
       }}
     >
       <div style={{ minWidth: 0 }}>
-        <SlugLink slug={slug} />
+        <InlineLink
+          url={buildOllamaLibraryUrl(slug)}
+          ariaLabel={`Open ${slug} on Ollama`}
+          style={{
+            display: 'block',
+            fontFamily: '"SF Mono", Menlo, monospace',
+            fontSize: 12.5,
+            fontWeight: 500,
+            textAlign: 'left',
+          }}
+        >
+          {slug}
+        </InlineLink>
         <p
           style={{
             fontSize: 10.5,
@@ -1032,79 +1047,7 @@ function ModelRow({ slug, description, size, isLast }: ModelRowProps) {
   );
 }
 
-/**
- * Renders the model slug as an inline button styled like text. Click
- * opens the model's Ollama library page in the user's default browser
- * via the `open_url` Tauri command. Hover lifts the slug to brand
- * orange with a subtle underline so it reads as discoverable without
- * shouting.
- */
-function SlugLink({ slug }: { slug: string }) {
-  const [hover, setHover] = useState(false);
-  return (
-    <button
-      onClick={() =>
-        void invoke('open_url', { url: buildOllamaLibraryUrl(slug) })
-      }
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      aria-label={`Open ${slug} on Ollama`}
-      style={{
-        display: 'block',
-        background: 'transparent',
-        border: 'none',
-        padding: 0,
-        margin: 0,
-        fontFamily: '"SF Mono", Menlo, monospace',
-        fontSize: 12.5,
-        fontWeight: 500,
-        color: hover ? '#ff8d5c' : '#f0f0f2',
-        textDecorationLine: hover ? 'underline' : 'none',
-        textDecorationColor: 'rgba(255,141,92,0.5)',
-        textUnderlineOffset: 3,
-        cursor: 'pointer',
-        userSelect: 'text',
-        textAlign: 'left',
-        transition: 'color 160ms ease',
-      }}
-    >
-      {slug}
-    </button>
-  );
-}
-
-// ─── Tab + copy + docs link ──────────────────────────────────────────────────
-
-interface DocsLinkProps {
-  ariaLabel: string;
-  url: string;
-  children: React.ReactNode;
-}
-
-function DocsLink({ ariaLabel, url, children }: DocsLinkProps) {
-  const [hover, setHover] = useState(false);
-  return (
-    <button
-      onClick={() => void invoke('open_url', { url })}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      aria-label={ariaLabel}
-      style={{
-        background: 'transparent',
-        border: 'none',
-        padding: 0,
-        fontFamily: 'inherit',
-        fontSize: 11,
-        fontWeight: 500,
-        color: hover ? '#ff8d5c' : 'rgba(255,141,92,0.7)',
-        cursor: 'pointer',
-        transition: 'color 160ms ease',
-      }}
-    >
-      {children}
-    </button>
-  );
-}
+// ─── Tab + copy ──────────────────────────────────────────────────────────────
 
 interface TabButtonProps {
   label: string;

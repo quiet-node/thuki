@@ -24,6 +24,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 import { useModelCapabilities } from '../../../hooks/useModelCapabilities';
 import { ConfirmDialog } from '../../components';
+import { InlineLink } from '../../../components/InlineLink';
 import { Tooltip } from '../../../components/Tooltip';
 import { formatContextWindow } from '../../../utils/contextWindow';
 import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
@@ -184,11 +185,6 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
       });
   }
 
-  function openHuggingFace(id: string) {
-    setOpenMenu(null);
-    void invoke('open_url', { url: `${HF_BASE_URL}/${id.split(':')[0]}` });
-  }
-
   function revealInFinder(id: string) {
     setOpenMenu(null);
     void invoke('reveal_model_in_finder', { id }).catch(() => {
@@ -296,13 +292,16 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                 <div className={styles.row}>
                   <div className={styles.mid}>
                     <div className={styles.name}>
-                      <button
-                        type="button"
-                        className={styles.nameLink}
-                        onClick={() => openHuggingFace(m.id)}
+                      <InlineLink
+                        url={`${HF_BASE_URL}/${m.id.split(':')[0]}`}
+                        style={{
+                          fontSize: 13.5,
+                          fontWeight: 580,
+                          textAlign: 'left',
+                        }}
                       >
                         {m.display_name}
-                      </button>
+                      </InlineLink>
                       <span className={`${styles.pill} ${styles.pillText}`}>
                         Text
                       </span>

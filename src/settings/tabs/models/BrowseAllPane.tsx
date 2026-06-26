@@ -26,6 +26,7 @@ import { downloadKey } from '../../../hooks/downloadKey';
 import { CapabilityPills } from './CapabilityPills';
 import { DownloadRiskConfirm } from './DownloadRiskConfirm';
 import { HF_SEARCH_QUERY_MAX_LEN, useHfSearch } from './useHfSearch';
+import { InlineLink } from '../../../components/InlineLink';
 import { Tooltip } from '../../../components/Tooltip';
 import { formatContextWindow } from '../../../utils/contextWindow';
 import { RAM_FIT_LABEL, RAM_FIT_TOOLTIP } from '../../../utils/ramFit';
@@ -216,10 +217,6 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
     void loadFiles();
   }
 
-  function openHuggingFace() {
-    void invoke('open_url', { url: `${HF_BASE_URL}/${model.id}` });
-  }
-
   // Silent re-read of the listing (no loading flash): the rows carry fresh
   // `partial_bytes`, so a file flips to/from its Paused state in place.
   const refetchFiles = useCallback(async () => {
@@ -258,13 +255,22 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
           <div className={styles.nm}>
             {/* The title opens the repo on Hugging Face, so the row needs no
                 separate link icon. */}
-            <button
-              type="button"
-              className={styles.nmLink}
-              onClick={openHuggingFace}
+            <InlineLink
+              url={`${HF_BASE_URL}/${model.id}`}
+              style={{
+                display: 'inline-block',
+                fontSize: 12.5,
+                fontWeight: 540,
+                textAlign: 'left',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: 0,
+                maxWidth: '100%',
+              }}
             >
               {model.id}
-            </button>
+            </InlineLink>
             <CapabilityPills vision={model.vision} thinking={model.thinking} />
             {model.gated ? (
               <span className={styles.gatedBadge}>Gated</span>

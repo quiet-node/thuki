@@ -11,6 +11,7 @@
 
 import type { ReactNode } from 'react';
 
+import { blurOnProgrammaticFocus } from '../../../utils/blurOnProgrammaticFocus';
 import styles from '../../../styles/settings.module.css';
 
 export type ModelsSubview = 'library' | 'discover' | 'providers';
@@ -69,6 +70,7 @@ export function ModelsSegmented({ value, onChange }: ModelsSegmentedProps) {
             tabIndex={active ? 0 : -1}
             className={`${styles.segItem} ${active ? styles.segItemActive : ''}`}
             onClick={() => onChange(view.id)}
+            onFocus={blurOnProgrammaticFocus}
             onKeyDown={(e) => {
               const isNext = e.key === 'ArrowRight';
               const isPrev = e.key === 'ArrowLeft';

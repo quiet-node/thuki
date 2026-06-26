@@ -253,19 +253,24 @@ export function HistoryPanel({
 
   return (
     <div className="history-panel flex flex-col w-full">
-      {/* Search input - hidden when showing any confirmation prompt */}
-      {pendingId === null && !pendingNewConversation && (
-        <div className="px-3 pt-3 pb-2 border-b border-surface-border">
-          <input
-            type="text"
-            value={search}
-            onChange={handleSearchChange}
-            placeholder="Search past chats…"
-            autoFocus
-            className="w-full bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
-          />
-        </div>
-      )}
+      {/* Search input - hidden during a confirmation prompt, and also when the
+          history is genuinely empty (nothing to search). An active search keeps
+          it visible even when the query returns no matches, so the user is
+          never stranded mid-search. */}
+      {pendingId === null &&
+        !pendingNewConversation &&
+        (conversations.length > 0 || search.trim() !== '') && (
+          <div className="px-3 pt-3 pb-2 border-b border-surface-border">
+            <input
+              type="text"
+              value={search}
+              onChange={handleSearchChange}
+              placeholder="Search past chats…"
+              autoFocus
+              className="w-full bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
+            />
+          </div>
+        )}
 
       {/* Switch confirmation - overlays the list when pending */}
       {pendingId !== null ? (

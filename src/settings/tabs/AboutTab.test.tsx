@@ -242,4 +242,138 @@ describe('AboutTab', () => {
       screen.queryByText(/your entire config\.toml/i),
     ).not.toBeInTheDocument();
   });
+
+  describe('Help shape Thuki card', () => {
+    it('renders the email ask with a Share email button', async () => {
+      render(<AboutTab {...SAMPLE_PROPS} />);
+      await waitFor(() => screen.getByText('Help shape Thuki'));
+      expect(screen.getByLabelText('Email address')).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /share email/i }),
+      ).toBeInTheDocument();
+    });
+
+    it("opens Logan's X profile when the inline link is clicked", async () => {
+      render(<AboutTab {...SAMPLE_PROPS} />);
+      await waitFor(() => screen.getByText('Help shape Thuki'));
+
+      fireEvent.click(
+        screen.getByRole('button', { name: /open logan's profile on x/i }),
+      );
+      expect(invokeMock).toHaveBeenCalledWith('open_url', {
+        url: 'https://x.com/quiet_node',
+      });
+    });
+
+    it('rejects an invalid email without calling subscribe_email', async () => {
+      render(<AboutTab {...SAMPLE_PROPS} />);
+      await waitFor(() => screen.getByText('Help shape Thuki'));
+
+      fireEvent.change(screen.getByLabelText('Email address'), {
+        target: { value: 'not-an-email' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /share email/i }));
+
+      expect(
+        screen.getByText(/enter a valid email address/i),
+      ).toBeInTheDocument();
+      expect(invokeMock).not.toHaveBeenCalledWith(
+        'subscribe_email',
+        expect.anything(),
+      );
+    });
+
+    it('clears the error once the user edits the email', async () => {
+      render(<AboutTab {...SAMPLE_PROPS} />);
+      await waitFor(() => screen.getByText('Help shape Thuki'));
+
+      fireEvent.click(screen.getByRole('button', { name: /share email/i }));
+      expect(
+        screen.getByText(/enter a valid email address/i),
+      ).toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Email address'), {
+        target: { value: 'a' },
+      });
+      expect(
+        screen.queryByText(/enter a valid email address/i),
+      ).not.toBeInTheDocument();
+    });
+
+    it('subscribes the trimmed email and shows a thank-you on success', async () => {
+      render(<AboutTab {...SAMPLE_PROPS} />);
+      await waitFor(() => screen.getByText('Help shape Thuki'));
+
+      fireEvent.change(screen.getByLabelText('Email address'), {
+        target: { value: '  founder@thuki.app  ' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /share email/i }));
+
+      expect(invokeMock).toHaveBeenCalledWith('subscribe_email', {
+        email: 'founder@thuki.app',
+      });
+      expect(await screen.findByText(/i'll be in touch/i)).toBeInTheDocument();
+      expect(screen.getByText('– Logan')).toBeInTheDocument();
+    });
+
+    it('shows a sending state while the request is in flight', async () => {
+      invokeMock.mockImplementation(async (cmd: string) => {
+        if (cmd === 'subscribe_email') {
+          return new Promise(() => {});
+        }
+        return defaultInvoke(cmd);
+      });
+      render(<AboutTab {...SAMPLE_PROPS} />);
+      await waitFor(() => screen.getByText('Help shape Thuki'));
+
+      fireEvent.change(screen.getByLabelText('Email address'), {
+        target: { value: 'founder@thuki.app' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /share email/i }));
+
+      const button = screen.getByRole('button', { name: /sending/i });
+      expect(button).toBeDisabled();
+    });
+
+    it('surfaces a retryable error when the send fails', async () => {
+      invokeMock.mockImplementation(async (cmd: string) => {
+        if (cmd === 'subscribe_email') {
+          throw new Error('network');
+        }
+        return defaultInvoke(cmd);
+      });
+      render(<AboutTab {...SAMPLE_PROPS} />);
+      await waitFor(() => screen.getByText('Help shape Thuki'));
+
+      fireEvent.change(screen.getByLabelText('Email address'), {
+        target: { value: 'founder@thuki.app' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /share email/i }));
+
+      expect(
+        await screen.findByText(/couldn't send right now/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /share email/i }),
+      ).not.toBeDisabled();
+    });
+
+    it('shows a rate-limit notice when the send is throttled (429)', async () => {
+      invokeMock.mockImplementation(async (cmd: string) => {
+        if (cmd === 'subscribe_email') {
+          throw 'rate_limited';
+        }
+        return defaultInvoke(cmd);
+      });
+      render(<AboutTab {...SAMPLE_PROPS} />);
+      await waitFor(() => screen.getByText('Help shape Thuki'));
+
+      fireEvent.change(screen.getByLabelText('Email address'), {
+        target: { value: 'founder@thuki.app' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /share email/i }));
+
+      expect(await screen.findByText(/too many requests/i)).toBeInTheDocument();
+    });
+  });
 });

@@ -13,7 +13,6 @@
  */
 
 import { useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import type React from 'react';
 import {
   isDownloadInFlight,
@@ -22,6 +21,7 @@ import {
 } from '../hooks/useDownloadModel';
 import type { RamFit, StarterOption, StarterTier } from '../types/starter';
 import { ALWAYS_REASONS_LABEL } from './ModelPickerPanel';
+import { InlineLink } from './InlineLink';
 
 const HF_BASE_URL = 'https://huggingface.co';
 
@@ -103,11 +103,6 @@ function formatEta(etaSeconds: number): string {
 /** Weights + vision companion, the full on-disk cost of one starter. */
 function totalBytes(option: StarterOption): number {
   return option.starter.size_bytes + option.starter.mmproj_bytes;
-}
-
-/** Opens the model's Hugging Face page in the system browser. */
-function openHuggingFace(repo: string): void {
-  void invoke('open_url', { url: `${HF_BASE_URL}/${repo}` });
 }
 
 export interface StarterMatrixProps {
@@ -517,7 +512,8 @@ function ValueCell({ children }: { children: React.ReactNode }) {
 
 /** A small "↗" link inside a trait cell that opens a Hugging Face repo page.
  * Shared by the Origin row (the model maker's official page) and the License
- * row (the GGUF download source). */
+ * row (the GGUF download source). The nowrap/ellipsis styles are load-bearing:
+ * they keep a long maker or license value from overflowing the table cell. */
 function ProvenanceLink({
   repo,
   ariaLabel,
@@ -528,18 +524,13 @@ function ProvenanceLink({
   children: React.ReactNode;
 }) {
   return (
-    <button
-      onClick={() => openHuggingFace(repo)}
-      aria-label={ariaLabel}
+    <InlineLink
+      url={`${HF_BASE_URL}/${repo}`}
+      ariaLabel={ariaLabel}
       style={{
-        background: 'transparent',
-        border: 'none',
-        padding: 0,
-        fontFamily: 'inherit',
+        display: 'inline-block',
         fontSize: 11.5,
         fontWeight: 600,
-        color: 'rgba(255,141,92,0.78)',
-        cursor: 'pointer',
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
@@ -547,7 +538,7 @@ function ProvenanceLink({
       }}
     >
       {children} ↗
-    </button>
+    </InlineLink>
   );
 }
 

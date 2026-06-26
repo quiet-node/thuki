@@ -22,6 +22,7 @@ import type React from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
 import { useFitOnboardingWindow } from '../../hooks/useFitOnboardingWindow';
+import { InlineLink } from '../../components/InlineLink';
 
 /** Built-in provider id, mirrored from the backend `PROVIDER_ID_BUILTIN`. */
 const PROVIDER_ID_BUILTIN = 'builtin';
@@ -62,18 +63,6 @@ export function BuiltinAnnouncementStep() {
 
   const handleKeepOllama = useCallback(async () => {
     await invoke('advance_past_builtin_announcement');
-  }, []);
-
-  const handleLearnMore = useCallback(() => {
-    void invoke('open_url', { url: LEARN_MORE_URL });
-  }, []);
-
-  const handleViewRelease = useCallback(() => {
-    void invoke('open_url', { url: RELEASE_TAG_URL });
-  }, []);
-
-  const handleHuggingFace = useCallback(() => {
-    void invoke('open_url', { url: HUGGING_FACE_URL });
   }, []);
 
   return (
@@ -184,20 +173,13 @@ export function BuiltinAnnouncementStep() {
           }}
         >
           Since{' '}
-          <TextLink
-            onClick={handleViewRelease}
+          <InlineLink
+            url={RELEASE_TAG_URL}
             ariaLabel="View the v0.15 release on GitHub"
-            color="rgba(255,141,92,0.85)"
-            hoverColor="#ff8d5c"
-            style={{
-              display: 'inline',
-              padding: 0,
-              fontSize: 'inherit',
-              fontWeight: 600,
-            }}
+            style={{ fontWeight: 600 }}
           >
             v0.15
-          </TextLink>
+          </InlineLink>
           , Thuki ships its own inference engine.
         </p>
 
@@ -213,20 +195,13 @@ export function BuiltinAnnouncementStep() {
             desc={
               <>
                 Any model, any quantization on{' '}
-                <TextLink
-                  onClick={handleHuggingFace}
+                <InlineLink
+                  url={HUGGING_FACE_URL}
                   ariaLabel="Open Hugging Face"
-                  color="rgba(255,141,92,0.85)"
-                  hoverColor="#ff8d5c"
-                  style={{
-                    display: 'inline',
-                    padding: 0,
-                    fontSize: 'inherit',
-                    fontWeight: 600,
-                  }}
+                  style={{ fontWeight: 600 }}
                 >
                   Hugging Face
-                </TextLink>{' '}
+                </InlineLink>{' '}
                 your Mac can handle. Find and download them right in the app, no
                 terminal needed.
               </>
@@ -310,15 +285,12 @@ export function BuiltinAnnouncementStep() {
           }}
         >
           Added in v0.15 &middot;{' '}
-          <TextLink
-            onClick={handleLearnMore}
+          <InlineLink
+            url={LEARN_MORE_URL}
             ariaLabel="Learn more about the built-in engine"
-            color="rgba(255,141,92,0.55)"
-            hoverColor="#ff8d5c"
-            style={{ display: 'inline', padding: 0, fontSize: 'inherit' }}
           >
             Learn more ↗
-          </TextLink>
+          </InlineLink>
         </p>
       </motion.div>
     </div>
@@ -396,9 +368,8 @@ interface TextLinkProps {
 }
 
 /**
- * Text-styled button that lifts to `hoverColor` on hover. Shared by the
- * "Keep using Ollama" secondary action and the footer "Learn more" link so the
- * hover treatment lives in one place.
+ * Text-styled button that lifts to `hoverColor` on hover. Used for the
+ * "Keep using Ollama" secondary action.
  */
 function TextLink({
   onClick,

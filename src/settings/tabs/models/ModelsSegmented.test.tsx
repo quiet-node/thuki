@@ -72,4 +72,20 @@ describe('ModelsSegmented', () => {
     });
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it('drops a programmatic refocus so no ring lingers when Settings reopens', () => {
+    render(<ModelsSegmented value="discover" onChange={() => {}} />);
+    const tab = screen.getByRole('tab', { name: 'Discover' });
+    const blurSpy = vi.spyOn(tab, 'blur');
+    fireEvent.focus(tab, { relatedTarget: null });
+    expect(blurSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps focus on a real keyboard tab into the control', () => {
+    render(<ModelsSegmented value="discover" onChange={() => {}} />);
+    const tab = screen.getByRole('tab', { name: 'Discover' });
+    const blurSpy = vi.spyOn(tab, 'blur');
+    fireEvent.focus(tab, { relatedTarget: document.body });
+    expect(blurSpy).not.toHaveBeenCalled();
+  });
 });

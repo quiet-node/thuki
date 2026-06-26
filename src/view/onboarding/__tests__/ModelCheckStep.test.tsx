@@ -398,7 +398,7 @@ describe('ModelCheckStep', () => {
     });
   });
 
-  it('lights up the slug link on pointer hover', async () => {
+  it('renders the slug as an underlined link with the URL in a hover title', async () => {
     enableChannelCaptureWithResponses({
       check_model_setup: { state: 'no_models_installed' },
     });
@@ -407,11 +407,8 @@ describe('ModelCheckStep', () => {
     await act(async () => {});
 
     const link = screen.getByLabelText('Open phi4:14b on Ollama');
-    const initialColor = link.style.color;
-    fireEvent.mouseEnter(link);
-    expect(link.style.color).not.toBe(initialColor);
-    fireEvent.mouseLeave(link);
-    expect(link.style.color).toBe(initialColor);
+    expect(link).toHaveAttribute('title', 'https://ollama.com/library/phi4');
+    expect(link.getAttribute('style')).toContain('underline');
   });
 
   it('swallows clipboard write errors silently', async () => {
@@ -515,7 +512,7 @@ describe('ModelCheckStep', () => {
     ).toBeInTheDocument();
   });
 
-  it('lights up sub-line doc links on pointer hover', async () => {
+  it('renders the sub-line doc link as an underlined link with the URL in a hover title', async () => {
     enableChannelCaptureWithResponses({
       check_model_setup: { state: 'ollama_unreachable' },
     });
@@ -524,11 +521,8 @@ describe('ModelCheckStep', () => {
     await act(async () => {});
 
     const link = screen.getByLabelText('Open Ollama documentation');
-    const initialColor = link.style.color;
-    fireEvent.mouseEnter(link);
-    expect(link.style.color).not.toBe(initialColor);
-    fireEvent.mouseLeave(link);
-    expect(link.style.color).toBe(initialColor);
+    expect(link).toHaveAttribute('title', 'https://ollama.com/download');
+    expect(link.getAttribute('style')).toContain('underline');
   });
 
   it('icon-only install copy button shows only the green check on success (no Copied text)', async () => {
