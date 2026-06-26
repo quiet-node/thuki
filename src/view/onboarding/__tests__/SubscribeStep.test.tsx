@@ -1,4 +1,10 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SubscribeStep } from '../SubscribeStep';
 import { invoke } from '../../../testUtils/mocks/tauri';
@@ -145,6 +151,34 @@ describe('SubscribeStep', () => {
 
     resolveSend();
     await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
+  });
+
+  it('hands off only once when the user skips while a subscribe is in flight', async () => {
+    let resolveSend: () => void = () => {};
+    invoke.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      }),
+    );
+    const onContinue = vi.fn();
+    render(<SubscribeStep onContinue={onContinue} />);
+
+    fireEvent.change(screen.getByLabelText('Email address'), {
+      target: { value: 'founder@thuki.app' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
+    );
+    // Skip while the subscribe is still pending; this is the single hand-off.
+    fireEvent.click(screen.getByRole('button', { name: /maybe later/i }));
+    expect(onContinue).toHaveBeenCalledTimes(1);
+
+    // The in-flight subscribe now resolves successfully. Its success path must
+    // not fire a second transition.
+    await act(async () => {
+      resolveSend();
+    });
+    expect(onContinue).toHaveBeenCalledTimes(1);
   });
 
   it('shows a gentle notice and does not advance when the send fails', async () => {

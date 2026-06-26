@@ -92,6 +92,18 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
   // margin. The inline error line is absorbed by the hook's ResizeObserver.
   useFitOnboardingWindow(cardRef, downloadStatus);
 
+  // Hand off to the next step at most once. Both skipping and a successful
+  // subscribe advance the flow, and "Maybe later" stays clickable while a
+  // subscribe is in flight; without this guard a user who skips and then has
+  // their in-flight subscribe resolve would fire a second transition, hiding
+  // the already-revealed tips card behind a redundant fade.
+  const handedOffRef = useRef(false);
+  const handoff = () => {
+    if (handedOffRef.current) return;
+    handedOffRef.current = true;
+    onContinue();
+  };
+
   const handleSubscribe = async () => {
     const trimmed = email.trim();
     if (!isValidEmail(trimmed)) {
@@ -105,9 +117,9 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
       // already-subscribed address resolves successfully, so re-onboarding is
       // never an error.
       await invoke('subscribe_email', { email: trimmed });
-      // onContinue unmounts this screen, so there is no submitting state to
+      // handoff unmounts this screen, so there is no submitting state to
       // reset on the success path.
-      onContinue();
+      handoff();
     } catch (err) {
       // Surface a gentle notice (rate-limit-aware) and let the user retry or
       // skip; never block the flow on a failed send.
@@ -173,7 +185,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
           />
         </div>
 
-        {/* Header — title + subtitle styling and spacing mirror IntroStep so
+        {/* Header: title + subtitle styling and spacing mirror IntroStep so
             the onboarding screens stay visually consistent. */}
         <div style={{ textAlign: 'center', marginBottom: 20 }}>
           <h1
@@ -360,7 +372,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
 
         {/* Skip */}
         <button
-          onClick={onContinue}
+          onClick={handoff}
           aria-label="Maybe later"
           style={{
             display: 'block',
