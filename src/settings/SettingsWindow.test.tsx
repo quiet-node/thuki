@@ -133,6 +133,15 @@ describe('SettingsWindow', () => {
     expect(screen.getByRole('tab', { name: /About/ })).toBeInTheDocument();
   });
 
+  it('drops a sidebar tab on programmatic refocus so no ring lingers on reopen', async () => {
+    render(<SettingsWindow />);
+    const tab = await screen.findByRole('tab', { name: /About/ });
+    const blurSpy = vi.spyOn(tab, 'blur');
+    // The panel reopen restores focus with no relatedTarget; the guard drops it.
+    fireEvent.focus(tab, { relatedTarget: null });
+    expect(blurSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('jumps to the Models Discover view on the show-discover event', async () => {
     const { unmount } = render(<SettingsWindow />);
     await waitFor(() =>

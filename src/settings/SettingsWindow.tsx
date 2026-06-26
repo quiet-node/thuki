@@ -37,6 +37,7 @@ import { SavedPill } from './components';
 import { WindowControls } from '../components/WindowControls';
 import { UpdateBanner } from '../components/UpdateBanner';
 import { useUpdater } from '../hooks/useUpdater';
+import { blurOnProgrammaticFocus } from '../utils/blurOnProgrammaticFocus';
 import styles from '../styles/settings.module.css';
 import type { CorruptMarker, RawAppConfig, SettingsTabId } from './types';
 
@@ -402,6 +403,7 @@ export function SettingsWindow() {
                     tabIndex={active ? 0 : -1}
                     className={`${styles.sideItem} ${active ? styles.sideItemActive : ''}`}
                     onClick={() => setActiveTab(tab.id)}
+                    onFocus={blurOnProgrammaticFocus}
                     onKeyDown={(e) => {
                       const isNext =
                         e.key === 'ArrowDown' || e.key === 'ArrowRight';
