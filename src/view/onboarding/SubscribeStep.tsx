@@ -1,8 +1,10 @@
 import { useRef, useState } from 'react';
 import { motion } from 'framer-motion';
+import { invoke } from '@tauri-apps/api/core';
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
 import { useFitOnboardingWindow } from '../../hooks/useFitOnboardingWindow';
 import { InlineLink } from '../../components/InlineLink';
+import { isValidEmail } from '../../utils/email';
 import {
   DownloadStatusStrip,
   type DownloadStripStatus,
@@ -15,15 +17,6 @@ import {
  * browser. Matches the social links in the About tab.
  */
 const X_PROFILE_URL = 'https://x.com/quiet_node';
-
-/**
- * Pragmatic email shape check: a single run of non-space/non-`@` characters,
- * an `@`, a domain, a dot, and a TLD. This is a client-side guard to keep
- * obviously malformed input out of the (future) subscribe call, not an
- * authority on deliverability; the email service performs the real
- * double-opt-in confirmation.
- */
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 interface RoadmapItem {
   icon: React.ReactNode;
@@ -81,36 +74,53 @@ interface Props {
  *
  * The email is only submitted on an explicit click with a valid address, never
  * automatically, which keeps this consistent with the app's "no silent
- * phone-home" posture. The network call to the email service is intentionally
- * not wired here yet (a frontend-only slice); `handleSubscribe` validates and
- * hands off, with the submit seam marked below.
+ * phone-home" posture. `handleSubscribe` validates, hands the address to the
+ * `subscribe_email` backend command, and advances on success; a failed send
+ * shows a gentle inline notice without trapping the user, so "Maybe later"
+ * always remains a way out.
  */
 export function SubscribeStep({ onContinue, downloadStatus }: Props) {
   const cardRef = useRef<HTMLDivElement>(null);
   const [email, setEmail] = useState('');
   const [invalid, setInvalid] = useState(false);
   const [focused, setFocused] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [sendFailed, setSendFailed] = useState(false);
   // Re-fit the transparent onboarding window when the ambient download strip
   // appears or changes height so the card never leaves a click-blocking
   // margin. The inline error line is absorbed by the hook's ResizeObserver.
   useFitOnboardingWindow(cardRef, downloadStatus);
 
-  const handleSubscribe = () => {
-    if (!EMAIL_PATTERN.test(email.trim())) {
+  const handleSubscribe = async () => {
+    const trimmed = email.trim();
+    if (!isValidEmail(trimmed)) {
       setInvalid(true);
       return;
     }
-    // Submit seam: the email service call (`invoke('subscribe_email', …)`)
-    // lands here once the backend command exists. Until then a valid address
-    // simply advances, so the screen is fully usable in the frontend slice.
-    onContinue();
+    setSubmitting(true);
+    setSendFailed(false);
+    try {
+      // Sent only here, on an explicit click with a valid address. An
+      // already-subscribed address resolves successfully, so re-onboarding is
+      // never an error.
+      await invoke('subscribe_email', { email: trimmed });
+      // onContinue unmounts this screen, so there is no submitting state to
+      // reset on the success path.
+      onContinue();
+    } catch {
+      // Surface a gentle notice and let the user retry or skip; never block
+      // the flow on a failed send.
+      setSendFailed(true);
+      setSubmitting(false);
+    }
   };
 
   const handleEmailChange = (next: string) => {
     setEmail(next);
-    // Clear the error as soon as the user edits, so the message never lingers
-    // over input they are actively fixing.
+    // Clear any error as soon as the user edits, so neither the validation nor
+    // the send-failure message lingers over input they are actively fixing.
     if (invalid) setInvalid(false);
+    if (sendFailed) setSendFailed(false);
   };
 
   return (
@@ -305,9 +315,12 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
           </p>
         ) : null}
 
-        {/* Primary action */}
+        {/* Primary action. The aria-label stays fixed while the visible label
+            switches to a sending state, so the button keeps a stable
+            accessible name across the in-flight transition. */}
         <button
-          onClick={handleSubscribe}
+          onClick={() => void handleSubscribe()}
+          disabled={submitting}
           aria-label="Help shape what's next for Thuki"
           style={{
             display: 'block',
@@ -319,14 +332,30 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
             fontWeight: 600,
             border: 'none',
             borderRadius: 12,
-            cursor: 'pointer',
+            cursor: submitting ? 'default' : 'pointer',
+            opacity: submitting ? 0.7 : 1,
             letterSpacing: '-0.1px',
             boxShadow: '0 4px 20px rgba(255,100,40,0.28)',
             textAlign: 'center',
           }}
         >
-          Help shape what's next for Thuki
+          {submitting ? 'Sending…' : "Help shape what's next for Thuki"}
         </button>
+
+        {sendFailed ? (
+          <p
+            role="alert"
+            style={{
+              fontSize: 11,
+              color: '#ff8a80',
+              lineHeight: 1.45,
+              textAlign: 'center',
+              margin: '8px 0 0',
+            }}
+          >
+            Couldn't send right now. Try again, or skip with "Maybe later".
+          </p>
+        ) : null}
 
         {/* Skip */}
         <button

@@ -29,6 +29,7 @@ pub mod openai;
 pub mod screenshot;
 pub mod search;
 pub mod settings_commands;
+pub mod subscribe;
 pub mod trace;
 pub mod updater;
 pub mod warmup;
@@ -2731,7 +2732,9 @@ pub fn run() {
             #[cfg(not(coverage))]
             keychain::clear_provider_api_key,
             #[cfg(not(coverage))]
-            keychain::has_provider_api_key
+            keychain::has_provider_api_key,
+            #[cfg(not(coverage))]
+            subscribe::subscribe_email
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -14,9 +14,10 @@ import { invoke } from '@tauri-apps/api/core';
 
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
 import pkg from '../../../package.json';
-import { Section, ConfirmDialog } from '../components';
+import { Section, ConfirmDialog, TextField } from '../components';
 import { DrawCheckIcon } from '../../components/DrawCheckIcon';
 import { InlineLink } from '../../components/InlineLink';
+import { isValidEmail } from '../../utils/email';
 import { Tooltip } from '../../components/Tooltip';
 import { useUpdater } from '../../hooks/useUpdater';
 import { formatRelative } from '../../utils/relativeTime';
@@ -340,6 +341,8 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
         </div>
       </Section>
 
+      <ShapeThukiCard />
+
       <Section heading="File">
         <div className={styles.aboutLinkRow}>
           <button
@@ -387,6 +390,84 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
         onCancel={() => setConfirmResetAll(false)}
       />
     </div>
+  );
+}
+
+/**
+ * Permanent "Help shape Thuki" card: the same optional email ask shown once
+ * during onboarding, kept reachable for users who skipped it or arrived before
+ * the onboarding screen existed. Passive and opt-in: the email is sent to the
+ * `subscribe_email` command only on an explicit click with a valid address, and
+ * an already-subscribed address resolves as success, so it is safe to re-send.
+ */
+function ShapeThukiCard() {
+  const [email, setEmail] = useState('');
+  const [status, setStatus] = useState<'idle' | 'sending' | 'sent'>('idle');
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    const trimmed = email.trim();
+    if (!isValidEmail(trimmed)) {
+      setError('Enter a valid email address.');
+      return;
+    }
+    setStatus('sending');
+    setError(null);
+    try {
+      await invoke('subscribe_email', { email: trimmed });
+      setStatus('sent');
+    } catch {
+      // Return to the idle, editable state with a gentle, retryable notice.
+      setStatus('idle');
+      setError("Couldn't send right now. Please try again.");
+    }
+  };
+
+  if (status === 'sent') {
+    return (
+      <Section heading="Help shape Thuki">
+        <div className={styles.rowHelper} role="status">
+          Thanks. Logan will be in touch. Check your inbox to confirm your
+          email.
+        </div>
+      </Section>
+    );
+  }
+
+  return (
+    <Section heading="Help shape Thuki">
+      <div className={styles.rowHelper} style={{ marginBottom: 10 }}>
+        Leave your email and Logan will personally reach out to learn how you
+        use Thuki and shape what's coming next. No spam, unsubscribe anytime.
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ flex: 1 }}>
+          <TextField
+            value={email}
+            onChange={(next) => {
+              setEmail(next);
+              if (error) setError(null);
+            }}
+            placeholder="you@example.com"
+            ariaLabel="Email address"
+            errored={error !== null}
+          />
+        </div>
+        <button
+          type="button"
+          className={`${styles.button} ${styles.buttonPrimary}`}
+          disabled={status === 'sending'}
+          onClick={() => void handleSubmit()}
+        >
+          {status === 'sending' ? 'Sending…' : 'Share email'}
+        </button>
+      </div>
+      {error ? (
+        <div className={styles.rowError} role="alert" style={{ marginTop: 6 }}>
+          {error}
+        </div>
+      ) : null}
+    </Section>
   );
 }
 

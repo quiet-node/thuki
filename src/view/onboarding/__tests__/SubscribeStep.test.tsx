@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SubscribeStep } from '../SubscribeStep';
 import { invoke } from '../../../testUtils/mocks/tauri';
@@ -102,7 +102,7 @@ describe('SubscribeStep', () => {
     expect(onContinue).not.toHaveBeenCalled();
   });
 
-  it('advances when subscribing with a valid email', () => {
+  it('subscribes the trimmed email and advances on success', async () => {
     const onContinue = vi.fn();
     render(<SubscribeStep onContinue={onContinue} />);
 
@@ -113,10 +113,102 @@ describe('SubscribeStep', () => {
       screen.getByRole('button', { name: /help shape what's next for thuki/i }),
     );
 
-    expect(onContinue).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('subscribe_email', {
+      email: 'founder@thuki.app',
+    });
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
     expect(
       screen.queryByText(/enter a valid email address/i),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows a sending state and disables the button while in flight', async () => {
+    let resolveSend: () => void = () => {};
+    invoke.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      }),
+    );
+    const onContinue = vi.fn();
+    render(<SubscribeStep onContinue={onContinue} />);
+
+    fireEvent.change(screen.getByLabelText('Email address'), {
+      target: { value: 'founder@thuki.app' },
+    });
+    const button = screen.getByRole('button', {
+      name: /help shape what's next for thuki/i,
+    });
+    fireEvent.click(button);
+
+    expect(button).toBeDisabled();
+    expect(screen.getByText('Sending…')).toBeInTheDocument();
+
+    resolveSend();
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows a gentle notice and does not advance when the send fails', async () => {
+    invoke.mockRejectedValueOnce(new Error('network'));
+    const onContinue = vi.fn();
+    render(<SubscribeStep onContinue={onContinue} />);
+
+    fireEvent.change(screen.getByLabelText('Email address'), {
+      target: { value: 'founder@thuki.app' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
+    );
+
+    expect(
+      await screen.findByText(/couldn't send right now/i),
+    ).toBeInTheDocument();
+    expect(onContinue).not.toHaveBeenCalled();
+    // The button returns to its idle, clickable state for a retry.
+    expect(
+      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
+    ).not.toBeDisabled();
+
+    // "Maybe later" must still be a way out after a failed send.
+    fireEvent.click(screen.getByRole('button', { name: /maybe later/i }));
+    expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the send-failure notice as soon as the user edits the email', async () => {
+    invoke.mockRejectedValueOnce(new Error('network'));
+    render(<SubscribeStep onContinue={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText('Email address'), {
+      target: { value: 'founder@thuki.app' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
+    );
+    expect(
+      await screen.findByText(/couldn't send right now/i),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Email address'), {
+      target: { value: 'founder@thuki.io' },
+    });
+    expect(
+      screen.queryByText(/couldn't send right now/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not call subscribe_email when the email is invalid', () => {
+    render(<SubscribeStep onContinue={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText('Email address'), {
+      target: { value: 'not-an-email' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
+    );
+
+    expect(invoke).not.toHaveBeenCalledWith(
+      'subscribe_email',
+      expect.anything(),
+    );
   });
 
   it('clears the error as soon as the user edits the email', () => {
