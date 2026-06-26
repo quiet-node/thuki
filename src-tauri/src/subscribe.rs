@@ -13,9 +13,11 @@
 //! surfaced to the UI (trust boundary): the `Err(String)` is effectively just
 //! a failure discriminant the frontend turns into its own generic line.
 
+use std::time::Duration;
+
 use serde::Serialize;
 
-use crate::config::defaults::DEFAULT_SUBSCRIBE_ENDPOINT;
+use crate::config::defaults::{DEFAULT_SUBSCRIBE_ENDPOINT, DEFAULT_SUBSCRIBE_TIMEOUT_SECS};
 
 /// JSON body sent to the subscribe proxy. `source` lets the proxy attribute
 /// sign-ups to the app vs. the landing page.
@@ -68,6 +70,7 @@ pub async fn post_subscribe(
 
     let response = client
         .post(endpoint)
+        .timeout(Duration::from_secs(DEFAULT_SUBSCRIBE_TIMEOUT_SECS))
         .json(&SubscribeRequest {
             email,
             source: "app",

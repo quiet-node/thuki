@@ -567,6 +567,12 @@ pub const DEFAULT_UPDATER_MANIFEST_URL: &str =
 /// endpoint, not a knob, and pointing it elsewhere would silently break the
 /// subscribe flow.
 pub const DEFAULT_SUBSCRIBE_ENDPOINT: &str = "https://thuki.app/api/subscribe";
+/// Per-request timeout for the optional email-subscribe POST, in seconds. Caps
+/// how long the "Help shape Thuki" button can sit in its sending state if the
+/// proxy stalls without responding, so the request fails into the generic
+/// retryable error instead of hanging indefinitely. Not user-tunable: it is an
+/// internal robustness bound on a one-shot network call, not a preference.
+pub const DEFAULT_SUBSCRIBE_TIMEOUT_SECS: u64 = 15;
 /// Filename of the JSON sidecar that persists snooze deadlines across restarts.
 /// Lives next to `config.toml` in `app_config_dir`. Single source of truth so
 /// the writer (commands.rs) and the loader (lib.rs) cannot drift.
