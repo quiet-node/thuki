@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
 import {
   DownloadStatusStrip,
   isDownloadActive,
@@ -28,7 +29,7 @@ describe('DownloadStatusStrip', () => {
     expect(screen.getByText('62% · 1m left')).toBeInTheDocument();
   });
 
-  it('alternates the label with the background hint on the ask bar', () => {
+  it('rotates the label through download, safe-to-close, and browse on the ask bar', () => {
     vi.useFakeTimers();
     render(
       <DownloadStatusStrip
@@ -48,7 +49,34 @@ describe('DownloadStatusStrip', () => {
     // The Control glyph renders as a keycap, not a bare caret.
     expect(screen.getByText('⌃')).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(5000));
+    expect(
+      screen.getByRole('button', { name: /browse more models in settings/i }),
+    ).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(5000));
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
+  });
+
+  it('opens Settings on the browse label click', () => {
+    vi.useFakeTimers();
+    vi.mocked(invoke).mockClear();
+    render(
+      <DownloadStatusStrip
+        surface="askbar"
+        status={{
+          kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
+          percent: 30,
+          etaSeconds: 120,
+          onPause: vi.fn(),
+        }}
+      />,
+    );
+    // Rotate past the model name and the safe-to-close hint to the browse label.
+    act(() => vi.advanceTimersByTime(10000));
+    fireEvent.click(
+      screen.getByRole('button', { name: /browse more models in settings/i }),
+    );
+    expect(invoke).toHaveBeenCalledWith('open_settings_window');
   });
 
   it('does not alternate the label during onboarding', () => {
@@ -66,9 +94,12 @@ describe('DownloadStatusStrip', () => {
       />,
     );
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
-    act(() => vi.advanceTimersByTime(5000));
+    act(() => vi.advanceTimersByTime(10000));
     expect(screen.getByText('Downloading Qwen3.5 9B')).toBeInTheDocument();
     expect(screen.queryByText(/Safe to close/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /browse more models in settings/i }),
+    ).not.toBeInTheDocument();
   });
 
   it('omits the ETA when it is not yet measurable', () => {

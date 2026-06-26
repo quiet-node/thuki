@@ -10,6 +10,7 @@
  */
 import { useEffect, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { invoke } from '@tauri-apps/api/core';
 
 /** The strip's states, mirroring the download machine plus a paused hop. */
 export type DownloadStripStatus =
@@ -90,6 +91,35 @@ function BackgroundHint() {
   return (
     <>
       Safe to close (<ControlKeyCap /> ×2), just don&apos;t quit
+    </>
+  );
+}
+
+/**
+ * The third ask-bar label: an invitation to line up more models while this one
+ * downloads. Only the word "Settings" is the link, styled like the inline
+ * embedded links elsewhere in the ask bar (brand-orange `text-primary`,
+ * underlined, pointer); clicking opens Settings → Models → Discover (the same
+ * `open_settings_window` deep-link the model picker uses).
+ */
+function BrowsePrompt() {
+  return (
+    <>
+      Browse more models in{' '}
+      <button
+        type="button"
+        aria-label="Browse more models in Settings"
+        onClick={() => void invoke('open_settings_window')}
+        className="cursor-pointer text-primary underline underline-offset-2 hover:opacity-80"
+        style={{
+          background: 'transparent',
+          border: 'none',
+          padding: 0,
+          font: 'inherit',
+        }}
+      >
+        Settings
+      </button>
     </>
   );
 }
@@ -286,9 +316,10 @@ export function DownloadStatusStrip({
 
 /**
  * The byte-moving downloading row. On the ask bar (`alternate`) its label
- * crossfades between the model name and the "safe to close" reassurance so both
- * fit the single line; on the intro it stays the model name. The percent, ETA,
- * and Pause stay fixed.
+ * crossfades through three phases so each fits the single line: the model name,
+ * the "safe to close" reassurance, and an invitation to browse more models in
+ * Settings. On the intro it stays the model name. The percent, ETA, and Pause
+ * stay fixed.
  */
 function DownloadingRow({
   status,
@@ -297,24 +328,30 @@ function DownloadingRow({
   status: Extract<DownloadStripStatus, { kind: 'downloading' }>;
   alternate: boolean;
 }) {
-  const [showHint, setShowHint] = useState(false);
+  const [phase, setPhase] = useState(0);
   useEffect(() => {
     if (!alternate) return;
-    const id = setInterval(() => setShowHint((s) => !s), LABEL_ROTATE_MS);
+    const id = setInterval(() => setPhase((p) => (p + 1) % 3), LABEL_ROTATE_MS);
     return () => clearInterval(id);
   }, [alternate]);
 
-  const isHint = alternate && showHint;
-  // Stable string key for the crossfade (the hint is JSX, not a string).
-  const labelKey = isHint ? 'safe-to-close' : `downloading:${status.modelName}`;
+  // Off the ask bar the label never rotates: only the model name shows.
+  const activePhase = alternate ? phase : 0;
+  // Stable string key for the crossfade (two phases render JSX, not a string).
+  const labelKey =
+    activePhase === 1
+      ? 'safe-to-close'
+      : activePhase === 2
+        ? 'browse-models'
+        : `downloading:${status.modelName}`;
   const trailing =
     status.etaSeconds !== null
       ? `${status.percent}% · ${formatEta(status.etaSeconds)} left`
       : `${status.percent}%`;
   return (
     <Shell color={ORANGE} fill={ORANGE_FILL} percent={status.percent}>
-      {/* Crossfade between the two labels so the swap is a soft dissolve, not
-          a hard cut. mode="wait" fades the old out before the new fades in. */}
+      {/* Crossfade between the labels so each swap is a soft dissolve, not a
+          hard cut. mode="wait" fades the old out before the new fades in. */}
       <AnimatePresence mode="wait">
         <motion.span
           key={labelKey}
@@ -324,7 +361,13 @@ function DownloadingRow({
           exit={{ opacity: 0 }}
           transition={{ duration: 0.45 }}
         >
-          {isHint ? <BackgroundHint /> : `Downloading ${status.modelName}`}
+          {activePhase === 1 ? (
+            <BackgroundHint />
+          ) : activePhase === 2 ? (
+            <BrowsePrompt />
+          ) : (
+            `Downloading ${status.modelName}`
+          )}
         </motion.span>
       </AnimatePresence>
       <span className="flex-1" />
