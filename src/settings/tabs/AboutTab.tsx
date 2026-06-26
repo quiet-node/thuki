@@ -18,6 +18,7 @@ import { Section, ConfirmDialog, TextField } from '../components';
 import { DrawCheckIcon } from '../../components/DrawCheckIcon';
 import { InlineLink } from '../../components/InlineLink';
 import { isValidEmail } from '../../utils/email';
+import { subscribeErrorMessage } from '../../utils/subscribeError';
 import { Tooltip } from '../../components/Tooltip';
 import { useUpdater } from '../../hooks/useUpdater';
 import { formatRelative } from '../../utils/relativeTime';
@@ -416,10 +417,11 @@ function ShapeThukiCard() {
     try {
       await invoke('subscribe_email', { email: trimmed });
       setStatus('sent');
-    } catch {
-      // Return to the idle, editable state with a gentle, retryable notice.
+    } catch (err) {
+      // Return to the idle, editable state with a gentle, retryable notice
+      // (rate-limit-aware via the shared mapper).
       setStatus('idle');
-      setError("Couldn't send right now. Please try again.");
+      setError(subscribeErrorMessage(err));
     }
   };
 

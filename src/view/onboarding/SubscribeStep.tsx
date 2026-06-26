@@ -5,6 +5,7 @@ import thukiLogo from '../../../src-tauri/icons/128x128.png';
 import { useFitOnboardingWindow } from '../../hooks/useFitOnboardingWindow';
 import { InlineLink } from '../../components/InlineLink';
 import { isValidEmail } from '../../utils/email';
+import { subscribeErrorMessage } from '../../utils/subscribeError';
 import {
   DownloadStatusStrip,
   type DownloadStripStatus,
@@ -85,7 +86,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
   const [invalid, setInvalid] = useState(false);
   const [focused, setFocused] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [sendFailed, setSendFailed] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   // Re-fit the transparent onboarding window when the ambient download strip
   // appears or changes height so the card never leaves a click-blocking
   // margin. The inline error line is absorbed by the hook's ResizeObserver.
@@ -98,7 +99,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
       return;
     }
     setSubmitting(true);
-    setSendFailed(false);
+    setSendError(null);
     try {
       // Sent only here, on an explicit click with a valid address. An
       // already-subscribed address resolves successfully, so re-onboarding is
@@ -107,10 +108,10 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
       // onContinue unmounts this screen, so there is no submitting state to
       // reset on the success path.
       onContinue();
-    } catch {
-      // Surface a gentle notice and let the user retry or skip; never block
-      // the flow on a failed send.
-      setSendFailed(true);
+    } catch (err) {
+      // Surface a gentle notice (rate-limit-aware) and let the user retry or
+      // skip; never block the flow on a failed send.
+      setSendError(subscribeErrorMessage(err));
       setSubmitting(false);
     }
   };
@@ -120,7 +121,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
     // Clear any error as soon as the user edits, so neither the validation nor
     // the send-failure message lingers over input they are actively fixing.
     if (invalid) setInvalid(false);
-    if (sendFailed) setSendFailed(false);
+    if (sendError) setSendError(null);
   };
 
   return (
@@ -342,7 +343,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
           {submitting ? 'Sending…' : "Help shape what's next for Thuki"}
         </button>
 
-        {sendFailed ? (
+        {sendError ? (
           <p
             role="alert"
             style={{
@@ -353,7 +354,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
               margin: '8px 0 0',
             }}
           >
-            Couldn't send right now. Please try again.
+            {sendError}
           </p>
         ) : null}
 

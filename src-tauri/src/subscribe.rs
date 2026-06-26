@@ -49,10 +49,13 @@ fn is_valid_email(email: &str) -> bool {
 }
 
 /// Validate, then POST `{ email, source: "app" }` to `endpoint` and map the
-/// response. A `2xx` (including an already-subscribed response) is success;
-/// an invalid address, a non-`2xx` status, or any transport failure is a
-/// generic `Err`. The `endpoint` is a parameter purely so tests can target a
-/// mock server; production callers pass [`DEFAULT_SUBSCRIBE_ENDPOINT`].
+/// response. A `2xx` (including an already-subscribed response) is success; a
+/// `429` is the stable `"rate_limited"` discriminant the frontend turns into a
+/// rate-limit-specific line; an invalid address, any other non-`2xx`, or a
+/// transport failure is a generic `Err`. The server's body is never surfaced in
+/// any branch (trust boundary). The `endpoint` is a parameter purely so tests
+/// can target a mock server; production callers pass
+/// [`DEFAULT_SUBSCRIBE_ENDPOINT`].
 pub async fn post_subscribe(
     client: &reqwest::Client,
     endpoint: &str,
@@ -75,6 +78,10 @@ pub async fn post_subscribe(
 
     if response.status().is_success() {
         Ok(())
+    } else if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        // Stable code (not a sentence): the frontend maps it to its own
+        // rate-limit copy, keeping all user-facing wording on the UI side.
+        Err("rate_limited".to_string())
     } else {
         Err("Something went wrong. Please try again later.".to_string())
     }
@@ -205,6 +212,21 @@ mod tests {
             result,
             Err("Something went wrong. Please try again later.".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn post_subscribe_maps_429_to_rate_limited() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/subscribe"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let endpoint = format!("{}/api/subscribe", server.uri());
+        let result = post_subscribe(&client, &endpoint, "founder@thuki.app").await;
+        assert_eq!(result, Err("rate_limited".to_string()));
     }
 
     #[tokio::test]

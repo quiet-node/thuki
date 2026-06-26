@@ -173,6 +173,22 @@ describe('SubscribeStep', () => {
     expect(onContinue).toHaveBeenCalledTimes(1);
   });
 
+  it('shows a rate-limit notice when the backend reports 429', async () => {
+    invoke.mockRejectedValueOnce('rate_limited');
+    const onContinue = vi.fn();
+    render(<SubscribeStep onContinue={onContinue} />);
+
+    fireEvent.change(screen.getByLabelText('Email address'), {
+      target: { value: 'founder@thuki.app' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
+    );
+
+    expect(await screen.findByText(/too many requests/i)).toBeInTheDocument();
+    expect(onContinue).not.toHaveBeenCalled();
+  });
+
   it('clears the send-failure notice as soon as the user edits the email', async () => {
     invoke.mockRejectedValueOnce(new Error('network'));
     render(<SubscribeStep onContinue={vi.fn()} />);

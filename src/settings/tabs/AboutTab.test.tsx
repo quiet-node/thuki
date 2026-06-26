@@ -357,5 +357,23 @@ describe('AboutTab', () => {
         screen.getByRole('button', { name: /share email/i }),
       ).not.toBeDisabled();
     });
+
+    it('shows a rate-limit notice when the send is throttled (429)', async () => {
+      invokeMock.mockImplementation(async (cmd: string) => {
+        if (cmd === 'subscribe_email') {
+          throw 'rate_limited';
+        }
+        return defaultInvoke(cmd);
+      });
+      render(<AboutTab {...SAMPLE_PROPS} />);
+      await waitFor(() => screen.getByText('Help shape Thuki'));
+
+      fireEvent.change(screen.getByLabelText('Email address'), {
+        target: { value: 'founder@thuki.app' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /share email/i }));
+
+      expect(await screen.findByText(/too many requests/i)).toBeInTheDocument();
+    });
   });
 });
