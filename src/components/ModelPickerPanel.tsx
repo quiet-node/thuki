@@ -328,7 +328,18 @@ export function ModelPickerPanel({
           >
             {providerKind === 'builtin' ? (
               downloadInProgress ? (
-                "Your first model is downloading. It'll appear here when it's ready."
+                <>
+                  Your first model is downloading. It'll appear here when it's
+                  ready. Meanwhile,{' '}
+                  <button
+                    type="button"
+                    onClick={openSettings}
+                    className="cursor-pointer text-primary underline underline-offset-2 hover:opacity-80"
+                  >
+                    discover more models
+                  </button>{' '}
+                  in Settings.
+                </>
               ) : (
                 <>
                   No model downloaded yet. Download one in{' '}

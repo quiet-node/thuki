@@ -175,7 +175,7 @@ describe('ModelPickerPanel', () => {
     expect(empty.textContent).not.toContain('ollama pull');
   });
 
-  it('acknowledges an in-flight download instead of routing to Settings', () => {
+  it('acknowledges an in-flight download and invites browsing more models', () => {
     renderPanel({
       models: [],
       providerKind: 'builtin',
@@ -183,10 +183,25 @@ describe('ModelPickerPanel', () => {
     });
     const empty = screen.getByTestId('model-picker-empty');
     expect(empty.textContent).toContain('downloading');
+    // The download acknowledgment replaces the "Download one in Settings"
+    // prompt, but still offers a soft route to browse the library.
     expect(empty.textContent).not.toContain('Download one in Settings');
     expect(
-      screen.queryByRole('button', { name: 'Settings' }),
-    ).not.toBeInTheDocument();
+      screen.getByRole('button', { name: 'discover more models' }),
+    ).toBeInTheDocument();
+  });
+
+  it('opens Settings from the in-flight download browse link', () => {
+    vi.mocked(invoke).mockClear();
+    renderPanel({
+      models: [],
+      providerKind: 'builtin',
+      downloadInProgress: true,
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: 'discover more models' }),
+    );
+    expect(invoke).toHaveBeenCalledWith('open_settings_window');
   });
 
   it('opens Settings from the builtin empty-state link', () => {
