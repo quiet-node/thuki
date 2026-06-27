@@ -294,6 +294,7 @@ export function LibraryPane({ config, onSaved, onAddModel }: LibraryPaneProps) {
                     <div className={styles.name}>
                       <InlineLink
                         url={`${HF_BASE_URL}/${m.id.split(':')[0]}`}
+                        subtle
                         style={{
                           fontSize: 13.5,
                           fontWeight: 580,

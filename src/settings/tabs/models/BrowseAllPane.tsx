@@ -257,6 +257,7 @@ function BrowseAllRow({ model, onSaved }: BrowseAllRowProps) {
                 separate link icon. */}
             <InlineLink
               url={`${HF_BASE_URL}/${model.id}`}
+              subtle
               style={{
                 display: 'inline-block',
                 fontSize: 12.5,

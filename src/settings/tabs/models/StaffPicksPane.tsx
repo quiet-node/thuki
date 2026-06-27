@@ -223,6 +223,7 @@ function ModelRow({ option, downloads, onSaved, refresh }: ModelRowProps) {
           <div className={styles.top}>
             <InlineLink
               url={`${HF_BASE_URL}/${starter.repo}`}
+              subtle
               style={{ fontSize: 12.5, fontWeight: 560, textAlign: 'left' }}
             >
               {starter.display_name}
