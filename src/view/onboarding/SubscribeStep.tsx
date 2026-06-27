@@ -267,7 +267,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
           }}
         >
           <Quote />
-          Hey there, I'm{' '}
+          Hey, I'm{' '}
           <InlineLink
             url={X_PROFILE_URL}
             ariaLabel="Open Logan's profile on X"
@@ -275,9 +275,10 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
           >
             Logan
           </InlineLink>
-          , founder of Thuki. I'd love to learn how you actually use it and hear
+          , the founder here. Thuki is early and I'm building it around how
+          people really use it. I'd love to learn how you will use it and hear
           your ideas, so I can shape these upcoming features to genuinely help
-          you. Leave your email and I'll personally reach out, I'd love to talk!
+          you. Leave your email and I'll reach out personally. Thanks!
           <Quote closing />
         </p>
 
@@ -334,7 +335,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
         <button
           onClick={() => void handleSubscribe()}
           disabled={submitting}
-          aria-label="Help shape what's next for Thuki"
+          aria-label="Count me in"
           style={{
             display: 'block',
             width: '100%',
@@ -352,7 +353,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
             textAlign: 'center',
           }}
         >
-          {submitting ? 'Sending…' : "Help shape what's next for Thuki"}
+          {submitting ? 'Sending…' : 'Count me in'}
         </button>
 
         {sendError ? (

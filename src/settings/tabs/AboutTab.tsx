@@ -455,7 +455,7 @@ function ShapeThukiCard() {
         className={styles.rowHelper}
         style={{ marginBottom: 10, fontStyle: 'italic' }}
       >
-        Hey there, I'm{' '}
+        Hey, I'm{' '}
         <InlineLink
           url="https://x.com/quiet_node"
           ariaLabel="Open Logan's profile on X"
@@ -463,9 +463,10 @@ function ShapeThukiCard() {
         >
           Logan
         </InlineLink>
-        , founder of Thuki. I'd love to learn how you use it and hear your
+        , the founder here. Thuki is early and I'm building it around how people
+        really use it. I'd love to learn how you will use it and hear your
         ideas, so I can shape what's next to genuinely help you. Leave your
-        email and I'll personally reach out, I'd love to talk!
+        email and I'll reach out personally. Thanks!
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <div style={{ flex: 1 }}>
