@@ -230,9 +230,10 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
           ))}
         </div>
 
-        {/* Free + local guarantee, capping the roadmap. It applies to the list
-            specifically (voice and meeting notes are paid, cloud features
-            elsewhere) and is the only product-local line on this screen, so it
+        {/* Local-first ethos line, capping the roadmap. It states how Thuki is
+            built today rather than promising a delivery model for the unshipped
+            roadmap items above, whose pricing and where they run are not yet
+            decided. It is the only product-local line on this screen, so it
             repeats neither the subtitle nor the email trust line below. */}
         <p
           style={{
@@ -243,7 +244,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
             margin: '0 0 12px',
           }}
         >
-          All free. All local. Nothing ever leaves your Mac.
+          Local-first, always. Your conversations stay on your Mac.
         </p>
 
         {/* Divider */}

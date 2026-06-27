@@ -8,7 +8,7 @@ A deep dive into Thuki's agentic RAG search pipeline: how retrieval-augmented ge
 
 ## Setup
 
-> **Roadmap:** First-class, out-of-box `/search` support (bundled native sidecars or pre-built container images shipped with the app) is planned. Today, enabling `/search` requires cloning this repository to run the local Docker services described below. Track progress and contribute in the project's [GitHub issues](https://github.com/quiet-node/thuki/issues).
+> **Roadmap:** First-class, out-of-box `/search` support (bundled native sidecars or pre-built container images shipped with the app) is planned. Today, enabling `/search` requires cloning this repository to run the local Docker services described below. Track it in [#257](https://github.com/quiet-node/thuki/issues/257).
 
 The `/search` command depends on two local Docker containers: a **SearXNG** meta-search engine and a **Trafilatura** reader. Both run on `127.0.0.1` only, so every query and every fetched page stays on your machine.
 

@@ -18,7 +18,7 @@ This means you can highlight text anywhere on screen, summon Thuki with double-t
 
 ## Image input on text-only models
 
-`/extract`, `/tldr`, `/translate`, `/rewrite`, `/refine`, `/bullets`, `/todos`, and `/explain` read attached images locally via macOS Vision OCR, so they work even when the active model has no vision capability. Only plain submits and `/screen` alone require a vision model to read images. See [OCR-supported commands](./ocr-commands.md) for the full list and details.
+`/extract`, `/tldr`, `/translate`, `/rewrite`, `/refine`, `/bullets`, `/todos`, and `/explain` pull the text out of attached images locally via macOS Vision OCR, so they work even when the active model has no vision capability. They read text, not scenes: describing a textless image still needs a vision model. Only plain submits and `/screen` alone send the image itself to the model. See [OCR-supported commands](./ocr-commands.md) for the full list and details.
 
 ## /search
 

@@ -2,6 +2,8 @@
 
 Self-hosted, privacy-respecting meta-search engine. First stop of Thuki's `/search` pipeline.
 
+> **Roadmap:** This Docker service is the interim way to run `/search`. A first-class, out-of-box `/search` bundled with the app (no Docker to run yourself) is planned. See [Setup](../../../docs/agentic-search.md#setup).
+
 ## What it does
 
 SearXNG aggregates results from 70+ upstream engines (Google, Bing, DuckDuckGo, Brave, Wikipedia, Stack Overflow, GitHub, arXiv, etc.) and returns a unified JSON result set. Our instance is:
