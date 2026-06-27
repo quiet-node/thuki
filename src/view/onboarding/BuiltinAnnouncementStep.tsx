@@ -28,18 +28,11 @@ import { InlineLink } from '../../components/InlineLink';
 const PROVIDER_ID_BUILTIN = 'builtin';
 
 /**
- * Destination for the "Learn more" link. Points at the product site today;
- * repoint to the v0.15 built-in-engine blog post once it is published.
+ * The v0.15 built-in-engine launch blog post. Shared by both links: the
+ * subtitle "v0.15" anchor and the footer "Learn more" link.
  */
-const LEARN_MORE_URL = 'https://www.thuki.app';
-
-/**
- * GitHub release page for the version that introduced the built-in engine.
- * Linked from the subtitle; the tag is not cut yet, so the page 404s until the
- * v0.15.0 release is published.
- */
-const RELEASE_TAG_URL =
-  'https://github.com/quiet-node/thuki/releases/tag/v0.15.0';
+const BLOG_POST_URL =
+  'https://www.thuki.app/blog/thuki-built-in-local-ai-engine';
 
 /** Hugging Face home, opened from the "Total AI model freedom" point. */
 const HUGGING_FACE_URL = 'https://huggingface.co';
@@ -174,8 +167,8 @@ export function BuiltinAnnouncementStep() {
         >
           Since{' '}
           <InlineLink
-            url={RELEASE_TAG_URL}
-            ariaLabel="View the v0.15 release on GitHub"
+            url={BLOG_POST_URL}
+            ariaLabel="Read about the v0.15 built-in engine"
             style={{ fontWeight: 600 }}
           >
             v0.15
@@ -286,7 +279,7 @@ export function BuiltinAnnouncementStep() {
         >
           Added in v0.15 &middot;{' '}
           <InlineLink
-            url={LEARN_MORE_URL}
+            url={BLOG_POST_URL}
             ariaLabel="Learn more about the built-in engine"
           >
             Learn more ↗
