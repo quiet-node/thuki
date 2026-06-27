@@ -9,26 +9,30 @@ describe('BuiltinAnnouncementStep', () => {
     invoke.mockResolvedValue(undefined);
   });
 
-  it('renders the version pill, title and subtitle with the release link', () => {
+  it('renders the version pill, title and subtitle with the blog link', () => {
     render(<BuiltinAnnouncementStep />);
     expect(screen.getByText('NEW')).toBeInTheDocument();
     expect(screen.getByText('Local AI, now built in')).toBeInTheDocument();
-    // The subtitle text is split by the embedded "v0.15" release link.
+    // The subtitle text is split by the embedded "v0.15" blog link.
     expect(
       screen.getByText(/ships its own inference engine/),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'View the v0.15 release on GitHub' }),
+      screen.getByRole('button', {
+        name: 'Read about the v0.15 built-in engine',
+      }),
     ).toBeInTheDocument();
   });
 
-  it('opens the v0.15 release on GitHub from the subtitle link', () => {
+  it('opens the blog post from the subtitle v0.15 link', () => {
     render(<BuiltinAnnouncementStep />);
     fireEvent.click(
-      screen.getByRole('button', { name: 'View the v0.15 release on GitHub' }),
+      screen.getByRole('button', {
+        name: 'Read about the v0.15 built-in engine',
+      }),
     );
     expect(invoke).toHaveBeenCalledWith('open_url', {
-      url: 'https://github.com/quiet-node/thuki/releases/tag/v0.15.0',
+      url: 'https://www.thuki.app/blog/thuki-built-in-local-ai-engine',
     });
   });
 
@@ -137,7 +141,7 @@ describe('BuiltinAnnouncementStep', () => {
     );
 
     expect(invoke).toHaveBeenCalledWith('open_url', {
-      url: 'https://www.thuki.app',
+      url: 'https://www.thuki.app/blog/thuki-built-in-local-ai-engine',
     });
   });
 
