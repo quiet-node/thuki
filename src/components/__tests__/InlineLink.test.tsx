@@ -38,6 +38,33 @@ describe('InlineLink', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders subtle variant as plain text, restoring the link look on hover', () => {
+    render(
+      <InlineLink url="https://huggingface.co" subtle>
+        Model
+      </InlineLink>,
+    );
+    const link = screen.getByRole('button');
+    // At rest: plain heading text, no link colour or underline.
+    let style = link.getAttribute('style') ?? '';
+    expect(style).toContain('text-decoration: none');
+    expect(style).toContain('var(--t1)');
+    expect(style).not.toContain('underline');
+    expect(link).toHaveAttribute('title', 'https://huggingface.co');
+
+    // On hover: accent colour and underline return.
+    fireEvent.mouseEnter(link);
+    style = link.getAttribute('style') ?? '';
+    expect(style).toContain('underline');
+    expect(style).toContain('rgb(255, 184, 146)'); // #ffb892
+
+    // On leave: back to plain text.
+    fireEvent.mouseLeave(link);
+    style = link.getAttribute('style') ?? '';
+    expect(style).toContain('text-decoration: none');
+    expect(style).not.toContain('underline');
+  });
+
   it('merges per-surface style overrides over the base style', () => {
     render(
       <InlineLink url="https://example.com" style={{ fontWeight: 600 }}>

@@ -271,7 +271,7 @@ export function SubscribeStep({ onContinue, downloadStatus }: Props) {
           <InlineLink
             url={X_PROFILE_URL}
             ariaLabel="Open Logan's profile on X"
-            style={{ fontStyle: 'normal', fontWeight: 600 }}
+            style={{ fontWeight: 600 }}
           >
             Logan
           </InlineLink>

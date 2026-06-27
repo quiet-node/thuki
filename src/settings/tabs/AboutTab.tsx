@@ -459,7 +459,7 @@ function ShapeThukiCard() {
         <InlineLink
           url="https://x.com/quiet_node"
           ariaLabel="Open Logan's profile on X"
-          style={{ fontStyle: 'normal', fontWeight: 600 }}
+          style={{ fontWeight: 600 }}
         >
           Logan
         </InlineLink>
