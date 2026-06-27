@@ -20,6 +20,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Renamed the `[model]` section in `config.toml` to `[inference]` and reshaped it from a single `ollama_url` string into the providers schema described above. There is no backward-compatibility shim for the section name: if you had a custom `[model]` section, rename it to `[inference]` after upgrading; a flat `ollama_url` inside `[inference]` is migrated automatically.
 - Active model selection is now strictly Option-typed end to end: when nothing is installed and nothing is persisted, Thuki refuses to dispatch requests and surfaces a "Pick a model" prompt instead of falling back to a hardcoded slug. The previous `DEFAULT_MODEL_NAME` constant has been removed.
 
+## [0.15.0](https://github.com/quiet-node/thuki/compare/v0.14.3...v0.15.0) (2026-06-27)
+
+
+### Features
+
+* built-in engine onboarding, model downloads, Settings providers, and default flip ([#219](https://github.com/quiet-node/thuki/issues/219)) ([171a6a3](https://github.com/quiet-node/thuki/commit/171a6a3dc2212f3a8079b0cee727b2c98b6fc0b3))
+* bundled engine runner and model library ([#217](https://github.com/quiet-node/thuki/issues/217)) ([faa82ca](https://github.com/quiet-node/thuki/commit/faa82caba2416327a2992153f8a6bcf2237ea6e2))
+* **models:** in-app model library with Discover browser and Staff Picks ([#237](https://github.com/quiet-node/thuki/issues/237)) ([23b32ef](https://github.com/quiet-node/thuki/commit/23b32efc13b615c4d0763e1bc7a09d3bd557f9b1))
+* **models:** sync live download progress across windows ([#250](https://github.com/quiet-node/thuki/issues/250)) ([4e14d66](https://github.com/quiet-node/thuki/commit/4e14d6654dc835c3a7380d94368bf37e2e16bbc3))
+* **onboarding:** built-in engine upgrade announcement and onboarding/picker polish ([#251](https://github.com/quiet-node/thuki/issues/251)) ([cfc0c62](https://github.com/quiet-node/thuki/commit/cfc0c62e246d4ce1716b95cf0d5c0cf1c3ef6622))
+* **onboarding:** optional email capture to help shape Thuki ([#254](https://github.com/quiet-node/thuki/issues/254)) ([b5c6f5c](https://github.com/quiet-node/thuki/commit/b5c6f5cfc98db7341fbaad78395579ea51fcbe8e))
+* **onboarding:** surface-aware download strip and model-library intro fact ([#252](https://github.com/quiet-node/thuki/issues/252)) ([f6240bd](https://github.com/quiet-node/thuki/commit/f6240bdeba37c99f7cc5f3745e8992c13b872eb9))
+* OpenAI-compatible /v1 client and provider routing ([#218](https://github.com/quiet-node/thuki/issues/218)) ([25fe634](https://github.com/quiet-node/thuki/commit/25fe63480260eb951c01bff632516d379e0d4ab7))
+* restore the Providers setting reverted by [#208](https://github.com/quiet-node/thuki/issues/208) ([#215](https://github.com/quiet-node/thuki/issues/215)) ([5a5310f](https://github.com/quiet-node/thuki/commit/5a5310f0ed2668110510bf137d1366061c195ae0))
+* **settings:** subtle model-name links with hover reveal ([#255](https://github.com/quiet-node/thuki/issues/255)) ([bcfaa78](https://github.com/quiet-node/thuki/commit/bcfaa781888277fc54d6a56f0740689d19ad386b))
+* **settings:** subtle model-name links with hover reveal; italic founder name ([bcfaa78](https://github.com/quiet-node/thuki/commit/bcfaa781888277fc54d6a56f0740689d19ad386b))
+
+
+### Bug Fixes
+
+* ad-hoc sign local macOS builds so TCC grants apply ([#229](https://github.com/quiet-node/thuki/issues/229)) ([5c3a2df](https://github.com/quiet-node/thuki/commit/5c3a2dfd4f65b1cfce36a447ad0f9a86a34721dd))
+* fetch llama-server sidecar before lint in nightly release ([#235](https://github.com/quiet-node/thuki/issues/235)) ([d039999](https://github.com/quiet-node/thuki/commit/d03999935eebbe84ec37312976f638d4559fedd8))
+* gate overlay activation during onboarding to prevent window collapse ([#233](https://github.com/quiet-node/thuki/issues/233)) ([b111b1c](https://github.com/quiet-node/thuki/commit/b111b1c36210a932d3489e4d7748f4cd953a59e2))
+* onboarding permission loop on local macOS builds ([#230](https://github.com/quiet-node/thuki/issues/230)) ([5c3a2df](https://github.com/quiet-node/thuki/commit/5c3a2dfd4f65b1cfce36a447ad0f9a86a34721dd))
+* persist onboarding progress so relaunch can't bounce permissions ([#229](https://github.com/quiet-node/thuki/issues/229)) ([a0ecbbb](https://github.com/quiet-node/thuki/commit/a0ecbbb43e3b650a618816ed4cf352dd8d153b34))
+* **prompt:** stop model from emitting slash commands as replies ([#243](https://github.com/quiet-node/thuki/issues/243)) ([fa08c8c](https://github.com/quiet-node/thuki/commit/fa08c8c712efe1464d6ef93713fe0e555a24a905))
+* regain overlay focus after defocus via hover-activate tracking area ([#234](https://github.com/quiet-node/thuki/issues/234)) ([dec7535](https://github.com/quiet-node/thuki/commit/dec75354d4c779ef5a7b5c4d42cdae1325ad82e7))
+* trim the system prompt and refresh non-customized prompts on load ([#239](https://github.com/quiet-node/thuki/issues/239)) ([395c77b](https://github.com/quiet-node/thuki/commit/395c77ba624f097107eec354904cad0a587d3e29))
+
+
+### Reverts
+
+* restore onboarding permission-revocation detection ([#231](https://github.com/quiet-node/thuki/issues/231)) ([#232](https://github.com/quiet-node/thuki/issues/232)) ([1f8a121](https://github.com/quiet-node/thuki/commit/1f8a12182f39309c646e41ccd2eec8bdd9deaee1))
+
 ## [0.14.3](https://github.com/quiet-node/thuki/compare/v0.14.2...v0.14.3) (2026-06-09)
 
 
