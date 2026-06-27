@@ -2,6 +2,8 @@
 
 Trafilatura-based URL-to-markdown extractor. Second stop of Thuki's agentic `/search` pipeline.
 
+> **Roadmap:** This Docker service is the interim way to run `/search`. A first-class, out-of-box `/search` bundled with the app (no Docker to run yourself) is planned. See [Setup](../../../docs/agentic-search.md#setup).
+
 ## What it does
 
 Takes a URL, fetches the page, strips boilerplate (navigation, ads, footers, cookie banners), and returns clean markdown the synthesis LLM can cite against.

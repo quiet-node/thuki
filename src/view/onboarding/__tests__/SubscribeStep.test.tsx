@@ -41,10 +41,12 @@ describe('SubscribeStep', () => {
     ).toBeInTheDocument();
   });
 
-  it('states the free and local guarantee under the roadmap', () => {
+  it('states the local-first ethos line under the roadmap', () => {
     render(<SubscribeStep onContinue={vi.fn()} />);
     expect(
-      screen.getByText('All free. All local. Nothing ever leaves your Mac.'),
+      screen.getByText(
+        'Local-first, always. Your conversations stay on your Mac.',
+      ),
     ).toBeInTheDocument();
   });
 

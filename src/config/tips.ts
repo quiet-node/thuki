@@ -11,7 +11,7 @@ export const TIPS: readonly Tip[] = [
   'Use /screen to snap your display and attach it to the chat for visual context',
   'Use /extract to extract any text from images or screenshots',
   {
-    text: 'OCR-supported commands (/extract, /translate, etc.) read images locally: no vision model needed ↗',
+    text: 'OCR-supported commands (/extract, /translate, etc.) read text in images locally: no vision model needed ↗',
     url: 'https://github.com/quiet-node/thuki/blob/main/docs/ocr-commands.md',
   },
   'Highlight text in any app before summoning Thuki to include it as context',
