@@ -51,10 +51,10 @@ describe('SubscribeStep', () => {
   it('renders the founder note with the inline Logan link', () => {
     render(<SubscribeStep onContinue={vi.fn()} />);
     expect(
-      screen.getByText(/founder of Thuki/i, { exact: false }),
+      screen.getByText(/the founder here/i, { exact: false }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/I'll personally reach out, I'd love to talk!/i, {
+      screen.getByText(/I'll reach out personally\. Thanks!/i, {
         exact: false,
       }),
     ).toBeInTheDocument();
@@ -77,9 +77,7 @@ describe('SubscribeStep', () => {
     const onContinue = vi.fn();
     render(<SubscribeStep onContinue={onContinue} />);
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /count me in/i }));
 
     expect(
       screen.getByText(/enter a valid email address/i),
@@ -98,9 +96,7 @@ describe('SubscribeStep', () => {
     fireEvent.change(screen.getByLabelText('Email address'), {
       target: { value: 'not-an-email' },
     });
-    fireEvent.click(
-      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /count me in/i }));
 
     expect(
       screen.getByText(/enter a valid email address/i),
@@ -115,9 +111,7 @@ describe('SubscribeStep', () => {
     fireEvent.change(screen.getByLabelText('Email address'), {
       target: { value: '  founder@thuki.app  ' },
     });
-    fireEvent.click(
-      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /count me in/i }));
 
     expect(invoke).toHaveBeenCalledWith('subscribe_email', {
       email: 'founder@thuki.app',
@@ -142,7 +136,7 @@ describe('SubscribeStep', () => {
       target: { value: 'founder@thuki.app' },
     });
     const button = screen.getByRole('button', {
-      name: /help shape what's next for thuki/i,
+      name: /count me in/i,
     });
     fireEvent.click(button);
 
@@ -166,9 +160,7 @@ describe('SubscribeStep', () => {
     fireEvent.change(screen.getByLabelText('Email address'), {
       target: { value: 'founder@thuki.app' },
     });
-    fireEvent.click(
-      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /count me in/i }));
     // Skip while the subscribe is still pending; this is the single hand-off.
     fireEvent.click(screen.getByRole('button', { name: /maybe later/i }));
     expect(onContinue).toHaveBeenCalledTimes(1);
@@ -189,9 +181,7 @@ describe('SubscribeStep', () => {
     fireEvent.change(screen.getByLabelText('Email address'), {
       target: { value: 'founder@thuki.app' },
     });
-    fireEvent.click(
-      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /count me in/i }));
 
     expect(
       await screen.findByText(/couldn't send right now/i),
@@ -199,7 +189,7 @@ describe('SubscribeStep', () => {
     expect(onContinue).not.toHaveBeenCalled();
     // The button returns to its idle, clickable state for a retry.
     expect(
-      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
+      screen.getByRole('button', { name: /count me in/i }),
     ).not.toBeDisabled();
 
     // "Maybe later" must still be a way out after a failed send.
@@ -215,9 +205,7 @@ describe('SubscribeStep', () => {
     fireEvent.change(screen.getByLabelText('Email address'), {
       target: { value: 'founder@thuki.app' },
     });
-    fireEvent.click(
-      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /count me in/i }));
 
     expect(await screen.findByText(/too many requests/i)).toBeInTheDocument();
     expect(onContinue).not.toHaveBeenCalled();
@@ -230,9 +218,7 @@ describe('SubscribeStep', () => {
     fireEvent.change(screen.getByLabelText('Email address'), {
       target: { value: 'founder@thuki.app' },
     });
-    fireEvent.click(
-      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /count me in/i }));
     expect(
       await screen.findByText(/couldn't send right now/i),
     ).toBeInTheDocument();
@@ -251,9 +237,7 @@ describe('SubscribeStep', () => {
     fireEvent.change(screen.getByLabelText('Email address'), {
       target: { value: 'not-an-email' },
     });
-    fireEvent.click(
-      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /count me in/i }));
 
     expect(invoke).not.toHaveBeenCalledWith(
       'subscribe_email',
@@ -264,9 +248,7 @@ describe('SubscribeStep', () => {
   it('clears the error as soon as the user edits the email', () => {
     render(<SubscribeStep onContinue={vi.fn()} />);
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /help shape what's next for thuki/i }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /count me in/i }));
     expect(
       screen.getByText(/enter a valid email address/i),
     ).toBeInTheDocument();
