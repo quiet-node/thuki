@@ -44,17 +44,9 @@ Thuki (thư kí, Vietnamese for secretary) is a lightweight macOS overlay powere
 
 ## See it in action
 
-### Basic usage
+Double-tap Control <kbd>⌃</kbd> to summon Thuki from anywhere, even over fullscreen apps. Highlight text first and it opens with your selection pre-filled as a quote. Ask a question, attach your screen with `/screen`, get an answer, and dismiss without ever leaving what you're doing.
 
-Double-tap Control <kbd>⌃</kbd> to summon Thuki from anywhere. Ask a question, get an answer, and dismiss. Use `/screen` or the screenshot button to capture your screen and attach it as context.
-
-https://github.com/user-attachments/assets/57df0efe-24eb-4875-a83d-e605e0c6f8b4
-
-### Overlay mode
-
-Thuki floats above every app, including fullscreen ones. Highlight text anywhere, double-tap Control <kbd>⌃</kbd>, and Thuki opens with your selection pre-filled as a quote, ready to ask about.
-
-https://github.com/user-attachments/assets/f52b55f7-479d-4c2e-a361-1553fe132712
+https://github.com/user-attachments/assets/388fa201-d096-49f4-951a-f0d3bf330cca
 
 ## Install on macOS
 
