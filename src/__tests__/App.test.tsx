@@ -663,6 +663,52 @@ describe('App', () => {
     ).toBeInTheDocument();
   });
 
+  it('opens the model picker from an EngineStartFailed error card in chat mode', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_picker_state: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'qwen2.5:7b'],
+        ollamaReachable: true,
+      },
+    });
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    const textarea = getAskInput();
+    setAskValue('hi');
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    await act(async () => {});
+
+    // The engine fails to load the model: the assistant turn becomes an
+    // EngineStartFailed error card with a Switch model recovery action.
+    act(() => {
+      getLastChannel()?.simulateMessage({
+        type: 'Error',
+        data: {
+          kind: 'EngineStartFailed',
+          message: 'llama_model_load: error loading model: illegal split file',
+        },
+      });
+    });
+    await act(async () => {});
+
+    // The picker is closed until the user clicks Switch model.
+    expect(screen.queryByRole('option', { name: 'gemma4:e2b' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+    await act(async () => {});
+
+    // The overlay model picker opens in chat mode, so the user is never
+    // dead-ended on a failed model load.
+    expect(
+      screen.getByRole('option', { name: 'gemma4:e2b' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', { name: 'qwen2.5:7b' }),
+    ).toBeInTheDocument();
+  });
+
   it('closes chat-mode model picker when clicking outside the dropdown', async () => {
     enableChannelCaptureWithResponses({
       get_model_picker_state: {

@@ -93,6 +93,9 @@ interface ConversationViewProps {
   onModelPickerToggle?: () => void;
   /** Whether the model picker panel is open; drives aria-expanded on the pill. */
   isModelPickerOpen?: boolean;
+  /** Opens the model picker from an `EngineStartFailed` error card so a failed
+   *  model load is never a dead end. Forwarded to each ChatBubble's ErrorCard. */
+  onSwitchModel?: () => void;
   /**
    * Called when the user clicks the minimize (yellow) dot.
    * Omit when there is no conversation to park (ask-bar mode).
@@ -134,6 +137,7 @@ export function ConversationView({
   modelDisplayNames,
   onModelPickerToggle,
   isModelPickerOpen,
+  onSwitchModel,
   onMinimize,
   onExportToggle,
   isExportOpen,
@@ -288,6 +292,7 @@ export function ConversationView({
               onImagePreview={onImagePreview}
               onReplace={msg.replaceCommand ? onReplace : undefined}
               errorKind={msg.errorKind}
+              onSwitchModel={onSwitchModel}
               thinkingContent={msg.thinkingContent}
               isThinkingPending={isThinkingPending}
               // "Still thinking" reflects the real stream state, not whether

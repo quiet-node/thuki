@@ -136,6 +136,11 @@ export interface HfGgufFile {
   /** Whether this exact repo file is already recorded in the installed
    * manifest, so Browse-all shows an "Installed" marker, not a download button. */
   installed: boolean;
+  /** Ordered shards of a split (multi-part) GGUF. For a single-file model this
+   * is an empty array; when length > 1 the row is one grouped multi-part model
+   * whose `size_bytes` is already the combined total, and one download fetches
+   * every shard. Individual shards are never shown as separate rows. */
+  parts: { file: string; sha256: string; size_bytes: number }[];
 }
 
 /**

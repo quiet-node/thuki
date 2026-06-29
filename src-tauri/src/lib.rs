@@ -2803,6 +2803,13 @@ pub fn run() {
                     .inner()
                     .clone();
                 tauri::async_runtime::block_on(async move { engine.shutdown().await });
+                // The engine is now stopped, so no split-model load can be in
+                // flight: remove the load-time symlink shims. The shard blobs
+                // themselves stay in the store; only the symlink indirection is
+                // reclaimed. Best-effort, a leftover dir is harmless.
+                if let Some(store) = app_handle.try_state::<models::storage::ModelStore>() {
+                    let _ = store.clear_split_shims();
+                }
             }
             _ => {}
         });

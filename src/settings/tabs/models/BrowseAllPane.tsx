@@ -406,6 +406,24 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
       ? Math.min(100, Math.floor((file.partial_bytes / file.size_bytes) * 100))
       : 0;
 
+  // A split (multi-part) GGUF downloads its shards sequentially; the backend
+  // emits per-shard Started/Progress/FileDone events that the reducer already
+  // folds into one continuous `combinedBytes`. The unified bar then needs the
+  // combined total (file.size_bytes, already summed by the backend) as its
+  // denominator, and a quiet "Part N of M" subline. N is the 1-based index of
+  // the currently streaming shard, matched by filename (Started.file equals the
+  // shard's parts[].file), so it stays correct across a resume. Single-file
+  // downloads pass neither and keep the per-file figures unchanged.
+  const isMultipart = (file.parts?.length ?? 0) > 1;
+  const currentPartIndex =
+    isMultipart && entry?.progress
+      ? file.parts.findIndex((p) => p.file === entry.progress!.file)
+      : -1;
+  const partLabel =
+    currentPartIndex >= 0
+      ? `Part ${currentPartIndex + 1} of ${file.parts.length}`
+      : null;
+
   if (confirming) {
     return (
       <div className={styles.quantRow}>
@@ -430,6 +448,14 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
           state={entry.state}
           progress={entry.progress}
           etaSeconds={entry.etaSeconds}
+          // A multi-part model renders one unified bar over the combined size
+          // (the reducer's accumulated bytes against file.size_bytes) with a
+          // "Part N of M" subline. A single-file download passes neither, so it
+          // keeps the per-file figures from its own Progress events.
+          combinedBytes={isMultipart ? entry.combinedBytes : null}
+          grandTotalBytes={isMultipart ? file.size_bytes : null}
+          speedBytesPerSec={entry.speedBytesPerSec}
+          partLabel={partLabel}
           // The repo download flow has no pre-flight confirm step (only the
           // starter picker does), so the confirm card never renders; these
           // share the same covered dismiss handler rather than dead no-op
@@ -475,7 +501,19 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
             </>
           ) : (
             <>
-              <span className={styles.quantSize}>{gb(file.size_bytes)} GB</span>
+              {/* A split (multi-part) GGUF collapses into this one row: the size
+                  is already the combined total, and a quiet "· N parts" whisper
+                  notes it is multi-file. Single-file rows render unchanged. One
+                  download fetches every shard; shards are never separate rows. */}
+              <span className={styles.quantSize}>
+                {gb(file.size_bytes)} GB
+                {(file.parts?.length ?? 0) > 1 ? (
+                  <span className={styles.partsWhisper}>
+                    {' '}
+                    · {file.parts.length} parts
+                  </span>
+                ) : null}
+              </span>
               <button
                 type="button"
                 className={styles.quantGet}

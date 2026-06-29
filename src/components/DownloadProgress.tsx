@@ -35,6 +35,15 @@ export interface DownloadProgressProps {
   /** Rolling download rate in bytes per second; drives the unified ETA. */
   speedBytesPerSec?: number | null;
   confirmInfo?: ConfirmInfo;
+  /**
+   * Quiet subline for a multi-part (split) model: "Part N of M". When set it
+   * replaces the "finishing vision" companion text, because a split model's
+   * later shards reuse the same `downloading_mmproj` phase the vision companion
+   * does (both are the second-and-later `Started`); the label keeps the read
+   * honest for a text model downloaded in shards. Absent for single-file and
+   * weights+companion downloads, which render unchanged.
+   */
+  partLabel?: string | null;
   onConfirm: () => void;
   onCancelConfirm: () => void;
   onCancel: () => void;
@@ -152,6 +161,7 @@ export function DownloadProgress({
   combinedBytes = null,
   grandTotalBytes = null,
   speedBytesPerSec = null,
+  partLabel = null,
   confirmInfo,
   onConfirm,
   onCancelConfirm,
@@ -205,7 +215,14 @@ export function DownloadProgress({
               {percent}%
             </strong>
             {figures !== null ? ` · ${figures}` : ''}
-            {state.phase === 'downloading_mmproj' ? ' · finishing vision' : ''}
+            {/* A split model's later shards reuse the mmproj phase, so the part
+                label takes precedence over the "finishing vision" companion
+                text to keep a text model's read honest. */}
+            {partLabel
+              ? ` · ${partLabel}`
+              : state.phase === 'downloading_mmproj'
+                ? ' · finishing vision'
+                : ''}
           </span>
           <span style={{ flex: 1 }} />
           <CancelX onClick={onCancel} />

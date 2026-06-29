@@ -22,6 +22,7 @@ use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
 
+use super::HfGgufPart;
 use crate::config::defaults::BLOB_HASH_BUFFER_BYTES;
 
 /// Errors returned by [`ModelStore`] operations.
@@ -198,6 +199,99 @@ impl ModelStore {
     pub fn free_bytes(&self) -> Option<u64> {
         free_disk_bytes(&self.root)
     }
+
+    /// Materializes a load-time symlink shim for a multi-part (split) GGUF model
+    /// and returns the path to the first shard's symlink, which the engine loads
+    /// as `model_path`. llama.cpp reconstructs the whole split from the sibling
+    /// shards in that directory, so each symlink must keep the shard's ORIGINAL
+    /// `<prefix>-NNNNN-of-MMMMM.gguf` name while pointing at its content-addressed
+    /// blob.
+    ///
+    /// The shim lives under a directory keyed by the first shard's content sha
+    /// (`root/shims/<first-sha>/`), an address Thuki owns: two repos whose first
+    /// shard happens to share a filename can never collide, and re-loading the
+    /// same model reuses the same directory.
+    ///
+    /// Security: every `part.file` comes from an untrusted Hugging Face listing
+    /// and is validated through [`crate::models::parse_shard`] before it is used
+    /// as a symlink leaf, rejecting path separators, `..`, and any non-shard
+    /// shape. An invalid name fails the whole call rather than touching disk.
+    ///
+    /// Idempotent: creation is purely additive. An existing same-named symlink
+    /// necessarily points at the same blob (the directory is content-addressed),
+    /// so an `AlreadyExists` is ignored; every other I/O error propagates. This
+    /// makes a concurrent re-materialize (warmup racing a chat) safe without any
+    /// remove-then-recreate window that could strand a load mid-flight.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `parts` is empty, when a shard name fails
+    /// validation, or on any filesystem failure other than `AlreadyExists`.
+    pub fn materialize_split_shim(&self, parts: &[HfGgufPart]) -> io::Result<PathBuf> {
+        let first = parts.first().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot materialize a split shim for an empty shard set",
+            )
+        })?;
+        let dir = self.root.join("shims").join(&first.sha256);
+        std::fs::create_dir_all(&dir)?;
+
+        for part in parts {
+            // Reject an attacker-controlled shard name before it becomes a path.
+            // `parse_shard` enforces the `<prefix>-NNNNN-of-MMMMM.gguf` shape but
+            // not that the name is a single path component, so guard separators
+            // and traversal explicitly: the name must be exactly one normal path
+            // component (no `/`, no `..`, not absolute) AND a valid shard shape.
+            if !is_safe_shard_leaf(&part.file) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("refusing to shim an invalid shard name: {}", part.file),
+                ));
+            }
+            let link = dir.join(&part.file);
+            match std::os::unix::fs::symlink(self.blob_path(&part.sha256), &link) {
+                Ok(()) => {}
+                // A pre-existing link points at the right blob (content-addressed
+                // dir), so treat it as already materialized.
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        }
+        // The first shard's symlink is the engine's load entry point; it was
+        // validated and created on the loop's first iteration.
+        Ok(dir.join(&parts[0].file))
+    }
+
+    /// Removes the entire split-shim directory tree (`root/shims/`). A no-op when
+    /// it does not exist, so callers need not pre-check. Called at app quit, after
+    /// the engine has shut down and no load can be in flight; the underlying shard
+    /// blobs survive in `root/blobs/` regardless, so removing the symlinks frees
+    /// only a few bytes of indirection.
+    pub fn clear_split_shims(&self) -> io::Result<()> {
+        match std::fs::remove_dir_all(self.root.join("shims")) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// True when `name` is safe to use as a split-shim symlink leaf: a single
+/// normal path component (no separators, no `..`, not absolute, not empty or
+/// `.`) that is also a well-formed `<prefix>-NNNNN-of-MMMMM.gguf` shard name.
+///
+/// The path-component check is the security boundary: it stops an
+/// attacker-controlled Hugging Face filename like `../../etc/evil-00001-of-00001.gguf`
+/// (which [`crate::models::parse_shard`] alone accepts, since it only inspects
+/// the fixed suffix and a non-empty prefix) from escaping the shim directory.
+fn is_safe_shard_leaf(name: &str) -> bool {
+    use std::path::Component;
+    let mut components = std::path::Path::new(name).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(Component::Normal(_)), None)
+    ) && crate::models::parse_shard(name).is_some()
 }
 
 /// Free bytes available on the volume holding `path`.
@@ -478,5 +572,128 @@ mod tests {
         let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "denied");
         let err = StorageError::Io(io_err);
         assert!(err.to_string().contains("denied"));
+    }
+
+    // ── split-shim materialization ───────────────────────────────────────────
+
+    /// Build a part with a well-formed split name and a dummy blob written for
+    /// its sha so the symlink resolves to real bytes.
+    fn shard(store: &ModelStore, index: u32, total: u32, sha: &str) -> HfGgufPart {
+        std::fs::write(store.blob_path(sha), format!("blob:{sha}")).unwrap();
+        HfGgufPart {
+            file: format!("model-{index:05}-of-{total:05}.gguf"),
+            sha256: sha.to_string(),
+            size_bytes: 100,
+        }
+    }
+
+    #[test]
+    fn materialize_split_shim_links_every_shard_to_its_blob() {
+        let (_dir, store) = make_store();
+        let parts = vec![shard(&store, 1, 2, "shaone"), shard(&store, 2, 2, "shatwo")];
+
+        let first = store.materialize_split_shim(&parts).unwrap();
+        // The returned path is the first shard's symlink, named by its original
+        // split filename and living under the first shard's sha.
+        assert!(first.ends_with("shims/shaone/model-00001-of-00002.gguf"));
+
+        // Every symlink resolves to the matching blob's bytes.
+        for part in &parts {
+            let link = first.parent().unwrap().join(&part.file);
+            assert_eq!(
+                std::fs::read(&link).unwrap(),
+                format!("blob:{}", part.sha256).into_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn materialize_split_shim_is_idempotent() {
+        let (_dir, store) = make_store();
+        let parts = vec![shard(&store, 1, 2, "idemA"), shard(&store, 2, 2, "idemB")];
+
+        let first = store.materialize_split_shim(&parts).unwrap();
+        // A second call over the same parts must succeed (AlreadyExists ignored)
+        // and return the same path.
+        let again = store.materialize_split_shim(&parts).unwrap();
+        assert_eq!(first, again);
+        assert!(again.exists());
+    }
+
+    #[test]
+    fn materialize_split_shim_rejects_an_empty_shard_set() {
+        let (_dir, store) = make_store();
+        let err = store.materialize_split_shim(&[]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn materialize_split_shim_rejects_malicious_shard_names() {
+        let (_dir, store) = make_store();
+        // Each is an attacker-controlled name that must be refused before any
+        // symlink is created: traversal, a nested path, an absolute path, and a
+        // name with the right shard suffix but path separators in the prefix.
+        for evil in [
+            "../escape.gguf",                     // not a shard shape at all
+            "../../etc/evil-00001-of-00001.gguf", // traversal with shard suffix
+            "sub/dir/model-00001-of-00001.gguf",  // nested path
+            "/abs/model-00001-of-00001.gguf",     // absolute path
+        ] {
+            let parts = vec![HfGgufPart {
+                file: evil.to_string(),
+                sha256: "evilsha".to_string(),
+                size_bytes: 100,
+            }];
+            let err = store.materialize_split_shim(&parts).unwrap_err();
+            assert_eq!(
+                err.kind(),
+                io::ErrorKind::InvalidInput,
+                "must reject malicious shard name: {evil}"
+            );
+        }
+    }
+
+    #[test]
+    fn materialize_split_shim_propagates_a_non_already_exists_symlink_error() {
+        let (_dir, store) = make_store();
+        // A 300-char prefix passes is_safe_shard_leaf (single component, valid
+        // shard shape: parse_shard does not bound prefix length) but the
+        // filesystem rejects the ~320-char leaf with ENAMETOOLONG, exercising
+        // the non-AlreadyExists symlink error arm.
+        let long_name = format!("{}-00001-of-00001.gguf", "x".repeat(300));
+        let parts = vec![HfGgufPart {
+            file: long_name,
+            sha256: "longsha".to_string(),
+            size_bytes: 100,
+        }];
+        let err = store.materialize_split_shim(&parts).unwrap_err();
+        assert_ne!(err.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
+    fn clear_split_shims_propagates_a_non_not_found_error() {
+        let (_dir, store) = make_store();
+        // Place a regular FILE where the shims directory would be, so
+        // remove_dir_all returns a non-NotFound error that must propagate.
+        std::fs::write(store.root.join("shims"), b"not a dir").unwrap();
+        let err = store.clear_split_shims().unwrap_err();
+        assert_ne!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn clear_split_shims_removes_the_tree_and_is_idempotent() {
+        let (_dir, store) = make_store();
+        // No shims dir yet: clearing is a no-op.
+        store.clear_split_shims().unwrap();
+
+        // A valid single-shard (1-of-1) set so a shim tree exists to remove.
+        let parts = vec![shard(&store, 1, 1, "clr1")];
+        let link = store.materialize_split_shim(&parts).unwrap();
+        assert!(link.exists());
+
+        store.clear_split_shims().unwrap();
+        assert!(!store.root.join("shims").exists());
+        // Clearing again with the tree already gone is still a no-op.
+        store.clear_split_shims().unwrap();
     }
 }

@@ -239,6 +239,9 @@ interface ChatBubbleProps {
   isStreaming?: boolean;
   /** When set, renders an ErrorCard callout instead of markdown. */
   errorKind?: EngineErrorKind;
+  /** Opens the model picker from an `EngineStartFailed` error card so a failed
+   *  model load is never a dead end. Forwarded to the ErrorCard. */
+  onSwitchModel?: () => void;
   /** Accumulated thinking/reasoning content from the model, if thinking mode was used. */
   thinkingContent?: string;
   /** Whether a `/think` turn is waiting for the first thinking tokens. */
@@ -317,6 +320,7 @@ export function ChatBubble({
   onImagePreview,
   onReplace,
   errorKind,
+  onSwitchModel,
   thinkingContent,
   isThinkingPending,
   isThinking,
@@ -486,7 +490,11 @@ export function ChatBubble({
             {sandboxUnavailable ? (
               <SandboxSetupCard />
             ) : errorKind ? (
-              <ErrorCard kind={errorKind} message={content} />
+              <ErrorCard
+                kind={errorKind}
+                message={content}
+                onSwitchModel={onSwitchModel}
+              />
             ) : (
               <MarkdownRenderer
                 content={displayContent}

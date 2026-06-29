@@ -204,8 +204,17 @@ pub fn resolve_chat_route(
 }
 
 /// Maps an installed-model manifest row onto the engine [`Target`] the
-/// runner spawns: blob-store paths for the weights and optional mmproj plus
-/// the configured context size.
+/// runner spawns: the model path, the optional mmproj path, plus the configured
+/// context size.
+///
+/// A single-file model loads its content-addressed blob directly. A multi-part
+/// (split) model cannot: llama.cpp rejoins a split by reading sibling shards
+/// named `<prefix>-NNNNN-of-MMMMM.gguf`, but the blob store names every file by
+/// its sha. So a split model is loaded through a symlink shim
+/// ([`crate::models::storage::ModelStore::materialize_split_shim`]) whose first
+/// shard's symlink becomes `model_path`; the engine then finds the rest of the
+/// set beside it. A shim failure (an unreadable cache dir, or an invalid shard
+/// name from the untrusted listing) surfaces as an engine-start error.
 ///
 /// [`Target`]: crate::engine::state::Target
 pub fn builtin_target(
@@ -225,8 +234,20 @@ pub fn builtin_target(
                 .to_string(),
         });
     };
+    let model_path = if model.parts.is_empty() {
+        store.blob_path(&model.sha256)
+    } else {
+        store
+            .materialize_split_shim(&model.parts)
+            .map_err(|e| EngineError {
+                kind: EngineErrorKind::Other,
+                message: format!(
+                    "Something went wrong\nCould not prepare the split model for loading: {e}"
+                ),
+            })?
+    };
     Ok(crate::engine::state::Target {
-        model_path: store.blob_path(&model.sha256),
+        model_path,
         mmproj_path: model
             .mmproj_sha256
             .as_deref()
@@ -273,8 +294,11 @@ async fn fetch_builtin_vision(client: &reqwest::Client, base_url: &str) -> bool 
 /// root cause first ("error loading model: <reason>") then generic trailers
 /// ("failed to load", "exiting due to model loading error"), so the first
 /// actionable match is the one to show. It falls back to any error/failure
-/// mention, then to the last non-empty line; a single-line detail (e.g. a
-/// health-check message) is returned unchanged. Classification upstream still
+/// mention, then to the first non-empty line; a single-line detail (e.g. a
+/// health-check message) is returned unchanged. The first line is preferred
+/// over the last because llama.cpp prints the real cause early and trails it
+/// with unrelated lines (a dyld image line, a generic "exiting" notice), which
+/// the last-line fallback would surface instead. Classification upstream still
 /// sees the full detail.
 fn concise_detail(detail: &str) -> String {
     let lines: Vec<&str> = detail
@@ -301,7 +325,7 @@ fn concise_detail(detail: &str) -> String {
                 })
             })
             .copied()
-            .unwrap_or(many[many.len() - 1])
+            .unwrap_or(many[0])
             .to_string(),
     }
 }
@@ -310,9 +334,10 @@ fn concise_detail(detail: &str) -> String {
 /// a health-check message) onto a user-facing [`EngineError`]. A llama.cpp
 /// "unknown model architecture" failure means the bundled engine cannot run
 /// this model, so it becomes a `ModelUnsupported` nudge to pick another model;
-/// every other failure surfaces the concise reason under the generic
-/// engine-start title so OOM, context-size, and projector mismatches stay
-/// actionable.
+/// every other failure surfaces the concise reason as the bare message, which
+/// the frontend renders verbatim under a fixed "couldn't start this model"
+/// title, so OOM, context-size, and projector mismatches stay actionable
+/// without a duplicated heading.
 ///
 /// Pure so the classification and exact copy are unit-tested without a Tauri
 /// runtime. Shared by `stream_builtin_chat` and `resolve_llm_transport`.
@@ -326,10 +351,7 @@ pub fn engine_start_error(detail: &str) -> EngineError {
     } else {
         EngineError {
             kind: EngineErrorKind::EngineStartFailed,
-            message: format!(
-                "Thuki's engine could not start.\n{}",
-                concise_detail(detail)
-            ),
+            message: concise_detail(detail),
         }
     }
 }
@@ -1513,10 +1535,8 @@ mod tests {
     fn engine_start_error_other_failures_surface_raw_reason() {
         let err = engine_start_error("engine health check returned HTTP 500");
         assert_eq!(err.kind, EngineErrorKind::EngineStartFailed);
-        assert_eq!(
-            err.message,
-            "Thuki's engine could not start.\nengine health check returned HTTP 500"
-        );
+        // The message is the bare reason: the frontend supplies the title.
+        assert_eq!(err.message, "engine health check returned HTTP 500");
     }
 
     #[test]
@@ -1526,7 +1546,7 @@ mod tests {
         assert_eq!(err.kind, EngineErrorKind::EngineStartFailed);
         assert_eq!(
             err.message,
-            "Thuki's engine could not start.\n0.06 E common_init: error loading model: out of memory"
+            "0.06 E common_init: error loading model: out of memory"
         );
     }
 
@@ -1539,8 +1559,11 @@ mod tests {
     }
 
     #[test]
-    fn concise_detail_falls_back_to_the_last_line_without_an_error_marker() {
-        assert_eq!(concise_detail("first\nsecond\nthird"), "third");
+    fn concise_detail_falls_back_to_the_first_line_without_an_error_marker() {
+        // No line reads like an error, so the first non-empty line wins: it is
+        // the real cause llama.cpp prints early, never a trailing dyld image
+        // line or "exiting" notice that the last-line fallback would surface.
+        assert_eq!(concise_detail("first\nsecond\nthird"), "first");
     }
 
     #[test]
@@ -3339,6 +3362,7 @@ mod tests {
             reasoning_always: false,
             mmproj_file: mmproj_sha256.map(|_| format!("{id}-mmproj.gguf")),
             mmproj_sha256: mmproj_sha256.map(str::to_string),
+            parts: Vec::new(),
         }
     }
 
@@ -3385,6 +3409,73 @@ mod tests {
         let err = builtin_target(&conn, &store, "org/repo:m.gguf", 4096).unwrap_err();
         assert_eq!(err.kind, EngineErrorKind::Other);
         assert!(err.message.contains("manifest"));
+    }
+
+    /// A multi-part manifest row whose `parts` carry the given `(file, sha)`
+    /// shard pairs; the representative sha256 is the first shard's.
+    fn multipart_model(
+        id: &str,
+        shards: &[(&str, &str)],
+    ) -> crate::models::manifest::InstalledModel {
+        crate::models::manifest::InstalledModel {
+            sha256: shards[0].1.to_string(),
+            parts: shards
+                .iter()
+                .map(|(file, sha)| crate::models::HfGgufPart {
+                    file: file.to_string(),
+                    sha256: sha.to_string(),
+                    size_bytes: 100,
+                })
+                .collect(),
+            ..installed_model(id, shards[0].1, None)
+        }
+    }
+
+    #[test]
+    fn builtin_target_multipart_model_loads_through_the_split_shim() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::models::storage::ModelStore::new(dir.path().to_path_buf()).unwrap();
+        // Write blobs for both shards so the shim's symlinks resolve.
+        std::fs::write(store.blob_path("shaA"), b"a").unwrap();
+        std::fs::write(store.blob_path("shaB"), b"b").unwrap();
+        crate::models::manifest::insert(
+            &conn,
+            &multipart_model(
+                "org/repo:split",
+                &[
+                    ("model-00001-of-00002.gguf", "shaA"),
+                    ("model-00002-of-00002.gguf", "shaB"),
+                ],
+            ),
+        )
+        .unwrap();
+
+        let target = builtin_target(&conn, &store, "org/repo:split", DEFAULT_NUM_CTX).unwrap();
+        // model_path is the first shard's symlink under the shim dir, NOT the
+        // raw blob path.
+        assert!(target
+            .model_path
+            .ends_with("shims/shaA/model-00001-of-00002.gguf"));
+        assert_ne!(target.model_path, store.blob_path("shaA"));
+    }
+
+    #[test]
+    fn builtin_target_multipart_invalid_shard_name_is_other_error() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::models::storage::ModelStore::new(dir.path().to_path_buf()).unwrap();
+        // An attacker-controlled shard name that is not a valid split shape
+        // makes the shim refuse, which surfaces as an engine-start error.
+        crate::models::manifest::insert(
+            &conn,
+            &multipart_model("org/repo:evil", &[("../escape.gguf", "shaE")]),
+        )
+        .unwrap();
+
+        let err = builtin_target(&conn, &store, "org/repo:evil", DEFAULT_NUM_CTX).unwrap_err();
+        assert_eq!(err.kind, EngineErrorKind::Other);
+        assert!(err.message.contains("split model"));
     }
 
     // ─── resolve_provider_api_key ───────────────────────────────────────
@@ -3766,9 +3857,7 @@ mod tests {
         assert!(matches!(
             &chunks[0],
             StreamChunk::Error(e)
-                if e.kind == EngineErrorKind::EngineStartFailed
-                && e.message.starts_with("Thuki's engine could not start.\n")
-                && e.message.contains("spawn boom")
+                if e.kind == EngineErrorKind::EngineStartFailed                && e.message.contains("spawn boom")
         ));
         engine.shutdown().await;
     }
@@ -4261,9 +4350,7 @@ mod tests {
         assert!(matches!(
             err,
             TransportError::Engine(ref e)
-                if e.kind == EngineErrorKind::EngineStartFailed
-                && e.message.starts_with("Thuki's engine could not start.\n")
-                && e.message.contains("spawn boom")
+                if e.kind == EngineErrorKind::EngineStartFailed                && e.message.contains("spawn boom")
         ));
         engine.shutdown().await;
 

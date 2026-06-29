@@ -418,6 +418,15 @@ pub const MAX_OLLAMA_SHOW_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// mirroring MAX_OLLAMA_TAGS_BODY_BYTES.
 pub const MAX_HF_API_BODY_BYTES: usize = 4 * 1024 * 1024;
 
+/// Upper bound on the declared part count of a multi-part (split) GGUF model,
+/// i.e. the `MMMMM` field of a `<prefix>-NNNNN-of-MMMMM.gguf` shard name. The
+/// 5-digit `gguf-split` format technically permits up to 99999 parts; this
+/// defense-in-depth cap rejects an absurd or hostile count from an untrusted
+/// Hugging Face listing before it drives any sibling-completeness check. Real
+/// models split into at most a few dozen parts, so the bound is never reached in
+/// practice.
+pub const MAX_SPLIT_PARTS: u32 = 999;
+
 /// Per-request timeout (seconds) for Hugging Face API metadata calls.
 pub const HF_API_TIMEOUT_SECS: u64 = 15;
 

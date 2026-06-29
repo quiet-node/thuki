@@ -12,8 +12,12 @@
  * connection behind a `Mutex`.
  */
 
+use std::collections::HashSet;
+
 use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use serde::Serialize;
+
+use super::HfGgufPart;
 
 /// A GGUF model that has been downloaded and recorded in the manifest.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -48,6 +52,11 @@ pub struct InstalledModel {
     pub mmproj_file: Option<String>,
     /// SHA-256 hex digest of the mmproj blob, if any.
     pub mmproj_sha256: Option<String>,
+    /// Ordered shards of a multi-part (split) GGUF model, empty for an ordinary
+    /// single-file model. `file_name`/`sha256`/`size_bytes` above stay the first
+    /// shard's (the representative); the full set is needed both to download every
+    /// shard and to rebuild the split through the load-time symlink shim.
+    pub parts: Vec<HfGgufPart>,
 }
 
 /// Inserts or replaces a model row in the manifest. If a row with the same
@@ -55,26 +64,22 @@ pub struct InstalledModel {
 /// always produces an up-to-date entry. `created_at` is set to the current
 /// Unix second timestamp inside this function.
 ///
-/// Returns the SHA-256 values of the replaced row (weights and mmproj) that
-/// are no longer referenced by any row after the replace, mirroring
-/// [`delete`]: a re-download whose upstream content changed would otherwise
-/// strand the old multi-GB blob forever. The caller is responsible for
-/// removing the orphaned blobs from disk. Empty when no row was replaced or
-/// every old SHA is still referenced (same content, or shared with another
-/// row).
+/// Returns the SHA-256 values of the replaced row (weights, mmproj, and every
+/// shard of a multi-part model) that are no longer referenced by any row after
+/// the replace, mirroring [`delete`]: a re-download whose upstream content
+/// changed would otherwise strand the old multi-GB blob forever. The caller is
+/// responsible for removing the orphaned blobs from disk. Empty when no row was
+/// replaced or every old SHA is still referenced (same content, or shared with
+/// another row).
 ///
 /// # Errors
 ///
 /// Returns a `rusqlite::Error` if the underlying SQL execution fails.
 pub fn insert(conn: &Connection, model: &InstalledModel) -> SqlResult<Vec<String>> {
-    // Snapshot the SHA values of the row being replaced before it is gone.
-    let replaced: Option<(String, Option<String>)> = conn
-        .query_row(
-            "SELECT sha256, mmproj_sha256 FROM installed_models WHERE id = ?1",
-            params![model.id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-        )
-        .optional()?;
+    // Snapshot the full SHA set of the row being replaced before it is gone:
+    // weights, mmproj, and every shard. Missing any shard here would strand
+    // the old shard blobs when a multi-part model's content changes.
+    let replaced = snapshot_row_shas(conn, &model.id)?;
 
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -84,8 +89,8 @@ pub fn insert(conn: &Connection, model: &InstalledModel) -> SqlResult<Vec<String
     conn.execute(
         "INSERT OR REPLACE INTO installed_models \
          (id, display_name, repo, revision, file_name, sha256, size_bytes, \
-          quant, vision, thinking, reasoning_always, mmproj_file, mmproj_sha256, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+          quant, vision, thinking, reasoning_always, mmproj_file, mmproj_sha256, parts, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             model.id,
             model.display_name,
@@ -100,32 +105,15 @@ pub fn insert(conn: &Connection, model: &InstalledModel) -> SqlResult<Vec<String
             model.reasoning_always as i32,
             model.mmproj_file,
             model.mmproj_sha256,
+            encode_parts(&model.parts),
             created_at,
         ],
     )?;
 
-    let Some((old_weights_sha, old_mmproj_sha)) = replaced else {
-        return Ok(vec![]);
-    };
-
-    // Refcount each replaced SHA against the post-replace table (the new row
-    // counts, so an unchanged SHA is never reported); deduplicate so a row
-    // whose weights and mmproj share a SHA does not produce duplicates.
-    let mut candidates: Vec<String> = vec![old_weights_sha];
-    if let Some(s) = old_mmproj_sha {
-        if !candidates.contains(&s) {
-            candidates.push(s);
-        }
-    }
-
-    let mut orphans = Vec::new();
-    for sha in candidates {
-        if sha_refcount(conn, &sha)? == 0 {
-            orphans.push(sha);
-        }
-    }
-
-    Ok(orphans)
+    // Of the replaced row's shas, return those no longer referenced anywhere
+    // after the replace (the new row's shas count as referenced, so an unchanged
+    // sha is never reported).
+    orphans_after_mutation(conn, replaced)
 }
 
 /// Returns all installed models ordered alphabetically by `display_name`.
@@ -137,7 +125,7 @@ pub fn list(conn: &Connection) -> SqlResult<Vec<InstalledModel>> {
     let mut stmt = conn.prepare(
         "SELECT id, display_name, repo, revision, file_name, sha256, \
                 size_bytes, quant, vision, thinking, mmproj_file, mmproj_sha256, \
-                reasoning_always \
+                reasoning_always, parts \
          FROM installed_models ORDER BY display_name",
     )?;
     let rows = stmt.query_map([], row_to_model)?;
@@ -153,7 +141,7 @@ pub fn list_unclassified(conn: &Connection) -> SqlResult<Vec<InstalledModel>> {
     let mut stmt = conn.prepare(
         "SELECT id, display_name, repo, revision, file_name, sha256, \
                 size_bytes, quant, vision, thinking, mmproj_file, mmproj_sha256, \
-                reasoning_always \
+                reasoning_always, parts \
          FROM installed_models WHERE reasoning_always IS NULL ORDER BY display_name",
     )?;
     let rows = stmt.query_map([], row_to_model)?;
@@ -197,7 +185,7 @@ pub fn get(conn: &Connection, id: &str) -> SqlResult<Option<InstalledModel>> {
     conn.query_row(
         "SELECT id, display_name, repo, revision, file_name, sha256, \
                 size_bytes, quant, vision, thinking, mmproj_file, mmproj_sha256, \
-                reasoning_always \
+                reasoning_always, parts \
          FROM installed_models WHERE id = ?1",
         params![id],
         row_to_model,
@@ -206,10 +194,11 @@ pub fn get(conn: &Connection, id: &str) -> SqlResult<Option<InstalledModel>> {
 }
 
 /// Deletes the model row identified by `id` and returns the SHA-256 values
-/// (weights and mmproj) that are no longer referenced by any remaining row.
+/// (weights, mmproj, and every shard of a multi-part model) that are no longer
+/// referenced by any remaining row.
 ///
 /// A blob SHA is included in the return value only when it is not referenced
-/// by any other row in either the `sha256` or `mmproj_sha256` column. The
+/// by any remaining row's `sha256`, `mmproj_sha256`, or `parts` shards. The
 /// caller is responsible for removing the orphaned blobs from disk.
 ///
 /// Returns an empty `Vec` if no row with the given `id` exists.
@@ -218,50 +207,113 @@ pub fn get(conn: &Connection, id: &str) -> SqlResult<Option<InstalledModel>> {
 ///
 /// Returns a `rusqlite::Error` if the delete or the reference-count query fails.
 pub fn delete(conn: &Connection, id: &str) -> SqlResult<Vec<String>> {
-    // Snapshot the SHA values of the row being deleted before it is gone.
-    let target: Option<(String, Option<String>)> = conn
-        .query_row(
-            "SELECT sha256, mmproj_sha256 FROM installed_models WHERE id = ?1",
-            params![id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-        )
-        .optional()?;
-
-    let Some((weights_sha, mmproj_sha)) = target else {
+    // Snapshot the full SHA set of the row being deleted before it is gone.
+    let Some(target) = snapshot_row_shas(conn, id)? else {
         return Ok(vec![]);
     };
 
     conn.execute("DELETE FROM installed_models WHERE id = ?1", params![id])?;
 
-    // Collect candidate SHAs; deduplicate so a model that is its own mmproj
-    // does not produce duplicate return entries.
-    let mut candidates: Vec<String> = vec![weights_sha];
-    if let Some(ref s) = mmproj_sha {
-        if !candidates.contains(s) {
-            candidates.push(s.clone());
-        }
-    }
-
-    // Filter to those no longer referenced by any remaining row.
-    let mut orphans = Vec::new();
-    for sha in candidates {
-        if sha_refcount(conn, &sha)? == 0 {
-            orphans.push(sha);
-        }
-    }
-
-    Ok(orphans)
+    // Of the deleted row's shas, return those no longer referenced by any
+    // remaining row.
+    orphans_after_mutation(conn, Some(target))
 }
 
-/// Counts the number of `installed_models` rows that reference `sha` in
-/// either the `sha256` or `mmproj_sha256` column.
-fn sha_refcount(conn: &Connection, sha: &str) -> SqlResult<i64> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM installed_models \
-         WHERE sha256 = ?1 OR mmproj_sha256 = ?1",
-        params![sha],
-        |row| row.get(0),
-    )
+/// Reads the complete set of blob shas a single row references: its weights
+/// `sha256`, its `mmproj_sha256` (when present), and every shard sha inside its
+/// `parts` JSON. `None` when no row with `id` exists. Deduplicated, so a row
+/// whose weights and mmproj (or a shard) share a sha never lists it twice.
+fn snapshot_row_shas(conn: &Connection, id: &str) -> SqlResult<Option<Vec<String>>> {
+    let row: Option<(String, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT sha256, mmproj_sha256, parts FROM installed_models WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    Ok(row.map(|(weights, mmproj, parts)| {
+        let mut shas: Vec<String> = vec![weights];
+        if let Some(s) = mmproj {
+            if !shas.contains(&s) {
+                shas.push(s);
+            }
+        }
+        for part in decode_parts(parts.as_deref()) {
+            if !shas.contains(&part.sha256) {
+                shas.push(part.sha256);
+            }
+        }
+        shas
+    }))
+}
+
+/// Given the full sha set of a just-removed-or-replaced row, returns those
+/// shas no longer referenced by any current row. Computed against the table
+/// AFTER the mutation, so a sha the new (replacing) row still carries is never
+/// reported. `None` candidates (no row was there) yield an empty `Vec`.
+fn orphans_after_mutation(
+    conn: &Connection,
+    candidates: Option<Vec<String>>,
+) -> SqlResult<Vec<String>> {
+    let Some(candidates) = candidates else {
+        return Ok(vec![]);
+    };
+    let referenced = referenced_shas(conn)?;
+    Ok(candidates
+        .into_iter()
+        .filter(|sha| !referenced.contains(sha))
+        .collect())
+}
+
+/// Returns every blob sha referenced by any current `installed_models` row:
+/// every `sha256`, every non-NULL `mmproj_sha256`, and every shard sha of a
+/// multi-part model. This is the authoritative live-reference set the blob
+/// garbage collector checks a removal candidate against. Counting only the two
+/// scalar columns (the prior `sha_refcount`) would miss shards and let deleting
+/// one multi-part model orphan-delete another model's shard blobs.
+///
+/// Built from [`list`] so the shard decoding flows through the same
+/// `row_to_model` path every read uses, rather than a parallel query.
+fn referenced_shas(conn: &Connection) -> SqlResult<HashSet<String>> {
+    let mut referenced = HashSet::new();
+    for model in list(conn)? {
+        referenced.insert(model.sha256);
+        if let Some(s) = model.mmproj_sha256 {
+            referenced.insert(s);
+        }
+        for part in model.parts {
+            referenced.insert(part.sha256);
+        }
+    }
+    Ok(referenced)
+}
+
+/// Encodes a model's shard list for the `parts` column: `None` for a single-file
+/// model (stored as SQL NULL), otherwise the JSON array. A serialization failure
+/// (not reachable for this plain struct) also collapses to `None` rather than
+/// panicking, degrading to single-file semantics instead of failing the install.
+fn encode_parts(parts: &[HfGgufPart]) -> Option<String> {
+    if parts.is_empty() {
+        None
+    } else {
+        serde_json::to_string(parts).ok()
+    }
+}
+
+/// Decodes the `parts` column back into a shard list. Never panics: a NULL,
+/// empty, or unparseable value yields an empty `Vec` (single-file semantics),
+/// so a hand-corrupted row can never crash a read or a refcount scan.
+fn decode_parts(raw: Option<&str>) -> Vec<HfGgufPart> {
+    match raw {
+        Some(s) if !s.is_empty() => serde_json::from_str(s).unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// Maps a SQLite row to an [`InstalledModel`].
@@ -285,6 +337,7 @@ fn row_to_model(row: &rusqlite::Row<'_>) -> SqlResult<InstalledModel> {
             .get::<_, Option<i32>>(12)?
             .map(|v| v != 0)
             .unwrap_or(false),
+        parts: decode_parts(row.get::<_, Option<String>>(13)?.as_deref()),
     })
 }
 
@@ -310,6 +363,39 @@ mod tests {
             reasoning_always: false,
             mmproj_file: None,
             mmproj_sha256: None,
+            parts: Vec::new(),
+        }
+    }
+
+    /// Builds a part list from `(file, sha)` pairs with a fixed dummy size.
+    fn parts_of(pairs: &[(&str, &str)]) -> Vec<HfGgufPart> {
+        pairs
+            .iter()
+            .map(|(file, sha)| HfGgufPart {
+                file: file.to_string(),
+                sha256: sha.to_string(),
+                size_bytes: 1_000_000,
+            })
+            .collect()
+    }
+
+    /// A multi-part model whose representative `sha256` is the first shard's and
+    /// whose `parts` carry every shard sha (mirroring the real install shape).
+    fn make_multipart_model(id: &str, shard_shas: &[&str]) -> InstalledModel {
+        let pairs: Vec<(&str, &str)> = shard_shas
+            .iter()
+            .enumerate()
+            .map(|(i, sha)| {
+                let file: &str = Box::leak(
+                    format!("{id}-{:05}-of-{:05}.gguf", i + 1, shard_shas.len()).into_boxed_str(),
+                );
+                (file, *sha)
+            })
+            .collect();
+        InstalledModel {
+            sha256: shard_shas[0].to_string(),
+            parts: parts_of(&pairs),
+            ..make_model(id, shard_shas[0])
         }
     }
 
@@ -732,5 +818,193 @@ mod tests {
         .unwrap();
         // snapshot SELECT works (reads through the view); DELETE on a view fails.
         assert!(delete(&conn, "x:y.gguf").is_err());
+    }
+
+    // ── Multi-part (split) GGUF models ───────────────────────────────────────
+
+    #[test]
+    fn multipart_parts_roundtrip_through_insert_and_get() {
+        let conn = open_in_memory().unwrap();
+        let m = make_multipart_model("org/repo:split", &["sha_p1", "sha_p2", "sha_p3"]);
+        insert(&conn, &m).unwrap();
+
+        let found = get(&conn, &m.id).unwrap().unwrap();
+        assert_eq!(found.parts.len(), 3);
+        assert_eq!(
+            found.parts.iter().map(|p| &p.sha256).collect::<Vec<_>>(),
+            vec!["sha_p1", "sha_p2", "sha_p3"]
+        );
+        // The representative sha256 is the first shard's.
+        assert_eq!(found.sha256, "sha_p1");
+        // The full row, parts included, survives the round trip.
+        assert_eq!(found, m);
+    }
+
+    #[test]
+    fn single_file_model_stores_null_parts_and_reads_empty() {
+        let conn = open_in_memory().unwrap();
+        insert(&conn, &make_model("org/repo:one.gguf", "sha_one")).unwrap();
+
+        // The `parts` column is SQL NULL for a single-file model.
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT parts FROM installed_models WHERE id = ?1",
+                params!["org/repo:one.gguf"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, None);
+        assert!(get(&conn, "org/repo:one.gguf")
+            .unwrap()
+            .unwrap()
+            .parts
+            .is_empty());
+    }
+
+    #[test]
+    fn deleting_one_multipart_model_orphans_only_its_own_shards() {
+        let conn = open_in_memory().unwrap();
+        // Two distinct multi-part models with disjoint shard blobs.
+        let a = make_multipart_model("org/repo:a", &["sha_a1", "sha_a2"]);
+        let b = make_multipart_model("org/repo:b", &["sha_b1", "sha_b2"]);
+        insert(&conn, &a).unwrap();
+        insert(&conn, &b).unwrap();
+
+        // Deleting A returns exactly A's shard shas; B's shards stay referenced.
+        let mut orphans = delete(&conn, &a.id).unwrap();
+        orphans.sort();
+        assert_eq!(orphans, vec!["sha_a1".to_string(), "sha_a2".to_string()]);
+
+        // B is untouched and still fully present.
+        let b_row = get(&conn, &b.id).unwrap().unwrap();
+        assert_eq!(b_row.parts.len(), 2);
+    }
+
+    #[test]
+    fn deleting_a_single_file_model_is_unaffected_by_a_multipart_sibling() {
+        let conn = open_in_memory().unwrap();
+        insert(
+            &conn,
+            &make_multipart_model("org/repo:split", &["sha_s1", "sha_s2"]),
+        )
+        .unwrap();
+        insert(&conn, &make_model("org/repo:plain.gguf", "sha_plain")).unwrap();
+
+        let orphans = delete(&conn, "org/repo:plain.gguf").unwrap();
+        assert_eq!(orphans, vec!["sha_plain".to_string()]);
+
+        // The split model keeps all its shards.
+        let split = get(&conn, "org/repo:split").unwrap().unwrap();
+        assert_eq!(split.parts.len(), 2);
+    }
+
+    #[test]
+    fn deleting_a_multipart_model_keeps_a_shard_shared_with_another_row() {
+        let conn = open_in_memory().unwrap();
+        // Two split models that happen to share one shard blob (identical content).
+        let a = make_multipart_model("org/repo:a", &["sha_shared", "sha_a2"]);
+        let b = make_multipart_model("org/repo:b", &["sha_shared", "sha_b2"]);
+        insert(&conn, &a).unwrap();
+        insert(&conn, &b).unwrap();
+
+        // Deleting A orphans only its private shard; the shared one stays.
+        let orphans = delete(&conn, &a.id).unwrap();
+        assert_eq!(orphans, vec!["sha_a2".to_string()]);
+    }
+
+    #[test]
+    fn deleting_a_multipart_model_keeps_a_shard_referenced_as_another_rows_weights() {
+        let conn = open_in_memory().unwrap();
+        // A split shard sha that is also a single-file model's weights sha.
+        let a = make_multipart_model("org/repo:a", &["sha_x", "sha_a2"]);
+        insert(&conn, &a).unwrap();
+        insert(&conn, &make_model("org/repo:plain.gguf", "sha_x")).unwrap();
+
+        // sha_x is still the plain model's weights, so only sha_a2 orphans.
+        let orphans = delete(&conn, &a.id).unwrap();
+        assert_eq!(orphans, vec!["sha_a2".to_string()]);
+    }
+
+    #[test]
+    fn shared_mmproj_stays_referenced_when_a_multipart_owner_is_deleted() {
+        let conn = open_in_memory().unwrap();
+        // A multi-part model and a single-file model share one mmproj blob.
+        let mut split = make_multipart_model("org/repo:split", &["sha_s1", "sha_s2"]);
+        split.mmproj_file = Some("mmproj.gguf".to_string());
+        split.mmproj_sha256 = Some("sha_mm".to_string());
+        let other = make_model_with_mmproj("org/repo:other.gguf", "sha_o", "sha_mm");
+        insert(&conn, &split).unwrap();
+        insert(&conn, &other).unwrap();
+
+        // Deleting the split model orphans its shards but not the shared mmproj.
+        let mut orphans = delete(&conn, &split.id).unwrap();
+        orphans.sort();
+        assert_eq!(orphans, vec!["sha_s1".to_string(), "sha_s2".to_string()]);
+    }
+
+    #[test]
+    fn reinstalling_a_multipart_model_orphans_only_truly_unreferenced_old_shards() {
+        let conn = open_in_memory().unwrap();
+        // Two split models sharing one shard; re-download of A changes its other
+        // shard but keeps the shared one (same content) and re-adds a fresh shard.
+        let a = make_multipart_model("org/repo:a", &["sha_shared", "sha_a_old"]);
+        let b = make_multipart_model("org/repo:b", &["sha_shared", "sha_b2"]);
+        insert(&conn, &a).unwrap();
+        insert(&conn, &b).unwrap();
+
+        // Re-install A: shared shard unchanged, old private shard replaced.
+        let a_new = make_multipart_model("org/repo:a", &["sha_shared", "sha_a_new"]);
+        let orphans = insert(&conn, &a_new).unwrap();
+        // Only the dropped private shard orphans: the shared shard is still
+        // referenced (by both A_new and B), and sha_a_new is the live row.
+        assert_eq!(orphans, vec!["sha_a_old".to_string()]);
+
+        let a_row = get(&conn, &a.id).unwrap().unwrap();
+        assert_eq!(
+            a_row.parts.iter().map(|p| &p.sha256).collect::<Vec<_>>(),
+            vec!["sha_shared", "sha_a_new"]
+        );
+    }
+
+    #[test]
+    fn reinstalling_an_identical_multipart_model_orphans_nothing() {
+        let conn = open_in_memory().unwrap();
+        let m = make_multipart_model("org/repo:split", &["sha_p1", "sha_p2"]);
+        insert(&conn, &m).unwrap();
+
+        // Same content re-installed: every shard sha is still referenced.
+        let orphans = insert(&conn, &m).unwrap();
+        assert!(orphans.is_empty());
+    }
+
+    #[test]
+    fn encode_parts_is_none_for_empty_and_some_json_otherwise() {
+        assert_eq!(encode_parts(&[]), None);
+        let json = encode_parts(&parts_of(&[("m-00001-of-00001.gguf", "sha_q")])).unwrap();
+        assert!(json.contains("sha_q"));
+        assert!(json.contains("m-00001-of-00001.gguf"));
+    }
+
+    #[test]
+    fn referenced_shas_propagates_sql_error_when_table_absent() {
+        // Exercises the `?` error arm on `referenced_shas`'s own query (the
+        // post-mutation reference scan), the one SQL path not reached through
+        // insert/delete since those fail earlier at their snapshot SELECT.
+        let conn = open_in_memory().unwrap();
+        conn.execute_batch("DROP TABLE installed_models;").unwrap();
+        assert!(referenced_shas(&conn).is_err());
+    }
+
+    #[test]
+    fn decode_parts_never_panics_on_bad_input() {
+        // NULL, empty, and unparseable values all decode to an empty Vec.
+        assert!(decode_parts(None).is_empty());
+        assert!(decode_parts(Some("")).is_empty());
+        assert!(decode_parts(Some("not json")).is_empty());
+        // A well-formed array round-trips.
+        let encoded = encode_parts(&parts_of(&[("m-00001-of-00002.gguf", "s1")])).unwrap();
+        let decoded = decode_parts(Some(&encoded));
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].sha256, "s1");
     }
 }

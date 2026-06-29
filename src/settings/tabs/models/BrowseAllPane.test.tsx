@@ -111,6 +111,7 @@ const GGUFS: HfGgufFile[] = [
     sha256: 'a'.repeat(64),
     partial_bytes: null,
     installed: false,
+    parts: [],
   },
   {
     file: 'gemma-q8.gguf',
@@ -118,6 +119,7 @@ const GGUFS: HfGgufFile[] = [
     sha256: 'b'.repeat(64),
     partial_bytes: null,
     installed: false,
+    parts: [],
   },
 ];
 
@@ -131,6 +133,36 @@ const GGUFS_PARTIAL: HfGgufFile[] = [
 const GGUFS_Q4_INSTALLED: HfGgufFile[] = [
   { ...GGUFS[0], installed: true },
   GGUFS[1],
+];
+
+/**
+ * A split (multi-part) GGUF: the backend collapses both shards into one row
+ * whose `size_bytes` is already the combined total, with the ordered shards in
+ * `parts`. The second row stays single-file so the whisper is asserted to be
+ * scoped to the multi-part row only.
+ */
+const GGUFS_MULTIPART: HfGgufFile[] = [
+  {
+    file: 'gpt-oss-q8.gguf',
+    size_bytes: 86_700_000_000,
+    fit: 'too_big',
+    sha256: 'c'.repeat(64),
+    partial_bytes: null,
+    installed: false,
+    parts: [
+      {
+        file: 'gpt-oss-q8-00001-of-00002.gguf',
+        sha256: 'd'.repeat(64),
+        size_bytes: 43_350_000_000,
+      },
+      {
+        file: 'gpt-oss-q8-00002-of-00002.gguf',
+        sha256: 'e'.repeat(64),
+        size_bytes: 43_350_000_000,
+      },
+    ],
+  },
+  GGUFS[0],
 ];
 
 const CONFIG_AFTER_INSTALL = { marker: 'fresh' } as unknown as RawAppConfig;
@@ -419,6 +451,126 @@ describe('BrowseAllPane', () => {
     expect(within(row).getByText('Tight')).toBeInTheDocument();
     expect(screen.getByText('gemma-q8.gguf')).toBeInTheDocument();
     expect(screen.getByText('9.0 GB')).toBeInTheDocument();
+    // Single-file rows carry no "N parts" whisper.
+    expect(screen.queryByText(/parts/)).not.toBeInTheDocument();
+  });
+
+  it('renders one grouped row with the combined size and a "N parts" whisper for a split GGUF', async () => {
+    await renderPane(() => {}, { list_hf_repo_ggufs: GGUFS_MULTIPART });
+    const row = screen
+      .getByText('google/gemma-4-12b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
+    await flush();
+    // The grouped row shows the combined total, not per-shard sizes, and a
+    // single download button (the shards are never separate rows).
+    expect(screen.getByText('gpt-oss-q8.gguf')).toBeInTheDocument();
+    expect(screen.getByText('86.7 GB')).toBeInTheDocument();
+    expect(screen.getByText('· 2 parts')).toBeInTheDocument();
+    // The individual shards are never rendered as their own rows.
+    expect(
+      screen.queryByText('gpt-oss-q8-00001-of-00002.gguf'),
+    ).not.toBeInTheDocument();
+    // The single-file sibling row carries no whisper.
+    expect(screen.getByText('5.0 GB')).toBeInTheDocument();
+  });
+
+  it('downloads the whole split set from the grouped row with one click', async () => {
+    await renderPane(() => {}, { list_hf_repo_ggufs: GGUFS_MULTIPART });
+    const row = screen
+      .getByText('google/gemma-4-12b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
+    await flush();
+    // The quant row is the immediate parent of the file-name span; scope the
+    // click to it so the multi-part Download is hit, not the sibling's. The
+    // CSS-module class name is hashed, so walk the DOM rather than match it.
+    const groupedRow = screen.getByText('gpt-oss-q8.gguf')
+      .parentElement as HTMLElement;
+    confirmDownload(
+      within(groupedRow).getByRole('button', { name: 'Download' }),
+    );
+    // One download is started for the grouped row's representative file; the
+    // backend fetches every shard from that single call.
+    expect(invokeMock).toHaveBeenCalledWith(
+      'download_repo_model',
+      expect.objectContaining({
+        repo: 'google/gemma-4-12b-it-GGUF',
+        file: 'gpt-oss-q8.gguf',
+      }),
+    );
+  });
+
+  it('shows one unified bar over the combined size with Part N of M across shards', async () => {
+    await renderPane(() => {}, { list_hf_repo_ggufs: GGUFS_MULTIPART });
+    const row = screen
+      .getByText('google/gemma-4-12b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
+    await flush();
+    const groupedRow = screen.getByText('gpt-oss-q8.gguf')
+      .parentElement as HTMLElement;
+    confirmDownload(
+      within(groupedRow).getByRole('button', { name: 'Download' }),
+    );
+    await flush();
+
+    // Shard 1 of 2: the bar's total is the COMBINED 86.7 GB, not the 43.4 GB
+    // shard total, and the subline names the current shard.
+    act(() => {
+      lastChannel?.simulateMessage({
+        type: 'Started',
+        data: {
+          file: 'gpt-oss-q8-00001-of-00002.gguf',
+          total_bytes: 43_350_000_000,
+          resumed_from: 0,
+        },
+      });
+      lastChannel?.simulateMessage({
+        type: 'Progress',
+        data: {
+          file: 'gpt-oss-q8-00001-of-00002.gguf',
+          bytes: 21_675_000_000,
+          total_bytes: 43_350_000_000,
+        },
+      });
+    });
+    expect(screen.getByTestId('download-figures')).toHaveTextContent(
+      '25% · 21.7 / 86.7 GB',
+    );
+    expect(screen.getByTestId('download-figures')).toHaveTextContent(
+      'Part 1 of 2',
+    );
+
+    // Shard 1 finishes, shard 2 begins: the cumulative figure does not reset to
+    // a per-shard number, it climbs past the shard-1 boundary, and the subline
+    // advances to "Part 2 of 2" (never "finishing vision" on a text model).
+    act(() => {
+      lastChannel?.simulateMessage({
+        type: 'FileDone',
+        data: { file: 'gpt-oss-q8-00001-of-00002.gguf' },
+      });
+      lastChannel?.simulateMessage({
+        type: 'Started',
+        data: {
+          file: 'gpt-oss-q8-00002-of-00002.gguf',
+          total_bytes: 43_350_000_000,
+          resumed_from: 0,
+        },
+      });
+      lastChannel?.simulateMessage({
+        type: 'Progress',
+        data: {
+          file: 'gpt-oss-q8-00002-of-00002.gguf',
+          bytes: 21_675_000_000,
+          total_bytes: 43_350_000_000,
+        },
+      });
+    });
+    const figures = screen.getByTestId('download-figures');
+    expect(figures).toHaveTextContent('75% · 65.0 / 86.7 GB');
+    expect(figures).toHaveTextContent('Part 2 of 2');
+    expect(figures).not.toHaveTextContent('finishing vision');
   });
 
   it('shows the per-repo context window on the collapsed row, after downloads', async () => {
