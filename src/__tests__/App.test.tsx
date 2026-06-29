@@ -307,6 +307,9 @@ describe('App', () => {
 
     const strip = screen.getByTestId('capability-mismatch-strip');
     expect(strip.textContent).toContain("Ollama isn't running");
+    // The strip offers a way out: an inline Get Ollama download link.
+    const link = screen.getByTestId('capability-mismatch-strip-link');
+    expect(link).toHaveTextContent('Get Ollama');
   });
 
   it('renders the no-models strip copy when Ollama is reachable but empty (S2)', async () => {

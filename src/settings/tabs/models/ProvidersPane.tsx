@@ -27,8 +27,10 @@ import { useModelSelection } from '../../../hooks/useModelSelection';
 import { useModelCapabilities } from '../../../hooks/useModelCapabilities';
 import { isNonLocalUrl } from '../../../utils/isNonLocalUrl';
 import { formatContextWindow } from '../../../utils/contextWindow';
+import { OLLAMA_DOWNLOAD_URL } from '../../../utils/capabilityConflicts';
 import { configHelp } from '../../configHelpers';
 import { Tooltip } from '../../../components/Tooltip';
+import { InlineLink } from '../../../components/InlineLink';
 import { ModelSelect, type ModelSelectItem } from './ModelSelect';
 import styles from '../../../styles/settings.module.css';
 import type { RawAppConfig, RawProvider } from '../../types';
@@ -230,8 +232,13 @@ export function ProvidersPane({
   // A provider switch is confirmed before it takes effect.
   const [pendingSwitch, setPendingSwitch] = useState<RawProvider | null>(null);
 
-  const { activeModel, availableModels, setActiveModel, refreshModels } =
-    useModelSelection();
+  const {
+    activeModel,
+    availableModels,
+    setActiveModel,
+    refreshModels,
+    ollamaReachable,
+  } = useModelSelection();
 
   // Per-model capabilities (vision/thinking) drive the built-in picker's pills.
   const { capabilities } = useModelCapabilities();
@@ -488,8 +495,15 @@ export function ProvidersPane({
                   onChange={commitOllamaModel}
                   ariaLabel="Active Ollama model"
                 />
-              ) : (
+              ) : ollamaReachable ? (
                 <span className={styles.providerHint}>No models installed</span>
+              ) : (
+                <span className={styles.providerHint}>
+                  Ollama isn&apos;t reachable.{' '}
+                  <InlineLink url={OLLAMA_DOWNLOAD_URL} ariaLabel="Get Ollama">
+                    Get Ollama ↗
+                  </InlineLink>
+                </span>
               )}
             </div>
           </>
