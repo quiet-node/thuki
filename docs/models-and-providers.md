@@ -2,7 +2,7 @@
 
 A deep dive into how Thuki runs AI on your Mac: the built-in engine, what powers it, what a model actually is, where models live, and exactly how the inference server starts, runs, and stops. If you just want to download a model and chat, the short version is "open Settings, pick a model in Discover, done." Everything below is for when you want to understand what is happening under the hood.
 
-> macOS only, Apple Silicon (M1/M2/M3/M4/M5). See [thuki.app](https://www.thuki.app/) for downloads.
+> macOS 13.4 (Ventura) or later, Apple Silicon (M1/M2/M3/M4/M5). See [thuki.app](https://www.thuki.app/) for downloads.
 
 ## Contents
 
@@ -315,45 +315,48 @@ The frontend never talks to the engine directly. It calls the `ask_model` Tauri 
 
 ## How the engine binary is packaged
 
-The engine is **not** committed to the repo. A build script (`scripts/ensure-llama-server.ts`) fetches it, verifies it, and wires it into the app, running automatically before `dev` and every production build. This section is the source of truth for the pin, what the script does, when it runs, and where the files end up. (For how the engine is _run_ once it is in place, see [Running inference: the sidecar](#running-inference-the-sidecar).)
+The engine is **not** committed to the repo. A build script (`scripts/ensure-llama-server.ts`) builds it from source, verifies it, and wires it into the app, running automatically before `dev` and every production build. This section is the source of truth for the pin, what the script does, when it runs, and where the files end up. (For how the engine is _run_ once it is in place, see [Running inference: the sidecar](#running-inference-the-sidecar).)
 
 ### The pin: which engine, exactly
 
-Thuki uses one **exact** llama.cpp release, named by two constants in the script:
+Thuki uses one **exact** llama.cpp commit, named by two constants in the script:
 
 - a **release tag** (the published llama.cpp version), and
-- the **SHA-256** of that release's macOS arm64 asset.
+- the **commit SHA** that tag points to.
 
-This is a _release pin_, not "whatever is newest." Pinning makes every build reproducible: llama.cpp's `main` branch moving forward, or a newer release appearing, never changes what your build produces. The pin moves only when a maintainer deliberately bumps it, and only after manual checks on real hardware (see [release-process.md](./release-process.md)).
+This is a _release pin_, not "whatever is newest." Pinning the commit makes every build reproducible and is the supply-chain anchor: the script clones the tag and refuses to build unless `HEAD` matches the pinned commit, so a moved or forged tag is rejected. The pin moves only when a maintainer deliberately bumps it, and only after manual checks on real hardware (see [release-process.md](./release-process.md)).
+
+Thuki **builds** this commit from source rather than downloading llama.cpp's prebuilt macOS binary. The prebuilt is compiled for macOS 26+ and fails to load on older macOS (a missing Metal symbol); building it ourselves with a macOS 13.4 deployment target keeps the engine compatible with macOS 13.4+ while tracking the latest llama.cpp. Building from source is also the stronger supply chain: we compile a pinned, git-verified commit instead of trusting an opaque downloaded blob.
 
 The engine version is **independent of Thuki's version.** Several Thuki releases can ship on one engine pin, and the engine can be bumped without bumping Thuki: the two are decoupled.
 
 ### What the build script does
 
-On a fetch the script runs five steps, and refuses to install anything that fails a check:
+On a build the script runs these steps, and refuses to install anything that fails a check:
 
-1. **Download** the pinned release asset from llama.cpp's GitHub releases.
-2. **Verify** its SHA-256 against the pin. A mismatch aborts, so a tampered or truncated asset never gets installed.
-3. **Prune to the real dependencies.** `llama-server` links a set of dynamic libraries (`.dylib`s: the ggml math kernels, Metal GPU support, the multimodal helper). The script walks the link closure starting from the binary and copies _only_ the dylibs it actually needs, ignoring the rest of the archive.
-4. **Check the bundle list.** Those same dylibs must be listed in `bundle.macOS.frameworks` in `tauri.conf.json` so Tauri packages them into the shipped `.app`. If a new engine version adds, renames, or drops a dylib, the script aborts and names exactly which entries differ, so the bundle can never silently omit a library.
-5. **Re-sign.** The script adds an `@loader_path/../Frameworks` rpath to the binary (explained below), which invalidates its code signature, so it ad-hoc re-signs the binary and every dylib. Without this, macOS refuses to run them.
+1. **Clone the pinned commit** from llama.cpp's GitHub repo and confirm `HEAD` matches the pinned commit SHA. A mismatch (a moved or forged tag) aborts before anything is built.
+2. **Build `llama-server` from source** with a macOS 13.4 deployment target (Metal shaders embedded, OpenSSL disabled, a relocatable `@loader_path` rpath). On Xcode 26, where the Metal shader compiler is a separate component, the script downloads it once.
+3. **Audit macOS compatibility.** A fail-closed check on the output: it must be arm64, target the minimum macOS (13.4), import the macOS-15 Metal residency-set symbol _weakly_ (so it still loads on the floor), and link no non-system dylibs. Any miss aborts before install.
+4. **Prune to the real dependencies.** `llama-server` links a set of dynamic libraries (`.dylib`s: the ggml math kernels, Metal GPU support, the multimodal helper). The script walks the link closure starting from the binary and copies _only_ the dylibs it actually needs.
+5. **Check the bundle list.** Those same dylibs must be listed in `bundle.macOS.frameworks` in `tauri.conf.json` so Tauri packages them into the shipped `.app`. If a new engine version adds, renames, or drops a dylib, the script aborts and names exactly which entries differ, so the bundle can never silently omit a library.
+6. **Sign.** The script adds an `@loader_path/../Frameworks` rpath to the binary (explained below), so it ad-hoc signs the binary and every dylib. Without this, macOS refuses to run them.
 
 ### When it runs (and when it does nothing)
 
-The script runs before **every** `dev` and production build, but it only _downloads_ when it has to. A stamp file (`src-tauri/binaries/.llama-cpp-version`) records the installed tag and hash:
+The script runs before **every** `dev` and production build, but it only _builds_ when it has to. A stamp file (`src-tauri/binaries/.llama-cpp-version`) records the installed tag and commit:
 
 ```
 script runs
   → is the pinned engine already installed? (stamp matches)
      → yes: exit instantly, do nothing      ← almost every run
-     → no:  download + verify + wire in      ← first checkout, or after a pin bump
+     → no:  build + verify + wire in         ← first checkout, or after a pin bump
 ```
 
 So the trigger is "engine missing or pin changed," not "Thuki shipped a new version." Cutting a new Thuki release on the same pin re-runs the script, sees the stamp match, and does nothing.
 
 ### Where the files live: dev vs the shipped app
 
-The fetched files are **gitignored** (never committed), which is why an engine bump is a tiny source diff rather than megabytes of blobs.
+The built files are **gitignored** (never committed), which is why an engine bump is a tiny source diff rather than megabytes of blobs.
 
 **During `dev`**, everything sits flat in `src-tauri/binaries/`:
 
@@ -367,7 +370,7 @@ src-tauri/binaries/
 └── .llama-cpp-version                  ← the stamp (the no-op check)
 ```
 
-The binary itself is tiny; the real weight is in the dylibs. That is why the script fetches a _set_ of files, not one: the binary is a launcher and the dylibs are the engine. Sitting side by side, the binary finds its dylibs automatically.
+The binary itself is tiny; the real weight is in the dylibs. That is why the script produces a _set_ of files, not one: the binary is a launcher and the dylibs are the engine. Sitting side by side, the binary finds its dylibs automatically.
 
 **In the shipped `.app`**, Tauri splits them into the standard macOS layout: the binary ships as a Tauri `externalBin`, and the pruned dylib closure ships via the `frameworks` list.
 

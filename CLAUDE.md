@@ -23,7 +23,7 @@ bun run format           # Prettier + cargo fmt
 bun run format:check     # Dry-run format validation
 bun run typecheck        # tsc --noEmit
 
-bun run engine:ensure    # Fetch + verify + re-sign the pinned llama-server sidecar (auto-runs before dev/build)
+bun run engine:ensure    # Build + verify + sign the pinned llama-server sidecar from source (auto-runs before dev/build)
 
 bun run search-box:start # Docker Compose up for the /search services (SearXNG + reader)
 bun run search-box:stop  # docker compose down for the /search services

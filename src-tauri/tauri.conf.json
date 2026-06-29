@@ -87,6 +87,7 @@
     "macOS": {
       "signingIdentity": "-",
       "hardenedRuntime": false,
+      "minimumSystemVersion": "13.4",
       "frameworks": [
         "binaries/libggml-base.0.dylib",
         "binaries/libggml-blas.0.dylib",

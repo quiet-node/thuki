@@ -330,14 +330,27 @@ fn concise_detail(detail: &str) -> String {
     }
 }
 
+/// True when the engine's stderr is a dynamic-linker failure resolving a symbol
+/// in a macOS system framework (e.g. `Symbol not found: _OBJC_CLASS_$_MTL... ;
+/// Expected in: /System/Library/Frameworks/Metal.framework`). dyld emits this
+/// when the engine binary needs a framework symbol the running macOS does not
+/// provide, which for the bundled engine means the OS predates the engine's
+/// build target. Both markers are required so an internal-symbol mismatch is
+/// not misreported as an OS-version problem.
+fn is_os_incompatible(lower_detail: &str) -> bool {
+    lower_detail.contains("symbol not found") && lower_detail.contains(".framework")
+}
+
 /// Maps a built-in engine start failure (the engine's own captured stderr, or
 /// a health-check message) onto a user-facing [`EngineError`]. A llama.cpp
 /// "unknown model architecture" failure means the bundled engine cannot run
 /// this model, so it becomes a `ModelUnsupported` nudge to pick another model;
-/// every other failure surfaces the concise reason as the bare message, which
-/// the frontend renders verbatim under a fixed "couldn't start this model"
-/// title, so OOM, context-size, and projector mismatches stay actionable
-/// without a duplicated heading.
+/// a dyld system-framework symbol failure means the engine cannot run on this
+/// macOS at all, so it surfaces a clear "update macOS" message instead of the
+/// raw linker line; every other failure surfaces the concise reason as the
+/// bare message, which the frontend renders verbatim under a fixed "couldn't
+/// start this model" title, so OOM, context-size, and projector mismatches
+/// stay actionable without a duplicated heading.
 ///
 /// Pure so the classification and exact copy are unit-tested without a Tauri
 /// runtime. Shared by `stream_builtin_chat` and `resolve_llm_transport`.
@@ -347,6 +360,11 @@ pub fn engine_start_error(detail: &str) -> EngineError {
         EngineError {
             kind: EngineErrorKind::ModelUnsupported,
             message: "Unsupported model\nThuki's engine doesn't support this model's architecture yet. Try another model; support expands as the engine updates.".to_string(),
+        }
+    } else if is_os_incompatible(&lower) {
+        EngineError {
+            kind: EngineErrorKind::EngineStartFailed,
+            message: "Thuki's engine could not start.\nYour version of macOS is too old for the built-in engine. Update macOS to use it.".to_string(),
         }
     } else {
         EngineError {
@@ -1529,6 +1547,28 @@ mod tests {
             engine_start_error("llama_model_load: unknown architecture").kind,
             EngineErrorKind::ModelUnsupported
         );
+    }
+
+    #[test]
+    fn engine_start_error_metal_symbol_failure_is_os_incompatible() {
+        let detail = "dyld[123]: Symbol not found: _OBJC_CLASS_$_MTLResidencySetDescriptor\n  Referenced from: <UUID> /Applications/Thuki.app/Contents/Frameworks/libggml-metal.0.dylib\n  Expected in: <UUID> /System/Library/Frameworks/Metal.framework/Versions/A/Metal";
+        let err = engine_start_error(detail);
+        assert_eq!(err.kind, EngineErrorKind::EngineStartFailed);
+        assert_eq!(
+            err.message,
+            "Thuki's engine could not start.\nYour version of macOS is too old for the built-in engine. Update macOS to use it."
+        );
+    }
+
+    #[test]
+    fn engine_start_error_symbol_failure_without_framework_marker_stays_generic() {
+        // "Symbol not found" alone (no system-framework marker) is not treated
+        // as an OS-version problem; it falls through to the concise reason.
+        // The message is bare for `EngineStartFailed`: the frontend
+        // `ErrorCard` supplies the fixed "couldn't start this model" title.
+        let err = engine_start_error("Symbol not found: _some_internal_symbol");
+        assert_eq!(err.kind, EngineErrorKind::EngineStartFailed);
+        assert_eq!(err.message, "Symbol not found: _some_internal_symbol");
     }
 
     #[test]
