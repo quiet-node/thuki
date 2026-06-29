@@ -334,6 +334,17 @@ pub const STARTERS: &[Starter] = &[
 /// without disturbing the onboarding heroes.
 pub const ONBOARDING_HERO_IDS: [&str; 3] = ["qwen3.5-9b", "gemma-4-12b", "gpt-oss-20b"];
 
+/// Ids of the small-machine onboarding heroes, in tier order
+/// (Fast, Balanced, Smartest): the smallest model in each tier. Used in place of
+/// [`ONBOARDING_HERO_IDS`] when every default hero is [`RamFit::TooBig`] for the
+/// machine, so a low-memory Mac still gets a Fast pick it can actually run
+/// instead of a row of three Heavy badges.
+pub const ONBOARDING_HERO_IDS_SMALL: [&str; 3] = [
+    "llama-3.2-3b",
+    "deepseek-r1-distill-8b",
+    "phi-4-reasoning-plus-14b",
+];
+
 /// The registry entry with this id, if any. The id-keyed download path and the
 /// onboarding-hero lookup both resolve entries through here, so a bad id yields
 /// `None` rather than a panic.
@@ -361,6 +372,36 @@ pub fn onboarding_heroes() -> Vec<&'static Starter> {
         .iter()
         .filter_map(|id| by_id(id))
         .collect()
+}
+
+/// The three small-machine onboarding heroes, resolved from
+/// [`ONBOARDING_HERO_IDS_SMALL`] in tier order. Like [`onboarding_heroes`], a
+/// missing id is skipped; a registry test asserts all three resolve, so the
+/// list is length three in practice.
+pub fn onboarding_heroes_small() -> Vec<&'static Starter> {
+    ONBOARDING_HERO_IDS_SMALL
+        .iter()
+        .filter_map(|id| by_id(id))
+        .collect()
+}
+
+/// The onboarding heroes to show on a machine with `ram_bytes` of memory: the
+/// default [`onboarding_heroes`] trio, unless every one of them is
+/// [`RamFit::TooBig`], in which case the smaller [`onboarding_heroes_small`]
+/// trio is used so the picker still offers a runnable model. `ram_bytes == 0`
+/// means detection failed; that is treated as unknown (not tiny), so the
+/// default trio is kept rather than needlessly downgrading the picker.
+pub fn select_onboarding_heroes(ram_bytes: u64) -> Vec<&'static Starter> {
+    let heroes = onboarding_heroes();
+    let all_too_big = ram_bytes > 0
+        && heroes
+            .iter()
+            .all(|s| ram_fit(s.est_runtime_gb, ram_bytes) == RamFit::TooBig);
+    if all_too_big {
+        onboarding_heroes_small()
+    } else {
+        heroes
+    }
 }
 
 /// RAM-fit hint rendered as a badge on each starter row.
@@ -523,6 +564,73 @@ mod tests {
         for id in ONBOARDING_HERO_IDS {
             assert!(by_id(id).is_some(), "hero id missing from registry: {id}");
         }
+    }
+
+    #[test]
+    fn small_onboarding_heroes_are_three_in_tier_order() {
+        // The low-memory fallback trio mirrors the default heroes' shape: one
+        // model per tier, in Fast/Balanced/Smartest order, every id real. The
+        // matrix is tier-keyed, so a missing tier would drop a column.
+        assert_eq!(ONBOARDING_HERO_IDS_SMALL.len(), 3);
+        let heroes = onboarding_heroes_small();
+        assert_eq!(heroes.len(), 3);
+        assert_eq!(
+            heroes.iter().map(|s| s.tier).collect::<Vec<_>>(),
+            vec![Tier::Fast, Tier::Balanced, Tier::Smartest]
+        );
+        for id in ONBOARDING_HERO_IDS_SMALL {
+            assert!(by_id(id).is_some(), "small hero id missing: {id}");
+        }
+        // The fallback only earns its name if each small hero is genuinely
+        // lighter than the default hero in the same tier.
+        let big = onboarding_heroes();
+        for (small, default) in heroes.iter().zip(big) {
+            assert!(
+                small.est_runtime_gb < default.est_runtime_gb,
+                "small hero {} is not lighter than default {}",
+                small.id,
+                default.id
+            );
+        }
+    }
+
+    #[test]
+    fn select_onboarding_heroes_swaps_only_when_every_default_is_too_big() {
+        const GIB: u64 = 1 << 30;
+        let ids = |heroes: Vec<&'static Starter>| heroes.iter().map(|s| s.id).collect::<Vec<_>>();
+
+        // Roomy machine: the default heroes fit (the Fast hero is Comfortable),
+        // so the default trio stands.
+        assert_eq!(
+            ids(select_onboarding_heroes(16 * GIB)),
+            ONBOARDING_HERO_IDS.to_vec()
+        );
+
+        // 8 GiB: every default hero is Heavy, so the small trio takes over.
+        assert!(onboarding_heroes()
+            .iter()
+            .all(|s| ram_fit(s.est_runtime_gb, 8 * GIB) == RamFit::TooBig));
+        assert_eq!(
+            ids(select_onboarding_heroes(8 * GIB)),
+            ONBOARDING_HERO_IDS_SMALL.to_vec()
+        );
+
+        // 10 GiB: the Fast default is only Tight (not Heavy), so the swap does
+        // not trigger - one fitting option is enough to keep the default trio.
+        assert!(onboarding_heroes()
+            .iter()
+            .any(|s| ram_fit(s.est_runtime_gb, 10 * GIB) != RamFit::TooBig));
+        assert_eq!(
+            ids(select_onboarding_heroes(10 * GIB)),
+            ONBOARDING_HERO_IDS.to_vec()
+        );
+
+        // Unknown memory (detection returned 0): treat as unknown, not tiny, and
+        // keep the default trio rather than downgrade blindly.
+        assert_eq!(
+            ids(select_onboarding_heroes(0)),
+            ONBOARDING_HERO_IDS.to_vec()
+        );
     }
 
     #[test]

@@ -76,6 +76,15 @@ export interface DownloadContextValue extends UseDownloadModel {
   pauseDownload: () => void;
   /** Resume a paused download from where it stopped. */
   resumeFromPause: () => void;
+  /**
+   * Discard the paused download: delete its partial bytes (weights + vision
+   * companion) from disk and clear the ambient strip. Unlike pause there is no
+   * resume after this; the model-picker chip is the way back to start another
+   * download. Lets a user abandon a first-model download they no longer want
+   * (e.g. after picking a smaller model in Settings) instead of being held to
+   * a Resume-only loop.
+   */
+  discardDownload: () => void;
 }
 
 const DownloadContext = createContext<DownloadContextValue | null>(null);
@@ -182,6 +191,26 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     resumeDownload(activeOption!.starter.tier, activeOption!, pausedBytes);
   }, [activeOption, pausedBytes, resumeDownload]);
 
+  const discardDownload = useCallback(() => {
+    // Only reachable from the paused strip, so a download was started and the
+    // active option is set. The run is already cancelled (paused == idle), so
+    // deleting the partial bytes and clearing the strip's state is all that
+    // remains: clearing pauseRequested drops `isPaused`, and with the phase
+    // already idle the ambient strip renders nothing.
+    const { starter } = activeOption!;
+    setPauseRequested(false);
+    setDownloadingTier(null);
+    setActiveOption(null);
+    setResumeSeedBytes(null);
+    setPausedBytes(0);
+    void (async () => {
+      await discard(starter.sha256);
+      if (starter.mmproj_sha256 !== null) {
+        await discard(starter.mmproj_sha256);
+      }
+    })();
+  }, [activeOption, discard]);
+
   const grandTotalBytes =
     activeOption === null
       ? null
@@ -201,6 +230,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       pausedBytes,
       pauseDownload,
       resumeFromPause,
+      discardDownload,
     }),
     [
       download,
@@ -215,6 +245,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       pausedBytes,
       pauseDownload,
       resumeFromPause,
+      discardDownload,
     ],
   );
 

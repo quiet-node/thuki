@@ -11,7 +11,11 @@ import {
   useStaffPicks,
   useStarterOptions,
 } from '../StarterPicker';
-import { invoke } from '../../testUtils/mocks/tauri';
+import {
+  invoke,
+  emitTauriEvent,
+  clearEventHandlers,
+} from '../../testUtils/mocks/tauri';
 import type { Starter, StarterOption, StarterTier } from '../../types/starter';
 
 function makeStarter(tier: StarterTier, overrides?: Partial<Starter>): Starter {
@@ -259,6 +263,7 @@ describe('StarterPicker', () => {
 describe('useStarterOptions', () => {
   beforeEach(() => {
     invoke.mockReset();
+    clearEventHandlers();
   });
 
   it('starts null and loads the options on mount', async () => {
@@ -294,11 +299,27 @@ describe('useStarterOptions', () => {
     await act(() => result.current.refresh());
     expect(result.current.options).toEqual(THREE_TIERS);
   });
+
+  it('re-fetches when a models-changed broadcast fires', async () => {
+    invoke.mockResolvedValueOnce(THREE_TIERS);
+    const { result } = renderHook(() => useStarterOptions());
+    await act(async () => {});
+    expect(result.current.options).toEqual(THREE_TIERS);
+
+    // A discard in another window deletes the partial and broadcasts; the
+    // picker must re-pull so the now-gone partial stops showing.
+    invoke.mockResolvedValueOnce([]);
+    await act(async () => {
+      emitTauriEvent('thuki://models-changed', null);
+    });
+    expect(result.current.options).toEqual([]);
+  });
 });
 
 describe('useStaffPicks', () => {
   beforeEach(() => {
     invoke.mockReset();
+    clearEventHandlers();
   });
 
   it('starts null and loads the catalog from get_staff_picks on mount', async () => {
@@ -333,5 +354,20 @@ describe('useStaffPicks', () => {
     invoke.mockResolvedValueOnce(THREE_TIERS);
     await act(() => result.current.refresh());
     expect(result.current.options).toEqual(THREE_TIERS);
+  });
+
+  it('re-fetches when a models-changed broadcast fires (cross-window discard)', async () => {
+    invoke.mockResolvedValueOnce(THREE_TIERS);
+    const { result } = renderHook(() => useStaffPicks());
+    await act(async () => {});
+    expect(result.current.options).toEqual(THREE_TIERS);
+
+    // The crux of the bug: a discard in the ask bar (another window) deletes
+    // the partial, so the Discover catalog must drop its stale Paused row.
+    invoke.mockResolvedValueOnce([]);
+    await act(async () => {
+      emitTauriEvent('thuki://models-changed', null);
+    });
+    expect(result.current.options).toEqual([]);
   });
 });

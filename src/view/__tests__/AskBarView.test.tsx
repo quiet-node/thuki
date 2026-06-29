@@ -200,6 +200,7 @@ describe('AskBarView', () => {
           kind: 'paused',
           percent: 58,
           onResume: vi.fn(),
+          onDiscard: vi.fn(),
         }}
       />,
     );
@@ -221,6 +222,36 @@ describe('AskBarView', () => {
       />,
     );
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+  });
+
+  it('keeps the send button live during a download once a usable model exists', () => {
+    // The decoupled gate: a background download no longer holds the bar hostage
+    // once any model is usable (the first finished, or another was installed in
+    // Settings), so the user can send to the usable model while the download
+    // keeps running in the ambient strip.
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query="Hello?"
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        hasUsableModel
+        downloadStatus={{
+          kind: 'downloading',
+          modelName: 'Qwen3.5 9B',
+          percent: 58,
+          etaSeconds: 180,
+          onPause: vi.fn(),
+        }}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Send message' }),
+    ).not.toBeDisabled();
   });
 
   it('keeps the send button enabled once the download is ready', () => {

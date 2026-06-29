@@ -176,20 +176,20 @@ describe('DownloadStatusStrip', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('shows a paused state with Resume but no Discard', () => {
+  it('shows a paused state with both Resume and Discard', () => {
     const onResume = vi.fn();
+    const onDiscard = vi.fn();
     render(
       <DownloadStatusStrip
         surface="askbar"
-        status={{ kind: 'paused', percent: 58, onResume }}
+        status={{ kind: 'paused', percent: 58, onResume, onDiscard }}
       />,
     );
     expect(screen.getByText('Paused · 58%')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Resume download' }));
     expect(onResume).toHaveBeenCalledTimes(1);
-    expect(
-      screen.queryByRole('button', { name: 'Discard download' }),
-    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard download' }));
+    expect(onDiscard).toHaveBeenCalledTimes(1);
   });
 
   it('reassures that verifying can take a while during the re-hash', () => {
@@ -269,7 +269,10 @@ describe('isDownloadActive', () => {
       },
       true,
     ],
-    [{ kind: 'paused', percent: 1, onResume: () => {} }, true],
+    [
+      { kind: 'paused', percent: 1, onResume: () => {}, onDiscard: () => {} },
+      true,
+    ],
     [{ kind: 'pausing', percent: 1 }, true],
     [{ kind: 'verifying', percent: 1 }, true],
     [{ kind: 'ready', modelName: 'X' }, false],

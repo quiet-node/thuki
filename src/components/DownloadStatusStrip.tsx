@@ -26,6 +26,8 @@ export type DownloadStripStatus =
       kind: 'paused';
       percent: number;
       onResume: () => void;
+      /** Abandon the download: delete the partial and clear the strip. */
+      onDiscard: () => void;
     }
   | { kind: 'pausing'; percent: number }
   | { kind: 'verifying'; percent: number }
@@ -295,9 +297,9 @@ export function DownloadStatusStrip({
   }
 
   if (status.kind === 'paused') {
-    // Resume only here. Discard belongs to the picker, where a Download button
-    // can re-trigger; in the ambient strip a discard would strand the user with
-    // no way back to start a download.
+    // Resume or Discard. Discard deletes the partial and clears the strip so a
+    // user who no longer wants this first model is not held to a Resume-only
+    // loop; the model-picker chip is the way back to start another download.
     return (
       <Shell color={MUTED} fill={MUTED_FILL} percent={status.percent}>
         <span className="flex-1 leading-snug">Paused · {status.percent}%</span>
@@ -306,6 +308,12 @@ export function DownloadStatusStrip({
           ariaLabel="Resume download"
           color={ACTION}
           onClick={status.onResume}
+        />
+        <Action
+          label="Discard"
+          ariaLabel="Discard download"
+          color={MUTED}
+          onClick={status.onDiscard}
         />
       </Shell>
     );

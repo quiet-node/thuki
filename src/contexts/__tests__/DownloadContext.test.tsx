@@ -243,6 +243,73 @@ describe('DownloadContext', () => {
     ).toHaveLength(2);
   });
 
+  it('discardDownload deletes both partials and clears the ambient strip', async () => {
+    const { result } = renderHook(() => useDownloadCtx(), { wrapper });
+    const opt = option();
+
+    await act(async () => {
+      result.current.beginDownload('balanced', opt);
+    });
+    await act(async () => {
+      result.current.pauseDownload();
+    });
+    act(() => channel().simulateMessage({ type: 'Cancelled' }));
+    expect(result.current.isPaused).toBe(true);
+
+    await act(async () => {
+      result.current.discardDownload();
+    });
+    // Flush the discard IIFE so the second (mmproj) delete is recorded.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Both blobs' partials are deleted from disk.
+    expect(invoke).toHaveBeenCalledWith('discard_partial_download', {
+      sha256: 'sha',
+    });
+    expect(invoke).toHaveBeenCalledWith('discard_partial_download', {
+      sha256: 'mmsha',
+    });
+    // The strip is cleared: no paused state, no active option, idle machine.
+    expect(result.current.isPaused).toBe(false);
+    expect(result.current.activeOption).toBeNull();
+    expect(result.current.downloadingTier).toBeNull();
+    expect(result.current.grandTotalBytes).toBeNull();
+  });
+
+  it('discardDownload deletes only the weights partial for a text-only model', async () => {
+    const { result } = renderHook(() => useDownloadCtx(), { wrapper });
+    const opt = option({
+      mmproj_file: null,
+      mmproj_sha256: null,
+      mmproj_bytes: 0,
+    });
+
+    await act(async () => {
+      result.current.beginDownload('fast', opt);
+    });
+    await act(async () => {
+      result.current.pauseDownload();
+    });
+    act(() => channel().simulateMessage({ type: 'Cancelled' }));
+
+    await act(async () => {
+      result.current.discardDownload();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(invoke).toHaveBeenCalledWith('discard_partial_download', {
+      sha256: 'sha',
+    });
+    expect(invoke).not.toHaveBeenCalledWith('discard_partial_download', {
+      sha256: 'mmsha',
+    });
+    expect(result.current.activeOption).toBeNull();
+  });
+
   describe('launch auto-resume', () => {
     /** Flush the multi-await auto-resume IIFE (stage, options, discards). */
     async function flushLaunch() {

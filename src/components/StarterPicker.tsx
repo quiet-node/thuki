@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { useModelsChangedRefresh } from '../hooks/useModelsChangedRefresh';
 import type {
   RamFit,
   StaffPickOption,
@@ -80,6 +81,10 @@ export function useStarterOptions(): UseStarterOptionsResult {
     void refresh();
   }, [refresh]);
 
+  // A discard in another window deletes the partial on disk; re-pull so the row
+  // drops its stale Paused/Resume/Discard state.
+  useModelsChangedRefresh(refresh);
+
   return { options, refresh };
 }
 
@@ -111,6 +116,10 @@ export function useStaffPicks(): UseStaffPicksResult {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // A discard in another window deletes the partial on disk; re-pull so the row
+  // drops its stale Paused/Resume/Discard state.
+  useModelsChangedRefresh(refresh);
 
   return { options, refresh };
 }

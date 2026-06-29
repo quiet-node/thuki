@@ -445,6 +445,7 @@ function App() {
     activeOption: downloadActiveOption,
     pauseDownload,
     resumeFromPause,
+    discardDownload,
   } = download;
   const downloadState = download.state;
   const downloadPhase = downloadState.phase;
@@ -2472,6 +2473,7 @@ function App() {
         kind: 'paused',
         percent: percentOf(downloadPausedBytes),
         onResume: resumeFromPause,
+        onDiscard: discardDownload,
       };
     }
     // Transitional: Pause clicked but the cancel has not landed yet. Shown
@@ -2534,6 +2536,7 @@ function App() {
     retryDownload,
     pauseDownload,
     resumeFromPause,
+    discardDownload,
   ]);
 
   /**
@@ -2544,6 +2547,17 @@ function App() {
   const isBuiltinDownloadActive =
     config.inference.activeProviderKind === 'builtin' &&
     (isDownloadInFlight(downloadPhase) || isDownloadPaused);
+
+  /**
+   * True when a model is installed and active, so a message has somewhere to
+   * go. Decouples "can I send" from "is the first download finished": once any
+   * model is usable (the first download completed, OR the user installed a
+   * different model in Settings), the ask bar accepts messages even while a
+   * download is still in flight. The download then stays a calm ambient strip
+   * rather than a hostage. `availableModels` is refreshed cross-window on
+   * `config-updated`, so a Settings install reaches this signal here.
+   */
+  const hasUsableModel = availableModels.length > 0 && activeModel !== null;
 
   const liveCapabilityConflictMessage = useMemo(() => {
     // The ambient download strip owns the messaging while a download is
@@ -2785,11 +2799,14 @@ function App() {
       (utilityTrigger !== undefined &&
         (hasScreen || attachedImages.length > 0));
 
-    // Built-in download soft-block. While the model is still downloading (or
-    // paused mid-download), hold the submit calmly: no shake, nothing queued.
-    // The ambient strip already shows the state, so the refusal needs no extra
-    // cue. Checked before the shake gate below so the wait never reads as error.
-    if (!isOcrPath && isBuiltinDownloadActive) {
+    // Built-in download soft-block. Hold the submit calmly (no shake, nothing
+    // queued) only while there is genuinely nothing to send to: a first model
+    // is downloading (or paused) and none is usable yet. Once any model is
+    // usable, sending is allowed and the download keeps running in the ambient
+    // strip, so the first download never holds the app hostage. The ambient
+    // strip already shows the state, so the refusal needs no extra cue. Checked
+    // before the shake gate below so the wait never reads as error.
+    if (!isOcrPath && isBuiltinDownloadActive && !hasUsableModel) {
       return;
     }
 
@@ -2983,6 +3000,7 @@ function App() {
     quote.maxContextLength,
     hasBlockingConflict,
     isBuiltinDownloadActive,
+    hasUsableModel,
   ]);
 
   // When a pending submit exists and all images finish processing, dispatch
@@ -3695,6 +3713,7 @@ function App() {
                               liveCapabilityConflictMessage
                             }
                             downloadStatus={downloadStripStatus}
+                            hasUsableModel={hasUsableModel}
                             shake={shakeAskBar}
                             maxImages={config.window.maxImages}
                             onFirstKeystroke={() =>
