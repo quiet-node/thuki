@@ -281,6 +281,13 @@ const ONBOARDING_EVENT: &str = "thuki://onboarding";
 /// user lands on the model browser rather than the default Providers view.
 const SETTINGS_SHOW_DISCOVER_EVENT: &str = "thuki://settings-show-discover";
 
+/// Frontend event that asks the Settings window to jump to the Models tab's
+/// Providers pane. Emitted by `open_settings_to_providers`, which the ask-bar
+/// "Ollama isn't running" strip calls from its "switch to Built-in" link, so a
+/// user who switched to Ollama without it running lands where they can flip the
+/// active provider back to the built-in engine.
+const SETTINGS_SHOW_PROVIDERS_EVENT: &str = "thuki://settings-show-providers";
+
 /// Logical dimensions of the onboarding window (centered). The permission
 /// and intro steps use the compact base size; the model-picker step widens
 /// to fit the three-column comparison matrix. Steps smaller than the frame
@@ -797,6 +804,17 @@ fn open_settings_window(app_handle: tauri::AppHandle) {
     // the Discover download picker. The Settings window listens for this and
     // jumps to Models -> Discover (Staff picks is Discover's default).
     let _ = app_handle.emit(SETTINGS_SHOW_DISCOVER_EVENT, ());
+}
+
+/// Opens the Settings window straight on the Models tab's Providers pane. The
+/// ask-bar "Ollama isn't running" strip links here from its "switch to Built-in"
+/// action so the user lands on the provider switcher and can flip the active
+/// provider back to the built-in engine themselves.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn open_settings_to_providers(app_handle: tauri::AppHandle) {
+    show_settings_window(&app_handle);
+    let _ = app_handle.emit(SETTINGS_SHOW_PROVIDERS_EVENT, ());
 }
 
 /// Centers the "What's New" update window horizontally on its monitor and
@@ -2700,6 +2718,7 @@ pub fn run() {
             onboarding_stage,
             is_builtin_announced,
             open_settings_window,
+            open_settings_to_providers,
             #[cfg(not(coverage))]
             warmup::warm_up_model,
             #[cfg(not(coverage))]

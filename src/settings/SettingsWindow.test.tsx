@@ -169,6 +169,38 @@ describe('SettingsWindow', () => {
     });
   });
 
+  it('jumps back to the Models Providers view on the show-providers event', async () => {
+    const { unmount } = render(<SettingsWindow />);
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Models/ })).toBeInTheDocument(),
+    );
+
+    // Drive the sub-view away from the Providers default first, so the
+    // providers deep-link has something to undo: Discover is gated for the
+    // ollama SAMPLE config, surfacing the switch prompt.
+    await act(async () => {
+      emitTauriEvent('thuki://settings-show-discover', undefined);
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByRole('button', { name: 'Switch to built-in' }),
+    ).toBeInTheDocument();
+
+    // The providers deep-link returns to Providers: the gate disappears.
+    await act(async () => {
+      emitTauriEvent('thuki://settings-show-providers', undefined);
+      await Promise.resolve();
+    });
+    expect(
+      screen.queryByRole('button', { name: 'Switch to built-in' }),
+    ).toBeNull();
+
+    unmount();
+    await act(async () => {
+      await Promise.resolve();
+    });
+  });
+
   it('switching to the Behavior tab shows the Text Replacement section', async () => {
     render(<SettingsWindow />);
     await waitFor(() => screen.getByRole('tab', { name: /Behavior/ }));

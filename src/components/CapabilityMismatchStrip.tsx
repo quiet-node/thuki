@@ -1,22 +1,51 @@
+import { Fragment } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import type {
+  CapabilityConflictMessage,
+  StripLink,
+} from '../utils/capabilityConflicts';
 
 /**
- * A capability strip message is either a plain string (passive
- * informational strip) or a three-part shape with an inline link
- * (`before` + `link` + `after`). The inline link form keeps the rest of
- * the strip text non-interactive so users only click when they want the
- * documented recovery path.
+ * The strip's message type. Re-exported under the component's local name so
+ * call sites that import it from here keep working; the canonical definition
+ * lives next to the logic that produces it in `capabilityConflicts`.
  */
-export type CapabilityMismatchMessage =
-  | string
-  | {
-      /** Copy rendered before the inline link. */
-      before: string;
-      /** The inline anchor: link text + URL opened on click. */
-      link: { text: string; url: string };
-      /** Copy rendered after the inline link. */
-      after: string;
-    };
+export type CapabilityMismatchMessage = CapabilityConflictMessage;
+
+/** Shared Tailwind class for an inline strip link (dotted amber underline). */
+const LINK_CLASS =
+  'cursor-pointer underline decoration-dotted underline-offset-2 decoration-[rgba(230,156,5,0.55)] text-[color:rgb(230,156,5)] hover:text-[color:rgb(245,176,30)] transition-colors';
+
+/**
+ * Renders one {@link StripLink} as an inline button. A `url` link opens the
+ * page in the browser and shows the ↗ external-link glyph; a `nav` link runs
+ * the in-app action (open Settings → Providers) and omits ↗ since it stays in
+ * Thuki.
+ */
+function StripLinkButton({ link }: { link: StripLink }) {
+  return (
+    <button
+      type="button"
+      data-testid="capability-mismatch-strip-link"
+      aria-label={
+        'url' in link
+          ? `Open ${link.url}`
+          : 'Switch to the Built-in provider in Settings'
+      }
+      onClick={() => {
+        if ('url' in link) {
+          void invoke('open_url', { url: link.url });
+        } else {
+          void invoke('open_settings_to_providers');
+        }
+      }}
+      className={LINK_CLASS}
+    >
+      {link.text}
+      {'url' in link ? ' ↗' : ''}
+    </button>
+  );
+}
 
 /** Props for the {@link CapabilityMismatchStrip} component. */
 export interface CapabilityMismatchStripProps {
@@ -72,6 +101,14 @@ export function CapabilityMismatchStrip({
   const body =
     typeof message === 'string' ? (
       message
+    ) : 'segments' in message ? (
+      message.segments.map((segment) =>
+        typeof segment === 'string' ? (
+          <Fragment key={segment}>{segment}</Fragment>
+        ) : (
+          <StripLinkButton key={segment.text} link={segment} />
+        ),
+      )
     ) : (
       <>
         {message.before}
@@ -82,7 +119,7 @@ export function CapabilityMismatchStrip({
           onClick={() => {
             void invoke('open_url', { url: message.link.url });
           }}
-          className="cursor-pointer underline decoration-dotted underline-offset-2 decoration-[rgba(230,156,5,0.55)] text-[color:rgb(230,156,5)] hover:text-[color:rgb(245,176,30)] transition-colors"
+          className={LINK_CLASS}
         >
           {message.link.text} ↗
         </button>

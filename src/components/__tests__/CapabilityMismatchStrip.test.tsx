@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CapabilityMismatchStrip } from '../CapabilityMismatchStrip';
+import type { CapabilityMismatchMessage } from '../CapabilityMismatchStrip';
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
@@ -74,5 +75,46 @@ describe('CapabilityMismatchStrip', () => {
     expect(invoke).toHaveBeenCalledWith('open_url', {
       url: 'https://example.test/x',
     });
+  });
+
+  const segmentsMessage: CapabilityMismatchMessage = {
+    segments: [
+      "Ollama isn't running. ",
+      { text: 'Get Ollama', url: 'https://ollama.test/download' },
+      ' or ',
+      { text: 'switch to Built-in', nav: 'settings-providers' },
+      '.',
+    ],
+  };
+
+  it('renders the segments variant with a url link (↗) and a nav link (no ↗)', () => {
+    render(<CapabilityMismatchStrip message={segmentsMessage} />);
+    const strip = screen.getByTestId('capability-mismatch-strip');
+    expect(strip).toHaveTextContent(
+      "Ollama isn't running. Get Ollama ↗ or switch to Built-in.",
+    );
+    const links = screen.getAllByTestId('capability-mismatch-strip-link');
+    expect(links).toHaveLength(2);
+    // External link carries the ↗ glyph; in-app nav link does not.
+    expect(links[0]).toHaveTextContent('Get Ollama ↗');
+    expect(links[1]).toHaveTextContent('switch to Built-in');
+    expect(links[1].textContent).not.toContain('↗');
+    expect(links[1]).toHaveAttribute(
+      'aria-label',
+      'Switch to the Built-in provider in Settings',
+    );
+  });
+
+  it('opens the url for a segment url link and Settings for a nav link', () => {
+    render(<CapabilityMismatchStrip message={segmentsMessage} />);
+    const links = screen.getAllByTestId('capability-mismatch-strip-link');
+
+    fireEvent.click(links[0]);
+    expect(invoke).toHaveBeenCalledWith('open_url', {
+      url: 'https://ollama.test/download',
+    });
+
+    fireEvent.click(links[1]);
+    expect(invoke).toHaveBeenCalledWith('open_settings_to_providers');
   });
 });

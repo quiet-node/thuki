@@ -19,10 +19,25 @@ export const OCR_COMMANDS_DOC_URL =
 export const OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download';
 
 /**
- * Discriminated message shape consumed by `CapabilityMismatchStrip`. Most
- * branches return a plain string; the vision-conflict branches return a
- * three-part shape that embeds an inline link (the OCR-supported-commands
- * doc) inside the message so only the link text is clickable.
+ * An inline clickable action embedded in a strip message. A `url` link opens
+ * an external page in the user's browser and carries the ↗ external-link glyph;
+ * a `nav` link runs an in-app navigation (today only `settings-providers`,
+ * which opens Settings → Models → Providers) and omits ↗ because it never
+ * leaves Thuki.
+ */
+export type StripLink =
+  | { text: string; url: string }
+  | { text: string; nav: 'settings-providers' };
+
+/**
+ * Discriminated message shape consumed by `CapabilityMismatchStrip`:
+ * - a plain `string` for passive informational copy;
+ * - a three-part `{ before, link, after }` shape that embeds a single inline
+ *   url link (the OCR-supported-commands doc) so only the link text is
+ *   clickable;
+ * - a `{ segments }` list of text spans and {@link StripLink}s, used when a
+ *   message needs more than one link or an in-app `nav` action (the Ollama
+ *   unreachable copy: Get Ollama + switch to Built-in).
  */
 export type CapabilityConflictMessage =
   | string
@@ -30,7 +45,8 @@ export type CapabilityConflictMessage =
       before: string;
       link: { text: string; url: string };
       after: string;
-    };
+    }
+  | { segments: Array<string | StripLink> };
 
 /**
  * Compose-state inputs the gate inspects. `imageCount` covers manually
@@ -96,17 +112,22 @@ export const NO_MODELS_INSTALLED_MESSAGE =
 
 /**
  * Copy used when the local Ollama daemon cannot be reached (connection
- * refused, timeout, port closed). The recovery action is "start Ollama",
- * not "pull a model": telling the user to pull when the daemon is down
- * sends them down the wrong rabbit hole. Carries an inline {@link
- * OLLAMA_DOWNLOAD_URL} link so a user who switched providers without
- * installing Ollama can get it, rather than staring at an instruction
- * they have no way to act on.
+ * refused, timeout, port closed). Offers both ways out a user in this state
+ * needs: an external {@link OLLAMA_DOWNLOAD_URL} link for someone who never
+ * installed Ollama, and an in-app "switch to Built-in" link that opens
+ * Settings → Models → Providers so a user who tried Ollama can fall back to
+ * the bundled engine without hunting through Settings. Deliberately omits a
+ * "pull a model" hint: telling the user to pull when the daemon is down sends
+ * them down the wrong rabbit hole.
  */
 export const OLLAMA_UNREACHABLE_MESSAGE: CapabilityConflictMessage = {
-  before: "Ollama isn't running. Start Ollama and try again. ",
-  link: { text: 'Get Ollama', url: OLLAMA_DOWNLOAD_URL },
-  after: '',
+  segments: [
+    "Ollama isn't running. ",
+    { text: 'Get Ollama', url: OLLAMA_DOWNLOAD_URL },
+    ' or ',
+    { text: 'switch to Built-in', nav: 'settings-providers' },
+    '.',
+  ],
 };
 
 /**

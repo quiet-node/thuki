@@ -503,6 +503,10 @@ export function ProvidersPane({
                   <InlineLink url={OLLAMA_DOWNLOAD_URL} ariaLabel="Get Ollama">
                     Get Ollama ↗
                   </InlineLink>
+                  {/* Plain text, not a link: the built-in provider's switch is
+                      already on this screen (Other providers below), so the
+                      user can flip back without leaving Settings. */}
+                  {builtinProvider ? ' or switch to Built-in.' : null}
                 </span>
               )}
             </div>
