@@ -234,6 +234,11 @@ fn run_migrations(conn: &Connection) -> SqlResult<()> {
     // those, and every new install writes a non-NULL 0/1.
     ensure_column(conn, "installed_models", "reasoning_always", "INTEGER")?;
 
+    // Ordered shard set for a multi-part (split) GGUF model, JSON-encoded
+    // (`[{file, sha256, size_bytes}, ...]`). NULL or empty for an ordinary
+    // single-file model; the load shim rebuilds the split from it.
+    ensure_column(conn, "installed_models", "parts", "TEXT")?;
+
     Ok(())
 }
 

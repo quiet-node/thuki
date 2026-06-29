@@ -162,6 +162,36 @@ describe('DownloadProgress', () => {
       expect(screen.getByTestId('download-figures')).toHaveTextContent('0%');
       expect(screen.queryByText(/GB/)).not.toBeInTheDocument();
     });
+
+    it('renders the Part N of M subline for a multi-part download', () => {
+      renderProgress(
+        { phase: 'downloading' },
+        {
+          combinedBytes: 21.5e9,
+          grandTotalBytes: 64.5e9,
+          partLabel: 'Part 1 of 2',
+        },
+      );
+      expect(screen.getByTestId('download-figures')).toHaveTextContent(
+        '33% · 21.5 / 64.5 GB · Part 1 of 2',
+      );
+    });
+
+    it('shows the part label instead of finishing vision on a later shard', () => {
+      // A split model's later shards reuse the mmproj phase; the part label must
+      // win so a text model never reads "finishing vision".
+      renderProgress(
+        { phase: 'downloading_mmproj' },
+        {
+          combinedBytes: 50e9,
+          grandTotalBytes: 64.5e9,
+          partLabel: 'Part 2 of 2',
+        },
+      );
+      const figures = screen.getByTestId('download-figures');
+      expect(figures).toHaveTextContent('77% · 50.0 / 64.5 GB · Part 2 of 2');
+      expect(figures).not.toHaveTextContent('finishing vision');
+    });
   });
 
   it('renders an indeterminate verifying state', () => {

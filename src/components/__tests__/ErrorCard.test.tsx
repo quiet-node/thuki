@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
 import { ErrorCard } from '../ErrorCard';
 
 describe('ErrorCard', () => {
@@ -166,5 +166,80 @@ describe('ErrorCard', () => {
     ).toBeInTheDocument();
     // No ollama pull command in the builtin copy, so nothing is code-wrapped.
     expect(container.querySelector('code')).toBeNull();
+  });
+
+  // EngineStartFailed: fixed human title + the raw backend detail verbatim in a
+  // wrapped, scrollable block, plus a Switch model recovery action.
+  describe('EngineStartFailed', () => {
+    const RAW_DETAIL =
+      '0.00.032.387 E llama_model_load: error loading model: illegal split file idx: 1 (file: /Users/logan/Library/Application Support/com.quietnode.thuki/models/blobs/2b0095251d3b1cf9a4ca9d6f8a2793715422f90e9468ca2b3deef766a368a6d9), model must be loaded with the first split';
+
+    it('renders the fixed engine-start-failed title', () => {
+      render(<ErrorCard kind="EngineStartFailed" message={RAW_DETAIL} />);
+      expect(
+        screen.getByText("Thuki's engine couldn't start this model"),
+      ).toBeInTheDocument();
+    });
+
+    it('renders the raw backend detail verbatim, wrapped and scrollable', () => {
+      render(<ErrorCard kind="EngineStartFailed" message={RAW_DETAIL} />);
+      const detail = screen.getByText(RAW_DETAIL);
+      expect(detail).toBeInTheDocument();
+      // The detail block wraps and scrolls so a long blob path never overflows.
+      expect(detail.style.whiteSpace).toBe('normal');
+      expect(detail.style.overflowWrap).toBe('anywhere');
+      expect(detail.style.wordBreak).toBe('break-word');
+      expect(detail.style.maxHeight).toBe('84px');
+      expect(detail.style.overflow).toBe('auto');
+    });
+
+    it('shows the raw detail even when it contains no newline', () => {
+      render(
+        <ErrorCard kind="EngineStartFailed" message="single line failure" />,
+      );
+      expect(screen.getByText('single line failure')).toBeInTheDocument();
+    });
+
+    it('renders a Switch model button when onSwitchModel is provided', () => {
+      render(
+        <ErrorCard
+          kind="EngineStartFailed"
+          message={RAW_DETAIL}
+          onSwitchModel={vi.fn()}
+        />,
+      );
+      expect(
+        screen.getByRole('button', { name: 'Switch model' }),
+      ).toBeInTheDocument();
+    });
+
+    it('omits the Switch model button when onSwitchModel is absent', () => {
+      render(<ErrorCard kind="EngineStartFailed" message={RAW_DETAIL} />);
+      expect(screen.queryByRole('button', { name: 'Switch model' })).toBeNull();
+    });
+
+    it('fires onSwitchModel when the Switch model button is clicked', () => {
+      const onSwitchModel = vi.fn();
+      render(
+        <ErrorCard
+          kind="EngineStartFailed"
+          message={RAW_DETAIL}
+          onSwitchModel={onSwitchModel}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      expect(onSwitchModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the red accent bar', () => {
+      const { container } = render(
+        <ErrorCard kind="EngineStartFailed" message={RAW_DETAIL} />,
+      );
+      const bar = container.querySelector('[data-error-bar]');
+      expect(bar?.getAttribute('data-kind')).toBe('EngineStartFailed');
+      expect((bar as HTMLElement | null)?.style.background).toBe(
+        'rgb(239, 68, 68)',
+      );
+    });
   });
 });

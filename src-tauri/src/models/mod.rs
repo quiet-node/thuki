@@ -33,9 +33,9 @@ use crate::config::defaults::{
     DEFAULT_OLLAMA_SHOW_REQUEST_TIMEOUT_SECS, DEFAULT_OLLAMA_TAGS_REQUEST_TIMEOUT_SECS,
     HF_API_TIMEOUT_SECS, HF_BASE_URL, HF_SEARCH_LIMIT_MAX, MAX_HF_API_BODY_BYTES,
     MAX_HF_SEARCH_QUERY_LEN, MAX_MODEL_CONTEXT_LENGTH, MAX_MODEL_SLUG_LEN,
-    MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES, OPENAI_MODELS_TIMEOUT_SECS,
-    PROVIDER_ID_BUILTIN, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
-    RUNTIME_OVERHEAD_GB,
+    MAX_OLLAMA_SHOW_BODY_BYTES, MAX_OLLAMA_TAGS_BODY_BYTES, MAX_SPLIT_PARTS,
+    OPENAI_MODELS_TIMEOUT_SECS, PROVIDER_ID_BUILTIN, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA,
+    PROVIDER_KIND_OPENAI, RUNTIME_OVERHEAD_GB,
 };
 use crate::config::AppConfig;
 
@@ -1420,6 +1420,68 @@ pub fn quant_from_filename(file: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Coordinates parsed from a multi-part (split) GGUF shard filename.
+pub(crate) struct ShardName<'a> {
+    /// The shared stem before the `-NNNNN-of-MMMMM` suffix; the grouping key
+    /// that ties one quant's shards together (e.g. `gpt-oss-120b-Q8_0`).
+    prefix: &'a str,
+    /// 1-based position of this shard within the set.
+    index: u32,
+    /// Total number of shards the name declares.
+    total: u32,
+}
+
+/// Parses a `<prefix>-NNNNN-of-MMMMM.gguf` split-shard name, the exact format
+/// llama.cpp's `gguf-split` emits and Hugging Face's own tooling matches.
+/// Returns the coordinates only for a well-formed suffix with a non-empty
+/// prefix, exactly five digits in each field, and `1 <= index <= total <=
+/// MAX_SPLIT_PARTS`; any single-file or malformed name yields `None`.
+///
+/// Hand-scanned over the fixed-length ASCII suffix instead of via a regex: the
+/// walk is a constant number of byte comparisons, so a hostile repo filename
+/// cannot trigger catastrophic backtracking.
+///
+/// Crate-visible so the load-time shim ([`storage::ModelStore::materialize_split_shim`])
+/// can reuse the same validation before turning an untrusted shard filename into
+/// a symlink leaf: a name that fails here (path separators, `..`, wrong shape) is
+/// rejected rather than written to disk.
+pub(crate) fn parse_shard(file: &str) -> Option<ShardName<'_>> {
+    // Suffix layout, all ASCII: '-' NNNNN '-of-' MMMMM == 1 + 5 + 4 + 5 = 15.
+    const SUFFIX_LEN: usize = 15;
+    let stem = file.strip_suffix(".gguf")?;
+    let cut = stem.len().checked_sub(SUFFIX_LEN)?;
+    let tail = &stem.as_bytes()[cut..];
+    if tail[0] != b'-' || &tail[6..10] != b"-of-" {
+        return None;
+    }
+    let index = parse_five_digits(&tail[1..6])?;
+    let total = parse_five_digits(&tail[10..15])?;
+    if index == 0 || total == 0 || total > MAX_SPLIT_PARTS || index > total {
+        return None;
+    }
+    // `tail[0]` is ASCII `-`, so `cut` falls on a char boundary and this slice
+    // cannot panic; reject a name that is all suffix and no model prefix.
+    let prefix = &stem[..cut];
+    if prefix.is_empty() {
+        return None;
+    }
+    Some(ShardName {
+        prefix,
+        index,
+        total,
+    })
+}
+
+/// Parses exactly five ASCII bytes as a decimal number, or `None` on any
+/// non-digit byte. The fixed five-digit width keeps the value within `u32`.
+fn parse_five_digits(bytes: &[u8]) -> Option<u32> {
+    let mut value = 0u32;
+    for &byte in bytes {
+        value = value * 10 + (byte as char).to_digit(10)?;
+    }
+    Some(value)
+}
+
 /// Marker substrings that flag a GGUF model as emitting explicit reasoning
 /// tokens (rendered in the ThinkingBlock UI). There is no machine-readable
 /// thinking signal in GGUF metadata or the Hugging Face API, so detection reads
@@ -1449,12 +1511,16 @@ pub fn detect_thinking(repo: &str, file: &str) -> bool {
         .any(|marker| repo.contains(marker) || file.contains(marker))
 }
 
-/// A `.gguf` entry in a Hugging Face repo listing, for the paste-a-repo UI.
+/// A `.gguf` entry in a Hugging Face repo listing, for the model browser. A
+/// single-file model leaves `parts` empty; a multi-part (split) model collapses
+/// its shards into one entry whose `file`/`sha256` are the first shard's,
+/// `size_bytes` is the combined total, and `parts` lists every shard in order.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HfGgufFile {
-    /// File name within the repo (`rfilename`).
+    /// File name within the repo (`rfilename`); the first shard for a split set.
     pub file: String,
-    /// File size in bytes; 0 when the API reports no size.
+    /// File size in bytes; the combined size of all shards for a split set, and
+    /// 0 when the API reports no size.
     pub size_bytes: u64,
     /// LFS content digest: the blob key used to resume or discard the partial.
     /// Empty when the repo file is not LFS-backed (rare for GGUF weights).
@@ -1462,6 +1528,23 @@ pub struct HfGgufFile {
     /// Length of an interrupted partial for this file on disk, or `None` when
     /// there is none. Drives the Browse-all Paused / Resume / Discard row.
     pub partial_bytes: Option<u64>,
+    /// Ordered constituent shards when this entry is a multi-part model, empty
+    /// for an ordinary single-file model. Drives the "N parts" hint and the
+    /// download-every-shard flow; the engine reconstructs the split from these.
+    #[serde(default)]
+    pub parts: Vec<HfGgufPart>,
+}
+
+/// One shard of a multi-part (split) GGUF model: the data the downloader fetches
+/// and the load-time symlink shim names so llama.cpp can rejoin the set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HfGgufPart {
+    /// Shard filename within the repo, e.g. `model-00002-of-00003.gguf`.
+    pub file: String,
+    /// LFS content digest; the content-addressed blob key for this shard.
+    pub sha256: String,
+    /// Shard size in bytes.
+    pub size_bytes: u64,
 }
 
 /// Subset of the HF `/api/models/<repo>?blobs=true` response Thuki consumes.
@@ -1542,6 +1625,12 @@ pub struct RepoResolved {
     pub weights_size_bytes: u64,
     /// Vision projection companion, when present in the repo.
     pub mmproj: Option<MmprojCompanion>,
+    /// Ordered shards when `file` is the first shard of a multi-part (split)
+    /// model, empty for a single-file model. The DRY carrier the download and
+    /// manifest paths both read: every shard is downloaded, and the full set is
+    /// recorded so the load-time shim can rebuild the split. `weights_sha256`
+    /// and `weights_size_bytes` stay the first shard's (the representative).
+    pub parts: Vec<HfGgufPart>,
 }
 
 /// An `mmproj*.gguf` sibling shipped next to the weights file.
@@ -1595,23 +1684,40 @@ pub fn resolve_listing(body: &[u8], file: &str) -> Result<RepoResolved, String> 
                 size_bytes,
             })
         });
+    let parts = resolve_split_parts(&info.siblings, file);
     Ok(RepoResolved {
         revision,
         weights_sha256,
         weights_size_bytes,
         mmproj,
+        parts,
     })
 }
 
-/// Pure parse of an HF repo listing into the `.gguf` file browser rows.
-/// Excludes `mmproj*` companions: they download alongside their weights file
-/// and are never picked directly.
-pub fn parse_gguf_listing(body: &[u8]) -> Result<Vec<HfGgufFile>, String> {
-    let info: HfRepoInfo = serde_json::from_slice(body)
-        .map_err(|e| format!("failed to decode Hugging Face API response: {e}"))?;
-    Ok(info
-        .siblings
+/// Re-derives the ordered shard set when `file` is the first shard of a
+/// complete multi-part (split) model, reusing the same grouping the browser
+/// uses ([`group_split_files`]) so detection can never disagree between the
+/// listing and the download. Returns the shards in order, or an empty `Vec`
+/// when `file` is an ordinary single-file model, a lone/incomplete shard, or a
+/// non-first shard of a set (the frontend always passes the first shard as the
+/// representative, so a grouped entry is keyed on the first shard's name).
+fn resolve_split_parts(siblings: &[HfSibling], file: &str) -> Vec<HfGgufPart> {
+    gguf_files_from_siblings(siblings)
         .into_iter()
+        .find(|grouped| grouped.file == file)
+        .map(|grouped| grouped.parts)
+        .unwrap_or_default()
+}
+
+/// Projects an HF sibling listing onto the grouped `.gguf` browser rows: keeps
+/// LFS or plain-sized `.gguf` files, drops `mmproj*` companions, then collapses
+/// split shards into one entry each via [`group_split_files`]. The single
+/// sibling-to-row derivation, shared by [`parse_gguf_listing`] and
+/// [`resolve_split_parts`] so the browser listing and the resolve path can never
+/// disagree about what is a split set.
+fn gguf_files_from_siblings(siblings: &[HfSibling]) -> Vec<HfGgufFile> {
+    let files = siblings
+        .iter()
         .filter(|s| s.rfilename.ends_with(".gguf") && !is_mmproj(&s.rfilename))
         .map(|s| {
             let size_bytes = s.lfs.as_ref().and_then(|l| l.size).or(s.size).unwrap_or(0);
@@ -1621,13 +1727,123 @@ pub fn parse_gguf_listing(body: &[u8]) -> Result<Vec<HfGgufFile>, String> {
                 .and_then(|l| l.sha256.clone())
                 .unwrap_or_default();
             HfGgufFile {
-                file: s.rfilename,
+                file: s.rfilename.clone(),
                 size_bytes,
                 sha256,
                 partial_bytes: None,
+                parts: Vec::new(),
             }
         })
-        .collect())
+        .collect();
+    group_split_files(files)
+}
+
+/// Collapses multi-part (split) GGUF shards into one logical entry per model,
+/// leaving single-file entries untouched and in place. Shards are recognised by
+/// the `<prefix>-NNNNN-of-MMMMM.gguf` name ([`parse_shard`]) and grouped by
+/// `(prefix, total)`. A group surfaces as one [`HfGgufFile`] only when the
+/// complete `1..=total` set is present, taking the first shard's name and digest,
+/// the summed size, and the ordered shard list in `parts`. An incomplete or
+/// malformed set is dropped rather than shown, so a lone shard, which the engine
+/// cannot load on its own, is never offered for download. First-appearance order
+/// is preserved.
+fn group_split_files(files: Vec<HfGgufFile>) -> Vec<HfGgufFile> {
+    /// A position in the output: either a finished single file or a reference
+    /// into `groups` for an accumulating shard set.
+    enum Entry {
+        Single(HfGgufFile),
+        Group(usize),
+    }
+    /// One accumulating shard set: its declared total and the shards seen so far.
+    struct GroupAcc {
+        total: u32,
+        parts: Vec<(u32, HfGgufPart)>,
+    }
+
+    let mut order: Vec<Entry> = Vec::with_capacity(files.len());
+    let mut groups: Vec<GroupAcc> = Vec::new();
+    let mut index_of: std::collections::HashMap<(String, u32), usize> =
+        std::collections::HashMap::new();
+
+    for file in files {
+        match parse_shard(&file.file) {
+            None => order.push(Entry::Single(file)),
+            Some(shard) => {
+                let key = (shard.prefix.to_string(), shard.total);
+                let gi = match index_of.get(&key) {
+                    Some(&gi) => gi,
+                    None => {
+                        let gi = groups.len();
+                        groups.push(GroupAcc {
+                            total: shard.total,
+                            parts: Vec::new(),
+                        });
+                        index_of.insert(key, gi);
+                        order.push(Entry::Group(gi));
+                        gi
+                    }
+                };
+                groups[gi].parts.push((
+                    shard.index,
+                    HfGgufPart {
+                        file: file.file,
+                        sha256: file.sha256,
+                        size_bytes: file.size_bytes,
+                    },
+                ));
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(order.len());
+    for entry in order {
+        match entry {
+            Entry::Single(file) => out.push(file),
+            Entry::Group(gi) => {
+                let group = &mut groups[gi];
+                let parts = std::mem::take(&mut group.parts);
+                if let Some(file) = finish_split_group(parts, group.total) {
+                    out.push(file);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Builds the single [`HfGgufFile`] for a collected shard group, or `None` when
+/// the set is incomplete: ordered, the shards must number exactly `total` and
+/// cover the indices `1..=total` with no gap or duplicate. The first shard
+/// supplies the entry's name and digest; the size is the sum of all shards.
+fn finish_split_group(mut parts: Vec<(u32, HfGgufPart)>, total: u32) -> Option<HfGgufFile> {
+    parts.sort_by_key(|(index, _)| *index);
+    if parts.len() != total as usize
+        || parts
+            .iter()
+            .enumerate()
+            .any(|(position, (index, _))| *index != position as u32 + 1)
+    {
+        return None;
+    }
+    let size_bytes = parts.iter().map(|(_, part)| part.size_bytes).sum();
+    let parts: Vec<HfGgufPart> = parts.into_iter().map(|(_, part)| part).collect();
+    let HfGgufPart { file, sha256, .. } = parts[0].clone();
+    Some(HfGgufFile {
+        file,
+        size_bytes,
+        sha256,
+        partial_bytes: None,
+        parts,
+    })
+}
+
+/// Pure parse of an HF repo listing into the `.gguf` file browser rows. Excludes
+/// `mmproj*` companions (they download alongside their weights file and are never
+/// picked directly), then collapses split shards via [`group_split_files`].
+pub fn parse_gguf_listing(body: &[u8]) -> Result<Vec<HfGgufFile>, String> {
+    let info: HfRepoInfo = serde_json::from_slice(body)
+        .map_err(|e| format!("failed to decode Hugging Face API response: {e}"))?;
+    Ok(gguf_files_from_siblings(&info.siblings))
 }
 
 /// GETs `<base>/api/models/<repo>?blobs=true` with the production timeout and
@@ -2242,9 +2458,11 @@ async fn fetch_openai_models_inner(
     parse_openai_models(&buf)
 }
 
-/// Download specs for a resolved repo model: weights first, then the mmproj
-/// companion. URL shape matches [`registry::download_specs`]:
-/// `<base>/<repo>/resolve/<revision>/<file>`.
+/// Download specs for a resolved repo model: every weights shard first, then the
+/// mmproj companion. A single-file model emits one weights spec; a multi-part
+/// model emits one spec per shard, in order, so the whole split set is fetched
+/// and verified before the model is recorded. URL shape matches
+/// [`registry::download_specs`]: `<base>/<repo>/resolve/<revision>/<file>`.
 pub fn repo_download_specs(
     base_url: &str,
     repo: &str,
@@ -2260,12 +2478,27 @@ pub fn repo_download_specs(
             f
         )
     };
-    let mut specs = vec![download::DownloadSpec {
-        url: url(file),
-        file: file.to_string(),
-        sha256: resolved.weights_sha256.clone(),
-        total_bytes: resolved.weights_size_bytes,
-    }];
+    let mut specs: Vec<download::DownloadSpec> = if resolved.parts.is_empty() {
+        // Single-file model: one weights spec keyed on the representative digest.
+        vec![download::DownloadSpec {
+            url: url(file),
+            file: file.to_string(),
+            sha256: resolved.weights_sha256.clone(),
+            total_bytes: resolved.weights_size_bytes,
+        }]
+    } else {
+        // Multi-part model: one spec per shard, in order.
+        resolved
+            .parts
+            .iter()
+            .map(|part| download::DownloadSpec {
+                url: url(&part.file),
+                file: part.file.clone(),
+                sha256: part.sha256.clone(),
+                total_bytes: part.size_bytes,
+            })
+            .collect()
+    };
     if let Some(mm) = &resolved.mmproj {
         specs.push(download::DownloadSpec {
             url: url(&mm.file),
@@ -2301,6 +2534,10 @@ pub fn repo_installed_model(
         reasoning_always: false,
         mmproj_file: resolved.mmproj.as_ref().map(|m| m.file.clone()),
         mmproj_sha256: resolved.mmproj.as_ref().map(|m| m.sha256.clone()),
+        // Ordered shards for a multi-part model, empty for single-file. The
+        // representative file_name/sha256/size_bytes above stay the first
+        // shard's; the full set drives the load-time symlink shim.
+        parts: resolved.parts.clone(),
     }
 }
 
@@ -4535,6 +4772,7 @@ mod tests {
             reasoning_always: false,
             mmproj_file: None,
             mmproj_sha256: None,
+            parts: Vec::new(),
         }
     }
 
@@ -4984,6 +5222,148 @@ mod tests {
         assert_eq!(quant_from_filename(""), "");
     }
 
+    // ── Model library: split-shard detection + grouping ──────────────────────
+
+    /// Builds a single-file listing row (empty `parts`) for the grouping tests.
+    fn gguf_row(file: &str, size_bytes: u64, sha256: &str) -> HfGgufFile {
+        HfGgufFile {
+            file: file.to_string(),
+            size_bytes,
+            sha256: sha256.to_string(),
+            partial_bytes: None,
+            parts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn parse_shard_reads_well_formed_split_names() {
+        let a = parse_shard("Q8_0/gpt-oss-120b-Q8_0-00001-of-00003.gguf").unwrap();
+        assert_eq!(a.prefix, "Q8_0/gpt-oss-120b-Q8_0");
+        assert_eq!((a.index, a.total), (1, 3));
+        let b = parse_shard("model-00002-of-00002.gguf").unwrap();
+        assert_eq!((b.prefix, b.index, b.total), ("model", 2, 2));
+    }
+
+    #[test]
+    fn parse_shard_rejects_non_shard_and_out_of_range_names() {
+        for name in [
+            "model-F16.gguf",            // single file
+            "model.gguf",                // stem shorter than the suffix
+            "model-00001-of-00002.bin",  // not a .gguf
+            "modelx00001-of-00002.gguf", // suffix does not start with '-'
+            "model-00001-xf-00002.gguf", // missing the '-of-' separator
+            "model-1-of-2.gguf",         // not five digits
+            "model-0000a-of-00002.gguf", // non-digit in a field
+            "-00001-of-00002.gguf",      // empty prefix
+            "model-00000-of-00002.gguf", // zero index
+            "model-00001-of-00000.gguf", // zero total
+            "model-00003-of-00002.gguf", // index past total
+            "model-00001-of-01000.gguf", // total past MAX_SPLIT_PARTS
+        ] {
+            assert!(parse_shard(name).is_none(), "expected non-shard: {name}");
+        }
+    }
+
+    #[test]
+    fn group_split_files_collapses_a_complete_set_into_one_row() {
+        let grouped = group_split_files(vec![
+            gguf_row("m-Q8_0-00001-of-00002.gguf", 600, &"a".repeat(64)),
+            gguf_row("m-Q8_0-00002-of-00002.gguf", 400, &"b".repeat(64)),
+        ]);
+        assert_eq!(grouped.len(), 1);
+        let row = &grouped[0];
+        // The first shard's name and digest represent the logical model.
+        assert_eq!(row.file, "m-Q8_0-00001-of-00002.gguf");
+        assert_eq!(row.sha256, "a".repeat(64));
+        // Size is the combined total of every shard.
+        assert_eq!(row.size_bytes, 1000);
+        assert_eq!(row.parts.len(), 2);
+        assert_eq!(row.parts[0].file, "m-Q8_0-00001-of-00002.gguf");
+        assert_eq!(row.parts[1].file, "m-Q8_0-00002-of-00002.gguf");
+    }
+
+    #[test]
+    fn group_split_files_orders_shards_and_keeps_first_appearance() {
+        // Second shard listed first, with a single file interleaved.
+        let grouped = group_split_files(vec![
+            gguf_row("m-00002-of-00002.gguf", 400, &"b".repeat(64)),
+            gguf_row("solo.gguf", 50, &"c".repeat(64)),
+            gguf_row("m-00001-of-00002.gguf", 600, &"a".repeat(64)),
+        ]);
+        assert_eq!(grouped.len(), 2);
+        // The group holds the position of its first-seen shard, before `solo`,
+        // and its parts are ordered by index regardless of listing order.
+        assert_eq!(grouped[0].file, "m-00001-of-00002.gguf");
+        assert_eq!(grouped[0].parts[0].file, "m-00001-of-00002.gguf");
+        assert_eq!(grouped[0].parts[1].file, "m-00002-of-00002.gguf");
+        assert_eq!(grouped[0].size_bytes, 1000);
+        assert_eq!(grouped[1].file, "solo.gguf");
+        assert!(grouped[1].parts.is_empty());
+    }
+
+    #[test]
+    fn group_split_files_separates_quants_by_prefix() {
+        let grouped = group_split_files(vec![
+            gguf_row("m-Q4-00001-of-00002.gguf", 1, &"a".repeat(64)),
+            gguf_row("m-Q8-00001-of-00002.gguf", 1, &"c".repeat(64)),
+            gguf_row("m-Q4-00002-of-00002.gguf", 1, &"b".repeat(64)),
+            gguf_row("m-Q8-00002-of-00002.gguf", 1, &"d".repeat(64)),
+        ]);
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].file, "m-Q4-00001-of-00002.gguf");
+        assert_eq!(grouped[1].file, "m-Q8-00001-of-00002.gguf");
+    }
+
+    #[test]
+    fn group_split_files_drops_incomplete_or_malformed_sets() {
+        // Missing shard 1: nothing surfaced, so no lone shard is offered.
+        let only_second = group_split_files(vec![gguf_row(
+            "m-00002-of-00002.gguf",
+            400,
+            &"b".repeat(64),
+        )]);
+        assert!(only_second.is_empty());
+
+        // Right count but a duplicate index (no shard 2): dropped.
+        let duplicated = group_split_files(vec![
+            gguf_row("m-00001-of-00002.gguf", 1, &"a".repeat(64)),
+            gguf_row("m-00001-of-00002.gguf", 1, &"a".repeat(64)),
+        ]);
+        assert!(duplicated.is_empty());
+
+        // Same prefix, conflicting totals: two incomplete sets, both dropped.
+        let mismatched = group_split_files(vec![
+            gguf_row("m-00001-of-00002.gguf", 1, &"a".repeat(64)),
+            gguf_row("m-00001-of-00003.gguf", 1, &"b".repeat(64)),
+        ]);
+        assert!(mismatched.is_empty());
+    }
+
+    #[test]
+    fn group_split_files_leaves_single_files_untouched() {
+        let files = vec![
+            gguf_row("a.gguf", 1, &"a".repeat(64)),
+            gguf_row("b.gguf", 2, &"b".repeat(64)),
+        ];
+        assert_eq!(group_split_files(files.clone()), files);
+    }
+
+    #[test]
+    fn hf_gguf_part_serializes_for_frontend() {
+        let grouped = group_split_files(vec![
+            gguf_row("m-00001-of-00002.gguf", 600, &"a".repeat(64)),
+            gguf_row("m-00002-of-00002.gguf", 400, &"b".repeat(64)),
+        ]);
+        let v = serde_json::to_value(&grouped[0]).unwrap();
+        assert_eq!(
+            v["parts"],
+            serde_json::json!([
+                {"file": "m-00001-of-00002.gguf", "sha256": "a".repeat(64), "size_bytes": 600},
+                {"file": "m-00002-of-00002.gguf", "sha256": "b".repeat(64), "size_bytes": 400},
+            ])
+        );
+    }
+
     // ── Model library: HF listing parse ──────────────────────────────────────
 
     /// Canonical HF `/api/models/<repo>?blobs=true` fixture used across the
@@ -5016,18 +5396,21 @@ mod tests {
                     size_bytes: 1000,
                     sha256: "a".repeat(64),
                     partial_bytes: None,
+                    parts: Vec::new(),
                 },
                 HfGgufFile {
                     file: "extra.gguf".to_string(),
                     size_bytes: 7,
                     sha256: String::new(),
                     partial_bytes: None,
+                    parts: Vec::new(),
                 },
                 HfGgufFile {
                     file: "bare.gguf".to_string(),
                     size_bytes: 0,
                     sha256: String::new(),
                     partial_bytes: None,
+                    parts: Vec::new(),
                 },
             ]
         );
@@ -5064,6 +5447,7 @@ mod tests {
                     size_bytes: 100,
                     sha256: sha.clone(),
                     partial_bytes: None,
+                    parts: Vec::new(),
                 },
                 fit: None,
                 installed: false,
@@ -5074,6 +5458,7 @@ mod tests {
                     size_bytes: 50,
                     sha256: String::new(),
                     partial_bytes: None,
+                    parts: Vec::new(),
                 },
                 fit: None,
                 installed: false,
@@ -5098,6 +5483,7 @@ mod tests {
                 size_bytes: 100,
                 sha256: String::new(),
                 partial_bytes: None,
+                parts: Vec::new(),
             },
             fit: None,
             installed: false,
@@ -5122,6 +5508,7 @@ mod tests {
             size_bytes: 5,
             sha256: "a".repeat(64),
             partial_bytes: Some(3),
+            parts: Vec::new(),
         })
         .unwrap();
         assert_eq!(
@@ -5131,6 +5518,7 @@ mod tests {
                 "size_bytes": 5,
                 "sha256": "a".repeat(64),
                 "partial_bytes": 3,
+                "parts": [],
             })
         );
     }
@@ -5599,12 +5987,14 @@ mod tests {
                 size_bytes: 1 << 30,
                 sha256: String::new(),
                 partial_bytes: None,
+                parts: Vec::new(),
             },
             HfGgufFile {
                 file: "b.gguf".to_string(),
                 size_bytes: 0,
                 sha256: String::new(),
                 partial_bytes: None,
+                parts: Vec::new(),
             },
         ];
         let rows = annotate_gguf_rows(files.clone(), 64 << 30);
@@ -5632,6 +6022,7 @@ mod tests {
             reasoning_always: false,
             mmproj_file: None,
             mmproj_sha256: None,
+            parts: Vec::new(),
         };
         let views = build_installed_views(vec![model.clone()], 64 << 30);
         assert_eq!(views[0].fit, Some(registry::RamFit::Fits));
@@ -5667,6 +6058,7 @@ mod tests {
                 size_bytes: 42,
                 sha256: String::new(),
                 partial_bytes: None,
+                parts: Vec::new(),
             },
             fit: None,
             installed: false,
@@ -5678,6 +6070,7 @@ mod tests {
                 "size_bytes": 42,
                 "sha256": "",
                 "partial_bytes": serde_json::Value::Null,
+                "parts": [],
                 "fit": serde_json::Value::Null,
                 "installed": false,
             })
@@ -5915,6 +6308,26 @@ mod tests {
                 sha256: "b".repeat(64),
                 size_bytes: 200,
             }),
+            parts: Vec::new(),
+        }
+    }
+
+    /// A resolved multi-part model: `parts` carries `count` ordered shards and
+    /// the representative weights digest/size is the first shard's.
+    fn sample_resolved_split(count: u32) -> RepoResolved {
+        let parts: Vec<HfGgufPart> = (1..=count)
+            .map(|i| HfGgufPart {
+                file: format!("w-Q4_K_M-{i:05}-of-{count:05}.gguf"),
+                sha256: format!("{i:064}"),
+                size_bytes: 1000 + i as u64,
+            })
+            .collect();
+        RepoResolved {
+            revision: "c".repeat(40),
+            weights_sha256: parts[0].sha256.clone(),
+            weights_size_bytes: parts[0].size_bytes,
+            mmproj: None,
+            parts,
         }
     }
 
@@ -5973,6 +6386,105 @@ mod tests {
         assert!(!m.vision);
         assert_eq!(m.mmproj_file, None);
         assert_eq!(m.mmproj_sha256, None);
+        // A single-file model carries no shards.
+        assert!(m.parts.is_empty());
+    }
+
+    // ── Multi-part (split) GGUF resolution + download ────────────────────────
+
+    /// Builds an HF repo-listing body where `files` are `(rfilename, sha, size)`
+    /// LFS-backed siblings, pinned to a fixed 40-hex commit.
+    fn split_listing_body(files: &[(&str, &str, u64)]) -> Vec<u8> {
+        let siblings: Vec<serde_json::Value> = files
+            .iter()
+            .map(|(name, sha, size)| {
+                serde_json::json!({
+                    "rfilename": name,
+                    "lfs": { "sha256": sha, "size": size }
+                })
+            })
+            .collect();
+        serde_json::json!({ "sha": "c".repeat(40), "siblings": siblings })
+            .to_string()
+            .into_bytes()
+    }
+
+    #[test]
+    fn resolve_listing_derives_ordered_parts_for_a_split_set() {
+        // A complete two-shard set, listed out of order to prove ordering.
+        let body = split_listing_body(&[
+            ("model-00002-of-00002.gguf", &"2".repeat(64), 400),
+            ("model-00001-of-00002.gguf", &"1".repeat(64), 600),
+        ]);
+        // The first shard is the representative the frontend passes.
+        let resolved = resolve_listing(&body, "model-00001-of-00002.gguf").unwrap();
+        assert_eq!(resolved.parts.len(), 2);
+        assert_eq!(resolved.parts[0].file, "model-00001-of-00002.gguf");
+        assert_eq!(resolved.parts[1].file, "model-00002-of-00002.gguf");
+        // The representative weights digest/size is the first shard's.
+        assert_eq!(resolved.weights_sha256, "1".repeat(64));
+        assert_eq!(resolved.weights_size_bytes, 600);
+    }
+
+    #[test]
+    fn resolve_listing_leaves_parts_empty_for_a_single_file_model() {
+        let body = split_listing_body(&[("model-Q4_K_M.gguf", &"a".repeat(64), 1000)]);
+        let resolved = resolve_listing(&body, "model-Q4_K_M.gguf").unwrap();
+        assert!(resolved.parts.is_empty());
+    }
+
+    #[test]
+    fn resolve_listing_leaves_parts_empty_for_a_lone_shard() {
+        // A single shard of a declared two-shard set is incomplete, so it never
+        // groups: parts stays empty and the broken set is not offered as split.
+        let body = split_listing_body(&[("model-00001-of-00002.gguf", &"a".repeat(64), 1000)]);
+        let resolved = resolve_listing(&body, "model-00001-of-00002.gguf").unwrap();
+        assert!(resolved.parts.is_empty());
+    }
+
+    #[test]
+    fn repo_download_specs_emits_one_spec_per_shard() {
+        let r = sample_resolved_split(3);
+        let specs = repo_download_specs("https://huggingface.co", "o/r", &r.parts[0].file, &r);
+        assert_eq!(specs.len(), 3);
+        for (i, spec) in specs.iter().enumerate() {
+            assert_eq!(spec.file, r.parts[i].file);
+            assert_eq!(spec.sha256, r.parts[i].sha256);
+            assert_eq!(spec.total_bytes, r.parts[i].size_bytes);
+            assert_eq!(
+                spec.url,
+                format!(
+                    "https://huggingface.co/o/r/resolve/{}/{}",
+                    r.revision, r.parts[i].file
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn repo_download_specs_appends_mmproj_after_every_shard() {
+        let mut r = sample_resolved_split(2);
+        r.mmproj = Some(MmprojCompanion {
+            file: "mmproj-model-f16.gguf".to_string(),
+            sha256: "f".repeat(64),
+            size_bytes: 50,
+        });
+        let specs = repo_download_specs("https://huggingface.co", "o/r", &r.parts[0].file, &r);
+        // Two shards then the mmproj companion, in that order.
+        assert_eq!(specs.len(), 3);
+        assert_eq!(specs[2].file, "mmproj-model-f16.gguf");
+        assert_eq!(specs[2].sha256, "f".repeat(64));
+    }
+
+    #[test]
+    fn repo_installed_model_records_ordered_parts_for_a_split_model() {
+        let r = sample_resolved_split(2);
+        let m = repo_installed_model("o/r", &r.parts[0].file, &r);
+        assert_eq!(m.parts.len(), 2);
+        assert_eq!(m.parts, r.parts);
+        // The representative fields are the first shard's, unchanged.
+        assert_eq!(m.sha256, r.parts[0].sha256);
+        assert_eq!(m.file_name, r.parts[0].file);
     }
 
     // ── Capability detection: thinking heuristic ─────────────────────────────

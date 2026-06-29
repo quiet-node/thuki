@@ -432,6 +432,8 @@ pub fn to_installed_model(s: &Starter) -> InstalledModel {
         reasoning_always: s.reasoning_always,
         mmproj_file: s.mmproj_file.map(str::to_string),
         mmproj_sha256: s.mmproj_sha256.map(str::to_string),
+        // Curated starters are always single-file; no split shards.
+        parts: Vec::new(),
     }
 }
 

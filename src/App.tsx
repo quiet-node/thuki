@@ -3151,6 +3151,22 @@ function App() {
   }, [refreshModels, refreshModelCapabilities]);
 
   /**
+   * Opens (never toggles) the model picker from an `EngineStartFailed` error
+   * card so a failed model load is never a dead end. Unlike the toggle, this
+   * always opens: clicking "Switch model" twice must not close the picker. The
+   * builtin provider keeps the chat-mode picker mount reachable (its
+   * `ollamaReachable` flag is manifest-based, true even when the sidecar
+   * failed), so opening here surfaces the picker in place.
+   */
+  const handleSwitchModelFromError = useCallback(() => {
+    setIsModelPickerOpen(true);
+    setIsHistoryOpen(false);
+    setIsExportOpen(false);
+    void refreshModels();
+    void refreshModelCapabilities();
+  }, [refreshModels, refreshModelCapabilities]);
+
+  /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
    * requests emitted from the Rust backend.
    */
@@ -3541,6 +3557,7 @@ function App() {
                                     : undefined
                                 }
                                 isModelPickerOpen={isModelPickerOpen}
+                                onSwitchModel={handleSwitchModelFromError}
                                 onMinimize={handleMinimize}
                                 onExportToggle={
                                   messages.length > 0

@@ -306,6 +306,14 @@
   color: var(--t3);
 }
 
+/* Low-emphasis "· N parts" whisper after the combined size on a grouped
+ * multi-part (split) GGUF row. The muted token keeps it a quiet aside: the
+ * combined size carries the signal, this only notes it is multi-file. */
+.partsWhisper {
+  color: var(--t3);
+  font-size: 11px;
+}
+
 /* Icon-only download button on a quant row: the accent download-arrow, the
  * one control that actually starts a download. */
 .quantGet {
