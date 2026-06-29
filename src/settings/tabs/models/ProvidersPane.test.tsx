@@ -372,6 +372,16 @@ describe('ProvidersPane active hero', () => {
     expect(screen.getByText('No models installed')).toBeInTheDocument();
   });
 
+  it('shows a Get Ollama link when Ollama is unreachable', async () => {
+    mockInvoke({
+      get_model_picker_state: { active: null, all: [], ollamaReachable: false },
+    });
+    renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
+    const link = await screen.findByRole('button', { name: 'Get Ollama' });
+    expect(link).toBeInTheDocument();
+    expect(link.closest('span')).toHaveTextContent("Ollama isn't reachable.");
+  });
+
   it('warns when the Ollama URL is non-local', () => {
     renderPane(
       makeConfig('ollama', [

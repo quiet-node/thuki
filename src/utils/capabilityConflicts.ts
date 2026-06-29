@@ -11,6 +11,14 @@ export const OCR_COMMANDS_DOC_URL =
   'https://github.com/quiet-node/thuki/blob/main/docs/ocr-commands.md';
 
 /**
+ * Ollama's official download page, embedded in the unreachable copy so a
+ * user who switched to the Ollama provider without it installed has a path
+ * forward instead of a dead-end "start Ollama" instruction. Ollama owns the
+ * install steps, so we link out rather than duplicating them.
+ */
+export const OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download';
+
+/**
  * Discriminated message shape consumed by `CapabilityMismatchStrip`. Most
  * branches return a plain string; the vision-conflict branches return a
  * three-part shape that embeds an inline link (the OCR-supported-commands
@@ -90,10 +98,16 @@ export const NO_MODELS_INSTALLED_MESSAGE =
  * Copy used when the local Ollama daemon cannot be reached (connection
  * refused, timeout, port closed). The recovery action is "start Ollama",
  * not "pull a model": telling the user to pull when the daemon is down
- * sends them down the wrong rabbit hole.
+ * sends them down the wrong rabbit hole. Carries an inline {@link
+ * OLLAMA_DOWNLOAD_URL} link so a user who switched providers without
+ * installing Ollama can get it, rather than staring at an instruction
+ * they have no way to act on.
  */
-export const OLLAMA_UNREACHABLE_MESSAGE =
-  "Ollama isn't running. Start Ollama and try again.";
+export const OLLAMA_UNREACHABLE_MESSAGE: CapabilityConflictMessage = {
+  before: "Ollama isn't running. Start Ollama and try again. ",
+  link: { text: 'Get Ollama', url: OLLAMA_DOWNLOAD_URL },
+  after: '',
+};
 
 /**
  * Copy used when the built-in engine has no downloaded model yet. The
@@ -167,7 +181,7 @@ export function getEnvironmentMessage(
   installedCount: number,
   activeModel: string | null | undefined,
   providerKind: string,
-): string | null {
+): CapabilityConflictMessage | null {
   if (providerKind === 'builtin') {
     if (!ollamaReachable) return MODEL_STATE_UNAVAILABLE_MESSAGE;
     if (installedCount === 0) return BUILTIN_NO_MODELS_MESSAGE;

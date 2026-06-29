@@ -7,6 +7,7 @@ import {
   MODEL_STATE_UNAVAILABLE_MESSAGE,
   NO_MODELS_INSTALLED_MESSAGE,
   OCR_COMMANDS_DOC_URL,
+  OLLAMA_DOWNLOAD_URL,
   OLLAMA_UNREACHABLE_MESSAGE,
   OPENAI_NO_MODEL_MESSAGE,
   PICK_A_MODEL_MESSAGE,
@@ -617,6 +618,17 @@ describe('getEnvironmentMessage', () => {
       expect(getEnvironmentMessage(false, 3, 'gemma4:e4b', 'ollama')).toBe(
         OLLAMA_UNREACHABLE_MESSAGE,
       );
+    });
+
+    it('embeds a Get Ollama download link in the unreachable copy', () => {
+      // The unreachable copy carries an inline link so a user who switched
+      // to Ollama without installing it has a path forward, not a dead-end.
+      expect(OLLAMA_DOWNLOAD_URL).toBe('https://ollama.com/download');
+      expect(OLLAMA_UNREACHABLE_MESSAGE).toEqual({
+        before: "Ollama isn't running. Start Ollama and try again. ",
+        link: { text: 'Get Ollama', url: OLLAMA_DOWNLOAD_URL },
+        after: '',
+      });
     });
 
     it('returns the no-models copy when reachable but installed list is empty (S2)', () => {
