@@ -250,6 +250,20 @@ export function SettingsWindow() {
     };
   }, []);
 
+  // The ask-bar "Ollama isn't running" strip's "switch to Built-in" link opens
+  // this window on the Models tab's Providers pane so the user can flip the
+  // active provider back to the built-in engine. Forces the sub-view even if
+  // the window was last left on Library/Discover.
+  useEffect(() => {
+    const unlistenPromise = listen('thuki://settings-show-providers', () => {
+      setActiveTab('general');
+      setPendingModelsView('providers');
+    });
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
   // Keyboard shortcuts scoped to the Settings window.
   // Cmd+,: re-focus/re-raise (mac convention for "already open").
   // Cmd+W: hide the window (mac convention for closing a panel).

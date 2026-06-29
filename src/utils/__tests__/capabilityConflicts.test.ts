@@ -620,14 +620,19 @@ describe('getEnvironmentMessage', () => {
       );
     });
 
-    it('embeds a Get Ollama download link in the unreachable copy', () => {
-      // The unreachable copy carries an inline link so a user who switched
-      // to Ollama without installing it has a path forward, not a dead-end.
+    it('offers both Get Ollama and switch-to-Built-in in the unreachable copy', () => {
+      // The unreachable copy carries two inline actions so a user who switched
+      // to Ollama without running it has a path forward, not a dead-end: an
+      // external Get Ollama link and an in-app jump back to the built-in engine.
       expect(OLLAMA_DOWNLOAD_URL).toBe('https://ollama.com/download');
       expect(OLLAMA_UNREACHABLE_MESSAGE).toEqual({
-        before: "Ollama isn't running. Start Ollama and try again. ",
-        link: { text: 'Get Ollama', url: OLLAMA_DOWNLOAD_URL },
-        after: '',
+        segments: [
+          "Ollama isn't running. ",
+          { text: 'Get Ollama', url: OLLAMA_DOWNLOAD_URL },
+          ' or ',
+          { text: 'switch to Built-in', nav: 'settings-providers' },
+          '.',
+        ],
       });
     });
 

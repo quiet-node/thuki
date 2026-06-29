@@ -372,14 +372,35 @@ describe('ProvidersPane active hero', () => {
     expect(screen.getByText('No models installed')).toBeInTheDocument();
   });
 
-  it('shows a Get Ollama link when Ollama is unreachable', async () => {
+  it('shows a Get Ollama link and a plain switch-to-Built-in hint when Ollama is unreachable', async () => {
     mockInvoke({
       get_model_picker_state: { active: null, all: [], ollamaReachable: false },
     });
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
     const link = await screen.findByRole('button', { name: 'Get Ollama' });
     expect(link).toBeInTheDocument();
-    expect(link.closest('span')).toHaveTextContent("Ollama isn't reachable.");
+    const hint = link.closest('span');
+    expect(hint).toHaveTextContent(
+      "Ollama isn't reachable. Get Ollama ↗ or switch to Built-in.",
+    );
+    // The switch-to-Built-in hint is plain text, not a second link: the
+    // built-in provider's Switch is already on this screen.
+    expect(
+      within(hint as HTMLElement).queryByRole('button', {
+        name: /switch to Built-in/i,
+      }),
+    ).toBeNull();
+  });
+
+  it('omits the switch-to-Built-in hint when no built-in provider is configured', async () => {
+    mockInvoke({
+      get_model_picker_state: { active: null, all: [], ollamaReachable: false },
+    });
+    renderPane(makeConfig('ollama', [OLLAMA]));
+    const link = await screen.findByRole('button', { name: 'Get Ollama' });
+    const hint = link.closest('span');
+    expect(hint).toHaveTextContent("Ollama isn't reachable.");
+    expect(hint?.textContent).not.toContain('switch to Built-in');
   });
 
   it('warns when the Ollama URL is non-local', () => {
