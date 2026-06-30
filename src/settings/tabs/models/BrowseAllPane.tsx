@@ -442,7 +442,27 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
 
   return (
     <div className={styles.quantRow}>
-      <span className={styles.quantName}>{file.file}</span>
+      {/* The filename links to that exact file on Hugging Face. `subtle` keeps
+          it reading as plain text until hover, where it underlines to reveal it
+          is clickable; the native title surfaces the URL. */}
+      <InlineLink
+        url={`${HF_BASE_URL}/${repo}/blob/main/${file.file}`}
+        subtle
+        subtleColor="var(--t2)"
+        style={{
+          display: 'inline-block',
+          flex: 1,
+          minWidth: 0,
+          maxWidth: '100%',
+          fontSize: 11.5,
+          textAlign: 'left',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {file.file}
+      </InlineLink>
       {downloading && entry ? (
         <DownloadProgress
           state={entry.state}

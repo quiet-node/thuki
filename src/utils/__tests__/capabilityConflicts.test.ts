@@ -692,8 +692,18 @@ describe('getEnvironmentMessage', () => {
       expect(getEnvironmentMessage(true, 0, null, 'builtin')).toBe(
         BUILTIN_NO_MODELS_MESSAGE,
       );
-      expect(BUILTIN_NO_MODELS_MESSAGE).not.toContain('Ollama');
-      expect(BUILTIN_NO_MODELS_MESSAGE).not.toContain('ollama pull');
+      // The inline Settings link routes to the Discover download picker.
+      expect(BUILTIN_NO_MODELS_MESSAGE).toEqual({
+        segments: [
+          'No model downloaded yet. Download one in ',
+          { text: 'Settings', nav: 'settings-discover' },
+          ', then come back.',
+        ],
+      });
+      // Never mentions Ollama: the builtin provider does not talk to it.
+      const serialized = JSON.stringify(BUILTIN_NO_MODELS_MESSAGE);
+      expect(serialized).not.toContain('Ollama');
+      expect(serialized).not.toContain('ollama pull');
     });
 
     it('returns the pick-a-model copy when models are downloaded but none is active', () => {

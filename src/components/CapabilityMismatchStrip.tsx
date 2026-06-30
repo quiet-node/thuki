@@ -16,27 +16,36 @@ export type CapabilityMismatchMessage = CapabilityConflictMessage;
 const LINK_CLASS =
   'cursor-pointer underline decoration-dotted underline-offset-2 decoration-[rgba(230,156,5,0.55)] text-[color:rgb(230,156,5)] hover:text-[color:rgb(245,176,30)] transition-colors';
 
+/** Maps a `nav` target to its Tauri command and accessible label. */
+const NAV_ACTIONS = {
+  'settings-providers': {
+    command: 'open_settings_to_providers',
+    ariaLabel: 'Switch to the Built-in provider in Settings',
+  },
+  'settings-discover': {
+    command: 'open_settings_window',
+    ariaLabel: 'Open the model download picker in Settings',
+  },
+} as const;
+
 /**
  * Renders one {@link StripLink} as an inline button. A `url` link opens the
  * page in the browser and shows the ↗ external-link glyph; a `nav` link runs
- * the in-app action (open Settings → Providers) and omits ↗ since it stays in
- * Thuki.
+ * the in-app action (open the Settings Models tab on the Providers or Discover
+ * pane) and omits ↗ since it stays in Thuki.
  */
 function StripLinkButton({ link }: { link: StripLink }) {
+  const nav = 'nav' in link ? NAV_ACTIONS[link.nav] : null;
   return (
     <button
       type="button"
       data-testid="capability-mismatch-strip-link"
-      aria-label={
-        'url' in link
-          ? `Open ${link.url}`
-          : 'Switch to the Built-in provider in Settings'
-      }
+      aria-label={'url' in link ? `Open ${link.url}` : nav!.ariaLabel}
       onClick={() => {
         if ('url' in link) {
           void invoke('open_url', { url: link.url });
         } else {
-          void invoke('open_settings_to_providers');
+          void invoke(nav!.command);
         }
       }}
       className={LINK_CLASS}

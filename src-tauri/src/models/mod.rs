@@ -2643,10 +2643,20 @@ pub struct DeleteOutcome {
 
 /// Deletes a model from the manifest and removes the blobs no other row
 /// references. `builtin_model` is the builtin provider's currently configured
-/// model id; deleting it flags `clear_builtin` for the caller. Refuses while
-/// a download is in flight (it may be about to insert or share the very blobs
-/// being refcounted), holding the download-state lock across the removal so a
-/// concurrent claim cannot race the delete (mirrors `discard_partial_inner`).
+/// model id; deleting it flags `clear_builtin` for the caller.
+///
+/// The delete never blocks on a concurrent download. Instead it keeps any
+/// now-orphan blob that an in-flight download is mid-write for (or about to
+/// reference): `run_download` skips a blob whose final file already exists, so
+/// a finishing download that reuses this blob (a shared vision mmproj is the
+/// common case) would strand if the delete removed it out from under it. The
+/// kept blob stays on disk: if that download finalizes it re-adopts the blob (a
+/// later delete of the adopting row re-orphans it normally); if the download is
+/// instead cancelled before finalizing, the blob is left referenced by no row
+/// and is reclaimed only once a future install of a model that shares it
+/// re-adopts it. The download-state lock is held across the removal so a
+/// concurrent claim cannot race the in-flight check (mirrors
+/// `discard_partial_inner`).
 pub fn delete_installed_model_inner(
     state: &DownloadState,
     conn: &rusqlite::Connection,
@@ -2655,11 +2665,12 @@ pub fn delete_installed_model_inner(
     builtin_model: &str,
 ) -> Result<DeleteOutcome, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    if !guard.is_empty() {
-        return Err("a download is already in progress".to_string());
-    }
     let orphans = manifest::delete(conn, id).map_err(|e| e.to_string())?;
-    store.remove_blobs(&orphans).map_err(|e| e.to_string())?;
+    let removable: Vec<String> = orphans
+        .into_iter()
+        .filter(|sha| !sha_in_flight(&guard, sha))
+        .collect();
+    store.remove_blobs(&removable).map_err(|e| e.to_string())?;
     Ok(DeleteOutcome {
         clear_builtin: builtin_model == id,
     })
@@ -6696,27 +6707,41 @@ mod tests {
     }
 
     #[test]
-    fn delete_installed_model_inner_refuses_while_download_in_flight() {
+    fn delete_installed_model_inner_keeps_in_flight_blobs_but_never_blocks() {
         let conn = crate::database::open_in_memory().unwrap();
         let (_dir, store) = make_store();
         let state = DownloadState::default();
 
         let m = repo_installed_model("o/r", "w.gguf", &sample_resolved(false));
+
+        // A download of an UNRELATED blob does not block the delete, and the
+        // model's now-orphan blob is removed normally.
         manifest::insert(&conn, &m).unwrap();
         std::fs::write(store.blob_path(&m.sha256), b"w").unwrap();
-
-        // A claimed download slot must refuse the delete and leave the row
-        // and blob untouched, even though the in-flight download is a different
-        // model: a finishing download could insert or share refcounted blobs.
-        let _token = claim_download(&state, "other-model", vec![]).unwrap();
-        let err = delete_installed_model_inner(&state, &conn, &store, &m.id, "").unwrap_err();
-        assert_eq!(err, "a download is already in progress");
-        assert!(manifest::get(&conn, &m.id).unwrap().is_some());
-        assert!(store.blob_path(&m.sha256).exists());
-
-        // Releasing the slot lets the delete proceed.
+        let _other = claim_download(&state, "other-model", vec!["c".repeat(64)]).unwrap();
+        let out = delete_installed_model_inner(&state, &conn, &store, &m.id, &m.id).unwrap();
+        assert!(out.clear_builtin);
+        assert!(manifest::get(&conn, &m.id).unwrap().is_none());
+        assert!(!store.blob_path(&m.sha256).exists());
         release_download(&state, "other-model");
-        assert!(delete_installed_model_inner(&state, &conn, &store, &m.id, "").is_ok());
+
+        // A download writing one of the model's OWN blobs still lets the delete
+        // succeed (the row goes), but that blob is KEPT: the finishing download
+        // reuses it and would strand if it were removed.
+        manifest::insert(&conn, &m).unwrap();
+        std::fs::write(store.blob_path(&m.sha256), b"w").unwrap();
+        let _this = claim_download(&state, "this-model", vec![m.sha256.clone()]).unwrap();
+        let out = delete_installed_model_inner(&state, &conn, &store, &m.id, "").unwrap();
+        assert!(!out.clear_builtin);
+        assert!(manifest::get(&conn, &m.id).unwrap().is_none());
+        assert!(store.blob_path(&m.sha256).exists());
+        release_download(&state, "this-model");
+
+        // Deleting an id with no manifest row is a no-op success: nothing to
+        // orphan, nothing to remove.
+        assert!(
+            delete_installed_model_inner(&state, &conn, &store, "no/such:model.gguf", "").is_ok()
+        );
     }
 
     #[test]

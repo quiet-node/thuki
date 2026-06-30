@@ -65,6 +65,25 @@ describe('InlineLink', () => {
     expect(style).not.toContain('underline');
   });
 
+  it('applies subtleColor to the rest state only, leaving the hover accent intact', () => {
+    render(
+      <InlineLink url="https://huggingface.co" subtle subtleColor="var(--t2)">
+        file.gguf
+      </InlineLink>,
+    );
+    const link = screen.getByRole('button');
+    // At rest: the secondary colour override, not the default primary token.
+    let style = link.getAttribute('style') ?? '';
+    expect(style).toContain('var(--t2)');
+    expect(style).not.toContain('var(--t1)');
+
+    // On hover: the accent colour still returns (the override is rest-only).
+    fireEvent.mouseEnter(link);
+    style = link.getAttribute('style') ?? '';
+    expect(style).toContain('rgb(255, 184, 146)'); // #ffb892
+    expect(style).not.toContain('var(--t2)');
+  });
+
   it('merges per-surface style overrides over the base style', () => {
     render(
       <InlineLink url="https://example.com" style={{ fontWeight: 600 }}>

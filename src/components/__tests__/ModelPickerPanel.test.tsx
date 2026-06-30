@@ -7,10 +7,7 @@ import {
   OLLAMA_PILL_TOOLTIP,
 } from '../ModelPickerPanel';
 import type { ModelCapabilitiesMap } from '../../types/model';
-import {
-  BUILTIN_NO_MODELS_MESSAGE,
-  OPENAI_NO_MODEL_MESSAGE,
-} from '../../utils/capabilityConflicts';
+import { OPENAI_NO_MODEL_MESSAGE } from '../../utils/capabilityConflicts';
 import { invoke } from '@tauri-apps/api/core';
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -171,7 +168,9 @@ describe('ModelPickerPanel', () => {
   it('routes a builtin user to the Settings download picker in the empty state', () => {
     renderPanel({ models: [], providerKind: 'builtin' });
     const empty = screen.getByTestId('model-picker-empty');
-    expect(empty.textContent).toBe(BUILTIN_NO_MODELS_MESSAGE);
+    expect(empty.textContent).toBe(
+      'No model downloaded yet. Download one in Settings, then come back.',
+    );
     expect(empty.textContent).not.toContain('ollama pull');
   });
 

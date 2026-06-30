@@ -21,13 +21,14 @@ export const OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download';
 /**
  * An inline clickable action embedded in a strip message. A `url` link opens
  * an external page in the user's browser and carries the ↗ external-link glyph;
- * a `nav` link runs an in-app navigation (today only `settings-providers`,
- * which opens Settings → Models → Providers) and omits ↗ because it never
- * leaves Thuki.
+ * a `nav` link runs an in-app navigation and omits ↗ because it never leaves
+ * Thuki. The two nav targets open the Settings window's Models tab on the
+ * `settings-providers` (the provider switcher) or `settings-discover` (the
+ * download picker) pane.
  */
 export type StripLink =
   | { text: string; url: string }
-  | { text: string; nav: 'settings-providers' };
+  | { text: string; nav: 'settings-providers' | 'settings-discover' };
 
 /**
  * Discriminated message shape consumed by `CapabilityMismatchStrip`:
@@ -133,10 +134,17 @@ export const OLLAMA_UNREACHABLE_MESSAGE: CapabilityConflictMessage = {
 /**
  * Copy used when the built-in engine has no downloaded model yet. The
  * recovery action lives in Settings (the download picker), never in an
- * `ollama pull`: the builtin provider does not talk to Ollama at all.
+ * `ollama pull`: the builtin provider does not talk to Ollama at all. The
+ * inline `Settings` link opens the Settings window straight on the Models
+ * tab's Discover pane so the user lands on the download picker.
  */
-export const BUILTIN_NO_MODELS_MESSAGE =
-  'No model downloaded yet. Download one in Settings, then come back.';
+export const BUILTIN_NO_MODELS_MESSAGE: CapabilityConflictMessage = {
+  segments: [
+    'No model downloaded yet. Download one in ',
+    { text: 'Settings', nav: 'settings-discover' },
+    ', then come back.',
+  ],
+};
 
 /**
  * Copy used when an OpenAI-compatible provider has no model configured.
