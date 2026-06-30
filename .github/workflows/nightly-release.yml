@@ -53,7 +53,7 @@ jobs:
     name: Build and publish nightly DMG
     needs: guard
     if: needs.guard.outputs.should_build == 'true'
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -88,14 +88,14 @@ jobs:
       # The sidecar must be present before any cargo invocation. lint:backend
       # (cargo clippy) and test:all:coverage (cargo llvm-cov) both run build.rs,
       # which fails if binaries/llama-server-<triple> is missing. Restore the
-      # cache and fetch on miss before the first lint step, not after.
+      # cache and build on miss before the first lint step, not after.
       - name: Cache llama.cpp sidecar
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: src-tauri/binaries
-          key: llama-cpp-${{ runner.os }}-b9781-50e822733750dbc3
+          key: llama-cpp-${{ runner.os }}-b9781-51eae8cf-macos13.4
 
-      - name: Fetch llama-server sidecar
+      - name: Build llama-server sidecar
         run: bun run engine:ensure
 
       - name: Lint and format check

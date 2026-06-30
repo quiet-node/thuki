@@ -59,6 +59,8 @@ https://github.com/user-attachments/assets/b321725e-860d-4177-8309-f78a0eb26261
 
 Install the app, pick a model during onboarding, and start asking.
 
+> **Requirements:** macOS 13.4 (Ventura) or later, on Apple Silicon (M1/M2/M3/M4/M5).
+
 ### Recommended: one-line install
 
 ```bash
