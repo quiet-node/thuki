@@ -44,7 +44,7 @@ const LLAMA_CPP_REPO = 'https://github.com/ggml-org/llama.cpp.git';
 // in sync with `minimumSystemVersion` in src-tauri/tauri.conf.json.
 const MACOS_DEPLOYMENT_TARGET = '13.4';
 
-// CMake flags that make the build macOS-14 compatible and bundle-shaped.
+// CMake flags that make the build macOS 13.4 compatible and bundle-shaped.
 // CMAKE_OSX_DEPLOYMENT_TARGET is the load-bearing one (weak Metal import); the
 // rest keep the output relocatable, dependency-clean, and identical in shape to
 // what the bundle expects. See the file header for the why.
