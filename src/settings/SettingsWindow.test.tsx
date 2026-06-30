@@ -396,21 +396,21 @@ describe('SettingsWindow', () => {
     expect(__mockWindow.setFocus).not.toHaveBeenCalled();
   });
 
-  it('Cmd+W on the document hides the settings window', async () => {
+  it('Cmd+W on the document hides the settings window via the backend', async () => {
     render(<SettingsWindow />);
     await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
 
-    __mockWindow.hide.mockClear();
+    invokeMock.mockClear();
     fireEvent.keyDown(document, { key: 'w', metaKey: true });
-    expect(__mockWindow.hide).toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenCalledWith('hide_settings_window');
   });
 
-  it('the close button hides the window instead of quitting', async () => {
+  it('the close button hides the window via the backend instead of quitting', async () => {
     render(<SettingsWindow />);
     await waitFor(() => screen.getByRole('tab', { name: /Models/ }));
-    __mockWindow.hide.mockClear();
+    invokeMock.mockClear();
     fireEvent.click(screen.getByRole('button', { name: /Close/ }));
-    expect(__mockWindow.hide).toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenCalledWith('hide_settings_window');
   });
 
   it('mousedown on the chrome triggers startDragging when not on an interactive element', async () => {
