@@ -24,7 +24,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { cpus, tmpdir, totalmem } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -248,6 +248,16 @@ function verifyMacosCompatible(binDir: string): void {
   }
 }
 
+// Build parallelism capped by available RAM, not just core count. A `-O3` build
+// of the heavy ggml/llama translation units needs a few GB each; GitHub's macOS
+// runners have only ~7 GB, so an unbounded `-j` (one job per core) OOM-thrashes
+// and stalls mid-compile. Reserve ~1 GB for the OS and budget ~3 GB per job, so
+// a 7 GB runner uses 2 while a roomy dev machine still uses all its cores.
+function buildParallelism(): number {
+  const budgetByMemory = Math.floor((totalmem() / 1024 ** 3 - 1) / 3);
+  return Math.max(1, Math.min(cpus().length, budgetByMemory));
+}
+
 // Clones the pinned commit and builds llama-server. Returns the build's bin/
 // directory (llama-server plus its dylib closure), audited macOS-compatible.
 function buildFromSource(workDir: string): string {
@@ -273,7 +283,16 @@ function buildFromSource(workDir: string): string {
   ensureMetalCompiler();
   const buildDir = join(srcDir, 'build');
   runStreaming('cmake', ['-B', buildDir, '-S', srcDir, ...CMAKE_FLAGS]);
-  runStreaming('cmake', ['--build', buildDir, '--config', 'Release', '-j', '--target', 'llama-server']);
+  runStreaming('cmake', [
+    '--build',
+    buildDir,
+    '--config',
+    'Release',
+    '-j',
+    String(buildParallelism()),
+    '--target',
+    'llama-server',
+  ]);
   const binDir = join(buildDir, 'bin');
   verifyMacosCompatible(binDir);
   return binDir;
