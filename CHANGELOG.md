@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Renamed the `[model]` section in `config.toml` to `[inference]` and reshaped it from a single `ollama_url` string into the providers schema described above. There is no backward-compatibility shim for the section name: if you had a custom `[model]` section, rename it to `[inference]` after upgrading; a flat `ollama_url` inside `[inference]` is migrated automatically.
 - Active model selection is now strictly Option-typed end to end: when nothing is installed and nothing is persisted, Thuki refuses to dispatch requests and surfaces a "Pick a model" prompt instead of falling back to a hardcoded slug. The previous `DEFAULT_MODEL_NAME` constant has been removed.
 
+## [0.15.4](https://github.com/quiet-node/thuki/compare/v0.15.3...v0.15.4) (2026-06-30)
+
+
+### Bug Fixes
+
+* **windows:** make Settings and What's New standard single-Space windows ([#283](https://github.com/quiet-node/thuki/issues/283)) ([0196729](https://github.com/quiet-node/thuki/commit/0196729c8d3ef31a9ff188f692411fb409ca9da6))
+
 ## [0.15.3](https://github.com/quiet-node/thuki/compare/v0.15.2...v0.15.3) (2026-06-30)
 
 
