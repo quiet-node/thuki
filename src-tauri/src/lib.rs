@@ -347,6 +347,25 @@ fn set_onboarding_active_impl(active: bool) {
     ONBOARDING_ACTIVE.store(active, Ordering::SeqCst);
 }
 
+/// True while the Settings window is open (shown, not yet closed/hidden). Set
+/// in `show_settings_window`, cleared in the `settings` close handler. Combined
+/// with `ONBOARDING_ACTIVE` to decide the app's activation policy: Thuki is a
+/// menu-bar app and stays `Accessory` (no Dock icon, floating overlay) by
+/// default, but flips to `Regular` while a real window (Settings or onboarding)
+/// is open. Regular makes that window order and layer like a normal app window
+/// (it opens on top, but another app clicked afterwards rises above it) and
+/// surfaces a Dock icon so a user who clicks away can get back to it.
+static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// Whether the app should currently present as a regular foreground app (Dock
+/// icon + normal window layering) rather than a Dock-less `Accessory`. True
+/// while Settings or onboarding owns a real window; false when only the
+/// floating overlay is around. Pure so the policy decision is unit-tested
+/// without touching AppKit; `sync_activation_policy` applies it.
+fn wants_regular_activation() -> bool {
+    SETTINGS_OPEN.load(Ordering::SeqCst) || ONBOARDING_ACTIVE.load(Ordering::SeqCst)
+}
+
 /// Set once the user confirms a quit (or quits with no download in flight), so
 /// the re-entrant `ExitRequested` that `app.exit` raises is allowed straight
 /// through instead of re-prompting the download warning forever.
@@ -742,15 +761,60 @@ fn position_settings_window(window: &tauri::WebviewWindow) {
     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
 }
 
+/// Brings the app's activation policy in line with `wants_regular_activation`:
+/// `Regular` (Dock icon + normal window layering) while Settings or onboarding
+/// owns a real window, `Accessory` (Dock-less, floating overlay) otherwise.
+/// When flipping to Regular it also activates the app so the just-opened window
+/// comes to the front of the desktop instead of opening behind whatever was
+/// focused. Runs on the macOS main thread (AppKit is not thread-safe).
+///
+/// Thin AppKit wrapper, excluded from coverage; the decision it reads
+/// (`wants_regular_activation`) is unit-tested directly.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn sync_activation_policy(app_handle: &tauri::AppHandle) {
+    let regular = wants_regular_activation();
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        let _ = handle.set_activation_policy(if regular {
+            ActivationPolicy::Regular
+        } else {
+            ActivationPolicy::Accessory
+        });
+        if regular {
+            activate_app();
+        }
+    });
+}
+
+/// Activates the app (foregrounds it). Used when switching to `Regular` so a
+/// newly opened Settings/onboarding window orders front. `activateIgnoringOtherApps`
+/// is deprecated on macOS 14+ but still functional and is the broadest-compatible
+/// call (Thuki supports macOS 13.4+). Must be called on the macOS main thread.
+///
+/// Thin AppKit wrapper, excluded from coverage.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn activate_app() {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if !app.is_null() {
+            let _: () = msg_send![app, activateIgnoringOtherApps: true];
+        }
+    }
+}
+
 /// Shows (or focuses, if already visible) the Settings window.
 ///
 /// The settings window is converted to a ThukiSettingsPanel NSPanel subclass
-/// (done once in `init_settings_panel` during setup). Using NSPanel with
-/// `can_become_key_window: true` allows the window to receive keyboard focus
-/// without switching the app's ActivationPolicy to Regular. Switching to
-/// Regular is what causes the Dock icon to appear; restoring it back to
-/// Accessory is unreliable when the app is frontmost. Staying in Accessory
-/// mode permanently avoids both problems.
+/// (done once in `init_settings_panel` during setup). While it is open the app
+/// switches to `Regular` activation (`sync_activation_policy`): the panel sits
+/// at normal window level so it opens on top yet lets another app clicked
+/// afterwards rise above it, and a Dock icon appears so a user who clicks away
+/// can return. Closing the window restores `Accessory` (see the `settings`
+/// close handler).
 ///
 /// Idempotent: invoking while Settings is already visible re-focuses without
 /// double-mounting the React tree (close handler hides instead of destroying).
@@ -760,17 +824,14 @@ fn position_settings_window(window: &tauri::WebviewWindow) {
 fn show_settings_window(app_handle: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
+        // Flip to Regular activation (Dock icon + normal layering) and activate
+        // so the window orders front. Queued on the main thread before the show
+        // below, so the policy is in place as the panel appears.
+        SETTINGS_OPEN.store(true, Ordering::SeqCst);
+        sync_activation_policy(app_handle);
         let window = app_handle.get_webview_window("settings");
         match app_handle.get_webview_panel("settings") {
             Ok(panel) => {
-                // Deliberately NO activateIgnoringOtherApps here (same as
-                // show_overlay / show_update_window). Activating the app
-                // while another app owns a fullscreen Space makes macOS
-                // switch to this app's home desktop Space to present the
-                // window, stranding it away from the user. The panel's
-                // nonactivating style + can_join_all_spaces (see
-                // init_settings_panel) make it appear in-place on whatever
-                // Space the user is on instead.
                 let _ = app_handle.run_on_main_thread(move || {
                     if let Some(win) = window {
                         position_settings_window(&win);
@@ -1584,6 +1645,9 @@ fn finish_onboarding(
     // Onboarding no longer owns the window; release the gate before the
     // overlay show below (otherwise show_overlay would gate itself out).
     set_onboarding_active_impl(false);
+    // Back to the Dock-less Accessory overlay now that no real window is open.
+    #[cfg(target_os = "macos")]
+    sync_activation_policy(&app_handle);
 
     // The handoff below covers the panel (alpha 0) and resizes it to the ask bar
     // under cover; IntroStep fades it back in once the ask bar has painted. Arm
@@ -1763,20 +1827,18 @@ fn init_panel(app_handle: &tauri::AppHandle) {
 /// `get_webview_panel("settings")` retrieve the same panel without
 /// re-converting.
 ///
-/// Mirrors `init_panel` / `init_update_panel` for Space behavior. Settings
-/// is opened from the tray, which the user can trigger while another app
-/// owns a fullscreen Space. `move_to_active_space` was unreliable there:
-/// macOS has no regular-desktop anchor Space and silently stranded the
-/// panel on Space 1, so picking "Settings…" from the tray opened it on the
-/// desktop and the user had to swipe Spaces to find it. The
-/// `nonactivating_panel` style + showing without `activateIgnoringOtherApps`
-/// (see `show_settings_window`) avoids the app activation that forces a
-/// Space switch; `is_floating_panel` + `can_join_all_spaces` +
-/// `full_screen_auxiliary` make the panel present on whatever Space the
-/// user is on, including a fullscreen one. `can_become_key_window` (set in
-/// the macro) keeps the Settings form inputs focusable even though the
-/// panel is nonactivating. `hides_on_deactivate(false)` keeps it open if
-/// the user clicks back into the fullscreen app without closing it.
+/// While Settings is open the app runs under `Regular` activation
+/// (`show_settings_window` -> `sync_activation_policy`), so the window behaves
+/// like a normal app window: it opens on top, another app the user clicks
+/// afterwards rises above it, and a Dock icon offers a way back. That activation
+/// can pull the user to Thuki's Space when Settings is summoned from over
+/// another app's fullscreen Space; this is the accepted cost of a Dock icon and
+/// standard layering. `can_join_all_spaces` + `full_screen_auxiliary` still let
+/// the panel present on whatever Space it lands on. `can_become_key_window` (set
+/// in the macro) keeps the Settings form inputs focusable, and the
+/// `nonactivating_panel` style + the hover-activate tracking area keep those
+/// inputs alive after the panel is defocused without the app stealing focus.
+/// `hides_on_deactivate(false)` keeps it open when the user clicks away.
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn init_settings_panel(app_handle: &tauri::AppHandle) {
@@ -1787,7 +1849,11 @@ fn init_settings_panel(app_handle: &tauri::AppHandle) {
     match window.to_panel::<ThukiSettingsPanel>() {
         Ok(panel) => {
             panel.set_floating_panel(true);
-            panel.set_level(PanelLevel::Floating.value());
+            // Normal window level (0), not Floating: while Settings is open the
+            // app runs under Regular activation (see show_settings_window), so a
+            // normal level lets another app the user clicks afterwards rise
+            // above Settings instead of Settings staying pinned on top forever.
+            panel.set_level(0);
             panel.set_style_mask(StyleMask::empty().nonactivating_panel().into());
             panel.set_has_shadow(true);
             panel.set_hides_on_deactivate(false);
@@ -1897,6 +1963,9 @@ fn show_onboarding_window(app_handle: &tauri::AppHandle, stage: onboarding::Onbo
     // Mark onboarding as owning the main window so any activation that races in
     // (tray / double-tap Control) is gated out of the ask-bar show path.
     set_onboarding_active_impl(true);
+    // Onboarding is a foreground task: run under Regular activation so it gets a
+    // Dock icon (a lost user can click back to it) and normal window layering.
+    sync_activation_policy(app_handle);
     // Cover the transition: the resize + recenter below happen while the React
     // tree is still showing the previous step, so do them on an invisible panel
     // and let the frontend fade it back in once the new screen has settled. The
@@ -2774,6 +2843,13 @@ pub fn run() {
                     if let Some(window) = app_handle.get_webview_window("settings") {
                         let _ = window.hide();
                     }
+                    // Real window gone: drop the Dock icon and return to
+                    // Accessory (unless onboarding still owns a window).
+                    #[cfg(target_os = "macos")]
+                    {
+                        SETTINGS_OPEN.store(false, Ordering::SeqCst);
+                        sync_activation_policy(app_handle);
+                    }
                 } else if label == "update" {
                     // Hide instead of destroy so the NSPanel handle from
                     // init_update_panel stays valid for the next open
@@ -2881,6 +2957,27 @@ mod tests {
         assert!(ONBOARDING_ACTIVE.load(Ordering::SeqCst));
         set_onboarding_active_impl(false);
         assert!(!ONBOARDING_ACTIVE.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn wants_regular_activation_when_settings_or_onboarding_open() {
+        SETTINGS_OPEN.store(false, Ordering::SeqCst);
+        ONBOARDING_ACTIVE.store(false, Ordering::SeqCst);
+        assert!(!wants_regular_activation());
+
+        SETTINGS_OPEN.store(true, Ordering::SeqCst);
+        assert!(wants_regular_activation());
+        SETTINGS_OPEN.store(false, Ordering::SeqCst);
+
+        ONBOARDING_ACTIVE.store(true, Ordering::SeqCst);
+        assert!(wants_regular_activation());
+
+        SETTINGS_OPEN.store(true, Ordering::SeqCst);
+        assert!(wants_regular_activation());
+
+        SETTINGS_OPEN.store(false, Ordering::SeqCst);
+        ONBOARDING_ACTIVE.store(false, Ordering::SeqCst);
+        assert!(!wants_regular_activation());
     }
 
     #[test]
