@@ -238,3 +238,18 @@ jobs:
             "macos/${PAYLOAD}" \
             "macos/${PAYLOAD}.sig" \
             "macos/latest.json"
+
+      # Publish (un-draft) the release ONLY after every asset is uploaded.
+      # release-please creates the release as a draft (draft: true in
+      # release-please-config.json), so it stays hidden from
+      # releases/latest while this macOS job builds and uploads. Flipping
+      # the draft here is the atomic go-live: until this runs, the install
+      # script and the in-app updater keep resolving the previous good
+      # release instead of 404ing on a release whose DMG does not exist yet.
+      # No `if: always()` on purpose: a failed build leaves an unpublished
+      # draft and releases/latest stays on the last good version.
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
+        run: gh release edit "$TAG" --draft=false
