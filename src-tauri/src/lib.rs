@@ -761,14 +761,22 @@ fn position_settings_window(window: &tauri::WebviewWindow) {
     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
 }
 
-/// Brings the app's activation policy in line with `wants_regular_activation`:
-/// `Regular` (Dock icon + normal window layering) while Settings or onboarding
-/// owns a real window, `Accessory` (Dock-less, floating overlay) otherwise.
-/// When flipping to Regular it also activates the app so the just-opened window
-/// comes to the front of the desktop instead of opening behind whatever was
-/// focused. Runs on the macOS main thread (AppKit is not thread-safe).
+/// Shows or hides the Dock icon to match `wants_regular_activation`: visible
+/// (Dock icon + foreground window layering) while Settings or onboarding owns a
+/// real window, hidden (Dock-less floating overlay) otherwise. Runs on the macOS
+/// main thread (AppKit is not thread-safe).
 ///
-/// Thin AppKit wrapper, excluded from coverage; the decision it reads
+/// Uses Tauri's `set_dock_visibility`, which drives `TransformProcessType`
+/// (foreground <-> UIElement) under the hood. That is the API that reliably
+/// *removes* the Dock icon at runtime; a plain `setActivationPolicy(.accessory)`
+/// downgrade does not drop the icon once the app has been foreground, which is
+/// why the earlier attempts left it stuck on. `set_dock_visibility` also guards
+/// the macOS multiple-icon bug by ignoring a hide within ~1s of a show.
+///
+/// On show it additionally activates the app so the just-opened window orders to
+/// the front instead of appearing behind whatever was focused.
+///
+/// Thin wrapper, excluded from coverage; the decision it reads
 /// (`wants_regular_activation`) is unit-tested directly.
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -776,21 +784,19 @@ fn sync_activation_policy(app_handle: &tauri::AppHandle) {
     let regular = wants_regular_activation();
     let handle = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
-        let _ = handle.set_activation_policy(if regular {
-            ActivationPolicy::Regular
-        } else {
-            ActivationPolicy::Accessory
-        });
+        // `set_dock_visibility` drives TransformProcessType, the API that
+        // reliably adds and removes the Dock icon at runtime.
+        let _ = handle.set_dock_visibility(regular);
         if regular {
             activate_app();
         }
     });
 }
 
-/// Activates the app (foregrounds it). Used when switching to `Regular` so a
-/// newly opened Settings/onboarding window orders front. `activateIgnoringOtherApps`
-/// is deprecated on macOS 14+ but still functional and is the broadest-compatible
-/// call (Thuki supports macOS 13.4+). Must be called on the macOS main thread.
+/// Activates (foregrounds) the app so a newly opened Settings/onboarding window
+/// orders front. `activateIgnoringOtherApps` is deprecated on macOS 14+ but
+/// still functional and is the broadest-compatible call (Thuki supports macOS
+/// 13.4+). Must be called on the macOS main thread.
 ///
 /// Thin AppKit wrapper, excluded from coverage.
 #[cfg(target_os = "macos")]
@@ -876,6 +882,27 @@ fn open_settings_window(app_handle: tauri::AppHandle) {
 fn open_settings_to_providers(app_handle: tauri::AppHandle) {
     show_settings_window(&app_handle);
     let _ = app_handle.emit(SETTINGS_SHOW_PROVIDERS_EVENT, ());
+}
+
+/// Closes (hides) the Settings window from the frontend and drops the Dock icon.
+///
+/// The Settings window is closed by the frontend (its close button and Cmd+W),
+/// which calls this instead of `getCurrentWindow().hide()` directly. Routing the
+/// close through the backend is what lets the Dock-icon state stay correct: a
+/// raw `hide()` never reaches the Rust side, so `SETTINGS_OPEN` would stay set
+/// and the Dock icon would never come back down. Clearing the flag here and
+/// re-syncing hides the Dock icon (unless onboarding still owns a window). The
+/// window is hidden rather than destroyed so its React state survives reopen.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn hide_settings_window(app_handle: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    SETTINGS_OPEN.store(false, Ordering::SeqCst);
+    if let Some(window) = app_handle.get_webview_window("settings") {
+        let _ = window.hide();
+    }
+    #[cfg(target_os = "macos")]
+    sync_activation_policy(&app_handle);
 }
 
 /// Centers the "What's New" update window horizontally on its monitor and
@@ -2788,6 +2815,7 @@ pub fn run() {
             is_builtin_announced,
             open_settings_window,
             open_settings_to_providers,
+            hide_settings_window,
             #[cfg(not(coverage))]
             warmup::warm_up_model,
             #[cfg(not(coverage))]
@@ -2885,6 +2913,33 @@ pub fn run() {
                 // reclaimed. Best-effort, a leftover dir is harmless.
                 if let Some(store) = app_handle.try_state::<models::storage::ModelStore>() {
                     let _ = store.clear_split_shims();
+                }
+            }
+            // Dock-icon click. The icon is only present while Settings or
+            // onboarding owns a window, so refocus that window rather than
+            // summoning the ask-bar overlay (which is not what the icon
+            // represents). macOS delivers Reopen on dock click / Cmd-Tab.
+            //
+            // Refocus only - deliberately does NOT call show_settings_window,
+            // which would run position_settings_window and recenter a panel the
+            // user has dragged. A dock click should bring the existing panel
+            // forward in place, not snap it back to center.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => {
+                if SETTINGS_OPEN.load(Ordering::SeqCst) {
+                    if let Ok(panel) = app_handle.get_webview_panel("settings") {
+                        let _ = app_handle.run_on_main_thread(move || {
+                            panel.show_and_make_key();
+                        });
+                    } else if let Some(w) = app_handle.get_webview_window("settings") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                } else if ONBOARDING_ACTIVE.load(Ordering::SeqCst) {
+                    if let Some(w) = app_handle.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
                 }
             }
             _ => {}

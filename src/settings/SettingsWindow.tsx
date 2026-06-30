@@ -275,15 +275,18 @@ export function SettingsWindow() {
       }
       if (e.metaKey && e.key === 'w') {
         e.preventDefault();
-        void getCurrentWindow().hide();
+        void invoke('hide_settings_window');
       }
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, []);
 
+  // Route the close through the backend (not getCurrentWindow().hide()) so the
+  // Rust side clears its Settings-open flag and drops the macOS Dock icon. A
+  // raw hide() never reaches Rust, leaving the Dock icon stuck on.
   const handleHide = useCallback(() => {
-    void getCurrentWindow().hide();
+    void invoke('hide_settings_window');
   }, []);
 
   /**
