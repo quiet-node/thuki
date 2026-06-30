@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Renamed the `[model]` section in `config.toml` to `[inference]` and reshaped it from a single `ollama_url` string into the providers schema described above. There is no backward-compatibility shim for the section name: if you had a custom `[model]` section, rename it to `[inference]` after upgrading; a flat `ollama_url` inside `[inference]` is migrated automatically.
 - Active model selection is now strictly Option-typed end to end: when nothing is installed and nothing is persisted, Thuki refuses to dispatch requests and surfaces a "Pick a model" prompt instead of falling back to a hardcoded slug. The previous `DEFAULT_MODEL_NAME` constant has been removed.
 
+## [0.15.1](https://github.com/quiet-node/thuki/compare/v0.15.0...v0.15.1) (2026-06-30)
+
+
+### Bug Fixes
+
+* **ci:** cap engine build parallelism by RAM to avoid OOM stalls ([#270](https://github.com/quiet-node/thuki/issues/270)) ([6904cb2](https://github.com/quiet-node/thuki/commit/6904cb28506782050db00793187492ff31e72274))
+* **ci:** cap engine build parallelism by RAM to avoid OOM stalls on CI runners ([6904cb2](https://github.com/quiet-node/thuki/commit/6904cb28506782050db00793187492ff31e72274))
+* **ci:** fetch llama-server sidecar before lint in release job ([0824f2c](https://github.com/quiet-node/thuki/commit/0824f2cabb9a34d0ad669e14a0c328008e10e2f2))
+* **ci:** fetch llama-server sidecar before lint in release publish job ([#261](https://github.com/quiet-node/thuki/issues/261)) ([0824f2c](https://github.com/quiet-node/thuki/commit/0824f2cabb9a34d0ad669e14a0c328008e10e2f2))
+* **downloads:** RAM-fit starter swap, non-blocking sends, cross-window pause/discard sync ([#269](https://github.com/quiet-node/thuki/issues/269)) ([faf681c](https://github.com/quiet-node/thuki/commit/faf681c505781c699afa70ad711149737a451fa1))
+* **engine:** support macOS 13.4+ for the built-in engine ([#266](https://github.com/quiet-node/thuki/issues/266)) ([8226773](https://github.com/quiet-node/thuki/commit/8226773290244cf2c2036387aafdc8e0a8ee536f))
+* **models:** update UI for multi-part (split) GGUF models ([#267](https://github.com/quiet-node/thuki/issues/267)) ([3c0c1de](https://github.com/quiet-node/thuki/commit/3c0c1de0bdb3262d15df32a2527d536fa594877a))
+
 ## [0.15.0](https://github.com/quiet-node/thuki/compare/v0.14.3...v0.15.0) (2026-06-29)
 
 
