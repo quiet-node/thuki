@@ -6,11 +6,15 @@ name: Engine macOS Floor
 #
 # The static audit in scripts/ensure-llama-server.ts already checks the shipped
 # binary is built for the floor with a weak residency-set import. This goes one
-# step further and the only way to be certain: it builds the real shipped binary
-# (on macos-latest, the same SDK releases use) and then *launches it on a macOS
-# 13 runner*. If any future llama.cpp bump introduces a new hard import from a
-# macOS > 13 framework, `llama-server --version` aborts here with "Symbol not
-# found", failing the PR before it can ship.
+# step further: it builds the real shipped binary (on macos-15, the same SDK
+# releases use) and then *launches it on macos-14* — the oldest GitHub-hosted
+# macOS image (macOS 13 runners were removed at the end of 2025). macOS 14, like
+# our 13.4 floor, predates the macOS-15 residency-set API, so it exercises the
+# exact weak-import load path the floor uses; together with the static
+# weak-import audit (which covers the 13.4-to-14 gap), a clean launch proves the
+# engine loads on the floor. If a future llama.cpp bump hard-imports a symbol
+# from a macOS newer than the floor, `llama-server --version` aborts here with
+# "Symbol not found", failing the PR before it can ship.
 
 on:
   pull_request:
@@ -46,9 +50,10 @@ jobs:
           retention-days: 1
 
   loads-on-floor:
-    name: Engine loads on macOS 13
+    name: Engine loads on macOS 14
     needs: build
-    runs-on: macos-13
+    runs-on: macos-14
+    timeout-minutes: 15
     steps:
       - name: Download the built engine
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
