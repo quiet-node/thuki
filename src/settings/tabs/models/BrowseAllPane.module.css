@@ -290,16 +290,6 @@
   gap: 10px;
 }
 
-.quantName {
-  flex: 1;
-  min-width: 0;
-  font-size: 11.5px;
-  color: var(--t2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .quantSize {
   flex: none;
   font-size: 11px;

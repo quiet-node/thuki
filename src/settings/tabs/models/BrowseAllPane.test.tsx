@@ -455,6 +455,19 @@ describe('BrowseAllPane', () => {
     expect(screen.queryByText(/parts/)).not.toBeInTheDocument();
   });
 
+  it('opens the exact file on Hugging Face when a quant filename is clicked', async () => {
+    await renderPane();
+    const row = screen
+      .getByText('google/gemma-4-12b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
+    await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'gemma-q4.gguf' }));
+    expect(invokeMock).toHaveBeenCalledWith('open_url', {
+      url: 'https://huggingface.co/google/gemma-4-12b-it-GGUF/blob/main/gemma-q4.gguf',
+    });
+  });
+
   it('renders one grouped row with the combined size and a "N parts" whisper for a split GGUF', async () => {
     await renderPane(() => {}, { list_hf_repo_ggufs: GGUFS_MULTIPART });
     const row = screen

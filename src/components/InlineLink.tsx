@@ -60,6 +60,13 @@ interface InlineLinkProps {
   ariaLabel?: string;
   /** Render as plain heading text (no accent colour or underline). */
   subtle?: boolean;
+  /**
+   * Rest-state text colour for the `subtle` variant, overriding the default
+   * primary token. Use where the link sits among secondary copy and should
+   * match it at rest (e.g. a `var(--t2)` quant filename). Does not affect the
+   * hover accent, so the run still reveals itself as a link on hover.
+   */
+  subtleColor?: string;
   /** Per-surface style overrides merged last (e.g. weight, alignment). */
   style?: React.CSSProperties;
 }
@@ -69,12 +76,16 @@ export function InlineLink({
   children,
   ariaLabel,
   subtle,
+  subtleColor,
   style,
 }: InlineLinkProps) {
   const [hovered, setHovered] = useState(false);
   // The subtle variant only sheds its link look at rest; on hover it returns to
   // the accent treatment so the run still reads as a link before the click.
-  const variantStyle = subtle && !hovered ? SUBTLE_STYLE : ACCENT_STYLE;
+  const variantStyle =
+    subtle && !hovered
+      ? { ...SUBTLE_STYLE, ...(subtleColor ? { color: subtleColor } : {}) }
+      : ACCENT_STYLE;
   return (
     <button
       type="button"
