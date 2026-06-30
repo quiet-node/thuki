@@ -163,18 +163,24 @@ mod macos {
     /// one activation path is active at a time.
     fn clipboard_fallback() -> Option<String> {
         let before = clipboard_text();
+        // Clear the pasteboard before copying so a successful Cmd+C is
+        // detectable even when the freshly-copied text is byte-identical to
+        // what was already on the clipboard (e.g. re-selecting the same
+        // passage a second time). Diffing against `before` would otherwise
+        // silently treat that as "nothing was copied."
+        write_clipboard("");
         // SAFETY: Accessibility permission is checked before the activator starts.
         unsafe { simulate_cmd_c() };
         // Poll the pasteboard with exponential backoff instead of a fixed sleep.
         // Fast machines return in ~10ms. The first synthetic Cmd+C intermittently
         // fails to land in Electron text inputs (Discord's editor, Slack), so if
-        // nothing has changed by the midpoint we re-issue it once; a Cmd+C with
+        // nothing has landed by the midpoint we re-issue it once; a Cmd+C with
         // no selection is a harmless no-op. Worst case (no selection) ~315ms.
-        let mut after = before.clone();
+        let mut after = String::new();
         for (i, delay_ms) in [10u64, 20, 40, 65, 80, 100].into_iter().enumerate() {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
             after = clipboard_text();
-            if after != before {
+            if !after.is_empty() {
                 break;
             }
             if i == 2 {
@@ -187,7 +193,7 @@ mod macos {
             write_clipboard(&before);
         }
         let trimmed = after.trim().to_string();
-        if after != before && !trimmed.is_empty() {
+        if !trimmed.is_empty() {
             Some(trimmed)
         } else {
             None
