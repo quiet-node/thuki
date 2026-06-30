@@ -53,7 +53,7 @@ jobs:
     name: Build and publish nightly DMG
     needs: guard
     if: needs.guard.outputs.should_build == 'true'
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
