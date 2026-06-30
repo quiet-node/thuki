@@ -357,13 +357,24 @@ fn set_onboarding_active_impl(active: bool) {
 /// surfaces a Dock icon so a user who clicks away can get back to it.
 static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
 
+/// True while the "What's New" update window is open (shown, not yet
+/// closed/hidden). Set in `show_update_window`, cleared in the `update` close
+/// handler. Like `SETTINGS_OPEN`, it flips the app to `Regular` activation so the
+/// update window behaves like a normal app window (it opens on top, another app
+/// clicked afterwards rises above it, a Dock icon offers a way back) and so
+/// activating pulls the user to the window's Space instead of floating it over
+/// whatever Space they are on.
+static UPDATE_OPEN: AtomicBool = AtomicBool::new(false);
+
 /// Whether the app should currently present as a regular foreground app (Dock
 /// icon + normal window layering) rather than a Dock-less `Accessory`. True
-/// while Settings or onboarding owns a real window; false when only the
-/// floating overlay is around. Pure so the policy decision is unit-tested
-/// without touching AppKit; `sync_activation_policy` applies it.
+/// while Settings, the update window, or onboarding owns a real window; false
+/// when only the floating overlay is around. Pure so the policy decision is
+/// unit-tested without touching AppKit; `sync_activation_policy` applies it.
 fn wants_regular_activation() -> bool {
-    SETTINGS_OPEN.load(Ordering::SeqCst) || ONBOARDING_ACTIVE.load(Ordering::SeqCst)
+    SETTINGS_OPEN.load(Ordering::SeqCst)
+        || UPDATE_OPEN.load(Ordering::SeqCst)
+        || ONBOARDING_ACTIVE.load(Ordering::SeqCst)
 }
 
 /// Set once the user confirms a quit (or quits with no download in flight), so
@@ -937,9 +948,12 @@ fn position_update_window(window: &tauri::WebviewWindow) {
 /// Shows (or focuses, if already visible) the "What's New" update window.
 ///
 /// Mirrors `show_settings_window`: the window is converted to a
-/// `ThukiUpdatePanel` NSPanel subclass once during setup
-/// (`init_update_panel`), so it can take keyboard focus without flipping
-/// the app's ActivationPolicy to Regular (which would surface a Dock icon).
+/// `ThukiUpdatePanel` NSPanel subclass once during setup (`init_update_panel`),
+/// and while it is open the app flips to `Regular` activation
+/// (`sync_activation_policy`, gated on `UPDATE_OPEN`) so it behaves like a
+/// standard app window. The activation also pulls the user to the window's Space
+/// when it is summoned from over a fullscreen app. Closing it restores
+/// `Accessory` (see the `update` close handler).
 ///
 /// Idempotent: invoking while the window is already visible re-focuses
 /// without re-mounting the React tree (the close handler hides instead of
@@ -950,17 +964,14 @@ fn position_update_window(window: &tauri::WebviewWindow) {
 fn show_update_window(app_handle: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
+        // Flip to Regular activation (Dock icon + normal layering) and activate
+        // so the window orders front and macOS pulls the user to its Space when
+        // it is summoned from over a fullscreen app. Mirrors show_settings_window.
+        UPDATE_OPEN.store(true, Ordering::SeqCst);
+        sync_activation_policy(app_handle);
         let window = app_handle.get_webview_window("update");
         match app_handle.get_webview_panel("update") {
             Ok(panel) => {
-                // Deliberately NO activateIgnoringOtherApps here (same as
-                // show_settings_window / show_overlay). Activating the app
-                // while another app owns a fullscreen Space makes macOS
-                // switch to this app's home desktop Space to present the
-                // window, stranding it away from the user. The panel's
-                // nonactivating style + can_join_all_spaces (see
-                // init_update_panel) make it appear in-place on whatever
-                // Space the user is on instead.
                 let _ = app_handle.run_on_main_thread(move || {
                     if let Some(win) = window {
                         position_update_window(&win);
@@ -1856,16 +1867,23 @@ fn init_panel(app_handle: &tauri::AppHandle) {
 ///
 /// While Settings is open the app runs under `Regular` activation
 /// (`show_settings_window` -> `sync_activation_policy`), so the window behaves
-/// like a normal app window: it opens on top, another app the user clicks
-/// afterwards rises above it, and a Dock icon offers a way back. That activation
-/// can pull the user to Thuki's Space when Settings is summoned from over
-/// another app's fullscreen Space; this is the accepted cost of a Dock icon and
-/// standard layering. `can_join_all_spaces` + `full_screen_auxiliary` still let
-/// the panel present on whatever Space it lands on. `can_become_key_window` (set
-/// in the macro) keeps the Settings form inputs focusable, and the
-/// `nonactivating_panel` style + the hover-activate tracking area keep those
-/// inputs alive after the panel is defocused without the app stealing focus.
-/// `hides_on_deactivate(false)` keeps it open when the user clicks away.
+/// like a normal macOS app window: it opens on top, another app the user clicks
+/// afterwards rises above it, and a Dock icon offers a way back.
+///
+/// The collection behavior is `Managed` (the AppKit default for an ordinary app
+/// window), deliberately NOT `can_join_all_spaces` + `full_screen_auxiliary`.
+/// Those two are the overlay flags: they make a window appear on every Space,
+/// follow the user across Space switches, and float over another app's
+/// fullscreen Space. The ask-bar/chat overlay wants exactly that; Settings does
+/// not. A `Managed` window is bound to a single Space, so it stays put when the
+/// user swipes to a different fullscreen app, and the `Regular` activation above
+/// pulls the user to the window's Space when Settings is summoned from over a
+/// fullscreen app, matching how the system Settings app and other standard Mac
+/// apps behave. `can_become_key_window` (set in the macro) keeps the Settings
+/// form inputs focusable, and the `nonactivating_panel` style + the
+/// hover-activate tracking area keep those inputs alive after the panel is
+/// defocused without the app stealing focus. `hides_on_deactivate(false)` keeps
+/// it open when the user clicks away.
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn init_settings_panel(app_handle: &tauri::AppHandle) {
@@ -1884,12 +1902,12 @@ fn init_settings_panel(app_handle: &tauri::AppHandle) {
             panel.set_style_mask(StyleMask::empty().nonactivating_panel().into());
             panel.set_has_shadow(true);
             panel.set_hides_on_deactivate(false);
-            panel.set_collection_behavior(
-                CollectionBehavior::new()
-                    .full_screen_auxiliary()
-                    .can_join_all_spaces()
-                    .into(),
-            );
+            // `Managed`, not the overlay flags: bind Settings to a single Space
+            // so it behaves like a standard app window (stays put when the user
+            // swipes to another fullscreen app; the `Regular` activation in
+            // show_settings_window pulls the user to its Space instead of
+            // floating it over a fullscreen app). See the function doc comment.
+            panel.set_collection_behavior(CollectionBehavior::new().managed().into());
             // Hover-activate: take key focus the moment the cursor enters the
             // Settings overlay, mirroring init_panel. Pairs with the
             // `active_always` tracking area on ThukiSettingsPanel so a defocused
@@ -1905,21 +1923,20 @@ fn init_settings_panel(app_handle: &tauri::AppHandle) {
 /// Converts the update Tauri window into a ThukiUpdatePanel NSPanel
 /// subclass. Called once during app setup.
 ///
-/// Mirrors `init_panel` (the overlay), NOT `init_settings_panel`. The
-/// update window is opened from the overlay footer, which the user can
-/// summon while another app owns a fullscreen Space. Three things together
-/// make the panel appear in-place on that Space instead of being yanked to
-/// the app's regular desktop Space. First, the `nonactivating_panel` style
-/// combined with showing it without `activateIgnoringOtherApps` (see
-/// `show_update_window`) avoids activating the app, since activation forces
-/// macOS to switch to the app's home Space. Second, `is_floating_panel`
-/// (utility panel) floats with the active Space rather than being tied to
-/// the app's window Space. Third, `can_join_all_spaces` plus
-/// `full_screen_auxiliary` makes it present on every Space, including a
-/// fullscreen one. `can_become_key_window` (set in the macro) keeps the
-/// four buttons clickable even though the panel is nonactivating, and
-/// `hides_on_deactivate(false)` keeps it up if the user clicks back into
-/// the fullscreen app without choosing an action.
+/// Mirrors `init_settings_panel`, NOT `init_panel` (the overlay). The "What's
+/// New" window is a window-style surface, so it should behave like a standard
+/// macOS app window rather than a Space-following overlay. While it is open the
+/// app runs under `Regular` activation (`show_update_window` ->
+/// `sync_activation_policy`, gated on `UPDATE_OPEN`): it opens on top, another
+/// app the user clicks afterwards rises above it (normal window level, not
+/// floating), and a Dock icon offers a way back. The collection behavior is
+/// `Managed` (bound to a single Space), so it stays put when the user swipes to
+/// another fullscreen app, and the `Regular` activation pulls the user to the
+/// window's Space when it is summoned from over a fullscreen app, instead of
+/// floating over whatever Space they are on. `can_become_key_window` (set in the
+/// macro) keeps the four action buttons clickable even though the panel is
+/// nonactivating, and `hides_on_deactivate(false)` keeps it up if the user
+/// clicks away without choosing an action.
 #[cfg(target_os = "macos")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn init_update_panel(app_handle: &tauri::AppHandle) {
@@ -1930,16 +1947,19 @@ fn init_update_panel(app_handle: &tauri::AppHandle) {
     match window.to_panel::<ThukiUpdatePanel>() {
         Ok(panel) => {
             panel.set_floating_panel(true);
-            panel.set_level(PanelLevel::Floating.value());
+            // Normal window level (0), not Floating: while the window is open the
+            // app runs under Regular activation (see show_update_window), so a
+            // normal level lets another app the user clicks afterwards rise above
+            // it instead of the window staying pinned on top forever.
+            panel.set_level(0);
             panel.set_style_mask(StyleMask::empty().nonactivating_panel().into());
             panel.set_has_shadow(true);
             panel.set_hides_on_deactivate(false);
-            panel.set_collection_behavior(
-                CollectionBehavior::new()
-                    .full_screen_auxiliary()
-                    .can_join_all_spaces()
-                    .into(),
-            );
+            // `Managed`, not the overlay flags: bind the update window to a single
+            // Space so it behaves like a standard app window (stays put when the
+            // user swipes to another fullscreen app; the Regular activation in
+            // show_update_window pulls the user to its Space). See the doc comment.
+            panel.set_collection_behavior(CollectionBehavior::new().managed().into());
             // Hover-activate: take key focus the moment the cursor enters the
             // update overlay, mirroring init_panel. Pairs with the
             // `active_always` tracking area on ThukiUpdatePanel so a defocused
@@ -2886,6 +2906,13 @@ pub fn run() {
                     if let Some(window) = app_handle.get_webview_window("update") {
                         let _ = window.hide();
                     }
+                    // Real window gone: drop the Dock icon and return to
+                    // Accessory (unless Settings or onboarding still owns one).
+                    #[cfg(target_os = "macos")]
+                    {
+                        UPDATE_OPEN.store(false, Ordering::SeqCst);
+                        sync_activation_policy(app_handle);
+                    }
                 }
             }
             RunEvent::ExitRequested { api, .. } => {
@@ -2915,10 +2942,10 @@ pub fn run() {
                     let _ = store.clear_split_shims();
                 }
             }
-            // Dock-icon click. The icon is only present while Settings or
-            // onboarding owns a window, so refocus that window rather than
-            // summoning the ask-bar overlay (which is not what the icon
-            // represents). macOS delivers Reopen on dock click / Cmd-Tab.
+            // Dock-icon click. The icon is only present while Settings, the
+            // update window, or onboarding owns a window, so refocus that window
+            // rather than summoning the ask-bar overlay (which is not what the
+            // icon represents). macOS delivers Reopen on dock click / Cmd-Tab.
             //
             // Refocus only - deliberately does NOT call show_settings_window,
             // which would run position_settings_window and recenter a panel the
@@ -2932,6 +2959,15 @@ pub fn run() {
                             panel.show_and_make_key();
                         });
                     } else if let Some(w) = app_handle.get_webview_window("settings") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                } else if UPDATE_OPEN.load(Ordering::SeqCst) {
+                    if let Ok(panel) = app_handle.get_webview_panel("update") {
+                        let _ = app_handle.run_on_main_thread(move || {
+                            panel.show_and_make_key();
+                        });
+                    } else if let Some(w) = app_handle.get_webview_window("update") {
                         let _ = w.show();
                         let _ = w.set_focus();
                     }
@@ -3015,8 +3051,9 @@ mod tests {
     }
 
     #[test]
-    fn wants_regular_activation_when_settings_or_onboarding_open() {
+    fn wants_regular_activation_when_settings_update_or_onboarding_open() {
         SETTINGS_OPEN.store(false, Ordering::SeqCst);
+        UPDATE_OPEN.store(false, Ordering::SeqCst);
         ONBOARDING_ACTIVE.store(false, Ordering::SeqCst);
         assert!(!wants_regular_activation());
 
@@ -3024,13 +3061,19 @@ mod tests {
         assert!(wants_regular_activation());
         SETTINGS_OPEN.store(false, Ordering::SeqCst);
 
+        UPDATE_OPEN.store(true, Ordering::SeqCst);
+        assert!(wants_regular_activation());
+        UPDATE_OPEN.store(false, Ordering::SeqCst);
+
         ONBOARDING_ACTIVE.store(true, Ordering::SeqCst);
         assert!(wants_regular_activation());
 
         SETTINGS_OPEN.store(true, Ordering::SeqCst);
+        UPDATE_OPEN.store(true, Ordering::SeqCst);
         assert!(wants_regular_activation());
 
         SETTINGS_OPEN.store(false, Ordering::SeqCst);
+        UPDATE_OPEN.store(false, Ordering::SeqCst);
         ONBOARDING_ACTIVE.store(false, Ordering::SeqCst);
         assert!(!wants_regular_activation());
     }
