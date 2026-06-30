@@ -1174,6 +1174,13 @@ pub struct DownloadState(pub std::sync::Mutex<std::collections::HashMap<String, 
 /// [`ActiveDownload`] with a present `event`.
 pub const DOWNLOAD_PROGRESS_EVENT: &str = "thuki://download-progress";
 
+/// Tauri event broadcast to every webview after the on-disk model set changes
+/// (currently: a partial download was discarded, deleting its file). A window
+/// that did not perform the discard re-reads its curated model list so the
+/// now-deleted partial stops showing as a "Paused / Resume / Discard" row.
+/// Mirrors the cross-window [`DOWNLOAD_PROGRESS_EVENT`] pattern; payloadless.
+pub const MODELS_CHANGED_EVENT: &str = "thuki://models-changed";
+
 /// A snapshot of one in-flight download for a window that did not start it: the
 /// slot `key`, the blob `shas` it writes (the cross-window match discriminator),
 /// and its latest progress `event` (`None` until the first event arrives).
@@ -1325,15 +1332,17 @@ fn annotate_starter(
     }
 }
 
-/// The onboarding starter picker rows: exactly the three tier heroes, annotated
-/// for this machine. Onboarding's 3-up comparison is fixed at one model per
-/// tier, so it draws only the heroes even as the Staff Picks catalog grows.
+/// The onboarding starter picker rows: three tier heroes annotated for this
+/// machine. Onboarding's 3-up comparison is fixed at one model per tier, so it
+/// draws only the heroes even as the Staff Picks catalog grows. On a machine too
+/// small for every default hero, the lighter small-machine trio is shown
+/// instead (see [`registry::select_onboarding_heroes`]).
 pub fn build_starter_options(
     conn: &rusqlite::Connection,
     store: &storage::ModelStore,
     ram_bytes: u64,
 ) -> Vec<StarterOption> {
-    registry::onboarding_heroes()
+    registry::select_onboarding_heroes(ram_bytes)
         .into_iter()
         .map(|s| annotate_starter(s, conn, store, ram_bytes))
         .collect()
@@ -1361,17 +1370,19 @@ pub fn starter_for_id(id: &str) -> Result<&'static registry::Starter, String> {
 }
 
 /// Maps a frontend tier string (`"fast" | "balanced" | "smartest"`) onto the
-/// onboarding hero for that tier. The hero is resolved by id from
-/// [`registry::ONBOARDING_HERO_IDS`], so adding more models of the same tier to
-/// the Staff Picks catalog never changes which model onboarding downloads.
-pub fn starter_for_tier(tier: &str) -> Result<&'static registry::Starter, String> {
+/// onboarding hero for that tier on a machine with `ram_bytes` of memory. The
+/// hero comes from [`registry::select_onboarding_heroes`], the same RAM-aware
+/// list the picker renders, so the tier the user taps downloads exactly the
+/// model shown in that column (default trio, or the small-machine trio when the
+/// machine is too small for every default hero).
+pub fn starter_for_tier(tier: &str, ram_bytes: u64) -> Result<&'static registry::Starter, String> {
     let idx = match tier {
         "fast" => 0,
         "balanced" => 1,
         "smartest" => 2,
         other => return Err(format!("unknown starter tier: {other}")),
     };
-    starter_for_id(registry::ONBOARDING_HERO_IDS[idx])
+    Ok(registry::select_onboarding_heroes(ram_bytes)[idx])
 }
 
 /// The builtin provider's currently configured model id (empty when none).
@@ -2762,7 +2773,7 @@ pub fn download_starter(
     app: tauri::AppHandle,
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
-    let starter = starter_for_tier(&tier)?;
+    let starter = starter_for_tier(&tier, system_ram_bytes())?;
     let specs = registry::download_specs(starter);
     let token = claim_download(&download_state, &key, spec_shas(&specs))?;
     spawn_model_download(
@@ -2876,22 +2887,35 @@ pub async fn list_openai_models(
 
 /// Cancels the in-flight model download identified by `key`, if any. The
 /// download task emits `Cancelled` and keeps the partial for a later resume.
-/// Other concurrent downloads are unaffected.
+/// Other concurrent downloads are unaffected. Broadcasts [`MODELS_CHANGED_EVENT`]
+/// so every window re-reads its model list and shows the now-paused (resumable)
+/// state in place, whichever window initiated the pause.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub fn cancel_model_download(key: String, download_state: tauri::State<'_, DownloadState>) {
+pub fn cancel_model_download(
+    key: String,
+    app: tauri::AppHandle,
+    download_state: tauri::State<'_, DownloadState>,
+) {
     cancel_download(&download_state, &key);
+    let _ = app.emit(MODELS_CHANGED_EVENT, ());
 }
 
 /// Removes the partial file for `sha256` (the user chose Discard over Resume).
+/// On success, broadcasts [`MODELS_CHANGED_EVENT`] so any other window (e.g. the
+/// Settings Discover panes) re-reads its curated list and drops the now-deleted
+/// partial's Paused/Resume/Discard row instead of leaving it stale.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn discard_partial_download(
     sha256: String,
+    app: tauri::AppHandle,
     download_state: tauri::State<'_, DownloadState>,
     store: tauri::State<'_, storage::ModelStore>,
 ) -> Result<(), String> {
-    discard_partial_inner(&download_state, &store, &sha256)
+    discard_partial_inner(&download_state, &store, &sha256)?;
+    let _ = app.emit(MODELS_CHANGED_EVENT, ());
+    Ok(())
 }
 
 /// Snapshot of the in-flight downloads, so a freshly-opened window hydrates its
@@ -4933,6 +4957,24 @@ mod tests {
     }
 
     #[test]
+    fn build_starter_options_shows_small_heroes_on_a_tiny_machine() {
+        // On a machine too small for every default hero, the picker rows are the
+        // lighter small-machine trio rather than three Heavy default rows.
+        let conn = crate::database::open_in_memory().unwrap();
+        let (_dir, store) = make_store();
+
+        const GIB: u64 = 1 << 30;
+        let opts = build_starter_options(&conn, &store, 8 * GIB);
+
+        assert_eq!(
+            opts.iter().map(|o| o.starter.id).collect::<Vec<_>>(),
+            registry::ONBOARDING_HERO_IDS_SMALL.to_vec()
+        );
+        // The whole point: the small Fast hero is no longer Heavy here.
+        assert_ne!(opts[0].fit, registry::RamFit::TooBig);
+    }
+
+    #[test]
     fn build_starter_options_treats_sql_error_as_not_installed() {
         let conn = crate::database::open_in_memory().unwrap();
         conn.execute_batch("DROP TABLE installed_models;").unwrap();
@@ -4960,18 +5002,39 @@ mod tests {
 
     #[test]
     fn starter_for_tier_parses_and_rejects() {
-        assert_eq!(starter_for_tier("fast").unwrap().tier, registry::Tier::Fast);
+        const GIB: u64 = 1 << 30;
+        // On a roomy machine each tier resolves to its default hero.
         assert_eq!(
-            starter_for_tier("balanced").unwrap().tier,
+            starter_for_tier("fast", 16 * GIB).unwrap().id,
+            registry::ONBOARDING_HERO_IDS[0]
+        );
+        assert_eq!(
+            starter_for_tier("balanced", 16 * GIB).unwrap().tier,
             registry::Tier::Balanced
         );
         assert_eq!(
-            starter_for_tier("smartest").unwrap().tier,
+            starter_for_tier("smartest", 16 * GIB).unwrap().tier,
             registry::Tier::Smartest
         );
-        assert!(starter_for_tier("Fast").is_err());
-        assert!(starter_for_tier("").is_err());
-        assert!(starter_for_tier("turbo").is_err());
+        assert!(starter_for_tier("Fast", 16 * GIB).is_err());
+        assert!(starter_for_tier("", 16 * GIB).is_err());
+        assert!(starter_for_tier("turbo", 16 * GIB).is_err());
+    }
+
+    #[test]
+    fn starter_for_tier_downloads_the_small_hero_on_a_tiny_machine() {
+        // The tier the user taps must download the model the picker showed for
+        // that column. On an 8 GiB Mac the picker shows the small trio, so
+        // resolving "fast" there must yield the small Fast hero, not the default.
+        const GIB: u64 = 1 << 30;
+        assert_eq!(
+            starter_for_tier("fast", 8 * GIB).unwrap().id,
+            registry::ONBOARDING_HERO_IDS_SMALL[0]
+        );
+        assert_eq!(
+            starter_for_tier("smartest", 8 * GIB).unwrap().id,
+            registry::ONBOARDING_HERO_IDS_SMALL[2]
+        );
     }
 
     #[test]

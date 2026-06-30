@@ -214,6 +214,14 @@ interface AskBarViewProps {
    */
   downloadStatus?: DownloadStripStatus | null;
   /**
+   * Whether a usable model is installed and active. When true, the send
+   * affordance stays live even while a built-in model is downloading, so a
+   * background download never holds the bar hostage; only when there is no
+   * usable model yet does an in-flight download grey out send. Defaults to
+   * false (treat as no usable model) for callers that do not track it.
+   */
+  hasUsableModel?: boolean;
+  /**
    * When true, the input row plays a brief horizontal shake animation.
    * The host pulses this true / false to signal a refused submit.
    */
@@ -255,6 +263,7 @@ export function AskBarView({
   isModelPickerOpen,
   capabilityConflictMessage,
   downloadStatus,
+  hasUsableModel = false,
   shake = false,
   maxImages,
   onFirstKeystroke,
@@ -264,9 +273,11 @@ export function AskBarView({
 
   /** True when the UI should be locked - either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
-  // A built-in model still downloading (or paused mid-download) holds the
-  // submit (App soft-blocks it), so the send affordance is greyed to match:
-  // the input stays editable for drafting, but there is nothing to send yet.
+  // A built-in model still downloading (or paused mid-download) greys the send
+  // affordance ONLY while there is no usable model yet: the input stays editable
+  // for drafting, but there is nothing to send to. Once a model is usable (the
+  // download finished, or another model was installed in Settings), send stays
+  // live and the download continues as an ambient strip, never a hostage.
   const isDownloadHolding =
     downloadStatus?.kind === 'downloading' ||
     downloadStatus?.kind === 'pausing' ||
@@ -275,7 +286,7 @@ export function AskBarView({
   const canSubmit =
     (query.trim().length > 0 || attachedImages.length > 0) &&
     !isBusy &&
-    !isDownloadHolding;
+    !(isDownloadHolding && !hasUsableModel);
   const isAtMaxImages = attachedImages.length >= maxImages;
 
   /** True briefly after a paste attempt is rejected because max images reached. */

@@ -81,6 +81,7 @@ function makeDownloadCtx(
     pausedBytes: 0,
     pauseDownload: vi.fn(),
     resumeFromPause: vi.fn(),
+    discardDownload: vi.fn(),
     ...overrides,
   };
 }
@@ -7898,6 +7899,46 @@ describe('App', () => {
       expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
     });
 
+    it('lets submit through during a download once a model is usable', async () => {
+      // The decoupled gate: a background download no longer holds the bar
+      // hostage once a usable model exists (the first finished, or another was
+      // installed in Settings). The message goes to the usable model while the
+      // download keeps running in the ambient strip.
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'qwen3.5-9b',
+          all: ['qwen3.5-9b'],
+          ollamaReachable: true,
+        },
+      });
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 1_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 5_000_000,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      act(() => {
+        setAskValue('hello');
+      });
+      invoke.mockClear();
+      act(() => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // Submit went through to the usable model, and the strip stays ambient.
+      expect(
+        invoke.mock.calls.filter((c) => c[0] === 'ask_model'),
+      ).toHaveLength(1);
+      expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
+    });
+
     it('shows the real failure reason and a Retry that restarts the download', async () => {
       enableChannelCaptureWithResponses({
         get_model_picker_state: {
@@ -8120,12 +8161,14 @@ describe('App', () => {
         },
       });
       const resumeFromPause = vi.fn();
+      const discardDownload = vi.fn();
       downloadHolder.value = makeDownloadCtx({
         state: { phase: 'idle' },
         isPaused: true,
         pausedBytes: 5_000_000_000,
         grandTotalBytes: 10_000_000_000,
         resumeFromPause,
+        discardDownload,
       });
 
       const { rerender } = render(builtinTree());
@@ -8139,9 +8182,15 @@ describe('App', () => {
         );
       });
       expect(resumeFromPause).toHaveBeenCalledTimes(1);
-      expect(
-        screen.queryByRole('button', { name: 'Discard download' }),
-      ).not.toBeInTheDocument();
+      // The paused strip now also offers Discard, wired to the context's
+      // discardDownload so the user can abandon the download instead of being
+      // held to a Resume-only loop.
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Discard download' }),
+        );
+      });
+      expect(discardDownload).toHaveBeenCalledTimes(1);
 
       // Grand total unknown while paused falls back to 0%.
       downloadHolder.value = makeDownloadCtx({
