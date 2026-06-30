@@ -42,7 +42,7 @@
     "@lexical/react": "^0.46.0",
     "@tauri-apps/api": "^2.11.0",
     "framer-motion": "^12.38.0",
-    "katex": "^0.17.0",
+    "katex": "^0.16.0",
     "lexical": "^0.46.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
