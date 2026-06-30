@@ -117,4 +117,24 @@ describe('CapabilityMismatchStrip', () => {
     fireEvent.click(links[1]);
     expect(invoke).toHaveBeenCalledWith('open_settings_to_providers');
   });
+
+  it('opens the Discover download picker for a settings-discover nav link', () => {
+    const message: CapabilityMismatchMessage = {
+      segments: [
+        'No model downloaded yet. Download one in ',
+        { text: 'Settings', nav: 'settings-discover' },
+        ', then come back.',
+      ],
+    };
+    render(<CapabilityMismatchStrip message={message} />);
+    const link = screen.getByTestId('capability-mismatch-strip-link');
+    expect(link).toHaveTextContent('Settings');
+    expect(link.textContent).not.toContain('↗');
+    expect(link).toHaveAttribute(
+      'aria-label',
+      'Open the model download picker in Settings',
+    );
+    fireEvent.click(link);
+    expect(invoke).toHaveBeenCalledWith('open_settings_window');
+  });
 });
