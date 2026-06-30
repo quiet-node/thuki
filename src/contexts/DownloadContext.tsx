@@ -30,6 +30,7 @@ import {
   type UseDownloadModel,
 } from '../hooks/useDownloadModel';
 import { useConfig } from './ConfigContext';
+import { useStarterOptions } from '../components/StarterPicker';
 import type { StarterOption, StarterTier } from '../types/starter';
 
 export interface DownloadContextValue extends UseDownloadModel {
@@ -97,17 +98,42 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   const [resumeSeedBytes, setResumeSeedBytes] = useState<number | null>(null);
   const [activeOption, setActiveOption] = useState<StarterOption | null>(null);
   const [pauseRequested, setPauseRequested] = useState(false);
-  const [pausedBytes, setPausedBytes] = useState(0);
+  const [localPausedBytes, setLocalPausedBytes] = useState(0);
 
   const { start, resume, cancel, discard, combinedBytes } = download;
   const downloadPhase = download.state.phase;
 
-  // A pause is only *committed* once the cancel has fully landed (machine back
-  // to idle, single download slot released). Deriving it rather than flipping a
-  // flag in pauseDownload means the strip offers Resume only after the slot is
-  // free, so a resume can never collide with the download it replaces and fail
-  // with "a download is already in progress".
-  const isPaused = pauseRequested && downloadPhase === 'idle';
+  // The on-disk truth for the active model: its partial size and whether it is
+  // installed. `useStarterOptions` re-reads this on every `models-changed`
+  // broadcast (which a pause or discard from ANY window now fires), so this
+  // stays current cross-window. Matched by the weights sha so it tracks exactly
+  // the model the strip is showing.
+  const { options: starterOptions } = useStarterOptions();
+  const activeStarter =
+    activeOption !== null && starterOptions !== null
+      ? starterOptions.find(
+          (o) => o.starter.sha256 === activeOption.starter.sha256,
+        )
+      : undefined;
+  const activePartialBytes = activeStarter?.partial_bytes ?? null;
+  const activeInstalled = activeStarter?.installed ?? false;
+
+  // Paused is derived from durable truth, not a local flag: the machine is idle
+  // (not actively streaming) and an interrupted partial exists on disk for the
+  // active model that is not yet installed. This makes a pause from ANY window
+  // show here, fixing the case where pausing from Settings used to make the
+  // ambient strip vanish. The `pauseRequested` short-circuit keeps a pause
+  // initiated HERE smooth: it commits the instant the cancel reaches idle,
+  // before the cross-window partial re-read lands.
+  const idle = downloadPhase === 'idle';
+  const isPaused =
+    (pauseRequested && idle) ||
+    (idle && activePartialBytes !== null && !activeInstalled);
+  // Percent source: the snapshot at pause time for a local pause (instant), the
+  // on-disk partial for a pause observed from another window.
+  const pausedBytes = pauseRequested
+    ? localPausedBytes
+    : (activePartialBytes ?? 0);
   // Transitional: the cancel is requested but the download is still winding
   // down. The strip shows "Pausing…" here so the Pause click is never silent.
   const isPausing = pauseRequested && isDownloadInFlight(downloadPhase);
@@ -179,7 +205,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     // Remember how far we got so the paused strip can show the percent, then
     // cancel the run (the backend keeps the partial on disk for resume). The
     // pause only *shows* once `downloadPhase` reaches idle (see `isPaused`).
-    setPausedBytes(combinedBytes ?? 0);
+    setLocalPausedBytes(combinedBytes ?? 0);
     setPauseRequested(true);
     void cancel();
   }, [combinedBytes, cancel]);
@@ -202,7 +228,7 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     setDownloadingTier(null);
     setActiveOption(null);
     setResumeSeedBytes(null);
-    setPausedBytes(0);
+    setLocalPausedBytes(0);
     void (async () => {
       await discard(starter.sha256);
       if (starter.mmproj_sha256 !== null) {

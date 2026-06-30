@@ -887,9 +887,11 @@ describe('ModelCheckStep (builtin flow)', () => {
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('advance_past_model_check');
     });
+    // The picker re-reads the options after the download lands (so the row
+    // flips to Installed): more get_starter_options calls than the mount probes.
     expect(
-      invoke.mock.calls.filter((c) => c[0] === 'get_starter_options'),
-    ).toHaveLength(2);
+      invoke.mock.calls.filter((c) => c[0] === 'get_starter_options').length,
+    ).toBeGreaterThanOrEqual(3);
   });
 
   it('Continue line advances onboarding while the download keeps running', async () => {
@@ -1045,9 +1047,11 @@ describe('ModelCheckStep (builtin flow)', () => {
       sha256: 'b'.repeat(64),
     });
     await waitFor(() => {
+      // The discard re-reads the options (also cross-window via models-changed)
+      // so the row drops its partial: more calls than the mount probes.
       expect(
-        invoke.mock.calls.filter((c) => c[0] === 'get_starter_options'),
-      ).toHaveLength(2);
+        invoke.mock.calls.filter((c) => c[0] === 'get_starter_options').length,
+      ).toBeGreaterThanOrEqual(3);
     });
   });
 

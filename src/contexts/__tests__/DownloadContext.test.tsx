@@ -6,6 +6,7 @@ import { ConfigProviderForTest, DEFAULT_CONFIG } from '../ConfigContext';
 import {
   invoke,
   enableChannelCapture,
+  enableChannelCaptureWithResponses,
   getLastChannel,
   resetChannelCapture,
   clearEventHandlers,
@@ -243,6 +244,53 @@ describe('DownloadContext', () => {
     ).toHaveLength(2);
   });
 
+  it('shows Paused from the on-disk partial when paused from another window', async () => {
+    // The cross-window case: this window started the download, another window
+    // (Settings) paused it. The backend cancels this window's task, so Cancelled
+    // lands here and the machine goes idle WITHOUT a local pauseDownload
+    // (pauseRequested stays false). The strip must still read Paused, derived
+    // from the partial that get_starter_options now reports for the active model.
+    const opt = option({ tier: 'balanced' });
+    enableChannelCaptureWithResponses({
+      get_starter_options: [{ ...opt, partial_bytes: 4_000_000_000 }],
+    });
+
+    const { result } = renderHook(() => useDownloadCtx(), { wrapper });
+    await act(async () => {}); // useStarterOptions mount fetch resolves
+
+    await act(async () => {
+      result.current.beginDownload('balanced', opt);
+    });
+    // Remote pause: the task is cancelled elsewhere; only the Cancelled event
+    // reaches this window. No local pauseDownload was called.
+    act(() => channel().simulateMessage({ type: 'Cancelled' }));
+
+    expect(result.current.isPaused).toBe(true);
+    expect(result.current.pausedBytes).toBe(4_000_000_000);
+  });
+
+  it('does not read Paused for an installed model even if a partial lingers', async () => {
+    // Guard mirroring Settings (`!installed`): an installed model is never
+    // shown as a resumable paused download, even in the unlikely event a partial
+    // is still reported alongside it.
+    const opt = option({ tier: 'balanced' });
+    enableChannelCaptureWithResponses({
+      get_starter_options: [
+        { ...opt, partial_bytes: 4_000_000_000, installed: true },
+      ],
+    });
+
+    const { result } = renderHook(() => useDownloadCtx(), { wrapper });
+    await act(async () => {});
+
+    await act(async () => {
+      result.current.beginDownload('balanced', opt);
+    });
+    act(() => channel().simulateMessage({ type: 'Cancelled' }));
+
+    expect(result.current.isPaused).toBe(false);
+  });
+
   it('discardDownload deletes both partials and clears the ambient strip', async () => {
     const { result } = renderHook(() => useDownloadCtx(), { wrapper });
     const opt = option();
@@ -332,7 +380,7 @@ describe('DownloadContext', () => {
       });
       await flushLaunch();
 
-      expect(invokeCount('get_starter_options')).toBe(1);
+      expect(invokeCount('onboarding_stage')).toBe(1);
       // The unreliable cold-resume is skipped: both blobs' partials are
       // discarded and a fresh download starts (no resume seed).
       expect(invoke).toHaveBeenCalledWith('discard_partial_download', {
@@ -382,8 +430,9 @@ describe('DownloadContext', () => {
       });
       await act(async () => {});
 
-      // Gated out before probing the starters; the picker handles the partial.
-      expect(invokeCount('get_starter_options')).toBe(0);
+      // Gated out at the stage check; the picker owns the partial, so no resume
+      // download is started even though a partial exists on disk.
+      expect(invokeCount('download_starter')).toBe(0);
       expect(result.current.state).toEqual({ phase: 'idle' });
     });
 
@@ -396,7 +445,7 @@ describe('DownloadContext', () => {
       });
       await act(async () => {});
 
-      expect(invokeCount('get_starter_options')).toBe(1);
+      expect(invokeCount('onboarding_stage')).toBe(1);
       expect(result.current.state).toEqual({ phase: 'idle' });
       expect(invokeCount('download_starter')).toBe(0);
     });
@@ -409,7 +458,7 @@ describe('DownloadContext', () => {
       });
       await act(async () => {});
 
-      expect(invokeCount('get_starter_options')).toBe(1);
+      expect(invokeCount('onboarding_stage')).toBe(1);
       expect(result.current.state).toEqual({ phase: 'idle' });
       expect(invokeCount('download_starter')).toBe(0);
     });
@@ -418,8 +467,9 @@ describe('DownloadContext', () => {
       const { result } = renderHook(() => useDownloadCtx(), { wrapper });
       await act(async () => {});
 
+      // Auto-resume is gated before any probe: the onboarding stage is never
+      // queried when the engine is not the active provider.
       expect(invokeCount('onboarding_stage')).toBe(0);
-      expect(invokeCount('get_starter_options')).toBe(0);
       expect(result.current.state).toEqual({ phase: 'idle' });
     });
 
