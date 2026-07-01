@@ -22,6 +22,7 @@ import type { Message } from './hooks/useModel';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { useModelSelection } from './hooks/useModelSelection';
 import { useModelCapabilities } from './hooks/useModelCapabilities';
+import { useEngineWarmupStatus } from './hooks/useEngineWarmupStatus';
 import { useDownloadCtx } from './contexts/DownloadContext';
 import {
   downloadFailureMessage,
@@ -455,6 +456,12 @@ function App() {
 
   const { capabilities: modelCapabilities, refresh: refreshModelCapabilities } =
     useModelCapabilities();
+
+  // Mounted here (app root, alive for the app's lifetime) rather than inside
+  // ConversationView (which only mounts once chat starts) so the warming
+  // state is already current the moment a turn needs it - see the hook's
+  // doc comment for why a late-mounting subscriber would risk missing it.
+  const { warming: builtinEngineWarming } = useEngineWarmupStatus();
 
   /** Capability flags for the currently active model, or undefined if not loaded yet. */
   const activeModelCapabilities = activeModel
@@ -3583,6 +3590,10 @@ function App() {
                                     : undefined
                                 }
                                 isExportOpen={isExportOpen}
+                                providerKind={
+                                  config.inference.activeProviderKind
+                                }
+                                engineWarming={builtinEngineWarming}
                               />
                             ) : null}
                           </AnimatePresence>

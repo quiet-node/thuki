@@ -201,6 +201,32 @@ impl BuiltinWarmState {
         }
     }
 
+    /// Marks `port` as warmed because a real chat request's first token has
+    /// already streamed - authoritative proof the prefill is done,
+    /// independent of whether a proactive prime (`try_begin`/`finish`) is
+    /// still queued behind this same request at the engine's single
+    /// execution slot. Without this, a real request that races ahead of its
+    /// own proactive prime in that queue leaves `warmup:builtin-warmed`
+    /// unfired - and the Settings status stuck on "warming" - until the
+    /// stale prime eventually finishes, which can be well after the real
+    /// response has already completed.
+    ///
+    /// Returns true the first time this fires for `port` (the caller should
+    /// emit `warmup:builtin-warmed`); returns false on every later call for
+    /// the same port, including if the queued prime's own `finish` already
+    /// announced it, so the frontend never sees a redundant second emit.
+    pub fn mark_warmed_by_real_request(&self, port: u16) -> bool {
+        let mut g = self.inner.lock().unwrap();
+        if g.primed_port == Some(port) {
+            return false;
+        }
+        g.primed_port = Some(port);
+        if g.in_flight == Some(port) {
+            g.in_flight = None;
+        }
+        true
+    }
+
     /// Whether a prime is currently in flight. Seeds the Settings keep-warm
     /// status when the panel mounts during a cold prime (it otherwise learns
     /// the state only from the `warmup:builtin-warming`/`-warmed` events).
@@ -1807,6 +1833,57 @@ mod tests {
         assert!(s.is_warming(), "a begun prime reports warming");
         s.finish(40000, true);
         assert!(!s.is_warming(), "a finished prime is no longer warming");
+    }
+
+    #[test]
+    fn warm_state_real_request_marks_warmed_and_reports_true_once() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000), "a proactive prime is in flight");
+        assert!(
+            s.mark_warmed_by_real_request(40000),
+            "the real request's first token is authoritative proof of warm"
+        );
+        assert!(
+            !s.mark_warmed_by_real_request(40000),
+            "a second call for the same port must not re-announce"
+        );
+    }
+
+    #[test]
+    fn warm_state_real_request_clears_the_in_flight_slot() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000));
+        assert!(s.is_warming(), "the proactive prime is in flight");
+        s.mark_warmed_by_real_request(40000);
+        assert!(
+            !s.is_warming(),
+            "the real request proves warm even though the redundant prime is still queued"
+        );
+    }
+
+    #[test]
+    fn warm_state_real_request_dedups_against_an_already_finished_prime() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000));
+        s.finish(40000, true);
+        assert!(
+            !s.mark_warmed_by_real_request(40000),
+            "the prime already announced warmed for this port; no second emit"
+        );
+    }
+
+    #[test]
+    fn warm_state_real_request_does_not_disturb_a_different_ports_in_flight_slot() {
+        let s = BuiltinWarmState::default();
+        assert!(s.try_begin(40000), "port 40000's prime is in flight");
+        assert!(
+            s.mark_warmed_by_real_request(40001),
+            "a real request on a different (newer) port still reports true"
+        );
+        assert!(
+            s.is_warming(),
+            "port 40000's own in-flight slot is untouched"
+        );
     }
 
     #[test]

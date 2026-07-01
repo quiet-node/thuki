@@ -1,5 +1,5 @@
 import { render, screen, act, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ConversationView } from '../ConversationView';
 
 describe('ConversationView', () => {
@@ -862,6 +862,84 @@ describe('ConversationView', () => {
       const labels = screen.getAllByTestId('loading-label');
       expect(labels.every((el) => el.textContent !== 'Searching the web')).toBe(
         true,
+      );
+    });
+  });
+
+  describe('Engine loading label', () => {
+    const plainMessages = [
+      { id: 'u', role: 'user' as const, content: 'q' },
+      { id: 'a', role: 'assistant' as const, content: '' },
+    ];
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('shows the first filler phrase for a builtin cold start past the threshold', () => {
+      render(
+        <ConversationView
+          messages={plainMessages}
+          isGenerating={true}
+          onClose={vi.fn()}
+          providerKind="builtin"
+        />,
+      );
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Starting up the model…',
+      );
+    });
+
+    it('shows the warming label immediately when the engine is already warming', () => {
+      render(
+        <ConversationView
+          messages={plainMessages}
+          isGenerating={true}
+          onClose={vi.fn()}
+          providerKind="builtin"
+          engineWarming={true}
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Warming up…',
+      );
+    });
+
+    it('never shows a label for a remote provider', () => {
+      render(
+        <ConversationView
+          messages={plainMessages}
+          isGenerating={true}
+          onClose={vi.fn()}
+          providerKind="openai"
+        />,
+      );
+      act(() => {
+        vi.advanceTimersByTime(10000);
+      });
+      expect(screen.queryByTestId('loading-label')).toBeNull();
+    });
+
+    it('lets an active search stage take priority over the engine label', () => {
+      render(
+        <ConversationView
+          messages={plainMessages}
+          isGenerating={true}
+          onClose={vi.fn()}
+          providerKind="builtin"
+          engineWarming={true}
+          searchStage={{ kind: 'analyzing_query' }}
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Analyzing query',
       );
     });
   });

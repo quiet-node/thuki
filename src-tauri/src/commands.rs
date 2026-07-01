@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use tauri::{ipc::Channel, State};
+use tauri::{ipc::Channel, Emitter, State};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::defaults::STRIP_PATTERNS;
@@ -393,6 +393,16 @@ pub fn engine_start_error(detail: &str) -> EngineError {
 /// [`apply_capability_filter`] path and stderr notice the cache-driven filter
 /// uses, instead of letting the whole request fail.
 ///
+/// This request's own first content chunk (`Token`/`ThinkingToken`) is
+/// authoritative proof the model is warm, independent of the proactive
+/// warm-up prime (`crate::warmup::warm_builtin`), which can still be queued
+/// behind this same request at the engine's single execution slot. On that
+/// first chunk, `warm_state.mark_warmed_by_real_request` is consulted and
+/// `on_warmed` fires at most once, so a caller wired to emit
+/// `warmup:builtin-warmed` from it never leaves the Settings status stuck on
+/// "warming" for the duration of a response that raced ahead of its own
+/// prime.
+///
 /// Returns the accumulated assistant content (empty on the error paths) so
 /// the caller's persistence tail treats every route identically.
 #[allow(clippy::too_many_arguments)]
@@ -404,6 +414,8 @@ pub(crate) async fn stream_builtin_chat(
     mut messages: Vec<ChatMessage>,
     client: &reqwest::Client,
     cancel_token: CancellationToken,
+    warm_state: &crate::warmup::BuiltinWarmState,
+    on_warmed: impl Fn(),
     on_chunk: impl Fn(StreamChunk),
 ) -> String {
     engine.touch();
@@ -436,6 +448,18 @@ pub(crate) async fn stream_builtin_chat(
                     );
                 }
             }
+            let warmed_announced = std::sync::atomic::AtomicBool::new(false);
+            let on_chunk = |chunk: StreamChunk| {
+                if !warmed_announced.load(std::sync::atomic::Ordering::Relaxed)
+                    && matches!(chunk, StreamChunk::Token(_) | StreamChunk::ThinkingToken(_))
+                {
+                    warmed_announced.store(true, std::sync::atomic::Ordering::Relaxed);
+                    if warm_state.mark_warmed_by_real_request(port) {
+                        on_warmed();
+                    }
+                }
+                on_chunk(chunk);
+            };
             crate::openai::stream_openai_chat(
                 crate::openai::OpenAiChatParams {
                     base_url,
@@ -1152,6 +1176,8 @@ pub async fn ask_model(
     model_store: State<'_, crate::models::storage::ModelStore>,
     engine: State<'_, crate::engine::runner::EngineHandle>,
     secrets: State<'_, crate::keychain::Secrets>,
+    app: tauri::AppHandle,
+    warm_state: State<'_, crate::warmup::BuiltinWarmState>,
 ) -> Result<(), String> {
     // Snapshot the config once so all downstream reads (endpoint, prompt, model)
     // see a consistent view even if the user edits Settings mid-stream.
@@ -1367,6 +1393,10 @@ pub async fn ask_model(
                         messages,
                         &client,
                         cancel_token.clone(),
+                        &warm_state,
+                        || {
+                            let _ = app.emit("warmup:builtin-warmed", ());
+                        },
                         builtin_pump,
                     )
                     .await;
@@ -1519,6 +1549,28 @@ mod tests {
             chunks_clone.lock().unwrap().push(chunk);
         };
         (chunks, callback)
+    }
+
+    /// Shared `stream_builtin_chat` `on_warmed` no-op for tests that never
+    /// reach a real streamed token (ensure fails/cancels, or the mocked
+    /// response has no content chunk). One source location shared across
+    /// every such call site, so `stream_builtin_chat_announces_warmed_*`
+    /// invoking the equivalent counting closure below is enough to prove
+    /// this shape is reachable - none of these individual call sites need to
+    /// invoke it themselves for coverage.
+    fn noop_on_warmed() -> impl Fn() {
+        || {}
+    }
+
+    /// Builds an `on_warmed` counter for tests: the returned closure
+    /// increments a shared count so a test can assert exactly how many times
+    /// `stream_builtin_chat` announced a warm-up.
+    fn warmed_counter() -> (Arc<AtomicU64>, impl Fn()) {
+        let count = Arc::new(AtomicU64::new(0));
+        let count_cb = Arc::clone(&count);
+        (count, move || {
+            count_cb.fetch_add(1, Ordering::Relaxed);
+        })
     }
 
     /// Helper: builds a `/api/chat` response line from content + done flag.
@@ -3750,6 +3802,8 @@ mod tests {
             vec![],
             &client,
             CancellationToken::new(),
+            &crate::warmup::BuiltinWarmState::default(),
+            noop_on_warmed(),
             callback,
         )
         .await;
@@ -3761,6 +3815,115 @@ mod tests {
         assert_eq!(
             std::mem::discriminant(&chunks[1]),
             std::mem::discriminant(&StreamChunk::Done)
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stream_builtin_chat_announces_warmed_exactly_once_on_first_token() {
+        let mut server = mockito::Server::new_async().await;
+        let port: u16 = server
+            .url()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse()
+            .expect("mockito url ends in a port");
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_header("content-type", "text/event-stream")
+            .with_body(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n\
+                 data: {\"choices\":[{\"delta\":{\"content\":\" there\"}}]}\n\n\
+                 data: [DONE]\n",
+            )
+            .create_async()
+            .await;
+
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port,
+            spawn_error: None,
+            healthy: true,
+        });
+        let client = reqwest::Client::new();
+        let (_chunks, callback) = collect_chunks();
+        let warm_state = crate::warmup::BuiltinWarmState::default();
+        let (warmed_count, on_warmed) = warmed_counter();
+        stream_builtin_chat(
+            &engine,
+            engine_target(),
+            "org/repo:m.gguf".to_string(),
+            false,
+            vec![],
+            &client,
+            CancellationToken::new(),
+            &warm_state,
+            on_warmed,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+        assert_eq!(
+            warmed_count.load(Ordering::Relaxed),
+            1,
+            "two tokens stream but on_warmed fires only for the first"
+        );
+        assert!(
+            !warm_state.try_begin(port),
+            "the real request's first token marked this port as warmed"
+        );
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stream_builtin_chat_skips_on_warmed_when_the_port_is_already_marked() {
+        let mut server = mockito::Server::new_async().await;
+        let port: u16 = server
+            .url()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse()
+            .expect("mockito url ends in a port");
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_header("content-type", "text/event-stream")
+            .with_body("data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\ndata: [DONE]\n")
+            .create_async()
+            .await;
+
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port,
+            spawn_error: None,
+            healthy: true,
+        });
+        let client = reqwest::Client::new();
+        let (_chunks, callback) = collect_chunks();
+        let warm_state = crate::warmup::BuiltinWarmState::default();
+        // A proactive prime already announced this port as warmed before the
+        // real request's first token arrives.
+        assert!(warm_state.mark_warmed_by_real_request(port));
+        let (warmed_count, on_warmed) = warmed_counter();
+        stream_builtin_chat(
+            &engine,
+            engine_target(),
+            "org/repo:m.gguf".to_string(),
+            false,
+            vec![],
+            &client,
+            CancellationToken::new(),
+            &warm_state,
+            on_warmed,
+            callback,
+        )
+        .await;
+
+        mock.assert_async().await;
+        assert_eq!(
+            warmed_count.load(Ordering::Relaxed),
+            0,
+            "the port was already announced warmed; no redundant emit"
         );
         engine.shutdown().await;
     }
@@ -3788,6 +3951,8 @@ mod tests {
                     vec![],
                     &client,
                     CancellationToken::new(),
+                    &crate::warmup::BuiltinWarmState::default(),
+                    noop_on_warmed(),
                     callback,
                 )
                 .await
@@ -3842,6 +4007,8 @@ mod tests {
                     vec![],
                     &client,
                     cancel_token,
+                    &crate::warmup::BuiltinWarmState::default(),
+                    noop_on_warmed(),
                     callback,
                 )
                 .await
@@ -3887,6 +4054,8 @@ mod tests {
             vec![],
             &client,
             CancellationToken::new(),
+            &crate::warmup::BuiltinWarmState::default(),
+            noop_on_warmed(),
             callback,
         )
         .await;
@@ -4028,6 +4197,8 @@ mod tests {
             image_message(),
             &client,
             CancellationToken::new(),
+            &crate::warmup::BuiltinWarmState::default(),
+            noop_on_warmed(),
             callback,
         )
         .await;
