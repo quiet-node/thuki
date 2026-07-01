@@ -5949,7 +5949,8 @@ describe('App', () => {
       );
     });
 
-    it('shows a warming-up placeholder first, then swaps it to the thinking row when thinking tokens arrive', async () => {
+    it('shows the shared engine loading placeholder first, then swaps it to the thinking row when thinking tokens arrive', async () => {
+      vi.useFakeTimers();
       enableChannelCapture();
 
       render(<App />);
@@ -5965,9 +5966,13 @@ describe('App', () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
 
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+
       expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
-        'Warming up...',
+        'Starting up the model…',
       );
       expect(
         screen.queryByRole('button', { name: 'Toggle reasoning details' }),
@@ -5980,13 +5985,15 @@ describe('App', () => {
         });
       });
 
-      expect(screen.queryByText('Warming up...')).toBeNull();
+      expect(screen.queryByText('Starting up the model…')).toBeNull();
       expect(
         screen.getByRole('button', { name: 'Toggle reasoning details' }),
       ).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Reasoning...',
       );
+
+      vi.useRealTimers();
     });
 
     it('does nothing when /think has no query and no images', async () => {

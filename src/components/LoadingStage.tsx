@@ -39,7 +39,7 @@ export function LoadingStage({
   labelPrefix,
 }: LoadingStageProps) {
   return (
-    <span className={`inline-flex items-center ${compact ? 'gap-2' : 'gap-3'}`}>
+    <span className="inline-flex items-center gap-2">
       <span className="shrink-0">
         <TypingIndicator />
       </span>

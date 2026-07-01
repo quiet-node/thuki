@@ -394,12 +394,26 @@ describe('ChatBubble', () => {
           content=""
           index={0}
           isThinkingPending={true}
+          pendingLabel="Starting up the model…"
         />,
       );
       expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
       expect(screen.getByTestId('loading-label').textContent).toBe(
-        'Warming up...',
+        'Starting up the model…',
       );
+    });
+
+    it('renders bare dots for the pending /think placeholder before the engine label threshold elapses', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isThinkingPending={true}
+        />,
+      );
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+      expect(screen.queryByTestId('loading-label')).toBeNull();
     });
 
     it('does not render ReasoningBlock for user message even with thinkingContent', () => {

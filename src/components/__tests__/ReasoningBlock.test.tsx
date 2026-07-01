@@ -10,11 +10,22 @@ describe('ReasoningBlock', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('shows the pending placeholder label before thinking tokens arrive', () => {
+  it('renders bare dots with no label when pending and no pendingLabel is supplied', () => {
     render(<ReasoningBlock isThinking={false} isPending />);
+    expect(screen.queryByTestId('loading-label')).toBeNull();
+  });
+
+  it('shows the caller-supplied pendingLabel while pending', () => {
+    render(
+      <ReasoningBlock
+        isThinking={false}
+        isPending
+        pendingLabel="Starting up the model…"
+      />,
+    );
     const label = screen.getByTestId('loading-label');
     expect(label).toBeInTheDocument();
-    expect(label.textContent).toBe('Warming up...');
+    expect(label.textContent).toBe('Starting up the model…');
   });
 
   it('does not render a toggle button while pending', () => {
@@ -22,6 +33,57 @@ describe('ReasoningBlock', () => {
     expect(
       screen.queryByRole('button', { name: 'Toggle reasoning details' }),
     ).toBeNull();
+  });
+
+  it('hides the chevron from assistive tech while pending (nothing to expand yet)', () => {
+    render(
+      <ReasoningBlock
+        isThinking={false}
+        isPending
+        pendingLabel="Starting up the model…"
+      />,
+    );
+    const chevron = screen.getByTestId('reasoning-chevron');
+    expect(chevron).toHaveAttribute('aria-hidden', 'true');
+    expect(chevron.className).toContain('opacity-0');
+  });
+
+  it("reserves the chevron's width while pending via an invisible spacer, so the label does not shift once thinking starts", () => {
+    render(
+      <ReasoningBlock
+        isThinking={false}
+        isPending
+        pendingLabel="Starting up the model…"
+      />,
+    );
+    const prefix = screen.getByTestId('loading-label-prefix');
+    expect(prefix).toBeInTheDocument();
+    expect(prefix.textContent).toBe('▲');
+  });
+
+  it('uses the exact same summary-row classes for the pending row and the clickable summary row', () => {
+    const { unmount } = render(
+      <ReasoningBlock
+        isThinking={false}
+        isPending
+        pendingLabel="Starting up the model…"
+      />,
+    );
+    const pendingRow = screen.getByTestId('reasoning-pending');
+    const pendingClasses = pendingRow.className;
+    unmount();
+
+    render(
+      <ReasoningBlock thinkingContent="Working on it" isThinking={true} />,
+    );
+    const summaryButton = screen.getByRole('button', {
+      name: 'Toggle reasoning details',
+    });
+    // The button adds interactive-only extras on top of the same base
+    // classes the pending row uses - assert the base is a strict subset.
+    pendingClasses
+      .split(' ')
+      .forEach((cls) => expect(summaryButton.className).toContain(cls));
   });
 
   it('shows a clickable "Reasoning..." summary while isThinking', () => {

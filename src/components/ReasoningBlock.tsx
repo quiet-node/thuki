@@ -7,11 +7,24 @@ export interface ReasoningBlockProps {
   thinkingContent?: string;
   isThinking: boolean;
   isPending?: boolean;
-  pendingLabel?: string;
+  /**
+   * Cue shown next to the dots while `isPending` is true. `null`/`undefined`
+   * renders bare dots with no text - the caller (the engine-loading label,
+   * shared with plain turns) is the single source of truth for this copy;
+   * this component has no cue of its own.
+   */
+  pendingLabel?: string | null;
 }
 
 const REASONING_LABEL = 'Reasoning...';
-const PENDING_LABEL = 'Warming up...';
+
+/**
+ * Classes shared byte-for-byte between the pending row and the clickable
+ * summary row (both while `isThinking` and once done), so all three are
+ * pixel-identical by construction rather than by hand-matching independent
+ * class lists. Only the element tag and interactive attributes differ.
+ */
+const SUMMARY_ROW_CLASS = 'flex items-center gap-2 p-0 text-left w-full';
 
 /**
  * Collapsible reasoning section rendered above an AI response.
@@ -24,7 +37,7 @@ export function ReasoningBlock({
   thinkingContent,
   isThinking,
   isPending = false,
-  pendingLabel = PENDING_LABEL,
+  pendingLabel = null,
 }: ReasoningBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const hasThinkingContent = Boolean(thinkingContent?.trim());
@@ -32,10 +45,27 @@ export function ReasoningBlock({
   if (!hasThinkingContent && !isPending) return null;
 
   if (isPending) {
+    // Invisible placeholder, not a real chevron: there's nothing to expand
+    // yet, so no click affordance should render or be announced. It exists
+    // purely to reserve the exact width the real chevron occupies once
+    // thinking starts, using the identical classes/markup that state uses
+    // below, so the label lands at the same x position in both.
+    const chevronSpacer = (
+      <span
+        data-testid="reasoning-chevron"
+        aria-hidden="true"
+        className="loading-label inline-block shrink-0 text-[9px] transition-transform duration-150 opacity-0"
+        style={{ transform: 'rotate(90deg)' }}
+      >
+        &#9650;
+      </span>
+    );
     return (
       <div data-testid="reasoning-block" className="mb-2">
-        <div data-testid="reasoning-pending" className="inline-flex min-w-0">
-          <LoadingStage label={pendingLabel} />
+        <div data-testid="reasoning-pending" className={SUMMARY_ROW_CLASS}>
+          <span className="inline-flex min-w-0">
+            <LoadingStage label={pendingLabel} labelPrefix={chevronSpacer} />
+          </span>
         </div>
       </div>
     );
@@ -60,11 +90,12 @@ export function ReasoningBlock({
 
   return (
     <div data-testid="reasoning-block" className="mb-2">
-      {/* Clickable summary row: chevron + label */}
+      {/* Clickable summary row: chevron + label. Same SUMMARY_ROW_CLASS the
+          pending row above uses, plus the interactive-only extras. */}
       <button
         type="button"
         onClick={() => setIsExpanded((prev) => !prev)}
-        className="flex items-center gap-2 cursor-pointer bg-transparent border-none p-0 text-left w-full"
+        className={`${SUMMARY_ROW_CLASS} cursor-pointer bg-transparent border-none`}
         aria-expanded={isExpanded}
         aria-label="Toggle reasoning details"
       >

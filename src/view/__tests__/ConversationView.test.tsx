@@ -496,7 +496,7 @@ describe('ConversationView', () => {
   });
 
   describe('Thinking props forwarding', () => {
-    it('renders the /think pending placeholder before thinking tokens arrive', () => {
+    it('renders the /think pending placeholder with bare dots before the engine loading threshold elapses', () => {
       render(
         <ConversationView
           messages={[
@@ -512,9 +512,60 @@ describe('ConversationView', () => {
         />,
       );
       expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
-      expect(screen.getByTestId('loading-label').textContent).toBe(
-        'Warming up...',
+      expect(screen.queryByTestId('loading-label')).toBeNull();
+    });
+
+    it('shows the shared engine loading label inside the /think pending placeholder for a builtin cold start', () => {
+      vi.useFakeTimers();
+      render(
+        <ConversationView
+          messages={[
+            {
+              id: '1',
+              role: 'assistant' as const,
+              content: '',
+              fromThink: true,
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          providerKind="builtin"
+        />,
       );
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Starting up the model…',
+      );
+      vi.useRealTimers();
+    });
+
+    it('does not render a duplicate external loading row for a /think turn', () => {
+      vi.useFakeTimers();
+      render(
+        <ConversationView
+          messages={[
+            {
+              id: '1',
+              role: 'assistant' as const,
+              content: '',
+              fromThink: true,
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          providerKind="builtin"
+        />,
+      );
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      // Only ReasoningBlock's own pending row should render the label; the
+      // bare-dots external row is suppressed for /think turns.
+      expect(screen.getAllByTestId('loading-label')).toHaveLength(1);
+      vi.useRealTimers();
     });
 
     it('renders ReasoningBlock when assistant message has thinkingContent', () => {
@@ -940,6 +991,24 @@ describe('ConversationView', () => {
       );
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Analyzing query',
+      );
+    });
+
+    it('shows the slow-warm cue instead of "starting up" when the engine is already loaded', () => {
+      render(
+        <ConversationView
+          messages={plainMessages}
+          isGenerating={true}
+          onClose={vi.fn()}
+          providerKind="builtin"
+          engineState="loaded"
+        />,
+      );
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Processing your message…',
       );
     });
   });

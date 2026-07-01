@@ -40,3 +40,14 @@ export const ENGINE_PHASE2_PHRASES: readonly string[] = [
 
 /** Spacing between phase 2's two phrases. */
 export const ENGINE_PHASE2_INTERVAL_MS = 3000;
+
+/**
+ * Shown when the engine was already `loaded` (not cold, not mid-prime) at
+ * the moment the turn began, yet the wait still crosses the threshold - the
+ * per-request prefill cost scales with how much conversation history there
+ * is, so a warm engine can still take real seconds on a long conversation.
+ * Neither phase-1 ("starting up") nor phase-2 ("warming up") language is
+ * true here: the engine never left `loaded`, so this gets its own single
+ * held phrase instead of borrowing either sequence's copy.
+ */
+export const ENGINE_SLOW_WARM_LABEL = 'Processing your message…';

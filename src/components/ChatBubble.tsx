@@ -246,6 +246,13 @@ interface ChatBubbleProps {
   thinkingContent?: string;
   /** Whether a `/think` turn is waiting for the first thinking tokens. */
   isThinkingPending?: boolean;
+  /**
+   * Cue shown in place of the reasoning block while `isThinkingPending` is
+   * true - the same engine-loading label shown next to a plain turn's
+   * typing dots (`null` before the loading threshold elapses, so a fast/warm
+   * turn shows no text either).
+   */
+  pendingLabel?: string | null;
   /** Whether the model is currently in the thinking phase (streaming thinking tokens). */
   isThinking?: boolean;
   /** Absolute file paths of images attached to this message, if any. */
@@ -323,6 +330,7 @@ export function ChatBubble({
   onSwitchModel,
   thinkingContent,
   isThinkingPending,
+  pendingLabel,
   isThinking,
   searchSources,
   searchWarnings,
@@ -484,6 +492,7 @@ export function ChatBubble({
               <ReasoningBlock
                 thinkingContent={thinkingContent}
                 isPending={isThinkingPending ?? false}
+                pendingLabel={pendingLabel}
                 isThinking={isThinking ?? false}
               />
             )}
