@@ -3,6 +3,7 @@ import { useRef, useEffect } from 'react';
 import { ChatBubble } from '../components/ChatBubble';
 import { LoadingStage } from '../components/LoadingStage';
 import { WindowControls } from '../components/WindowControls';
+import { useEngineLoadingLabel } from '../hooks/useEngineLoadingLabel';
 import type { Message } from '../hooks/useModel';
 import type { SearchStage } from '../types/search';
 
@@ -108,6 +109,17 @@ interface ConversationViewProps {
   onExportToggle?: () => void;
   /** Drives `aria-expanded` on the export button. */
   isExportOpen?: boolean;
+  /**
+   * Active provider's `kind` (`builtin` | `ollama` | `openai`). Drives
+   * whether a cold-start loading label can appear at all: only the two
+   * local providers have a real spin-up wait to narrate.
+   */
+  providerKind?: string;
+  /**
+   * Live `warmup:builtin-warming` state from `useEngineWarmupStatus`,
+   * mounted once near the app root. Only ever true for the built-in engine.
+   */
+  engineWarming?: boolean;
 }
 
 /**
@@ -141,8 +153,30 @@ export function ConversationView({
   onMinimize,
   onExportToggle,
   isExportOpen,
+  providerKind = '',
+  engineWarming = false,
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // True while the trailing assistant message is waiting on its first token
+  // from a plain (non-search, non-think) chat turn - the exact condition
+  // that renders the bare-dots loading row below. Drives the cold-start
+  // label timer; think/search turns render their own loading state inside
+  // ChatBubble and never reach this row.
+  const lastMessage = messages[messages.length - 1];
+  const isAwaitingFirstToken = Boolean(
+    isGenerating &&
+    lastMessage?.role === 'assistant' &&
+    !lastMessage?.content &&
+    !lastMessage?.thinkingContent &&
+    !lastMessage?.fromSearch &&
+    !lastMessage?.fromThink,
+  );
+  const engineLoadingLabel = useEngineLoadingLabel(
+    isAwaitingFirstToken,
+    providerKind,
+    engineWarming,
+  );
 
   /** Threshold in pixels - if within this distance of the bottom, consider "near bottom". */
   const NEAR_BOTTOM_THRESHOLD = 60;
@@ -320,14 +354,12 @@ export function ConversationView({
 
         {/* Loading row: always show 9-dot indicator when waiting for first
             content. For search turns, show the stage label inline as plain
-            text next to the dots. */}
-        {isGenerating &&
-        messages[messages.length - 1]?.role === 'assistant' &&
-        !messages[messages.length - 1]?.content &&
-        !messages[messages.length - 1]?.thinkingContent &&
-        !messages[messages.length - 1]?.fromSearch &&
-        !messages[messages.length - 1]?.fromThink ? (
-          <LoadingStage label={searchStageLabel(searchStage)} />
+            text next to the dots; for a plain turn stuck behind a cold
+            provider spin-up, show the engine loading label instead. */}
+        {isAwaitingFirstToken ? (
+          <LoadingStage
+            label={searchStageLabel(searchStage) ?? engineLoadingLabel}
+          />
         ) : null}
       </div>
 
