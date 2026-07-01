@@ -256,6 +256,30 @@ export function useModel(
   }, []);
 
   /**
+   * Signals the backend to stop the active generation and tracks the
+   * in-flight cancel in `pendingCancelRef` so the next `ask()` /
+   * `askSearch()` awaits the round-trip before starting a new turn. That
+   * wait is what stops a fresh request from racing the outgoing one onto
+   * the engine's single decode slot. Idempotent while a cancel is already
+   * pending, so overlapping callers (double cancel, cancel-then-reset) only
+   * fire `cancel_generation` once. Returns the pending-cancel promise.
+   */
+  const requestBackendCancel = useCallback((): Promise<void> => {
+    if (!pendingCancelRef.current) {
+      pendingCancelRef.current = (async () => {
+        try {
+          await invoke('cancel_generation');
+        } catch {
+          // Local hard-abort already reset the UI; backend best-effort only.
+        } finally {
+          pendingCancelRef.current = null;
+        }
+      })();
+    }
+    return pendingCancelRef.current;
+  }, []);
+
+  /**
    * Submits a message to the Ollama backend and starts the streaming response.
    *
    * The backend manages conversation history. Only the new user message is sent.
@@ -717,22 +741,8 @@ export function useModel(
     }
 
     abortActiveGeneration();
-
-    if (!pendingCancelRef.current) {
-      const cancelPromise = (async () => {
-        try {
-          await invoke('cancel_generation');
-        } catch {
-          // Local hard-abort already reset the UI; backend best-effort only.
-        } finally {
-          pendingCancelRef.current = null;
-        }
-      })();
-      pendingCancelRef.current = cancelPromise;
-    }
-
-    await pendingCancelRef.current;
-  }, [abortActiveGeneration, isGenerating]);
+    await requestBackendCancel();
+  }, [abortActiveGeneration, isGenerating, requestBackendCancel]);
 
   /** Resets all conversation state for a fresh session.
    *
@@ -746,7 +756,15 @@ export function useModel(
    * user-visible reset.
    */
   const reset = useCallback(() => {
-    abortActiveGeneration();
+    const hadActiveGeneration = abortActiveGeneration();
+    // Starting a fresh session must also stop any in-flight backend stream,
+    // not just the frontend view abort above. Otherwise the outgoing
+    // generation keeps the engine's single decode slot and the next turn
+    // queues behind it. Routed through the same `pendingCancelRef` plumbing
+    // `cancel()` uses so the next `ask()` awaits the cancel round-trip.
+    if (hadActiveGeneration) {
+      void requestBackendCancel();
+    }
     setMessages([]);
     const outgoingId = traceConversationIdRef.current;
     if (outgoingId !== null && !isFirstTurnRef.current) {
@@ -758,7 +776,7 @@ export function useModel(
     traceConversationIdRef.current = null;
     isFirstTurnRef.current = true;
     void invoke('reset_conversation');
-  }, [abortActiveGeneration]);
+  }, [abortActiveGeneration, requestBackendCancel]);
 
   /** Replaces the current message list with a previously loaded set of messages.
    *
@@ -770,7 +788,13 @@ export function useModel(
    */
   const loadMessages = useCallback(
     (msgs: Message[]) => {
-      abortActiveGeneration();
+      const hadActiveGeneration = abortActiveGeneration();
+      // Loading another conversation is a session boundary too: stop the
+      // in-flight backend stream so it does not hold the engine slot and
+      // stall the loaded conversation's next turn. Same plumbing as reset().
+      if (hadActiveGeneration) {
+        void requestBackendCancel();
+      }
       const outgoingId = traceConversationIdRef.current;
       if (outgoingId !== null && !isFirstTurnRef.current) {
         void invoke('record_conversation_end', {
@@ -782,7 +806,7 @@ export function useModel(
       isFirstTurnRef.current = true;
       setMessages(msgs);
     },
-    [abortActiveGeneration],
+    [abortActiveGeneration, requestBackendCancel],
   );
 
   /**

@@ -901,6 +901,51 @@ describe('useModel', () => {
         expect.objectContaining({ reason: 'user_reset' }),
       );
     });
+
+    it('cancels the in-flight backend generation when starting a new session', async () => {
+      // Stall ask_model so the generation stays active while we reset.
+      let resolveInvoke!: () => void;
+      invoke.mockImplementationOnce(
+        async (_cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            return new Promise<void>((res) => {
+              resolveInvoke = res;
+            });
+          }
+        },
+      );
+
+      const { result } = renderHook(() => useModel(''));
+
+      act(() => {
+        void result.current.ask('hello');
+      });
+      expect(result.current.isGenerating).toBe(true);
+
+      await act(async () => {
+        result.current.reset();
+        await Promise.resolve();
+      });
+
+      // A new session must stop the backend stream, not just the frontend
+      // view - otherwise the old generation holds the engine's single slot
+      // and the next turn queues behind it.
+      expect(invoke).toHaveBeenCalledWith('cancel_generation');
+
+      act(() => {
+        resolveInvoke?.();
+      });
+    });
+
+    it('does not call cancel_generation when reset runs with no active generation', () => {
+      const { result } = renderHook(() => useModel(''));
+
+      act(() => {
+        result.current.reset();
+      });
+
+      expect(invoke).not.toHaveBeenCalledWith('cancel_generation');
+    });
   });
 
   // ─── onTurnComplete callback ─────────────────────────────────────────────────
@@ -1124,6 +1169,40 @@ describe('useModel', () => {
         'record_conversation_end',
         expect.objectContaining({ reason: 'history_load' }),
       );
+    });
+
+    it('cancels the in-flight backend generation when loading another conversation', async () => {
+      // Stall ask_model so the generation stays active while we load.
+      let resolveInvoke!: () => void;
+      invoke.mockImplementationOnce(
+        async (_cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            return new Promise<void>((res) => {
+              resolveInvoke = res;
+            });
+          }
+        },
+      );
+
+      const { result } = renderHook(() => useModel(''));
+
+      act(() => {
+        void result.current.ask('original');
+      });
+      expect(result.current.isGenerating).toBe(true);
+
+      await act(async () => {
+        result.current.loadMessages([
+          { id: 'l1', role: 'user', content: 'loaded' },
+        ]);
+        await Promise.resolve();
+      });
+
+      expect(invoke).toHaveBeenCalledWith('cancel_generation');
+
+      act(() => {
+        resolveInvoke?.();
+      });
     });
   });
 
