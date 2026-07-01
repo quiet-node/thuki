@@ -44,6 +44,20 @@ impl ActivationContext {
     }
 }
 
+/// Decides what a clipboard poll observed after a synthetic Cmd+C: a
+/// non-empty (post-trim) value means the copy landed. Pulled out of the
+/// macOS-only `clipboard_fallback` as plain, portable logic so it can be unit
+/// tested directly — the pasteboard I/O and key-event simulation around it
+/// require a real OS and can't be.
+fn copied_text(after: &str) -> Option<String> {
+    let trimmed = after.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 // ─── macOS AX capture ────────────────────────────────────────────────────────
 
 #[cfg(target_os = "macos")]
@@ -55,7 +69,7 @@ mod macos {
     use core_foundation::string::{CFString, CFStringRef};
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 
-    use super::{ActivationContext, ScreenRect};
+    use super::{copied_text, ActivationContext, ScreenRect};
 
     type AXUIElementRef = *const c_void;
     type AXError = i32;
@@ -163,18 +177,24 @@ mod macos {
     /// one activation path is active at a time.
     fn clipboard_fallback() -> Option<String> {
         let before = clipboard_text();
+        // Clear the pasteboard before copying so a successful Cmd+C is
+        // detectable even when the freshly-copied text is byte-identical to
+        // what was already on the clipboard (e.g. re-selecting the same
+        // passage a second time). Diffing against `before` would otherwise
+        // silently treat that as "nothing was copied."
+        write_clipboard("");
         // SAFETY: Accessibility permission is checked before the activator starts.
         unsafe { simulate_cmd_c() };
         // Poll the pasteboard with exponential backoff instead of a fixed sleep.
         // Fast machines return in ~10ms. The first synthetic Cmd+C intermittently
         // fails to land in Electron text inputs (Discord's editor, Slack), so if
-        // nothing has changed by the midpoint we re-issue it once; a Cmd+C with
+        // nothing has landed by the midpoint we re-issue it once; a Cmd+C with
         // no selection is a harmless no-op. Worst case (no selection) ~315ms.
-        let mut after = before.clone();
+        let mut after = String::new();
         for (i, delay_ms) in [10u64, 20, 40, 65, 80, 100].into_iter().enumerate() {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
             after = clipboard_text();
-            if after != before {
+            if !after.is_empty() {
                 break;
             }
             if i == 2 {
@@ -186,12 +206,7 @@ mod macos {
         if after != before {
             write_clipboard(&before);
         }
-        let trimmed = after.trim().to_string();
-        if after != before && !trimmed.is_empty() {
-            Some(trimmed)
-        } else {
-            None
-        }
+        copied_text(&after)
     }
 
     unsafe fn focused_element() -> Option<AXUIElementRef> {
@@ -479,6 +494,34 @@ pub fn calculate_window_position(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copied_text_returns_none_for_empty() {
+        assert_eq!(copied_text(""), None);
+    }
+
+    #[test]
+    fn copied_text_returns_none_for_whitespace_only() {
+        assert_eq!(copied_text("   \n\t  "), None);
+    }
+
+    #[test]
+    fn copied_text_trims_and_returns_some() {
+        assert_eq!(
+            copied_text("  hello world  "),
+            Some("hello world".to_string())
+        );
+    }
+
+    #[test]
+    fn copied_text_succeeds_even_when_identical_to_a_prior_value() {
+        // Regression guard: clipboard_fallback used to compare the post-copy
+        // clipboard value against the pre-copy value and treat a match as
+        // "nothing was copied," which silently dropped re-selected passages
+        // already sitting on the clipboard. The decision must depend only on
+        // whether `after` is non-empty, never on a prior value.
+        assert_eq!(copied_text("same text"), Some("same text".to_string()));
+    }
 
     fn ctx_with_bounds(x: f64, y: f64, w: f64, h: f64) -> ActivationContext {
         ActivationContext {
