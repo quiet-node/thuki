@@ -7,6 +7,7 @@ import {
   ENGINE_PHASE1_INTERVAL_MS,
   ENGINE_PHASE2_PHRASES,
   ENGINE_PHASE2_INTERVAL_MS,
+  ENGINE_SLOW_WARM_LABEL,
 } from '../../config/engineLoadingLabels';
 
 describe('useEngineLoadingLabel', () => {
@@ -20,14 +21,14 @@ describe('useEngineLoadingLabel', () => {
 
   it('renders no label when inactive', () => {
     const { result } = renderHook(() =>
-      useEngineLoadingLabel(false, 'builtin', false),
+      useEngineLoadingLabel(false, 'builtin', false, 'stopped'),
     );
     expect(result.current).toBeNull();
   });
 
   it('renders no label for a remote provider', () => {
     const { result } = renderHook(() =>
-      useEngineLoadingLabel(true, 'openai', false),
+      useEngineLoadingLabel(true, 'openai', false, 'stopped'),
     );
     act(() => {
       vi.advanceTimersByTime(10000);
@@ -37,7 +38,7 @@ describe('useEngineLoadingLabel', () => {
 
   it('stays null before the threshold elapses (fast/warm turn)', () => {
     const { result } = renderHook(() =>
-      useEngineLoadingLabel(true, 'builtin', false),
+      useEngineLoadingLabel(true, 'builtin', false, 'starting'),
     );
     act(() => {
       vi.advanceTimersByTime(ENGINE_LOADING_THRESHOLD_MS - 1);
@@ -47,7 +48,7 @@ describe('useEngineLoadingLabel', () => {
 
   it('shows the first phase-1 phrase once the threshold elapses', () => {
     const { result } = renderHook(() =>
-      useEngineLoadingLabel(true, 'builtin', false),
+      useEngineLoadingLabel(true, 'builtin', false, 'starting'),
     );
     act(() => {
       vi.advanceTimersByTime(ENGINE_LOADING_THRESHOLD_MS);
@@ -57,7 +58,7 @@ describe('useEngineLoadingLabel', () => {
 
   it('steps to the second phase-1 phrase at the configured interval', () => {
     const { result } = renderHook(() =>
-      useEngineLoadingLabel(true, 'ollama', false),
+      useEngineLoadingLabel(true, 'ollama', false, 'starting'),
     );
     act(() => {
       vi.advanceTimersByTime(
@@ -69,7 +70,7 @@ describe('useEngineLoadingLabel', () => {
 
   it('holds on the last phase-1 phrase for Ollama (no phase-2 signal exists)', () => {
     const { result } = renderHook(() =>
-      useEngineLoadingLabel(true, 'ollama', false),
+      useEngineLoadingLabel(true, 'ollama', false, 'starting'),
     );
     act(() => {
       vi.advanceTimersByTime(
@@ -81,7 +82,8 @@ describe('useEngineLoadingLabel', () => {
 
   it('jumps to the first phase-2 phrase immediately when warming fires', () => {
     const { result, rerender } = renderHook(
-      ({ warming }) => useEngineLoadingLabel(true, 'builtin', warming),
+      ({ warming }) =>
+        useEngineLoadingLabel(true, 'builtin', warming, 'starting'),
       { initialProps: { warming: false } },
     );
     act(() => {
@@ -95,7 +97,8 @@ describe('useEngineLoadingLabel', () => {
 
   it('cuts phase 1 short when warming fires before its second phrase', () => {
     const { result, rerender } = renderHook(
-      ({ warming }) => useEngineLoadingLabel(true, 'builtin', warming),
+      ({ warming }) =>
+        useEngineLoadingLabel(true, 'builtin', warming, 'starting'),
       { initialProps: { warming: false } },
     );
     act(() => {
@@ -115,7 +118,8 @@ describe('useEngineLoadingLabel', () => {
 
   it('steps to the second phase-2 phrase once warming has run long enough', () => {
     const { result, rerender } = renderHook(
-      ({ warming }) => useEngineLoadingLabel(true, 'builtin', warming),
+      ({ warming }) =>
+        useEngineLoadingLabel(true, 'builtin', warming, 'starting'),
       { initialProps: { warming: true } },
     );
     expect(result.current).toBe(ENGINE_PHASE2_PHRASES[0]);
@@ -137,7 +141,8 @@ describe('useEngineLoadingLabel', () => {
     // The label must not fall back to a phase-1 phrase - that would
     // misreport a loaded model as still spinning up.
     const { result, rerender } = renderHook(
-      ({ warming }) => useEngineLoadingLabel(true, 'builtin', warming),
+      ({ warming }) =>
+        useEngineLoadingLabel(true, 'builtin', warming, 'starting'),
       { initialProps: { warming: false } },
     );
     act(() => {
@@ -159,7 +164,8 @@ describe('useEngineLoadingLabel', () => {
 
   it('is a no-op when warming flips true again while already in phase 2', () => {
     const { result, rerender } = renderHook(
-      ({ warming }) => useEngineLoadingLabel(true, 'builtin', warming),
+      ({ warming }) =>
+        useEngineLoadingLabel(true, 'builtin', warming, 'starting'),
       { initialProps: { warming: true } },
     );
     expect(result.current).toBe(ENGINE_PHASE2_PHRASES[0]);
@@ -178,7 +184,7 @@ describe('useEngineLoadingLabel', () => {
 
   it('never enters phase 2 for Ollama (no real signal exists)', () => {
     const { result } = renderHook(() =>
-      useEngineLoadingLabel(true, 'ollama', false),
+      useEngineLoadingLabel(true, 'ollama', false, 'starting'),
     );
     act(() => {
       vi.advanceTimersByTime(
@@ -190,7 +196,8 @@ describe('useEngineLoadingLabel', () => {
 
   it('clears the label once the turn becomes inactive', () => {
     const { result, rerender } = renderHook(
-      ({ active }) => useEngineLoadingLabel(active, 'builtin', false),
+      ({ active }) =>
+        useEngineLoadingLabel(active, 'builtin', false, 'starting'),
       { initialProps: { active: true } },
     );
     act(() => {
@@ -204,7 +211,8 @@ describe('useEngineLoadingLabel', () => {
 
   it('restarts the threshold from zero on a fresh active turn', () => {
     const { result, rerender } = renderHook(
-      ({ active }) => useEngineLoadingLabel(active, 'builtin', false),
+      ({ active }) =>
+        useEngineLoadingLabel(active, 'builtin', false, 'starting'),
       { initialProps: { active: true } },
     );
     act(() => {
@@ -225,7 +233,7 @@ describe('useEngineLoadingLabel', () => {
   it('does not carry the phase-2 latch over into a fresh turn', () => {
     const { result, rerender } = renderHook(
       ({ active, warming }) =>
-        useEngineLoadingLabel(active, 'builtin', warming),
+        useEngineLoadingLabel(active, 'builtin', warming, 'starting'),
       { initialProps: { active: true, warming: false } },
     );
     rerender({ active: true, warming: true });
@@ -242,5 +250,81 @@ describe('useEngineLoadingLabel', () => {
       vi.advanceTimersByTime(ENGINE_LOADING_THRESHOLD_MS);
     });
     expect(result.current).toBe(ENGINE_PHASE1_PHRASES[0]);
+  });
+
+  describe('engine already loaded (slow-warm path)', () => {
+    it('never shows a phase-1 phrase when the engine is already loaded', () => {
+      const { result } = renderHook(() =>
+        useEngineLoadingLabel(true, 'builtin', false, 'loaded'),
+      );
+      act(() => {
+        vi.advanceTimersByTime(
+          ENGINE_LOADING_THRESHOLD_MS + ENGINE_PHASE1_INTERVAL_MS * 5,
+        );
+      });
+      expect(ENGINE_PHASE1_PHRASES).not.toContain(result.current);
+    });
+
+    it('shows the slow-warm label once the threshold elapses on an already-loaded engine', () => {
+      const { result } = renderHook(() =>
+        useEngineLoadingLabel(true, 'builtin', false, 'loaded'),
+      );
+      act(() => {
+        vi.advanceTimersByTime(ENGINE_LOADING_THRESHOLD_MS);
+      });
+      expect(result.current).toBe(ENGINE_SLOW_WARM_LABEL);
+    });
+
+    it('stays null before the threshold elapses on an already-loaded engine', () => {
+      const { result } = renderHook(() =>
+        useEngineLoadingLabel(true, 'builtin', false, 'loaded'),
+      );
+      act(() => {
+        vi.advanceTimersByTime(ENGINE_LOADING_THRESHOLD_MS - 1);
+      });
+      expect(result.current).toBeNull();
+    });
+
+    it('holds on the slow-warm label indefinitely (no further rotation)', () => {
+      const { result } = renderHook(() =>
+        useEngineLoadingLabel(true, 'builtin', false, 'loaded'),
+      );
+      act(() => {
+        vi.advanceTimersByTime(ENGINE_LOADING_THRESHOLD_MS + 30000);
+      });
+      expect(result.current).toBe(ENGINE_SLOW_WARM_LABEL);
+    });
+
+    it('still jumps to phase 2 if warming fires on an already-loaded engine', () => {
+      // Real world: the engine is loaded, and a fresh proactive prime kicks
+      // off for this exact turn (e.g. a model switch just completed). The
+      // real signal always wins over the slow-warm guess.
+      const { result, rerender } = renderHook(
+        ({ warming }) =>
+          useEngineLoadingLabel(true, 'builtin', warming, 'loaded'),
+        { initialProps: { warming: false } },
+      );
+      act(() => {
+        vi.advanceTimersByTime(ENGINE_LOADING_THRESHOLD_MS);
+      });
+      expect(result.current).toBe(ENGINE_SLOW_WARM_LABEL);
+
+      rerender({ warming: true });
+      expect(result.current).toBe(ENGINE_PHASE2_PHRASES[0]);
+    });
+
+    it('ignores a stray engineState=loaded for Ollama (engineState only ever describes the built-in engine)', () => {
+      // A quirk of Ollama being the active provider: `engineState` still
+      // reflects the built-in engine's own runner, so a value of "loaded"
+      // here says nothing about Ollama's residency. Ollama must always use
+      // the phase-1 cold-start filler, never the slow-warm skip.
+      const { result } = renderHook(() =>
+        useEngineLoadingLabel(true, 'ollama', false, 'loaded'),
+      );
+      act(() => {
+        vi.advanceTimersByTime(ENGINE_LOADING_THRESHOLD_MS);
+      });
+      expect(result.current).toBe(ENGINE_PHASE1_PHRASES[0]);
+    });
   });
 });

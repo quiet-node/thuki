@@ -461,7 +461,8 @@ function App() {
   // ConversationView (which only mounts once chat starts) so the warming
   // state is already current the moment a turn needs it - see the hook's
   // doc comment for why a late-mounting subscriber would risk missing it.
-  const { warming: builtinEngineWarming } = useEngineWarmupStatus();
+  const { warming: builtinEngineWarming, engineState: builtinEngineState } =
+    useEngineWarmupStatus();
 
   /** Capability flags for the currently active model, or undefined if not loaded yet. */
   const activeModelCapabilities = activeModel
@@ -3594,6 +3595,7 @@ function App() {
                                   config.inference.activeProviderKind
                                 }
                                 engineWarming={builtinEngineWarming}
+                                engineState={builtinEngineState}
                               />
                             ) : null}
                           </AnimatePresence>

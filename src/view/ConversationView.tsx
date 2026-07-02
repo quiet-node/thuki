@@ -120,6 +120,13 @@ interface ConversationViewProps {
    * mounted once near the app root. Only ever true for the built-in engine.
    */
   engineWarming?: boolean;
+  /**
+   * Live `engine:status` state from the same hook, describing only the
+   * built-in engine (meaningless for Ollama). Lets the loading label skip
+   * "starting up" language when the engine was already resident at the
+   * moment a turn began.
+   */
+  engineState?: string;
 }
 
 /**
@@ -155,27 +162,30 @@ export function ConversationView({
   isExportOpen,
   providerKind = '',
   engineWarming = false,
+  engineState = 'stopped',
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // True while the trailing assistant message is waiting on its first token
-  // from a plain (non-search, non-think) chat turn - the exact condition
-  // that renders the bare-dots loading row below. Drives the cold-start
-  // label timer; think/search turns render their own loading state inside
-  // ChatBubble and never reach this row.
+  // (or, for a /think turn, its first thinking token) from a non-search chat
+  // turn. Search turns render their own loading state inside ChatBubble's
+  // SearchTraceBlock and never reach this. Drives the cold-start label timer
+  // for BOTH surfaces: the bare-dots row below (plain turns) and, for a
+  // /think turn, the pending state inside ReasoningBlock (see `pendingLabel`
+  // below) - one shared source of truth for the cue instead of two.
   const lastMessage = messages[messages.length - 1];
   const isAwaitingFirstToken = Boolean(
     isGenerating &&
     lastMessage?.role === 'assistant' &&
     !lastMessage?.content &&
     !lastMessage?.thinkingContent &&
-    !lastMessage?.fromSearch &&
-    !lastMessage?.fromThink,
+    !lastMessage?.fromSearch,
   );
   const engineLoadingLabel = useEngineLoadingLabel(
     isAwaitingFirstToken,
     providerKind,
     engineWarming,
+    engineState,
   );
 
   /** Threshold in pixels - if within this distance of the bottom, consider "near bottom". */
@@ -329,6 +339,7 @@ export function ConversationView({
               onSwitchModel={onSwitchModel}
               thinkingContent={msg.thinkingContent}
               isThinkingPending={isThinkingPending}
+              pendingLabel={engineLoadingLabel}
               // "Still thinking" reflects the real stream state, not whether
               // /think was used: thinking tokens have arrived, the answer has
               // not started, and the turn is still generating (isLastAssistant
@@ -355,8 +366,10 @@ export function ConversationView({
         {/* Loading row: always show 9-dot indicator when waiting for first
             content. For search turns, show the stage label inline as plain
             text next to the dots; for a plain turn stuck behind a cold
-            provider spin-up, show the engine loading label instead. */}
-        {isAwaitingFirstToken ? (
+            provider spin-up, show the engine loading label instead. A
+            /think turn gets the same engine label, but rendered inside its
+            own ChatBubble (ReasoningBlock's pending state) rather than here. */}
+        {isAwaitingFirstToken && !lastMessage?.fromThink ? (
           <LoadingStage
             label={searchStageLabel(searchStage) ?? engineLoadingLabel}
           />

@@ -13,10 +13,26 @@ describe('useEngineWarmupStatus', () => {
     clearEventHandlers();
   });
 
-  it('starts not warming', async () => {
+  it('starts not warming and stopped', async () => {
     const { result } = renderHook(() => useEngineWarmupStatus());
     await act(async () => {});
     expect(result.current.warming).toBe(false);
+    expect(result.current.engineState).toBe('stopped');
+  });
+
+  it('updates engineState on engine:status', async () => {
+    const { result } = renderHook(() => useEngineWarmupStatus());
+    await act(async () => {});
+
+    await act(async () => {
+      emitTauriEvent('engine:status', {
+        state: 'loaded',
+        model_path: '/tmp/m.gguf',
+        port: 8080,
+        error: null,
+      });
+    });
+    expect(result.current.engineState).toBe('loaded');
   });
 
   it('flips to warming on warmup:builtin-warming', async () => {
