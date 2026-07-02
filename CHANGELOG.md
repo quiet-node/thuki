@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Renamed the `[model]` section in `config.toml` to `[inference]` and reshaped it from a single `ollama_url` string into the providers schema described above. There is no backward-compatibility shim for the section name: if you had a custom `[model]` section, rename it to `[inference]` after upgrading; a flat `ollama_url` inside `[inference]` is migrated automatically.
 - Active model selection is now strictly Option-typed end to end: when nothing is installed and nothing is persisted, Thuki refuses to dispatch requests and surfaces a "Pick a model" prompt instead of falling back to a hardcoded slug. The previous `DEFAULT_MODEL_NAME` constant has been removed.
 
+## [0.15.7](https://github.com/quiet-node/thuki/compare/v0.15.6...v0.15.7) (2026-07-02)
+
+
+### Bug Fixes
+
+* cancel in-flight generation when starting a new session ([#289](https://github.com/quiet-node/thuki/issues/289)) ([da432fa](https://github.com/quiet-node/thuki/commit/da432fa2349d411887d7263fa4e8b4ed71b8a0d6))
+* skip false starting-up copy when engine is already loaded ([#291](https://github.com/quiet-node/thuki/issues/291)) ([047824c](https://github.com/quiet-node/thuki/commit/047824ce2a8db529665369b98a60dcc017b544f3))
+
 ## [0.15.6](https://github.com/quiet-node/thuki/compare/v0.15.5...v0.15.6) (2026-07-01)
 
 
