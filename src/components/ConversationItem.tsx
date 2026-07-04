@@ -47,16 +47,16 @@ export const ConversationItem = memo(function ConversationItem({
   const title = conversation.title ?? 'Untitled';
 
   return (
-    <div className="history-item group flex items-center gap-2 w-full">
+    <div className="history-item group relative w-full">
       <button
         type="button"
         onClick={() => onSelect(conversation.id)}
         aria-label={title}
         aria-current={isActive ? 'true' : undefined}
-        className={`flex-1 min-w-0 flex flex-col gap-0.5 text-left px-3 py-2 rounded-lg transition-colors duration-150 cursor-pointer ${
+        className={`relative w-full flex flex-col gap-0.5 text-left pl-3 pr-9 py-2 rounded-lg transition-colors duration-150 cursor-pointer hover:bg-white/5 ${
           isActive
-            ? 'bg-primary/10 border-l-2 border-primary'
-            : 'hover:bg-white/5'
+            ? "before:absolute before:content-[''] before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-r before:bg-primary before:shadow-[0_0_10px_rgba(255,141,92,0.5)]"
+            : ''
         }`}
       >
         <span
@@ -69,11 +69,13 @@ export const ConversationItem = memo(function ConversationItem({
         </span>
       </button>
 
+      {/* Delete: absolute overlay revealed on row hover, so it never reserves a
+          layout column that would permanently narrow every title. */}
       <button
         type="button"
         onClick={() => onDelete(conversation.id)}
         aria-label="Delete conversation"
-        className="shrink-0 mr-2 p-1 rounded text-text-secondary opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-500/10 transition-colors duration-150 cursor-pointer"
+        className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded text-text-secondary opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-500/10 transition-opacity duration-150 cursor-pointer"
       >
         {DELETE_ICON}
       </button>
