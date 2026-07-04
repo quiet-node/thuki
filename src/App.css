@@ -40,6 +40,7 @@
   --color-border: rgba(255, 141, 92, 0.1);
   --color-sidebar: rgba(28, 28, 32, 0.95);
   --color-foreground: #f0f0f2;
+  --color-background: rgb(22, 18, 15);
 
   /* Elevation - input bar mode (compact floating effect, Spotlight-inspired) */
   --shadow-bar:
