@@ -6,6 +6,23 @@ import type { ConversationSummary } from '../types/history';
 /** Debounce delay in ms before firing a search query. */
 const SEARCH_DEBOUNCE_MS = 200;
 
+/** Hoisted static magnifier icon for the search field. */
+const SEARCH_ICON = (
+  <svg
+    width="13"
+    height="13"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    className="shrink-0 text-text-secondary"
+    aria-hidden="true"
+  >
+    <circle cx="11" cy="11" r="7" />
+    <path d="M21 21l-4-4" strokeLinecap="round" />
+  </svg>
+);
+
 /**
  * Groups a flat list of conversations into date buckets for display.
  * Returns an ordered array of `[label, items]` pairs.
@@ -260,15 +277,18 @@ export function HistoryPanel({
       {pendingId === null &&
         !pendingNewConversation &&
         (conversations.length > 0 || search.trim() !== '') && (
-          <div className="px-3 pt-3 pb-2 border-b border-surface-border">
-            <input
-              type="text"
-              value={search}
-              onChange={handleSearchChange}
-              placeholder="Search past chats…"
-              autoFocus
-              className="w-full bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
-            />
+          <div className="px-3 pt-3 pb-2">
+            <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-white/5 border border-surface-border focus-within:border-primary/40 transition-colors duration-150">
+              {SEARCH_ICON}
+              <input
+                type="text"
+                value={search}
+                onChange={handleSearchChange}
+                placeholder="Search past chats…"
+                autoFocus
+                className="flex-1 min-w-0 bg-transparent text-xs text-text-primary placeholder:text-text-secondary outline-none"
+              />
+            </div>
           </div>
         )}
 
@@ -287,7 +307,7 @@ export function HistoryPanel({
           onCancel={onCancelNew!}
         />
       ) : (
-        <div className="overflow-y-auto py-1 max-h-[280px]">
+        <div className="overflow-y-auto px-1.5 py-1 max-h-[280px]">
           {loadError && (
             <p className="px-3 py-4 text-xs text-text-secondary text-center">
               Couldn&apos;t load history - try again.

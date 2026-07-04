@@ -99,8 +99,7 @@ describe('ConversationItem', () => {
       name: /how does react work/i,
     });
     expect(button).toHaveAttribute('aria-current', 'true');
-    expect(button.className).toContain('bg-primary/10');
-    expect(button.className).toContain('border-primary');
+    expect(button.className).toContain('before:bg-primary');
   });
 
   it('does not apply active styling when isActive is false', () => {
@@ -116,6 +115,6 @@ describe('ConversationItem', () => {
       name: /how does react work/i,
     });
     expect(button).not.toHaveAttribute('aria-current');
-    expect(button.className).not.toContain('bg-primary/10');
+    expect(button.className).not.toContain('before:bg-primary');
   });
 });
