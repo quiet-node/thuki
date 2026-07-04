@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Renamed the `[model]` section in `config.toml` to `[inference]` and reshaped it from a single `ollama_url` string into the providers schema described above. There is no backward-compatibility shim for the section name: if you had a custom `[model]` section, rename it to `[inference]` after upgrading; a flat `ollama_url` inside `[inference]` is migrated automatically.
 - Active model selection is now strictly Option-typed end to end: when nothing is installed and nothing is persisted, Thuki refuses to dispatch requests and surfaces a "Pick a model" prompt instead of falling back to a hardcoded slug. The previous `DEFAULT_MODEL_NAME` constant has been removed.
 
+## [0.15.8](https://github.com/quiet-node/thuki/compare/v0.15.7...v0.15.8) (2026-07-04)
+
+
+### Bug Fixes
+
+* define missing background theme token for Streamdown table menus ([#292](https://github.com/quiet-node/thuki/issues/292)) ([6100c5d](https://github.com/quiet-node/thuki/commit/6100c5d53fab59156e95ecbe43941c8b804997b1))
+* redesign history panel search field and active row indicator ([#294](https://github.com/quiet-node/thuki/issues/294)) ([4252217](https://github.com/quiet-node/thuki/commit/4252217695e9db87c1321e3355221de756d93d08))
+
 ## [0.15.7](https://github.com/quiet-node/thuki/compare/v0.15.6...v0.15.7) (2026-07-02)
 
 
