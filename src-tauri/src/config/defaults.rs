@@ -754,3 +754,23 @@ pub const HTTP_REQUEST_TIMEOUT_S: u64 = 15;
 ///
 /// Not user-tunable: an internal robustness bound.
 pub const HTTP_CONNECT_TIMEOUT_S: u64 = 8;
+
+// ─── Web-search pre-pass ─────────────────────────────────────────────────────
+
+/// Token cap for the grammar-constrained search pre-pass response. The JSON
+/// itself is tiny (~60 tokens), but reasoning-family models (e.g. gpt-oss)
+/// spend internal tokens on chain-of-thought before emitting the JSON, so the
+/// budget carries headroom: too small and the reasoning exhausts it before any
+/// JSON is produced, yielding an empty body. Measured ~500 reasoning tokens on
+/// the bundled models, so 768 leaves margin plus the JSON.
+///
+/// Not user-tunable: part of the pre-pass prompt/parse contract, not a latency
+/// or quality knob the user should tune.
+pub const PREPASS_MAX_TOKENS: i32 = 768;
+
+/// Per-call wall-clock timeout for the search pre-pass (seconds). One warm-slot
+/// classification call; a few seconds is generous, and exceeding it means the
+/// engine is wedged, in which case degrading to a direct answer beats stalling.
+///
+/// Not user-tunable: an internal robustness bound.
+pub const PREPASS_TIMEOUT_S: u64 = 20;

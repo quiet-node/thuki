@@ -35,6 +35,7 @@ pub mod subscribe;
 pub mod trace;
 pub mod updater;
 pub mod warmup;
+pub mod websearch;
 
 #[cfg(target_os = "macos")]
 mod activator;
