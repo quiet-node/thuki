@@ -34,8 +34,13 @@ if [[ ! -f "$QUERIES_FILE" ]]; then
   exit 1
 fi
 
-# Collect non-comment, non-blank queries.
-mapfile -t QUERIES < <(grep -vE '^\s*(#|$)' "$QUERIES_FILE")
+# Collect non-comment, non-blank queries (portable to bash 3.2 on macOS).
+QUERIES=()
+while IFS= read -r line; do
+  [[ -z "${line//[[:space:]]/}" ]] && continue # skip blank / whitespace-only
+  [[ "${line#"${line%%[![:space:]]*}"}" == \#* ]] && continue # skip comments
+  QUERIES+=("$line")
+done <"$QUERIES_FILE"
 total=${#QUERIES[@]}
 if [[ $total -eq 0 ]]; then
   echo "error: no queries in '$QUERIES_FILE'" >&2
