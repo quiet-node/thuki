@@ -774,3 +774,20 @@ pub const PREPASS_MAX_TOKENS: i32 = 768;
 ///
 /// Not user-tunable: an internal robustness bound.
 pub const PREPASS_TIMEOUT_S: u64 = 20;
+
+// ─── Web-search engine results ───────────────────────────────────────────────
+
+/// Maximum result rows kept from one keyless search-engine query after dedupe.
+/// Enough breadth for the fetch stage to pick the top pages plus snippet
+/// fallbacks, without flooding the extractive filter. Matches the 8-10 band
+/// every surveyed pipeline converges on.
+///
+/// Not user-tunable: a pipeline-shape constant, not a latency knob.
+pub const SERP_MAX_RESULTS_PER_QUERY: usize = 10;
+
+/// Maximum results kept from any single domain in one query, so a
+/// content-farm that owns the whole first page cannot crowd out diverse
+/// sources before the fetch/extract stages run.
+///
+/// Not user-tunable: a result-diversity bound.
+pub const SERP_MAX_RESULTS_PER_DOMAIN: usize = 2;

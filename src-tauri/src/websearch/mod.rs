@@ -9,5 +9,7 @@
 //! The stages are built as independent, injectable units so the orchestrator's
 //! decision logic is unit-testable without a live model or network:
 //! - [`prepass`] — the `no｜cached｜web` trigger and query rewrite.
+//! - [`engine`] — keyless search-engine scraping with rotation.
 
+pub mod engine;
 pub mod prepass;
