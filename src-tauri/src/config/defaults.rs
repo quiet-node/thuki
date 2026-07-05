@@ -717,3 +717,40 @@ pub const STRIP_PATTERNS: &[&str] = &[
     "<think>",
     "</think>",
 ];
+
+// ─── SSRF-safe HTTP transport ────────────────────────────────────────────────
+
+/// Hard cap on the decompressed body Thuki reads from any single outbound
+/// request in the web-search stack (bytes). The transport streams the response
+/// and aborts once this many bytes have accumulated, so a hostile server (or a
+/// gzip bomb, since the cap counts post-decompression bytes) cannot exhaust
+/// memory. 4 MiB is far above any real HTML page or vertical-API JSON payload.
+///
+/// Not user-tunable: a defense-in-depth bound on attacker-controlled response
+/// size, not a latency or quality knob.
+pub const MAX_HTTP_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum number of redirect hops the transport follows before failing the
+/// request. Every hop is re-screened by the SSRF guard, so this is a
+/// belt-and-suspenders bound on redirect loops and redirect-based latency, not
+/// the security boundary itself. 5 covers legitimate chains (e.g. Google News
+/// RSS opaque-token redirects) with margin.
+///
+/// Not user-tunable: a protocol-hardening bound on attacker-controlled
+/// redirect chains.
+pub const MAX_HTTP_REDIRECTS: usize = 5;
+
+/// Backstop wall-clock timeout for a single outbound request (seconds). This
+/// is a coarse safety net so a stuck connection cannot hang forever; callers
+/// that need a tighter per-request or whole-fan-out deadline (e.g. the page
+/// fetcher's ~6 s global budget) impose it themselves with `tokio::time`.
+///
+/// Not user-tunable: an internal robustness bound, not a user-facing knob.
+pub const HTTP_REQUEST_TIMEOUT_S: u64 = 15;
+
+/// Connection-establishment timeout for a single outbound request (seconds).
+/// Tighter than the overall request timeout so an unreachable host fails fast
+/// during engine rotation instead of stalling the whole turn.
+///
+/// Not user-tunable: an internal robustness bound.
+pub const HTTP_CONNECT_TIMEOUT_S: u64 = 8;

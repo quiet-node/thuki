@@ -23,6 +23,7 @@ pub mod export;
 pub mod history;
 pub mod images;
 pub mod models;
+pub mod net;
 pub mod ocr;
 pub mod onboarding;
 pub mod openai;
