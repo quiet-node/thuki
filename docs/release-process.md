@@ -40,15 +40,14 @@ Developer ID signing and notarization are a release-time prerequisite for shippi
 
 The pin is two constants in `scripts/ensure-llama-server.ts`: `LLAMA_CPP_TAG` (the release tag) and `LLAMA_CPP_COMMIT` (that tag's exact commit SHA). The script clones the tag and refuses to build unless `HEAD` matches `LLAMA_CPP_COMMIT`, so the commit is the supply-chain anchor: a moved or forged tag is rejected before anything is built. We build from source rather than download ggml-org's prebuilt because that prebuilt is compiled for macOS 26+ and dyld-fails on older macOS; our build pins `CMAKE_OSX_DEPLOYMENT_TARGET=13.4`, which makes the macOS-15 Metal residency-set symbol a weak import (used on 15+, skipped below). See [Models and Providers](./models-and-providers.md#how-the-engine-binary-is-packaged) for the full why.
 
-There is no automatic bump, and that is intentional: a new engine version has to clear the manual checks below on real hardware before it ships. Upgrade when there is a concrete reason: a newer model architecture we want to load, a `llama-server` bug or security fix, or a Metal/performance improvement. Otherwise the existing pin keeps working indefinitely.
+Renovate opens review-gated bump PRs automatically (weekly, see [engine-bump-and-gate.md](./engine-bump-and-gate.md)), but a bump is never merged automatically: a new engine version still has to clear the checks below and human review before it ships. Use the steps here to bump by hand when there is a concrete reason the automation should not wait for — a newer model architecture we want to load, a `llama-server` bug or security fix, or a Metal/performance improvement. Otherwise the existing pin keeps working indefinitely.
 
-To bump:
+To bump by hand:
 
 1. Pick the target release on https://github.com/ggml-org/llama.cpp/releases and set `LLAMA_CPP_TAG` to its tag.
 2. Set `LLAMA_CPP_COMMIT` to that tag's commit SHA: `git ls-remote https://github.com/ggml-org/llama.cpp refs/tags/<tag>`.
 3. Run `bun run engine:ensure`. It clones the pinned commit, builds `llama-server` for the macOS 13.4 target, audits the output (arm64, macOS-13.4 deployment target, weak Metal residency-set import, no non-system dylibs), and re-derives the dylib link closure. If the new release adds, renames, or drops a dylib, the script aborts and names exactly which entries differ from `bundle.macOS.frameworks` in `src-tauri/tauri.conf.json`; update that list to match so the closure check passes.
-4. Bump the cache-key commit suffix (`-<commit-prefix>`) in the build workflows so the engine is rebuilt rather than restored stale from the old cache.
-5. Re-run the binary-dependent checks on a real machine, ideally one running the minimum macOS (13.4), since that compatibility is the whole point of building from source: the sidecar spawns and streams a response, and `codesign -vv` is clean on the `llama-server` binary and every bundled dylib.
+4. Re-run the binary-dependent checks on a real machine, ideally one running the minimum macOS (13.4), since that compatibility is the whole point of building from source: the sidecar spawns and streams a response, and `codesign -vv` is clean on the `llama-server` binary and every bundled dylib. (The CI sidecar cache keys are derived from a hash of `scripts/ensure-llama-server.ts`, so changing the pin invalidates them automatically — no cache-key edit needed.)
 
 ## Cutting a release manually (rare)
 

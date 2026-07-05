@@ -1,0 +1,92 @@
+name: Engine Regression Gate
+
+# Proves the bundled engine still loads a real model and runs real inference
+# correctly. Runs on every PR and is the mandatory gate on engine-bump PRs.
+#
+# This is the same shape the field uses to gate a llama.cpp bump (Ollama builds
+# the runtime on a version change; Jan/cortex build + run a real-model E2E smoke):
+# build it, load a real model, generate, assert. It exercises the real
+# scripts/ensure-llama-server.ts path — build/verify/prune/re-sign — so a changed
+# dylib closure or a signing breakage fails here, not in a user's hands. It then
+# verifies the signature, loads the pinned gate model, drives it through
+# llama-server's /v1 chat endpoint (Thuki's actual runtime path, so a broken chat
+# template is caught) with greedy decoding, and asserts the answers are
+# semantically correct rather than byte-identical to a frozen golden (greedy
+# output is only reproducible on the same build + hardware). A throughput floor
+# catches a gross performance regression such as a silent CPU fallback.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Engine loads + inference
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.11
+      - run: bun install --frozen-lockfile
+
+      - name: Cache llama.cpp sidecar
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: src-tauri/binaries
+          key: llama-cpp-${{ runner.os }}-${{ hashFiles('scripts/ensure-llama-server.ts') }}
+
+      - name: Build the shipped engine (real build/verify/prune/re-sign)
+        run: bun run engine:ensure
+
+      - name: Verify code signatures
+        run: |
+          set -uo pipefail
+          bin=src-tauri/binaries/llama-server-aarch64-apple-darwin
+          pass=true
+          codesign -vv "$bin" 2>&1 || pass=false
+          n=0
+          for dylib in src-tauri/binaries/*.dylib; do
+            codesign -vv "$dylib" 2>&1 || pass=false
+            n=$((n + 1))
+          done
+          printf '{"pass":%s,"detail":"binary + %d dylibs verified"}' "$pass" "$n" > codesign.json
+          cat codesign.json
+
+      - name: Cache gate model
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .gate-model
+          # Keyed by the pinned model's sha256 prefix; keep in sync with GATE_MODEL
+          # in scripts/engine-gate/config.ts.
+          key: gate-model-6a1a2eb6
+
+      - name: Download + verify gate model
+        run: |
+          set -euo pipefail
+          eval "$(bun scripts/engine-gate/model-info.ts)"
+          mkdir -p .gate-model
+          if [ ! -f ".gate-model/${GATE_MODEL_FILE}" ]; then
+            curl -fL --retry 3 -o ".gate-model/${GATE_MODEL_FILE}" "${GATE_MODEL_URL}"
+          fi
+          echo "${GATE_MODEL_SHA256}  .gate-model/${GATE_MODEL_FILE}" | shasum -a 256 -c -
+
+      - name: Run inference + measure throughput
+        run: |
+          set -euo pipefail
+          eval "$(bun scripts/engine-gate/model-info.ts)"
+          GATE_MODEL_PATH=".gate-model/${GATE_MODEL_FILE}" \
+          GATE_RESULT=result.json \
+            bun scripts/engine-gate/collect.ts
+
+      - name: Decide
+        run: |
+          set -euo pipefail
+          GATE_RESULT=result.json \
+          GATE_CODESIGN=codesign.json \
+            bun scripts/engine-gate/decide.ts
