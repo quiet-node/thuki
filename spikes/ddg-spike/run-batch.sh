@@ -13,7 +13,11 @@
 #
 # Defaults: network "home", queries.txt, gap 30-75s. Locale rotates across a
 # small set so the log captures locale variance. Safe to run daily (append) and
-# from cron.
+# from cron/launchd.
+#
+# Set DDG_SPIKE_LOG to an absolute path to keep the JSONL log in a stable
+# location independent of this worktree (used by the scheduled launchd job so
+# the data survives worktree changes). Defaults to a local file in this dir.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -23,6 +27,7 @@ QUERIES_FILE="${2:-queries.txt}"
 MIN_GAP="${3:-30}"
 MAX_GAP="${4:-75}"
 BIN="./target/release/ddg-spike"
+LOG_FILE="${DDG_SPIKE_LOG:-ddg-spike-log.jsonl}"
 LOCALES=("us-en" "us-en" "uk-en" "fr-fr" "de-de") # weighted toward us-en
 
 if [[ ! -x "$BIN" ]]; then
@@ -54,7 +59,7 @@ for q in "${QUERIES[@]}"; do
   locale="${LOCALES[$((RANDOM % ${#LOCALES[@]}))]}"
   echo "[$i/$total] ($locale) $q"
   # Never abort the batch on a single query's non-zero exit (a block is data).
-  "$BIN" --network "$NETWORK" --locale "$locale" "$q" || true
+  "$BIN" --network "$NETWORK" --locale "$locale" --log "$LOG_FILE" "$q" || true
   if [[ $i -lt $total ]]; then
     gap=$((MIN_GAP + RANDOM % (MAX_GAP - MIN_GAP + 1)))
     sleep "$gap"
@@ -62,9 +67,9 @@ for q in "${QUERIES[@]}"; do
 done
 
 echo
-echo "== outcome tally (this log to date) =="
+echo "== outcome tally ($LOG_FILE to date) =="
 if command -v jq >/dev/null 2>&1; then
-  jq -s 'group_by(.status) | map({status: .[0].status, count: length})' ddg-spike-log.jsonl
+  jq -s 'group_by(.status) | map({status: .[0].status, count: length})' "$LOG_FILE"
 else
-  echo "(install jq for a tally; raw log at ddg-spike-log.jsonl)"
+  echo "(install jq for a tally; raw log at $LOG_FILE)"
 fi
