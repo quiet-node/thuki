@@ -29,6 +29,7 @@ serde_json = "1"
 reqwest = { version = "0.13.4", features = ["json", "stream", "gzip", "form"] }
 url = "2"
 scraper = "0.20"
+dom_smoothie = "0.18"
 tokio = { version = "1.52.3", features = ["macros", "process", "time", "sync"] }
 futures-util = "0.3.32"
 tokio-util = "0.7"

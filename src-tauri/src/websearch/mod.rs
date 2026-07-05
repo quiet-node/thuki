@@ -10,6 +10,8 @@
 //! decision logic is unit-testable without a live model or network:
 //! - [`prepass`] — the `no｜cached｜web` trigger and query rewrite.
 //! - [`engine`] — keyless search-engine scraping with rotation.
+//! - [`fetch`] — concurrent page fetch + readability extraction.
 
 pub mod engine;
+pub mod fetch;
 pub mod prepass;

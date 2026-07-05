@@ -791,3 +791,44 @@ pub const SERP_MAX_RESULTS_PER_QUERY: usize = 10;
 ///
 /// Not user-tunable: a result-diversity bound.
 pub const SERP_MAX_RESULTS_PER_DOMAIN: usize = 2;
+
+// ─── Web-search fetch + extract ──────────────────────────────────────────────
+
+/// `num_ctx` at or above which the fetch stage is allowed the larger page
+/// budget. Below it, only a couple of extracted pages plus snippets fit
+/// alongside the conversation; at or above it, more full pages fit.
+///
+/// Not user-tunable: a pipeline-shape threshold tied to the context budget, not
+/// a user knob (the user tunes `num_ctx`, and this reads it).
+pub const FETCH_LARGE_CTX_THRESHOLD: u32 = 16384;
+
+/// Pages fully fetched and extracted per turn on a small context window
+/// (`num_ctx` < [`FETCH_LARGE_CTX_THRESHOLD`]). The rest of the SERP contributes
+/// snippets only, so recall is preserved without overrunning the budget.
+///
+/// Not user-tunable: derived pipeline shape gated by `num_ctx`.
+pub const FETCH_MAX_PAGES_SMALL_CTX: usize = 2;
+
+/// Pages fully fetched and extracted per turn on a large context window
+/// (`num_ctx` >= [`FETCH_LARGE_CTX_THRESHOLD`]).
+///
+/// Not user-tunable: derived pipeline shape gated by `num_ctx`.
+pub const FETCH_MAX_PAGES_LARGE_CTX: usize = 5;
+
+/// Per-URL wall-clock timeout for a single page fetch (seconds). The page
+/// fetches race concurrently and each is capped here, so the whole fan-out
+/// completes within roughly this bound: per-URL-bounded concurrency is itself
+/// the global fetch deadline, no separate (and lossy) outer timeout needed. A
+/// URL that misses it degrades to its SERP snippet.
+///
+/// Not user-tunable: an internal latency bound on the fetch fan-out.
+pub const FETCH_PER_URL_TIMEOUT_S: u64 = 5;
+
+/// Hard cap on DOM elements the readability extractor will parse from one page.
+/// Defense-in-depth beyond [`MAX_HTTP_RESPONSE_BYTES`]: the byte cap bounds
+/// download size, this bounds parse-time work so a pathological but small DOM
+/// cannot burn CPU. 9 000 covers real articles with wide margin.
+///
+/// Not user-tunable: a defense-in-depth bound on attacker-controlled page
+/// structure.
+pub const FETCH_MAX_ELEMENTS_TO_PARSE: usize = 9000;
