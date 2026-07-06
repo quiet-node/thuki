@@ -12,7 +12,9 @@
 //! - [`engine`] — keyless search-engine scraping with rotation.
 //! - [`fetch`] — concurrent page fetch + readability extraction.
 //! - [`rank`] — chunking + BM25 extractive filter behind a `Scorer` seam.
+//! - [`assemble`] — group ranked chunks into budgeted numbered source blocks.
 
+pub mod assemble;
 pub mod engine;
 pub mod fetch;
 pub mod prepass;

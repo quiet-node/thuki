@@ -861,3 +861,29 @@ pub const BM25_B: f64 = 0.75;
 ///
 /// Not user-tunable: a retrieval-pipeline diversity bound.
 pub const RANK_MAX_CHUNKS_PER_PAGE: usize = 3;
+
+// ─── Web-search context assembly ─────────────────────────────────────────────
+
+/// Hard ceiling on the retrieved-source context injected into the writer call,
+/// in estimated tokens. The effective budget is the smaller of this and a
+/// fraction of `num_ctx` (see [`CONTEXT_BUDGET_CTX_PERCENT`]), so retrieval
+/// never crowds out the conversation or the answer even on a huge context
+/// window. 4 000 tokens holds several substantial source passages.
+///
+/// Not user-tunable: a pipeline budget bound derived alongside `num_ctx`.
+pub const CONTEXT_MAX_TOKENS: usize = 4000;
+
+/// Fraction of `num_ctx`, as a percentage, that retrieved sources may occupy.
+/// Combined with [`CONTEXT_MAX_TOKENS`] via a min, this leaves the majority of
+/// the window for the system prompt, conversation, and the generated answer.
+///
+/// Not user-tunable: a pipeline budget bound derived alongside `num_ctx`.
+pub const CONTEXT_BUDGET_CTX_PERCENT: usize = 40;
+
+/// Rough characters-per-token divisor for estimating token counts of source
+/// text without invoking a tokenizer. ~4 characters per token is the standard
+/// English approximation; the budget rounds up (over-estimates) so the real
+/// token count stays under the ceiling.
+///
+/// Not user-tunable: an internal estimation constant.
+pub const CHARS_PER_TOKEN: usize = 4;
