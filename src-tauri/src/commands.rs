@@ -576,6 +576,104 @@ pub(crate) async fn stream_builtin_chat(
     }
 }
 
+/// Outcome of the built-in search pre-pass + pipeline for one turn.
+enum BuiltinSearchResult {
+    /// Search grounded the answer: stream these writer messages (which already
+    /// embed the delimited sources) instead of the plain chat messages.
+    Grounded(Vec<ChatMessage>),
+    /// No search this turn (a `no` decision, an infra failure, or nothing worth
+    /// citing): stream the original plain messages.
+    Plain,
+    /// The user cancelled during the pipeline: emit `Cancelled`, stream nothing.
+    Cancelled,
+}
+
+/// Today's date as `YYYY-MM-DD` (UTC) for the writer's date context. UTC keeps
+/// the clock wrapper thread-safe; near-midnight zone skew is immaterial to the
+/// model's freshness reasoning. Coverage-excluded: a thin clock wrapper.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn today_string() -> String {
+    time::OffsetDateTime::now_utc().date().to_string()
+}
+
+/// Best-effort user locale from `$LANG` (e.g. `en_US`), falling back to
+/// `en-US`, for the writer's localisation hint. Coverage-excluded: a thin
+/// environment wrapper.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn user_locale() -> String {
+    std::env::var("LANG")
+        .ok()
+        .and_then(|lang| lang.split('.').next().map(str::to_string))
+        .filter(|locale| !locale.is_empty())
+        .unwrap_or_else(|| "en-US".to_string())
+}
+
+/// Runs the built-in search pre-pass and, if it fires, the retrieval pipeline
+/// on the warm engine, emitting progress through `on_chunk`. The prompt inputs
+/// MUST be the same strings the plain chat path streams (system prompt, filtered
+/// history, quote-wrapped user turn) so the pre-pass and writer reuse
+/// llama-server's warm KV prefix.
+///
+/// Coverage-excluded: glue that wires the real engine port, HTTP transport, and
+/// BM25 scorer into the fully-tested [`crate::websearch::orchestrator::run_search`]
+/// and maps its outcome to a wire result. Every decision lives in `run_search`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::too_many_arguments)]
+async fn run_builtin_search(
+    engine: &crate::engine::runner::EngineHandle,
+    target: &crate::engine::state::Target,
+    model_id: &str,
+    client: &reqwest::Client,
+    num_ctx: u32,
+    system_prompt: &str,
+    history: &[ChatMessage],
+    latest_user: &str,
+    cancel: &CancellationToken,
+    on_chunk: &(impl Fn(StreamChunk) + Send + Sync),
+) -> BuiltinSearchResult {
+    // The engine is already warm (the caller holds an activity guard); this
+    // re-ensure just reads back the live port for the pre-pass and writer.
+    let Ok(port) = engine.ensure_loaded(target.clone()).await else {
+        return BuiltinSearchResult::Plain;
+    };
+    let Ok(transport) = crate::net::transport::ReqwestTransport::new() else {
+        return BuiltinSearchResult::Plain;
+    };
+    let prepass = crate::websearch::prepass::BuiltinPrePass::new(
+        client.clone(),
+        format!("http://127.0.0.1:{port}"),
+        model_id.to_string(),
+        crate::config::defaults::PREPASS_TIMEOUT_S,
+    );
+    let scorer = crate::websearch::rank::Bm25Scorer;
+    let deps = crate::websearch::orchestrator::SearchDeps {
+        prepass: &prepass,
+        transport: &transport,
+        scorer: &scorer,
+    };
+    let status = |phase| on_chunk(StreamChunk::SearchStatus { phase });
+    let outcome = crate::websearch::orchestrator::run_search(
+        &deps,
+        system_prompt,
+        history,
+        latest_user,
+        num_ctx,
+        &today_string(),
+        &user_locale(),
+        cancel,
+        &status,
+    )
+    .await;
+    match outcome {
+        crate::websearch::orchestrator::SearchOutcome::Answer { messages, sources } => {
+            on_chunk(StreamChunk::SearchSources(source_metas(&sources)));
+            BuiltinSearchResult::Grounded(messages)
+        }
+        crate::websearch::orchestrator::SearchOutcome::NoSearch => BuiltinSearchResult::Plain,
+        crate::websearch::orchestrator::SearchOutcome::Cancelled => BuiltinSearchResult::Cancelled,
+    }
+}
+
 /// Sets `flag` when `chunk` carries reasoning output. The built-in runtime
 /// backstop wires this into the chunk pump so it learns whether a model emitted
 /// reasoning tokens even though reasoning was requested OFF.
@@ -986,6 +1084,37 @@ pub enum StreamChunk {
     /// retire its `is_first_turn` flag without relying on token-arrival
     /// ordering. Does not appear in the trace itself.
     TurnAccepted,
+    /// Progress of the invisible web-search pipeline, streamed before any answer
+    /// token so the UI can show what the model is doing on the warm slot.
+    SearchStatus {
+        phase: crate::websearch::orchestrator::SearchPhase,
+    },
+    /// The resolved citation sources for a source-grounded answer, emitted once
+    /// just before the answer tokens. Never emitted on a plain (non-search) turn.
+    SearchSources(Vec<SourceMeta>),
+}
+
+/// Citation metadata for one resolved web source, sent to the frontend to
+/// render the numbered sources list. The source's extracted text stays
+/// server-side (it lives only in the writer prompt), so only the citation index
+/// and its origin cross the IPC boundary.
+#[derive(Clone, Serialize)]
+pub struct SourceMeta {
+    pub index: usize,
+    pub url: String,
+    pub title: String,
+}
+
+/// Projects the assembled source blocks to the citation metadata the UI needs.
+pub(crate) fn source_metas(blocks: &[crate::websearch::assemble::SourceBlock]) -> Vec<SourceMeta> {
+    blocks
+        .iter()
+        .map(|block| SourceMeta {
+            index: block.index,
+            url: block.url.clone(),
+            title: block.title.clone(),
+        })
+        .collect()
 }
 
 /// A single message in the Ollama `/api/chat` conversation format.
@@ -1283,7 +1412,9 @@ pub(crate) fn record_chunk_to_trace(
         StreamChunk::Done
         | StreamChunk::Cancelled
         | StreamChunk::Error(_)
-        | StreamChunk::TurnAccepted => {}
+        | StreamChunk::TurnAccepted
+        | StreamChunk::SearchStatus { .. }
+        | StreamChunk::SearchSources(_) => {}
     }
 }
 
@@ -1431,6 +1562,10 @@ pub async fn ask_model(
         slash_command: slash_command.clone(),
     });
 
+    // Whether this turn attaches images. Auto-search is skipped for image turns
+    // (the writer prompt is text-only), so capture it before `image_paths` moves.
+    let turn_has_images = image_paths.as_ref().is_some_and(|paths| !paths.is_empty());
+
     // Base64-encode attached images for the Ollama multimodal API.
     let images = match image_paths {
         Some(ref paths) if !paths.is_empty() => {
@@ -1570,39 +1705,84 @@ pub async fn ask_model(
                     String::new()
                 }
                 Ok((target, crate::models::memory::MemoryGate::Proceed)) => {
-                    // Observe whether reasoning streamed this turn so the
-                    // runtime backstop can mark a model that reasons even with
-                    // reasoning requested OFF (see `backstop_mark_reasoning_always`).
-                    let reasoning_seen =
-                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                    let seen_for_pump = std::sync::Arc::clone(&reasoning_seen);
-                    let backstop_model_id = model_id.clone();
-                    let builtin_pump = move |chunk: StreamChunk| {
-                        observe_reasoning_chunk(&chunk, &seen_for_pump);
-                        pump(chunk);
+                    // Hold an activity guard across the search pre-pass and the
+                    // stream so the idle sweep cannot unload the engine between
+                    // resolving the port for the pre-pass and streaming.
+                    let _activity = engine.activity_guard();
+                    engine.touch();
+
+                    // Invisible auto-search (built-in engine only; skipped when
+                    // the turn attaches images). The prompt inputs mirror the
+                    // plain path exactly so the pre-pass and writer share the warm
+                    // KV prefix: the system prompt, the capability-filtered
+                    // history (`messages[1..len-1]`), and the quote-wrapped user
+                    // turn (`user_msg.content`). Do NOT let the source-augmented
+                    // writer messages reach history persistence below.
+                    let search = if turn_has_images {
+                        BuiltinSearchResult::Plain
+                    } else {
+                        let history = &messages[1..messages.len().saturating_sub(1)];
+                        run_builtin_search(
+                            &engine,
+                            &target,
+                            &model_id,
+                            &client,
+                            config.inference.num_ctx,
+                            &messages[0].content,
+                            history,
+                            &user_msg.content,
+                            &cancel_token,
+                            &pump,
+                        )
+                        .await
                     };
-                    let content = stream_builtin_chat(
-                        &engine,
-                        target,
-                        model_id,
-                        think,
-                        messages,
-                        &client,
-                        cancel_token.clone(),
-                        &warm_state,
-                        || {
-                            let _ = app.emit("warmup:builtin-warmed", ());
-                        },
-                        builtin_pump,
-                    )
-                    .await;
-                    backstop_mark_reasoning_always(
-                        &db,
-                        &backstop_model_id,
-                        think,
-                        reasoning_seen.load(std::sync::atomic::Ordering::Relaxed),
-                    );
-                    content
+
+                    match search {
+                        BuiltinSearchResult::Cancelled => {
+                            pump(StreamChunk::Cancelled);
+                            String::new()
+                        }
+                        grounded_or_plain => {
+                            let stream_messages = match grounded_or_plain {
+                                BuiltinSearchResult::Grounded(writer) => writer,
+                                _ => messages,
+                            };
+                            // Observe whether reasoning streamed this turn so the
+                            // runtime backstop can mark a model that reasons even
+                            // with reasoning requested OFF (see
+                            // `backstop_mark_reasoning_always`).
+                            let reasoning_seen =
+                                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                            let seen_for_pump = std::sync::Arc::clone(&reasoning_seen);
+                            let backstop_model_id = model_id.clone();
+                            let builtin_pump = move |chunk: StreamChunk| {
+                                observe_reasoning_chunk(&chunk, &seen_for_pump);
+                                pump(chunk);
+                            };
+                            let content = stream_builtin_chat(
+                                &engine,
+                                target,
+                                model_id,
+                                think,
+                                stream_messages,
+                                &client,
+                                cancel_token.clone(),
+                                &warm_state,
+                                || {
+                                    let _ = app.emit("warmup:builtin-warmed", ());
+                                },
+                                builtin_pump,
+                            )
+                            .await;
+                            backstop_mark_reasoning_always(
+                                &db,
+                                &backstop_model_id,
+                                think,
+                                reasoning_seen.load(std::sync::atomic::Ordering::Relaxed),
+                            );
+                            content
+                        }
+                    }
                 }
                 Err(err) => {
                     pump(StreamChunk::Error(err));
@@ -1737,6 +1917,29 @@ mod tests {
     use super::*;
     use crate::config::defaults::DEFAULT_NUM_CTX;
     use std::sync::{Arc, Mutex as StdMutex};
+
+    #[test]
+    fn source_metas_projects_index_url_title() {
+        let blocks = vec![
+            crate::websearch::assemble::SourceBlock {
+                index: 1,
+                url: "https://a/".into(),
+                title: "A".into(),
+                text: "body a".into(),
+            },
+            crate::websearch::assemble::SourceBlock {
+                index: 2,
+                url: "https://b/".into(),
+                title: "B".into(),
+                text: "body b".into(),
+            },
+        ];
+        let metas = source_metas(&blocks);
+        assert_eq!(metas.len(), 2);
+        assert_eq!(metas[0].index, 1);
+        assert_eq!(metas[0].url, "https://a/");
+        assert_eq!(metas[1].title, "B");
+    }
 
     fn collect_chunks() -> (Arc<StdMutex<Vec<StreamChunk>>>, impl Fn(StreamChunk)) {
         let chunks: Arc<StdMutex<Vec<StreamChunk>>> = Arc::new(StdMutex::new(Vec::new()));

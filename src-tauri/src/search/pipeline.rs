@@ -564,10 +564,12 @@ async fn run_streaming_branch(
 pub(super) fn translate_chunk(chunk: StreamChunk) -> SearchEvent {
     match chunk {
         StreamChunk::Token(t) => SearchEvent::Token { content: t },
-        // Thinking mode is not exposed for the search pipeline: suppressing
-        // these tokens keeps the event stream minimal. A dedicated event can
-        // be added later without touching the frontend types.
-        StreamChunk::ThinkingToken(_) => SearchEvent::Token {
+        // Thinking mode is not exposed for the search pipeline, and the built-in
+        // auto-search chunks never reach this legacy pump; both suppress to an
+        // empty token, keeping the event stream minimal and the match exhaustive.
+        StreamChunk::ThinkingToken(_)
+        | StreamChunk::SearchStatus { .. }
+        | StreamChunk::SearchSources(_) => SearchEvent::Token {
             content: String::new(),
         },
         StreamChunk::Done => SearchEvent::Done { metadata: None },
