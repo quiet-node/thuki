@@ -303,6 +303,90 @@ describe('useModel', () => {
     });
   });
 
+  // ─── auto-search chunks ──────────────────────────────────────────────────────
+
+  describe('auto-search chunks', () => {
+    it('maps SearchStatus phases to the shared stage indicator', async () => {
+      const { result } = renderHook(() => useModel(''));
+      await act(async () => {
+        await result.current.ask('what is the news today');
+      });
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'SearchStatus',
+          data: { phase: 'deciding' },
+        });
+      });
+      expect(result.current.searchStage).toEqual({ kind: 'analyzing_query' });
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'SearchStatus',
+          data: { phase: 'searching' },
+        });
+      });
+      expect(result.current.searchStage).toEqual({ kind: 'searching' });
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'SearchStatus',
+          data: { phase: 'reading' },
+        });
+      });
+      expect(result.current.searchStage).toEqual({ kind: 'reading_sources' });
+    });
+
+    it('attaches SearchSources to the assistant message and persists them on Done', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useModel('m', onTurnComplete));
+      await act(async () => {
+        await result.current.ask('who signed the treaty');
+      });
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'SearchSources',
+          data: [
+            { index: 1, url: 'https://a/', title: 'A' },
+            { index: 2, url: 'https://b/', title: 'B' },
+          ],
+        });
+      });
+
+      const assistant = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistant?.fromSearch).toBe(true);
+      expect(assistant?.searchSources).toEqual([
+        { title: 'A', url: 'https://a/' },
+        { title: 'B', url: 'https://b/' },
+      ]);
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Token',
+          data: 'It was signed in 1919.',
+        });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      expect(onTurnComplete).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'user' }),
+        expect.objectContaining({
+          content: 'It was signed in 1919.',
+          fromSearch: true,
+          searchSources: [
+            { title: 'A', url: 'https://a/' },
+            { title: 'B', url: 'https://b/' },
+          ],
+        }),
+      );
+    });
+  });
+
   // ─── imagePaths handling ─────────────────────────────────────────────────────
 
   describe('imagePaths handling', () => {

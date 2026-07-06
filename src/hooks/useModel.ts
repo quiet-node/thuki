@@ -86,7 +86,15 @@ type RawStreamChunk =
   | { type: 'Done' }
   | { type: 'Cancelled' }
   | { type: 'Error'; data: { kind: EngineErrorKind; message: string } }
-  | { type: 'TurnAccepted' };
+  | { type: 'TurnAccepted' }
+  | { type: 'SearchStatus'; data: { phase: SearchPhase } }
+  | {
+      type: 'SearchSources';
+      data: Array<{ index: number; url: string; title: string }>;
+    };
+
+/** Progress phase of the invisible auto-search pipeline (mirrors the Rust enum). */
+type SearchPhase = 'deciding' | 'searching' | 'reading';
 
 /**
  * Normalized chat-stream chunk used inside the hook.
@@ -101,7 +109,9 @@ type StreamChunk =
   | { type: 'Done' }
   | { type: 'Cancelled' }
   | { type: 'Error'; error: { kind: EngineErrorKind; message: string } }
-  | { type: 'TurnAccepted' };
+  | { type: 'TurnAccepted' }
+  | { type: 'SearchStatus'; phase: SearchPhase }
+  | { type: 'SearchSources'; sources: SearchResultPreview[] };
 
 /**
  * Shared swallow-all handler for fire-and-forget trace IPC calls.
@@ -130,8 +140,25 @@ function normalizeStreamChunk(chunk: RawStreamChunk): StreamChunk {
       return { type: 'Error', error: chunk.data };
     case 'TurnAccepted':
       return chunk;
+    case 'SearchStatus':
+      return { type: 'SearchStatus', phase: chunk.data.phase };
+    case 'SearchSources':
+      return {
+        type: 'SearchSources',
+        sources: chunk.data.map((source) => ({
+          title: source.title,
+          url: source.url,
+        })),
+      };
   }
 }
+
+/** Maps an auto-search phase to the shared stage indicator. */
+const SEARCH_STAGE_BY_PHASE: Record<SearchPhase, SearchStage> = {
+  deciding: { kind: 'analyzing_query' },
+  searching: { kind: 'searching' },
+  reading: { kind: 'reading_sources' },
+};
 
 /** Result payload delivered to callers when a `/search` pipeline turn finishes. */
 export interface SearchOutcome {
@@ -482,6 +509,7 @@ export function useModel(
       const channel = new Channel<RawStreamChunk>();
       let currentContent = '';
       let currentThinkingContent = '';
+      let pendingSources: SearchResultPreview[] | undefined;
 
       channel.onmessage = (rawChunk) => {
         const chunk = normalizeStreamChunk(rawChunk);
@@ -532,6 +560,23 @@ export function useModel(
           return;
         }
 
+        if (chunk.type === 'SearchStatus') {
+          setSearchStage(SEARCH_STAGE_BY_PHASE[chunk.phase]);
+          return;
+        }
+
+        if (chunk.type === 'SearchSources') {
+          pendingSources = chunk.sources;
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantId
+                ? { ...message, fromSearch: true, searchSources: chunk.sources }
+                : message,
+            ),
+          );
+          return;
+        }
+
         if (chunk.type === 'Done') {
           completeGeneration();
           setIsGenerating(false);
@@ -540,6 +585,8 @@ export function useModel(
             ...assistantMsg,
             content: currentContent,
             thinkingContent: currentThinkingContent || undefined,
+            fromSearch: pendingSources ? true : assistantMsg.fromSearch,
+            searchSources: pendingSources,
           });
           return;
         }
