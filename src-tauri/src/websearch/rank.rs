@@ -187,7 +187,10 @@ mod tests {
 
     #[test]
     fn chunk_text_splits_on_word_target() {
-        let text = (0..800).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
+        let text = (0..800)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
         let chunks = chunk_text(&text, 350);
         assert_eq!(chunks.len(), 3); // 350 + 350 + 100
         assert_eq!(chunks[0].split_whitespace().count(), 350);
@@ -208,7 +211,10 @@ mod tests {
 
     #[test]
     fn tokenize_lowercases_and_splits_nonalnum() {
-        assert_eq!(tokenize("Rust's BM25, v2!"), vec!["rust", "s", "bm25", "v2"]);
+        assert_eq!(
+            tokenize("Rust's BM25, v2!"),
+            vec!["rust", "s", "bm25", "v2"]
+        );
     }
 
     // ── bm25_scores ───────────────────────────────────────────────────────────

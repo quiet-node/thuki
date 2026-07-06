@@ -132,9 +132,10 @@ async fn fetch_one(transport: &dyn HttpTransport, hit: &SearchHit) -> FetchedPag
     )
     .await
     {
-        Ok(Ok(response)) if (200..300).contains(&response.status) => {
-            extract_readable(&String::from_utf8_lossy(&response.body), &response.final_url)
-        }
+        Ok(Ok(response)) if (200..300).contains(&response.status) => extract_readable(
+            &String::from_utf8_lossy(&response.body),
+            &response.final_url,
+        ),
         _ => None,
     };
     page_from_parts(hit, extracted)
@@ -255,7 +256,9 @@ mod tests {
         // Small ctx -> fetch 2, but only a.com has a canned page.
         let pages = fetch_pages(&transport, &hits, 8192).await;
         assert_eq!(pages.len(), 2);
-        assert!(pages[0].text.contains("Ownership is the most distinctive feature"));
+        assert!(pages[0]
+            .text
+            .contains("Ownership is the most distinctive feature"));
         // b.com had no canned response -> transport error -> snippet fallback.
         assert_eq!(pages[1].text, "snippet b");
     }

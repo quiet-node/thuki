@@ -178,7 +178,9 @@ mod tests {
         ];
         let region = build_sources_region(&blocks, "NONCE123");
         assert!(region.starts_with("<<<UNTRUSTED_WEB_CONTENT NONCE123>>>"));
-        assert!(region.trim_end().ends_with("<<<END_UNTRUSTED_WEB_CONTENT NONCE123>>>"));
+        assert!(region
+            .trim_end()
+            .ends_with("<<<END_UNTRUSTED_WEB_CONTENT NONCE123>>>"));
         assert!(region.contains("[1] Title A (a.example)"));
         assert!(region.contains("[2] Title B (b.example)"));
         assert!(region.contains("body a"));
@@ -227,7 +229,9 @@ mod tests {
         assert_eq!(msgs[1].content, "earlier");
         assert_eq!(msgs[2].role, "user");
         assert!(msgs[2].content.starts_with("what happened today?"));
-        assert!(msgs[2].content.contains("<<<UNTRUSTED_WEB_CONTENT NONCE>>>"));
+        assert!(msgs[2]
+            .content
+            .contains("<<<UNTRUSTED_WEB_CONTENT NONCE>>>"));
         assert!(msgs[2].content.contains("body"));
     }
 }

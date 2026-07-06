@@ -10,9 +10,7 @@
 //! block to cite. Pure over its inputs; the delimiter-wrapping and prompt
 //! framing happen later in the writer stage.
 
-use crate::config::defaults::{
-    CHARS_PER_TOKEN, CONTEXT_BUDGET_CTX_PERCENT, CONTEXT_MAX_TOKENS,
-};
+use crate::config::defaults::{CHARS_PER_TOKEN, CONTEXT_BUDGET_CTX_PERCENT, CONTEXT_MAX_TOKENS};
 use crate::websearch::rank::ScoredChunk;
 
 /// One numbered source in the assembled context: the `[n]` a citation refers
@@ -61,7 +59,11 @@ pub fn assemble_context(chunks: &[ScoredChunk], num_ctx: u32) -> Vec<SourceBlock
             Some(&i) => order[i].2.push(chunk.text.clone()),
             None => {
                 position.insert(chunk.url.clone(), order.len());
-                order.push((chunk.url.clone(), chunk.title.clone(), vec![chunk.text.clone()]));
+                order.push((
+                    chunk.url.clone(),
+                    chunk.title.clone(),
+                    vec![chunk.text.clone()],
+                ));
             }
         }
     }

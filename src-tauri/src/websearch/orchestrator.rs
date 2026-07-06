@@ -158,14 +158,23 @@ async fn run_web(
     if sources.is_empty() {
         return SearchOutcome::NoSearch;
     }
-    let messages = writer_messages(chat_system_prompt, history, latest_user, &sources, today, locale);
+    let messages = writer_messages(
+        chat_system_prompt,
+        history,
+        latest_user,
+        &sources,
+        today,
+        locale,
+    );
     SearchOutcome::Answer { messages, sources }
 }
 
 /// Removes cross-query duplicate hits by URL, preserving first-seen order.
 fn dedupe_hits(hits: Vec<SearchHit>) -> Vec<SearchHit> {
     let mut seen = std::collections::HashSet::new();
-    hits.into_iter().filter(|h| seen.insert(h.url.clone())).collect()
+    hits.into_iter()
+        .filter(|h| seen.insert(h.url.clone()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -260,7 +269,10 @@ mod tests {
         }
     }
 
-    fn recorder() -> (std::sync::Arc<Mutex<Vec<SearchPhase>>>, impl Fn(SearchPhase) + Send + Sync) {
+    fn recorder() -> (
+        std::sync::Arc<Mutex<Vec<SearchPhase>>>,
+        impl Fn(SearchPhase) + Send + Sync,
+    ) {
         let phases = std::sync::Arc::new(Mutex::new(Vec::new()));
         let clone = std::sync::Arc::clone(&phases);
         (phases, move |p| clone.lock().unwrap().push(p))
@@ -275,7 +287,11 @@ mod tests {
             url: u.into(),
             snippet: "s".into(),
         };
-        let out = dedupe_hits(vec![hit("https://a/"), hit("https://b/"), hit("https://a/")]);
+        let out = dedupe_hits(vec![
+            hit("https://a/"),
+            hit("https://b/"),
+            hit("https://a/"),
+        ]);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].url, "https://a/");
         assert_eq!(out[1].url, "https://b/");
@@ -367,12 +383,14 @@ mod tests {
             &status,
         )
         .await;
-        assert!(matches!(&outcome, SearchOutcome::Answer { messages, sources }
+        assert!(
+            matches!(&outcome, SearchOutcome::Answer { messages, sources }
             if sources.len() == 1
                 && sources[0].url == "https://match.example/"
                 && messages.last().is_some_and(|m| m.content.starts_with("when signed")
                     && m.content.contains("UNTRUSTED_WEB_CONTENT")
-                    && m.content.contains("treaty"))));
+                    && m.content.contains("treaty")))
+        );
         assert_eq!(
             *phases.lock().unwrap(),
             vec![

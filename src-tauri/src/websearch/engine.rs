@@ -332,7 +332,10 @@ mod tests {
     #[test]
     fn is_ad_result_flags_ad_class_and_yjs_only() {
         assert!(is_ad_result(Some("result result--ad"), "https://real/"));
-        assert!(is_ad_result(None, "https://duckduckgo.com/y.js?ad_domain=x"));
+        assert!(is_ad_result(
+            None,
+            "https://duckduckgo.com/y.js?ad_domain=x"
+        ));
         assert!(!is_ad_result(Some("result web-result"), "https://real/"));
         assert!(!is_ad_result(None, "https://real/"));
     }
@@ -457,5 +460,4 @@ mod tests {
         let transport = FakeHttpTransport::new();
         assert!(ddg_search(&transport, "q").await.is_empty());
     }
-
 }

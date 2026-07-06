@@ -38,7 +38,10 @@ pub(crate) fn domain_of(url: &str) -> String {
 mod tests {
     #[test]
     fn domain_of_extracts_host_or_empty() {
-        assert_eq!(super::domain_of("https://sub.example.com/path"), "sub.example.com");
+        assert_eq!(
+            super::domain_of("https://sub.example.com/path"),
+            "sub.example.com"
+        );
         assert_eq!(super::domain_of("not a url"), "");
     }
 }
