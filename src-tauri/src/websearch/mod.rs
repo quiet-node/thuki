@@ -13,10 +13,13 @@
 //! - [`fetch`] — concurrent page fetch + readability extraction.
 //! - [`rank`] — chunking + BM25 extractive filter behind a `Scorer` seam.
 //! - [`assemble`] — group ranked chunks into budgeted numbered source blocks.
+//! - [`writer`] — writer prompt assembly with prompt-injection defenses.
+//! - [`orchestrator`] — the fixed pipeline tying the stages together.
 
 pub mod assemble;
 pub mod engine;
 pub mod fetch;
+pub mod orchestrator;
 pub mod prepass;
 pub mod rank;
 pub mod writer;
