@@ -11,7 +11,9 @@
 //! - [`prepass`] — the `no｜cached｜web` trigger and query rewrite.
 //! - [`engine`] — keyless search-engine scraping with rotation.
 //! - [`fetch`] — concurrent page fetch + readability extraction.
+//! - [`rank`] — chunking + BM25 extractive filter behind a `Scorer` seam.
 
 pub mod engine;
 pub mod fetch;
 pub mod prepass;
+pub mod rank;

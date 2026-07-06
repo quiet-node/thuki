@@ -832,3 +832,32 @@ pub const FETCH_PER_URL_TIMEOUT_S: u64 = 5;
 /// Not user-tunable: a defense-in-depth bound on attacker-controlled page
 /// structure.
 pub const FETCH_MAX_ELEMENTS_TO_PARSE: usize = 9000;
+
+// ─── Web-search extractive filter (chunking + BM25) ──────────────────────────
+
+/// Target size, in whitespace-separated words, of one page chunk fed to the
+/// extractive filter. ~350 words lands in the 300-500 token band the retrieval
+/// literature converges on: large enough to hold a coherent passage, small
+/// enough that the ranker can discard the irrelevant remainder of a page.
+///
+/// Not user-tunable: a retrieval-pipeline shape constant.
+pub const CHUNK_TARGET_WORDS: usize = 350;
+
+/// BM25 term-frequency saturation parameter `k1`. The Okapi default; higher
+/// values let repeated query terms keep raising a chunk's score, lower values
+/// saturate sooner. 1.5 is the standard baseline.
+///
+/// Not user-tunable: a ranking-algorithm constant.
+pub const BM25_K1: f64 = 1.5;
+
+/// BM25 length-normalisation parameter `b`. The Okapi default; 1.0 fully
+/// penalises long chunks, 0.0 ignores length. 0.75 is the standard baseline.
+///
+/// Not user-tunable: a ranking-algorithm constant.
+pub const BM25_B: f64 = 0.75;
+
+/// Maximum chunks kept from any single page after ranking, so one long page
+/// cannot dominate the citation budget and source diversity is preserved.
+///
+/// Not user-tunable: a retrieval-pipeline diversity bound.
+pub const RANK_MAX_CHUNKS_PER_PAGE: usize = 3;
